@@ -1,0 +1,24 @@
+spring:
+  config:
+    activate:
+      on-profile: prod,test
+  application:
+    name: auth-service
+  cloud:
+    vault:
+      enabled: true
+      uri: ${VAULT_URI:http://localhost:8200}
+      authentication: approle
+      app-role:
+        role-id: ${VAULT_ROLE_ID:}
+        secret-id: ${VAULT_SECRET_ID:}
+      fail-fast: true
+      generic:
+        enabled: true
+        backend: secret
+        default-context: ${ENV:local}/${spring.application.name}
+        profile-separator: "/"
+        additional-contexts:
+          - ${ENV:local}/shared
+    config:
+      import: vault://

@@ -1,0 +1,73 @@
+openapi: 3.0.3
+info:
+  title: Permission Service API
+  version: 1.0.0
+  description: Kullanıcı modül erişimleri ve rol atamaları için API.
+servers:
+  - url: https://gateway.example.com
+  - url: http://localhost:8080
+tags:
+  - name: Permissions
+paths:
+  /api/permissions/assignments:
+    get:
+      tags: [Permissions]
+      summary: Kullanıcı atamalarını listele
+      parameters:
+        - in: query
+          name: userId
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Atama listesi
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Assignment' }
+        '401': { description: Yetkisiz }
+        '403': { description: İzin yok }
+
+  /api/permissions/check:
+    get:
+      tags: [Permissions]
+      summary: İzin kontrolü
+      parameters:
+        - in: query
+          name: userId
+          required: true
+          schema: { type: string }
+        - in: query
+          name: companyId
+          required: false
+          schema: { type: string }
+        - in: query
+          name: action
+          required: true
+          schema: { type: string, example: VIEW_USERS }
+      responses:
+        '200':
+          description: Sonuç
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowed: { type: boolean }
+
+components:
+  schemas:
+    Assignment:
+      type: object
+      properties:
+        moduleKey: { type: string }
+        moduleLabel: { type: string }
+        level: { type: string, enum: [NONE, VIEW, EDIT, MANAGE] }
+        assignmentId: { type: string, nullable: true }
+        roleName: { type: string, nullable: true }
+        permissions:
+          type: array
+          items: { type: string }
+        companyId: { type: string, nullable: true }
+

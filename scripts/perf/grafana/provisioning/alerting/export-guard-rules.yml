@@ -1,0 +1,255 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: export-guard
+    folder: Security / CSV Export
+    interval: 1m
+    rules:
+      - uid: export-blocked-warning
+        title: Users export blocked ratio (warning)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: sum(rate(users_export_rate_limit_total{result="blocked"}[5m])) / clamp_min(sum(rate(users_export_rate_limit_total{result="allowed"}[5m])), 0.001)
+              interval: ""
+              intervalMs: 1000
+              legendFormat: blocked / allowed
+              maxDataPoints: 43200
+              refId: A
+              range: true
+              instant: false
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.02
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                      - 5m
+                      - now
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              hide: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: 5 dk ortalamada blocked/allowed oranı %2 üzerine çıktı.
+        labels:
+          severity: warning
+          component: users-export
+        isPaused: false
+
+      - uid: export-blocked-critical
+        title: Users export blocked ratio (critical)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: sum(rate(users_export_rate_limit_total{result="blocked"}[5m])) / clamp_min(sum(rate(users_export_rate_limit_total{result="allowed"}[5m])), 0.001)
+              interval: ""
+              intervalMs: 1000
+              legendFormat: blocked / allowed
+              maxDataPoints: 43200
+              refId: A
+              range: true
+              instant: false
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.05
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                      - 5m
+                      - now
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              hide: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: 5 dk ortalamada blocked/allowed oranı %5 üzerine çıktı.
+        labels:
+          severity: critical
+          component: users-export
+        isPaused: false
+
+      - uid: export-duration-warning
+        title: Users export duration p95 (warning)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: histogram_quantile(0.95, sum(rate(users_export_duration_bucket[5m])) by (le))
+              interval: ""
+              intervalMs: 1000
+              legendFormat: p95
+              maxDataPoints: 43200
+              refId: A
+              range: true
+              instant: false
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 5
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                      - 5m
+                      - now
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              hide: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Export p95 süresi 5 saniyeyi geçti.
+        labels:
+          severity: warning
+          component: users-export
+        isPaused: false
+
+      - uid: export-duration-critical
+        title: Users export duration p95 (critical)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              datasource:
+                type: prometheus
+                uid: prometheus
+              expr: histogram_quantile(0.95, sum(rate(users_export_duration_bucket[5m])) by (le))
+              interval: ""
+              intervalMs: 1000
+              legendFormat: p95
+              maxDataPoints: 43200
+              refId: A
+              range: true
+              instant: false
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 10
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                      - 5m
+                      - now
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              hide: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Export p95 süresi 10 saniyeyi geçti.
+        labels:
+          severity: critical
+          component: users-export
+        isPaused: false

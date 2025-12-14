@@ -1,0 +1,158 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/backstage/backstage/master/packages/catalog-model/examples/acme-featureflags.schema.json
+---
+apiVersion: backstage.io/v1alpha1
+kind: FeatureFlag
+metadata:
+  name: access-mutation-write-v1
+  annotations:
+    mp/flag-id: access:mutation-write:v1
+    mp/flag-owner: team/access
+    mp/flag-lifecycle: ga
+    mp/flag-created: "2025-10-15"
+    mp/runbook: docs/04-operations/01-runbooks/52-mfe-access-runbook.md
+spec:
+  description: >
+    Controls write operations (create/update/delete) inside Access grid. When this flag is false the UI
+    automatically switches to read-only mode and informs operators via banner + telemetry events.
+  environments:
+    - name: dev
+      default: true
+      rollout: 100
+    - name: stage
+      default: true
+      rollout: 100
+    - name: prod
+      default: true
+      rollout: 100
+  tags: [ga, security-critical]
+  guardrails:
+    - Access_Mutation_Error
+  killSwitch:
+    linkedFlag: access:mutation-write:kill-switch
+    runbook: docs/04-operations/01-runbooks/52-mfe-access-runbook.md
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: FeatureFlag
+metadata:
+  name: access-mutation-write-kill-switch
+  annotations:
+    mp/flag-id: access:mutation-write:kill-switch
+    mp/flag-owner: team/platform-ops
+    mp/flag-lifecycle: kill-switch
+    mp/flag-created: "2025-10-15"
+    mp/runbook: docs/04-operations/01-runbooks/52-mfe-access-runbook.md
+spec:
+  description: >
+    Emergency kill-switch that forces Access module into read-only mode. Ops toggles this flag to contain incidents
+    such as mutation error spikes or audit pipeline degradations.
+  environments:
+    - name: dev
+      default: false
+    - name: stage
+      default: false
+    - name: prod
+      default: false
+  tags: [kill-switch, security-critical]
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: FeatureFlag
+metadata:
+  name: access-grid-lazy-load-v1
+  annotations:
+    mp/flag-id: access:grid-lazy-load:v1
+    mp/flag-owner: team/access
+    mp/flag-lifecycle: ga
+    mp/flag-created: "2025-11-05"
+    mp/runbook: docs/04-operations/01-runbooks/52-mfe-access-runbook.md
+spec:
+  description: >
+    Enables incremental lazy loading for Access grid rows to keep TTFA under 5s. When disabled, the module falls back
+    to classic pagination and increases backend load.
+  environments:
+    - name: dev
+      default: true
+      rollout: 100
+    - name: stage
+      default: true
+      rollout: 100
+    - name: prod
+      default: true
+      rollout: 100
+  tags: [ga, performance]
+  killSwitch:
+    linkedFlag: access:grid-lazy-load:kill-switch
+    runbook: docs/04-operations/01-runbooks/52-mfe-access-runbook.md
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: FeatureFlag
+metadata:
+  name: shell-broadcast-channel-kill-switch
+  annotations:
+    mp/flag-id: shell:broadcast-channel:kill-switch
+    mp/flag-owner: team/shell
+    mp/flag-lifecycle: kill-switch
+    mp/flag-created: "2025-09-20"
+    mp/runbook: docs/04-operations/01-runbooks/43-kill-switch-plan.md
+spec:
+  description: >
+    Forces MFE shell to disable BroadcastChannel token sync. Used when browser broadcast APIs behave unexpectedly or
+    when auth incidents require shutting down shared session propagation.
+  environments:
+    - name: dev
+      default: false
+    - name: stage
+      default: false
+    - name: prod
+      default: false
+  tags: [kill-switch, auth]
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: FeatureFlag
+metadata:
+  name: shell-maintenance-guard
+  annotations:
+    mp/flag-id: shell:maintenance-guard:kill-switch
+    mp/flag-owner: team/platform-ops
+    mp/flag-lifecycle: kill-switch
+    mp/flag-created: "2025-11-15"
+    mp/runbook: docs/04-operations/01-runbooks/vault-failfast-fallback.md
+spec:
+  description: >
+    Displays the maintenance banner + redirects read-only views when Vault/Keycloak fail-fast incidents happen. This flag
+    is toggled through the ops CLI alongside the Vault failover drill.
+  environments:
+    - name: dev
+      default: false
+    - name: stage
+      default: false
+    - name: prod
+      default: false
+  tags: [kill-switch, dr]
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: FeatureFlag
+metadata:
+  name: security-jwt-enforcement-kill-switch
+  annotations:
+    mp/flag-id: security:jwt-enforcement:kill-switch
+    mp/flag-owner: team/platform-arch
+    mp/flag-lifecycle: kill-switch
+    mp/flag-created: "2025-08-30"
+    mp/runbook: docs/04-operations/01-runbooks/43-kill-switch-plan.md
+spec:
+  description: >
+    Mirrors the `JWT_ENFORCEMENT_ENABLED` rollout. Setting the flag to false temporarily re-enables legacy service-token
+    logic for emergency rollback; default is false in prod and should only change under Incident Commander approval.
+  environments:
+    - name: dev
+      default: false
+    - name: stage
+      default: false
+    - name: prod
+      default: false
+  tags: [kill-switch, security-critical]

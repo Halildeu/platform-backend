@@ -1,0 +1,26 @@
+# Servislerin auth metodu ve politika isimlendirmesi için örnek mapping.
+# Faz 1 kapsamında gerçek servis listesi ile güncelleyin.
+
+approle:
+  - service: permission-service
+    env: prod
+    role_name: permission-service-prod
+    policy: permission-service-prod
+  - service: api-gateway
+    env: prod
+    role_name: api-gateway-prod
+    policy: api-gateway-prod
+
+kubernetes:
+  - service: user-service
+    env: prod
+    namespace: prod
+    service_account: user-api-sa
+    role_name: user-service-prod
+    policy: user-service-prod
+  - service: notification-service
+    env: staging
+    namespace: staging
+    service_account: notifier-sa
+    role_name: notification-service-staging
+    policy: notification-service-staging

@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "id": "access-roles",
+  "layout": "PageLayout",
+  "title": "access.roles.title",
+  "description": "access.roles.description",
+  "components": [
+    {
+      "type": "Grid",
+      "id": "rolesGrid",
+      "props": {
+        "dataSource": "/api/v1/roles",
+        "columns": ["roleName", "permissions", "updatedAt"],
+        "pageSize": 20
+      }
+    }
+  ],
+  "meta": {
+    "i18nNamespace": "access",
+    "featureFlag": "manifest:access"
+  }
+}

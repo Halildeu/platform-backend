@@ -1,0 +1,30 @@
+version: 1
+owner: team/platform-arch
+last_review: YYYY-MM-DD
+metrics:
+  - id: lhci_lcp_p75
+    name: LCP p75 (desktop)
+    source: lhci
+    target: "<=2500ms"
+    gating: true
+  - id: axe_violations
+    name: A11Y ihlal sayısı (axe)
+    source: axe-ci
+    target: "==0"
+    gating: true
+  - id: bundle_size_main
+    name: Ana bundle boyutu
+    source: size-limit
+    target: "<=250KB"
+    gating: true
+  - id: i18n_missing_keys
+    name: i18n eksik anahtarlar
+    source: i18n-smoke
+    target: "==0"
+    gating: true
+  - id: jwt_error_rate
+    name: JWT doğrulama hata oranı
+    source: prometheus
+    query: rate(jwt_validation_failure_total[5m])
+    target: "< 0.01/s"
+    gating: false

@@ -1,0 +1,30 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "schemaVersion": 38,
+  "title": "User-Service SLO (p95/p99)",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP p95 (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"user-service\"}[1m])) by (le)) * 1000",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP p99 (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=\"user-service\"}[1m])) by (le)) * 1000",
+          "legendFormat": "p99"
+        }
+      ]
+    }
+  ]
+}
+

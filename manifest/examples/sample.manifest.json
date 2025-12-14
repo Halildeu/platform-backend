@@ -1,0 +1,53 @@
+{
+  "version": "1.0.0",
+  "generatedAt": "2025-12-05T18:00:00Z",
+  "remotes": [
+    {
+      "name": "mfe-users",
+      "entry": "https://cdn.example.com/remotes/mfe-users/1.4.2/remoteEntry.js",
+      "sri": "sha384-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "versionRange": "^1.4.0",
+      "module": "users",
+      "meta": {
+        "i18nNamespace": "users",
+        "featureFlag": "manifest:users"
+      }
+    },
+    {
+      "name": "mfe-access",
+      "entry": "https://cdn.example.com/remotes/mfe-access/2.1.0/remoteEntry.js",
+      "sri": "sha384-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "versionRange": "^2.1.0",
+      "module": "access",
+      "meta": {
+        "i18nNamespace": "access",
+        "featureFlag": "manifest:access"
+      }
+    }
+  ],
+  "dictionaries": [
+    {
+      "locale": "tr-TR",
+      "url": "https://cdn.example.com/i18n/tr-TR.json",
+      "sri": "sha384-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "locale": "en-US",
+      "url": "https://cdn.example.com/i18n/en-US.json",
+      "sri": "sha384-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  ],
+  "meta": {
+    "env": "stage",
+    "gitSha": "abcdef1234567890",
+    "generatedBy": "agent-codex"
+  },
+  "pages": {
+    "users": {
+      "layoutUrl": "https://cdn.example.com/manifests/page-users.layout.json"
+    },
+    "access": {
+      "layoutUrl": "https://cdn.example.com/manifests/page-access.layout.json"
+    }
+  }
+}

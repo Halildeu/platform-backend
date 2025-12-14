@@ -1,0 +1,110 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/manifest.schema.json",
+  "title": "Shell Manifest v1",
+  "description": "Remote manifest ve sözlük girişleri için semver + SRI zorunlu şema (v1).",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Manifest sürümü (semver).",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-.]+)?(?:\\+[0-9A-Za-z-.]+)?$"
+    },
+    "generatedAt": {
+      "type": "string",
+      "description": "Manifest üretim zamanı (ISO 8601).",
+      "format": "date-time"
+    },
+    "remotes": {
+      "type": "array",
+      "description": "Remote micro-frontend tanımları.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Remote adı (benzersiz).",
+            "minLength": 1
+          },
+          "entry": {
+            "type": "string",
+            "description": "Remote entrypoint URL’si.",
+            "format": "uri"
+          },
+          "sri": {
+            "type": "string",
+            "description": "Subresource Integrity hash’i (örn. sha384-...).",
+            "pattern": "^sha(256|384|512)-[A-Za-z0-9+/=]+$"
+          },
+          "versionRange": {
+            "type": "string",
+            "description": "Semver aralığı (örn. ^1.2.0).",
+            "minLength": 1
+          },
+          "module": {
+            "type": "string",
+            "description": "Remote module name (module federation).",
+            "minLength": 1
+          },
+          "meta": {
+            "type": "object",
+            "description": "Ek metadata (örn. i18n namespace, feature flag).",
+            "additionalProperties": true
+          }
+        },
+        "required": ["name", "entry", "sri", "versionRange", "module"],
+        "additionalProperties": false
+      }
+    },
+    "dictionaries": {
+      "type": "array",
+      "description": "Sözlük/çeviri paketleri için kaynaklar (opsiyonel).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "locale": {
+            "type": "string",
+            "description": "IETF language tag (örn. tr-TR, en-US).",
+            "pattern": "^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$"
+          },
+          "url": {
+            "type": "string",
+            "description": "Sözlük URL’si.",
+            "format": "uri"
+          },
+          "sri": {
+            "type": "string",
+            "description": "Subresource Integrity hash’i.",
+            "pattern": "^sha(256|384|512)-[A-Za-z0-9+/=]+$"
+          }
+        },
+        "required": ["locale", "url", "sri"],
+        "additionalProperties": false
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Manifest genel metadata (örn. environment, gitSha).",
+      "additionalProperties": true
+    },
+    "pages": {
+      "type": "object",
+      "description": "Sayfa layout referansları (PageLayout manifestleri).",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "layoutUrl": {
+            "type": "string",
+            "description": "PageLayout manifest URL’si.",
+            "format": "uri"
+          }
+        },
+        "required": ["layoutUrl"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "remotes"],
+  "additionalProperties": false
+}

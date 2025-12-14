@@ -1,0 +1,72 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: audit-guard
+    folder: Operations / Audit Guard
+    interval: 1m
+    rules:
+      - uid: audit-unauthorized-warning
+        title: Audit unauthorized ratio (warning)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                sum(rate(route_guard_hits_total{path=~"/admin/audit/.*",result="unauthorized"}[5m]))
+                / clamp_min(sum(rate(route_guard_hits_total{path=~"/admin/audit/.*"}[5m])), 0.001)
+              refId: A
+              range: true
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.05] }
+                  operator: { type: and }
+                  query: { params: [A, 5m, now] }
+                  reducer: { type: avg, params: [] }
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations: { summary: "5 dk ortalamada unauthorized oranı %5 üzerine çıktı." }
+        labels: { severity: warning, component: audit-guard }
+        isPaused: false
+
+      - uid: audit-unauthorized-critical
+        title: Audit unauthorized ratio (critical)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                sum(rate(route_guard_hits_total{path=~"/admin/audit/.*",result="unauthorized"}[5m]))
+                / clamp_min(sum(rate(route_guard_hits_total{path=~"/admin/audit/.*"}[5m])), 0.001)
+              refId: A
+              range: true
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.15] }
+                  operator: { type: and }
+                  query: { params: [A, 5m, now] }
+                  reducer: { type: avg, params: [] }
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations: { summary: "5 dk ortalamada unauthorized oranı %15 üzerine çıktı." }
+        labels: { severity: critical, component: audit-guard }
+        isPaused: false
+

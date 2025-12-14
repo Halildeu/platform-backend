@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.env.local
+docs/deploy/env/.env.*
+!docs/deploy/env/.env.*.example
+docs/deploy/env/*.local
+.DS_Store
+
+# Dev Vault artifacts (do not commit)
+.vault-dev/
+.vault-dev/**

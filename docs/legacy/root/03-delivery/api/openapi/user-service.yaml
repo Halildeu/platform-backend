@@ -1,0 +1,167 @@
+openapi: 3.0.3
+info:
+  title: User Service API
+  version: 1.0.0
+  description: |
+    SSRM uyumlu listeleme ve büyük veri CSV export uçları dahil kullanıcı servisinin HTTP API sözleşmesi.
+servers:
+  - url: https://gateway.example.com
+  - url: http://localhost:8080
+tags:
+  - name: Users
+paths:
+  /api/users/all:
+    get:
+      tags: [Users]
+      summary: Kullanıcıları listele (SSRM uyumlu)
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, default: 50 }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string, enum: [ALL, ACTIVE, INACTIVE, INVITED, SUSPENDED], default: ALL }
+        - in: query
+          name: role
+          schema: { type: string, enum: [ALL, USER, ADMIN], default: ALL }
+        - in: query
+          name: sort
+          description: Çoklu sıralama `field,dir;field2,dir2`
+          schema: { type: string, example: "name,asc;email,desc" }
+        - in: query
+          name: advancedFilter
+          description: URL-encoded JSON model (whitelist)
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sayfalı kullanıcı listesi
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserSummary'
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+        '401': { description: Yetkisiz }
+        '403': { description: İzin yok }
+        '400': { description: Geçersiz sort/advancedFilter }
+        '500': { description: Sunucu hatası }
+
+  /api/users/export.csv:
+    get:
+      tags: [Users]
+      summary: CSV export (streaming)
+      parameters:
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string, enum: [ALL, ACTIVE, INACTIVE, INVITED, SUSPENDED], default: ALL }
+        - in: query
+          name: role
+          schema: { type: string, enum: [ALL, USER, ADMIN], default: ALL }
+        - in: query
+          name: sort
+          schema: { type: string, example: "name,asc;email,desc" }
+        - in: query
+          name: advancedFilter
+          schema: { type: string }
+      responses:
+        '200':
+          description: CSV stream
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '429': { description: Rate-limit aşıldı }
+        '401': { description: Yetkisiz }
+        '403': { description: İzin yok }
+        '500': { description: Sunucu hatası }
+
+  /api/users/register:
+    post:
+      tags: [Users]
+      summary: Yeni kullanıcı kaydı
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '201': { description: Oluşturuldu }
+        '400': { description: Geçersiz istek }
+        '409': { description: Çakışma (email var) }
+
+  /api/users/{id}:
+    put:
+      tags: [Users]
+      summary: Kullanıcı güncelle
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [USER, ADMIN] }
+                enabled: { type: boolean }
+                sessionTimeoutMinutes: { type: integer, minimum: 1 }
+      responses:
+        '200': { description: Güncellendi }
+        '400': { description: Geçersiz istek }
+        '404': { description: Bulunamadı }
+
+components:
+  schemas:
+    UserSummary:
+      type: object
+      properties:
+        id: { type: string }
+        fullName: { type: string }
+        email: { type: string }
+        role: { type: string }
+        status: { type: string }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time, nullable: true }
+        sessionTimeoutMinutes: { type: integer }
+        modulePermissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserModulePermission'
+    UserModulePermission:
+      type: object
+      properties:
+        moduleKey: { type: string }
+        moduleLabel: { type: string }
+        level: { type: string, enum: [NONE, VIEW, EDIT, MANAGE] }
+        assignmentId: { type: string, nullable: true }
+        roleName: { type: string, nullable: true }
+        permissions:
+          type: array
+          items: { type: string }
+        companyId: { type: string, nullable: true }
+

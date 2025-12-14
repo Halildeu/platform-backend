@@ -1,0 +1,54 @@
+groups:
+  - name: security-dashboard-rules
+    interval: 30s
+    rules:
+      - alert: Security_OPA_Deny_Surge
+        expr: 
+          (
+            sum by (policy)(rate(opa_decision_denied_total[5m]))
+            /
+            clamp_min(sum by (policy)(rate(opa_decision_total[5m])), 1e-5)
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          service: security-dashboard
+        annotations:
+          summary: "OPA deny oranı yüksek (policy={{ $labels.policy }})"
+          description: >-
+            Policy {{ $labels.policy }} için OPA deny oranı son 5 dakikada %20 eşiğini aştı.
+            Policy bundle sürümünü ve gateway loglarını kontrol edin.
+
+      - alert: Security_Vault_mTLS_Correlation
+        expr: sum(rate(gateway_mtls_handshake_failure_total[5m])) > 3
+        for: 10m
+        labels:
+          severity: critical
+          service: security-dashboard
+        annotations:
+          summary: "Vault / mTLS başarısızlık artışı"
+          description: >-
+            Gateway mTLS handshake failure sayısı son 10 dakikada eşik üzerinde. Vault audit loglarında aynı zaman
+            aralığında deny entry'lerini kontrol edin.
+
+      - alert: Security_Keycloak_Access_Surge
+        expr: increase(keycloak_access_request_created_total[10m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+          service: security-dashboard
+        annotations:
+          summary: "Keycloak access request sayısı artışı"
+          description: >-
+            10 dakika içinde {{ $value }} adet access talebi oluşturuldu. Break-glass taleplerini doğrulayın.
+
+      - alert: Security_Keycloak_Revoke_Miss
+        expr: increase(keycloak_roles_revoked_total[24h]) == 0
+        for: 0m
+        labels:
+          severity: info
+          service: security-dashboard
+        annotations:
+          summary: "Son 24 saatte Keycloak revoke event'i yok"
+          description: >-
+            Revoke cronjob çalışmamış olabilir. SIEM loglarını ve cronjob pod loglarını kontrol edin.

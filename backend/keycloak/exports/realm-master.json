@@ -1,0 +1,64 @@
+{
+  "realm": "master",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "verifyEmail": false,
+  "sslRequired": "external",
+  "clients": [
+    {
+      "clientId": "user-service",
+      "enabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "bearerOnly": true,
+      "redirectUris": [],
+      "webOrigins": [],
+      "attributes": {
+        "jwt.credential.certificate": "",
+        "access.token.lifespan": "600"
+      }
+    },
+    {
+      "clientId": "frontend",
+      "name": "Frontend SPA",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.lifespan": "900"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-user-service",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "user-service",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

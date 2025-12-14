@@ -1,0 +1,105 @@
+name: Release Canary Guardrail
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Metrics kaynağı: sample (varsayılan) veya live'
+        required: false
+        default: 'sample'
+      window_minutes:
+        description: 'Metrics pencere süresi (dakika)'
+        required: false
+        default: '30'
+      prom_url:
+        description: 'Opsiyonel Grafana/Prom taban URL override'
+        required: false
+        default: ''
+      ttfb_query:
+        description: 'Opsiyonel TTFB PromQL ifadeleri override'
+        required: false
+        default: ''
+      error_query:
+        description: 'Opsiyonel hata oranı PromQL ifadeleri override'
+        required: false
+        default: ''
+      sentry_query:
+        description: 'Opsiyonel Sentry hata oranı PromQL ifadeleri override'
+        required: false
+        default: ''
+      audit_filter_query:
+        description: 'Opsiyonel audit filter sorgusu override'
+        required: false
+        default: ''
+      audit_total_query:
+        description: 'Opsiyonel audit toplam sorgusu override'
+        required: false
+        default: ''
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        stage:
+          - label: 'Stage 1 – 10% trafik'
+            weight: 10
+            sample: stage10
+          - label: 'Stage 2 – 50% trafik'
+            weight: 50
+            sample: stage50
+          - label: 'Stage 3 – 100% trafik'
+            weight: 100
+            sample: stage100
+    env:
+      CANARY_MODE: ${{ inputs.mode || 'sample' }}
+      CANARY_WINDOW_MINUTES: ${{ inputs.window_minutes || '30' }}
+      CANARY_PROM_URL: ${{ inputs.prom_url != '' && inputs.prom_url || secrets.CANARY_PROM_URL || vars.CANARY_PROM_URL }}
+      GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+      CANARY_TTFB_QUERY: ${{ inputs.ttfb_query != '' && inputs.ttfb_query || vars.CANARY_TTFB_QUERY }}
+      CANARY_ERROR_QUERY: ${{ inputs.error_query != '' && inputs.error_query || vars.CANARY_ERROR_QUERY }}
+      CANARY_SENTRY_QUERY: ${{ inputs.sentry_query != '' && inputs.sentry_query || vars.CANARY_SENTRY_QUERY }}
+      CANARY_AUDIT_FILTER_QUERY: ${{ inputs.audit_filter_query != '' && inputs.audit_filter_query || vars.CANARY_AUDIT_FILTER_QUERY }}
+      CANARY_AUDIT_TOTAL_QUERY: ${{ inputs.audit_total_query != '' && inputs.audit_total_query || vars.CANARY_AUDIT_TOTAL_QUERY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: ${{ matrix.stage.label }} – metrics (sample)
+        if: ${{ env.CANARY_MODE == 'sample' }}
+        run: >
+          node scripts/ci/canary/pull-grafana-metrics.mjs
+          --sample scripts/ci/canary/samples/${{ matrix.stage.sample }}.json
+          --output scripts/ci/canary/generated-${{ matrix.stage.sample }}.json
+          --window-minutes ${{ env.CANARY_WINDOW_MINUTES }}
+
+      - name: ${{ matrix.stage.label }} – metrics (live)
+        if: ${{ env.CANARY_MODE != 'sample' }}
+        env:
+          CANARY_PROM_URL: ${{ env.CANARY_PROM_URL }}
+          GRAFANA_API_KEY: ${{ env.GRAFANA_API_KEY }}
+          CANARY_TTFB_QUERY: ${{ env.CANARY_TTFB_QUERY }}
+          CANARY_ERROR_QUERY: ${{ env.CANARY_ERROR_QUERY }}
+          CANARY_SENTRY_QUERY: ${{ env.CANARY_SENTRY_QUERY }}
+          CANARY_AUDIT_FILTER_QUERY: ${{ env.CANARY_AUDIT_FILTER_QUERY }}
+          CANARY_AUDIT_TOTAL_QUERY: ${{ env.CANARY_AUDIT_TOTAL_QUERY }}
+        run: >
+          node scripts/ci/canary/pull-grafana-metrics.mjs
+          --output scripts/ci/canary/generated-${{ matrix.stage.sample }}.json
+          --window-minutes ${{ env.CANARY_WINDOW_MINUTES }}
+
+      - name: ${{ matrix.stage.label }} – guardrail check
+        run: >
+          node scripts/ci/canary/guardrail-check.mjs
+          --metrics scripts/ci/canary/generated-${{ matrix.stage.sample }}.json
+          --weight ${{ matrix.stage.weight }}
+
+      - name: Canary gözlem penceresini bekle
+        if: ${{ matrix.stage.weight != 100 }}
+        run: sleep 3

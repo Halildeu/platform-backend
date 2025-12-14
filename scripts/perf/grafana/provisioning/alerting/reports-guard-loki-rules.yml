@@ -1,0 +1,132 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: reports-guard-loki
+    folder: Operations / Reports Guard
+    interval: 1m
+    rules:
+      - uid: reports-unauthorized-warning-loki
+        title: Reports unauthorized ratio (warning, Loki)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: loki
+            model:
+              datasource:
+                type: loki
+                uid: loki
+              expr: |
+                (
+                  sum(rate({app="api-gateway"} |= "/admin/reports/" |= " 401 " [5m]))
+                ) / clamp_min(
+                  sum(rate({app="api-gateway"} |= "/admin/reports/" [5m])), 0.001
+                )
+              refId: A
+              queryType: range
+              maxLines: 0
+              legendFormat: unauthorized ratio
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.05
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                      - 5m
+                      - now
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              hide: false
+              intervalMs: 1000
+              refId: B
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Loki oranı %5 üzerinde (5 dk)
+        labels:
+          severity: warning
+          component: reports-guard
+        isPaused: false
+
+      - uid: reports-unauthorized-critical-loki
+        title: Reports unauthorized ratio (critical, Loki)
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: loki
+            model:
+              datasource:
+                type: loki
+                uid: loki
+              expr: |
+                (
+                  sum(rate({app="api-gateway"} |= "/admin/reports/" |= " 401 " [5m]))
+                ) / clamp_min(
+                  sum(rate({app="api-gateway"} |= "/admin/reports/" [5m])), 0.001
+                )
+              refId: A
+              queryType: range
+              maxLines: 0
+              legendFormat: unauthorized ratio
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params:
+                      - 0.15
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params:
+                      - A
+                      - 5m
+                      - now
+                  reducer:
+                    params: []
+                    type: avg
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              hide: false
+              intervalMs: 1000
+              refId: B
+              type: classic_conditions
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: Loki oranı %15 üzerinde (5 dk)
+        labels:
+          severity: critical
+          component: reports-guard
+        isPaused: false
+

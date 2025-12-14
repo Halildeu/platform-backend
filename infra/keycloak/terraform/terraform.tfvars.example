@@ -1,0 +1,6 @@
+base_url = "https://keycloak-stage.example.com"
+username = "admin"
+password = "admin"
+realm    = "platform"
+service_clients = ["gateway","user-service","permission-service","variant-service"]
+

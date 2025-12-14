@@ -1,0 +1,84 @@
+name: Security Guardrails
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Permission registry contract test
+        run: node scripts/permissions/validate-permission-registry.mjs
+
+      - name: Generate theme tokens
+        run: npm run tokens:build
+
+      - name: Stylelint guardrail
+        run: npm run lint:style
+
+      - name: ESLint semantic guardrail
+        run: npm run lint:semantic
+
+      - name: Tailwind semantic guardrail
+        run: npm run lint:tailwind
+
+      - name: Run Keycloak access request CLI tests
+        run: node --test scripts/jira/__tests__/create-keycloak-access-request.test.mjs
+
+      - name: Run SpotBugs SAST scan
+        run: ./scripts/ci/security/run-sast.sh
+
+      - name: Run dependency vulnerability scan
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./scripts/ci/security/run-dependency-scan.sh
+
+      - name: Run ZAP baseline DAST scan
+        env:
+          ZAP_TARGET_URL: ${{ secrets.ZAP_TARGET_URL }}
+          DAST_FALLBACK_URL: ${{ vars.DAST_FALLBACK_URL }}
+        run: ./scripts/ci/security/run-dast.sh
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.2.3'
+
+      - name: Generate SBOM and sign artefacts
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: ./scripts/ci/security/generate-sbom-and-sign.sh
+
+      - name: Generate feature flag health report
+        run: ./scripts/ci/security/export-flag-health.rb
+
+      - name: Upload security artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: test-results/security

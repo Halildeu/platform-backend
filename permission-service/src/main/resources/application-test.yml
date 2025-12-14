@@ -1,0 +1,20 @@
+spring:
+  config:
+    import: vault://secret/db/permission-service
+  cloud:
+    vault:
+      enabled: true
+      authentication: TOKEN
+      token: ${VAULT_TOKEN:root}
+      kv:
+        enabled: true
+        backend: secret
+      uri: ${VAULT_URI:http://localhost:8200}
+      scheme: ${VAULT_SCHEME:http}
+      fail-fast: ${VAULT_FAIL_FAST:true}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8081/realms/serban
+          jwk-set-uri: http://localhost:8081/realms/serban/protocol/openid-connect/certs

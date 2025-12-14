@@ -1,0 +1,95 @@
+{
+  "info": {
+    "name": "Users & Permissions API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "00000000-0000-0000-0000-000000000001"
+  },
+  "item": [
+    {
+      "name": "Auth / Login",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{BASE_URL}}/api/auth/login", "host": ["{{BASE_URL}}"], "path": ["api","auth","login"] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"admin1234\",\n  \"companyId\": {{COMPANY_ID}}\n}"
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Users / List (SSRM)",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{JWT}}" },
+          { "key": "X-Company-Id", "value": "{{COMPANY_ID}}" }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/users/all?page=1&pageSize=50&search=&status=ALL&role=ALL&sort=name,asc",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api","users","all"],
+          "query": [
+            {"key":"page","value":"1"},
+            {"key":"pageSize","value":"50"},
+            {"key":"search","value":""},
+            {"key":"status","value":"ALL"},
+            {"key":"role","value":"ALL"},
+            {"key":"sort","value":"name,asc"}
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Users / Export CSV",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{JWT}}" },
+          { "key": "X-Company-Id", "value": "{{COMPANY_ID}}" },
+          { "key": "Accept", "value": "text/csv" }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/users/export.csv?search=&status=ALL&role=ALL&sort=name,asc",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api","users","export.csv"],
+          "query": [
+            {"key":"search","value":""},
+            {"key":"status","value":"ALL"},
+            {"key":"role","value":"ALL"},
+            {"key":"sort","value":"name,asc"}
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Permissions / Assignments by User",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{JWT}}" },
+          { "key": "X-Company-Id", "value": "{{COMPANY_ID}}" }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/permissions/assignments?userId={{USER_ID}}",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api","permissions","assignments"],
+          "query": [ {"key":"userId","value":"{{USER_ID}}"} ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    { "key": "BASE_URL", "value": "http://localhost:8080" },
+    { "key": "JWT", "value": "" },
+    { "key": "COMPANY_ID", "value": "42" },
+    { "key": "USER_ID", "value": "1" }
+  ]
+}
+

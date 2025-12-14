@@ -1,0 +1,98 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: audit-filter-usage
+    folder: security
+    interval: 1m
+    rules:
+      - uid: audit-filter-usage-warning
+        title: Audit Filter Usage Warning
+        condition: C
+        data:
+          - refId: A
+            queryType: range
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: sum(rate({app="permission-service"} |= "filter[" [5m])) / clamp_min(sum(rate({app="permission-service"} |= "GET /api/audit/events" [5m])), 0.001)
+              format: time_series
+              interval: 1m
+              datasource:
+                type: loki
+                uid: loki
+          - refId: B
+            queryType: range
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: 0.2
+              format: time_series
+              datasource:
+                type: loki
+                uid: loki
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          severity: warning
+          runbook: docs/04-operations/02-monitoring/tempo-loki-dashboards.md
+        labels:
+          service: audit-events
+          guardrail: filter-usage
+        conditions:
+          - evaluator:
+              params:
+                - 0.2
+              type: lt
+            operator:
+              type: and
+            query:
+              params:
+                - A
+            reducer:
+              type: last
+            type: query
+      - uid: audit-filter-usage-critical
+        title: Audit Filter Usage Critical
+        condition: C
+        data:
+          - refId: A
+            queryType: range
+            datasourceUid: loki
+            relativeTimeRange:
+              from: 300
+              to: 0
+            model:
+              expr: sum(rate({app="permission-service"} |= "filter[" [5m])) / clamp_min(sum(rate({app="permission-service"} |= "GET /api/audit/events" [5m])), 0.001)
+              format: time_series
+              interval: 1m
+              datasource:
+                type: loki
+                uid: loki
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          severity: critical
+          runbook: docs/04-operations/02-monitoring/tempo-loki-dashboards.md
+        labels:
+          service: audit-events
+          guardrail: filter-usage
+        conditions:
+          - evaluator:
+              params:
+                - 0.1
+              type: lt
+            operator:
+              type: and
+            query:
+              params:
+                - A
+            reducer:
+              type: last
+            type: query

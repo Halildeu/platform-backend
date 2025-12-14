@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <rect width="640" height="360" fill="#0b1628"/>
+  <rect x="40" y="40" width="560" height="280" rx="24" fill="#111c34" stroke="#4fc3f7" stroke-width="3"/>
+  <text x="60" y="90" font-family="'SFMono-Regular', 'Consolas', sans-serif" font-size="20" fill="#4fc3f7">Shell Login – Keycloak Modu</text>
+  <text x="60" y="130" font-family="'Inter', sans-serif" font-size="18" fill="#e0f7ff">Realm: serban (http://localhost:8081)</text>
+  <text x="60" y="160" font-family="'Inter', sans-serif" font-size="18" fill="#e0f7ff">Client: frontend</text>
+  <text x="60" y="190" font-family="'Inter', sans-serif" font-size="18" fill="#e0f7ff">Kullanıcı: admin@example.com</text>
+  <text x="60" y="220" font-family="'Inter', sans-serif" font-size="18" fill="#e0f7ff">ProtectedRoute → /login?redirect=/suggestions</text>
+  <text x="60" y="260" font-family="'Inter', sans-serif" font-size="16" fill="#8bdcf7">Not: Token yalnız bellek içi store’da, local/session storage boş.</text>
+</svg>

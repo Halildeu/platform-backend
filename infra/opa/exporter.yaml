@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-exporter-config
+  namespace: platform-security
+  labels:
+    app: opa-exporter
+
+data:
+  config.yaml: |
+    server:
+      listen: ":9109"
+    opa:
+      url: "http://opa:8181"
+      decision: "gateway/authz"
+    metrics:
+      include_labels:
+        - policy
+        - input_method
+        - input_path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-exporter
+  namespace: platform-security
+  labels:
+    app: opa-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa-exporter
+  template:
+    metadata:
+      labels:
+        app: opa-exporter
+    spec:
+      containers:
+        - name: exporter
+          image: ghcr.io/platform/opa-prometheus-exporter:latest
+          args:
+            - "--config=/config/config.yaml"
+          ports:
+            - name: metrics
+              containerPort: 9109
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: opa-exporter-config
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: opa-exporter
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: opa-exporter
+  namespaceSelector:
+    matchNames:
+      - platform-security
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics

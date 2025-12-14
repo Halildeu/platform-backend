@@ -1,0 +1,2 @@
+-- Baseline migration for existing auth-service schema
+-- Bu dosya mevcut tabloları korur; yeni şema değişiklikleri için sonraki versiyonlar eklenmelidir.

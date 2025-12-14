@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/page-layout.schema.json",
+  "title": "PageLayout Manifest v1",
+  "description": "Manifest tabanlı sayfa tanımı (layout + bileşenler).",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Manifest sürümü (semver).",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-.]+)?(?:\\+[0-9A-Za-z-.]+)?$"
+    },
+    "id": {
+      "type": "string",
+      "description": "Sayfa kimliği (örn. admin-users).",
+      "minLength": 1
+    },
+    "layout": {
+      "type": "string",
+      "description": "Kullanılacak layout tipi (örn. PageLayout, WizardLayout).",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "description": "Sayfa başlığı veya i18n key’i.",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "description": "Sayfa açıklaması veya i18n key’i."
+    },
+    "components": {
+      "type": "array",
+      "description": "Layout içinde yer alacak bileşenler.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Bileşen tipi (örn. Grid, Form, Tabs).",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "description": "Bileşen kimliği.",
+            "minLength": 1
+          },
+          "props": {
+            "type": "object",
+            "description": "Bileşene özgü konfigürasyon.",
+            "additionalProperties": true
+          }
+        },
+        "required": ["type", "id"],
+        "additionalProperties": false
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Ek metadata (flag, permission, i18n namespace vb.).",
+      "additionalProperties": true
+    }
+  },
+  "required": ["version", "id", "layout", "title", "components"],
+  "additionalProperties": false
+}

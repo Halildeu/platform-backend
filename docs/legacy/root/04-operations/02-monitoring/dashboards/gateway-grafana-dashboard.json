@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 38,
+  "title": "API Gateway SLO",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP p95 (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"api-gateway\"}[1m])) by (le)) * 1000",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP p99 (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=\"api-gateway\"}[1m])) by (le)) * 1000",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "4xx/5xx Rate",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"api-gateway\",status=~\"4..\"}[1m]))",
+          "legendFormat": "4xx"
+        },
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"api-gateway\",status=~\"5..\"}[1m]))",
+          "legendFormat": "5xx"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP p95 by routeId (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"api-gateway\"}[1m])) by (le,routeId)) * 1000",
+          "legendFormat": "{{routeId}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "4xx/5xx Rate by routeId",
+      "targets": [
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"api-gateway\",status=~\"4..\"}[1m])) by (routeId)",
+          "legendFormat": "4xx {{routeId}}"
+        },
+        {
+          "expr": "sum(rate(http_server_requests_seconds_count{job=\"api-gateway\",status=~\"5..\"}[1m])) by (routeId)",
+          "legendFormat": "5xx {{routeId}}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "id": "admin-users",
+  "layout": "PageLayout",
+  "title": "admin.users.title",
+  "description": "admin.users.description",
+  "components": [
+    {
+      "type": "Grid",
+      "id": "usersGrid",
+      "props": {
+        "dataSource": "/api/v1/users",
+        "columns": ["fullName", "email", "role", "status"],
+        "pageSize": 20
+      }
+    }
+  ],
+  "meta": {
+    "i18nNamespace": "users",
+    "featureFlag": "manifest:users"
+  }
+}

@@ -1,0 +1,22 @@
+# Documentation ownership
+
+# Architecture & ADR
+/docs/architecture/** @team/platform-arch
+/docs/adr/** @team/platform-arch
+
+# Roadmap & strategy
+/docs/roadmap/** @team/product @team/platform-arch
+
+# Operations / Runbooks / Security
+/docs/operations/** @team/sre
+/docs/security/** @team/security
+/docs/ci/** @team/devops
+
+# Guides / Onboarding / Glossary
+/docs/guides/** @team/devrel
+/docs/backlog.md @team/platform-docs
+/docs/templates/** @team/platform-docs
+/docs/README.md @team/platform-docs
+
+# System architecture overview
+/docs/system-architecture.md @team/platform-arch

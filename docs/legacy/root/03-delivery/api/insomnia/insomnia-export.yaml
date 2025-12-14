@@ -1,0 +1,69 @@
+_type: export
+__export_format: 4
+__export_date: 2025-11-12T00:00:00.000Z
+__export_source: insomnia.desktop.app:v2025.0.0
+resources:
+  - _id: env_base
+    _type: environment
+    name: Base Environment
+    data:
+      base_url: http://localhost:8080
+      jwt: ""
+      company_id: 42
+      user_id: 1
+  - _id: wrk_users_permissions
+    _type: workspace
+    name: Users & Permissions API
+  - _id: req_login
+    _type: request
+    parentId: wrk_users_permissions
+    name: Auth / Login
+    method: POST
+    url: "{{ base_url }}/api/auth/login"
+    body:
+      mimeType: application/json
+      text: |
+        {
+          "email": "admin@example.com",
+          "password": "admin1234",
+          "companyId": {{ company_id }}
+        }
+    headers:
+      - name: Content-Type
+        value: application/json
+  - _id: req_users_all
+    _type: request
+    parentId: wrk_users_permissions
+    name: Users / List (SSRM)
+    method: GET
+    url: "{{ base_url }}/api/users/all?page=1&pageSize=50&status=ALL&role=ALL&sort=name,asc"
+    headers:
+      - name: Authorization
+        value: "Bearer {{ jwt }}"
+      - name: X-Company-Id
+        value: "{{ company_id }}"
+  - _id: req_users_export
+    _type: request
+    parentId: wrk_users_permissions
+    name: Users / Export CSV
+    method: GET
+    url: "{{ base_url }}/api/users/export.csv?status=ALL&role=ALL&sort=name,asc"
+    headers:
+      - name: Authorization
+        value: "Bearer {{ jwt }}"
+      - name: X-Company-Id
+        value: "{{ company_id }}"
+      - name: Accept
+        value: text/csv
+  - _id: req_perm_assignments
+    _type: request
+    parentId: wrk_users_permissions
+    name: Permissions / Assignments by User
+    method: GET
+    url: "{{ base_url }}/api/permissions/assignments?userId={{ user_id }}"
+    headers:
+      - name: Authorization
+        value: "Bearer {{ jwt }}"
+      - name: X-Company-Id
+        value: "{{ company_id }}"
+

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <rect width="640" height="360" fill="#031b11"/>
+  <rect x="40" y="40" width="560" height="280" rx="24" fill="#062b1a" stroke="#66ffa6" stroke-width="3"/>
+  <text x="60" y="90" font-family="'SFMono-Regular', 'Consolas', sans-serif" font-size="20" fill="#66ffa6">PermitAll Banner (Dev Profil)</text>
+  <text x="60" y="140" font-family="'Inter', sans-serif" font-size="18" fill="#c8ffe0">VITE_AUTH_MODE=permitAll</text>
+  <text x="60" y="170" font-family="'Inter', sans-serif" font-size="18" fill="#c8ffe0">VITE_ENABLE_FAKE_AUTH=true → admin@example.com mock</text>
+  <text x="60" y="210" font-family="'Inter', sans-serif" font-size="18" fill="#c8ffe0">Login sayfası yeşil bilgilendirme banner’ı gösterir, butonlar devre dışı.</text>
+  <text x="60" y="250" font-family="'Inter', sans-serif" font-size="16" fill="#9cfbcf">Not: Prod/Test profillerinde bu banner görünmez.</text>
+</svg>

@@ -1,0 +1,15 @@
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: default-email
+    group_by:
+      - component
+      - severity
+    routes:
+      - receiver: default-email
+        object_matchers:
+          - [ "component", "=", "reports-guard" ]
+      - receiver: default-email
+        object_matchers:
+          - [ "component", "=", "export-guard" ]

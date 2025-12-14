@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: keycloak-revoke-temporary-roles
+  namespace: platform-security
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: keycloak-ops
+          containers:
+            - name: revoke-temporary-roles
+              image: ghcr.io/platform/keycloak-ops:latest
+              env:
+                - name: KEYCLOAK_BASE_URL
+                  value: "https://keycloak.example.com"
+                - name: KEYCLOAK_REALM
+                  value: "platform"
+                - name: KEYCLOAK_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: keycloak-ops-client
+                      key: client-id
+                - name: KEYCLOAK_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: keycloak-ops-client
+                      key: client-secret
+                - name: SIEM_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: siem-webhook
+                      key: url
+                - name: SIEM_WEBHOOK_AUTH
+                  valueFrom:
+                    secretKeyRef:
+                      name: siem-webhook
+                      key: auth
+              args:
+                - /app/revoke-temporary-roles.sh
+          restartPolicy: OnFailure

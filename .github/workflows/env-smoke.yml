@@ -1,0 +1,65 @@
+name: Env Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: "Hedef ortam"
+        type: choice
+        default: stage
+        options:
+          - stage
+          - prod
+
+jobs:
+  vault-and-smoke:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_env }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync Vault secrets
+        env:
+          TARGET_ENV: ${{ inputs.target_env }}
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+          SERVICE_CLIENT_USER_SERVICE_SECRET: ${{ secrets.SERVICE_CLIENT_USER_SERVICE_SECRET }}
+          PERMISSION_DB_USERNAME: ${{ secrets.PERMISSION_DB_USERNAME }}
+          PERMISSION_DB_PASSWORD: ${{ secrets.PERMISSION_DB_PASSWORD }}
+          VARIANT_DB_USERNAME: ${{ secrets.VARIANT_DB_USERNAME }}
+          VARIANT_DB_PASSWORD: ${{ secrets.VARIANT_DB_PASSWORD }}
+        run: |
+          if [[ -z "${VAULT_ADDR}" || -z "${VAULT_TOKEN}" ]]; then
+            echo "::error::VAULT_ADDR ve VAULT_TOKEN environment secrets olarak tanımlanmalı." && exit 1
+          fi
+          if [[ -z "${SERVICE_CLIENT_USER_SERVICE_SECRET}" ]]; then
+            echo "::error::SERVICE_CLIENT_USER_SERVICE_SECRET secrets içinde tanımlı olmalı." && exit 1
+          fi
+          if [[ "${TARGET_ENV}" == "prod" ]]; then
+            ./scripts/vault/write-secrets-prod.sh
+          else
+            ENV="${TARGET_ENV}" ./scripts/vault/write-secrets-stage.sh
+          fi
+
+      - name: Identity health checks
+        env:
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+          KEYCLOAK_HEALTH_URL: ${{ vars.KEYCLOAK_HEALTH_URL }}
+          KEYCLOAK_AUTH_HEADER: ${{ secrets.KEYCLOAK_AUTH_HEADER }}
+        run: ./scripts/health/check-identity.sh
+
+      - name: Gateway smoke
+        env:
+          USER_JWT: ${{ secrets.USER_JWT }}
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+          SERVICE_TOKEN_VAULT_ENV: ${{ inputs.target_env }}
+          SERVICE_TOKEN_VAULT_SERVICE: auth-service
+          SERVICE_TOKEN_CLIENT_ID: ${{ vars.SERVICE_TOKEN_CLIENT_ID || 'user-service' }}
+          SERVICE_TOKEN_AUDIENCE: ${{ vars.SERVICE_TOKEN_AUDIENCE || 'permission-service' }}
+          SERVICE_TOKEN_PERMISSIONS: ${{ vars.SERVICE_TOKEN_PERMISSIONS || 'permissions:read' }}
+          AUTH_BASE_URL: ${{ vars.AUTH_BASE_URL || 'http://localhost:8088' }}
+          GATEWAY_BASE_URL: ${{ vars.GATEWAY_BASE_URL || 'http://localhost:8080' }}
+          OAUTH2_JWKS_URL: ${{ vars.OAUTH2_JWKS_URL }}
+        run: ./scripts/smoke.sh

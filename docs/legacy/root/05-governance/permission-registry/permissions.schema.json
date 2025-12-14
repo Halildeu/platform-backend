@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Permission Registry Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "permissions"],
+  "properties": {
+    "version": {
+      "description": "Semantic or calendar version of the registry snapshot.",
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAt": {
+      "description": "Optional ISO-8601 timestamp describing when this snapshot was produced.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "permissions": {
+      "description": "List of permission definitions that UI, manifest ve backend servisleri paylaşır.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "status", "owner", "module", "description"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Permission code (module:resource:action) veya legacy KEY formatı.",
+            "pattern": "^[A-Z0-9_:-]+$"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "deprecated"],
+            "description": "Permission kullanımdaki (active) ya da sunset sürecinde (deprecated) mi?"
+          },
+          "owner": {
+            "type": "string",
+            "description": "Permission’dan sorumlu ekip veya ekip adı."
+          },
+          "module": {
+            "type": "string",
+            "description": "Permission’ın bağlı olduğu iş modülü."
+          },
+          "description": {
+            "type": "string",
+            "description": "İzin neyi açar/kapatır açıklaması."
+          },
+          "sunsetAt": {
+            "description": "Deprecated izinler için ISO tarih (YYYY-MM-DD).",
+            "type": ["string", "null"],
+            "format": "date"
+          },
+          "deprecationReason": {
+            "description": "Sunset sebebi veya linki.",
+            "type": ["string", "null"]
+          },
+          "tags": {
+            "description": "Opsiyonel anahtar kelimeler.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "notes": {
+            "description": "Ek açıklamalar veya runbook referansları.",
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "uniqueItems": true
+    }
+  }
+}

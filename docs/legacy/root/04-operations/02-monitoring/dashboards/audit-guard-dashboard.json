@@ -1,0 +1,33 @@
+{
+  "uid": "OPS-AUDIT-GUARD-001",
+  "title": "Operations / Audit Guard",
+  "tags": ["operations", "audit", "guard"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Audit guard hits by result (Loki)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+      "targets": [
+        {"refId": "A", "expr": "sum by (result) (rate({app=\"api-gateway\"} |= \"/admin/audit/\" [5m]))", "range": true}
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Unauthorized ratio (Loki)",
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "targets": [
+        {"refId": "A", "expr": "(sum(rate({app=\"api-gateway\"} |= \"/admin/audit/\" |= \" 401 \" [5m])))/(clamp_min(sum(rate({app=\"api-gateway\"} |= \"/admin/audit/\" [5m])), 0.001))", "range": true}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "ttfb_p95_ms": 1650,
+  "error_rate_pct": 1.1,
+  "sentry_error_rate_pct": 0.6,
+  "audit_filter_usage_pct": 32,
+  "windowMinutes": 30,
+  "timestamp": "2025-11-29T12:35:00Z"
+}

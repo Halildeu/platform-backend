@@ -1,0 +1,28 @@
+1. Terminal (Adres Defteri):
+
+Bash
+
+cd discovery-server
+java -jar target/discovery-server-0.0.1-SNAPSHOT.jar
+(Önce bunun tam olarak başladığından emin olun.)
+
+2. Terminal (Kullanıcı Servisi):
+
+Bash
+
+cd user-service
+java -jar target/user-service-0.0.1-SNAPSHOT.jar
+3. Terminal (Kimlik Doğrulama Servisi):
+
+Bash
+
+cd auth-service
+# (Eğer terminali yeniden açtıysanız)
+$env:JWT_SECRET="seninCokGuvenliGizliAnahtarinBuradaOlmaliveCokUzunOlmalidir123"
+java -jar target/auth-service-0.0.1-SNAPSHOT.jar
+4. Terminal (Giriş Kapısı):
+
+Bash
+
+cd api-gateway
+java -jar target/api-gateway-0.0.1-SNAPSHOT.jar

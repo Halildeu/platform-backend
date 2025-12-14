@@ -1,0 +1,2 @@
+-- Baseline migration for existing permission-service schema
+-- Mevcut tablolar korunur; yeni değişiklikler için sonraki versiyonlar eklenmelidir.
