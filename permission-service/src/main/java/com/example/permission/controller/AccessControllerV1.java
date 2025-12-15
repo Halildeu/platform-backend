@@ -30,7 +30,6 @@ import java.util.List;
  */
 @RestController
 @RequestMapping("/api/v1/roles")
-@PreAuthorize("hasAuthority('permission-scope-manage')")
 public class AccessControllerV1 {
 
     private final AccessRoleService accessRoleService;
@@ -43,6 +42,7 @@ public class AccessControllerV1 {
     }
 
     @GetMapping
+    @PreAuthorize("hasAuthority('access-read')")
     public ResponseEntity<PagedResultDto<RoleDto>> listRoles() {
         List<AccessRoleDto> roles = accessRoleService.listRoles();
         List<RoleDto> items = roles.stream().map(PermissionDtoMapper::toRoleDto).toList();
@@ -50,6 +50,7 @@ public class AccessControllerV1 {
     }
 
     @PostMapping("/{roleId}/clone")
+    @PreAuthorize("hasAuthority('role-manage')")
     public ResponseEntity<RoleCloneResponseDto> cloneRole(@PathVariable Long roleId,
                                                          @RequestBody(required = false) CloneRoleRequestDto request) {
         CloneRoleRequestDto payload = request == null ? new CloneRoleRequestDto() : request;
@@ -63,6 +64,7 @@ public class AccessControllerV1 {
     }
 
     @PatchMapping("/{roleId}/permissions/bulk")
+    @PreAuthorize("hasAuthority('permission-manage')")
     public ResponseEntity<BulkPermissionsResponseDto> bulkPermissions(@PathVariable Long roleId,
                                                                 @RequestBody BulkPermissionsRequestDto request) {
         BulkPermissionsResponseDto result = accessRoleService.bulkUpdateModuleLevel(
@@ -76,11 +78,13 @@ public class AccessControllerV1 {
     }
 
     @GetMapping("/users/{userId}/scopes")
+    @PreAuthorize("hasAuthority('permission-scope-manage')")
     public ResponseEntity<List<ScopeSummaryDto>> listUserScopes(@PathVariable Long userId) {
         return ResponseEntity.ok(userScopeService.listUserScopes(userId));
     }
 
     @PostMapping("/users/{userId}/scopes")
+    @PreAuthorize("hasAuthority('permission-scope-manage')")
     public ResponseEntity<Void> addUserScope(@PathVariable Long userId,
                                              @RequestBody ScopeAssignmentRequestDto scope) {
         userScopeService.addScope(userId, scope.scopeType(), scope.scopeRefId(), scope.permissionCode());
@@ -88,6 +92,7 @@ public class AccessControllerV1 {
     }
 
     @DeleteMapping("/users/{userId}/scopes/{scopeType}/{scopeRefId}")
+    @PreAuthorize("hasAuthority('permission-scope-manage')")
     public ResponseEntity<Void> removeUserScope(@PathVariable Long userId,
                                                 @PathVariable String scopeType,
                                                 @PathVariable Long scopeRefId,

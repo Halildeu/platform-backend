@@ -371,9 +371,6 @@ public class ThemeController {
         if (authentication instanceof JwtAuthenticationToken jwtAuth) {
             Jwt jwt = jwtAuth.getToken();
             AuthorizationContext ctx = variantAuthorizationService.buildContext(jwt);
-            if (ctx.getUserId() == null || ctx.getEmail() == null) {
-                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik bilgisi eksik");
-            }
             return ctx;
         }
         throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik doğrulaması bulunamadı");

@@ -127,8 +127,13 @@ public class SecurityConfig {
         serviceConverter.setPrincipalClaimName("svc");
         serviceConverter.setJwtGrantedAuthoritiesConverter(serviceAuthoritiesConverter);
 
+        JwtGrantedAuthoritiesConverter userAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
+        userAuthoritiesConverter.setAuthoritiesClaimName("permissions");
+        userAuthoritiesConverter.setAuthorityPrefix("");
+
         JwtAuthenticationConverter userConverter = new JwtAuthenticationConverter();
         userConverter.setPrincipalClaimName("sub");
+        userConverter.setJwtGrantedAuthoritiesConverter(userAuthoritiesConverter);
 
         // Varsayılan davranış: kullanıcı token'ı olduğunda user converter, aksi halde service converter
         return new CompositeJwtAuthenticationConverter(serviceConverter, userConverter);

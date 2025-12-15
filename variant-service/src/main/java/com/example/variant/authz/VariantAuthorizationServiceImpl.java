@@ -2,6 +2,7 @@ package com.example.variant.authz;
 
 import com.example.commonauth.AuthorizationContext;
 import com.example.commonauth.AuthorizationContextCache;
+import com.example.commonauth.AuthorizationContextBuilder;
 import com.example.commonauth.PermissionCodes;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -27,21 +28,35 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
 
     @Override
     public AuthorizationContext buildContext(Jwt jwt) {
-        String userId = jwt.getSubject();
-        if (userId == null || userId.isBlank()) {
+        if (jwt == null) {
             return AuthorizationContext.of(null, null, Set.of(), Set.of(), Set.of(), Set.of(), Set.of());
         }
-        String email = jwt.getClaimAsString("email");
-        Set<String> permissions = new HashSet<>();
-        var permList = jwt.getClaimAsStringList("permissions");
-        if (permList != null) {
-            permissions.addAll(permList);
+
+        String subject = jwt.getSubject();
+        if (subject == null || subject.isBlank()) {
+            return AuthorizationContext.of(null, null, Set.of(), Set.of(), Set.of(), Set.of(), Set.of());
         }
-        return cache.get(userId, () -> fetchContext(userId, email, permissions, jwt.getTokenValue()));
+
+        AuthorizationContext base = AuthorizationContextBuilder.fromJwt(jwt);
+        String email = base.getEmail();
+        if (email == null || email.isBlank()) {
+            String preferredUsername = jwt.getClaimAsString("preferred_username");
+            if (preferredUsername != null && !preferredUsername.isBlank()) {
+                email = preferredUsername;
+            }
+        }
+
+        Set<String> roles = new HashSet<>(base.getRoles());
+        Set<String> permissions = new HashSet<>(base.getPermissions());
+
+        String cacheKey = subject;
+        String finalEmail = email;
+        return cache.get(cacheKey, () -> fetchContext(base.getUserId(), finalEmail, roles, permissions, jwt.getTokenValue()));
     }
 
-    private AuthorizationContext fetchContext(String userId,
+    private AuthorizationContext fetchContext(Long userId,
                                               String email,
+                                              Set<String> roles,
                                               Set<String> permissions,
                                               String bearerToken) {
         AuthzMeResponse authz = permissionServiceAuthzClient.getAuthzMe(bearerToken);
@@ -84,9 +99,9 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         // Not: Variant global bir katalogdur.
         // company/project bazlı data-scope uygulanmayacak; yalnızca permissions kullanılacak.
         return AuthorizationContext.of(
-                toLong(userId),
+                userId,
                 email,
-                Set.of(),
+                roles,
                 effectivePermissions,
                 allowedCompanies,
                 allowedProjects,

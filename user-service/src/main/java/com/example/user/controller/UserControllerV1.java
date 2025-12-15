@@ -164,6 +164,29 @@ public class UserControllerV1 {
 
         String username;
         if (principal instanceof Jwt jwt) {
+            Object rawUserId = jwt.getClaim("userId");
+            Long userId = null;
+            if (rawUserId instanceof Number num) {
+                userId = num.longValue();
+            } else if (rawUserId instanceof String str) {
+                try {
+                    userId = Long.parseLong(str);
+                } catch (NumberFormatException ignored) {
+                    userId = null;
+                }
+            }
+            if (userId != null) {
+                try {
+                    return userService.findRequiredById(userId);
+                } catch (ResponseStatusException ex) {
+                    if (ex.getStatusCode() == HttpStatus.NOT_FOUND) {
+                        LOGGER.warn("JWT userId mevcut ancak yerel profil yok: {}", userId);
+                        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "PROFILE_MISSING");
+                    }
+                    throw ex;
+                }
+            }
+
             username = firstNonBlank(
                     jwt.getClaimAsString("email"),
                     jwt.getClaimAsString("preferred_username"),

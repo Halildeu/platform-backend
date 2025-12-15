@@ -128,6 +128,10 @@ public class AuthorizationContextService {
             expanded.add("user-export");
         }
 
+        if (permissions.contains("VIEW_REPORTS")) {
+            expanded.add("user-read");
+        }
+
         if (permissions.contains("MANAGE_USERS")) {
             expanded.add("user-read");
             expanded.add("user-create");
