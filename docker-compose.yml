@@ -228,6 +228,21 @@ services:
       timeout: 5s
       retries: 10
 
+  vault-unseal:
+    image: hashicorp/vault:1.15.4
+    depends_on:
+      vault:
+        condition: service_started
+    networks:
+      - microservice-network
+    volumes:
+      - ./.vault-dev:/vault-dev:ro
+      - ./devops/vault:/vault/config:ro
+    environment:
+      VAULT_ADDR: http://vault:8200
+    command: ["/bin/sh", "/vault/config/dev-unseal-loop.sh"]
+    restart: unless-stopped
+
   permission-service:
     build: ./permission-service
     ports:
