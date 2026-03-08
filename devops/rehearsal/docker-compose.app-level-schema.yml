@@ -1,0 +1,250 @@
+services:
+  discovery-server:
+    build: ../../discovery-server
+    ports:
+      - "18761:8761"
+    networks:
+      - rehearsal-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  postgres-db:
+    image: postgres:15
+    ports:
+      - "15432:5432"
+    networks:
+      - rehearsal-network
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: schema_rehearsal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d schema_rehearsal"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  permission-service:
+    build: ../../permission-service
+    ports:
+      - "18090:8084"
+    networks:
+      - rehearsal-network
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_CLOUD_VAULT_ENABLED: "false"
+      SPRING_CLOUD_VAULT_FAIL_FAST: "false"
+      SPRING_CLOUD_VAULT_KV_ENABLED: "false"
+      PERMISSION_DOCKER_DB_URL: jdbc:postgresql://postgres-db:5432/schema_rehearsal
+      PERMISSION_DB_SCHEMA: permission_service
+      PERMISSION_FLYWAY_LOCATIONS: classpath:db/migration_schema_owned
+      PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_ENABLED: "true"
+      PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE: user_service.users
+      PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_MAX_ATTEMPTS: "30"
+      PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_RETRY_DELAY_MS: "1000"
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      SECURITY_LEGACY_API_KEY_ENABLED: "false"
+      SECURITY_JWT_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_USER_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_ISSUER: auth-service
+      SECURITY_JWT_AUDIENCE: permission-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+  auth-service:
+    build: ../../auth-service
+    ports:
+      - "18088:8088"
+    networks:
+      - rehearsal-network
+    environment:
+      SPRING_PROFILES_ACTIVE: local,docker
+      SPRING_CLOUD_VAULT_ENABLED: "false"
+      SPRING_CLOUD_VAULT_FAIL_FAST: "false"
+      SPRING_CLOUD_VAULT_KV_ENABLED: "false"
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      AUTH_DOCKER_DB_URL: jdbc:postgresql://postgres-db:5432/schema_rehearsal
+      AUTH_DB_SCHEMA: auth_service
+      AUTH_FLYWAY_LOCATIONS: classpath:db/migration_schema_owned
+      PERMISSION_SERVICE_BASE_URL: http://permission-service:8084
+      USER_SERVICE_BASE_URL: http://user-service:8089
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      SERVICE_JWT_PRIVATE_KEY: ""
+      SERVICE_JWT_PUBLIC_KEY: ""
+      JWT_SECRET: dev-secret-key-32-bytes-placeholder
+      AUTH_VERIFICATION_BASE_URL: http://localhost:3000/verify-email
+      AUTH_RESET_BASE_URL: http://localhost:3000/reset-password
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+      permission-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+  user-service:
+    build:
+      context: ../..
+      dockerfile: ./user-service/Dockerfile
+    ports:
+      - "18089:8089"
+    networks:
+      - rehearsal-network
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_CLOUD_VAULT_ENABLED: "false"
+      SPRING_CLOUD_VAULT_FAIL_FAST: "false"
+      SPRING_CLOUD_VAULT_KV_ENABLED: "false"
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      USER_DOCKER_DB_URL: jdbc:postgresql://postgres-db:5432/schema_rehearsal
+      USER_DB_SCHEMA: user_service
+      USER_FLYWAY_LOCATIONS: classpath:db/migration_schema_owned
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PERMISSION_SERVICE_BASE_URL: http://permission-service:8084
+      SERVICE_TOKEN_MINT_URL: http://auth-service:8088/oauth2/token
+      SERVICE_AUTH_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SERVICE_AUTH_ISSUER: auth-service
+      SERVICE_TOKEN_CLIENT_ID: user-service
+      SERVICE_TOKEN_CLIENT_SECRET: ""
+      SECURITY_JWT_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_USER_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_ISSUER: auth-service
+      SECURITY_JWT_AUDIENCE: user-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+      permission-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+  variant-service:
+    build:
+      context: ../..
+      dockerfile: ./variant-service/Dockerfile
+    ports:
+      - "18091:8091"
+    networks:
+      - rehearsal-network
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_CLOUD_VAULT_ENABLED: "false"
+      SPRING_CLOUD_VAULT_FAIL_FAST: "false"
+      SPRING_CLOUD_VAULT_KV_ENABLED: "false"
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      VARIANT_DB_URL: jdbc:postgresql://postgres-db:5432/schema_rehearsal
+      VARIANT_DB_SCHEMA: variant_service
+      VARIANT_FLYWAY_LOCATIONS: classpath:db/migration_schema_owned
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      SECURITY_JWT_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_ISSUER: auth-service
+      SECURITY_JWT_AUDIENCE: variant-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+  core-data-service:
+    build:
+      context: ../..
+      dockerfile: ./core-data-service/Dockerfile
+    ports:
+      - "18092:8092"
+    networks:
+      - rehearsal-network
+    environment:
+      SERVER_PORT: "8092"
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/schema_rehearsal
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      CORE_DATA_DB_SCHEMA: core_data_service
+      CORE_DATA_FLYWAY_LOCATIONS: classpath:db/migration_schema_owned
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
+      SECURITY_JWT_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_ISSUER: auth-service
+      SECURITY_JWT_AUDIENCE: frontend,user-service,core-data-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+  api-gateway:
+    build: ../../api-gateway
+    ports:
+      - "18080:8080"
+    networks:
+      - rehearsal-network
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_CLOUD_VAULT_ENABLED: "false"
+      SPRING_CLOUD_VAULT_FAIL_FAST: "false"
+      SPRING_CLOUD_VAULT_KV_ENABLED: "false"
+      SECURITY_JWT_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_ISSUER: auth-service
+      SECURITY_JWT_AUDIENCE: user-service,permission-service,variant-service,core-data-service
+      SECURITY_JWT_JWK_SET_URIS: http://auth-service:8088/oauth2/jwks
+      SECURITY_JWT_ISSUERS: auth-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      permission-service:
+        condition: service_healthy
+      variant-service:
+        condition: service_healthy
+      core-data-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+
+networks:
+  rehearsal-network:
+    driver: bridge

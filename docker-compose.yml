@@ -25,6 +25,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-users}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./devops/postgres:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -47,7 +48,9 @@ services:
       SPRING_CLOUD_VAULT_ENABLED: "false"
       SPRING_CLOUD_VAULT_FAIL_FAST: "false"
       SPRING_CLOUD_VAULT_KV_ENABLED: "false"
-      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL}
+      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
+      SERVICE_TOKEN_MINT_URL: ${SERVICE_TOKEN_MINT_URL:-http://auth-service:8088/oauth2/token}
+      USER_DB_SCHEMA: ${USER_DB_SCHEMA:-public}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       # RS256/JWKS doğrulaması
@@ -89,8 +92,9 @@ services:
       SPRING_CLOUD_VAULT_ENABLED: "false"
       SPRING_CLOUD_VAULT_FAIL_FAST: "false"
       SPRING_CLOUD_VAULT_KV_ENABLED: "false"
-      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL}
-      USER_SERVICE_BASE_URL: http://user-service:8089
+      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
+      USER_SERVICE_BASE_URL: ${USER_SERVICE_BASE_URL:-http://user-service}
+      AUTH_DB_SCHEMA: ${AUTH_DB_SCHEMA:-public}
       EUREKA_SERVER_URL: ${EUREKA_SERVER_URL}
       AUTH_DB_NAME: ${AUTH_DB_NAME:-users}
       AUTH_DB_USERNAME: ${AUTH_DB_USERNAME:-postgres}
@@ -133,6 +137,7 @@ services:
       VARIANT_DB_URL: ${VARIANT_DB_URL}
       VARIANT_DB_USERNAME: ${VARIANT_DB_USERNAME}
       VARIANT_DB_PASSWORD: ${VARIANT_DB_PASSWORD}
+      VARIANT_DB_SCHEMA: ${VARIANT_DB_SCHEMA:-variant_service}
       EUREKA_SERVER_URL: ${EUREKA_SERVER_URL}
     depends_on:
       discovery-server:
@@ -141,6 +146,35 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8091/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  core-data-service:
+    build:
+      context: .
+      dockerfile: ./core-data-service/Dockerfile
+    ports:
+      - "8092:8092"
+    networks:
+      - microservice-network
+    environment:
+      - SERVER_PORT=8092
+      - SPRING_DATASOURCE_URL=${CORE_DATA_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
+      - SPRING_DATASOURCE_USERNAME=${CORE_DATA_DB_USERNAME:-postgres}
+      - SPRING_DATASOURCE_PASSWORD=${CORE_DATA_DB_PASSWORD:-postgres}
+      - CORE_DATA_DB_SCHEMA=${CORE_DATA_DB_SCHEMA:-core_data_service}
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
+      - SECURITY_JWT_JWK_SET_URI=${SECURITY_JWT_JWK_SET_URI:-http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
+      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://localhost:8081/realms/serban}
+      - SECURITY_JWT_AUDIENCE=${CORE_DATA_SECURITY_JWT_AUDIENCE:-frontend,user-service,core-data-service}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -156,7 +190,7 @@ services:
       # RS256/JWKS doğrulaması gateway tarafında Keycloak JWKS üzerinden yapılır
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUER=http://localhost:8081/realms/serban
-      - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service
+      - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service,core-data-service
       # Ek issuer: Keycloak (lokal dev)
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=http://localhost:8081/realms/serban
@@ -173,13 +207,20 @@ services:
       auth-service:
         condition: service_healthy
       permission-service:
-        condition: service_started
+        condition: service_healthy
       variant-service:
+        condition: service_healthy
+      core-data-service:
         condition: service_healthy
       observability-prometheus:
         condition: service_started
       observability-grafana:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0.3
@@ -254,6 +295,7 @@ services:
       - PERMISSION_DB_URL=${PERMISSION_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
       - PERMISSION_DB_USERNAME=${PERMISSION_DB_USERNAME:-postgres}
       - PERMISSION_DB_PASSWORD=${PERMISSION_DB_PASSWORD:-postgres}
+      - PERMISSION_DB_SCHEMA=${PERMISSION_DB_SCHEMA:-public}
       - EUREKA_SERVER_URL=${EUREKA_SERVER_URL}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
@@ -272,6 +314,7 @@ services:
       # Ek issuer listesi Keycloak serban realm'i işaret eder
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=http://localhost:8081/realms/serban
+      - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-users}
     depends_on:
       discovery-server:
         condition: service_healthy
@@ -279,6 +322,11 @@ services:
         condition: service_healthy
       vault:
         condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   observability-prometheus:
     image: prom/prometheus:latest

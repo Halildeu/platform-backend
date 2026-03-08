@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <suppress>
+    <notes><![CDATA[
+    commons-configuration 1.10 icin CVE-2025-46392 bulgusu, Spring Cloud Netflix Eureka 2.0.5'in transitif bagimliliginda
+    tasiniyor. Maven Central'da 1.x hattinda 1.10'dan daha yeni bir release bulunmuyor ve repoda kutuphane yalniz
+    guvenilir package/vault/application config kaynaklarini okuyor. Bu nedenle bulgu gizlenmiyor; review tarihli
+    residual-risk sozlesmesi altinda tasiniyor.
+    Kontrat: docs/02-architecture/context/security-remediation.contract.v1.json
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/commons-configuration/commons-configuration@1\.10$</packageUrl>
+    <cve>CVE-2025-46392</cve>
+  </suppress>
+  <suppress>
+    <notes><![CDATA[
+    jackson-databind 2.15.4 için CVE-2023-35116 bulgusu NVD tarafında 2.16.0 altına geniş eşleşiyor.
+    Aynı kayıttaki vendor notu bunun harici saldırganın tetikleyebileceği geçerli bir model olmadığını belirtir.
+    Repo Spring Boot 3.2.x baseline kullandığı için bu bulgu fail-open gizlenmiyor; review tarihli residual-risk sözleşmesi altında taşınıyor.
+    Kontrat: docs/02-architecture/context/security-remediation.contract.v1.json
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/com\.fasterxml\.jackson\.core/jackson-databind@2\.15\.4$</packageUrl>
+    <cve>CVE-2023-35116</cve>
+  </suppress>
+</suppressions>
