@@ -7,18 +7,23 @@ require 'time'
 require 'fileutils'
 
 ROOT_DIR = File.expand_path('../../..', __dir__)
-YAML_PATH = File.join(ROOT_DIR, 'docs/04-operations/assets/unleash/feature-flags.yaml')
 REPORT_DIR = File.join(ROOT_DIR, 'test-results/security')
 OUTPUT_FILE = File.join(REPORT_DIR, 'flag-health.json')
+YAML_CANDIDATES = [
+  File.join(ROOT_DIR, 'docs/04-operations/assets/unleash/feature-flags.yaml'),
+  File.join(ROOT_DIR, 'docs/legacy/root/04-operations/assets/unleash/feature-flags.yaml')
+].freeze
 
-unless File.exist?(YAML_PATH)
-  warn "[flag-health] manifest not found at #{YAML_PATH}"
+yaml_path = YAML_CANDIDATES.find { |candidate| File.exist?(candidate) }
+
+unless yaml_path
+  warn "[flag-health] manifest not found. checked:\n#{YAML_CANDIDATES.join("\n")}"
   exit 1
 end
 
 FileUtils.mkdir_p(REPORT_DIR)
 
-documents = YAML.load_stream(File.read(YAML_PATH)).compact
+documents = YAML.load_stream(File.read(yaml_path)).compact
 
 flags = documents.map do |doc|
   metadata = doc['metadata'] || {}
@@ -47,6 +52,7 @@ end
 
 report = {
   generated_at: Time.now.utc.iso8601,
+  manifest_source: yaml_path.sub("#{ROOT_DIR}/", ''),
   total_flags: flags.length,
   kill_switch_flags: flags.count { |flag| flag[:lifecycle] == 'kill-switch' },
   stale_candidates: flags.select { |flag| flag[:lifecycle] == 'ga' && flag[:tags].include?('stale') }.map { |flag| flag[:id] },
