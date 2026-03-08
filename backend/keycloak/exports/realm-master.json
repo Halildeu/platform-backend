@@ -6,7 +6,7 @@
   "duplicateEmailsAllowed": false,
   "resetPasswordAllowed": true,
   "verifyEmail": false,
-  "sslRequired": "external",
+  "sslRequired": "NONE",
   "clients": [
     {
       "clientId": "user-service",
