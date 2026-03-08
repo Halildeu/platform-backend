@@ -36,7 +36,7 @@ public class ServiceJwtConfiguration {
         RSAPublicKey publicKey;
 
         if (!StringUtils.hasText(properties.getPrivateKey()) || !StringUtils.hasText(properties.getPublicKey())) {
-            logger.warn("Service JWT anahtarları tanımlanmadı, geçici anahtar çifti üretilecek (yalnızca geliştirme amaçlı)");
+            logger.info("Service JWT anahtarları tanımlanmadı, geçici anahtar çifti üretilecek (yalnızca geliştirme amaçlı)");
             KeyPair keyPair = generateKeyPair();
             privateKey = (RSAPrivateKey) keyPair.getPrivate();
             publicKey = (RSAPublicKey) keyPair.getPublic();

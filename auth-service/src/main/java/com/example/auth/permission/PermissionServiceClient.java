@@ -2,13 +2,10 @@ package com.example.auth.permission;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestClientException;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.util.Collections;
 import java.util.List;
@@ -20,29 +17,27 @@ public class PermissionServiceClient {
 
     private static final Logger log = LoggerFactory.getLogger(PermissionServiceClient.class);
 
-    private final RestTemplate restTemplate;
-    private final String baseUrl;
+    private final WebClient webClient;
 
-    public PermissionServiceClient(RestTemplate restTemplate,
+    public PermissionServiceClient(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder webClientBuilder,
                                    @org.springframework.beans.factory.annotation.Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
-        this.restTemplate = restTemplate;
-        this.baseUrl = baseUrl;
+        this.webClient = webClientBuilder.baseUrl(baseUrl).build();
     }
 
     public Set<String> getPermissions(Long userId, Long companyId) {
         try {
-            String url = baseUrl + "/api/permissions/assignments?userId=" + userId;
-            if (companyId != null) {
-                url += "&companyId=" + companyId;
-            }
-
-            ResponseEntity<PermissionAssignmentResponse[]> response = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    HttpEntity.EMPTY,
-                    PermissionAssignmentResponse[].class
-            );
-            PermissionAssignmentResponse[] body = response.getBody();
+            PermissionAssignmentResponse[] body = webClient.get()
+                    .uri(uriBuilder -> {
+                        uriBuilder.path("/api/permissions/assignments")
+                                .queryParam("userId", userId);
+                        if (companyId != null) {
+                            uriBuilder.queryParam("companyId", companyId);
+                        }
+                        return uriBuilder.build();
+                    })
+                    .retrieve()
+                    .bodyToMono(PermissionAssignmentResponse[].class)
+                    .block();
             if (body == null) {
                 return Collections.emptySet();
             }
@@ -54,7 +49,10 @@ public class PermissionServiceClient {
                     })
                     .map(String::toUpperCase)
                     .collect(Collectors.toSet());
-        } catch (RestClientException ex) {
+        } catch (WebClientResponseException ex) {
+            log.warn("PermissionService izin çözümünde HTTP hata: status={} message={}", ex.getStatusCode(), ex.getMessage());
+            return Collections.emptySet();
+        } catch (Exception ex) {
             log.warn("PermissionService'den izinler alınamadı: {}. Varsayılan olarak boş liste dönülecek.", ex.getMessage());
             return Collections.emptySet();
         }

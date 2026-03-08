@@ -4,6 +4,7 @@ import com.example.variant.theme.domain.Theme;
 import com.example.variant.theme.domain.ThemeAxes;
 import com.example.variant.theme.domain.ThemeType;
 import com.example.variant.theme.repository.ThemeRepository;
+import jakarta.persistence.EntityManager;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
@@ -50,9 +51,11 @@ public class ThemePaletteSeeder implements ApplicationRunner {
     );
 
     private final ThemeRepository themeRepository;
+    private final EntityManager entityManager;
 
-    public ThemePaletteSeeder(ThemeRepository themeRepository) {
+    public ThemePaletteSeeder(ThemeRepository themeRepository, EntityManager entityManager) {
         this.themeRepository = themeRepository;
+        this.entityManager = entityManager;
     }
 
     @Override
@@ -62,11 +65,10 @@ public class ThemePaletteSeeder implements ApplicationRunner {
         for (PaletteThemeSpec spec : PALETTE_THEMES) {
             Theme match = findExistingPaletteTheme(globals, spec);
             if (match == null) {
-                themeRepository.save(createTheme(spec));
+                entityManager.persist(createTheme(spec));
                 continue;
             }
             ensureThemeMatchesPaletteSpec(match, spec);
-            themeRepository.save(match);
         }
 
         List<Theme> defaults = themeRepository.findByTypeAndVisibility(ThemeType.GLOBAL, GLOBAL_DEFAULT_VISIBILITY);
@@ -84,7 +86,6 @@ public class ThemePaletteSeeder implements ApplicationRunner {
                 for (Theme theme : defaults) {
                     if (theme.getId() != null && !theme.getId().equals(keepId)) {
                         theme.setVisibility(null);
-                        themeRepository.save(theme);
                     }
                 }
             }
@@ -99,7 +100,6 @@ public class ThemePaletteSeeder implements ApplicationRunner {
             }
             if (fallback != null && (fallback.getVisibility() == null || fallback.getVisibility().isBlank())) {
                 fallback.setVisibility(GLOBAL_DEFAULT_VISIBILITY);
-                themeRepository.save(fallback);
             }
         }
     }
@@ -166,7 +166,6 @@ public class ThemePaletteSeeder implements ApplicationRunner {
 
     private Theme createTheme(PaletteThemeSpec spec) {
         Theme theme = new Theme();
-        theme.setId(spec.id());
         theme.setName(spec.name());
         theme.setType(ThemeType.GLOBAL);
         theme.setGlobal(true);

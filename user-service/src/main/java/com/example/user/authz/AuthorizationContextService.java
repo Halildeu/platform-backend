@@ -4,19 +4,15 @@ import com.example.commonauth.AuthorizationContext;
 import com.example.commonauth.AuthorizationContextCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,16 +26,14 @@ public class AuthorizationContextService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthorizationContextService.class);
 
-    private final RestTemplate restTemplate;
+    private final WebClient webClient;
     private final AuthorizationContextCache cache;
-    private final String baseUrl;
 
-    public AuthorizationContextService(RestTemplate restTemplate,
+    public AuthorizationContextService(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder webClientBuilder,
                                        AuthorizationContextCache cache,
                                        @Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
-        this.restTemplate = restTemplate;
+        this.webClient = webClientBuilder == null ? null : webClientBuilder.baseUrl(baseUrl).build();
         this.cache = cache;
-        this.baseUrl = baseUrl;
     }
 
     public AuthorizationContext buildContext(Jwt jwt, List<GrantedAuthority> authorities) {
@@ -64,19 +58,14 @@ public class AuthorizationContextService {
 
     private AuthorizationContext loadContext(Jwt jwt, List<GrantedAuthority> authorities) {
         String token = jwt.getTokenValue();
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(token);
 
         try {
-            ResponseEntity<AuthzMeResponse> response = restTemplate.exchange(
-                    baseUrl + "/api/v1/authz/me",
-                    HttpMethod.GET,
-                    new HttpEntity<>(headers),
-                    AuthzMeResponse.class
-            );
-
-            AuthzMeResponse body = response.getBody();
+            AuthzMeResponse body = webClient.get()
+                    .uri("/api/v1/authz/me")
+                    .headers(headers -> headers.setBearerAuth(token))
+                    .retrieve()
+                    .bodyToMono(AuthzMeResponse.class)
+                    .block();
             Set<String> permissions = body != null && body.permissions() != null
                     ? Set.copyOf(body.permissions())
                     : extractPermissionsFromJwt(jwt, authorities);

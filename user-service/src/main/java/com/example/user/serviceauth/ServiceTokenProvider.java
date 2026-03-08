@@ -1,24 +1,20 @@
 package com.example.user.serviceauth;
 
-import com.example.user.config.JwtProperties;
-import java.net.URI;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.RequestEntity;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.BodyInserters;
+import org.springframework.web.reactive.function.client.WebClient;
 
 @Component
 public class ServiceTokenProvider {
@@ -26,16 +22,18 @@ public class ServiceTokenProvider {
     private final ServiceTokenProperties serviceTokenProperties;
     private final ServiceTokenClientProperties clientProperties;
     private final String serviceId;
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final WebClient webClient;
 
     private volatile TokenCache cache;
 
     public ServiceTokenProvider(ServiceTokenProperties serviceTokenProperties,
                                 ServiceTokenClientProperties clientProperties,
+                                @Qualifier("directWebClientBuilder") WebClient.Builder webClientBuilder,
                                 @Value("${spring.application.name:user-service}") String serviceId) {
         this.serviceTokenProperties = serviceTokenProperties;
         this.clientProperties = clientProperties;
         this.serviceId = serviceId;
+        this.webClient = webClientBuilder.build();
     }
 
     public String getToken() {
@@ -75,12 +73,17 @@ public class ServiceTokenProvider {
         String basic = Base64.getEncoder().encodeToString((clientProperties.getClientId() + ":" + clientProperties.getClientSecret()).getBytes(StandardCharsets.UTF_8));
         headers.set(HttpHeaders.AUTHORIZATION, "Basic " + basic);
 
-        HttpEntity<MultiValueMap<String, String>> req = new HttpEntity<>(form, headers);
-        ResponseEntity<Map> res = restTemplate.postForEntity(clientProperties.getTokenUrl(), req, Map.class);
-        if (!res.getStatusCode().is2xxSuccessful() || res.getBody() == null) {
-            throw new IllegalStateException("Service token mint failed: " + res.getStatusCode());
+        Map<?, ?> body = webClient.post()
+                .uri(clientProperties.getTokenUrl())
+                .headers(httpHeaders -> httpHeaders.addAll(headers))
+                .body(BodyInserters.fromFormData(form))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+        if (body == null) {
+            throw new IllegalStateException("Service token mint failed: empty response");
         }
-        Object token = res.getBody().get("access_token");
+        Object token = body.get("access_token");
         if (!(token instanceof String str) || str.isBlank()) {
             throw new IllegalStateException("Service token missing in response");
         }
