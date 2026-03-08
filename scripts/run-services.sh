@@ -176,7 +176,25 @@ run() {
   else
     rotate_log "$name" "$log"
     printf '[session] %s %s\n' "$SESSION_ID" "$SESSION_CREATED_AT" >> "$log"
-    nohup "$ROOT_DIR/mvnw" -q -f "$pom" spring-boot:run >>"$log" 2>&1 &
+    python3 - "$ROOT_DIR" "$pom" "$log" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+
+root_dir = Path(sys.argv[1])
+pom_path = Path(sys.argv[2])
+log_path = Path(sys.argv[3])
+
+with log_path.open("ab", buffering=0) as log_file:
+    subprocess.Popen(
+        [str(root_dir / "mvnw"), "-q", "-f", str(pom_path), "spring-boot:run"],
+        cwd=root_dir,
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,
+    )
+PY
     record_session_line "$name" "$pom" "$port" "started" "$log"
   fi
 }

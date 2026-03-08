@@ -13,7 +13,7 @@ import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableWebSecurity
-@Profile({"!local", "!dev"})
+@Profile("!local & !dev")
 public class SecurityConfigKeycloak {
 
     @Bean
