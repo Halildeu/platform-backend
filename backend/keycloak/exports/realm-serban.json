@@ -99,7 +99,83 @@
           ]
         }
       }
-    ]
+    ],
+    "client": {
+      "frontend": [
+        {
+          "name": "ADMIN",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "VIEW_USERS",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "MANAGE_USERS",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "VARIANTS_READ",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "VARIANTS_WRITE",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "MANAGE_GLOBAL_VARIANTS",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "access-read",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "role-manage",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "permission-manage",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "permission-scope-manage",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "audit-read",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        },
+        {
+          "name": "audit-export",
+          "composite": false,
+          "clientRole": true,
+          "containerId": "frontend"
+        }
+      ]
+    }
   },
   "clientScopes": [
     {
@@ -261,6 +337,22 @@
         "ROLE_IAM_ADMIN",
         "ROLE_AUDITOR"
       ],
+      "clientRoles": {
+        "frontend": [
+          "ADMIN",
+          "VIEW_USERS",
+          "MANAGE_USERS",
+          "VARIANTS_READ",
+          "VARIANTS_WRITE",
+          "MANAGE_GLOBAL_VARIANTS",
+          "access-read",
+          "role-manage",
+          "permission-manage",
+          "permission-scope-manage",
+          "audit-read",
+          "audit-export"
+        ]
+      },
       "credentials": [
         {
           "type": "password",

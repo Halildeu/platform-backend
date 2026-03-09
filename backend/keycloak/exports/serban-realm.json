@@ -357,6 +357,94 @@
         "clientRole" : true,
         "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
         "attributes" : { }
+      }, {
+        "id" : "1ffbf05f-bfdf-4c15-8ccd-3748317aa834",
+        "name" : "VIEW_USERS",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "624589ae-0e3f-4d39-94b6-8f6e2601a92c",
+        "name" : "MANAGE_USERS",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "4a744265-8d21-480a-9f1d-59000df558db",
+        "name" : "VARIANTS_READ",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "caa49a0c-c376-4c1a-be30-25b5d6c0e837",
+        "name" : "VARIANTS_WRITE",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "672c49f7-358f-46f4-897b-a86765bab910",
+        "name" : "MANAGE_GLOBAL_VARIANTS",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "43fa625a-ce2e-4d0a-9163-28075255423d",
+        "name" : "access-read",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "c8158f5f-5f25-418a-81ab-e6ce9807570f",
+        "name" : "role-manage",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "f4f409c0-fff7-432f-8a14-1fadb17caa2d",
+        "name" : "permission-manage",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "868bdf0f-5ad2-4701-9c91-39ccd1c0a3c3",
+        "name" : "permission-scope-manage",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "a71282e9-cd42-48c4-bf2a-e1375fa4cc92",
+        "name" : "audit-read",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
+      }, {
+        "id" : "ae0d89a5-b55b-46da-902b-cfe9ccede17d",
+        "name" : "audit-export",
+        "description" : "",
+        "composite" : false,
+        "clientRole" : true,
+        "containerId" : "417b0f73-b78f-4b05-93d2-ba70f197d36e",
+        "attributes" : { }
       } ]
     }
   },
@@ -424,7 +512,7 @@
       "realm-management" : [ "create-client" ],
       "broker" : [ "read-token" ],
       "account" : [ "view-profile", "manage-consent", "view-consent", "view-groups", "view-applications", "manage-account-links", "manage-account", "delete-account" ],
-      "frontend" : [ "ADMIN" ]
+      "frontend" : [ "ADMIN", "VIEW_USERS", "MANAGE_USERS", "VARIANTS_READ", "VARIANTS_WRITE", "MANAGE_GLOBAL_VARIANTS", "access-read", "role-manage", "permission-manage", "permission-scope-manage", "audit-read", "audit-export" ]
     },
     "notBefore" : 0,
     "groups" : [ ]
