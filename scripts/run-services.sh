@@ -138,6 +138,15 @@ PY
   return 1
 }
 
+wait_for_selected_port() {
+  local name="$1"; shift
+  local port="$1"; shift
+  if ! service_selected "$name"; then
+    return 0
+  fi
+  wait_for_tcp 127.0.0.1 "$port" "$name" "$@"
+}
+
 start_infra() {
   if [[ "$AUTO_START_INFRA" != "1" ]]; then
     echo "[infra] AUTO_START_INFRA=0, compose tabanli bagimliliklar atlandi"
@@ -200,12 +209,18 @@ PY
 }
 
 run discovery-server    "$ROOT_DIR/discovery-server/pom.xml"    8761
+wait_for_selected_port discovery-server 8761 || true
 start_infra
 run auth-service        "$ROOT_DIR/auth-service/pom.xml"        8088
 run permission-service  "$ROOT_DIR/permission-service/pom.xml"  8084
 run user-service        "$ROOT_DIR/user-service/pom.xml"        8089
 run variant-service     "$ROOT_DIR/variant-service/pom.xml"     8091
 run core-data-service   "$ROOT_DIR/core-data-service/pom.xml"   8092
+wait_for_selected_port auth-service 8088 || true
+wait_for_selected_port permission-service 8084 || true
+wait_for_selected_port user-service 8089 || true
+wait_for_selected_port variant-service 8091 || true
+wait_for_selected_port core-data-service 8092 || true
 run api-gateway         "$ROOT_DIR/api-gateway/pom.xml"         8080
 
 write_session_json
