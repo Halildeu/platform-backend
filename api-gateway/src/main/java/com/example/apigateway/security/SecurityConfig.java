@@ -26,7 +26,7 @@ import java.nio.charset.StandardCharsets;
 
 @Configuration
 @EnableWebFluxSecurity
-@Profile({"!local", "!dev"})
+@Profile("!local & !dev")
 public class SecurityConfig {
 
     private final Environment environment;
