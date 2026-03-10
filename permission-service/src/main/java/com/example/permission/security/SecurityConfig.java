@@ -24,6 +24,8 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Collection;
 
 @Configuration
 @EnableWebSecurity
@@ -89,28 +91,35 @@ public class SecurityConfig {
                 environment.getProperty("security.jwt.issuer"),
                 "http://localhost:8081/realms/serban"
         );
-        String audience = firstNonBlank(
-                firstFromList(environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences")),
+        Collection<String> audiences = resolveCsv(
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences"),
                 environment.getProperty("security.jwt.audience"),
                 environment.getProperty("spring.application.name"),
                 "permission-service"
         );
+        Collection<String> allowedClientIds = resolveCsv(
+                environment.getProperty("security.jwt.allowed-client-ids"),
+                environment.getProperty("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+                "frontend,admin-cli,serban-web"
+        );
 
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
 
-        decoder.setJwtValidator(buildServiceValidator(issuer, audience));
+        decoder.setJwtValidator(buildServiceValidator(issuer, audiences, allowedClientIds));
         return decoder;
     }
 
-    private OAuth2TokenValidator<Jwt> buildServiceValidator(String issuer, String audience) {
+    private OAuth2TokenValidator<Jwt> buildServiceValidator(String issuer,
+                                                            Collection<String> audiences,
+                                                            Collection<String> allowedClientIds) {
         java.util.List<OAuth2TokenValidator<Jwt>> validators = new java.util.ArrayList<>();
         if (StringUtils.hasText(issuer)) {
             validators.add(JwtValidators.createDefaultWithIssuer(issuer));
         } else {
             validators.add(JwtValidators.createDefault());
         }
-        if (StringUtils.hasText(audience)) {
-            validators.add(new AudienceValidator(audience));
+        if ((audiences != null && !audiences.isEmpty()) || (allowedClientIds != null && !allowedClientIds.isEmpty())) {
+            validators.add(new AudienceValidator(audiences, allowedClientIds));
         }
         return new DelegatingOAuth2TokenValidator<>(
                 validators.toArray(new OAuth2TokenValidator[0])
@@ -145,6 +154,17 @@ public class SecurityConfig {
         }
         int idx = value.indexOf(',');
         return idx >= 0 ? value.substring(0, idx).trim() : value.trim();
+    }
+
+    private Collection<String> resolveCsv(String... values) {
+        String raw = firstNonBlank(values);
+        if (!StringUtils.hasText(raw)) {
+            return java.util.List.of();
+        }
+        return Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .toList();
     }
 
     private String firstNonBlank(String... values) {

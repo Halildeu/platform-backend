@@ -8,6 +8,8 @@ import com.example.permission.dto.v1.PagedResultDto;
 import com.example.permission.dto.v1.PermissionDtoMapper;
 import com.example.permission.dto.v1.RoleCloneResponseDto;
 import com.example.permission.dto.v1.RoleDto;
+import com.example.permission.dto.v1.RolePermissionsUpdateRequestDto;
+import com.example.permission.dto.v1.RolePermissionsUpdateResponseDto;
 import com.example.permission.dto.v1.ScopeAssignmentRequestDto;
 import com.example.permission.dto.v1.ScopeSummaryDto;
 import com.example.permission.service.AccessRoleService;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
@@ -49,6 +52,13 @@ public class AccessControllerV1 {
         return ResponseEntity.ok(PermissionDtoMapper.wrap(items, items.size()));
     }
 
+    @GetMapping("/{roleId}")
+    @PreAuthorize("hasAuthority('access-read')")
+    public ResponseEntity<RoleDto> getRole(@PathVariable Long roleId) {
+        AccessRoleDto role = accessRoleService.getRole(roleId);
+        return ResponseEntity.ok(PermissionDtoMapper.toRoleDto(role));
+    }
+
     @PostMapping("/{roleId}/clone")
     @PreAuthorize("hasAuthority('role-manage')")
     public ResponseEntity<RoleCloneResponseDto> cloneRole(@PathVariable Long roleId,
@@ -73,6 +83,19 @@ public class AccessControllerV1 {
                 request.getModuleLabel(),
                 request.getLevel(),
                 request.getPerformedBy()
+        );
+        return ResponseEntity.ok(result);
+    }
+
+    @PutMapping("/{roleId}/permissions")
+    @PreAuthorize("hasAuthority('permission-manage')")
+    public ResponseEntity<RolePermissionsUpdateResponseDto> updateRolePermissions(@PathVariable Long roleId,
+                                                                                  @RequestBody(required = false) RolePermissionsUpdateRequestDto request) {
+        RolePermissionsUpdateRequestDto payload = request == null ? new RolePermissionsUpdateRequestDto() : request;
+        RolePermissionsUpdateResponseDto result = accessRoleService.updateRolePermissions(
+                roleId,
+                payload.getPermissionIds(),
+                payload.getPerformedBy()
         );
         return ResponseEntity.ok(result);
     }

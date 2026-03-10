@@ -31,7 +31,8 @@ class AccessControllerTest {
     @Test
     void listRoles_returnsOk() throws Exception {
         AccessRoleDto role = new AccessRoleDto(1L, "USER_MANAGER", "", 0, false, "2025-01-01T00:00:00Z", "system",
-                List.of(new AccessModulePolicyDto("USER_MANAGEMENT", "Kullanıcı Yönetimi", "MANAGE", "2025-01-01T00:00:00Z", "system")));
+                List.of(new AccessModulePolicyDto("USER_MANAGEMENT", "Kullanıcı Yönetimi", "MANAGE", "2025-01-01T00:00:00Z", "system")),
+                List.of("users.manage"));
         when(accessRoleService.listRoles()).thenReturn(List.of(role));
 
         mockMvc.perform(get("/api/access/roles").accept(MediaType.APPLICATION_JSON))

@@ -10,6 +10,6 @@ public record AccessRoleDto(
         boolean systemRole,
         String lastModifiedAt,
         String lastModifiedBy,
-        List<AccessModulePolicyDto> policies
+        List<AccessModulePolicyDto> policies,
+        List<String> permissions
 ) {}
-

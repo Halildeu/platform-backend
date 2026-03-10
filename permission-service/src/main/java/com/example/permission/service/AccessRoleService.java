@@ -6,6 +6,7 @@ import com.example.permission.dto.v1.BulkPermissionsResponseDto;
 import com.example.permission.dto.v1.PermissionDtoMapper;
 import com.example.permission.dto.v1.RoleCloneResponseDto;
 import com.example.permission.dto.v1.RoleDto;
+import com.example.permission.dto.v1.RolePermissionsUpdateResponseDto;
 import com.example.permission.model.Permission;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
@@ -46,6 +47,13 @@ public class AccessRoleService {
     public List<AccessRoleDto> listRoles() {
         List<Role> roles = roleRepository.findAll();
         return roles.stream().map(this::toDto).toList();
+    }
+
+    @Transactional(readOnly = true)
+    public AccessRoleDto getRole(Long roleId) {
+        Role role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new IllegalArgumentException("Role not found: " + roleId));
+        return toDto(role);
     }
 
     @Transactional
@@ -123,6 +131,73 @@ public class AccessRoleService {
 
         String auditId = audit != null && audit.getId() != null ? audit.getId().toString() : null;
         return new BulkPermissionsResponseDto(new ArrayList<>(updated), auditId);
+    }
+
+    @Transactional
+    public RolePermissionsUpdateResponseDto updateRolePermissions(Long roleId, List<String> permissionIds, Long performedBy) {
+        Role role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new IllegalArgumentException("Role not found: " + roleId));
+
+        LinkedHashMap<Long, Permission> targetPermissions = resolvePermissions(permissionIds);
+        Set<Long> currentPermissionIds = role.getRolePermissions().stream()
+                .map(RolePermission::getPermission)
+                .filter(Objects::nonNull)
+                .map(Permission::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Long> targetPermissionIds = new LinkedHashSet<>(targetPermissions.keySet());
+
+        List<RolePermission> toRemove = role.getRolePermissions().stream()
+                .filter(rolePermission -> {
+                    Permission permission = rolePermission.getPermission();
+                    Long permissionId = permission != null ? permission.getId() : null;
+                    return permissionId != null && !targetPermissionIds.contains(permissionId);
+                })
+                .toList();
+        if (!toRemove.isEmpty()) {
+            rolePermissionRepository.deleteAll(toRemove);
+            role.getRolePermissions().removeIf(toRemove::contains);
+        }
+
+        for (Permission permission : targetPermissions.values()) {
+            Long permissionId = permission.getId();
+            if (permissionId == null || currentPermissionIds.contains(permissionId)) {
+                continue;
+            }
+            RolePermission rolePermission = new RolePermission();
+            rolePermission.setRole(role);
+            rolePermission.setPermission(permission);
+            rolePermissionRepository.save(rolePermission);
+            role.getRolePermissions().add(rolePermission);
+        }
+
+        role.setUpdatedAt(Instant.now());
+        roleRepository.save(role);
+
+        List<String> beforePermissions = currentPermissionIds.stream()
+                .sorted()
+                .map(String::valueOf)
+                .toList();
+        List<String> afterPermissions = targetPermissionIds.stream()
+                .map(String::valueOf)
+                .toList();
+
+        var audit = auditEventService.recordEvent(
+                auditEventService.buildEvent(
+                        "UPDATE_ROLE_PERMISSIONS",
+                        performedBy,
+                        "Role permissions updated for role %s".formatted(role.getName()),
+                        null,
+                        "INFO",
+                        "ROLE_PERMISSIONS_UPDATED",
+                        Map.of("roleId", role.getId(), "permissionCount", afterPermissions.size()),
+                        Map.of("permissionIds", beforePermissions),
+                        Map.of("permissionIds", afterPermissions)
+                )
+        );
+
+        String auditId = audit != null && audit.getId() != null ? audit.getId().toString() : null;
+        return new RolePermissionsUpdateResponseDto(true, auditId);
     }
 
     private boolean applyLevelForModule(Role role, String moduleKey, String level) {
@@ -224,6 +299,15 @@ public class AccessRoleService {
             );
         }).toList();
 
+        List<String> permissionIds = role.getRolePermissions().stream()
+                .map(RolePermission::getPermission)
+                .filter(Objects::nonNull)
+                .map(Permission::getId)
+                .filter(Objects::nonNull)
+                .sorted()
+                .map(String::valueOf)
+                .toList();
+
         return new AccessRoleDto(
                 role.getId(),
                 role.getName(),
@@ -232,8 +316,42 @@ public class AccessRoleService {
                 false,
                 DateTimeFormatter.ISO_INSTANT.format(Optional.ofNullable(role.getUpdatedAt()).orElse(role.getCreatedAt() != null ? role.getCreatedAt() : Instant.now())),
                 "system",
-                policies
+                policies,
+                permissionIds
         );
+    }
+
+    private LinkedHashMap<Long, Permission> resolvePermissions(List<String> permissionIds) {
+        LinkedHashMap<Long, Permission> resolved = new LinkedHashMap<>();
+        if (permissionIds == null || permissionIds.isEmpty()) {
+            return resolved;
+        }
+
+        List<String> missing = new ArrayList<>();
+        for (String rawIdentifier : permissionIds) {
+            String identifier = rawIdentifier == null ? "" : rawIdentifier.trim();
+            if (identifier.isEmpty()) {
+                continue;
+            }
+
+            Optional<Permission> permission = Optional.empty();
+            if (identifier.chars().allMatch(Character::isDigit)) {
+                permission = permissionRepository.findById(Long.parseLong(identifier));
+            }
+            if (permission.isEmpty()) {
+                permission = permissionRepository.findByCodeIgnoreCase(identifier);
+            }
+            if (permission.isPresent() && permission.get().getId() != null) {
+                resolved.putIfAbsent(permission.get().getId(), permission.get());
+            } else {
+                missing.add(identifier);
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("Permissions not found: " + String.join(", ", missing));
+        }
+        return resolved;
     }
 
     private String normalizeModuleKey(String moduleLabel) {

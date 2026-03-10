@@ -19,6 +19,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -37,6 +38,29 @@ class AccessControllerV1Test {
 
     @MockBean
     private UserScopeService userScopeService;
+
+    @Test
+    void getRoleReturnsRoleDetail() throws Exception {
+        var role = new com.example.permission.dto.access.AccessRoleDto(
+                2L,
+                "USER_MANAGER",
+                "desc",
+                3,
+                false,
+                "2025-01-01T00:00:00Z",
+                "system",
+                List.of(),
+                List.of("VIEW_USERS", "MANAGE_USERS")
+        );
+
+        when(accessRoleService.getRole(2L)).thenReturn(role);
+
+        mockMvc.perform(get("/api/v1/roles/{roleId}", 2).accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(2))
+                .andExpect(jsonPath("$.name").value("USER_MANAGER"))
+                .andExpect(jsonPath("$.permissions[0]").value("VIEW_USERS"));
+    }
 
     @Test
     void cloneRolePropagatesAuditId() throws Exception {
