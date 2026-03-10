@@ -170,11 +170,36 @@ class UserControllerV1Test {
                         .content(objectMapper.writeValueAsString(Map.of("active", true))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ok"))
-                .andExpect(jsonPath("$.auditId").isNotEmpty());
+                .andExpect(jsonPath("$.auditId").value(org.hamcrest.Matchers.startsWith("user-")));
 
         User updated = userRepository.findById(saved.getId()).orElseThrow();
         org.assertj.core.api.Assertions.assertThat(updated.isEnabled()).isTrue();
         Assertions.assertThat(userAuditEventRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void updateUser_recordsUserAuditEvent() throws Exception {
+        User saved = ensureUserExists("mutate@example.com");
+        saved.setRole("USER");
+        saved.setSessionTimeoutMinutes(15);
+        userRepository.save(saved);
+        String token = issueToken(saved.getEmail());
+
+        mockMvc.perform(put("/api/v1/users/{id}", saved.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "role", "ADMIN",
+                                "sessionTimeoutMinutes", 16
+                        ))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.role").value("ADMIN"))
+                .andExpect(jsonPath("$.sessionTimeoutMinutes").value(16));
+
+        Assertions.assertThat(userAuditEventRepository.count()).isEqualTo(1);
+        Assertions.assertThat(userAuditEventRepository.findAll().getFirst().getDetails())
+                .contains("role:USER->ADMIN")
+                .contains("sessionTimeoutMinutes:15->16");
     }
 
     private User ensureUserExists(String email) {

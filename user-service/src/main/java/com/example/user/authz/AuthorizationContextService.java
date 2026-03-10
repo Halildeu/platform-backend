@@ -67,7 +67,7 @@ public class AuthorizationContextService {
                     .bodyToMono(AuthzMeResponse.class)
                     .block();
             Set<String> permissions = body != null && body.permissions() != null
-                    ? Set.copyOf(body.permissions())
+                    ? expandPermissionAliases(body.permissions())
                     : extractPermissionsFromJwt(jwt, authorities);
 
             Set<Long> allowedCompanies = body != null && body.allowedScopes() != null

@@ -51,15 +51,12 @@ public class UserService implements UserDetailsService { // UserDetailsService a
                        PasswordEncoder passwordEncoder,
                        UserAuditEventService userAuditEventService,
                        AuthorizationContextService authorizationContextService,
-                       @Value("${jwt.expiration:900000}") long jwtExpirationMillis) {
+                       @Value("${user.session-timeout.max-minutes:1440}") int configuredMaxSessionTimeoutMinutes) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.userAuditEventService = userAuditEventService;
         this.authorizationContextService = authorizationContextService;
-        long calculatedMinutes = Math.max(1L, Math.round(Math.ceil(jwtExpirationMillis / 60000.0)));
-        this.maxSessionTimeoutMinutes = calculatedMinutes > Integer.MAX_VALUE
-                ? Integer.MAX_VALUE
-                : (int) calculatedMinutes;
+        this.maxSessionTimeoutMinutes = Math.max(User.DEFAULT_SESSION_TIMEOUT_MINUTES, configuredMaxSessionTimeoutMinutes);
     }
 
     @EventListener(ApplicationReadyEvent.class)

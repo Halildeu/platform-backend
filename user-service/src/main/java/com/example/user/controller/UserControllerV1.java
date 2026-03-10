@@ -1,6 +1,7 @@
 package com.example.user.controller;
 
 import com.example.user.dto.KeycloakUserProvisionRequest;
+import com.example.user.dto.UpdateUserRequest;
 import com.example.user.dto.v1.PagedUserResponseDto;
 import com.example.user.dto.v1.UserActivationRequestDto;
 import com.example.user.dto.v1.UserDetailDto;
@@ -11,6 +12,7 @@ import com.example.commonauth.AuthorizationContext;
 import com.example.user.authz.AuthorizationContextService;
 import com.example.user.model.User;
 import com.example.user.permission.PermissionActions;
+import com.example.user.service.UserAuditEventService;
 import com.example.user.service.UserService;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -50,14 +52,17 @@ import com.example.user.security.ServiceAuthenticationToken;
 public class UserControllerV1 {
 
     private final UserService userService;
+    private final UserAuditEventService userAuditEventService;
     private final AuthorizationContextService authorizationContextService;
     private final MeterRegistry meterRegistry;
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(UserControllerV1.class);
 
     public UserControllerV1(UserService userService,
+                            UserAuditEventService userAuditEventService,
                             AuthorizationContextService authorizationContextService,
                             MeterRegistry meterRegistry) {
         this.userService = userService;
+        this.userAuditEventService = userAuditEventService;
         this.authorizationContextService = authorizationContextService;
         this.meterRegistry = meterRegistry;
     }
@@ -140,7 +145,72 @@ public class UserControllerV1 {
                                                                @Valid @RequestBody UserActivationRequestDto request) {
         User currentUser = requireCurrentUser();
         String auditId = userService.updateActivation(id, Boolean.TRUE.equals(request.getActive()), currentUser.getId());
-        return ResponseEntity.ok(UserMutationAckDto.ok(auditId));
+        return ResponseEntity.ok(UserMutationAckDto.ok(prefixUserAuditId(auditId)));
+    }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<UserDetailDto> updateUser(@PathVariable Long id,
+                                                    @RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+                                                    @Valid @RequestBody UpdateUserRequest request) {
+        User currentUser = requireCurrentUser();
+        requirePermissionWithCompanyScope(PermissionActions.USER_UPDATE, companyId);
+        UserAuditSnapshot existingUser = UserAuditSnapshot.from(userService.findRequiredById(id));
+        User updatedUser = userService.updateUser(id, request);
+        recordUserUpdateAudit(currentUser, existingUser, updatedUser, request);
+        return ResponseEntity.ok(UserDtoMapper.toDetail(updatedUser));
+    }
+
+    private void recordUserUpdateAudit(User currentUser, UserAuditSnapshot previousUser, User updatedUser, UpdateUserRequest request) {
+        if (currentUser == null || previousUser == null || updatedUser == null) {
+            return;
+        }
+        List<String> changes = new ArrayList<>();
+        if (request.getName() != null && !request.getName().isBlank() && !request.getName().equals(previousUser.name())) {
+            changes.add("name:%s->%s".formatted(safeValue(previousUser.name()), safeValue(updatedUser.getName())));
+        }
+        if (request.getRole() != null && !request.getRole().isBlank() && !request.getRole().equalsIgnoreCase(previousUser.role())) {
+            changes.add("role:%s->%s".formatted(safeValue(previousUser.role()), safeValue(updatedUser.getRole())));
+        }
+        if (request.getEnabled() != null && previousUser.enabled() != updatedUser.isEnabled()) {
+            changes.add("enabled:%s->%s".formatted(previousUser.enabled(), updatedUser.isEnabled()));
+        }
+        if (request.getSessionTimeoutMinutes() != null) {
+            Integer previousTimeout = previousUser.sessionTimeoutMinutes();
+            Integer updatedTimeout = updatedUser.getSessionTimeoutMinutes();
+            if (!java.util.Objects.equals(previousTimeout, updatedTimeout)) {
+                changes.add("sessionTimeoutMinutes:%s->%s".formatted(previousTimeout, updatedTimeout));
+            }
+        }
+        if (changes.isEmpty()) {
+            return;
+        }
+        userAuditEventService.recordUpdateEvent(
+                currentUser.getId(),
+                updatedUser.getId(),
+                "User updated by %d [%s]".formatted(currentUser.getId(), String.join(", ", changes))
+        );
+    }
+
+    private String prefixUserAuditId(String auditId) {
+        if (!StringUtils.hasText(auditId)) {
+            return auditId;
+        }
+        return auditId.startsWith("user-") ? auditId : "user-" + auditId;
+    }
+
+    private String safeValue(String value) {
+        return StringUtils.hasText(value) ? value : "null";
+    }
+
+    private record UserAuditSnapshot(String name, String role, boolean enabled, Integer sessionTimeoutMinutes) {
+        private static UserAuditSnapshot from(User user) {
+            return new UserAuditSnapshot(
+                    user.getName(),
+                    user.getRole(),
+                    user.isEnabled(),
+                    user.getSessionTimeoutMinutes()
+            );
+        }
     }
 
     @PostMapping("/internal/provision")

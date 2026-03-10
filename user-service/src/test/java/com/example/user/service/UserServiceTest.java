@@ -79,7 +79,7 @@ class UserServiceTest {
 
         userAuditEventService = new UserAuditEventService(userAuditEventRepository);
         authorizationContextService = new FakeAuthzService();
-        userService = new UserService(userRepository, passwordEncoder, userAuditEventService, authorizationContextService, 900_000L);
+        userService = new UserService(userRepository, passwordEncoder, userAuditEventService, authorizationContextService, 1440);
         SecurityContextHolder.clearContext();
     }
 

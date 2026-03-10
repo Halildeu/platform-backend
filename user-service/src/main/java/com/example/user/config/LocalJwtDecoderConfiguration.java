@@ -2,6 +2,9 @@ package com.example.user.config;
 
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.jwk.RSAKey;
+import com.example.user.security.AudienceOrAuthorizedPartyValidator;
+import java.util.Arrays;
+import java.util.List;
 import org.springframework.core.env.Environment;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,17 +47,13 @@ public class LocalJwtDecoderConfiguration {
                 environment.getProperty("SECURITY_JWT_ISSUER"),
                 "http://localhost:8081/realms/serban"
             );
-            String audience = firstNonBlank(
-                firstFromList(environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences")),
-                environment.getProperty("security.jwt.audience"),
-                environment.getProperty("spring.application.name"),
-                "user-service"
-            );
+            List<String> audiences = resolveAudiences();
+            List<String> allowedClientIds = resolveAllowedClientIds();
 
             NimbusJwtDecoder keycloakDecoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
             OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
-                new AudienceValidator(java.util.List.of(audience))
+                new AudienceOrAuthorizedPartyValidator(audiences, allowedClientIds)
             );
             keycloakDecoder.setJwtValidator(validator);
 
@@ -72,12 +71,34 @@ public class LocalJwtDecoderConfiguration {
         }
     }
 
-    private String firstFromList(String value) {
+    List<String> resolveAudiences() {
+        String audienceProp = firstNonBlank(
+            environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences"),
+            environment.getProperty("security.service-auth.expected-audience"),
+            environment.getProperty("security.jwt.audience"),
+            environment.getProperty("spring.application.name"),
+            "user-service"
+        );
+        return splitCsv(audienceProp);
+    }
+
+    List<String> resolveAllowedClientIds() {
+        String raw = firstNonBlank(
+            environment.getProperty("security.service-auth.allowed-client-ids"),
+            environment.getProperty("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+            ""
+        );
+        return splitCsv(raw);
+    }
+
+    private List<String> splitCsv(String value) {
         if (value == null || value.isBlank()) {
-            return null;
+            return List.of();
         }
-        int idx = value.indexOf(',');
-        return idx >= 0 ? value.substring(0, idx).trim() : value.trim();
+        return Arrays.stream(value.split(","))
+            .map(String::trim)
+            .filter(part -> !part.isBlank())
+            .toList();
     }
 
     private String firstNonBlank(String... values) {
