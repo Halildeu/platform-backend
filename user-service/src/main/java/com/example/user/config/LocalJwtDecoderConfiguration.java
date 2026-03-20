@@ -47,6 +47,16 @@ public class LocalJwtDecoderConfiguration {
                 environment.getProperty("SECURITY_JWT_ISSUER"),
                 "http://localhost:8081/realms/serban"
             );
+            String authServiceJwkSetUri = firstNonBlank(
+                environment.getProperty("security.service-auth.jwk-set-uri"),
+                environment.getProperty("SERVICE_AUTH_JWK_SET_URI"),
+                "http://127.0.0.1:8088/oauth2/jwks"
+            );
+            String authServiceIssuer = firstNonBlank(
+                environment.getProperty("security.service-auth.issuer"),
+                environment.getProperty("SERVICE_AUTH_ISSUER"),
+                "auth-service"
+            );
             List<String> audiences = resolveAudiences();
             List<String> allowedClientIds = resolveAllowedClientIds();
 
@@ -57,13 +67,20 @@ public class LocalJwtDecoderConfiguration {
             );
             keycloakDecoder.setJwtValidator(validator);
 
+            NimbusJwtDecoder authServiceFallbackDecoder = NimbusJwtDecoder.withJwkSetUri(authServiceJwkSetUri).build();
+            authServiceFallbackDecoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(authServiceIssuer));
+
             NimbusJwtDecoder localDecoder = NimbusJwtDecoder.withPublicKey(rsaKey.toRSAPublicKey()).build();
 
             return token -> {
                 try {
                     return keycloakDecoder.decode(token);
                 } catch (Exception ignore) {
-                    return localDecoder.decode(token);
+                    try {
+                        return authServiceFallbackDecoder.decode(token);
+                    } catch (Exception ignoredAgain) {
+                        return localDecoder.decode(token);
+                    }
                 }
             };
         } catch (JOSEException ex) {

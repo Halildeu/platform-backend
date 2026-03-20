@@ -1,7 +1,10 @@
 package com.example.user.controller;
 
 import com.example.user.dto.v1.NotificationPreferenceDto;
+import com.example.user.dto.v1.NotificationPreferenceMutationDto;
+import com.example.user.dto.v1.NotificationPreferenceSnapshotDto;
 import com.example.user.dto.v1.NotificationPreferencesResponseDto;
+import com.example.user.dto.v1.UpdateNotificationPreferenceRequestDto;
 import com.example.user.dto.v1.UpdateNotificationPreferencesRequestDto;
 import com.example.user.model.User;
 import com.example.user.model.UserNotificationPreference;
@@ -15,7 +18,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -44,6 +49,20 @@ public class NotificationPreferencesControllerV1 {
         return ResponseEntity.ok(new NotificationPreferencesResponseDto(toDtoList(prefs)));
     }
 
+    @GetMapping("/{channel}")
+    public ResponseEntity<NotificationPreferenceSnapshotDto> getPreferenceSnapshot(@PathVariable String channel) {
+        User currentUser = requireCurrentUser();
+        UserNotificationPreference preference =
+                notificationPreferencesService.getOrInitChannelForUser(currentUser.getId(), channel);
+        return ResponseEntity.ok(new NotificationPreferenceSnapshotDto(
+                buildNotificationResourceKey(currentUser, preference.getChannel()),
+                preference.getChannel(),
+                preference.isEnabled(),
+                preference.getFrequency(),
+                safeVersion(preference)
+        ));
+    }
+
     @PatchMapping
     public ResponseEntity<NotificationPreferencesResponseDto> updatePreferences(@RequestBody UpdateNotificationPreferencesRequestDto request) {
         if (request == null) {
@@ -55,11 +74,89 @@ public class NotificationPreferencesControllerV1 {
         return ResponseEntity.ok(new NotificationPreferencesResponseDto(toDtoList(updated)));
     }
 
+    @PutMapping("/{channel}")
+    public ResponseEntity<NotificationPreferenceMutationDto> updatePreference(@PathVariable String channel,
+                                                                              @RequestBody UpdateNotificationPreferenceRequestDto request) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_request_body");
+        }
+
+        User currentUser = requireCurrentUser();
+        var result = notificationPreferencesService.syncOwnPreference(
+                currentUser.getId(),
+                currentUser.getEmail(),
+                channel,
+                request.getEnabled(),
+                request.getFrequency(),
+                request.getExpectedVersion(),
+                request.getSource(),
+                request.getAttemptCount(),
+                request.getQueueActionId()
+        );
+
+        String resourceKey = buildNotificationResourceKey(currentUser, result.channel());
+        NotificationPreferenceMutationDto response = result.isConflict()
+                ? NotificationPreferenceMutationDto.conflict(
+                        prefixUserAuditId(result.auditId()),
+                        resourceKey,
+                        result.channel(),
+                        result.enabled(),
+                        result.frequency(),
+                        safeVersion(result.version()),
+                        result.source(),
+                        result.message(),
+                        result.errorCode(),
+                        result.conflictReason()
+                )
+                : NotificationPreferenceMutationDto.ok(
+                        prefixUserAuditId(result.auditId()),
+                        resourceKey,
+                        result.channel(),
+                        result.enabled(),
+                        result.frequency(),
+                        safeVersion(result.version()),
+                        result.source()
+                );
+
+        return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
+    }
+
     private List<NotificationPreferenceDto> toDtoList(List<UserNotificationPreference> prefs) {
         if (prefs == null) return List.of();
         return prefs.stream()
-                .map(p -> new NotificationPreferenceDto(p.getChannel(), p.isEnabled(), p.getFrequency(), p.getUpdatedAt()))
+                .map(p -> new NotificationPreferenceDto(
+                        p.getChannel(),
+                        p.isEnabled(),
+                        p.getFrequency(),
+                        p.getUpdatedAt(),
+                        safeVersion(p)
+                ))
                 .toList();
+    }
+
+    private String buildNotificationResourceKey(User user, String channel) {
+        return "notification-preference:" + user.getEmail().trim().toLowerCase() + ":" + channel.trim().toLowerCase();
+    }
+
+    private String prefixUserAuditId(String auditId) {
+        if (!StringUtils.hasText(auditId)) {
+            return auditId;
+        }
+        return auditId.startsWith("user-") ? auditId : "user-" + auditId;
+    }
+
+    private int safeVersion(UserNotificationPreference preference) {
+        if (preference == null || preference.getVersion() == null || preference.getVersion() < 0) {
+            return 0;
+        }
+        return preference.getVersion();
+    }
+
+    private int safeVersion(Integer version) {
+        if (version == null || version < 0) {
+            return 0;
+        }
+        return version;
     }
 
     private User requireCurrentUser() {
@@ -102,4 +199,3 @@ public class NotificationPreferencesControllerV1 {
         return null;
     }
 }
-

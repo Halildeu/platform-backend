@@ -2,8 +2,12 @@ package com.example.permission.service;
 
 import com.example.permission.dto.AuditEventPageResponse;
 import com.example.permission.dto.AuditEventResponse;
+import com.example.permission.dto.v1.AuditExportJobResponseDto;
+import com.example.permission.dto.v1.AuditEventIngestRequestDto;
+import com.example.permission.model.AuditExportJob;
 import com.example.permission.model.PermissionAuditEvent;
 import com.example.permission.model.UserAuditEventMirror;
+import com.example.permission.repository.AuditExportJobRepository;
 import com.example.permission.repository.PermissionAuditEventRepository;
 import com.example.permission.repository.UserAuditEventMirrorRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -28,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -39,17 +44,20 @@ public class AuditEventService {
     private static final int MAX_EXPORT_LIMIT = 10000;
 
     private final PermissionAuditEventRepository repository;
+    private final AuditExportJobRepository auditExportJobRepository;
     private final UserAuditEventMirrorRepository userAuditEventMirrorRepository;
     private final ObjectMapper objectMapper;
     private final AuditEventStream auditEventStream;
     private final boolean liveStreamEnabled;
 
     public AuditEventService(PermissionAuditEventRepository repository,
+                             AuditExportJobRepository auditExportJobRepository,
                              UserAuditEventMirrorRepository userAuditEventMirrorRepository,
                              ObjectMapper objectMapper,
                              AuditEventStream auditEventStream,
                              @Value("${audit.live-stream.enabled:true}") boolean liveStreamEnabled) {
         this.repository = repository;
+        this.auditExportJobRepository = auditExportJobRepository;
         this.userAuditEventMirrorRepository = userAuditEventMirrorRepository;
         this.objectMapper = objectMapper;
         this.auditEventStream = auditEventStream;
@@ -111,6 +119,81 @@ public class AuditEventService {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported export format: " + format);
     }
 
+    public AuditExportJobResponseDto createExportJob(String requestedBy,
+                                                     String format,
+                                                     Integer limit,
+                                                     String sort,
+                                                     Map<String, String> filters) {
+        String normalizedFormat = normalizeExportFormat(format);
+        AuditExportJob job = new AuditExportJob();
+        job.setId(UUID.randomUUID().toString());
+        job.setRequestedBy(requestedBy);
+        job.setStatus("PROCESSING");
+        job.setFormat(normalizedFormat);
+        job.setSortValue(sort);
+        job.setFilterSnapshot(writeJsonSafe(filters == null ? Map.of() : filters));
+        job.setCreatedAt(Instant.now());
+        auditExportJobRepository.save(job);
+
+        try {
+            List<AuditEventResponse> events = exportEvents(sort, filters == null ? Map.of() : filters, limit);
+            byte[] payload = buildExportPayload(events, normalizedFormat);
+            job.setPayload(payload);
+            job.setContentType(resolveExportContentType(normalizedFormat));
+            job.setFilename("audit-events-%s.%s".formatted(job.getId(), normalizedFormat));
+            job.setEventCount(events.size());
+            job.setStatus("COMPLETED");
+            job.setCompletedAt(Instant.now());
+            auditExportJobRepository.save(job);
+            recordEventSafely(buildExportJobAuditEvent(
+                    "AUDIT_EXPORT_JOB_CREATED",
+                    requestedBy,
+                    "Audit export job completed with %s events".formatted(events.size()),
+                    "INFO",
+                    Map.of(
+                            "jobId", job.getId(),
+                            "format", normalizedFormat,
+                            "eventCount", events.size(),
+                            "status", job.getStatus()
+                    )
+            ));
+        } catch (RuntimeException error) {
+            job.setStatus("FAILED");
+            job.setCompletedAt(Instant.now());
+            job.setErrorMessage(resolveExportErrorMessage(error));
+            auditExportJobRepository.save(job);
+            recordEventSafely(buildExportJobAuditEvent(
+                    "AUDIT_EXPORT_JOB_FAILED",
+                    requestedBy,
+                    "Audit export job failed",
+                    "ERROR",
+                    Map.of(
+                            "jobId", job.getId(),
+                            "format", normalizedFormat,
+                            "status", job.getStatus(),
+                            "error", job.getErrorMessage()
+                    )
+            ));
+        }
+
+        return toExportJobResponse(job);
+    }
+
+    public AuditExportJobResponseDto getExportJob(String jobId, String requestedBy) {
+        return toExportJobResponse(findOwnedExportJob(jobId, requestedBy));
+    }
+
+    public AuditExportJob getCompletedExportJob(String jobId, String requestedBy) {
+        AuditExportJob job = findOwnedExportJob(jobId, requestedBy);
+        if (!"COMPLETED".equalsIgnoreCase(job.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Export job is not ready");
+        }
+        if (job.getPayload() == null || job.getPayload().length == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Export payload not found");
+        }
+        return job;
+    }
+
     public SseEmitter openLiveStream() {
         if (!liveStreamEnabled) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Audit live stream disabled");
@@ -122,6 +205,23 @@ public class AuditEventService {
         PermissionAuditEvent saved = repository.save(event);
         dispatchLiveEvent(saved);
         return saved;
+    }
+
+    public PermissionAuditEvent recordMirroredEvent(AuditEventIngestRequestDto request) {
+        PermissionAuditEvent event = new PermissionAuditEvent();
+        event.setEventType(request.getEventType());
+        event.setPerformedBy(request.getPerformedBy());
+        event.setDetails(request.getDetails());
+        event.setUserEmail(request.getUserEmail());
+        event.setService(request.getService());
+        event.setLevel(request.getLevel());
+        event.setAction(request.getAction());
+        event.setCorrelationId(isNotBlank(request.getCorrelationId()) ? request.getCorrelationId() : UUID.randomUUID().toString());
+        event.setMetadata(writeJsonSafe(request.getMetadata()));
+        event.setBeforeState(writeJsonSafe(request.getBefore()));
+        event.setAfterState(writeJsonSafe(request.getAfter()));
+        event.setOccurredAt(request.getOccurredAt() != null ? request.getOccurredAt() : Instant.now());
+        return recordEvent(event);
     }
 
     public PermissionAuditEvent buildEvent(String eventType,
@@ -150,11 +250,19 @@ public class AuditEventService {
     }
 
     private void dispatchLiveEvent(PermissionAuditEvent event) {
-        if (!liveStreamEnabled) {
+        if (!liveStreamEnabled || event == null) {
             return;
         }
         AuditEventResponse response = mapToResponse(event);
         auditEventStream.publish(response);
+    }
+
+    private void recordEventSafely(PermissionAuditEvent event) {
+        try {
+            recordEvent(event);
+        } catch (RuntimeException error) {
+            log.warn("Failed to persist audit export lifecycle event", error);
+        }
     }
 
     private String buildCsvPayload(List<AuditEventResponse> events) {
@@ -305,6 +413,69 @@ public class AuditEventService {
 
     private boolean isNotBlank(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String normalizeExportFormat(String format) {
+        return "csv".equalsIgnoreCase(format) ? "csv" : "json";
+    }
+
+    private String resolveExportContentType(String format) {
+        return "csv".equalsIgnoreCase(format) ? "text/csv" : "application/json";
+    }
+
+    private String resolveExportErrorMessage(RuntimeException error) {
+        if (error.getMessage() != null && !error.getMessage().isBlank()) {
+            return error.getMessage();
+        }
+        return "Audit export job failed";
+    }
+
+    private AuditExportJob findOwnedExportJob(String jobId, String requestedBy) {
+        AuditExportJob job = auditExportJobRepository.findById(jobId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit export job not found"));
+        String jobOwner = job.getRequestedBy() == null ? "" : job.getRequestedBy();
+        String currentUser = requestedBy == null ? "" : requestedBy;
+        if (!jobOwner.equalsIgnoreCase(currentUser)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit export job not found");
+        }
+        return job;
+    }
+
+    private AuditExportJobResponseDto toExportJobResponse(AuditExportJob job) {
+        return new AuditExportJobResponseDto(
+                job.getId(),
+                job.getStatus(),
+                job.getFormat(),
+                job.getFilename(),
+                job.getContentType(),
+                job.getEventCount(),
+                job.getRequestedBy(),
+                job.getCreatedAt(),
+                job.getCompletedAt(),
+                job.getErrorMessage(),
+                "/api/audit/events/export-jobs/%s/download".formatted(job.getId())
+        );
+    }
+
+    private PermissionAuditEvent buildExportJobAuditEvent(String eventType,
+                                                          String requestedBy,
+                                                          String details,
+                                                          String level,
+                                                          Map<String, Object> metadata) {
+        PermissionAuditEvent event = new PermissionAuditEvent();
+        event.setEventType(eventType);
+        event.setPerformedBy(null);
+        event.setDetails(details);
+        event.setUserEmail(requestedBy);
+        event.setService("permission-service");
+        event.setLevel(level);
+        event.setAction(eventType);
+        event.setCorrelationId(UUID.randomUUID().toString());
+        event.setMetadata(writeJsonSafe(metadata));
+        event.setBeforeState(writeJsonSafe(Map.of()));
+        event.setAfterState(writeJsonSafe(Map.of()));
+        event.setOccurredAt(Instant.now());
+        return event;
     }
 
     private AuditEventResponse mapToResponse(PermissionAuditEvent event) {

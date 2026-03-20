@@ -2,8 +2,12 @@ package com.example.permission.service;
 
 import com.example.permission.dto.AuditEventPageResponse;
 import com.example.permission.dto.AuditEventResponse;
+import com.example.permission.dto.v1.AuditExportJobResponseDto;
+import com.example.permission.model.AuditExportJob;
+import com.example.permission.dto.v1.AuditEventIngestRequestDto;
 import com.example.permission.model.PermissionAuditEvent;
 import com.example.permission.model.UserAuditEventMirror;
+import com.example.permission.repository.AuditExportJobRepository;
 import com.example.permission.repository.PermissionAuditEventRepository;
 import com.example.permission.repository.UserAuditEventMirrorRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +28,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -37,6 +42,9 @@ class AuditEventServiceTest {
     private PermissionAuditEventRepository repository;
 
     @Mock
+    private AuditExportJobRepository auditExportJobRepository;
+
+    @Mock
     private UserAuditEventMirrorRepository userAuditEventMirrorRepository;
 
     @Mock
@@ -48,8 +56,8 @@ class AuditEventServiceTest {
 
     @BeforeEach
     void setUp() {
-        objectMapper = new ObjectMapper();
-        auditEventService = new AuditEventService(repository, userAuditEventMirrorRepository, objectMapper, auditEventStream, true);
+        objectMapper = new ObjectMapper().findAndRegisterModules();
+        auditEventService = new AuditEventService(repository, auditExportJobRepository, userAuditEventMirrorRepository, objectMapper, auditEventStream, true);
     }
 
     @Test
@@ -119,5 +127,64 @@ class AuditEventServiceTest {
         assertThat(response.events().getFirst().service()).isEqualTo("user-service");
         assertThat(response.events().getFirst().action()).isEqualTo("USER_ACTIVATE");
         assertThat(response.events().get(1).id()).isEqualTo("7");
+    }
+
+    @Test
+    void recordMirroredEvent_persistsExternalServiceAuditIntoCentralFeed() {
+        AuditEventIngestRequestDto request = new AuditEventIngestRequestDto();
+        request.setEventType("SESSION_CREATED");
+        request.setPerformedBy(99L);
+        request.setUserEmail("user@example.com");
+        request.setService("auth-service");
+        request.setLevel("INFO");
+        request.setAction("SESSION_CREATED");
+        request.setDetails("Session created");
+        request.setCorrelationId("corr-auth-1");
+        request.setMetadata(Map.of("companyId", 42L, "permissionCount", 3));
+        request.setOccurredAt(Instant.parse("2026-03-13T20:00:00Z"));
+
+        when(repository.save(any(PermissionAuditEvent.class))).thenAnswer(invocation -> {
+            PermissionAuditEvent event = invocation.getArgument(0);
+            event.setId(77L);
+            return event;
+        });
+
+        PermissionAuditEvent saved = auditEventService.recordMirroredEvent(request);
+
+        assertThat(saved.getId()).isEqualTo(77L);
+        assertThat(saved.getService()).isEqualTo("auth-service");
+        assertThat(saved.getAction()).isEqualTo("SESSION_CREATED");
+        assertThat(saved.getCorrelationId()).isEqualTo("corr-auth-1");
+        assertThat(saved.getMetadata()).contains("permissionCount");
+        verify(repository).save(any(PermissionAuditEvent.class));
+    }
+
+    @Test
+    void createExportJob_completesAndReturnsDownloadPath() {
+        PermissionAuditEvent event = new PermissionAuditEvent();
+        event.setId(42L);
+        event.setOccurredAt(Instant.parse("2025-01-01T00:00:00Z"));
+        event.setService("permission-service");
+        event.setLevel("INFO");
+        event.setAction("ASSIGN_ROLE");
+        event.setDetails("Role assigned");
+
+        when(repository.findAll()).thenReturn(List.of(event));
+        when(userAuditEventMirrorRepository.findAll()).thenReturn(List.of());
+        when(auditExportJobRepository.save(any(AuditExportJob.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AuditExportJobResponseDto response = auditEventService.createExportJob(
+                "admin@example.com",
+                "json",
+                50,
+                "timestamp,desc",
+                Map.of("service", "permission-service")
+        );
+
+        assertThat(response.status()).isEqualTo("COMPLETED");
+        assertThat(response.downloadPath()).contains("/api/audit/events/export-jobs/");
+        assertThat(response.filename()).endsWith(".json");
+        assertThat(response.eventCount()).isEqualTo(1);
+        verify(auditExportJobRepository, org.mockito.Mockito.atLeastOnce()).save(any(AuditExportJob.class));
     }
 }

@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: report-service
+  datasource:
+    url: jdbc:sqlserver://${REPORT_MSSQL_HOST:localhost}:${REPORT_MSSQL_PORT:1433};databaseName=${REPORT_MSSQL_DB:reporting};encrypt=true;trustServerCertificate=true;applicationIntent=ReadOnly
+    username: ${REPORT_MSSQL_USERNAME:sa}
+    password: ${REPORT_MSSQL_PASSWORD:}
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 10000
+      max-lifetime: 600000
+      read-only: true
+      auto-commit: true
+      pool-name: report-mssql-pool
+      connection-init-sql: SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+  jpa:
+    open-in-view: false
+  flyway:
+    enabled: false
+
+server:
+  port: ${SERVER_PORT:8095}
+  tomcat:
+    threads:
+      virtual:
+        enabled: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS:false}
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:127.0.0.1}
+    instance-id: ${spring.application.name}:${eureka.instance.hostname}:${server.port}
+
+security:
+  jwt:
+    jwk-set-uri: ${SECURITY_JWT_JWK_SET_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
+    issuer: ${SECURITY_JWT_ISSUER:http://localhost:8081/realms/serban}
+    audience: ${SECURITY_JWT_AUDIENCE:report-service}
+
+report:
+  definitions-path: classpath:reports/
+  query:
+    timeout-seconds: 30
+    max-export-rows: 500000
+  audit:
+    internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:dev-local-audit-mirror-key}
+
+logging:
+  level:
+    org.springframework.security: INFO
+    org.springframework.web: INFO
+    com.example.report: DEBUG

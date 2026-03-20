@@ -3,6 +3,7 @@ package com.example.auth.service;
 import com.example.auth.config.JwtProperties;
 import com.example.auth.dto.JwtResponse;
 import com.example.auth.notification.EmailNotificationService;
+import com.example.auth.permission.PermissionAuditMirrorClient;
 import com.example.auth.permission.PermissionServiceClient;
 import com.example.auth.security.AuthenticatedUserDetails;
 import com.example.auth.security.JwtTokenProvider;
@@ -63,6 +64,12 @@ class AuthServiceTest {
     @Mock
     private EmailNotificationService emailNotificationService;
 
+    @Mock
+    private AuthAuditService authAuditService;
+
+    @Mock
+    private PermissionAuditMirrorClient permissionAuditMirrorClient;
+
     private AuthService authService;
     private JwtTokenProvider jwtTokenProvider;
     private JwtProperties jwtProperties;
@@ -91,6 +98,7 @@ class AuthServiceTest {
                 emailVerificationService,
                 passwordResetService,
                 emailNotificationService,
+                authAuditService,
                 false
         );
 

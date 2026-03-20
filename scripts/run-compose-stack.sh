@@ -21,6 +21,25 @@ COMPOSE_RUNTIME_PS_REPORT="${COMPOSE_RUNTIME_PS_REPORT:-$REPO_ROOT/.cache/report
 COMPOSE_RUNTIME_WAIT_SECONDS="${COMPOSE_RUNTIME_WAIT_SECONDS:-180}"
 COMPOSE_RUNTIME_POLL_INTERVAL="${COMPOSE_RUNTIME_POLL_INTERVAL:-3}"
 STARTUP_GUARD_SCRIPT="$ROOT_DIR/scripts/health/check-compose-runtime-guard.py"
+SESSION_ENV_JSON="$(
+  python3 <<'PY'
+import json
+import os
+
+keys = [
+    "COMPOSE_RUNTIME_SERVICES",
+    "COMPOSE_RUNTIME_BUILD",
+    "COMPOSE_RUNTIME_POSTCHECK",
+    "COMPOSE_RUNTIME_STRICT_WARNINGS",
+]
+payload = {}
+for key in keys:
+    value = os.environ.get(key)
+    if isinstance(value, str) and value != "":
+        payload[key] = value
+print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+PY
+)"
 
 ALL_SERVICES=(
   discovery-server
@@ -63,7 +82,7 @@ record_session_line() {
 }
 
 write_session_json() {
-  python3 - "$SESSION_TSV" "$SESSION_FILE" "$SESSION_ID" "$SESSION_CREATED_AT" "$COMPOSE_RUNTIME_SERVICES" "$COMPOSE_FILE" "$COMPOSE_LOG_DIR" "$COMPOSE_RUNTIME_PS_REPORT" <<'PY'
+  python3 - "$SESSION_TSV" "$SESSION_FILE" "$SESSION_ID" "$SESSION_CREATED_AT" "$COMPOSE_RUNTIME_SERVICES" "$COMPOSE_FILE" "$COMPOSE_LOG_DIR" "$COMPOSE_RUNTIME_PS_REPORT" "$SESSION_ENV_JSON" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -76,6 +95,7 @@ selected_filter = sys.argv[5] or "all"
 compose_file = Path(sys.argv[6]).resolve()
 compose_log_dir = Path(sys.argv[7]).resolve()
 compose_ps_report = Path(sys.argv[8]).resolve()
+environment = json.loads(sys.argv[9])
 
 services = []
 for raw_line in tsv_path.read_text(encoding="utf-8").splitlines():
@@ -96,6 +116,7 @@ payload = {
     "session_id": session_id,
     "created_at": created_at,
     "selected_filter": selected_filter,
+    "environment": environment,
     "compose_file": str(compose_file),
     "compose_log_dir": str(compose_log_dir),
     "compose_ps_report": str(compose_ps_report),

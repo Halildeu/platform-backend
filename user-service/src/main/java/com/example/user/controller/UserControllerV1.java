@@ -3,11 +3,26 @@ package com.example.user.controller;
 import com.example.user.dto.KeycloakUserProvisionRequest;
 import com.example.user.dto.UpdateUserRequest;
 import com.example.user.dto.v1.PagedUserResponseDto;
+import com.example.user.dto.v1.UpdateUserDateFormatRequestDto;
+import com.example.user.dto.v1.UpdateUserLocaleRequestDto;
+import com.example.user.dto.v1.UpdateUserSessionTimeoutRequestDto;
+import com.example.user.dto.v1.UpdateUserTimeFormatRequestDto;
+import com.example.user.dto.v1.UpdateUserTimezoneRequestDto;
 import com.example.user.dto.v1.UserActivationRequestDto;
 import com.example.user.dto.v1.UserDetailDto;
+import com.example.user.dto.v1.UserDateFormatMutationDto;
+import com.example.user.dto.v1.UserDateFormatSnapshotDto;
 import com.example.user.dto.v1.UserDtoMapper;
+import com.example.user.dto.v1.UserLocaleMutationDto;
+import com.example.user.dto.v1.UserLocaleSnapshotDto;
+import com.example.user.dto.v1.UserSessionTimeoutMutationDto;
+import com.example.user.dto.v1.UserSessionTimeoutSnapshotDto;
 import com.example.user.dto.v1.UserSummaryDto;
+import com.example.user.dto.v1.UserTimeFormatMutationDto;
+import com.example.user.dto.v1.UserTimeFormatSnapshotDto;
 import com.example.user.dto.v1.UserMutationAckDto;
+import com.example.user.dto.v1.UserTimezoneMutationDto;
+import com.example.user.dto.v1.UserTimezoneSnapshotDto;
 import com.example.commonauth.AuthorizationContext;
 import com.example.user.authz.AuthorizationContextService;
 import com.example.user.model.User;
@@ -148,6 +163,238 @@ public class UserControllerV1 {
         return ResponseEntity.ok(UserMutationAckDto.ok(prefixUserAuditId(auditId)));
     }
 
+    @GetMapping("/me/session-timeout")
+    public ResponseEntity<UserSessionTimeoutSnapshotDto> getCurrentSessionTimeoutSnapshot() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(new UserSessionTimeoutSnapshotDto(
+                buildProfileResourceKey(currentUser),
+                currentUser.getSessionTimeoutMinutes(),
+                safeVersion(currentUser)
+        ));
+    }
+
+    @GetMapping("/me/profile")
+    public ResponseEntity<UserDetailDto> getCurrentUserProfile() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(UserDtoMapper.toDetail(currentUser));
+    }
+
+    @PutMapping("/me/profile")
+    public ResponseEntity<UserDetailDto> updateCurrentUserProfile(@Valid @RequestBody UpdateUserRequest request) {
+        User currentUser = requireCurrentUser();
+        UpdateUserRequest selfUpdateRequest = new UpdateUserRequest();
+        selfUpdateRequest.setName(request.getName());
+        UserAuditSnapshot existingUser = UserAuditSnapshot.from(currentUser);
+        User updatedUser = userService.updateUser(currentUser.getId(), selfUpdateRequest);
+        recordUserUpdateAudit(currentUser, existingUser, updatedUser, selfUpdateRequest);
+        return ResponseEntity.ok(UserDtoMapper.toDetail(updatedUser));
+    }
+
+    @PutMapping("/me/session-timeout")
+    public ResponseEntity<UserSessionTimeoutMutationDto> updateCurrentSessionTimeout(@Valid @RequestBody UpdateUserSessionTimeoutRequestDto request) {
+        User currentUser = requireCurrentUser();
+        var result = userService.syncOwnSessionTimeout(
+                currentUser.getId(),
+                request.getSessionTimeoutMinutes(),
+                request.getExpectedVersion(),
+                request.getSource(),
+                request.getAttemptCount(),
+                request.getQueueActionId()
+        );
+        UserSessionTimeoutMutationDto response = result.isConflict()
+                ? UserSessionTimeoutMutationDto.conflict(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.sessionTimeoutMinutes(),
+                        result.version(),
+                        result.source(),
+                        result.message(),
+                        result.errorCode(),
+                        result.conflictReason()
+                )
+                : UserSessionTimeoutMutationDto.ok(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.sessionTimeoutMinutes(),
+                        result.version(),
+                        result.source()
+                );
+
+        return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
+    }
+
+    @GetMapping("/me/locale")
+    public ResponseEntity<UserLocaleSnapshotDto> getCurrentLocaleSnapshot() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(new UserLocaleSnapshotDto(
+                buildProfileResourceKey(currentUser),
+                currentUser.getLocale(),
+                safeVersion(currentUser)
+        ));
+    }
+
+    @PutMapping("/me/locale")
+    public ResponseEntity<UserLocaleMutationDto> updateCurrentLocale(@Valid @RequestBody UpdateUserLocaleRequestDto request) {
+        User currentUser = requireCurrentUser();
+        var result = userService.syncOwnLocale(
+                currentUser.getId(),
+                request.getLocale(),
+                request.getExpectedVersion(),
+                request.getSource(),
+                request.getAttemptCount(),
+                request.getQueueActionId()
+        );
+        UserLocaleMutationDto response = result.isConflict()
+                ? UserLocaleMutationDto.conflict(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.locale(),
+                        result.version(),
+                        result.source(),
+                        result.message(),
+                        result.errorCode(),
+                        result.conflictReason()
+                )
+                : UserLocaleMutationDto.ok(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.locale(),
+                        result.version(),
+                        result.source()
+                );
+
+        return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
+    }
+
+    @GetMapping("/me/timezone")
+    public ResponseEntity<UserTimezoneSnapshotDto> getCurrentTimezoneSnapshot() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(new UserTimezoneSnapshotDto(
+                buildProfileResourceKey(currentUser),
+                currentUser.getTimezone(),
+                safeVersion(currentUser)
+        ));
+    }
+
+    @PutMapping("/me/timezone")
+    public ResponseEntity<UserTimezoneMutationDto> updateCurrentTimezone(@Valid @RequestBody UpdateUserTimezoneRequestDto request) {
+        User currentUser = requireCurrentUser();
+        var result = userService.syncOwnTimezone(
+                currentUser.getId(),
+                request.getTimezone(),
+                request.getExpectedVersion(),
+                request.getSource(),
+                request.getAttemptCount(),
+                request.getQueueActionId()
+        );
+        UserTimezoneMutationDto response = result.isConflict()
+                ? UserTimezoneMutationDto.conflict(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.timezone(),
+                        result.version(),
+                        result.source(),
+                        result.message(),
+                        result.errorCode(),
+                        result.conflictReason()
+                )
+                : UserTimezoneMutationDto.ok(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.timezone(),
+                        result.version(),
+                        result.source()
+                );
+
+        return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
+    }
+
+    @GetMapping("/me/date-format")
+    public ResponseEntity<UserDateFormatSnapshotDto> getCurrentDateFormatSnapshot() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(new UserDateFormatSnapshotDto(
+                buildProfileResourceKey(currentUser),
+                currentUser.getDateFormat(),
+                safeVersion(currentUser)
+        ));
+    }
+
+    @PutMapping("/me/date-format")
+    public ResponseEntity<UserDateFormatMutationDto> updateCurrentDateFormat(@Valid @RequestBody UpdateUserDateFormatRequestDto request) {
+        User currentUser = requireCurrentUser();
+        var result = userService.syncOwnDateFormat(
+                currentUser.getId(),
+                request.getDateFormat(),
+                request.getExpectedVersion(),
+                request.getSource(),
+                request.getAttemptCount(),
+                request.getQueueActionId()
+        );
+        UserDateFormatMutationDto response = result.isConflict()
+                ? UserDateFormatMutationDto.conflict(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.dateFormat(),
+                        result.version(),
+                        result.source(),
+                        result.message(),
+                        result.errorCode(),
+                        result.conflictReason()
+                )
+                : UserDateFormatMutationDto.ok(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.dateFormat(),
+                        result.version(),
+                        result.source()
+                );
+
+        return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
+    }
+
+    @GetMapping("/me/time-format")
+    public ResponseEntity<UserTimeFormatSnapshotDto> getCurrentTimeFormatSnapshot() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(new UserTimeFormatSnapshotDto(
+                buildProfileResourceKey(currentUser),
+                currentUser.getTimeFormat(),
+                safeVersion(currentUser)
+        ));
+    }
+
+    @PutMapping("/me/time-format")
+    public ResponseEntity<UserTimeFormatMutationDto> updateCurrentTimeFormat(@Valid @RequestBody UpdateUserTimeFormatRequestDto request) {
+        User currentUser = requireCurrentUser();
+        var result = userService.syncOwnTimeFormat(
+                currentUser.getId(),
+                request.getTimeFormat(),
+                request.getExpectedVersion(),
+                request.getSource(),
+                request.getAttemptCount(),
+                request.getQueueActionId()
+        );
+        UserTimeFormatMutationDto response = result.isConflict()
+                ? UserTimeFormatMutationDto.conflict(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.timeFormat(),
+                        result.version(),
+                        result.source(),
+                        result.message(),
+                        result.errorCode(),
+                        result.conflictReason()
+                )
+                : UserTimeFormatMutationDto.ok(
+                        prefixUserAuditId(result.auditId()),
+                        buildProfileResourceKey(currentUser),
+                        result.timeFormat(),
+                        result.version(),
+                        result.source()
+                );
+
+        return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
+    }
+
     @PutMapping("/{id}")
     public ResponseEntity<UserDetailDto> updateUser(@PathVariable Long id,
                                                     @RequestHeader(value = "X-Company-Id", required = false) Long companyId,
@@ -181,6 +428,9 @@ public class UserControllerV1 {
                 changes.add("sessionTimeoutMinutes:%s->%s".formatted(previousTimeout, updatedTimeout));
             }
         }
+        if (request.getLocale() != null && !request.getLocale().isBlank() && !request.getLocale().equalsIgnoreCase(previousUser.locale())) {
+            changes.add("locale:%s->%s".formatted(safeValue(previousUser.locale()), safeValue(updatedUser.getLocale())));
+        }
         if (changes.isEmpty()) {
             return;
         }
@@ -202,13 +452,25 @@ public class UserControllerV1 {
         return StringUtils.hasText(value) ? value : "null";
     }
 
-    private record UserAuditSnapshot(String name, String role, boolean enabled, Integer sessionTimeoutMinutes) {
+    private String buildProfileResourceKey(User user) {
+        return "profile:" + user.getEmail().trim().toLowerCase();
+    }
+
+    private int safeVersion(User user) {
+        if (user == null || user.getVersion() == null || user.getVersion() < 0) {
+            return 0;
+        }
+        return user.getVersion();
+    }
+
+    private record UserAuditSnapshot(String name, String role, boolean enabled, Integer sessionTimeoutMinutes, String locale) {
         private static UserAuditSnapshot from(User user) {
             return new UserAuditSnapshot(
                     user.getName(),
                     user.getRole(),
                     user.isEnabled(),
-                    user.getSessionTimeoutMinutes()
+                    user.getSessionTimeoutMinutes(),
+                    user.getLocale()
             );
         }
     }

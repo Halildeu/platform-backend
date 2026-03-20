@@ -179,6 +179,12 @@ public class VariantControllerV1 {
         if (authentication instanceof JwtAuthenticationToken jwtAuth) {
             Jwt jwt = jwtAuth.getToken();
             AuthorizationContext authz = variantAuthorizationService.buildContext(jwt);
+            log.info("Resolved variant authz context: userId={} email={} roles={} permissionsCount={} isAdmin={}",
+                    authz.getUserId(),
+                    authz.getEmail(),
+                    authz.getRoles(),
+                    authz.getPermissions() == null ? 0 : authz.getPermissions().size(),
+                    authz.isAdmin());
             if (authz.getUserId() == null || authz.getEmail() == null) {
                 throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik bilgisi eksik");
             }

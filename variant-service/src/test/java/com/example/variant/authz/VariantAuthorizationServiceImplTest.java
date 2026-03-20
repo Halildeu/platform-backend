@@ -42,6 +42,31 @@ class VariantAuthorizationServiceImplTest {
         assertEquals(1, client.callCount.get());
     }
 
+    @Test
+    void buildsContextFromAuthServiceStyleJwtClaims() {
+        CountingStubClient client = new CountingStubClient();
+        client.setResponse(new AuthzMeResponse());
+
+        VariantAuthorizationServiceImpl service = new VariantAuthorizationServiceImpl(client, Duration.ofSeconds(1));
+
+        Jwt jwt = Jwt.withTokenValue("t")
+                .header("alg", "RS256")
+                .subject("admin@example.com")
+                .claim("uid", 1201)
+                .claim("email", "admin@example.com")
+                .claim("role", "ADMIN")
+                .claim("permissions", List.of("audit-read"))
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(60))
+                .build();
+
+        AuthorizationContext ctx = service.buildContext(jwt);
+        assertEquals(1201L, ctx.getUserId());
+        assertThat(ctx.getEmail()).isEqualTo("admin@example.com");
+        assertThat(ctx.getRoles()).contains("ADMIN");
+        assertThat(ctx.isAdmin()).isTrue();
+    }
+
     private AuthzMeResponse buildAuthzMeResponse() {
         AuthzMeResponse response = new AuthzMeResponse();
         response.setUserId("42");

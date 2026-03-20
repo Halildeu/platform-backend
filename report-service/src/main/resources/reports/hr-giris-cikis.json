@@ -1,0 +1,47 @@
+{
+  "key": "hr-giris-cikis",
+  "version": "1.0",
+  "title": "İşe Giriş / Çıkış Raporu",
+  "description": "Personel giriş-çıkış kayıtları, kıdem ve ihbar bilgileri",
+  "category": "İnsan Kaynakları",
+  "source": "EMPLOYEES_IN_OUT",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "IN_OUT_ID", "headerName": "Kayıt ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "EMPLOYEE_ID", "headerName": "Sicil No", "type": "number", "width": 90, "sensitive": false },
+    { "field": "BRANCH_ID", "headerName": "Şube ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "DEPARTMENT_ID", "headerName": "Departman ID", "type": "number", "width": 110, "sensitive": false },
+    { "field": "START_DATE", "headerName": "İşe Giriş", "type": "date", "width": 120, "sensitive": false },
+    { "field": "FINISH_DATE", "headerName": "İşten Çıkış", "type": "date", "width": 120, "sensitive": false },
+    { "field": "EXPLANATION_ID", "headerName": "Çıkış Nedeni", "type": "number", "width": 110, "sensitive": false },
+    { "field": "DUTY_TYPE", "headerName": "Görev Tipi", "type": "number", "width": 100, "sensitive": false },
+    { "field": "SALARY", "headerName": "Maaş", "type": "number", "width": 120, "sensitive": true },
+    { "field": "MONEY", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "SALARY_TYPE", "headerName": "Maaş Tipi", "type": "number", "width": 100, "sensitive": false },
+    { "field": "GROSS_NET", "headerName": "Brüt/Net", "type": "number", "width": 80, "sensitive": false },
+    { "field": "KIDEM_YEARS", "headerName": "Kıdem (Yıl)", "type": "number", "width": 100, "sensitive": false },
+    { "field": "KIDEM_AMOUNT", "headerName": "Kıdem Tazminatı", "type": "number", "width": 140, "sensitive": true },
+    { "field": "IHBAR_DAYS", "headerName": "İhbar (Gün)", "type": "number", "width": 100, "sensitive": false },
+    { "field": "IHBAR_AMOUNT", "headerName": "İhbar Tazminatı", "type": "number", "width": 140, "sensitive": true },
+    { "field": "TOTAL_SSK_DAYS", "headerName": "SGK Gün", "type": "number", "width": 90, "sensitive": false },
+    { "field": "HAKEDILEN_YILLIK_IZIN", "headerName": "Hak Edilen İzin", "type": "number", "width": 120, "sensitive": false },
+    { "field": "KULLANILMAYAN_IZIN_COUNT", "headerName": "Kullanılmayan İzin", "type": "number", "width": 130, "sensitive": false },
+    { "field": "KULLANILMAYAN_IZIN_AMOUNT", "headerName": "İzin Ücreti", "type": "number", "width": 120, "sensitive": true },
+    { "field": "SSK_STATUTE", "headerName": "SGK Statü", "type": "number", "width": 90, "sensitive": false },
+    { "field": "VALID", "headerName": "Onay", "type": "number", "width": 70, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 130, "sensitive": false }
+  ],
+  "defaultSort": "START_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.hr-giris-cikis.view",
+    "columnRestrictions": {
+      "reports.hr.salary-view": ["SALARY", "KIDEM_AMOUNT", "IHBAR_AMOUNT", "KULLANILMAYAN_IZIN_AMOUNT"]
+    },
+    "rowFilter": {
+      "column": "BRANCH_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

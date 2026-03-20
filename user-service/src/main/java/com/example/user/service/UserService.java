@@ -27,10 +27,14 @@ import org.springframework.util.StringUtils;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.GrantedAuthority;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.DateTimeException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.Set;
@@ -40,12 +44,95 @@ import org.springframework.web.server.ResponseStatusException;
 public class UserService implements UserDetailsService { // UserDetailsService arayüzünü uygular
 
     private static final Logger log = LoggerFactory.getLogger(UserService.class);
+    private static final String SESSION_TIMEOUT_SYNC_CONFLICT_CODE = "USER_SESSION_TIMEOUT_SYNC_CONFLICT";
+    private static final String LOCALE_SYNC_CONFLICT_CODE = "USER_LOCALE_SYNC_CONFLICT";
+    private static final String TIMEZONE_SYNC_CONFLICT_CODE = "USER_TIMEZONE_SYNC_CONFLICT";
+    private static final String DATE_FORMAT_SYNC_CONFLICT_CODE = "USER_DATE_FORMAT_SYNC_CONFLICT";
+    private static final String TIME_FORMAT_SYNC_CONFLICT_CODE = "USER_TIME_FORMAT_SYNC_CONFLICT";
+    private static final String STALE_EXPECTED_VERSION_REASON = "STALE_EXPECTED_VERSION";
+    private static final Set<String> ALLOWED_LOCALES = Set.of("tr", "en", "de", "es");
+    private static final Set<String> ALLOWED_DATE_FORMATS = Set.of(
+            "dd.MM.yyyy",
+            "MM/dd/yyyy",
+            "yyyy-MM-dd",
+            "dd/MM/yyyy"
+    );
+    private static final Set<String> ALLOWED_TIME_FORMATS = Set.of(
+            "HH:mm",
+            "hh:mm a",
+            "HH.mm"
+    );
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final UserAuditEventService userAuditEventService;
     private final AuthorizationContextService authorizationContextService;
     private final int maxSessionTimeoutMinutes;
+
+    public record SessionTimeoutSyncResult(String status,
+                                           Integer sessionTimeoutMinutes,
+                                           Integer version,
+                                           String auditId,
+                                           String source,
+                                           String message,
+                                           String errorCode,
+                                           String conflictReason) {
+        public boolean isConflict() {
+            return "conflict".equalsIgnoreCase(status);
+        }
+    }
+
+    public record LocaleSyncResult(String status,
+                                   String locale,
+                                   Integer version,
+                                   String auditId,
+                                   String source,
+                                   String message,
+                                   String errorCode,
+                                   String conflictReason) {
+        public boolean isConflict() {
+            return "conflict".equalsIgnoreCase(status);
+        }
+    }
+
+    public record TimezoneSyncResult(String status,
+                                     String timezone,
+                                     Integer version,
+                                     String auditId,
+                                     String source,
+                                     String message,
+                                     String errorCode,
+                                     String conflictReason) {
+        public boolean isConflict() {
+            return "conflict".equalsIgnoreCase(status);
+        }
+    }
+
+    public record DateFormatSyncResult(String status,
+                                       String dateFormat,
+                                       Integer version,
+                                       String auditId,
+                                       String source,
+                                       String message,
+                                       String errorCode,
+                                       String conflictReason) {
+        public boolean isConflict() {
+            return "conflict".equalsIgnoreCase(status);
+        }
+    }
+
+    public record TimeFormatSyncResult(String status,
+                                       String timeFormat,
+                                       Integer version,
+                                       String auditId,
+                                       String source,
+                                       String message,
+                                       String errorCode,
+                                       String conflictReason) {
+        public boolean isConflict() {
+            return "conflict".equalsIgnoreCase(status);
+        }
+    }
 
     public UserService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
@@ -93,6 +180,10 @@ public class UserService implements UserDetailsService { // UserDetailsService a
             user.setSessionTimeoutMinutes(timeout);
         }
 
+        if (StringUtils.hasText(updateRequest.getLocale())) {
+            user.setLocale(resolveRequestedLocale(updateRequest.getLocale()));
+        }
+
         return userRepository.save(user);
     }
 
@@ -112,6 +203,10 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         // Parolayı şifreleyerek kaydediyoruz.
         newUser.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
         newUser.setSessionTimeoutMinutes(User.DEFAULT_SESSION_TIMEOUT_MINUTES);
+        newUser.setLocale(User.DEFAULT_LOCALE);
+        newUser.setTimezone(User.DEFAULT_TIMEZONE);
+        newUser.setDateFormat(User.DEFAULT_DATE_FORMAT);
+        newUser.setTimeFormat(User.DEFAULT_TIME_FORMAT);
         // Varsayılan olarak rolü "USER" ve hesabı "enabled" (aktif) olacak.
 
         return userRepository.save(newUser);
@@ -133,6 +228,10 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         newUser.setEnabled(false);
         newUser.setRole("USER");
         newUser.setSessionTimeoutMinutes(User.DEFAULT_SESSION_TIMEOUT_MINUTES);
+        newUser.setLocale(User.DEFAULT_LOCALE);
+        newUser.setTimezone(User.DEFAULT_TIMEZONE);
+        newUser.setDateFormat(User.DEFAULT_DATE_FORMAT);
+        newUser.setTimeFormat(User.DEFAULT_TIME_FORMAT);
 
         return userRepository.save(newUser);
     }
@@ -174,6 +273,10 @@ public class UserService implements UserDetailsService { // UserDetailsService a
             fresh.setEmail(email);
             fresh.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
             fresh.setSessionTimeoutMinutes(User.DEFAULT_SESSION_TIMEOUT_MINUTES);
+            fresh.setLocale(User.DEFAULT_LOCALE);
+            fresh.setTimezone(User.DEFAULT_TIMEZONE);
+            fresh.setDateFormat(User.DEFAULT_DATE_FORMAT);
+            fresh.setTimeFormat(User.DEFAULT_TIME_FORMAT);
             fresh.setEnabled(Boolean.TRUE.equals(request.getEnabled()));
             return fresh;
         });
@@ -193,6 +296,11 @@ public class UserService implements UserDetailsService { // UserDetailsService a
             int safeTimeout = Math.max(1, Math.min(requestedTimeout, maxSessionTimeoutMinutes));
             target.setSessionTimeoutMinutes(safeTimeout);
         }
+
+        target.setLocale(resolveRequestedLocale(target.getLocale()));
+        target.setTimezone(resolveRequestedTimezone(target.getTimezone()));
+        target.setDateFormat(resolveRequestedDateFormat(target.getDateFormat()));
+        target.setTimeFormat(resolveRequestedTimeFormat(target.getTimeFormat()));
 
         return userRepository.save(target);
     }
@@ -236,6 +344,306 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         return null;
     }
 
+    @Transactional
+    public SessionTimeoutSyncResult syncOwnSessionTimeout(Long userId,
+                                                          Integer requestedTimeoutMinutes,
+                                                          Integer expectedVersion,
+                                                          String source,
+                                                          Integer attemptCount,
+                                                          String queueActionId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+
+        if (expectedVersion == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "expected_version_required");
+        }
+
+        Integer currentVersion = safeVersion(user);
+        if (!currentVersion.equals(expectedVersion)) {
+            return buildConflictResult(user, source, "User profile version changed before replay.", attemptCount, queueActionId);
+        }
+
+        int safeTimeout = Math.max(1, Math.min(requestedTimeoutMinutes == null ? User.DEFAULT_SESSION_TIMEOUT_MINUTES : requestedTimeoutMinutes, maxSessionTimeoutMinutes));
+        Integer previousTimeout = user.getSessionTimeoutMinutes();
+        user.setSessionTimeoutMinutes(safeTimeout);
+
+        try {
+            User saved = userRepository.saveAndFlush(user);
+            String auditId = null;
+            if (!java.util.Objects.equals(previousTimeout, saved.getSessionTimeoutMinutes())) {
+                var auditEvent = userAuditEventService.recordSessionTimeoutSyncEvent(
+                        userId,
+                        userId,
+                        saved.getEmail(),
+                        previousTimeout,
+                        saved.getSessionTimeoutMinutes(),
+                        expectedVersion,
+                        safeVersion(saved),
+                        source,
+                        attemptCount,
+                        queueActionId
+                );
+                if (auditEvent != null && auditEvent.getId() != null) {
+                    auditId = auditEvent.getId().toString();
+                }
+            }
+            return new SessionTimeoutSyncResult(
+                    "ok",
+                    saved.getSessionTimeoutMinutes(),
+                    safeVersion(saved),
+                    auditId,
+                    normalizeSource(source),
+                    "Session timeout synced.",
+                    null,
+                    null
+            );
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            User latest = userRepository.findById(userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+            return buildConflictResult(latest, source, "User profile version conflict detected during replay.", attemptCount, queueActionId);
+        }
+    }
+
+    @Transactional
+    public LocaleSyncResult syncOwnLocale(Long userId,
+                                          String requestedLocale,
+                                          Integer expectedVersion,
+                                          String source,
+                                          Integer attemptCount,
+                                          String queueActionId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+
+        if (expectedVersion == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "expected_version_required");
+        }
+
+        Integer currentVersion = safeVersion(user);
+        if (!currentVersion.equals(expectedVersion)) {
+            return buildLocaleConflictResult(user, source, "User locale version changed before replay.", attemptCount, queueActionId);
+        }
+
+        String previousLocale = user.getLocale();
+        user.setLocale(resolveRequestedLocale(requestedLocale));
+
+        try {
+            User saved = userRepository.saveAndFlush(user);
+            String auditId = null;
+            if (!java.util.Objects.equals(previousLocale, saved.getLocale())) {
+                var auditEvent = userAuditEventService.recordLocaleSyncEvent(
+                        userId,
+                        userId,
+                        saved.getEmail(),
+                        previousLocale,
+                        saved.getLocale(),
+                        expectedVersion,
+                        safeVersion(saved),
+                        source,
+                        attemptCount,
+                        queueActionId
+                );
+                if (auditEvent != null && auditEvent.getId() != null) {
+                    auditId = auditEvent.getId().toString();
+                }
+            }
+
+            return new LocaleSyncResult(
+                    "ok",
+                    saved.getLocale(),
+                    safeVersion(saved),
+                    auditId,
+                    normalizeSource(source),
+                    "User locale synced.",
+                    null,
+                    null
+            );
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            User latest = userRepository.findById(userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+            return buildLocaleConflictResult(latest, source, "User locale version conflict detected during replay.", attemptCount, queueActionId);
+        }
+    }
+
+    @Transactional
+    public TimezoneSyncResult syncOwnTimezone(Long userId,
+                                              String requestedTimezone,
+                                              Integer expectedVersion,
+                                              String source,
+                                              Integer attemptCount,
+                                              String queueActionId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+
+        if (expectedVersion == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "expected_version_required");
+        }
+
+        Integer currentVersion = safeVersion(user);
+        if (!currentVersion.equals(expectedVersion)) {
+            return buildTimezoneConflictResult(user, source, "User timezone version changed before replay.", attemptCount, queueActionId);
+        }
+
+        String previousTimezone = user.getTimezone();
+        user.setTimezone(resolveRequestedTimezone(requestedTimezone));
+
+        try {
+            User saved = userRepository.saveAndFlush(user);
+            String auditId = null;
+            if (!java.util.Objects.equals(previousTimezone, saved.getTimezone())) {
+                var auditEvent = userAuditEventService.recordTimezoneSyncEvent(
+                        userId,
+                        userId,
+                        saved.getEmail(),
+                        previousTimezone,
+                        saved.getTimezone(),
+                        expectedVersion,
+                        safeVersion(saved),
+                        source,
+                        attemptCount,
+                        queueActionId
+                );
+                if (auditEvent != null && auditEvent.getId() != null) {
+                    auditId = auditEvent.getId().toString();
+                }
+            }
+
+            return new TimezoneSyncResult(
+                    "ok",
+                    saved.getTimezone(),
+                    safeVersion(saved),
+                    auditId,
+                    normalizeSource(source),
+                    "User timezone synced.",
+                    null,
+                    null
+            );
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            User latest = userRepository.findById(userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+            return buildTimezoneConflictResult(latest, source, "User timezone version conflict detected during replay.", attemptCount, queueActionId);
+        }
+    }
+
+    @Transactional
+    public DateFormatSyncResult syncOwnDateFormat(Long userId,
+                                                  String requestedDateFormat,
+                                                  Integer expectedVersion,
+                                                  String source,
+                                                  Integer attemptCount,
+                                                  String queueActionId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+
+        if (expectedVersion == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "expected_version_required");
+        }
+
+        Integer currentVersion = safeVersion(user);
+        if (!currentVersion.equals(expectedVersion)) {
+            return buildDateFormatConflictResult(user, source, "User date format version changed before replay.", attemptCount, queueActionId);
+        }
+
+        String previousDateFormat = user.getDateFormat();
+        user.setDateFormat(resolveRequestedDateFormat(requestedDateFormat));
+
+        try {
+            User saved = userRepository.saveAndFlush(user);
+            String auditId = null;
+            if (!java.util.Objects.equals(previousDateFormat, saved.getDateFormat())) {
+                var auditEvent = userAuditEventService.recordDateFormatSyncEvent(
+                        userId,
+                        userId,
+                        saved.getEmail(),
+                        previousDateFormat,
+                        saved.getDateFormat(),
+                        expectedVersion,
+                        safeVersion(saved),
+                        source,
+                        attemptCount,
+                        queueActionId
+                );
+                if (auditEvent != null && auditEvent.getId() != null) {
+                    auditId = auditEvent.getId().toString();
+                }
+            }
+
+            return new DateFormatSyncResult(
+                    "ok",
+                    saved.getDateFormat(),
+                    safeVersion(saved),
+                    auditId,
+                    normalizeSource(source),
+                    "User date format synced.",
+                    null,
+                    null
+            );
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            User latest = userRepository.findById(userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+            return buildDateFormatConflictResult(latest, source, "User date format version conflict detected during replay.", attemptCount, queueActionId);
+        }
+    }
+
+    @Transactional
+    public TimeFormatSyncResult syncOwnTimeFormat(Long userId,
+                                                  String requestedTimeFormat,
+                                                  Integer expectedVersion,
+                                                  String source,
+                                                  Integer attemptCount,
+                                                  String queueActionId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+
+        if (expectedVersion == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "expected_version_required");
+        }
+
+        Integer currentVersion = safeVersion(user);
+        if (!currentVersion.equals(expectedVersion)) {
+            return buildTimeFormatConflictResult(user, source, "User time format version changed before replay.", attemptCount, queueActionId);
+        }
+
+        String previousTimeFormat = user.getTimeFormat();
+        user.setTimeFormat(resolveRequestedTimeFormat(requestedTimeFormat));
+
+        try {
+            User saved = userRepository.saveAndFlush(user);
+            String auditId = null;
+            if (!java.util.Objects.equals(previousTimeFormat, saved.getTimeFormat())) {
+                var auditEvent = userAuditEventService.recordTimeFormatSyncEvent(
+                        userId,
+                        userId,
+                        saved.getEmail(),
+                        previousTimeFormat,
+                        saved.getTimeFormat(),
+                        expectedVersion,
+                        safeVersion(saved),
+                        source,
+                        attemptCount,
+                        queueActionId
+                );
+                if (auditEvent != null && auditEvent.getId() != null) {
+                    auditId = auditEvent.getId().toString();
+                }
+            }
+
+            return new TimeFormatSyncResult(
+                    "ok",
+                    saved.getTimeFormat(),
+                    safeVersion(saved),
+                    auditId,
+                    normalizeSource(source),
+                    "User time format synced.",
+                    null,
+                    null
+            );
+        } catch (ObjectOptimisticLockingFailureException ex) {
+            User latest = userRepository.findById(userId)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Kullanıcı bulunamadı: " + userId));
+            return buildTimeFormatConflictResult(latest, source, "User time format version conflict detected during replay.", attemptCount, queueActionId);
+        }
+    }
+
     private int normalizeExistingRoles() {
         List<User> users = userRepository.findAll();
         List<User> toUpdate = new ArrayList<>();
@@ -251,6 +659,216 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         }
         userRepository.saveAll(toUpdate);
         return toUpdate.size();
+    }
+
+    private SessionTimeoutSyncResult buildConflictResult(User user,
+                                                         String source,
+                                                         String message,
+                                                         Integer attemptCount,
+                                                         String queueActionId) {
+        String auditId = null;
+        var auditEvent = userAuditEventService.recordSessionTimeoutConflictEvent(
+                user.getId(),
+                user.getId(),
+                user.getEmail(),
+                user.getSessionTimeoutMinutes(),
+                safeVersion(user),
+                normalizeSource(source),
+                STALE_EXPECTED_VERSION_REASON,
+                attemptCount,
+                queueActionId
+        );
+        if (auditEvent != null && auditEvent.getId() != null) {
+            auditId = auditEvent.getId().toString();
+        }
+
+        return new SessionTimeoutSyncResult(
+                "conflict",
+                user.getSessionTimeoutMinutes(),
+                safeVersion(user),
+                auditId,
+                normalizeSource(source),
+                message,
+                SESSION_TIMEOUT_SYNC_CONFLICT_CODE,
+                STALE_EXPECTED_VERSION_REASON
+        );
+    }
+
+    private LocaleSyncResult buildLocaleConflictResult(User user,
+                                                       String source,
+                                                       String message,
+                                                       Integer attemptCount,
+                                                       String queueActionId) {
+        String auditId = null;
+        var auditEvent = userAuditEventService.recordLocaleConflictEvent(
+                user.getId(),
+                user.getId(),
+                user.getEmail(),
+                user.getLocale(),
+                safeVersion(user),
+                normalizeSource(source),
+                STALE_EXPECTED_VERSION_REASON,
+                attemptCount,
+                queueActionId
+        );
+        if (auditEvent != null && auditEvent.getId() != null) {
+            auditId = auditEvent.getId().toString();
+        }
+
+        return new LocaleSyncResult(
+                "conflict",
+                user.getLocale(),
+                safeVersion(user),
+                auditId,
+                normalizeSource(source),
+                message,
+                LOCALE_SYNC_CONFLICT_CODE,
+                STALE_EXPECTED_VERSION_REASON
+        );
+    }
+
+    private TimezoneSyncResult buildTimezoneConflictResult(User user,
+                                                           String source,
+                                                           String message,
+                                                           Integer attemptCount,
+                                                           String queueActionId) {
+        String auditId = null;
+        var auditEvent = userAuditEventService.recordTimezoneConflictEvent(
+                user.getId(),
+                user.getId(),
+                user.getEmail(),
+                user.getTimezone(),
+                safeVersion(user),
+                normalizeSource(source),
+                STALE_EXPECTED_VERSION_REASON,
+                attemptCount,
+                queueActionId
+        );
+        if (auditEvent != null && auditEvent.getId() != null) {
+            auditId = auditEvent.getId().toString();
+        }
+
+        return new TimezoneSyncResult(
+                "conflict",
+                user.getTimezone(),
+                safeVersion(user),
+                auditId,
+                normalizeSource(source),
+                message,
+                TIMEZONE_SYNC_CONFLICT_CODE,
+                STALE_EXPECTED_VERSION_REASON
+        );
+    }
+
+    private DateFormatSyncResult buildDateFormatConflictResult(User user,
+                                                               String source,
+                                                               String message,
+                                                               Integer attemptCount,
+                                                               String queueActionId) {
+        String auditId = null;
+        var auditEvent = userAuditEventService.recordDateFormatConflictEvent(
+                user.getId(),
+                user.getId(),
+                user.getEmail(),
+                user.getDateFormat(),
+                safeVersion(user),
+                normalizeSource(source),
+                STALE_EXPECTED_VERSION_REASON,
+                attemptCount,
+                queueActionId
+        );
+        if (auditEvent != null && auditEvent.getId() != null) {
+            auditId = auditEvent.getId().toString();
+        }
+
+        return new DateFormatSyncResult(
+                "conflict",
+                user.getDateFormat(),
+                safeVersion(user),
+                auditId,
+                normalizeSource(source),
+                message,
+                DATE_FORMAT_SYNC_CONFLICT_CODE,
+                STALE_EXPECTED_VERSION_REASON
+        );
+    }
+
+    private TimeFormatSyncResult buildTimeFormatConflictResult(User user,
+                                                               String source,
+                                                               String message,
+                                                               Integer attemptCount,
+                                                               String queueActionId) {
+        String auditId = null;
+        var auditEvent = userAuditEventService.recordTimeFormatConflictEvent(
+                user.getId(),
+                user.getId(),
+                user.getEmail(),
+                user.getTimeFormat(),
+                safeVersion(user),
+                normalizeSource(source),
+                STALE_EXPECTED_VERSION_REASON,
+                attemptCount,
+                queueActionId
+        );
+        if (auditEvent != null && auditEvent.getId() != null) {
+            auditId = auditEvent.getId().toString();
+        }
+
+        return new TimeFormatSyncResult(
+                "conflict",
+                user.getTimeFormat(),
+                safeVersion(user),
+                auditId,
+                normalizeSource(source),
+                message,
+                TIME_FORMAT_SYNC_CONFLICT_CODE,
+                STALE_EXPECTED_VERSION_REASON
+        );
+    }
+
+    private int safeVersion(User user) {
+        if (user == null || user.getVersion() == null || user.getVersion() < 0) {
+            return 0;
+        }
+        return user.getVersion();
+    }
+
+    private String normalizeSource(String source) {
+        return StringUtils.hasText(source) ? source.trim() : "mobile-offline-queue";
+    }
+
+    private String resolveRequestedLocale(String requestedLocale) {
+        String normalized = User.normalizeLocale(requestedLocale);
+        String localeKey = normalized.replace('-', '_').toLowerCase(Locale.ROOT);
+        if (!ALLOWED_LOCALES.contains(localeKey)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_locale");
+        }
+        return localeKey;
+    }
+
+    private String resolveRequestedTimezone(String requestedTimezone) {
+        String normalized = User.normalizeTimezone(requestedTimezone);
+        try {
+            return ZoneId.of(normalized).getId();
+        } catch (DateTimeException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_timezone");
+        }
+    }
+
+    private String resolveRequestedDateFormat(String requestedDateFormat) {
+        String normalized = User.normalizeDateFormat(requestedDateFormat);
+        if (!ALLOWED_DATE_FORMATS.contains(normalized)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_date_format");
+        }
+        return normalized;
+    }
+
+    private String resolveRequestedTimeFormat(String requestedTimeFormat) {
+        String normalized = User.normalizeTimeFormat(requestedTimeFormat);
+        if (!ALLOWED_TIME_FORMATS.contains(normalized)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_time_format");
+        }
+        return normalized;
     }
 
     public Page<User> searchUsers(String search,

@@ -1,0 +1,320 @@
+{
+  "type": "dashboard",
+  "key": "hr-analytics",
+  "version": "1.1",
+  "title": "İK Analitik Dashboard",
+  "description": "ISO 30414 uyumlu iş gücü analitikleri — personel, devir, kıdem",
+  "category": "İnsan Kaynakları",
+  "icon": "users",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  },
+  "timeRanges": ["30d", "90d", "1y", "ytd"],
+  "defaultTimeRange": "90d",
+  "kpis": [
+    {
+      "id": "headcount",
+      "title": "Toplam Personel",
+      "format": "number",
+      "tone": "info",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID)",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL"
+      },
+      "trend": {
+        "select": "COUNT(DISTINCT EMPLOYEE_ID)",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "direction": "higher_is_better"
+      },
+      "drillTo": {
+        "reportKey": "hr-personel-listesi",
+        "filters": { "POSITION_STATUS": { "filterType": "number", "type": "equals", "filter": 1 } }
+      }
+    },
+    {
+      "id": "turnover-rate",
+      "title": "Ayrılma Oranı",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.20", "tone": "danger" },
+        { "condition": "> 0.13", "tone": "warning" },
+        { "condition": "<= 0.13", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(SUM(CASE WHEN FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_periodStart AND FINISH_DATE <= :_periodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28) THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0)",
+        "where": "VALID = 1"
+      },
+      "trend": {
+        "select": "CAST(SUM(CASE WHEN FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_prevPeriodStart AND FINISH_DATE <= :_prevPeriodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28) THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0)",
+        "where": "VALID = 1",
+        "direction": "lower_is_better"
+      },
+      "benchmark": { "label": "SHRM 2025 Ort.", "value": 0.132 },
+      "drillTo": {
+        "reportKey": "hr-giris-cikis",
+        "filters": { "FINISH_DATE": { "filterType": "date", "type": "notBlank" } }
+      }
+    },
+    {
+      "id": "retention-rate",
+      "title": "Tutma Oranı",
+      "format": "percent",
+      "toneRules": [
+        { "condition": ">= 0.87", "tone": "success" },
+        { "condition": ">= 0.80", "tone": "warning" },
+        { "condition": "< 0.80", "tone": "danger" }
+      ],
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "1.0 - (CAST(SUM(CASE WHEN FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_periodStart AND FINISH_DATE <= :_periodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28) THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0))",
+        "where": "VALID = 1"
+      },
+      "benchmark": { "label": "SHRM 2025 Ort.", "value": 0.868 },
+      "drillTo": {
+        "reportKey": "hr-giris-cikis"
+      }
+    },
+    {
+      "id": "avg-tenure",
+      "title": "Ort. Kıdem (Yıl)",
+      "format": "decimal",
+      "tone": "info",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "AVG(DATEDIFF(DAY, START_DATE, GETDATE()) / 365.25)",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL"
+      },
+      "drillTo": {
+        "reportKey": "hr-giris-cikis"
+      }
+    },
+    {
+      "id": "new-hires",
+      "title": "Yeni İşe Alım",
+      "format": "number",
+      "tone": "success",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "COUNT(*)",
+        "where": "VALID = 1 AND START_DATE >= :_periodStart AND START_DATE <= :_periodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)"
+      },
+      "trend": {
+        "select": "COUNT(*)",
+        "where": "VALID = 1 AND START_DATE >= :_prevPeriodStart AND START_DATE <= :_prevPeriodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)",
+        "direction": "higher_is_better"
+      },
+      "drillTo": {
+        "reportKey": "hr-giris-cikis",
+        "filters": { "START_DATE": { "filterType": "date", "type": "notBlank" } }
+      }
+    },
+    {
+      "id": "departures",
+      "title": "Gerçek Ayrılan",
+      "format": "number",
+      "toneRules": [
+        { "condition": "> 50", "tone": "danger" },
+        { "condition": "> 20", "tone": "warning" },
+        { "condition": "<= 20", "tone": "info" }
+      ],
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "COUNT(*)",
+        "where": "VALID = 1 AND FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_periodStart AND FINISH_DATE <= :_periodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)"
+      },
+      "trend": {
+        "select": "COUNT(*)",
+        "where": "VALID = 1 AND FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_prevPeriodStart AND FINISH_DATE <= :_prevPeriodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)",
+        "direction": "lower_is_better"
+      },
+      "drillTo": {
+        "reportKey": "hr-giris-cikis",
+        "filters": { "FINISH_DATE": { "filterType": "date", "type": "notBlank" } }
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "dept-headcount",
+      "title": "Departman Bazlı Personel Dağılımı",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(d.DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[DEPARTMENT] d ON d.DEPARTMENT_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].DEPARTMENT_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(d.DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC",
+        "limit": 15
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true,
+        "showGrid": true
+      },
+      "drillTo": {
+        "reportKey": "hr-personel-listesi",
+        "filterColumn": "DEPARTMENT_ID",
+        "filterFromField": "label"
+      }
+    },
+    {
+      "id": "company-distribution",
+      "title": "Şirket Bazlı Personel Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(oc.NICK_NAME, 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[BRANCH] b ON b.BRANCH_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].BRANCH_ID LEFT JOIN [workcube_mikrolink].[OUR_COMPANY] oc ON oc.COMP_ID = b.COMPANY_ID",
+        "groupBy": "ISNULL(oc.NICK_NAME, 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC"
+      },
+      "chartConfig": {
+        "showLegend": true
+      }
+    },
+    {
+      "id": "branch-headcount",
+      "title": "Şube Bazlı Personel Dağılımı",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(b.BRANCH_NAME, 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[BRANCH] b ON b.BRANCH_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].BRANCH_ID",
+        "groupBy": "ISNULL(b.BRANCH_NAME, 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC",
+        "limit": 15
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true,
+        "showGrid": true
+      }
+    },
+    {
+      "id": "collar-distribution",
+      "title": "Yaka Tipi Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEE_POSITIONS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Diğer' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) AS value",
+        "where": "POSITION_STATUS = 1 AND [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID > 0 AND EXISTS (SELECT 1 FROM [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio WHERE eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL)",
+        "groupBy": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Diğer' END"
+      },
+      "chartConfig": {
+        "showLegend": true
+      }
+    },
+    {
+      "id": "title-headcount",
+      "title": "Unvan Bazlı Personel Dağılımı",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEE_POSITIONS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM([workcube_mikrolink].[EMPLOYEE_POSITIONS].TITLE_NAME),''), 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) AS value",
+        "where": "POSITION_STATUS = 1 AND [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID > 0 AND EXISTS (SELECT 1 FROM [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio WHERE eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL)",
+        "groupBy": "ISNULL(NULLIF(RTRIM([workcube_mikrolink].[EMPLOYEE_POSITIONS].TITLE_NAME),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) DESC",
+        "limit": 15
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true,
+        "showGrid": true
+      },
+      "drillTo": {
+        "reportKey": "hr-personel-listesi",
+        "filterColumn": "TITLE_NAME",
+        "filterFromField": "label"
+      }
+    },
+    {
+      "id": "tenure-distribution",
+      "title": "Kıdem Dağılımı",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 1 THEN '0-1 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 3 THEN '1-3 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 5 THEN '3-5 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 10 THEN '5-10 Yıl' ELSE '10+ Yıl' END AS label, COUNT(DISTINCT EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "groupBy": "CASE WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 1 THEN '0-1 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 3 THEN '1-3 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 5 THEN '3-5 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 10 THEN '5-10 Yıl' ELSE '10+ Yıl' END"
+      },
+      "chartConfig": {
+        "showValues": true
+      }
+    },
+    {
+      "id": "monthly-hire-exit",
+      "title": "Aylık Giriş / Çıkış Trendi",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "FORMAT(START_DATE, 'yyyy-MM') AS label, COUNT(*) AS value",
+        "where": "VALID = 1 AND START_DATE IS NOT NULL AND START_DATE >= :_periodStart AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)",
+        "groupBy": "FORMAT(START_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true,
+        "showGrid": true
+      }
+    },
+    {
+      "id": "dept-turnover",
+      "title": "Departman Bazlı Ayrılma (Son Dönem)",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_IN_OUT",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(d.DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, COUNT(*) AS value",
+        "where": "VALID = 1 AND FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_periodStart AND FINISH_DATE <= :_periodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)",
+        "join": "LEFT JOIN [workcube_mikrolink].[DEPARTMENT] d ON d.DEPARTMENT_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].DEPARTMENT_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(d.DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(*) DESC",
+        "limit": 10
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true
+      }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["headcount", "turnover-rate", "retention-rate", "avg-tenure", "new-hires", "departures"] },
+      { "type": "chart-row", "ids": ["dept-headcount", "company-distribution"] },
+      { "type": "chart-row", "ids": ["branch-headcount", "collar-distribution"] },
+      { "type": "chart-row", "ids": ["title-headcount", "tenure-distribution"] },
+      { "type": "chart-row", "ids": ["monthly-hire-exit", "dept-turnover"] }
+    ]
+  }
+}

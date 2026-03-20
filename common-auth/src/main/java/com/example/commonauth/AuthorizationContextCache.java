@@ -28,14 +28,34 @@ public class AuthorizationContextCache {
 
     public AuthorizationContext get(String key, Supplier<AuthorizationContext> supplier) {
         Objects.requireNonNull(key, "cache key required");
-        Instant now = clock.instant();
-        Cached existing = cache.get(key);
-        if (existing != null && existing.expiresAt().isAfter(now)) {
-            return existing.ctx();
+        AuthorizationContext cached = getIfPresent(key);
+        if (cached != null) {
+            return cached;
         }
         AuthorizationContext ctx = Optional.ofNullable(supplier.get()).orElse(AuthorizationContext.of(null, null, null, null, null, null, null));
-        cache.put(key, new Cached(ctx, now.plus(ttl)));
+        put(key, ctx);
         return ctx;
+    }
+
+    public AuthorizationContext getIfPresent(String key) {
+        Objects.requireNonNull(key, "cache key required");
+        Instant now = clock.instant();
+        Cached existing = cache.get(key);
+        if (existing == null) {
+            return null;
+        }
+        if (existing.expiresAt().isAfter(now)) {
+            return existing.ctx();
+        }
+        cache.remove(key, existing);
+        return null;
+    }
+
+    public void put(String key, AuthorizationContext ctx) {
+        Objects.requireNonNull(key, "cache key required");
+        AuthorizationContext safeContext =
+                Optional.ofNullable(ctx).orElse(AuthorizationContext.of(null, null, null, null, null, null, null));
+        cache.put(key, new Cached(safeContext, clock.instant().plus(ttl)));
     }
 
     public void clear() {

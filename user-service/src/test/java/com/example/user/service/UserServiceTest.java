@@ -6,6 +6,7 @@ import com.example.user.repository.UserRepository;
 import com.example.user.repository.UserAuditEventRepository;
 import com.example.user.authz.AuthorizationContextService;
 import com.example.commonauth.AuthorizationContext;
+import com.example.user.permission.UserAuditMirrorClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,9 @@ class UserServiceTest {
     @Mock
     private UserAuditEventRepository userAuditEventRepository;
 
+    @Mock
+    private UserAuditMirrorClient userAuditMirrorClient;
+
     private FakeAuthzService authorizationContextService;
 
     private UserAuditEventService userAuditEventService;
@@ -77,7 +81,7 @@ class UserServiceTest {
         userWithCompany.setEmail("c1@example.com");
         userWithCompany.setCompanyId(10L);
 
-        userAuditEventService = new UserAuditEventService(userAuditEventRepository);
+        userAuditEventService = new UserAuditEventService(userAuditEventRepository, userAuditMirrorClient);
         authorizationContextService = new FakeAuthzService();
         userService = new UserService(userRepository, passwordEncoder, userAuditEventService, authorizationContextService, 1440);
         SecurityContextHolder.clearContext();

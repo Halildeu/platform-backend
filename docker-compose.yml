@@ -14,7 +14,7 @@ services:
       retries: 5
 
   postgres-db:
-    image: postgres:15
+    image: postgres:16
     ports:
       - "5432:5432"
     networks:
@@ -56,21 +56,21 @@ services:
       # RS256/JWKS doğrulaması
       SECURITY_JWT_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       SECURITY_JWT_USER_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUER: http://localhost:8081/realms/serban
+      SECURITY_JWT_ISSUER: http://keycloak:8080/realms/serban
       SECURITY_JWT_AUDIENCE: user-service
       # Service token doğrulaması için auth-service JWKS (lokal senaryo)
-      SERVICE_AUTH_JWK_SET_URI: ${SERVICE_AUTH_JWK_SET_URI:-http://host.docker.internal:8088/oauth2/jwks}
+      SERVICE_AUTH_JWK_SET_URI: ${SERVICE_AUTH_JWK_SET_URI:-http://auth-service:8088/oauth2/jwks}
       SERVICE_AUTH_ISSUER: ${SERVICE_AUTH_ISSUER:-auth-service}
       # Ek issuer/JWKS listesi Keycloak serban realm'ini işaret eder
       SECURITY_JWT_JWK_SET_URIS: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUERS: http://localhost:8081/realms/serban
+      SECURITY_JWT_ISSUERS: http://keycloak:8080/realms/serban
     depends_on:
       discovery-server:
         condition: service_healthy
       postgres-db:
         condition: service_healthy
       vault:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8089/actuator/health"]
       interval: 30s
@@ -106,7 +106,7 @@ services:
       discovery-server:
         condition: service_healthy
       vault:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/actuator/health"]
       interval: 30s
@@ -130,7 +130,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       # RS256/JWKS doğrulaması (user JWT)
       SECURITY_JWT_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUER: http://localhost:8081/realms/serban
+      SECURITY_JWT_ISSUER: http://keycloak:8080/realms/serban
       # Access token aud claim’i Keycloak client tanımındaki variant-service değerine göre doğrulanır.
       SECURITY_JWT_AUDIENCE: variant-service
       # Opsiyonel diğer ayarlar
@@ -166,7 +166,7 @@ services:
       - CORE_DATA_DB_SCHEMA=${CORE_DATA_DB_SCHEMA:-core_data_service}
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
       - SECURITY_JWT_JWK_SET_URI=${SECURITY_JWT_JWK_SET_URI:-http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
-      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://localhost:8081/realms/serban}
+      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       - SECURITY_JWT_AUDIENCE=${CORE_DATA_SECURITY_JWT_AUDIENCE:-frontend,user-service,core-data-service}
     depends_on:
       discovery-server:
@@ -189,11 +189,11 @@ services:
       - SPRING_PROFILES_ACTIVE=${API_GATEWAY_PROFILES:-local,docker}
       # RS256/JWKS doğrulaması gateway tarafında Keycloak JWKS üzerinden yapılır
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUER=http://localhost:8081/realms/serban
+      - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
       - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service,core-data-service
       # Ek issuer: Keycloak (lokal dev)
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUERS=http://localhost:8081/realms/serban
+      - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban
       - SPRING_CLOUD_VAULT_ENABLED="false"
       - SPRING_CLOUD_VAULT_FAIL_FAST="false"
       - SPRING_CLOUD_VAULT_KV_ENABLED="false"
@@ -212,15 +212,12 @@ services:
         condition: service_healthy
       core-data-service:
         condition: service_healthy
-      observability-prometheus:
-        condition: service_started
-      observability-grafana:
-        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 45s
 
   keycloak:
     image: quay.io/keycloak/keycloak:24.0.3
@@ -264,10 +261,13 @@ services:
       - vault-data:/vault/file
       - ./devops/vault:/vault/config:ro
     healthcheck:
+      # vault status: exit 0=unsealed+healthy, exit 1=error, exit 2=sealed
+      # unseal-loop scripti otomatik acar, sonra exit 0 doner
       test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
 
   vault-unseal:
     image: hashicorp/vault:1.15.4
@@ -283,6 +283,12 @@ services:
       VAULT_ADDR: http://vault:8200
     command: ["/bin/sh", "/vault/config/dev-unseal-loop.sh"]
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "vault", "status", "-address=http://vault:8200"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   permission-service:
     build: ./permission-service
@@ -308,12 +314,12 @@ services:
       - SECURITY_JWT_USER_JWK_SET_URI=${SECURITY_JWT_USER_JWK_SET_URI:-http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
       # RS256 için JWKS ayarı (service tokens)
       - SECURITY_JWT_JWK_SET_URI=${SECURITY_JWT_JWK_SET_URI:-http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
-      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://localhost:8081/realms/serban}
+      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       # Audience doğrulaması; token üretimindeki aud ile eşleşmeli
       - SECURITY_JWT_AUDIENCE=${SECURITY_JWT_AUDIENCE:-permission-service}
       # Ek issuer listesi Keycloak serban realm'i işaret eder
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUERS=http://localhost:8081/realms/serban
+      - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban
       - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-users}
     depends_on:
       discovery-server:
@@ -321,12 +327,46 @@ services:
       postgres-db:
         condition: service_healthy
       vault:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+
+  report-service:
+    build:
+      context: .
+      dockerfile: ./report-service/Dockerfile
+    ports:
+      - "8095:8095"
+    networks:
+      - microservice-network
+    environment:
+      - SERVER_PORT=8095
+      - REPORT_MSSQL_HOST=${REPORT_MSSQL_HOST:-host.docker.internal}
+      - REPORT_MSSQL_PORT=${REPORT_MSSQL_PORT:-1433}
+      - REPORT_MSSQL_DB=${REPORT_MSSQL_DB:-reporting}
+      - REPORT_MSSQL_USERNAME=${REPORT_MSSQL_USERNAME:-sa}
+      - REPORT_MSSQL_PASSWORD=${REPORT_MSSQL_PASSWORD:-}
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
+      - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
+      - SECURITY_JWT_ISSUER=http://localhost:8081/realms/serban
+      - SECURITY_JWT_AUDIENCE=report-service,account,frontend
+      - PERMISSION_SERVICE_INTERNAL_API_KEY=${PERMISSION_SERVICE_INTERNAL_API_KEY:-dev-local-audit-mirror-key}
+      # SQL Server baglantisi optional — erisim yoksa servis yine de baslar
+      - SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT=-1
+      # DB health indicator'u devre disi birak (SQL Server ulasılamaz oldugunda timeout yapar)
+      - MANAGEMENT_HEALTH_DB_ENABLED=false
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8095/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   observability-prometheus:
     image: prom/prometheus:latest
@@ -338,6 +378,12 @@ services:
     networks:
       - observability-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   observability-grafana:
     image: grafana/grafana:10.4.2
@@ -359,6 +405,12 @@ services:
       observability-prometheus:
         condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   postgres_data:

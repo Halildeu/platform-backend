@@ -21,6 +21,29 @@ STARTUP_GUARD_REPORT="${STARTUP_GUARD_REPORT:-$REPO_ROOT/.cache/reports/backend_
 STARTUP_GUARD_WAIT_SECONDS="${STARTUP_GUARD_WAIT_SECONDS:-90}"
 STARTUP_GUARD_POLL_INTERVAL="${STARTUP_GUARD_POLL_INTERVAL:-2}"
 JAVA_RUNTIME_HELPER="$ROOT_DIR/scripts/java-runtime.sh"
+SESSION_ENV_JSON="$(
+  python3 <<'PY'
+import json
+import os
+
+keys = [
+    "AUTO_START_INFRA",
+    "RUN_SERVICES_FILTER",
+    "RUN_SERVICES_POSTCHECK",
+    "RUN_SERVICES_STRICT_WARNINGS",
+    "JAVA_RUNTIME_TARGET",
+    "VARIANT_DB_SCHEMA",
+    "CORE_DATA_DB_SCHEMA",
+    "CORE_DATA_DB_URL",
+]
+payload = {}
+for key in keys:
+    value = os.environ.get(key)
+    if isinstance(value, str) and value != "":
+        payload[key] = value
+print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+PY
+)"
 
 if [[ -f "$JAVA_RUNTIME_HELPER" ]]; then
   # shellcheck source=/dev/null
@@ -58,7 +81,7 @@ record_session_line() {
 }
 
 write_session_json() {
-  python3 - "$SESSION_TSV" "$SESSION_FILE" "$SESSION_ID" "$SESSION_CREATED_AT" "$AUTO_START_INFRA" "$RUN_SERVICES_FILTER" <<'PY'
+  python3 - "$SESSION_TSV" "$SESSION_FILE" "$SESSION_ID" "$SESSION_CREATED_AT" "$AUTO_START_INFRA" "$RUN_SERVICES_FILTER" "$SESSION_ENV_JSON" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -69,6 +92,7 @@ session_id = sys.argv[3]
 created_at = sys.argv[4]
 auto_start_infra = sys.argv[5] == "1"
 selected_filter = sys.argv[6] or "all"
+environment = json.loads(sys.argv[7])
 
 services = []
 for raw_line in tsv_path.read_text(encoding="utf-8").splitlines():
@@ -92,6 +116,7 @@ payload = {
     "created_at": created_at,
     "auto_start_infra": auto_start_infra,
     "selected_filter": selected_filter,
+    "environment": environment,
     "services": services,
 }
 out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +170,44 @@ wait_for_selected_port() {
     return 0
   fi
   wait_for_tcp 127.0.0.1 "$port" "$name" "$@"
+}
+
+wait_for_eureka_application() {
+  local service_name="$1"; shift
+  local app_name="$1"; shift
+  local max_attempts="${1:-45}"
+  local sleep_s="${2:-2}"
+
+  if ! service_selected "$service_name" || ! service_selected "api-gateway"; then
+    return 0
+  fi
+
+  local attempt
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if python3 - "$app_name" <<'PY' >/dev/null 2>&1
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
+app_name = sys.argv[1]
+url = f"http://127.0.0.1:8761/eureka/apps/{app_name}"
+try:
+    with urlopen(url, timeout=2.0) as response:
+        status = int(response.getcode())
+except (HTTPError, URLError, TimeoutError):
+    raise SystemExit(1)
+
+raise SystemExit(0 if status == 200 else 1)
+PY
+    then
+      echo "[infra] $service_name Eureka kaydi hazir ($app_name)"
+      return 0
+    fi
+    sleep "$sleep_s"
+  done
+
+  echo "[warn] $service_name icin Eureka kaydi beklenen surede hazir olmadi ($app_name)" >&2
+  return 1
 }
 
 start_infra() {
@@ -221,6 +284,11 @@ wait_for_selected_port permission-service 8084 || true
 wait_for_selected_port user-service 8089 || true
 wait_for_selected_port variant-service 8091 || true
 wait_for_selected_port core-data-service 8092 || true
+wait_for_eureka_application auth-service AUTH-SERVICE || true
+wait_for_eureka_application permission-service PERMISSION-SERVICE || true
+wait_for_eureka_application user-service USER-SERVICE || true
+wait_for_eureka_application variant-service VARIANT-SERVICE || true
+wait_for_eureka_application core-data-service CORE-DATA-SERVICE || true
 run api-gateway         "$ROOT_DIR/api-gateway/pom.xml"         8080
 
 write_session_json

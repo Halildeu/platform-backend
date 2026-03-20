@@ -8,14 +8,20 @@ public class NotificationPreferenceDto {
     private boolean enabled;
     private String frequency;
     private LocalDateTime updatedAt;
+    private int version;
 
     public NotificationPreferenceDto() {}
 
-    public NotificationPreferenceDto(String channel, boolean enabled, String frequency, LocalDateTime updatedAt) {
+    public NotificationPreferenceDto(String channel,
+                                     boolean enabled,
+                                     String frequency,
+                                     LocalDateTime updatedAt,
+                                     int version) {
         this.channel = channel;
         this.enabled = enabled;
         this.frequency = frequency;
         this.updatedAt = updatedAt;
+        this.version = version;
     }
 
     public String getChannel() {
@@ -49,5 +55,12 @@ public class NotificationPreferenceDto {
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
     }
-}
 
+    public int getVersion() {
+        return version;
+    }
+
+    public void setVersion(int version) {
+        this.version = version;
+    }
+}

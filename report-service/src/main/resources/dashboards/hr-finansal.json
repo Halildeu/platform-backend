@@ -1,0 +1,279 @@
+{
+  "type": "dashboard",
+  "key": "hr-finansal",
+  "version": "1.0",
+  "title": "İK Finansal Dashboard",
+  "description": "Personel maliyet analizi — bordro, SGK, fazla mesai, izin, kıdem",
+  "category": "İnsan Kaynakları",
+  "icon": "banknotes",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  },
+  "timeRanges": ["30d", "90d", "1y", "ytd"],
+  "defaultTimeRange": "90d",
+  "kpis": [
+    {
+      "id": "total-payroll",
+      "title": "Toplam Brüt Bordro",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SALARY)",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(SALARY)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "total-employer-cost",
+      "title": "Toplam İşveren Maliyeti",
+      "format": "currency",
+      "toneRules": [
+        { "condition": "> 250000000", "tone": "danger" },
+        { "condition": "> 200000000", "tone": "warning" },
+        { "condition": "<= 200000000", "tone": "info" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI)",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "avg-salary",
+      "title": "Ort. Brüt Maaş",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "AVG(SALARY)",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "AVG(SALARY)",
+        "where": "SALARY > 0 AND PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "higher_is_better"
+      }
+    },
+    {
+      "id": "overtime-cost",
+      "title": "Fazla Mesai Maliyeti",
+      "format": "currency",
+      "toneRules": [
+        { "condition": "> 10000000", "tone": "danger" },
+        { "condition": "> 5000000", "tone": "warning" },
+        { "condition": "<= 5000000", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(EXT_SALARY)",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(EXT_SALARY)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "severance-cost",
+      "title": "Kıdem + İhbar Tazminatı",
+      "format": "currency",
+      "toneRules": [
+        { "condition": "> 20000000", "tone": "danger" },
+        { "condition": "> 10000000", "tone": "warning" },
+        { "condition": "<= 10000000", "tone": "info" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(KIDEM_AMOUNT + IHBAR_AMOUNT)",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(KIDEM_AMOUNT + IHBAR_AMOUNT)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "sgk-employer-total",
+      "title": "SGK İşveren Payı",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI)",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "monthly-payroll-trend",
+      "title": "Aylık Bordro Trendi (Brüt vs İşveren Maliyeti)",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(p.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(p.SAL_MON AS VARCHAR), 2) AS label, SUM(SALARY) AS value",
+        "where": "(p.SAL_YEAR = YEAR(GETDATE()) OR (p.SAL_YEAR = YEAR(GETDATE())-1 AND p.SAL_MON >= MONTH(GETDATE()))) AND p.SAL_MON <= CASE WHEN p.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(p.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(p.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true,
+        "showGrid": true
+      }
+    },
+    {
+      "id": "company-payroll",
+      "title": "Şirket Bazlı Bordro Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(p.COMP_NICK_NAME),''), 'Belirtilmemiş') AS label, SUM(SALARY) AS value",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(p.COMP_NICK_NAME),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(SALARY) DESC"
+      },
+      "chartConfig": {
+        "showLegend": true
+      }
+    },
+    {
+      "id": "avg-salary-by-company",
+      "title": "Şirket Bazlı Ort. Brüt Maaş",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(p.COMP_NICK_NAME),''), 'Belirtilmemiş') AS label, AVG(SALARY) AS value",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(p.COMP_NICK_NAME),''), 'Belirtilmemiş')",
+        "orderBy": "AVG(SALARY) DESC"
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true
+      }
+    },
+    {
+      "id": "overtime-trend",
+      "title": "Aylık Fazla Mesai Maliyeti",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(p.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(p.SAL_MON AS VARCHAR), 2) AS label, SUM(EXT_SALARY) AS value",
+        "where": "(p.SAL_YEAR = YEAR(GETDATE()) OR (p.SAL_YEAR = YEAR(GETDATE())-1 AND p.SAL_MON >= MONTH(GETDATE()))) AND p.SAL_MON <= CASE WHEN p.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(p.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(p.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true,
+        "showGrid": true
+      }
+    },
+    {
+      "id": "severance-trend",
+      "title": "Aylık Kıdem + İhbar Tazminatı",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(p.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(p.SAL_MON AS VARCHAR), 2) AS label, SUM(KIDEM_AMOUNT + IHBAR_AMOUNT) AS value",
+        "where": "(p.SAL_YEAR = YEAR(GETDATE()) OR (p.SAL_YEAR = YEAR(GETDATE())-1 AND p.SAL_MON >= MONTH(GETDATE()))) AND p.SAL_MON <= CASE WHEN p.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(p.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(p.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true
+      }
+    },
+    {
+      "id": "leave-distribution",
+      "title": "İzin Türü Dağılımı (Son Dönem)",
+      "chartType": "pie",
+      "size": "md",
+      "source": "OFFTIME",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(so.OFFTIMECAT, 'Diğer') AS label, COUNT(*) AS value",
+        "where": "VALID = 1 AND STARTDATE >= :_periodStart AND STARTDATE <= :_periodEnd",
+        "join": "LEFT JOIN [workcube_mikrolink].[SETUP_OFFTIME] so ON so.OFFTIMECAT_ID = [workcube_mikrolink].[OFFTIME].OFFTIMECAT_ID",
+        "groupBy": "ISNULL(so.OFFTIMECAT, 'Diğer')",
+        "orderBy": "COUNT(*) DESC"
+      },
+      "chartConfig": {
+        "showLegend": true
+      }
+    },
+    {
+      "id": "dept-payroll",
+      "title": "Departman Bazlı Bordro (Top 15)",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, SUM(SALARY) AS value",
+        "where": "p.SAL_YEAR = YEAR(GETDATE()) AND p.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] p ON p.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(SALARY) DESC",
+        "limit": 15
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true,
+        "showGrid": true
+      }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["total-payroll", "total-employer-cost", "avg-salary", "overtime-cost", "severance-cost", "sgk-employer-total"] },
+      { "type": "chart-row", "ids": ["monthly-payroll-trend", "company-payroll"] },
+      { "type": "chart-row", "ids": ["overtime-trend", "avg-salary-by-company"] },
+      { "type": "chart-row", "ids": ["severance-trend", "leave-distribution"] },
+      { "type": "chart-row", "ids": ["dept-payroll"] }
+    ]
+  }
+}

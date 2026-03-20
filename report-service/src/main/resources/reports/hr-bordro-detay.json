@@ -1,0 +1,53 @@
+{
+  "key": "hr-bordro-detay",
+  "version": "1.0",
+  "title": "Bordro Detay Raporu",
+  "description": "Aylık bordro kalemleri — brüt, net, SGK, vergi, kesintiler",
+  "category": "İnsan Kaynakları",
+  "source": "EMPLOYEES_PUANTAJ_ROWS",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "EMPLOYEE_PUANTAJ_ID", "headerName": "Bordro Satır ID", "type": "number", "width": 110, "sensitive": false },
+    { "field": "PUANTAJ_ID", "headerName": "Puantaj ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "EMPLOYEE_ID", "headerName": "Sicil No", "type": "number", "width": 90, "sensitive": false },
+    { "field": "POSITION_NAME", "headerName": "Pozisyon", "type": "text", "width": 160, "sensitive": false },
+    { "field": "DEPARTMENT_ID", "headerName": "Departman ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "SALARY", "headerName": "Brüt Maaş", "type": "number", "width": 120, "sensitive": true },
+    { "field": "NET_UCRET", "headerName": "Net Ücret", "type": "number", "width": 120, "sensitive": true },
+    { "field": "TOTAL_SALARY", "headerName": "Toplam Brüt", "type": "number", "width": 120, "sensitive": true },
+    { "field": "TOTAL_PAY", "headerName": "Toplam Ödeme", "type": "number", "width": 120, "sensitive": true },
+    { "field": "MONEY", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "TOTAL_DAYS", "headerName": "Çalışma Günü", "type": "number", "width": 100, "sensitive": false },
+    { "field": "TOTAL_HOURS", "headerName": "Çalışma Saati", "type": "number", "width": 100, "sensitive": false },
+    { "field": "SSK_DAYS", "headerName": "SGK Gün", "type": "number", "width": 80, "sensitive": false },
+    { "field": "SSK_MATRAH", "headerName": "SGK Matrah", "type": "number", "width": 120, "sensitive": true },
+    { "field": "SSK_ISCI_HISSESI", "headerName": "SGK İşçi Payı", "type": "number", "width": 120, "sensitive": true },
+    { "field": "SSK_ISVEREN_HISSESI", "headerName": "SGK İşveren Payı", "type": "number", "width": 130, "sensitive": true },
+    { "field": "GELIR_VERGISI_MATRAH", "headerName": "GV Matrah", "type": "number", "width": 120, "sensitive": true },
+    { "field": "GELIR_VERGISI", "headerName": "Gelir Vergisi", "type": "number", "width": 110, "sensitive": true },
+    { "field": "DAMGA_VERGISI", "headerName": "Damga Vergisi", "type": "number", "width": 110, "sensitive": true },
+    { "field": "ISSIZLIK_ISCI_HISSESI", "headerName": "İşsizlik İşçi", "type": "number", "width": 100, "sensitive": true },
+    { "field": "ISSIZLIK_ISVEREN_HISSESI", "headerName": "İşsizlik İşveren", "type": "number", "width": 110, "sensitive": true },
+    { "field": "EXT_SALARY", "headerName": "Ek Ücret", "type": "number", "width": 100, "sensitive": true },
+    { "field": "AVANS", "headerName": "Avans", "type": "number", "width": 100, "sensitive": true },
+    { "field": "KIDEM_AMOUNT", "headerName": "Kıdem Tazminatı", "type": "number", "width": 130, "sensitive": true },
+    { "field": "IHBAR_AMOUNT", "headerName": "İhbar Tazminatı", "type": "number", "width": 130, "sensitive": true },
+    { "field": "GROSS_NET", "headerName": "Brüt/Net", "type": "number", "width": 80, "sensitive": false },
+    { "field": "SALARY_TYPE", "headerName": "Maaş Tipi", "type": "number", "width": 90, "sensitive": false },
+    { "field": "SSK_STATUTE", "headerName": "SGK Statü", "type": "number", "width": 90, "sensitive": false },
+    { "field": "IN_OUT_ID", "headerName": "Giriş/Çıkış ID", "type": "number", "width": 100, "sensitive": false }
+  ],
+  "defaultSort": "EMPLOYEE_PUANTAJ_ID",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.hr-bordro-detay.view",
+    "columnRestrictions": {
+      "reports.hr.salary-view": ["SALARY", "NET_UCRET", "TOTAL_SALARY", "TOTAL_PAY", "SSK_MATRAH", "SSK_ISCI_HISSESI", "SSK_ISVEREN_HISSESI", "GELIR_VERGISI_MATRAH", "GELIR_VERGISI", "DAMGA_VERGISI", "ISSIZLIK_ISCI_HISSESI", "ISSIZLIK_ISVEREN_HISSESI", "EXT_SALARY", "AVANS", "KIDEM_AMOUNT", "IHBAR_AMOUNT"]
+    },
+    "rowFilter": {
+      "column": "DEPARTMENT_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

@@ -37,8 +37,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                                       @NonNull FilterChain filterChain)
             throws ServletException, IOException {
         
-        // Bu kontrol auth-service'e özgüdür ama burada bir zararı olmaz.
-        if (request.getServletPath().contains("/api/auth")) {
+        String servletPath = request.getServletPath();
+
+        // Modern v1 JWT akışı oauth2ResourceServer üzerinden çözülür; legacy filtre
+        // yalnızca eski path'ler için fallback olarak kalmalı.
+        if (servletPath.contains("/api/auth")
+                || servletPath.startsWith("/api/v1/")
+                || servletPath.startsWith("/api/users/internal/")) {
             filterChain.doFilter(request, response);
             return;
         }

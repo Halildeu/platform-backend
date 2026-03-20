@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -40,8 +41,14 @@ public class AuthorizationContextService {
         if (jwt == null) {
             return AuthorizationContext.of(null, null, Collections.emptySet(), Collections.emptySet());
         }
-        String cacheKey = jwt.getSubject();
-        return cache.get(cacheKey, () -> loadContext(jwt, authorities));
+        String cacheKey = buildCacheKey(jwt);
+        AuthorizationContext cached = cache.getIfPresent(cacheKey);
+        if (isReusable(cached)) {
+            return cached;
+        }
+        AuthorizationContext fresh = loadContext(jwt, authorities);
+        cache.put(cacheKey, fresh);
+        return fresh;
     }
 
     public AuthorizationContext getCurrentUserContext() {
@@ -154,6 +161,17 @@ public class AuthorizationContextService {
             if (v != null && !v.isBlank()) return v;
         }
         return null;
+    }
+
+    private static String buildCacheKey(Jwt jwt) {
+        String subject = firstNonBlank(jwt.getSubject(), jwt.getClaimAsString("preferred_username"), "anonymous");
+        String expiresAt = jwt.getExpiresAt() == null ? "na" : String.valueOf(jwt.getExpiresAt().getEpochSecond());
+        int tokenHash = Objects.hashCode(jwt.getTokenValue());
+        return subject + ":" + expiresAt + ":" + Integer.toHexString(tokenHash);
+    }
+
+    private static boolean isReusable(AuthorizationContext context) {
+        return context != null && !context.getPermissions().isEmpty();
     }
 
 }

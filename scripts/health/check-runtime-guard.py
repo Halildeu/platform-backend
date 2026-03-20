@@ -17,13 +17,19 @@ from urllib.request import Request, urlopen
 @dataclass(frozen=True)
 class HttpCheck:
     url: str
-    expected_status: int = 200
+    expected_statuses: tuple[int, ...] = (200,)
 
 
 @dataclass(frozen=True)
 class TcpCheck:
     host: str
     port: int
+
+
+@dataclass(frozen=True)
+class GatewayRouteCheck:
+    service: str
+    check: HttpCheck
 
 
 APP_HEALTH_CHECKS: dict[str, HttpCheck] = {
@@ -42,6 +48,29 @@ INFRA_CHECKS: dict[str, HttpCheck | TcpCheck] = {
     "vault": HttpCheck("http://127.0.0.1:8200/v1/sys/health"),
 }
 
+GATEWAY_ROUTE_CHECKS: dict[str, GatewayRouteCheck] = {
+    "gateway-user-by-email-route": GatewayRouteCheck(
+        service="user-service",
+        check=HttpCheck("http://127.0.0.1:8080/api/v1/users/by-email?email=admin%40example.com"),
+    ),
+    "gateway-theme-registry-route": GatewayRouteCheck(
+        service="variant-service",
+        check=HttpCheck("http://127.0.0.1:8080/api/v1/theme-registry"),
+    ),
+    "gateway-roles-route": GatewayRouteCheck(
+        service="permission-service",
+        check=HttpCheck("http://127.0.0.1:8080/api/v1/roles", expected_statuses=(401,)),
+    ),
+    "gateway-permissions-route": GatewayRouteCheck(
+        service="permission-service",
+        check=HttpCheck("http://127.0.0.1:8080/api/v1/permissions", expected_statuses=(401,)),
+    ),
+    "gateway-audit-route": GatewayRouteCheck(
+        service="permission-service",
+        check=HttpCheck("http://127.0.0.1:8080/api/audit/events?page=0&size=1", expected_statuses=(401,)),
+    ),
+}
+
 FATAL_MARKERS = (
     "APPLICATION FAILED TO START",
     "Error starting ApplicationContext",
@@ -53,6 +82,10 @@ FATAL_MARKERS = (
     "VaultConfigInitializationException",
     "Failed to obtain JDBC Connection",
     "Error creating bean with name",
+)
+
+IGNORED_ERROR_MARKERS = (
+    "Unable to load io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider",
 )
 
 IGNORED_WARNING_MARKERS = (
@@ -122,7 +155,7 @@ def _http_check(check: HttpCheck, timeout_seconds: float = 3.0) -> dict[str, Any
             "url": check.url,
         }
 
-    normalized_status = "UP" if status_code == check.expected_status else "DOWN"
+    normalized_status = "UP" if status_code in check.expected_statuses else "DOWN"
     payload_status = None
     try:
         payload_obj = json.loads(body)
@@ -136,6 +169,7 @@ def _http_check(check: HttpCheck, timeout_seconds: float = 3.0) -> dict[str, Any
         "reachable": True,
         "status": normalized_status,
         "http_status": status_code,
+        "expected_statuses": list(check.expected_statuses),
         "payload_status": payload_status,
         "url": check.url,
         "body_tail": body[-400:] if body else "",
@@ -207,6 +241,10 @@ def _line_is_ignored_warning(line: str) -> bool:
     return any(marker in line for marker in IGNORED_WARNING_MARKERS)
 
 
+def _line_is_ignored_error(line: str) -> bool:
+    return any(marker in line for marker in IGNORED_ERROR_MARKERS)
+
+
 def _scan_log(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {
@@ -222,12 +260,16 @@ def _scan_log(path: Path) -> dict[str, Any]:
     error_matches: list[dict[str, Any]] = []
     warning_matches: list[dict[str, Any]] = []
     ignored_warning_matches: list[dict[str, Any]] = []
+    ignored_error_matches: list[dict[str, Any]] = []
     for idx, raw_line in enumerate(lines, start=1):
         line = raw_line.rstrip()
         if not line.strip():
             continue
         entry = {"line": idx, "text": line[:400]}
         if _line_matches_error(line):
+            if _line_is_ignored_error(line):
+                ignored_error_matches.append(entry)
+                continue
             error_matches.append(entry)
             continue
         if _line_matches_warning(line):
@@ -240,6 +282,7 @@ def _scan_log(path: Path) -> dict[str, Any]:
         "performed": True,
         "log_path": str(path),
         "error_matches": error_matches[-20:],
+        "ignored_error_matches": ignored_error_matches[-20:],
         "warning_matches": warning_matches[-20:],
         "ignored_warning_matches": ignored_warning_matches[-20:],
     }
@@ -348,8 +391,35 @@ def main(argv: list[str] | None = None) -> int:
             failed_infra.append(name)
         infra_reports.append({"name": name, "health": result})
 
+    gateway_route_reports: list[dict[str, Any]] = []
+    failed_gateway_routes: list[str] = []
+    if "api-gateway" in selected_names:
+        selected_gateway_routes = {
+            name: route_check.check
+            for name, route_check in GATEWAY_ROUTE_CHECKS.items()
+            if route_check.service in selected_names
+        }
+        gateway_results = _wait_for_checks(
+            selected_gateway_routes,
+            wait_seconds=args.wait_seconds,
+            poll_interval=args.poll_interval,
+        )
+        for name, route_check in GATEWAY_ROUTE_CHECKS.items():
+            if route_check.service not in selected_names:
+                continue
+            result = gateway_results.get(name) or {"status": "DOWN", "reachable": False}
+            if result.get("status") != "UP":
+                failed_gateway_routes.append(name)
+            gateway_route_reports.append(
+                {
+                    "name": name,
+                    "service": route_check.service,
+                    "health": result,
+                }
+            )
+
     status = "OK"
-    if failed_services or failed_infra or total_error_matches:
+    if failed_services or failed_infra or failed_gateway_routes or total_error_matches:
         status = "FAIL"
     elif total_warning_matches:
         status = "FAIL" if bool(args.strict_warnings) else "WARN"
@@ -367,6 +437,8 @@ def main(argv: list[str] | None = None) -> int:
             "infra_checked": len(infra_reports),
             "failed_services": failed_services,
             "failed_infra": failed_infra,
+            "gateway_routes_checked": len(gateway_route_reports),
+            "failed_gateway_routes": failed_gateway_routes,
             "error_match_count": total_error_matches,
             "warning_match_count": total_warning_matches,
             "ignored_warning_match_count": total_ignored_warning_matches,
@@ -378,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "apps": app_reports,
         "infra": infra_reports,
+        "gateway_routes": gateway_route_reports,
     }
 
     report_path.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -388,6 +461,7 @@ def main(argv: list[str] | None = None) -> int:
                 "report_path": str(report_path),
                 "failed_services": failed_services,
                 "failed_infra": failed_infra,
+                "failed_gateway_routes": failed_gateway_routes,
                 "error_match_count": total_error_matches,
                 "warning_match_count": total_warning_matches,
             },

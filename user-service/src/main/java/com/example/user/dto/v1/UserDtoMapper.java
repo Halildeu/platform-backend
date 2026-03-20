@@ -34,7 +34,8 @@ public final class UserDtoMapper {
                 user.isEnabled(),
                 user.getCreateDate(),
                 user.getLastLogin(),
-                user.getSessionTimeoutMinutes()
+                user.getSessionTimeoutMinutes(),
+                user.getLocale()
         );
     }
 }

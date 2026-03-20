@@ -1,0 +1,40 @@
+{
+  "key": "hr-personel-listesi",
+  "version": "1.0",
+  "title": "Personel Listesi",
+  "description": "Tüm çalışanların pozisyon, departman ve iletişim bilgileri",
+  "category": "İnsan Kaynakları",
+  "source": "EMPLOYEE_POSITIONS",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "POSITION_ID", "headerName": "Pozisyon ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "EMPLOYEE_ID", "headerName": "Sicil No", "type": "number", "width": 90, "sensitive": false },
+    { "field": "EMPLOYEE_NAME", "headerName": "Ad", "type": "text", "width": 140, "sensitive": false },
+    { "field": "EMPLOYEE_SURNAME", "headerName": "Soyad", "type": "text", "width": 140, "sensitive": false },
+    { "field": "EMPLOYEE_EMAIL", "headerName": "E-Posta", "type": "text", "width": 220, "sensitive": false },
+    { "field": "POSITION_NAME", "headerName": "Pozisyon", "type": "text", "width": 200, "sensitive": false },
+    { "field": "TITLE_NAME", "headerName": "Unvan", "type": "text", "width": 180, "sensitive": false },
+    { "field": "DEPARTMENT_ID", "headerName": "Departman ID", "type": "number", "width": 110, "sensitive": false },
+    { "field": "BRANCH_ID", "headerName": "Şube ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "OUR_COMPANY_ID", "headerName": "Şirket ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "COLLAR_TYPE", "headerName": "Yaka Tipi", "type": "number", "width": 90, "sensitive": false },
+    { "field": "POSITION_STATUS", "headerName": "Aktif", "type": "number", "width": 70, "sensitive": false },
+    { "field": "IS_CRITICAL", "headerName": "Kritik Pozisyon", "type": "number", "width": 110, "sensitive": false },
+    { "field": "IS_TRIAL", "headerName": "Deneme Süresi", "type": "number", "width": 110, "sensitive": false },
+    { "field": "TRIAL_DATE", "headerName": "Deneme Bitiş", "type": "date", "width": 120, "sensitive": false },
+    { "field": "ONGR_UCRET", "headerName": "Öngörülen Ücret", "type": "number", "width": 140, "sensitive": true }
+  ],
+  "defaultSort": "EMPLOYEE_NAME",
+  "defaultSortDirection": "ASC",
+  "access": {
+    "permission": "reports.hr-personel-listesi.view",
+    "columnRestrictions": {
+      "reports.hr.salary-view": ["ONGR_UCRET"]
+    },
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

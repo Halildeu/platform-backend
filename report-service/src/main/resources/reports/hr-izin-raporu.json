@@ -1,0 +1,37 @@
+{
+  "key": "hr-izin-raporu",
+  "version": "1.0",
+  "title": "İzin Raporu",
+  "description": "Çalışan izin talepleri, onay durumları ve izin süreleri",
+  "category": "İnsan Kaynakları",
+  "source": "OFFTIME",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "OFFTIME_ID", "headerName": "İzin ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "EMPLOYEE_ID", "headerName": "Sicil No", "type": "number", "width": 90, "sensitive": false },
+    { "field": "OFFTIMECAT_ID", "headerName": "İzin Türü", "type": "number", "width": 90, "sensitive": false },
+    { "field": "STARTDATE", "headerName": "Başlangıç", "type": "date", "width": 150, "sensitive": false },
+    { "field": "FINISHDATE", "headerName": "Bitiş", "type": "date", "width": 150, "sensitive": false },
+    { "field": "WORK_STARTDATE", "headerName": "İşe Dönüş", "type": "date", "width": 150, "sensitive": false },
+    { "field": "TOTAL_HOURS", "headerName": "Toplam Saat", "type": "number", "width": 100, "sensitive": false },
+    { "field": "VALID", "headerName": "Onay", "type": "number", "width": 70, "sensitive": false },
+    { "field": "VALID_1", "headerName": "1. Onay", "type": "number", "width": 70, "sensitive": false },
+    { "field": "VALID_2", "headerName": "2. Onay", "type": "number", "width": 70, "sensitive": false },
+    { "field": "DETAIL", "headerName": "Açıklama", "type": "text", "width": 200, "sensitive": false },
+    { "field": "IS_CANCEL", "headerName": "İptal", "type": "number", "width": 70, "sensitive": false },
+    { "field": "IS_FROM_PDKS", "headerName": "PDKS Kaynak", "type": "number", "width": 90, "sensitive": false },
+    { "field": "IN_OUT_ID", "headerName": "Giriş/Çıkış ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 130, "sensitive": false }
+  ],
+  "defaultSort": "STARTDATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.hr-izin-raporu.view",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "EMPLOYEE_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

@@ -57,6 +57,16 @@ public class SecurityConfigLocal {
             environment.getProperty("spring.application.name"),
             "variant-service"
         );
+        String authServiceJwkSetUri = firstNonBlank(
+            environment.getProperty("security.service-auth.jwk-set-uri"),
+            environment.getProperty("SERVICE_AUTH_JWK_SET_URI"),
+            "http://127.0.0.1:8088/oauth2/jwks"
+        );
+        String authServiceIssuer = firstNonBlank(
+            environment.getProperty("security.service-auth.issuer"),
+            environment.getProperty("SERVICE_AUTH_ISSUER"),
+            "auth-service"
+        );
 
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
@@ -64,7 +74,17 @@ public class SecurityConfigLocal {
             new AudienceValidator(audience)
         );
         decoder.setJwtValidator(validator);
-        return decoder;
+
+        NimbusJwtDecoder authServiceFallbackDecoder = NimbusJwtDecoder.withJwkSetUri(authServiceJwkSetUri).build();
+        authServiceFallbackDecoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(authServiceIssuer));
+
+        return token -> {
+            try {
+                return decoder.decode(token);
+            } catch (Exception ignore) {
+                return authServiceFallbackDecoder.decode(token);
+            }
+        };
     }
 
     private String firstFromList(String value) {

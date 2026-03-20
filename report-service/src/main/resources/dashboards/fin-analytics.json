@@ -1,0 +1,256 @@
+{
+  "type": "dashboard",
+  "key": "fin-analytics",
+  "version": "1.0",
+  "title": "Finans Analitik Dashboard",
+  "description": "Nakit akışı, banka bakiyesi, cari denge, fatura ve çek/senet özeti",
+  "category": "Finans",
+  "icon": "banknote",
+  "access": {
+    "permission": "dashboards.fin-analytics.view"
+  },
+  "timeRanges": ["30d", "90d", "180d", "1y", "ytd"],
+  "defaultTimeRange": "90d",
+  "kpis": [
+    {
+      "id": "bank-balance",
+      "title": "Banka Bakiyesi (TL)",
+      "format": "currency",
+      "tone": "info",
+      "source": "ACCOUNT_REMAINDER_LAST",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(BAKIYE), 0)",
+        "where": "1=1"
+      },
+      "drillTo": {
+        "reportKey": "fin-banka-hareketleri"
+      }
+    },
+    {
+      "id": "cash-balance",
+      "title": "Kasa Bakiyesi (TL)",
+      "format": "currency",
+      "tone": "info",
+      "source": "CASH_REMAINDER_LAST",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(BAKIYE), 0)",
+        "where": "1=1"
+      },
+      "drillTo": {
+        "reportKey": "fin-kasa-hareketleri"
+      }
+    },
+    {
+      "id": "cash-inflow",
+      "title": "Nakit Giriş (Banka)",
+      "format": "currency",
+      "tone": "success",
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd"
+      },
+      "trend": {
+        "select": "ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)",
+        "where": "ACTION_DATE >= :_prevPeriodStart AND ACTION_DATE <= :_prevPeriodEnd",
+        "direction": "higher_is_better"
+      },
+      "drillTo": {
+        "reportKey": "fin-banka-hareketleri"
+      }
+    },
+    {
+      "id": "cash-outflow",
+      "title": "Nakit Çıkış (Banka)",
+      "format": "currency",
+      "toneRules": [
+        { "condition": "> 10000000", "tone": "danger" },
+        { "condition": "> 5000000", "tone": "warning" },
+        { "condition": "<= 5000000", "tone": "info" }
+      ],
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd"
+      },
+      "trend": {
+        "select": "ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)",
+        "where": "ACTION_DATE >= :_prevPeriodStart AND ACTION_DATE <= :_prevPeriodEnd",
+        "direction": "lower_is_better"
+      },
+      "drillTo": {
+        "reportKey": "fin-banka-hareketleri"
+      }
+    },
+    {
+      "id": "invoice-purchase-total",
+      "title": "Alış Fatura Toplam",
+      "format": "currency",
+      "tone": "warning",
+      "source": "INVOICE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(NETTOTAL), 0)",
+        "where": "INVOICE_CAT = 56 AND INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd"
+      },
+      "drillTo": {
+        "reportKey": "fin-faturalar",
+        "filters": { "INVOICE_CAT": { "filterType": "number", "type": "equals", "filter": 56 } }
+      }
+    },
+    {
+      "id": "invoice-sales-total",
+      "title": "Satış Fatura Toplam",
+      "format": "currency",
+      "tone": "success",
+      "source": "INVOICE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(NETTOTAL), 0)",
+        "where": "INVOICE_CAT = 59 AND INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd"
+      },
+      "drillTo": {
+        "reportKey": "fin-faturalar",
+        "filters": { "INVOICE_CAT": { "filterType": "number", "type": "equals", "filter": 59 } }
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "monthly-cash-flow",
+      "title": "Aylık Nakit Akışı (Giriş / Çıkış)",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "FORMAT(ACTION_DATE, 'yyyy-MM') AS label, ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) AS value, ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) AS value2",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd",
+        "groupBy": "FORMAT(ACTION_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true,
+        "showGrid": true,
+        "series": [
+          { "field": "value", "name": "Giriş", "color": "#22c55e" },
+          { "field": "value2", "name": "Çıkış", "color": "#ef4444" }
+        ]
+      }
+    },
+    {
+      "id": "bank-action-types",
+      "title": "İşlem Tipi Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(ACTION_TYPE, 'Diğer') AS label, COUNT(*) AS value",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd",
+        "groupBy": "ACTION_TYPE",
+        "orderBy": "COUNT(*) DESC",
+        "limit": 10
+      },
+      "chartConfig": {
+        "showLegend": true
+      }
+    },
+    {
+      "id": "cari-top-debtors",
+      "title": "En Yüksek Borçlu Cariler",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "COMPANY_REMAINDER",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL((SELECT TOP 1 c.FULLNAME FROM [workcube_mikrolink].[COMPANY] c WITH (NOLOCK) WHERE c.COMPANY_ID = [workcube_mikrolink_2026_1].[COMPANY_REMAINDER].COMPANY_ID), 'Bilinmiyor') AS label, BAKIYE AS value",
+        "where": "BAKIYE > 0",
+        "orderBy": "BAKIYE DESC",
+        "limit": 15
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true,
+        "showGrid": true
+      },
+      "drillTo": {
+        "reportKey": "fin-cari-hareketler",
+        "filterColumn": "ACTION_NAME",
+        "filterFromField": "label"
+      }
+    },
+    {
+      "id": "monthly-invoice-trend",
+      "title": "Aylık Fatura Trendi (Alış / Satış)",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "INVOICE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "FORMAT(INVOICE_DATE, 'yyyy-MM') AS label, ISNULL(SUM(CASE WHEN INVOICE_CAT = 56 THEN NETTOTAL ELSE 0 END), 0) AS value, ISNULL(SUM(CASE WHEN INVOICE_CAT = 59 THEN NETTOTAL ELSE 0 END), 0) AS value2",
+        "where": "INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd",
+        "groupBy": "FORMAT(INVOICE_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true,
+        "showGrid": true,
+        "series": [
+          { "field": "value", "name": "Alış Fatura", "color": "#f97316" },
+          { "field": "value2", "name": "Satış Fatura", "color": "#3b82f6" }
+        ]
+      }
+    },
+    {
+      "id": "cheque-maturity",
+      "title": "Çek Vade Dağılımı",
+      "chartType": "bar",
+      "size": "md",
+      "source": "CHEQUE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CASE WHEN CHEQUE_DUEDATE < GETDATE() THEN 'Vadesi Geçmiş' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 30, GETDATE()) THEN '0-30 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 60, GETDATE()) THEN '30-60 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 90, GETDATE()) THEN '60-90 Gün' ELSE '90+ Gün' END AS label, SUM(CHEQUE_VALUE) AS value",
+        "where": "CHEQUE_STATUS_ID IN (1, 6)",
+        "groupBy": "CASE WHEN CHEQUE_DUEDATE < GETDATE() THEN 'Vadesi Geçmiş' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 30, GETDATE()) THEN '0-30 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 60, GETDATE()) THEN '30-60 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 90, GETDATE()) THEN '60-90 Gün' ELSE '90+ Gün' END"
+      },
+      "chartConfig": {
+        "showValues": true
+      },
+      "drillTo": {
+        "reportKey": "fin-cek-senet"
+      }
+    },
+    {
+      "id": "account-balances",
+      "title": "Banka Hesap Bakiyeleri (Top 10)",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "ACCOUNT_REMAINDER_LAST",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(ACCOUNT_NAME, 'Bilinmiyor') AS label, BAKIYE AS value",
+        "where": "BAKIYE <> 0",
+        "orderBy": "BAKIYE DESC",
+        "limit": 10
+      },
+      "chartConfig": {
+        "orientation": "horizontal",
+        "showValues": true,
+        "showGrid": true
+      }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["bank-balance", "cash-balance", "cash-inflow", "cash-outflow", "invoice-purchase-total", "invoice-sales-total"] },
+      { "type": "chart-row", "ids": ["monthly-cash-flow", "bank-action-types"] },
+      { "type": "chart-row", "ids": ["cari-top-debtors", "cheque-maturity"] },
+      { "type": "chart-row", "ids": ["monthly-invoice-trend", "account-balances"] }
+    ]
+  }
+}

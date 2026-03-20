@@ -1,0 +1,38 @@
+{
+  "key": "fin-cek-senet",
+  "version": "1.0",
+  "title": "Çek/Senet Takip",
+  "description": "Alınan ve verilen çek/senet listesi, vade ve durum takibi",
+  "category": "Finans",
+  "source": "CHEQUE",
+  "sourceSchema": "workcube_mikrolink_1",
+  "schemaMode": "yearly",
+  "yearColumn": "CHEQUE_DUEDATE",
+  "columns": [
+    { "field": "CHEQUE_ID", "headerName": "Çek ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CHEQUE_NO", "headerName": "Çek No", "type": "text", "width": 140, "sensitive": false },
+    { "field": "CHEQUE_CODE", "headerName": "Çek Kodu", "type": "text", "width": 120, "sensitive": false },
+    { "field": "CHEQUE_DUEDATE", "headerName": "Vade Tarihi", "type": "date", "width": 120, "sensitive": false },
+    { "field": "CHEQUE_VALUE", "headerName": "Tutar", "type": "number", "width": 140, "sensitive": false },
+    { "field": "CURRENCY_ID", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "DEBTOR_NAME", "headerName": "Borçlu", "type": "text", "width": 240, "sensitive": false },
+    { "field": "COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CHEQUE_STATUS_ID", "headerName": "Durum", "type": "number", "width": 80, "sensitive": false },
+    { "field": "BANK_NAME", "headerName": "Banka", "type": "text", "width": 160, "sensitive": false },
+    { "field": "BANK_BRANCH_NAME", "headerName": "Şube", "type": "text", "width": 140, "sensitive": false },
+    { "field": "ACCOUNT_NO", "headerName": "Hesap No", "type": "text", "width": 140, "sensitive": false },
+    { "field": "SELF_CHEQUE", "headerName": "Kendi Çeki", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CHEQUE_PURSE_NO", "headerName": "Çanta No", "type": "text", "width": 100, "sensitive": false }
+  ],
+  "defaultSort": "CHEQUE_DUEDATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.fin-cek-senet.view",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

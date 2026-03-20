@@ -3,6 +3,8 @@ package com.example.user.controller;
 import com.example.user.UserApplication;
 import com.example.user.config.TestSecurityConfig;
 import com.example.user.model.User;
+import com.example.user.model.UserNotificationPreference;
+import com.example.user.repository.UserAuditEventRepository;
 import com.example.user.repository.UserNotificationPreferenceRepository;
 import com.example.user.repository.UserRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -63,10 +65,14 @@ class NotificationPreferencesControllerV1Test {
     private UserNotificationPreferenceRepository userNotificationPreferenceRepository;
 
     @Autowired
+    private UserAuditEventRepository userAuditEventRepository;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     @BeforeEach
     void cleanDb() {
+        userAuditEventRepository.deleteAll();
         userNotificationPreferenceRepository.deleteAll();
         userRepository.deleteAll();
     }
@@ -95,7 +101,22 @@ class NotificationPreferencesControllerV1Test {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.preferences", hasSize(4)))
-                .andExpect(jsonPath("$.preferences[0].channel").isNotEmpty());
+                .andExpect(jsonPath("$.preferences[0].channel").isNotEmpty())
+                .andExpect(jsonPath("$.preferences[0].version").isNumber());
+    }
+
+    @Test
+    void getPreferenceSnapshot_returnsChannelState() throws Exception {
+        User existing = ensureUserExists("snapshot@example.com");
+        String token = issueToken(existing.getEmail());
+
+        mockMvc.perform(get("/api/v1/notification-preferences/email")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resourceKey").value("notification-preference:snapshot@example.com:email"))
+                .andExpect(jsonPath("$.channel").value("email"))
+                .andExpect(jsonPath("$.enabled").isBoolean())
+                .andExpect(jsonPath("$.version").isNumber());
     }
 
     @Test
@@ -130,7 +151,8 @@ class NotificationPreferencesControllerV1Test {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.preferences", hasSize(4)))
                 .andExpect(content().string(containsString("\"channel\":\"email\"")))
-                .andExpect(content().string(containsString("\"enabled\":false")));
+                .andExpect(content().string(containsString("\"enabled\":false")))
+                .andExpect(content().string(containsString("\"version\":")));
     }
 
     @Test
@@ -145,6 +167,71 @@ class NotificationPreferencesControllerV1Test {
                 .andExpect(content().string(containsString("ERR_BAD_REQUEST")));
     }
 
+    @Test
+    void putPreference_updatesAndReturnsAckWithAudit() throws Exception {
+        User existing = ensureUserExists("sync@example.com");
+        UserNotificationPreference existingPreference = userNotificationPreferenceRepository.save(emailPreference(existing.getId(), true, "immediate"));
+        String token = issueToken(existing.getEmail());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/notification-preferences/email")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "enabled", false,
+                                "frequency", "daily",
+                                "expectedVersion", existingPreference.getVersion() == null ? 0 : existingPreference.getVersion(),
+                                "source", "mobile-offline-queue",
+                                "attemptCount", 2,
+                                "queueActionId", "qa-notification-success-01"
+                        ))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ok"))
+                .andExpect(jsonPath("$.auditId").value(org.hamcrest.Matchers.startsWith("user-")))
+                .andExpect(jsonPath("$.channel").value("email"))
+                .andExpect(jsonPath("$.enabled").value(false))
+                .andExpect(jsonPath("$.frequency").value("daily"))
+                .andExpect(jsonPath("$.errorCode").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.conflictReason").value(org.hamcrest.Matchers.nullValue()));
+
+        UserNotificationPreference updated = userNotificationPreferenceRepository
+                .findByUserIdAndChannel(existing.getId(), "email")
+                .orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(updated.isEnabled()).isFalse();
+        org.assertj.core.api.Assertions.assertThat(updated.getFrequency()).isEqualTo("daily");
+        org.assertj.core.api.Assertions.assertThat(userAuditEventRepository.count()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(userAuditEventRepository.findAll().getFirst().getEventType())
+                .isEqualTo("USER_NOTIFICATION_PREFERENCE_SYNCED");
+    }
+
+    @Test
+    void putPreference_versionConflict_returns409() throws Exception {
+        User existing = ensureUserExists("sync-conflict@example.com");
+        UserNotificationPreference existingPreference = userNotificationPreferenceRepository.save(emailPreference(existing.getId(), true, "immediate"));
+        String token = issueToken(existing.getEmail());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/notification-preferences/email")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "enabled", false,
+                                "frequency", "daily",
+                                "expectedVersion", (existingPreference.getVersion() == null ? 0 : existingPreference.getVersion()) + 1,
+                                "source", "mobile-offline-queue",
+                                "attemptCount", 3,
+                                "queueActionId", "qa-notification-conflict-01"
+                        ))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value("conflict"))
+                .andExpect(jsonPath("$.auditId").value(org.hamcrest.Matchers.startsWith("user-")))
+                .andExpect(jsonPath("$.channel").value("email"))
+                .andExpect(jsonPath("$.errorCode").value("USER_NOTIFICATION_PREFERENCE_SYNC_CONFLICT"))
+                .andExpect(jsonPath("$.conflictReason").value("STALE_EXPECTED_VERSION"));
+
+        org.assertj.core.api.Assertions.assertThat(userAuditEventRepository.count()).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(userAuditEventRepository.findAll().getFirst().getEventType())
+                .isEqualTo("USER_NOTIFICATION_PREFERENCE_SYNC_CONFLICT");
+    }
+
     private User ensureUserExists(String email) {
         return userRepository.findByEmail(email).orElseGet(() -> {
             User user = new User();
@@ -155,6 +242,15 @@ class NotificationPreferencesControllerV1Test {
             user.setRole("USER");
             return userRepository.save(user);
         });
+    }
+
+    private UserNotificationPreference emailPreference(Long userId, boolean enabled, String frequency) {
+        UserNotificationPreference preference = new UserNotificationPreference();
+        preference.setUserId(userId);
+        preference.setChannel("email");
+        preference.setEnabled(enabled);
+        preference.setFrequency(frequency);
+        return preference;
     }
 
     private String issueToken(String email) {
@@ -175,4 +271,3 @@ class NotificationPreferencesControllerV1Test {
         return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
     }
 }
-

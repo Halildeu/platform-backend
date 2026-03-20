@@ -16,6 +16,10 @@ import java.util.Collections;
 public class User implements UserDetails { // UserDetails arayüzünü uygular
 
     public static final int DEFAULT_SESSION_TIMEOUT_MINUTES = 15;
+    public static final String DEFAULT_LOCALE = "tr";
+    public static final String DEFAULT_TIMEZONE = "Europe/Istanbul";
+    public static final String DEFAULT_DATE_FORMAT = "dd.MM.yyyy";
+    public static final String DEFAULT_TIME_FORMAT = "HH:mm";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -52,6 +56,22 @@ public class User implements UserDetails { // UserDetails arayüzünü uygular
     @Column(name = "session_timeout_minutes", columnDefinition = "integer default " + DEFAULT_SESSION_TIMEOUT_MINUTES + " not null")
     private Integer sessionTimeoutMinutes = DEFAULT_SESSION_TIMEOUT_MINUTES;
 
+    @Column(name = "locale", nullable = false, length = 16)
+    private String locale = DEFAULT_LOCALE;
+
+    @Column(name = "timezone", nullable = false, length = 64)
+    private String timezone = DEFAULT_TIMEZONE;
+
+    @Column(name = "date_format", nullable = false, length = 32)
+    private String dateFormat = DEFAULT_DATE_FORMAT;
+
+    @Column(name = "time_format", nullable = false, length = 16)
+    private String timeFormat = DEFAULT_TIME_FORMAT;
+
+    @Version
+    @Column(name = "version", nullable = false)
+    private Integer version = 0;
+
     // --- Constructorlar ---
     public User() {}
 
@@ -76,6 +96,16 @@ public class User implements UserDetails { // UserDetails arayüzünü uygular
     public void setLastLogin(LocalDateTime lastLogin) { this.lastLogin = lastLogin; }
     public Integer getSessionTimeoutMinutes() { return sessionTimeoutMinutes; }
     public void setSessionTimeoutMinutes(Integer sessionTimeoutMinutes) { this.sessionTimeoutMinutes = sessionTimeoutMinutes; }
+    public String getLocale() { return locale; }
+    public void setLocale(String locale) { this.locale = normalizeLocale(locale); }
+    public String getTimezone() { return timezone; }
+    public void setTimezone(String timezone) { this.timezone = normalizeTimezone(timezone); }
+    public String getDateFormat() { return dateFormat; }
+    public void setDateFormat(String dateFormat) { this.dateFormat = normalizeDateFormat(dateFormat); }
+    public String getTimeFormat() { return timeFormat; }
+    public void setTimeFormat(String timeFormat) { this.timeFormat = normalizeTimeFormat(timeFormat); }
+    public Integer getVersion() { return version; }
+    public void setVersion(Integer version) { this.version = version; }
 
     // --- UserDetails Arayüzünden Gelen Zorunlu Metotlar ---
 
@@ -128,6 +158,10 @@ public class User implements UserDetails { // UserDetails arayüzünü uygular
             this.sessionTimeoutMinutes = DEFAULT_SESSION_TIMEOUT_MINUTES;
         }
         this.role = normalizeRole(this.role);
+        this.locale = normalizeLocale(this.locale);
+        this.timezone = normalizeTimezone(this.timezone);
+        this.dateFormat = normalizeDateFormat(this.dateFormat);
+        this.timeFormat = normalizeTimeFormat(this.timeFormat);
     }
 
     public static String normalizeRole(String role) {
@@ -139,5 +173,37 @@ public class User implements UserDetails { // UserDetails arayüzünü uygular
             trimmed = trimmed.substring(5);
         }
         return trimmed.isBlank() ? "USER" : trimmed;
+    }
+
+    public static String normalizeLocale(String locale) {
+        if (locale == null || locale.isBlank()) {
+            return DEFAULT_LOCALE;
+        }
+        String trimmed = locale.trim().toLowerCase();
+        return trimmed.isBlank() ? DEFAULT_LOCALE : trimmed;
+    }
+
+    public static String normalizeTimezone(String timezone) {
+        if (timezone == null || timezone.isBlank()) {
+            return DEFAULT_TIMEZONE;
+        }
+        String trimmed = timezone.trim();
+        return trimmed.isBlank() ? DEFAULT_TIMEZONE : trimmed;
+    }
+
+    public static String normalizeDateFormat(String dateFormat) {
+        if (dateFormat == null || dateFormat.isBlank()) {
+            return DEFAULT_DATE_FORMAT;
+        }
+        String trimmed = dateFormat.trim();
+        return trimmed.isBlank() ? DEFAULT_DATE_FORMAT : trimmed;
+    }
+
+    public static String normalizeTimeFormat(String timeFormat) {
+        if (timeFormat == null || timeFormat.isBlank()) {
+            return DEFAULT_TIME_FORMAT;
+        }
+        String trimmed = timeFormat.trim();
+        return trimmed.isBlank() ? DEFAULT_TIME_FORMAT : trimmed;
     }
 }
