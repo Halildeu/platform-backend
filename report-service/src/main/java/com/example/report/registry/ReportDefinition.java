@@ -12,6 +12,7 @@ public record ReportDefinition(
         String sourceSchema,
         String schemaMode,
         String yearColumn,
+        String sourceQuery,
         List<ColumnDefinition> columns,
         String defaultSort,
         String defaultSortDirection,
@@ -21,8 +22,8 @@ public record ReportDefinition(
         if (key == null || key.isBlank()) {
             throw new IllegalArgumentException("Report key must not be blank");
         }
-        if (source == null || source.isBlank()) {
-            throw new IllegalArgumentException("Report source (view/table name) must not be blank");
+        if ((source == null || source.isBlank()) && (sourceQuery == null || sourceQuery.isBlank())) {
+            throw new IllegalArgumentException("Report must have either source (table name) or sourceQuery (custom SQL)");
         }
         if (sourceSchema == null || sourceSchema.isBlank()) {
             sourceSchema = "dbo";
@@ -40,5 +41,9 @@ public record ReportDefinition(
 
     public boolean isYearlySchema() {
         return "yearly".equals(schemaMode);
+    }
+
+    public boolean hasSourceQuery() {
+        return sourceQuery != null && !sourceQuery.isBlank();
     }
 }

@@ -1,0 +1,40 @@
+{
+  "key": "fin-kaynak-eslesme",
+  "version": "1.0",
+  "title": "Muhasebe Kaynak Eşleşme Raporu",
+  "description": "ACCOUNT_CARD fişleri — ACTION_TYPE ve ACTION_ID ile kaynak tablo eşleşme durumu",
+  "category": "Finans",
+  "source": "ACCOUNT_CARD",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "sourceQuery": "SELECT AC.CARD_ID, AC.ACTION_DATE, AC.CARD_TYPE, AC.ACTION_TYPE, AC.ACTION_ID, AC.ACTION_ROW_ID, AC.CARD_DETAIL, AC.PAPER_NO, AC.BILL_NO, AC.IS_CANCEL, AC.ACC_COMPANY_ID, AC.ACC_EMPLOYEE_ID, ISNULL(SPC.PROCESS_CAT, 'Diger') AS PROCESS_CAT_NAME, C.FULLNAME AS COMPANY_NAME, CASE WHEN AC.ACTION_ID IS NULL OR AC.ACTION_ID = 0 THEN 'KAYNAK YOK' ELSE 'ESLESME VAR' END AS ESLESME_DURUMU, CASE AC.ACTION_TYPE WHEN 23 THEN 'BANK_ACTIONS' WHEN 25 THEN 'CASH/HAVALE' WHEN 56 THEN 'ALIS_FATURA' WHEN 58 THEN 'FATURA_DIGER' WHEN 59 THEN 'SATIS_FATURA' WHEN 120 THEN 'MASRAF_FISI' WHEN 113 THEN 'STOK_FIS' WHEN 41 THEN 'CARI_DEKONT' ELSE 'TIP_' + CAST(ISNULL(AC.ACTION_TYPE,0) AS NVARCHAR) END AS KAYNAK_TABLO, (SELECT ISNULL(SUM(CASE WHEN ACR.BA = 1 THEN ACR.AMOUNT ELSE 0 END), 0) FROM [{schema}].[ACCOUNT_CARD_ROWS] ACR WHERE ACR.CARD_ID = AC.CARD_ID) AS FIS_BORC_TOPLAM, (SELECT ISNULL(SUM(CASE WHEN ACR.BA = 0 THEN ACR.AMOUNT ELSE 0 END), 0) FROM [{schema}].[ACCOUNT_CARD_ROWS] ACR WHERE ACR.CARD_ID = AC.CARD_ID) AS FIS_ALACAK_TOPLAM, (SELECT COUNT(*) FROM [{schema}].[ACCOUNT_CARD_ROWS] ACR WHERE ACR.CARD_ID = AC.CARD_ID) AS FIS_SATIR_SAYISI FROM [{schema}].[ACCOUNT_CARD] AC WITH (NOLOCK) LEFT JOIN [workcube_mikrolink_7].[SETUP_PROCESS_CAT] SPC WITH (NOLOCK) ON SPC.PROCESS_CAT_ID = AC.CARD_CAT_ID LEFT JOIN [workcube_mikrolink].[COMPANY] C WITH (NOLOCK) ON C.COMPANY_ID = AC.ACC_COMPANY_ID",
+  "columns": [
+    { "field": "ACTION_DATE", "headerName": "Tarih", "type": "date", "width": 110, "sensitive": false },
+    { "field": "ESLESME_DURUMU", "headerName": "Eşleşme", "type": "text", "width": 120, "sensitive": false },
+    { "field": "KAYNAK_TABLO", "headerName": "Kaynak Tablo", "type": "text", "width": 140, "sensitive": false },
+    { "field": "PROCESS_CAT_NAME", "headerName": "İşlem Kategorisi", "type": "text", "width": 150, "sensitive": false },
+    { "field": "CARD_DETAIL", "headerName": "Fiş Açıklama", "type": "text", "width": 300, "sensitive": false },
+    { "field": "FIS_BORC_TOPLAM", "headerName": "Fiş Borç Toplamı", "type": "number", "width": 140, "sensitive": false },
+    { "field": "FIS_ALACAK_TOPLAM", "headerName": "Fiş Alacak Toplamı", "type": "number", "width": 140, "sensitive": false },
+    { "field": "FIS_SATIR_SAYISI", "headerName": "Satır Sayısı", "type": "number", "width": 90, "sensitive": false },
+    { "field": "COMPANY_NAME", "headerName": "Cari Adı", "type": "text", "width": 220, "sensitive": false },
+    { "field": "PAPER_NO", "headerName": "Belge No", "type": "text", "width": 130, "sensitive": false },
+    { "field": "ACTION_TYPE", "headerName": "Action Type", "type": "number", "width": 90, "sensitive": false },
+    { "field": "ACTION_ID", "headerName": "Action ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CARD_TYPE", "headerName": "Card Type", "type": "number", "width": 80, "sensitive": false },
+    { "field": "CARD_ID", "headerName": "Fiş ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "ACC_COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 80, "sensitive": false }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "ACC_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

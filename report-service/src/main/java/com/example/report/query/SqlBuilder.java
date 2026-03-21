@@ -172,7 +172,13 @@ public class SqlBuilder {
                     : def.sourceSchema();
 
             StringBuilder sb = new StringBuilder();
-            sb.append("[").append(schema).append("].[").append(def.source()).append("] WITH (NOLOCK)");
+            if (def.hasSourceQuery()) {
+                // Custom SQL query — wrap as subquery
+                String resolvedQuery = def.sourceQuery().replace("{schema}", schema);
+                sb.append("(").append(resolvedQuery).append(") AS _src");
+            } else {
+                sb.append("[").append(schema).append("].[").append(def.source()).append("] WITH (NOLOCK)");
+            }
             sb.append(" WHERE 1=1");
             appendWhereFilters(sb, rlsWhereClause, rlsParams, filterResult, params);
             return sb.toString();
@@ -188,7 +194,12 @@ public class SqlBuilder {
                 union.append("\n  UNION ALL\n");
             }
             union.append("  SELECT ").append(selectCols);
-            union.append(" FROM [").append(schemas.get(i)).append("].[").append(def.source()).append("] WITH (NOLOCK)");
+            if (def.hasSourceQuery()) {
+                String resolvedQuery = def.sourceQuery().replace("{schema}", schemas.get(i));
+                union.append(" FROM (").append(resolvedQuery).append(") AS _src");
+            } else {
+                union.append(" FROM [").append(schemas.get(i)).append("].[").append(def.source()).append("] WITH (NOLOCK)");
+            }
             union.append(" WHERE 1=1");
             // Push down RLS and filters into each branch
             appendWhereFiltersInline(union, rlsWhereClause, filterResult);

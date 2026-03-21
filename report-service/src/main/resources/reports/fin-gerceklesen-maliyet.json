@@ -1,0 +1,36 @@
+{
+  "key": "fin-gerceklesen-maliyet",
+  "version": "1.0",
+  "title": "Gerçekleşen Maliyet Raporu",
+  "description": "Muhasebe fişlerinden hesap bazında gerçekleşen gider ve maliyet detayları",
+  "category": "Finans",
+  "source": "ACCOUNT_CARD_ROWS",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "columns": [
+    { "field": "CARD_ID", "headerName": "Fiş ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CARD_ROW_ID", "headerName": "Satır ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "ACCOUNT_ID", "headerName": "Hesap Kodu", "type": "text", "width": 160, "sensitive": false },
+    { "field": "BA", "headerName": "B/A", "type": "number", "width": 60, "sensitive": false },
+    { "field": "AMOUNT", "headerName": "Tutar", "type": "number", "width": 140, "sensitive": false },
+    { "field": "AMOUNT_CURRENCY", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "DETAIL", "headerName": "Açıklama", "type": "text", "width": 300, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 120, "sensitive": false },
+    { "field": "COST_PROFIT_CENTER", "headerName": "Masraf Merkezi", "type": "number", "width": 120, "sensitive": false },
+    { "field": "ACC_DEPARTMENT_ID", "headerName": "Departman", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ACC_BRANCH_ID", "headerName": "Şube", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ACC_PROJECT_ID", "headerName": "Proje", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ACC_COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 100, "sensitive": false }
+  ],
+  "defaultSort": "RECORD_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "ACC_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

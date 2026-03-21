@@ -1,0 +1,47 @@
+{
+  "key": "fin-masraf-detay",
+  "version": "1.0",
+  "title": "Masraf Fiş Detayları",
+  "description": "Masraf/gider fişleri ham veri — fiş detayı, tutar, KDV, döviz, ilişkili cari/proje/departman",
+  "category": "Finans",
+  "source": "EXPENSE_ITEM_PLANS",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "yearColumn": "EXPENSE_DATE",
+  "sourceQuery": "SELECT EIP.EXPENSE_ID, EIP.EXPENSE_DATE, EIP.DETAIL, EIP.PAPER_NO, EIP.SERIAL_NO, EIP.TOTAL_AMOUNT, EIP.KDV_TOTAL, EIP.TOTAL_AMOUNT_KDVLI, EIP.OTHER_MONEY, EIP.OTHER_MONEY_AMOUNT, EIP.OTHER_MONEY_KDV, EIP.OTHER_MONEY_NET_TOTAL, EIP.DUE_DATE, EIP.DEPARTMENT_ID, EIP.BRANCH_ID, EIP.PROJECT_ID, EIP.STOPAJ, EIP.STOPAJ_ORAN, EIP.IS_IPTAL, EIP.RECORD_DATE, EI.EXPENSE_ITEM_NAME AS GIDER_KALEMI, EI.ACCOUNT_CODE AS GIDER_HESAP_KODU, ISNULL(SPC.PROCESS_CAT, 'Diger') AS ISLEM_KATEGORISI, C.FULLNAME AS CARI_ADI, P.PROJECT_HEAD AS PROJE_ADI FROM [{schema}].[EXPENSE_ITEM_PLANS] EIP WITH (NOLOCK) LEFT JOIN [{schema}].[EXPENSE_ITEMS] EI WITH (NOLOCK) ON EI.EXPENSE_ITEM_ID = EIP.EXPENSE_COST_TYPE LEFT JOIN [workcube_mikrolink_7].[SETUP_PROCESS_CAT] SPC WITH (NOLOCK) ON SPC.PROCESS_CAT_ID = EIP.PROCESS_CAT LEFT JOIN [workcube_mikrolink].[COMPANY] C WITH (NOLOCK) ON C.COMPANY_ID = EIP.CH_COMPANY_ID LEFT JOIN [workcube_mikrolink].[PRO_PROJECTS] P WITH (NOLOCK) ON P.PROJECT_ID = EIP.PROJECT_ID",
+  "columns": [
+    { "field": "EXPENSE_DATE", "headerName": "Masraf Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "ISLEM_KATEGORISI", "headerName": "İşlem Kategorisi", "type": "text", "width": 160, "sensitive": false },
+    { "field": "GIDER_KALEMI", "headerName": "Gider Kalemi", "type": "text", "width": 200, "sensitive": false },
+    { "field": "GIDER_HESAP_KODU", "headerName": "Gider Hesap Kodu", "type": "text", "width": 140, "sensitive": false },
+    { "field": "DETAIL", "headerName": "Açıklama", "type": "text", "width": 300, "sensitive": false },
+    { "field": "TOTAL_AMOUNT", "headerName": "Tutar (Net)", "type": "number", "width": 130, "sensitive": false },
+    { "field": "KDV_TOTAL", "headerName": "KDV", "type": "number", "width": 100, "sensitive": false },
+    { "field": "TOTAL_AMOUNT_KDVLI", "headerName": "Tutar (KDV'li)", "type": "number", "width": 140, "sensitive": false },
+    { "field": "OTHER_MONEY", "headerName": "Döviz", "type": "text", "width": 60, "sensitive": false },
+    { "field": "OTHER_MONEY_AMOUNT", "headerName": "Döviz Tutar", "type": "number", "width": 120, "sensitive": false },
+    { "field": "STOPAJ", "headerName": "Stopaj", "type": "number", "width": 100, "sensitive": false },
+    { "field": "STOPAJ_ORAN", "headerName": "Stopaj %", "type": "number", "width": 80, "sensitive": false },
+    { "field": "CARI_ADI", "headerName": "Cari Adı", "type": "text", "width": 240, "sensitive": false },
+    { "field": "PROJE_ADI", "headerName": "Proje", "type": "text", "width": 200, "sensitive": false },
+    { "field": "PAPER_NO", "headerName": "Belge No", "type": "text", "width": 140, "sensitive": false },
+    { "field": "SERIAL_NO", "headerName": "Seri No", "type": "text", "width": 120, "sensitive": false },
+    { "field": "DUE_DATE", "headerName": "Vade Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "DEPARTMENT_ID", "headerName": "Departman", "type": "number", "width": 100, "sensitive": false },
+    { "field": "BRANCH_ID", "headerName": "Şube", "type": "number", "width": 80, "sensitive": false },
+    { "field": "IS_IPTAL", "headerName": "İptal", "type": "number", "width": 60, "sensitive": false },
+    { "field": "EXPENSE_ID", "headerName": "Masraf ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 110, "sensitive": false }
+  ],
+  "defaultSort": "EXPENSE_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "BRANCH_ID",
+      "scopeType": "BRANCH",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

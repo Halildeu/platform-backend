@@ -24,6 +24,8 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.util.StringUtils;
 
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +38,7 @@ import java.util.List;
 @EnableMethodSecurity
 // STORY-0002: Backend Keycloak JWT Hardening
 @Profile("!local & !dev")
+@Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class SecurityConfig {
 
     private final Environment environment;
@@ -54,6 +57,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/**").permitAll()
+                        .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .exceptionHandling(handler -> handler

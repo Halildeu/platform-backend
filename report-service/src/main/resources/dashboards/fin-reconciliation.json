@@ -1,0 +1,155 @@
+{
+  "type": "dashboard",
+  "key": "fin-reconciliation",
+  "version": "2.0",
+  "title": "Tutar Mutabakat Kontrolü",
+  "description": "ACTION_TYPE bazında kaynak tablo ↔ ACCOUNT_CARD_ROWS eşleştirme",
+  "category": "Finans",
+  "icon": "check-circle",
+  "access": {
+    "permission": "dashboards.fin-analytics.view"
+  },
+  "timeRanges": ["30d", "90d", "180d", "1y", "ytd"],
+  "defaultTimeRange": "ytd",
+  "kpis": [
+    {
+      "id": "acr-total-borc",
+      "title": "ACR Toplam BORÇ",
+      "format": "currency",
+      "tone": "info",
+      "source": "ACCOUNT_CARD_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": { "select": "ISNULL(SUM(CASE WHEN BA = 1 THEN AMOUNT ELSE 0 END), 0)", "where": "1=1" }
+    },
+    {
+      "id": "acr-total-alacak",
+      "title": "ACR Toplam ALACAK",
+      "format": "currency",
+      "tone": "info",
+      "source": "ACCOUNT_CARD_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": { "select": "ISNULL(SUM(CASE WHEN BA = 0 THEN AMOUNT ELSE 0 END), 0)", "where": "1=1" }
+    },
+    {
+      "id": "acr-borc-alacak-fark",
+      "title": "Borç-Alacak Farkı",
+      "format": "currency",
+      "toneRules": [
+        { "condition": "== 0", "tone": "success" },
+        { "condition": "!= 0", "tone": "warning" }
+      ],
+      "source": "ACCOUNT_CARD_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": { "select": "ISNULL(SUM(CASE WHEN BA = 1 THEN AMOUNT ELSE 0 END), 0) - ISNULL(SUM(CASE WHEN BA = 0 THEN AMOUNT ELSE 0 END), 0)", "where": "1=1" }
+    },
+    {
+      "id": "card-total",
+      "title": "Fiş Sayısı",
+      "format": "number",
+      "tone": "info",
+      "source": "ACCOUNT_CARD",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": { "select": "COUNT(*)", "where": "1=1" }
+    },
+    {
+      "id": "card-with-source",
+      "title": "Kaynağı Olan Fiş",
+      "format": "number",
+      "tone": "success",
+      "source": "ACCOUNT_CARD",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": { "select": "COUNT(CASE WHEN ACTION_ID IS NOT NULL AND ACTION_ID > 0 THEN 1 END)", "where": "1=1" }
+    },
+    {
+      "id": "card-no-source",
+      "title": "Kaynağı Olmayan Fiş",
+      "format": "number",
+      "toneRules": [
+        { "condition": "== 0", "tone": "success" },
+        { "condition": "> 0", "tone": "warning" }
+      ],
+      "source": "ACCOUNT_CARD",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": { "select": "COUNT(CASE WHEN ACTION_ID IS NULL OR ACTION_ID = 0 THEN 1 END)", "where": "1=1" }
+    }
+  ],
+  "charts": [
+    {
+      "id": "card-by-action-type",
+      "title": "Fiş Sayısı — ACTION_TYPE Bazında",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "ACCOUNT_CARD",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST(ACTION_TYPE AS NVARCHAR) AS label, COUNT(*) AS value",
+        "where": "1=1",
+        "groupBy": "ACTION_TYPE",
+        "orderBy": "COUNT(*) DESC",
+        "limit": 20
+      },
+      "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "acr-amount-by-action-type",
+      "title": "ACR Tutar (Borç) — ACTION_TYPE Bazında",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "ACCOUNT_CARD_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST((SELECT TOP 1 AC.ACTION_TYPE FROM [workcube_mikrolink_2026_1].[ACCOUNT_CARD] AC WHERE AC.CARD_ID = [workcube_mikrolink_2026_1].[ACCOUNT_CARD_ROWS].CARD_ID) AS NVARCHAR) AS label, SUM(CASE WHEN BA = 1 THEN AMOUNT ELSE 0 END) AS value",
+        "where": "1=1",
+        "groupBy": "(SELECT TOP 1 AC.ACTION_TYPE FROM [workcube_mikrolink_2026_1].[ACCOUNT_CARD] AC WHERE AC.CARD_ID = [workcube_mikrolink_2026_1].[ACCOUNT_CARD_ROWS].CARD_ID)",
+        "orderBy": "SUM(CASE WHEN BA = 1 THEN AMOUNT ELSE 0 END) DESC",
+        "limit": 20
+      },
+      "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "acr-by-account-group",
+      "title": "ACR Borç — Hesap Planı Ana Grubu",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "ACCOUNT_CARD_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "LEFT(ACCOUNT_ID, 1) AS label, SUM(CASE WHEN BA = 1 THEN AMOUNT ELSE 0 END) AS value, SUM(CASE WHEN BA = 0 THEN AMOUNT ELSE 0 END) AS value2",
+        "where": "1=1",
+        "groupBy": "LEFT(ACCOUNT_ID, 1)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showValues": true,
+        "showGrid": true,
+        "series": [
+          { "field": "value", "name": "Borç", "color": "#ef4444" },
+          { "field": "value2", "name": "Alacak", "color": "#22c55e" }
+        ]
+      }
+    },
+    {
+      "id": "card-type-distribution",
+      "title": "Fiş Tipi Dağılımı (CARD_TYPE)",
+      "chartType": "pie",
+      "size": "md",
+      "source": "ACCOUNT_CARD",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST(CARD_TYPE AS NVARCHAR) AS label, COUNT(*) AS value",
+        "where": "1=1",
+        "groupBy": "CARD_TYPE",
+        "orderBy": "COUNT(*) DESC",
+        "limit": 10
+      },
+      "chartConfig": { "showLegend": true, "showPercentage": true }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["acr-total-borc", "acr-total-alacak", "acr-borc-alacak-fark", "card-total", "card-with-source", "card-no-source"] },
+      { "type": "chart-row", "ids": ["card-by-action-type", "card-type-distribution"] },
+      { "type": "chart-row", "ids": ["acr-amount-by-action-type", "acr-by-account-group"] }
+    ]
+  }
+}

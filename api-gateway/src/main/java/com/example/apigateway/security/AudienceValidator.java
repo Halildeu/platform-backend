@@ -5,39 +5,74 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 import org.springframework.security.oauth2.jwt.Jwt;
 
+/**
+ * Audience doğrulayıcı; aud claim veya azp/client_id claim'i kabul eder.
+ * Permission-service'deki implementasyonla uyumlu.
+ */
 public class AudienceValidator implements OAuth2TokenValidator<Jwt> {
 
     private final Set<String> expectedAudiences;
+    private final Set<String> allowedClientIds;
 
     public AudienceValidator(Collection<String> expectedAudiences) {
-        if (expectedAudiences == null) {
-            this.expectedAudiences = Set.of();
-        } else {
-            this.expectedAudiences = expectedAudiences.stream()
-                    .filter(Objects::nonNull)
-                    .map(String::trim)
-                    .filter(s -> !s.isBlank())
-                    .collect(Collectors.toUnmodifiableSet());
-        }
+        this(expectedAudiences, Set.of("frontend", "admin-cli", "serban-web"));
+    }
+
+    public AudienceValidator(Collection<String> expectedAudiences, Collection<String> allowedClientIds) {
+        this.expectedAudiences = normalize(expectedAudiences);
+        this.allowedClientIds = normalize(allowedClientIds);
     }
 
     @Override
     public OAuth2TokenValidatorResult validate(Jwt token) {
-        if (expectedAudiences.isEmpty()) {
+        if (expectedAudiences.isEmpty() && allowedClientIds.isEmpty()) {
             return OAuth2TokenValidatorResult.success();
         }
-        Collection<String> tokenAudiences = token.getAudience();
-        boolean match = tokenAudiences != null && tokenAudiences.stream()
+
+        Collection<String> audiences = token.getAudience();
+        if (audiences != null && audiences.stream()
                 .filter(Objects::nonNull)
-                .anyMatch(expectedAudiences::contains);
-        if (match) {
+                .map(String::trim)
+                .anyMatch(expectedAudiences::contains)) {
             return OAuth2TokenValidatorResult.success();
         }
+
+        // azp claim fallback (Keycloak frontend token'ları)
+        String azp = stringClaim(token, "azp");
+        if (azp != null && allowedClientIds.contains(azp)) {
+            return OAuth2TokenValidatorResult.success();
+        }
+
+        // client_id claim fallback
+        String clientId = stringClaim(token, "client_id");
+        if (clientId != null && allowedClientIds.contains(clientId)) {
+            return OAuth2TokenValidatorResult.success();
+        }
+
         return OAuth2TokenValidatorResult.failure(
-                new OAuth2Error("invalid_token", "The required audience is missing", null));
+                new OAuth2Error(OAuth2ErrorCodes.INVALID_TOKEN, "The required audience is missing", null));
+    }
+
+    private static String stringClaim(Jwt token, String claimName) {
+        Object claim = token.getClaims().get(claimName);
+        if (claim instanceof String value) {
+            String trimmed = value.trim();
+            return trimmed.isEmpty() ? null : trimmed;
+        }
+        return null;
+    }
+
+    private static Set<String> normalize(Collection<String> values) {
+        if (values == null) return Set.of();
+        return values.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(v -> !v.isBlank())
+                .collect(Collectors.toUnmodifiableSet());
     }
 }

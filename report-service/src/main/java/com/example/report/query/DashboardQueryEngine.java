@@ -268,7 +268,7 @@ public class DashboardQueryEngine {
         ReportDefinition pseudoDef = new ReportDefinition(
                 "dashboard-rls", "1.0", "RLS", "", "", source,
                 access.rowFilter().column() != null ? "dbo" : "dbo",
-                "static", null,
+                "static", null, null,
                 List.of(new ColumnDefinition("_id", "_id", "number", 1, false)),
                 "_id", "ASC", access);
         return rowFilterInjector.buildRlsClause(pseudoDef, authz);

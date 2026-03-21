@@ -1,6 +1,7 @@
 package com.example.report.config;
 
 import com.example.report.security.AudienceValidator;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import org.springframework.context.annotation.Bean;
@@ -14,6 +15,7 @@ import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.web.SecurityFilterChain;
@@ -71,18 +73,61 @@ public class SecurityConfig {
         );
         List<String> audiences = resolveAudiences();
 
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        // Primary decoder
+        NimbusJwtDecoder primaryDecoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         if ("none".equalsIgnoreCase(issuer)) {
-            // Skip issuer validation — useful for local dev with mixed token issuers
-            decoder.setJwtValidator(new AudienceValidator(audiences));
-        } else {
-            OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
-                    JwtValidators.createDefaultWithIssuer(issuer),
-                    new AudienceValidator(audiences)
-            );
-            decoder.setJwtValidator(validator);
+            primaryDecoder.setJwtValidator(new AudienceValidator(audiences));
+            return primaryDecoder;
         }
-        return decoder;
+
+        primaryDecoder.setJwtValidator(buildValidator(issuer, audiences));
+
+        // Secondary issuers — Docker internal vs localhost Keycloak
+        String secondaryIssuer = deriveSecondaryIssuer(issuer);
+        if (secondaryIssuer != null) {
+            NimbusJwtDecoder secondaryDecoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+            secondaryDecoder.setJwtValidator(buildValidator(secondaryIssuer, audiences));
+            return fallbackDecoder(List.of(primaryDecoder, secondaryDecoder));
+        }
+
+        return primaryDecoder;
+    }
+
+    private OAuth2TokenValidator<Jwt> buildValidator(String issuer, List<String> audiences) {
+        return new DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefaultWithIssuer(issuer),
+                new AudienceValidator(audiences)
+        );
+    }
+
+    /**
+     * Docker/localhost issuer eşleştirmesi:
+     * keycloak:8080 ↔ localhost:8081 arası otomatik fallback.
+     */
+    private String deriveSecondaryIssuer(String primaryIssuer) {
+        if (primaryIssuer.contains("keycloak:8080")) {
+            return primaryIssuer.replace("keycloak:8080", "localhost:8081")
+                                .replace("http://keycloak", "http://localhost");
+        }
+        if (primaryIssuer.contains("localhost:8081")) {
+            return primaryIssuer.replace("localhost:8081", "keycloak:8080")
+                                .replace("http://localhost", "http://keycloak");
+        }
+        return null;
+    }
+
+    private JwtDecoder fallbackDecoder(List<NimbusJwtDecoder> decoders) {
+        return token -> {
+            JwtException lastError = null;
+            for (NimbusJwtDecoder decoder : decoders) {
+                try {
+                    return decoder.decode(token);
+                } catch (JwtException e) {
+                    lastError = e;
+                }
+            }
+            throw lastError != null ? lastError : new JwtException("No suitable decoder accepted the token");
+        };
     }
 
     private List<String> resolveAudiences() {

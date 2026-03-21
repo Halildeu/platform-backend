@@ -71,14 +71,23 @@ public class ReportRegistry {
                 .toList();
     }
 
+    private static final Pattern UNSAFE_SQL = Pattern.compile(
+            "(?i)\\b(DROP|DELETE|UPDATE|INSERT|EXEC|EXECUTE|xp_|sp_|ALTER|CREATE|TRUNCATE|MERGE)\\b");
+
     private void validate(ReportDefinition def) {
-        if (!SAFE_IDENTIFIER.matcher(def.source()).matches()) {
+        if (def.source() != null && !def.source().isBlank() && !SAFE_IDENTIFIER.matcher(def.source()).matches()) {
             throw new IllegalArgumentException(
                     "Report source '" + def.source() + "' contains unsafe characters. Only alphanumeric, underscore, and dot allowed.");
         }
         if (!SAFE_IDENTIFIER.matcher(def.sourceSchema()).matches()) {
             throw new IllegalArgumentException(
                     "Report sourceSchema '" + def.sourceSchema() + "' contains unsafe characters. Only alphanumeric, underscore, and dot allowed.");
+        }
+        if (def.hasSourceQuery()) {
+            if (UNSAFE_SQL.matcher(def.sourceQuery()).find()) {
+                throw new IllegalArgumentException(
+                        "Report sourceQuery in '" + def.key() + "' contains unsafe SQL keywords.");
+            }
         }
         for (ColumnDefinition col : def.columns()) {
             if (!SAFE_IDENTIFIER.matcher(col.field()).matches()) {

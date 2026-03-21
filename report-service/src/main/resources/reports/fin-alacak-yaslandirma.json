@@ -1,0 +1,25 @@
+{
+  "key": "fin-alacak-yaslandirma",
+  "version": "1.0",
+  "title": "Alacak Yaşlandırma Analizi",
+  "description": "Cari bazında alacak bakiye listesi",
+  "category": "Finans",
+  "source": "COMPANY_REMAINDER",
+  "sourceSchema": "workcube_mikrolink_1",
+  "schemaMode": "yearly",
+  "columns": [
+    { "field": "COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "BAKIYE", "headerName": "Toplam Alacak", "type": "number", "width": 150, "sensitive": false }
+  ],
+  "defaultSort": "BAKIYE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

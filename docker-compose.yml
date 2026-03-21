@@ -343,6 +343,7 @@ services:
     networks:
       - microservice-network
     environment:
+      - SPRING_PROFILES_ACTIVE=${REPORT_SERVICE_PROFILES:-docker}
       - SERVER_PORT=8095
       - REPORT_MSSQL_HOST=${REPORT_MSSQL_HOST:-host.docker.internal}
       - REPORT_MSSQL_PORT=${REPORT_MSSQL_PORT:-1433}
@@ -351,7 +352,7 @@ services:
       - REPORT_MSSQL_PASSWORD=${REPORT_MSSQL_PASSWORD:-}
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUER=http://localhost:8081/realms/serban
+      - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
       - SECURITY_JWT_AUDIENCE=report-service,account,frontend
       - PERMISSION_SERVICE_INTERNAL_API_KEY=${PERMISSION_SERVICE_INTERNAL_API_KEY:-dev-local-audit-mirror-key}
       # SQL Server baglantisi optional — erisim yoksa servis yine de baslar

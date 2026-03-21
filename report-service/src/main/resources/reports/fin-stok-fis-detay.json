@@ -1,0 +1,40 @@
+{
+  "key": "fin-stok-fis-detay",
+  "version": "1.0",
+  "title": "Stok Fiş Satır Detayları",
+  "description": "Stok giriş/çıkış fişleri satır bazında ham veri — ürün, miktar, fiyat, tutar, KDV",
+  "category": "Finans",
+  "source": "STOCK_FIS_ROW",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "sourceQuery": "SELECT SFR.STOCK_FIS_ROW_ID, SFR.FIS_ID, SFR.FIS_NUMBER, SFR.STOCK_ID, SFR.AMOUNT AS MIKTAR, SFR.UNIT, SFR.PRICE AS BIRIM_FIYAT, SFR.TOTAL AS TOPLAM, SFR.TOTAL_TAX AS KDV_TUTAR, SFR.NET_TOTAL AS NET_TUTAR, SFR.TAX AS KDV_ORAN, SFR.DISCOUNT1, SFR.LOT_NO, SFR.SPECT_VAR_NAME, SF.FIS_DATE, SF.FIS_TYPE, SF.FIS_DETAIL, SF.REF_NO, SF.LOCATION_OUT, SF.LOCATION_IN, SF.PROJECT_ID, ISNULL(SPC.PROCESS_CAT, 'Diger') AS ISLEM_KATEGORISI, P.PROJECT_HEAD AS PROJE_ADI FROM [{schema}].[STOCK_FIS_ROW] SFR WITH (NOLOCK) LEFT JOIN [{schema}].[STOCK_FIS] SF WITH (NOLOCK) ON SF.FIS_ID = SFR.FIS_ID LEFT JOIN [workcube_mikrolink_7].[SETUP_PROCESS_CAT] SPC WITH (NOLOCK) ON SPC.PROCESS_CAT_ID = SF.PROCESS_CAT LEFT JOIN [workcube_mikrolink].[PRO_PROJECTS] P WITH (NOLOCK) ON P.PROJECT_ID = SF.PROJECT_ID",
+  "columns": [
+    { "field": "FIS_DATE", "headerName": "Fiş Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "FIS_NUMBER", "headerName": "Fiş No", "type": "text", "width": 130, "sensitive": false },
+    { "field": "ISLEM_KATEGORISI", "headerName": "İşlem Kategorisi", "type": "text", "width": 160, "sensitive": false },
+    { "field": "FIS_DETAIL", "headerName": "Fiş Açıklama", "type": "text", "width": 280, "sensitive": false },
+    { "field": "STOCK_ID", "headerName": "Stok ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "SPECT_VAR_NAME", "headerName": "Varyant", "type": "text", "width": 140, "sensitive": false },
+    { "field": "MIKTAR", "headerName": "Miktar", "type": "number", "width": 90, "sensitive": false },
+    { "field": "UNIT", "headerName": "Birim", "type": "text", "width": 70, "sensitive": false },
+    { "field": "BIRIM_FIYAT", "headerName": "Birim Fiyat", "type": "number", "width": 120, "sensitive": false },
+    { "field": "NET_TUTAR", "headerName": "Net Tutar", "type": "number", "width": 130, "sensitive": false },
+    { "field": "KDV_ORAN", "headerName": "KDV %", "type": "number", "width": 70, "sensitive": false },
+    { "field": "KDV_TUTAR", "headerName": "KDV Tutar", "type": "number", "width": 110, "sensitive": false },
+    { "field": "TOPLAM", "headerName": "Toplam", "type": "number", "width": 130, "sensitive": false },
+    { "field": "DISCOUNT1", "headerName": "İskonto", "type": "number", "width": 100, "sensitive": false },
+    { "field": "LOT_NO", "headerName": "Lot No", "type": "text", "width": 100, "sensitive": false },
+    { "field": "PROJE_ADI", "headerName": "Proje", "type": "text", "width": 200, "sensitive": false },
+    { "field": "REF_NO", "headerName": "Ref No", "type": "text", "width": 120, "sensitive": false },
+    { "field": "FIS_TYPE", "headerName": "Fiş Tipi", "type": "number", "width": 80, "sensitive": false },
+    { "field": "STOCK_FIS_ROW_ID", "headerName": "Satır ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "FIS_ID", "headerName": "Fiş ID", "type": "number", "width": 80, "sensitive": false }
+  ],
+  "defaultSort": "FIS_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {}
+  }
+}
