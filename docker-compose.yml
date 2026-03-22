@@ -227,8 +227,8 @@ services:
       - KEYCLOAK_ADMIN_PASSWORD=admin
       # v26: KC_HOSTNAME_STRICT replaced by KC_HOSTNAME
       # start-dev modunda hostname kontrolü otomatik kapalı
-      - KC_HOSTNAME=localhost
       - KC_HTTP_ENABLED=true
+      - KC_HOSTNAME_DEBUG=true
     ports:
       - "8081:8080"
     networks:

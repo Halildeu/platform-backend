@@ -123,15 +123,14 @@ public class SecurityConfig {
         primary.setJwtValidator(validatorForIssuer.apply(primaryIssuer));
         decoders.add(primary);
 
-        if (extraJwks != null && !extraJwks.isBlank()) {
-            String[] uris = extraJwks.split(",");
-            String[] issuers = extraIssuers != null ? extraIssuers.split(",") : new String[0];
-            for (int i = 0; i < uris.length; i++) {
-                String uri = uris[i].trim();
-                if (uri.isEmpty()) continue;
-                NimbusJwtDecoder d = NimbusJwtDecoder.withJwkSetUri(uri).build();
-                String iss = (i < issuers.length && !issuers[i].isBlank()) ? issuers[i].trim() : primaryIssuer;
-                d.setJwtValidator(validatorForIssuer.apply(iss));
+        // Extra issuers: each issuer uses the primary JWK endpoint
+        // (same Keycloak instance, different hostname from frontend vs Docker)
+        if (extraIssuers != null && !extraIssuers.isBlank()) {
+            for (String iss : extraIssuers.split(",")) {
+                String issuerTrimmed = iss.trim();
+                if (issuerTrimmed.isEmpty() || issuerTrimmed.equals(primaryIssuer)) continue;
+                NimbusJwtDecoder d = NimbusJwtDecoder.withJwkSetUri(primaryJwk).build();
+                d.setJwtValidator(validatorForIssuer.apply(issuerTrimmed));
                 decoders.add(d);
             }
         }
