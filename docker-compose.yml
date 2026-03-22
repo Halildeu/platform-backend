@@ -318,7 +318,8 @@ services:
       # Ek issuer listesi Keycloak serban realm'i işaret eder
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban
-      - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-users}
+      - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-user_service.users}
+      - PERMISSION_AUTHZ_USER_TABLE=${PERMISSION_AUTHZ_USER_TABLE:-user_service.users}
     depends_on:
       discovery-server:
         condition: service_healthy
