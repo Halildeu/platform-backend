@@ -295,7 +295,7 @@ services:
     networks:
       - microservice-network
     environment:
-      - SPRING_PROFILES_ACTIVE=${PERMISSION_SERVICE_PROFILES:-local,docker}
+      - SPRING_PROFILES_ACTIVE=${PERMISSION_SERVICE_PROFILES:-docker}
       - PERMISSION_DB_URL=${PERMISSION_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
       - PERMISSION_DB_USERNAME=${PERMISSION_DB_USERNAME:-postgres}
       - PERMISSION_DB_PASSWORD=${PERMISSION_DB_PASSWORD:-postgres}
@@ -317,7 +317,11 @@ services:
       - SECURITY_JWT_AUDIENCE=${SECURITY_JWT_AUDIENCE:-permission-service}
       # Ek issuer listesi Keycloak serban realm'i işaret eder
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban
+      - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban
+      # Secondary issuer: frontend tokens come from localhost:8081
+      - SECURITY_JWT_SECONDARY_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
+      - SECURITY_JWT_SECONDARY_ISSUER=http://localhost:8081/realms/serban
+      - SECURITY_JWT_SECONDARY_AUDIENCE=permission-service
       - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-user_service.users}
       - PERMISSION_AUTHZ_USER_TABLE=${PERMISSION_AUTHZ_USER_TABLE:-user_service.users}
     depends_on:

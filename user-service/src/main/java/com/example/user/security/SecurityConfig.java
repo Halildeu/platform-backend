@@ -147,13 +147,47 @@ public class SecurityConfig {
 
     @Bean
     public JwtAuthenticationConverter userJwtAuthenticationConverter() {
-        JwtGrantedAuthoritiesConverter delegate = new JwtGrantedAuthoritiesConverter();
-        delegate.setAuthoritiesClaimName("permissions");
-        delegate.setAuthorityPrefix(""); // permissions claim zaten final değerleri taşır (örn: user-read)
-
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setPrincipalClaimName("sub");
-        converter.setJwtGrantedAuthoritiesConverter(delegate);
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            java.util.Set<org.springframework.security.core.GrantedAuthority> authorities = new java.util.LinkedHashSet<>();
+
+            // 1. "permissions" claim (injected by frontend via permission-service)
+            java.util.List<String> permissions = jwt.getClaimAsStringList("permissions");
+            if (permissions != null) {
+                permissions.forEach(p -> authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority(p)));
+            }
+
+            // 2. "realm_access.roles" (Keycloak standard)
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> realmAccess = jwt.getClaim("realm_access");
+            if (realmAccess != null) {
+                @SuppressWarnings("unchecked")
+                java.util.List<String> roles = (java.util.List<String>) realmAccess.get("roles");
+                if (roles != null) {
+                    roles.forEach(r -> {
+                        authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_" + r.toUpperCase()));
+                        // admin role → grant all common permissions
+                        if ("admin".equalsIgnoreCase(r)) {
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("user-read"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("user-write"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("user-manage"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("admin"));
+                        }
+                    });
+                }
+            }
+
+            // 3. "scope" claim fallback
+            String scope = jwt.getClaimAsString("scope");
+            if (scope != null) {
+                for (String s : scope.split(" ")) {
+                    if (!s.isBlank()) authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_" + s));
+                }
+            }
+
+            return authorities;
+        });
         return converter;
     }
 
