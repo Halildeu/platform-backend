@@ -220,17 +220,15 @@ services:
       start_period: 45s
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0.3
-    command: ${KEYCLOAK_START_COMMAND:-start-dev}
+    image: quay.io/keycloak/keycloak:26.5.5
+    command: ${KEYCLOAK_START_COMMAND:-start-dev --import-realm}
     environment:
       - KEYCLOAK_ADMIN=admin
       - KEYCLOAK_ADMIN_PASSWORD=admin
-      # Geliştirme kolaylığı: hostname katı doğrulamayı kapat
-      - KC_HOSTNAME_STRICT=false
-      - KC_THEME=login
-      # KEYCLOAK_IMPORT_FILE ve KEYCLOAK_START_COMMAND=start-dev --import-realm değerlerini
-      # yalnız yeni bir realm import etmek istediğinizde (.env üzerinde) tanımlayın.
-      - KEYCLOAK_IMPORT=${KEYCLOAK_IMPORT_FILE:-}
+      # v26: KC_HOSTNAME_STRICT replaced by KC_HOSTNAME
+      # start-dev modunda hostname kontrolü otomatik kapalı
+      - KC_HOSTNAME=localhost
+      - KC_HTTP_ENABLED=true
     ports:
       - "8081:8080"
     networks:
