@@ -178,13 +178,42 @@ public class SecurityConfig {
         serviceConverter.setPrincipalClaimName("svc");
         serviceConverter.setJwtGrantedAuthoritiesConverter(serviceAuthoritiesConverter);
 
-        JwtGrantedAuthoritiesConverter userAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
-        userAuthoritiesConverter.setAuthoritiesClaimName("permissions");
-        userAuthoritiesConverter.setAuthorityPrefix("");
-
         JwtAuthenticationConverter userConverter = new JwtAuthenticationConverter();
         userConverter.setPrincipalClaimName("sub");
-        userConverter.setJwtGrantedAuthoritiesConverter(userAuthoritiesConverter);
+        userConverter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            java.util.Set<org.springframework.security.core.GrantedAuthority> authorities = new java.util.LinkedHashSet<>();
+
+            // 1. "permissions" claim (if present)
+            java.util.List<String> permissions = jwt.getClaimAsStringList("permissions");
+            if (permissions != null) {
+                permissions.forEach(p -> authorities.add(
+                    new org.springframework.security.core.authority.SimpleGrantedAuthority(p)));
+            }
+
+            // 2. "realm_access.roles" (Keycloak standard)
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> realmAccess = jwt.getClaim("realm_access");
+            if (realmAccess != null) {
+                @SuppressWarnings("unchecked")
+                java.util.List<String> roles = (java.util.List<String>) realmAccess.get("roles");
+                if (roles != null) {
+                    roles.forEach(r -> {
+                        authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_" + r.toUpperCase()));
+                        if ("admin".equalsIgnoreCase(r)) {
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("access-read"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("access-write"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("access-manage"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("role-read"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("role-write"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("role-manage"));
+                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("permission-manage"));
+                        }
+                    });
+                }
+            }
+
+            return authorities;
+        });
 
         // Varsayılan davranış: kullanıcı token'ı olduğunda user converter, aksi halde service converter
         return new CompositeJwtAuthenticationConverter(serviceConverter, userConverter);
