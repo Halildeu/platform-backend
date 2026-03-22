@@ -31,14 +31,14 @@
       "sensitive": false
     },
     {
-      "field": "ACTION_DOC_NO",
+      "field": "PAPER_NO",
       "headerName": "Belge No",
       "type": "text",
       "width": 140,
       "sensitive": false
     },
     {
-      "field": "ACTION_DESC",
+      "field": "ACTION_DETAIL",
       "headerName": "Açıklama",
       "type": "text",
       "width": 280,
@@ -52,7 +52,7 @@
       "sensitive": false
     },
     {
-      "field": "CURRENCY_ID",
+      "field": "ACTION_CURRENCY_ID",
       "headerName": "Döviz",
       "type": "text",
       "width": 70,

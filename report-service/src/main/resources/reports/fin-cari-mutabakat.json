@@ -10,7 +10,7 @@
   "yearColumn": "ACTION_DATE",
   "columns": [
     {
-      "field": "ACTION_ID",
+      "field": "CARI_ACTION_ID",
       "headerName": "Hareket ID",
       "type": "number",
       "width": 100,
@@ -31,21 +31,21 @@
       "sensitive": false
     },
     {
-      "field": "ACTION_DUEDATE",
+      "field": "DUE_DATE",
       "headerName": "Vade Tarihi",
       "type": "date",
       "width": 110,
       "sensitive": false
     },
     {
-      "field": "ACTION_DOC_NO",
+      "field": "PAPER_NO",
       "headerName": "Belge No",
       "type": "text",
       "width": 140,
       "sensitive": false
     },
     {
-      "field": "ACTION_NAME",
+      "field": "ACTION_DETAIL",
       "headerName": "Açıklama",
       "type": "text",
       "width": 280,
@@ -59,7 +59,7 @@
       "sensitive": false
     },
     {
-      "field": "CURRENCY_ID",
+      "field": "ACTION_CURRENCY_ID",
       "headerName": "Döviz",
       "type": "text",
       "width": 70,
