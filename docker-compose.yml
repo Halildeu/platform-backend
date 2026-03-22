@@ -244,7 +244,7 @@ services:
       retries: 10
 
   vault:
-    image: hashicorp/vault:1.15.4
+    image: hashicorp/vault:1.21.4
     container_name: backend-vault-1
     user: "0:0"
     cap_add:
@@ -268,7 +268,7 @@ services:
       start_period: 10s
 
   vault-unseal:
-    image: hashicorp/vault:1.15.4
+    image: hashicorp/vault:1.21.4
     depends_on:
       vault:
         condition: service_started
@@ -386,7 +386,7 @@ services:
       start_period: 10s
 
   observability-grafana:
-    image: grafana/grafana:10.4.2
+    image: grafana/grafana:12.4.1
     container_name: observability-grafana
     environment:
       - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
