@@ -63,7 +63,7 @@ services:
       SERVICE_AUTH_ISSUER: ${SERVICE_AUTH_ISSUER:-auth-service}
       # Ek issuer/JWKS listesi Keycloak serban realm'ini işaret eder
       SECURITY_JWT_JWK_SET_URIS: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUERS: http://keycloak:8080/realms/serban
+      SECURITY_JWT_ISSUERS: http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban
     depends_on:
       discovery-server:
         condition: service_healthy
