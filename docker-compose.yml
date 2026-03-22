@@ -372,6 +372,51 @@ services:
       retries: 10
       start_period: 30s
 
+  loki:
+    image: grafana/loki:3.5.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki-data:/loki
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  promtail:
+    image: grafana/promtail:3.5.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./infra/promtail/config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - observability-network
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    ports:
+      - "3200:3200"
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    command: ["-config.file=/etc/tempo/config.yml"]
+    volumes:
+      - ./infra/tempo/config.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+    networks:
+      - observability-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3200/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   observability-prometheus:
     image: prom/prometheus:latest
     container_name: observability-prometheus
@@ -420,6 +465,8 @@ volumes:
   postgres_data:
   backend_keycloak_data:
   vault-data:
+  loki-data:
+  tempo-data:
 
 networks:
   microservice-network:
