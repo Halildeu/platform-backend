@@ -26,6 +26,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @EnableWebSecurity
 @EnableMethodSecurity
 @Profile("!local & !dev")
+@SuppressWarnings("deprecation") // References legacy JwtAuthFilter intentionally for local/dev fallback
 public class SecurityConfig {
 
     private final ObjectProvider<JwtAuthFilter> jwtAuthFilterProvider;
