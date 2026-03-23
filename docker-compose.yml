@@ -128,10 +128,12 @@ services:
       SPRING_CLOUD_VAULT_KV_ENABLED: "false"
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      # RS256/JWKS doğrulaması (user JWT)
+      # RS256/JWKS doğrulaması (user JWT — issuer localhost:8081 for frontend tokens)
       SECURITY_JWT_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUER: http://keycloak:8080/realms/serban
-      # Access token aud claim’i Keycloak client tanımındaki variant-service değerine göre doğrulanır.
+      SECURITY_JWT_ISSUER: http://localhost:8081/realms/serban
+      SECURITY_JWT_ISSUERS: http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban
+      SERVICE_AUTH_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SERVICE_AUTH_ISSUER: auth-service
       SECURITY_JWT_AUDIENCE: variant-service
       # Opsiyonel diğer ayarlar
       VARIANT_DB_URL: ${VARIANT_DB_URL}
@@ -193,7 +195,9 @@ services:
       - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service,core-data-service
       # Ek issuer: Keycloak (lokal dev)
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban
+      - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban
+      - SECURITY_JWT_SECONDARY_ISSUER=http://localhost:8081/realms/serban
+      - SECURITY_JWT_SECONDARY_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SPRING_CLOUD_VAULT_ENABLED="false"
       - SPRING_CLOUD_VAULT_FAIL_FAST="false"
       - SPRING_CLOUD_VAULT_KV_ENABLED="false"
