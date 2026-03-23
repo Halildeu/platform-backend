@@ -122,7 +122,7 @@ HEALTHY=$(docker compose ps --format "{{.Status}}" 2>/dev/null | grep -c "health
 TOTAL=$(docker compose ps --format "{{.Name}}" 2>/dev/null | wc -l | tr -d ' ')
 
 echo -e "${BOLD}Endpoint'ler:${NC}"
-for ep in "Frontend|http://localhost:3000|3000" "API Gateway|http://localhost:8080|8080" "Keycloak|http://localhost:8081|8081" "Eureka|http://localhost:8761|8761" "Vault|http://localhost:8200|8200" "Grafana|http://localhost:3010|3010"; do
+for ep in "Frontend|http://localhost:3000|3000" "API Gateway|http://localhost:8080/actuator/health|8080" "Keycloak|http://localhost:8081|8081" "Eureka|http://localhost:8761|8761" "Vault|http://localhost:8200/v1/sys/health|8200" "Grafana|http://localhost:3010|3010"; do
   IFS='|' read -r name url port <<< "$ep"
   code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
   if [ "$code" = "000" ]; then
