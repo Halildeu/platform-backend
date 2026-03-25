@@ -99,6 +99,28 @@
       }, "chartConfig": { "showValues": true }
     },
     {
+      "id": "age-pyramid-male", "title": "Yaş Piramidi (Erkek)", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 25 THEN '20-24' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 30 THEN '25-29' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 35 THEN '30-34' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 40 THEN '35-39' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 45 THEN '40-44' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 50 THEN '45-49' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 55 THEN '50-54' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 60 THEN '55-59' ELSE '60+' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ei.BIRTH_DATE IS NOT NULL AND ed.SEX = 1",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 25 THEN '20-24' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 30 THEN '25-29' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 35 THEN '30-34' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 40 THEN '35-39' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 45 THEN '40-44' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 50 THEN '45-49' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 55 THEN '50-54' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 60 THEN '55-59' ELSE '60+' END",
+        "orderBy": "MIN(DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()))"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "age-pyramid-female", "title": "Yaş Piramidi (Kadın)", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 25 THEN '20-24' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 30 THEN '25-29' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 35 THEN '30-34' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 40 THEN '35-39' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 45 THEN '40-44' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 50 THEN '45-49' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 55 THEN '50-54' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 60 THEN '55-59' ELSE '60+' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ei.BIRTH_DATE IS NOT NULL AND ed.SEX = 0",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 25 THEN '20-24' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 30 THEN '25-29' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 35 THEN '30-34' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 40 THEN '35-39' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 45 THEN '40-44' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 50 THEN '45-49' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 55 THEN '50-54' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 60 THEN '55-59' ELSE '60+' END",
+        "orderBy": "MIN(DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()))"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
       "id": "education-distribution", "title": "Eğitim Seviyesi", "chartType": "bar", "size": "md",
       "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
       "aggregate": {
