@@ -1,0 +1,360 @@
+{
+  "type": "dashboard",
+  "key": "hr-demografik",
+  "version": "3.0",
+  "title": "İK Demografik Yapı",
+  "description": "APQC standardında tüm demografik, organizasyonel, maaş ve çeşitlilik metrikleri — Workcube canlı veri",
+  "category": "İnsan Kaynakları",
+  "icon": "pie-chart",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "rowFilter": { "column": "OUR_COMPANY_ID", "scopeType": "COMPANY", "bypassPermission": "reports.hr.all-companies" }
+  },
+  "timeRanges": ["30d", "90d", "1y", "ytd"],
+  "defaultTimeRange": "ytd",
+  "kpis": [
+    {
+      "id": "headcount", "title": "Toplam Personel", "format": "number", "tone": "info",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": { "select": "COUNT(DISTINCT EMPLOYEE_ID)", "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL" }
+    },
+    {
+      "id": "female-ratio", "title": "Kadın Oranı", "format": "percent", "tone": "info",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(SUM(CASE WHEN ed.SEX = 0 THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID), 0)",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID"
+      }
+    },
+    {
+      "id": "avg-age", "title": "Ortalama Yaş", "format": "decimal", "tone": "info",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "AVG(DATEDIFF(DAY, ei.BIRTH_DATE, GETDATE()) / 365.25)",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ei.BIRTH_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID"
+      }
+    },
+    {
+      "id": "avg-tenure", "title": "Ort. Kıdem (Yıl)", "format": "decimal", "tone": "info",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": { "select": "AVG(DATEDIFF(DAY, START_DATE, GETDATE()) / 365.25)", "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL" }
+    },
+    {
+      "id": "turnover-rate", "title": "Devir Hızı", "format": "percent",
+      "toneRules": [{"condition": "> 0.20", "tone": "danger"}, {"condition": "> 0.13", "tone": "warning"}, {"condition": "<= 0.13", "tone": "success"}],
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(SUM(CASE WHEN FINISH_DATE IS NOT NULL AND FINISH_DATE >= :_periodStart AND FINISH_DATE <= :_periodEnd AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28) THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0)",
+        "where": "VALID = 1"
+      }
+    },
+    {
+      "id": "married-ratio", "title": "Evli Oranı", "format": "percent", "tone": "info",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(SUM(CASE WHEN ei.MARRIED = 1 THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID), 0)",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID"
+      }
+    },
+    {
+      "id": "disability-ratio", "title": "Engelli Oranı", "format": "percent", "tone": "info",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(SUM(CASE WHEN ed.DEFECTED = 1 THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID), 0)",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID"
+      }
+    },
+    {
+      "id": "white-collar-ratio", "title": "Beyaz Yaka Oranı", "format": "percent", "tone": "info",
+      "source": "EMPLOYEE_POSITIONS", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(SUM(CASE WHEN [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE = 1 THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID), 0)",
+        "where": "[workcube_mikrolink].[EMPLOYEE_POSITIONS].POSITION_STATUS = 1 AND EXISTS (SELECT 1 FROM [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio WHERE eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL)"
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "gender-distribution", "title": "Cinsiyet Dağılımı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ed.SEX = 1 THEN 'Erkek' WHEN ed.SEX = 0 THEN 'Kadın' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ed.SEX = 1 THEN 'Erkek' WHEN ed.SEX = 0 THEN 'Kadın' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "age-distribution", "title": "Yaş Grubu Dağılımı", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ei.BIRTH_DATE IS NULL THEN 'Belirtilmemiş' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 25 THEN '18-24' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 30 THEN '25-29' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 35 THEN '30-34' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 40 THEN '35-39' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 45 THEN '40-44' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 50 THEN '45-49' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 55 THEN '50-54' ELSE '55+' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ei.BIRTH_DATE IS NULL THEN 'Belirtilmemiş' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 25 THEN '18-24' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 30 THEN '25-29' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 35 THEN '30-34' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 40 THEN '35-39' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 45 THEN '40-44' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 50 THEN '45-49' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) < 55 THEN '50-54' ELSE '55+' END"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "education-distribution", "title": "Eğitim Seviyesi", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE ed.LAST_SCHOOL WHEN 1 THEN 'İlköğretim' WHEN 2 THEN 'Lise' WHEN 3 THEN 'Önlisans' WHEN 4 THEN 'Lisans' WHEN 5 THEN 'Yüksek Lisans' WHEN 6 THEN 'Doktora' WHEN 8 THEN 'Ortaokul' WHEN 9 THEN 'Meslek Lisesi' WHEN 10 THEN 'Mühendislik' WHEN 11 THEN 'Fakülte' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE ed.LAST_SCHOOL WHEN 1 THEN 'İlköğretim' WHEN 2 THEN 'Lise' WHEN 3 THEN 'Önlisans' WHEN 4 THEN 'Lisans' WHEN 5 THEN 'Yüksek Lisans' WHEN 6 THEN 'Doktora' WHEN 8 THEN 'Ortaokul' WHEN 9 THEN 'Meslek Lisesi' WHEN 10 THEN 'Mühendislik' WHEN 11 THEN 'Fakülte' ELSE 'Belirtilmemiş' END",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC"
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "dept-headcount", "title": "Departman Dağılımı", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(d.DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[DEPARTMENT] d ON d.DEPARTMENT_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].DEPARTMENT_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(d.DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC",
+        "limit": 15
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "company-distribution", "title": "Şirket Dağılımı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(oc.NICK_NAME, 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[BRANCH] b ON b.BRANCH_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].BRANCH_ID LEFT JOIN [workcube_mikrolink].[OUR_COMPANY] oc ON oc.COMP_ID = b.COMPANY_ID",
+        "groupBy": "ISNULL(oc.NICK_NAME, 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "branch-distribution", "title": "Şube Dağılımı", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(b.BRANCH_NAME, 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[BRANCH] b ON b.BRANCH_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].BRANCH_ID",
+        "groupBy": "ISNULL(b.BRANCH_NAME, 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC",
+        "limit": 15
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "collar-distribution", "title": "Yaka Tipi Dağılımı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEE_POSITIONS", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Diğer' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEE_POSITIONS].POSITION_STATUS = 1 AND EXISTS (SELECT 1 FROM [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio WHERE eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL)",
+        "groupBy": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Diğer' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "title-distribution", "title": "Unvan Dağılımı", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEE_POSITIONS", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM([workcube_mikrolink].[EMPLOYEE_POSITIONS].TITLE_NAME),''), 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEE_POSITIONS].POSITION_STATUS = 1 AND EXISTS (SELECT 1 FROM [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio WHERE eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL)",
+        "groupBy": "ISNULL(NULLIF(RTRIM([workcube_mikrolink].[EMPLOYEE_POSITIONS].TITLE_NAME),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) DESC",
+        "limit": 15
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "marital-status", "title": "Medeni Durum", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ei.MARRIED = 1 THEN 'Evli' WHEN ei.MARRIED = 0 THEN 'Bekar' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ei.MARRIED = 1 THEN 'Evli' WHEN ei.MARRIED = 0 THEN 'Bekar' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "military-status", "title": "Askerlik Durumu (Erkek)", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE ed.MILITARY_STATUS WHEN 1 THEN 'Yapıldı' WHEN 2 THEN 'Tecilli' WHEN 3 THEN 'Muaf' WHEN 4 THEN 'Bedelli' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ed.SEX = 1",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE ed.MILITARY_STATUS WHEN 1 THEN 'Yapıldı' WHEN 2 THEN 'Tecilli' WHEN 3 THEN 'Muaf' WHEN 4 THEN 'Bedelli' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "disability-distribution", "title": "Engel Durumu", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ed.DEFECTED = 1 THEN 'Engelli' ELSE 'Engelsiz' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ed.DEFECTED = 1 THEN 'Engelli' ELSE 'Engelsiz' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "blood-type", "title": "Kan Grubu", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE ei.BLOOD_TYPE WHEN 1 THEN 'A Rh+' WHEN 2 THEN 'A Rh-' WHEN 3 THEN 'B Rh+' WHEN 4 THEN 'B Rh-' WHEN 5 THEN 'AB Rh+' WHEN 6 THEN 'AB Rh-' WHEN 7 THEN '0 Rh+' WHEN 8 THEN '0 Rh-' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE ei.BLOOD_TYPE WHEN 1 THEN 'A Rh+' WHEN 2 THEN 'A Rh-' WHEN 3 THEN 'B Rh+' WHEN 4 THEN 'B Rh-' WHEN 5 THEN 'AB Rh+' WHEN 6 THEN 'AB Rh-' WHEN 7 THEN '0 Rh+' WHEN 8 THEN '0 Rh-' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "nationality-distribution", "title": "Uyruk Dağılımı", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ei.NATIONALITY IS NULL OR ei.NATIONALITY = 0 THEN 'Belirtilmemiş' WHEN ei.NATIONALITY = 1 THEN 'T.C.' ELSE 'Yabancı Uyruk' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ei.NATIONALITY IS NULL OR ei.NATIONALITY = 0 THEN 'Belirtilmemiş' WHEN ei.NATIONALITY = 1 THEN 'T.C.' ELSE 'Yabancı Uyruk' END",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC"
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "birth-city", "title": "Doğum Yeri (İl)", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ei.BIRTH_PLACE),''), 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ei.BIRTH_PLACE),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC",
+        "limit": 15
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "tenure-distribution", "title": "Kıdem Dağılımı", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 1 THEN '0-1 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 3 THEN '1-3 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 5 THEN '3-5 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 10 THEN '5-10 Yıl' ELSE '10+ Yıl' END AS label, COUNT(DISTINCT EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "groupBy": "CASE WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 1 THEN '0-1 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 3 THEN '1-3 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 5 THEN '3-5 Yıl' WHEN DATEDIFF(DAY, START_DATE, GETDATE())/365.25 < 10 THEN '5-10 Yıl' ELSE '10+ Yıl' END"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "duty-type", "title": "Görev Tipi Dağılımı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE DUTY_TYPE WHEN 0 THEN 'Normal' WHEN 1 THEN 'Stajyer' WHEN 2 THEN 'Sözleşmeli' WHEN 3 THEN 'Taşeron' WHEN 4 THEN 'Mevsimlik' WHEN 5 THEN 'Yarı Zamanlı' WHEN 6 THEN 'Geçici' WHEN 7 THEN 'Uzaktan' WHEN 8 THEN 'Danışman' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE IS NOT NULL",
+        "groupBy": "CASE DUTY_TYPE WHEN 0 THEN 'Normal' WHEN 1 THEN 'Stajyer' WHEN 2 THEN 'Sözleşmeli' WHEN 3 THEN 'Taşeron' WHEN 4 THEN 'Mevsimlik' WHEN 5 THEN 'Yarı Zamanlı' WHEN 6 THEN 'Geçici' WHEN 7 THEN 'Uzaktan' WHEN 8 THEN 'Danışman' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "salary-distribution", "title": "Maaş Dağılımı (Brüt)", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ISNULL(es.latest_salary, 0) = 0 THEN 'Belirtilmemiş' WHEN es.latest_salary < 20000 THEN '0-20K' WHEN es.latest_salary < 30000 THEN '20-30K' WHEN es.latest_salary < 40000 THEN '30-40K' WHEN es.latest_salary < 50000 THEN '40-50K' WHEN es.latest_salary < 75000 THEN '50-75K' WHEN es.latest_salary < 100000 THEN '75-100K' ELSE '100K+' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN (SELECT EMPLOYEE_ID, MAX(CASE WHEN M3 > 0 THEN M3 WHEN M2 > 0 THEN M2 WHEN M1 > 0 THEN M1 ELSE 0 END) AS latest_salary FROM [workcube_mikrolink].[EMPLOYEES_SALARY] WHERE PERIOD_YEAR = YEAR(GETDATE()) AND SALARY_CODE = 'BRUT' GROUP BY EMPLOYEE_ID) es ON es.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ISNULL(es.latest_salary, 0) = 0 THEN 'Belirtilmemiş' WHEN es.latest_salary < 20000 THEN '0-20K' WHEN es.latest_salary < 30000 THEN '20-30K' WHEN es.latest_salary < 40000 THEN '30-40K' WHEN es.latest_salary < 50000 THEN '40-50K' WHEN es.latest_salary < 75000 THEN '50-75K' WHEN es.latest_salary < 100000 THEN '75-100K' ELSE '100K+' END",
+        "orderBy": "MIN(ISNULL(es.latest_salary, 0))"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "salary-by-gender", "title": "Cinsiyet Bazlı Ort. Maaş", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ed.SEX = 1 THEN 'Erkek' WHEN ed.SEX = 0 THEN 'Kadın' ELSE 'Belirtilmemiş' END AS label, CAST(AVG(ISNULL(es.latest_salary, 0)) AS INT) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ISNULL(es.latest_salary, 0) > 0",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN (SELECT EMPLOYEE_ID, MAX(CASE WHEN M3 > 0 THEN M3 WHEN M2 > 0 THEN M2 WHEN M1 > 0 THEN M1 ELSE 0 END) AS latest_salary FROM [workcube_mikrolink].[EMPLOYEES_SALARY] WHERE PERIOD_YEAR = YEAR(GETDATE()) AND SALARY_CODE = 'BRUT' GROUP BY EMPLOYEE_ID) es ON es.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ed.SEX = 1 THEN 'Erkek' WHEN ed.SEX = 0 THEN 'Kadın' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "language-count", "title": "Yabancı Dil Bilgisi", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ISNULL(el.cnt, 0) = 0 THEN 'Dil Yok' WHEN el.cnt = 1 THEN '1 Dil' WHEN el.cnt = 2 THEN '2 Dil' ELSE '3+ Dil' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN (SELECT EMPLOYEE_ID, COUNT(*) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_APP_LANGUAGE] GROUP BY EMPLOYEE_ID) el ON el.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ISNULL(el.cnt, 0) = 0 THEN 'Dil Yok' WHEN el.cnt = 1 THEN '1 Dil' WHEN el.cnt = 2 THEN '2 Dil' ELSE '3+ Dil' END"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "edu-detail", "title": "Eğitim Detay (Okul Türü)", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ISNULL(eei.cnt, 0) = 0 THEN 'Kayıt Yok' WHEN eei.cnt = 1 THEN '1 Kayıt' WHEN eei.cnt BETWEEN 2 AND 3 THEN '2-3 Kayıt' ELSE '4+ Kayıt' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN (SELECT EMPLOYEE_ID, COUNT(*) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_APP_EDU_INFO] GROUP BY EMPLOYEE_ID) eei ON eei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ISNULL(eei.cnt, 0) = 0 THEN 'Kayıt Yok' WHEN eei.cnt = 1 THEN '1 Kayıt' WHEN eei.cnt BETWEEN 2 AND 3 THEN '2-3 Kayıt' ELSE '4+ Kayıt' END"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "smoking-distribution", "title": "Sigara Kullanımı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ed.USE_CIGARETTE = 1 THEN 'Kullanıyor' WHEN ed.USE_CIGARETTE = 0 THEN 'Kullanmıyor' ELSE 'Belirtilmemiş' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ed.USE_CIGARETTE = 1 THEN 'Kullanıyor' WHEN ed.USE_CIGARETTE = 0 THEN 'Kullanmıyor' ELSE 'Belirtilmemiş' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "home-city", "title": "İkamet Şehri", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(sc.CITY_NAME, 'Belirtilmemiş') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[SETUP_CITY] sc ON sc.CITY_ID = ed.HOMECITY",
+        "groupBy": "ISNULL(sc.CITY_NAME, 'Belirtilmemiş')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC",
+        "limit": 15
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "course-count", "title": "Kurs/Sertifika", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ISNULL(ec.cnt, 0) = 0 THEN 'Kurs Yok' WHEN ec.cnt = 1 THEN '1 Kurs' WHEN ec.cnt BETWEEN 2 AND 3 THEN '2-3 Kurs' ELSE '4+ Kurs' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN (SELECT EMPLOYEE_ID, COUNT(*) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_COURSE] GROUP BY EMPLOYEE_ID) ec ON ec.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ISNULL(ec.cnt, 0) = 0 THEN 'Kurs Yok' WHEN ec.cnt = 1 THEN '1 Kurs' WHEN ec.cnt BETWEEN 2 AND 3 THEN '2-3 Kurs' ELSE '4+ Kurs' END"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "relative-count", "title": "Aile Üye Sayısı", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ISNULL(er.cnt, 0) = 0 THEN 'Kayıt Yok' WHEN er.cnt = 1 THEN '1 Kişi' WHEN er.cnt BETWEEN 2 AND 3 THEN '2-3 Kişi' WHEN er.cnt BETWEEN 4 AND 5 THEN '4-5 Kişi' ELSE '6+ Kişi' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN (SELECT EMPLOYEE_ID, COUNT(*) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_RELATIVES] GROUP BY EMPLOYEE_ID) er ON er.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN ISNULL(er.cnt, 0) = 0 THEN 'Kayıt Yok' WHEN er.cnt = 1 THEN '1 Kişi' WHEN er.cnt BETWEEN 2 AND 3 THEN '2-3 Kişi' WHEN er.cnt BETWEEN 4 AND 5 THEN '4-5 Kişi' ELSE '6+ Kişi' END"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "monthly-hire-exit", "title": "Aylık Giriş / Çıkış", "chartType": "bar", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "FORMAT(START_DATE, 'yyyy-MM') AS label, COUNT(*) AS value",
+        "where": "VALID = 1 AND START_DATE IS NOT NULL AND START_DATE >= :_periodStart AND ISNULL(EXPLANATION_ID,0) NOT IN (18,26,28)",
+        "groupBy": "FORMAT(START_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      }, "chartConfig": { "showValues": true, "showGrid": true }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["headcount", "female-ratio", "avg-age", "avg-tenure", "turnover-rate", "married-ratio", "disability-ratio", "white-collar-ratio"] },
+      { "type": "chart-row", "ids": ["gender-distribution", "age-distribution"] },
+      { "type": "chart-row", "ids": ["education-distribution", "dept-headcount"] },
+      { "type": "chart-row", "ids": ["company-distribution", "branch-distribution"] },
+      { "type": "chart-row", "ids": ["collar-distribution", "title-distribution"] },
+      { "type": "chart-row", "ids": ["marital-status", "military-status"] },
+      { "type": "chart-row", "ids": ["disability-distribution", "blood-type"] },
+      { "type": "chart-row", "ids": ["nationality-distribution", "birth-city"] },
+      { "type": "chart-row", "ids": ["tenure-distribution", "duty-type"] },
+      { "type": "chart-row", "ids": ["salary-distribution", "salary-by-gender"] },
+      { "type": "chart-row", "ids": ["language-count", "edu-detail"] },
+      { "type": "chart-row", "ids": ["smoking-distribution", "home-city"] },
+      { "type": "chart-row", "ids": ["course-count", "relative-count"] },
+      { "type": "chart-row", "ids": ["monthly-hire-exit"] }
+    ]
+  }
+}
