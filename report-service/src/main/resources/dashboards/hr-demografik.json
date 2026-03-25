@@ -359,6 +359,107 @@
         "groupBy": "FORMAT(START_DATE, 'yyyy-MM')",
         "orderBy": "label ASC"
       }, "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "generation-distribution", "title": "Nesil Dağılımı", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) >= 59 THEN 'Baby Boomer' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) BETWEEN 44 AND 58 THEN 'Gen X' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) BETWEEN 28 AND 43 THEN 'Milenyum' ELSE 'Gen Z' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ei.BIRTH_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IDENTY] ei ON ei.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID",
+        "groupBy": "CASE WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) >= 59 THEN 'Baby Boomer' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) BETWEEN 44 AND 58 THEN 'Gen X' WHEN DATEDIFF(YEAR, ei.BIRTH_DATE, GETDATE()) BETWEEN 28 AND 43 THEN 'Milenyum' ELSE 'Gen Z' END",
+        "orderBy": "label"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "location-distribution", "title": "Lokasyon Dağılımı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(sc.CITY_NAME, 'Belirtilmemis') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[SETUP_CITY] sc ON sc.CITY_ID = ed.HOMECITY",
+        "groupBy": "ISNULL(sc.CITY_NAME, 'Belirtilmemis')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "manager-ratio", "title": "Yönetici Oranı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ep.IS_MASTER = 1 THEN 'Yonetici' ELSE 'Calisan' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] ep ON ep.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID AND ep.POSITION_STATUS = 1",
+        "groupBy": "CASE WHEN ep.IS_MASTER = 1 THEN 'Yonetici' ELSE 'Calisan' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "female-manager-ratio", "title": "Kadın Yönetici Oranı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ep.IS_MASTER = 1 THEN 'Yonetici' ELSE 'Calisan' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL AND ed.SEX = 0",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] ep ON ep.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID AND ep.POSITION_STATUS = 1",
+        "groupBy": "CASE WHEN ep.IS_MASTER = 1 THEN 'Yonetici' ELSE 'Calisan' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "disability-employment", "title": "Engelli İstihdam Oranı", "chartType": "pie", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN ed.DEFECTED = 1 OR io2.DEFECTION_LEVEL > 0 THEN 'Engelli' ELSE 'Engelli Degil' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_IN_OUT] io2 ON io2.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID AND io2.FINISH_DATE IS NULL",
+        "groupBy": "CASE WHEN ed.DEFECTED = 1 OR io2.DEFECTION_LEVEL > 0 THEN 'Engelli' ELSE 'Engelli Degil' END"
+      }, "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "position-level", "title": "Pozisyon Seviyesi", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(os.ORGANIZATION_STEP_NAME, 'Belirtilmemis') AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND [workcube_mikrolink].[EMPLOYEES_IN_OUT].START_DATE IS NOT NULL",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] ep ON ep.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID AND ep.POSITION_STATUS = 1 LEFT JOIN [workcube_mikrolink].[SETUP_ORGANIZATION_STEPS] os ON os.ORGANIZATION_STEP_ID = ep.ORGANIZATION_STEP_ID",
+        "groupBy": "ISNULL(os.ORGANIZATION_STEP_NAME, 'Belirtilmemis')",
+        "orderBy": "COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID) DESC"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "salary-gender-trend", "title": "Maaş Farkı Trend (Son 6 Yıl)", "chartType": "line", "size": "lg",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(s.PERIOD_YEAR AS VARCHAR) AS label, CAST(AVG(CASE WHEN ed.SEX = 1 THEN s.MONEY END) AS INT) AS male_avg, CAST(AVG(CASE WHEN ed.SEX = 0 THEN s.MONEY END) AS INT) AS female_avg, CAST(AVG(s.MONEY) AS INT) AS value",
+        "where": "[workcube_mikrolink].[EMPLOYEES_IN_OUT].FINISH_DATE IS NULL AND s.MONEY > 0 AND s.PERIOD_YEAR >= YEAR(GETDATE()) - 5",
+        "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_SALARY] s ON s.IN_OUT_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].IN_OUT_ID",
+        "groupBy": "s.PERIOD_YEAR",
+        "orderBy": "s.PERIOD_YEAR"
+      }, "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "new-hires-12m", "title": "Son 12 Ay İşe Alım", "chartType": "kpi", "size": "sm",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "'Yeni Ise Alim' AS label, COUNT(DISTINCT EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND START_DATE >= DATEADD(MONTH, -12, GETDATE())"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "internal-transfers", "title": "İç Transfer (Son 1 Yıl)", "chartType": "kpi", "size": "sm",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "'Ic Transfer' AS label, COUNT(DISTINCT EMPLOYEE_ID) AS value",
+        "where": "FINISH_DATE IS NULL AND DUTY_TYPE IN (3, 4) AND START_DATE >= DATEADD(YEAR, -1, GETDATE())"
+      }, "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "turnover-reasons", "title": "Ayrılma Nedenleri", "chartType": "bar", "size": "md",
+      "source": "EMPLOYEES_IN_OUT", "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN EXPLANATION_ID IS NOT NULL THEN ISNULL(r.REASON_NAME, 'Diger') ELSE 'Gonullu' END AS label, COUNT(*) AS value",
+        "where": "FINISH_DATE IS NOT NULL AND FINISH_DATE >= DATEADD(YEAR, -1, GETDATE())",
+        "join": "LEFT JOIN [workcube_mikrolink].[SETUP_EMPLOYEE_FIRE_REASONS] r ON r.REASON_ID = [workcube_mikrolink].[EMPLOYEES_IN_OUT].EXPLANATION_ID",
+        "groupBy": "CASE WHEN [workcube_mikrolink].[EMPLOYEES_IN_OUT].EXPLANATION_ID IS NOT NULL THEN ISNULL(r.REASON_NAME, 'Diger') ELSE 'Gonullu' END",
+        "orderBy": "COUNT(*) DESC"
+      }, "chartConfig": { "orientation": "horizontal", "showValues": true }
     }
   ],
   "layout": {
@@ -376,7 +477,11 @@
       { "type": "chart-row", "ids": ["language-count", "edu-detail"] },
       { "type": "chart-row", "ids": ["smoking-distribution", "home-city"] },
       { "type": "chart-row", "ids": ["course-count", "relative-count"] },
-      { "type": "chart-row", "ids": ["monthly-hire-exit"] }
+      { "type": "chart-row", "ids": ["monthly-hire-exit"] },
+      { "type": "chart-row", "ids": ["generation-distribution", "location-distribution"] },
+      { "type": "chart-row", "ids": ["manager-ratio", "female-manager-ratio", "disability-employment"] },
+      { "type": "chart-row", "ids": ["position-level", "salary-gender-trend"] },
+      { "type": "chart-row", "ids": ["new-hires-12m", "internal-transfers", "turnover-reasons"] }
     ]
   }
 }
