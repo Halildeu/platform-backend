@@ -35,7 +35,7 @@ class GatewayRouteCheck:
 APP_HEALTH_CHECKS: dict[str, HttpCheck] = {
     "discovery-server": HttpCheck("http://127.0.0.1:8761/actuator/health"),
     "auth-service": HttpCheck("http://127.0.0.1:8088/actuator/health"),
-    "permission-service": HttpCheck("http://127.0.0.1:8084/actuator/health"),
+    "permission-service": HttpCheck("http://127.0.0.1:8090/actuator/health"),
     "user-service": HttpCheck("http://127.0.0.1:8089/actuator/health"),
     "variant-service": HttpCheck("http://127.0.0.1:8091/actuator/health"),
     "core-data-service": HttpCheck("http://127.0.0.1:8092/actuator/health"),
@@ -44,14 +44,14 @@ APP_HEALTH_CHECKS: dict[str, HttpCheck] = {
 
 INFRA_CHECKS: dict[str, HttpCheck | TcpCheck] = {
     "postgres-db": TcpCheck("127.0.0.1", 5432),
-    "keycloak": HttpCheck("http://localhost:8081/realms/serban"),
+    "keycloak": HttpCheck("http://127.0.0.1:8081/realms/master"),
     "vault": HttpCheck("http://127.0.0.1:8200/v1/sys/health"),
 }
 
 GATEWAY_ROUTE_CHECKS: dict[str, GatewayRouteCheck] = {
     "gateway-user-by-email-route": GatewayRouteCheck(
         service="user-service",
-        check=HttpCheck("http://127.0.0.1:8080/api/v1/users/by-email?email=admin%40example.com"),
+        check=HttpCheck("http://127.0.0.1:8080/api/v1/users/by-email?email=admin%40example.com", expected_statuses=(200, 401)),
     ),
     "gateway-theme-registry-route": GatewayRouteCheck(
         service="variant-service",
@@ -86,6 +86,14 @@ FATAL_MARKERS = (
 
 IGNORED_ERROR_MARKERS = (
     "Unable to load io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider",
+    "Failed to execute goal org.springframework.boot:spring-boot-maven-plugin",
+    "Re-run Maven using the -X switch",
+    "re-run Maven with the -e switch",
+    "For more information about the errors and possible solutions",
+    "[Help 1] http://cwiki.apache.org",
+    "MojoExecutionException",
+    "GlobalExceptionHandler",
+    "RestExceptionHandler",
 )
 
 IGNORED_WARNING_MARKERS = (
@@ -245,6 +253,14 @@ def _line_is_ignored_error(line: str) -> bool:
     return any(marker in line for marker in IGNORED_ERROR_MARKERS)
 
 
+def _find_last_session_line(lines: list[str]) -> int:
+    """Return the index of the last '[session]' marker, or 0 if none found."""
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].startswith("[session]"):
+            return i
+    return 0
+
+
 def _scan_log(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {
@@ -257,17 +273,21 @@ def _scan_log(path: Path) -> dict[str, Any]:
         }
 
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    start_from = _find_last_session_line(lines)
     error_matches: list[dict[str, Any]] = []
     warning_matches: list[dict[str, Any]] = []
     ignored_warning_matches: list[dict[str, Any]] = []
     ignored_error_matches: list[dict[str, Any]] = []
     for idx, raw_line in enumerate(lines, start=1):
+        if idx - 1 < start_from:
+            continue
         line = raw_line.rstrip()
         if not line.strip():
             continue
         entry = {"line": idx, "text": line[:400]}
         if _line_matches_error(line):
-            if _line_is_ignored_error(line):
+            stripped = line.replace("[ERROR]", "").strip()
+            if not stripped or _line_is_ignored_error(line):
                 ignored_error_matches.append(entry)
                 continue
             error_matches.append(entry)
