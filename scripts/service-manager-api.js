@@ -41,6 +41,7 @@ const SERVICES = [
   { name: 'report-service', container: 'serban-report-service-1', port: 8095, healthPath: '/actuator/health', category: 'business' },
   // Data
   { name: 'postgres-db', container: 'serban-postgres-db-1', port: 5432, healthPath: null, category: 'data' },
+  { name: 'pgvector', container: 'pgvector_local', port: 5433, healthPath: null, category: 'data' },
   // Observability
   { name: 'loki', container: 'serban-loki-1', port: 3100, healthPath: '/ready', category: 'observability' },
   { name: 'tempo', container: 'serban-tempo-1', port: 3200, healthPath: '/ready', category: 'observability' },
