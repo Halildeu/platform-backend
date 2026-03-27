@@ -8,6 +8,7 @@
 const express = require('express');
 const Docker = require('dockerode');
 const http = require('http');
+const { execSync } = require('child_process');
 
 const app = express();
 app.use((_req, res, next) => {
@@ -48,12 +49,41 @@ const SERVICES = [
   { name: 'prometheus', container: 'observability-prometheus', port: 9090, healthPath: '/-/healthy', category: 'observability' },
   { name: 'grafana', container: 'observability-grafana', port: 3010, healthPath: '/api/health', category: 'observability' },
   { name: 'promtail', container: 'serban-promtail-1', port: null, healthPath: null, category: 'observability' },
+  // Frontend MFEs (process-based, not Docker)
+  { name: 'mfe-shell', container: null, port: 3000, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-suggestions', container: null, port: 3001, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-ethic', container: null, port: 3002, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-users', container: null, port: 3004, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-access', container: null, port: 3005, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-audit', container: null, port: 3006, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-reporting', container: null, port: 3007, healthPath: '/', category: 'frontend', type: 'process' },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function findService(name) {
   return SERVICES.find((s) => s.name === name);
+}
+
+function isProcessService(svc) {
+  return svc.type === 'process';
+}
+
+function getProcessInfo(port) {
+  try {
+    const pid = execSync(`lsof -ti:${port} -sTCP:LISTEN 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    if (!pid) return { pid: null, running: false, status: 'stopped' };
+    // Get process start time for uptime
+    const startRaw = execSync(`ps -p ${pid.split('\n')[0]} -o lstart= 2>/dev/null`, { encoding: 'utf-8' }).trim();
+    return {
+      pid: pid.split('\n')[0],
+      running: true,
+      status: 'running',
+      startedAt: startRaw ? new Date(startRaw).toISOString() : null,
+    };
+  } catch {
+    return { pid: null, running: false, status: 'stopped' };
+  }
 }
 
 async function getContainerInfo(containerName) {
@@ -128,6 +158,27 @@ function formatUptime(startedAt) {
 app.get('/api/services', async (_req, res) => {
   const results = await Promise.all(
     SERVICES.map(async (svc) => {
+      if (isProcessService(svc)) {
+        const procInfo = getProcessInfo(svc.port);
+        const healthInfo = procInfo.running
+          ? await checkHealth(svc.port, svc.healthPath)
+          : { status: 'DOWN', responseTime: null };
+        return {
+          name: svc.name,
+          container: null,
+          port: svc.port,
+          category: svc.category,
+          type: 'process',
+          containerId: procInfo.pid ? `pid:${procInfo.pid}` : null,
+          containerStatus: procInfo.status,
+          running: procInfo.running,
+          startedAt: procInfo.startedAt,
+          uptime: formatUptime(procInfo.startedAt),
+          dockerHealth: null,
+          health: healthInfo.status,
+          responseTime: healthInfo.responseTime,
+        };
+      }
       const [containerInfo, healthInfo] = await Promise.all([
         getContainerInfo(svc.container),
         checkHealth(svc.port, svc.healthPath),
@@ -137,6 +188,7 @@ app.get('/api/services', async (_req, res) => {
         container: svc.container,
         port: svc.port,
         category: svc.category,
+        type: 'docker',
         containerId: containerInfo.id,
         containerStatus: containerInfo.status,
         running: containerInfo.running,
@@ -165,6 +217,10 @@ app.post('/api/services/:name/start', async (req, res) => {
   const svc = findService(req.params.name);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
 
+  if (isProcessService(svc)) {
+    return res.json({ ok: false, action: 'start', name: svc.name, note: 'Process services must be started via npm scripts (e.g. npm run dev:shell)' });
+  }
+
   try {
     const container = docker.getContainer(svc.container);
     await container.start();
@@ -182,6 +238,17 @@ app.post('/api/services/:name/stop', async (req, res) => {
   const svc = findService(req.params.name);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
 
+  if (isProcessService(svc)) {
+    try {
+      const pid = execSync(`lsof -ti:${svc.port} -sTCP:LISTEN 2>/dev/null`, { encoding: 'utf-8' }).trim();
+      if (!pid) return res.json({ ok: true, action: 'stop', name: svc.name, note: 'already stopped' });
+      execSync(`kill ${pid.split('\n')[0]}`);
+      return res.json({ ok: true, action: 'stop', name: svc.name });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
   try {
     const container = docker.getContainer(svc.container);
     await container.stop({ t: 10 });
@@ -198,6 +265,10 @@ app.post('/api/services/:name/stop', async (req, res) => {
 app.post('/api/services/:name/restart', async (req, res) => {
   const svc = findService(req.params.name);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
+
+  if (isProcessService(svc)) {
+    return res.json({ ok: false, action: 'restart', name: svc.name, note: 'Process services must be restarted via npm scripts' });
+  }
 
   try {
     const container = docker.getContainer(svc.container);
@@ -221,6 +292,19 @@ app.post('/api/services/bulk-action', async (req, res) => {
 
   const results = await Promise.all(
     targets.map(async (svc) => {
+      if (isProcessService(svc)) {
+        if (action === 'stop') {
+          try {
+            const pid = execSync(`lsof -ti:${svc.port} -sTCP:LISTEN 2>/dev/null`, { encoding: 'utf-8' }).trim();
+            if (!pid) return { name: svc.name, ok: true, note: 'already stopped' };
+            execSync(`kill ${pid.split('\n')[0]}`);
+            return { name: svc.name, ok: true };
+          } catch (err) {
+            return { name: svc.name, ok: false, error: err.message };
+          }
+        }
+        return { name: svc.name, ok: false, note: 'Process services: use npm scripts for start/restart' };
+      }
       try {
         const container = docker.getContainer(svc.container);
         if (action === 'start') await container.start();
@@ -243,6 +327,10 @@ app.get('/api/services/:name/logs', async (req, res) => {
 
   const tail = parseInt(req.query.tail || '100', 10);
 
+  if (isProcessService(svc)) {
+    return res.json({ name: svc.name, logs: 'Process services: logs are in the terminal where npm run dev:* was started.', tail });
+  }
+
   try {
     const container = docker.getContainer(svc.container);
     const logs = await container.logs({
@@ -251,7 +339,6 @@ app.get('/api/services/:name/logs', async (req, res) => {
       tail,
       timestamps: true,
     });
-    // Docker logs returns a Buffer with stream headers — strip 8-byte prefix per line
     const text = logs.toString('utf-8');
     res.json({ name: svc.name, logs: text, tail });
   } catch (err) {
