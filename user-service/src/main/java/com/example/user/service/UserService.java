@@ -14,6 +14,13 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.Root;
+import jakarta.persistence.criteria.Expression;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
@@ -62,6 +69,9 @@ public class UserService implements UserDetailsService { // UserDetailsService a
             "hh:mm a",
             "HH.mm"
     );
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -935,33 +945,189 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         return userRepository.findAll(spec, safeSort);
     }
 
+    // ── SSRM: Group, Aggregation, Pivot ───────────────────────────
+
+    private static final Set<String> ALLOWED_GROUP_FIELDS = Set.of(
+            "role", "enabled", "name", "email");
+    private static final Set<String> ALLOWED_AGG_FUNCS = Set.of(
+            "sum", "avg", "count", "min", "max");
+    private static final Set<String> NUMERIC_FIELDS = Set.of(
+            "sessionTimeoutMinutes", "id");
+
     /**
-     * Returns distinct group values with count for server-side row grouping.
-     * Each Object[] = { groupValue, count }.
+     * JPQL GROUP BY — returns [{groupValue, count, ...aggValues}] for SSRM grouping.
      */
     public List<Object[]> getDistinctGroupValues(String search, String status, String role,
-                                                  Specification<User> extraSpec, String groupField, Sort sort) {
-        List<User> all = searchUsers(search, status, role, extraSpec,
-                sort != null && !sort.isUnsorted() ? sort : Sort.by(Sort.Direction.ASC, "id"));
-        java.util.Map<String, Long> groups = all.stream()
-                .collect(java.util.stream.Collectors.groupingBy(
-                        u -> getFieldValue(u, groupField),
-                        java.util.stream.Collectors.counting()));
-        return groups.entrySet().stream()
-                .sorted(java.util.Map.Entry.comparingByKey())
-                .map(e -> new Object[]{e.getKey(), e.getValue()})
-                .collect(java.util.stream.Collectors.toList());
+                                                  Specification<User> extraSpec, String groupField,
+                                                  Sort sort, String valueCols) {
+        if (!ALLOWED_GROUP_FIELDS.contains(groupField)) {
+            groupField = "role";
+        }
+
+        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+        CriteriaQuery<Object[]> cq = cb.createQuery(Object[].class);
+        Root<User> root = cq.from(User.class);
+
+        // Build WHERE from spec
+        Specification<User> fullSpec = buildSpecification(search, status, role, extraSpec);
+        Predicate predicate = fullSpec != null
+                ? fullSpec.toPredicate(root, cq, cb)
+                : cb.conjunction();
+        cq.where(predicate);
+
+        // SELECT groupField, COUNT(*)
+        Expression<?> groupExpr = root.get(groupField);
+        java.util.List<jakarta.persistence.criteria.Selection<?>> selections = new java.util.ArrayList<>();
+        selections.add(groupExpr);
+        selections.add(cb.count(root));
+
+        // Add aggregate expressions from valueCols (e.g. "sessionTimeoutMinutes:sum")
+        java.util.List<String> aggLabels = new java.util.ArrayList<>();
+        if (valueCols != null && !valueCols.isBlank()) {
+            for (String vc : valueCols.split(",")) {
+                String[] parts = vc.split(":");
+                if (parts.length != 2) continue;
+                String field = parts[0].trim();
+                String func = parts[1].trim().toLowerCase();
+                if (!NUMERIC_FIELDS.contains(field) || !ALLOWED_AGG_FUNCS.contains(func)) continue;
+                Expression<Number> numExpr = root.get(field);
+                switch (func) {
+                    case "sum":   selections.add(cb.sum(numExpr)); break;
+                    case "avg":   selections.add(cb.avg(numExpr)); break;
+                    case "count": selections.add(cb.count(numExpr)); break;
+                    case "min":   selections.add(cb.min(numExpr)); break;
+                    case "max":   selections.add(cb.max(numExpr)); break;
+                }
+                aggLabels.add(field + "_" + func);
+            }
+        }
+
+        cq.multiselect(selections.toArray(new jakarta.persistence.criteria.Selection[0]));
+        cq.groupBy(groupExpr);
+        cq.orderBy(cb.asc(groupExpr));
+
+        return entityManager.createQuery(cq).getResultList();
     }
 
-    private String getFieldValue(User u, String field) {
-        switch (field) {
-            case "role": return u.getRole() != null ? u.getRole() : "UNKNOWN";
-            case "enabled": return u.isEnabled() ? "ACTIVE" : "INACTIVE";
-            case "status": return u.isEnabled() ? "ACTIVE" : "INACTIVE";
-            case "name": return u.getName() != null ? u.getName() : "";
-            case "email": return u.getEmail() != null ? u.getEmail() : "";
-            default: return "OTHER";
+    /** Backward-compatible overload without valueCols. */
+    public List<Object[]> getDistinctGroupValues(String search, String status, String role,
+                                                  Specification<User> extraSpec, String groupField, Sort sort) {
+        return getDistinctGroupValues(search, status, role, extraSpec, groupField, sort, null);
+    }
+
+    /**
+     * Compute aggregate values for a filtered set (SSRM aggregation without grouping).
+     * Returns: {"sessionTimeoutMinutes": 450, ...}
+     */
+    public java.util.Map<String, Object> computeAggregation(Specification<User> spec, String valueCols) {
+        java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+        if (valueCols == null || valueCols.isBlank()) return result;
+
+        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+
+        for (String vc : valueCols.split(",")) {
+            String[] parts = vc.split(":");
+            if (parts.length != 2) continue;
+            String field = parts[0].trim();
+            String func = parts[1].trim().toLowerCase();
+            if (!NUMERIC_FIELDS.contains(field) || !ALLOWED_AGG_FUNCS.contains(func)) continue;
+
+            CriteriaQuery<Number> cq = cb.createQuery(Number.class);
+            Root<User> root = cq.from(User.class);
+
+            if (spec != null) {
+                cq.where(spec.toPredicate(root, cq, cb));
+            }
+
+            Expression<Number> numExpr = root.get(field);
+            switch (func) {
+                case "sum":   cq.select(cb.sum(numExpr)); break;
+                case "avg":   cq.select(cb.avg(numExpr)); break;
+                case "count": cq.select(cb.count(numExpr)); break;
+                case "min":   cq.select(cb.min(numExpr)); break;
+                case "max":   cq.select(cb.max(numExpr)); break;
+            }
+
+            Number value = entityManager.createQuery(cq).getSingleResult();
+            result.put(field, value);
         }
+        return result;
+    }
+
+    /**
+     * Compute pivot data: group by groupField, pivot by pivotField, aggregate valueCols.
+     * Returns items as Maps + secondaryColumns list.
+     */
+    public java.util.Map<String, Object> computePivot(Specification<User> spec,
+                                                        String groupField, String pivotField, String valueCols) {
+        // 1. Get distinct pivot values
+        CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+        CriteriaQuery<String> pvq = cb.createQuery(String.class);
+        Root<User> pvRoot = pvq.from(User.class);
+        pvq.select(pvRoot.get(pivotField)).distinct(true);
+        if (spec != null) pvq.where(spec.toPredicate(pvRoot, pvq, cb));
+        List<String> pivotValues = entityManager.createQuery(pvq).getResultList();
+
+        // 2. For each group, compute aggregate per pivot value
+        CriteriaQuery<Object[]> gq = cb.createQuery(Object[].class);
+        Root<User> gRoot = gq.from(User.class);
+        gq.select(cb.array(gRoot.get(groupField))).distinct(true);
+        if (spec != null) gq.where(spec.toPredicate(gRoot, gq, cb));
+        gq.groupBy(gRoot.get(groupField));
+        List<Object[]> groupValues = entityManager.createQuery(gq).getResultList();
+
+        // Parse valueCols
+        String valueField = "sessionTimeoutMinutes";
+        String aggFunc = "sum";
+        if (valueCols != null && valueCols.contains(":")) {
+            String[] parts = valueCols.split(",")[0].split(":");
+            valueField = parts[0].trim();
+            aggFunc = parts.length > 1 ? parts[1].trim().toLowerCase() : "sum";
+        }
+
+        List<java.util.Map<String, Object>> items = new java.util.ArrayList<>();
+        List<String> secondaryColumns = new java.util.ArrayList<>();
+
+        for (String pv : pivotValues) {
+            secondaryColumns.add(pv + "_" + valueField);
+        }
+
+        for (Object[] gv : groupValues) {
+            String groupVal = String.valueOf(gv[0]);
+            java.util.Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put(groupField, groupVal);
+
+            for (String pv : pivotValues) {
+                // Query: SELECT aggFunc(valueField) FROM User WHERE groupField=groupVal AND pivotField=pv
+                CriteriaQuery<Number> aq = cb.createQuery(Number.class);
+                Root<User> aRoot = aq.from(User.class);
+                Predicate where = cb.and(
+                        cb.equal(aRoot.get(groupField), groupVal),
+                        cb.equal(aRoot.get(pivotField), pv)
+                );
+                if (spec != null) where = cb.and(where, spec.toPredicate(aRoot, aq, cb));
+                aq.where(where);
+
+                Expression<Number> numExpr = aRoot.get(valueField);
+                switch (aggFunc) {
+                    case "sum":   aq.select(cb.sum(numExpr)); break;
+                    case "avg":   aq.select(cb.avg(numExpr)); break;
+                    case "count": aq.select(cb.count(numExpr)); break;
+                    case "min":   aq.select(cb.min(numExpr)); break;
+                    case "max":   aq.select(cb.max(numExpr)); break;
+                    default:      aq.select(cb.sum(numExpr)); break;
+                }
+
+                Number val = entityManager.createQuery(aq).getSingleResult();
+                row.put(pv + "_" + valueField, val != null ? val : 0);
+            }
+            items.add(row);
+        }
+
+        java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("items", items);
+        result.put("secondaryColumns", secondaryColumns);
+        return result;
     }
 
     private Specification<User> buildSpecification(String search,
