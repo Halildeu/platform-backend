@@ -20,6 +20,7 @@
         <flyway.version>11.7.2</flyway.version>
     </properties>
 
+
     <dependencies>
         <dependency>
             <groupId>org.springframework.cloud</groupId>
