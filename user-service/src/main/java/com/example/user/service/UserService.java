@@ -955,7 +955,7 @@ public class UserService implements UserDetailsService { // UserDetailsService a
 
     private String getFieldValue(User u, String field) {
         switch (field) {
-            case "role": return u.getRole() != null ? u.getRole().name() : "UNKNOWN";
+            case "role": return u.getRole() != null ? u.getRole() : "UNKNOWN";
             case "enabled": return u.isEnabled() ? "ACTIVE" : "INACTIVE";
             case "status": return u.isEnabled() ? "ACTIVE" : "INACTIVE";
             case "name": return u.getName() != null ? u.getName() : "";

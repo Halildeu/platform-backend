@@ -130,11 +130,11 @@ public class UserControllerV1 {
                 List<Object[]> groups = userService.getDistinctGroupValues(search, status, role, groupSpec, groupField, parsedSort);
                 List<UserSummaryDto> groupRows = groups.stream().map(row -> {
                     UserSummaryDto dto = new UserSummaryDto();
-                    dto.setName(String.valueOf(row[0]));
+                    String groupValue = String.valueOf(row[0]);
+                    long childCount = row.length > 1 ? ((Number) row[1]).longValue() : 0;
+                    dto.setName(groupValue + " (" + childCount + ")");
                     dto.setEmail(null);
-                    dto.setRole(groupField.equals("role") ? String.valueOf(row[0]) : null);
-                    // row[1] = count
-                    dto.setSessionTimeoutMinutes(row.length > 1 ? ((Number) row[1]).intValue() : 0);
+                    dto.setRole(groupField.equals("role") ? groupValue : null);
                     return dto;
                 }).collect(Collectors.toList());
                 return ResponseEntity.ok(new PagedUserResponseDto(groupRows, groupRows.size(), 1, groupRows.size()));
