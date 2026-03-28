@@ -91,7 +91,9 @@ public class UserControllerV1 {
                                                           @RequestParam(value = "advancedFilter", required = false) String advancedFilter,
                                                           @RequestParam(value = "page", required = false, defaultValue = "1") int page,
                                                           @RequestParam(value = "pageSize", required = false, defaultValue = "25") int pageSize,
-                                                          @RequestParam(value = "dataSource", required = false) String dataSource) {
+                                                          @RequestParam(value = "dataSource", required = false) String dataSource,
+                                                          @RequestParam(value = "rowGroupCols", required = false) String rowGroupCols,
+                                                          @RequestParam(value = "groupKeys", required = false) String groupKeys) {
         User currentUser = requireCurrentUser();
         Timer.Sample sample = Timer.start(meterRegistry);
         String resultTag = "success";
@@ -107,7 +109,48 @@ public class UserControllerV1 {
         boolean unpaged = clientMode || pageSize <= 0;
         String modeTag = unpaged ? "client" : "server";
 
+        // ── Server-side grouping ──
+        String[] groupColArray = StringUtils.hasText(rowGroupCols) ? rowGroupCols.split(",") : new String[0];
+        String[] groupKeyArray = StringUtils.hasText(groupKeys) ? groupKeys.split(",") : new String[0];
+        boolean isGroupRequest = groupColArray.length > 0 && groupKeyArray.length < groupColArray.length;
+
         try {
+            if (isGroupRequest) {
+                // Return distinct values for the current group level
+                String groupField = groupColArray[groupKeyArray.length];
+                // Apply parent group filters
+                org.springframework.data.jpa.domain.Specification<User> groupSpec = extraSpec;
+                for (int i = 0; i < groupKeyArray.length; i++) {
+                    final String col = groupColArray[i];
+                    final String key = groupKeyArray[i];
+                    groupSpec = groupSpec == null
+                            ? (root, query, cb) -> cb.equal(root.get(col), key)
+                            : groupSpec.and((root, query, cb) -> cb.equal(root.get(col), key));
+                }
+                List<Object[]> groups = userService.getDistinctGroupValues(search, status, role, groupSpec, groupField, parsedSort);
+                List<UserSummaryDto> groupRows = groups.stream().map(row -> {
+                    UserSummaryDto dto = new UserSummaryDto();
+                    dto.setName(String.valueOf(row[0]));
+                    dto.setEmail(null);
+                    dto.setRole(groupField.equals("role") ? String.valueOf(row[0]) : null);
+                    // row[1] = count
+                    dto.setSessionTimeoutMinutes(row.length > 1 ? ((Number) row[1]).intValue() : 0);
+                    return dto;
+                }).collect(Collectors.toList());
+                return ResponseEntity.ok(new PagedUserResponseDto(groupRows, groupRows.size(), 1, groupRows.size()));
+            }
+
+            // ── Apply group key filters for leaf-level requests ──
+            org.springframework.data.jpa.domain.Specification<User> leafSpec = extraSpec;
+            for (int i = 0; i < Math.min(groupColArray.length, groupKeyArray.length); i++) {
+                final String col = groupColArray[i];
+                final String key = groupKeyArray[i];
+                leafSpec = leafSpec == null
+                        ? (root, query, cb) -> cb.equal(root.get(col), key)
+                        : leafSpec.and((root, query, cb) -> cb.equal(root.get(col), key));
+            }
+            extraSpec = leafSpec;
+
             if (unpaged) {
                 List<UserSummaryDto> items = userService.searchUsers(search, status, role, extraSpec, parsedSort).stream()
                         .map(UserDtoMapper::toSummary)

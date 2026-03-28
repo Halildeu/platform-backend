@@ -8,7 +8,8 @@
 const express = require('express');
 const Docker = require('dockerode');
 const http = require('http');
-const { execSync } = require('child_process');
+const path = require('path');
+const { execSync, spawn } = require('child_process');
 
 const app = express();
 app.use((_req, res, next) => {
@@ -218,7 +219,29 @@ app.post('/api/services/:name/start', async (req, res) => {
   if (!svc) return res.status(404).json({ error: 'Service not found' });
 
   if (isProcessService(svc)) {
-    return res.json({ ok: false, action: 'start', name: svc.name, note: 'Process services must be started via npm scripts (e.g. npm run dev:shell)' });
+    // Check if already running
+    try {
+      const pid = execSync(`lsof -ti:${svc.port} -sTCP:LISTEN 2>/dev/null`, { encoding: 'utf-8' }).trim();
+      if (pid) return res.json({ ok: true, action: 'start', name: svc.name, note: 'already running' });
+    } catch { /* not running */ }
+
+    // Start frontend MFE via npm start in its app directory
+    const webRoot = path.resolve(__dirname, '../../web');
+    const appDir = path.join(webRoot, 'apps', svc.name);
+    try {
+      const env = {
+        ...process.env,
+        AUTH_MODE: 'permitAll',
+        SHELL_SKIP_REMOTE_SERVICES: 'true',
+        SHELL_ENABLE_SUGGESTIONS_REMOTE: 'false',
+        SHELL_ENABLE_ETHIC_REMOTE: 'false',
+      };
+      const child = spawn('npm', ['start'], { cwd: appDir, env, detached: true, stdio: 'ignore' });
+      child.unref();
+      return res.json({ ok: true, action: 'start', name: svc.name, pid: child.pid });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
   }
 
   try {

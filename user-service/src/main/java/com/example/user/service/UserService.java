@@ -935,6 +935,35 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         return userRepository.findAll(spec, safeSort);
     }
 
+    /**
+     * Returns distinct group values with count for server-side row grouping.
+     * Each Object[] = { groupValue, count }.
+     */
+    public List<Object[]> getDistinctGroupValues(String search, String status, String role,
+                                                  Specification<User> extraSpec, String groupField, Sort sort) {
+        List<User> all = searchUsers(search, status, role, extraSpec,
+                sort != null && !sort.isUnsorted() ? sort : Sort.by(Sort.Direction.ASC, "id"));
+        java.util.Map<String, Long> groups = all.stream()
+                .collect(java.util.stream.Collectors.groupingBy(
+                        u -> getFieldValue(u, groupField),
+                        java.util.stream.Collectors.counting()));
+        return groups.entrySet().stream()
+                .sorted(java.util.Map.Entry.comparingByKey())
+                .map(e -> new Object[]{e.getKey(), e.getValue()})
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    private String getFieldValue(User u, String field) {
+        switch (field) {
+            case "role": return u.getRole() != null ? u.getRole().name() : "UNKNOWN";
+            case "enabled": return u.isEnabled() ? "ACTIVE" : "INACTIVE";
+            case "status": return u.isEnabled() ? "ACTIVE" : "INACTIVE";
+            case "name": return u.getName() != null ? u.getName() : "";
+            case "email": return u.getEmail() != null ? u.getEmail() : "";
+            default: return "OTHER";
+        }
+    }
+
     private Specification<User> buildSpecification(String search,
                                                    String status,
                                                    String role,
