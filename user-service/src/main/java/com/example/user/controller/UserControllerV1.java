@@ -96,7 +96,8 @@ public class UserControllerV1 {
                                                           @RequestParam(value = "groupKeys", required = false) String groupKeys,
                                                           @RequestParam(value = "valueCols", required = false) String valueCols,
                                                           @RequestParam(value = "pivotMode", required = false, defaultValue = "false") boolean pivotMode,
-                                                          @RequestParam(value = "pivotCols", required = false) String pivotCols) {
+                                                          @RequestParam(value = "pivotCols", required = false) String pivotCols,
+                                                          @RequestParam(value = "multiSearch", required = false) String multiSearch) {
         User currentUser = requireCurrentUser();
         Timer.Sample sample = Timer.start(meterRegistry);
         String resultTag = "success";
@@ -108,6 +109,27 @@ public class UserControllerV1 {
 
         Sort parsedSort = parseSort(sort);
         org.springframework.data.jpa.domain.Specification<User> extraSpec = buildAdvancedFilterSpecSafe(advancedFilter);
+
+        // multiSearch: pipe-separated values → OR across name + email
+        if (StringUtils.hasText(multiSearch)) {
+            String[] terms = multiSearch.split("\\|");
+            org.springframework.data.jpa.domain.Specification<User> multiSpec = null;
+            for (String term : terms) {
+                final String trimmed = term.trim();
+                if (trimmed.isEmpty()) continue;
+                final String like = "%" + trimmed.toLowerCase() + "%";
+                org.springframework.data.jpa.domain.Specification<User> termSpec =
+                        (root, query, cb) -> cb.or(
+                                cb.like(cb.lower(root.get("name")), like),
+                                cb.like(cb.lower(root.get("email")), like)
+                        );
+                multiSpec = multiSpec == null ? termSpec : multiSpec.or(termSpec);
+            }
+            if (multiSpec != null) {
+                extraSpec = extraSpec == null ? multiSpec : extraSpec.and(multiSpec);
+            }
+        }
+
         boolean clientMode = dataSource != null && dataSource.equalsIgnoreCase("client");
         boolean unpaged = clientMode || pageSize <= 0;
         String modeTag = unpaged ? "client" : "server";
