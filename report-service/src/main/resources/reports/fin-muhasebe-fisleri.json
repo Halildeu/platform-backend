@@ -1,0 +1,34 @@
+{
+  "key": "fin-muhasebe-fisleri",
+  "version": "1.0",
+  "title": "Muhasebe Fişleri",
+  "description": "Yevmiye fişi listesi — tarih, tip, açıklama ve ilişkili kayıtlar",
+  "category": "Finans",
+  "source": "ACCOUNT_CARD",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "columns": [
+    { "field": "CARD_ID", "headerName": "Fiş ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "ACTION_DATE", "headerName": "Tarih", "type": "date", "width": 120, "sensitive": false },
+    { "field": "CARD_TYPE", "headerName": "Fiş Tipi", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CARD_DETAIL", "headerName": "Açıklama", "type": "text", "width": 350, "sensitive": false },
+    { "field": "PAPER_NO", "headerName": "Belge No", "type": "text", "width": 140, "sensitive": false },
+    { "field": "BILL_NO", "headerName": "Fatura No", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ACC_COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "PROJECT_ID", "headerName": "Proje ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "IS_CANCEL", "headerName": "İptal", "type": "number", "width": 70, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 120, "sensitive": false }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "ACC_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

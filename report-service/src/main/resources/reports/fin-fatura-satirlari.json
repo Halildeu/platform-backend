@@ -1,0 +1,51 @@
+{
+  "key": "fin-fatura-satirlari",
+  "version": "1.0",
+  "title": "Fatura Satır Detayları",
+  "description": "Fatura satır bazında ham veri — ürün, miktar, birim fiyat, iskonto, KDV, net/brüt toplam",
+  "category": "Finans",
+  "source": "INVOICE_ROW",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "sourceQuery": "SELECT IR.INVOICE_ROW_ID, IR.INVOICE_ID, IR.NAME_PRODUCT, IR.DESCRIPTION, IR.AMOUNT AS MIKTAR, IR.UNIT, IR.PRICE AS BIRIM_FIYAT, IR.COST_PRICE AS MALIYET_FIYAT, IR.DISCOUNT1, IR.DISCOUNT2, IR.DISCOUNTTOTAL AS ISKONTO_TOPLAM, IR.NETTOTAL AS NET_TUTAR, IR.TAXTOTAL AS KDV_TUTAR, IR.TAX AS KDV_ORAN, IR.GROSSTOTAL AS BRUT_TUTAR, IR.MARGIN AS KAR_MARJI, IR.OTHER_MONEY AS DOVIZ, IR.OTHER_MONEY_VALUE AS DOVIZ_TUTAR, IR.OTHER_MONEY_GROSS_TOTAL AS DOVIZ_BRUT, IR.LOT_NO, IR.ROW_ACC_CODE AS HESAP_KODU, IR.ROW_PROJECT_ID, IR.DELIVER_DATE, I.INVOICE_NUMBER, I.SERIAL_NUMBER, I.INVOICE_DATE, I.INVOICE_CAT, I.PURCHASE_SALES, I.COMPANY_ID, CASE I.INVOICE_CAT WHEN 56 THEN 'Alis' WHEN 59 THEN 'Satis' WHEN 57 THEN 'Alis Iade' WHEN 60 THEN 'Satis Iade' ELSE 'Diger' END AS FATURA_TIPI, C.FULLNAME AS CARI_ADI, P.PROJECT_HEAD AS PROJE_ADI FROM [{schema}].[INVOICE_ROW] IR WITH (NOLOCK) LEFT JOIN [{schema}].[INVOICE] I WITH (NOLOCK) ON I.INVOICE_ID = IR.INVOICE_ID LEFT JOIN [workcube_mikrolink].[COMPANY] C WITH (NOLOCK) ON C.COMPANY_ID = I.COMPANY_ID LEFT JOIN [workcube_mikrolink].[PRO_PROJECTS] P WITH (NOLOCK) ON P.PROJECT_ID = IR.ROW_PROJECT_ID",
+  "columns": [
+    { "field": "INVOICE_DATE", "headerName": "Fatura Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "INVOICE_NUMBER", "headerName": "Fatura No", "type": "text", "width": 130, "sensitive": false },
+    { "field": "FATURA_TIPI", "headerName": "Fatura Tipi", "type": "text", "width": 100, "sensitive": false },
+    { "field": "CARI_ADI", "headerName": "Cari Adı", "type": "text", "width": 240, "sensitive": false },
+    { "field": "NAME_PRODUCT", "headerName": "Ürün/Hizmet", "type": "text", "width": 280, "sensitive": false },
+    { "field": "DESCRIPTION", "headerName": "Açıklama", "type": "text", "width": 200, "sensitive": false },
+    { "field": "MIKTAR", "headerName": "Miktar", "type": "number", "width": 90, "sensitive": false },
+    { "field": "UNIT", "headerName": "Birim", "type": "text", "width": 70, "sensitive": false },
+    { "field": "BIRIM_FIYAT", "headerName": "Birim Fiyat", "type": "number", "width": 120, "sensitive": false },
+    { "field": "MALIYET_FIYAT", "headerName": "Maliyet Fiyatı", "type": "number", "width": 120, "sensitive": true },
+    { "field": "ISKONTO_TOPLAM", "headerName": "İskonto", "type": "number", "width": 100, "sensitive": false },
+    { "field": "NET_TUTAR", "headerName": "Net Tutar", "type": "number", "width": 130, "sensitive": false },
+    { "field": "KDV_ORAN", "headerName": "KDV %", "type": "number", "width": 70, "sensitive": false },
+    { "field": "KDV_TUTAR", "headerName": "KDV Tutar", "type": "number", "width": 110, "sensitive": false },
+    { "field": "BRUT_TUTAR", "headerName": "Brüt Tutar", "type": "number", "width": 130, "sensitive": false },
+    { "field": "KAR_MARJI", "headerName": "Kâr Marjı", "type": "number", "width": 100, "sensitive": true },
+    { "field": "DOVIZ", "headerName": "Döviz", "type": "text", "width": 60, "sensitive": false },
+    { "field": "DOVIZ_TUTAR", "headerName": "Döviz Tutar", "type": "number", "width": 120, "sensitive": false },
+    { "field": "HESAP_KODU", "headerName": "Hesap Kodu", "type": "text", "width": 120, "sensitive": false },
+    { "field": "PROJE_ADI", "headerName": "Proje", "type": "text", "width": 200, "sensitive": false },
+    { "field": "LOT_NO", "headerName": "Lot No", "type": "text", "width": 100, "sensitive": false },
+    { "field": "DELIVER_DATE", "headerName": "Teslim Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "INVOICE_ROW_ID", "headerName": "Satır ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "INVOICE_ID", "headerName": "Fatura ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "COMPANY_ID", "headerName": "Cari ID (RLS)", "type": "number", "width": 80, "sensitive": false }
+  ],
+  "defaultSort": "INVOICE_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {
+      "reports.fin-fatura-satirlari.financials": ["MALIYET_FIYAT", "KAR_MARJI"]
+    },
+    "rowFilter": {
+      "column": "COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

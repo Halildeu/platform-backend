@@ -1,12 +1,19 @@
 package com.example.permission.controller;
 
 import com.example.permission.dto.AuditEventPageResponse;
+import com.example.permission.dto.v1.AuditExportJobCreateRequestDto;
+import com.example.permission.dto.v1.AuditExportJobResponseDto;
 import com.example.permission.service.AuditEventService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -72,6 +79,39 @@ public class AuditEventController {
                 .body(payload);
     }
 
+    @PostMapping("/export-jobs")
+    @PreAuthorize("hasAuthority('audit-export')")
+    public ResponseEntity<AuditExportJobResponseDto> createExportJob(@Valid @RequestBody(required = false) AuditExportJobCreateRequestDto request,
+                                                                     Authentication authentication) {
+        AuditExportJobCreateRequestDto payload = request == null ? new AuditExportJobCreateRequestDto() : request;
+        AuditExportJobResponseDto response = auditEventService.createExportJob(
+                resolveRequestedBy(authentication),
+                payload.getFormat(),
+                payload.getLimit(),
+                payload.getSort(),
+                payload.getFilters()
+        );
+        return ResponseEntity.status(201).body(response);
+    }
+
+    @GetMapping("/export-jobs/{jobId}")
+    @PreAuthorize("hasAuthority('audit-export')")
+    public ResponseEntity<AuditExportJobResponseDto> getExportJob(@PathVariable String jobId,
+                                                                  Authentication authentication) {
+        return ResponseEntity.ok(auditEventService.getExportJob(jobId, resolveRequestedBy(authentication)));
+    }
+
+    @GetMapping("/export-jobs/{jobId}/download")
+    @PreAuthorize("hasAuthority('audit-export')")
+    public ResponseEntity<byte[]> downloadExportJob(@PathVariable String jobId,
+                                                    Authentication authentication) {
+        var job = auditEventService.getCompletedExportJob(jobId, resolveRequestedBy(authentication));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=%s".formatted(job.getFilename()))
+                .contentType(MediaType.parseMediaType(job.getContentType()))
+                .body(job.getPayload());
+    }
+
     @GetMapping(value = "/live", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter liveEvents() {
         return auditEventService.openLiveStream();
@@ -105,5 +145,12 @@ public class AuditEventController {
             }
         });
         return filters;
+    }
+
+    private String resolveRequestedBy(Authentication authentication) {
+        if (authentication == null || authentication.getName() == null || authentication.getName().isBlank()) {
+            return "unknown";
+        }
+        return authentication.getName();
     }
 }

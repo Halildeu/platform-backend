@@ -41,4 +41,9 @@ public final class PermissionCodes {
     public static final String USER_DELETE = "user-delete";
     public static final String USER_EXPORT = "user-export";
     public static final String USER_IMPORT = "user-import";
+
+    // Reporting
+    public static final String REPORT_VIEW = "REPORT_VIEW";
+    public static final String REPORT_EXPORT = "REPORT_EXPORT";
+    public static final String REPORT_MANAGE = "REPORT_MANAGE";
 }

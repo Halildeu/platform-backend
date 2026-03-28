@@ -1,0 +1,41 @@
+package com.example.report.config;
+
+import com.github.benmanes.caffeine.cache.Caffeine;
+import java.time.Duration;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import org.springframework.cache.support.SimpleCacheManager;
+import org.springframework.cache.caffeine.CaffeineCache;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import java.util.List;
+
+@Configuration
+@EnableCaching
+public class CacheConfig {
+
+    @Bean
+    public CacheManager cacheManager() {
+        SimpleCacheManager manager = new SimpleCacheManager();
+        manager.setCaches(List.of(
+                buildCache("reportDefinitions", Duration.ofHours(1), 100),
+                buildCache("reportCounts", Duration.ofSeconds(60), 1000),
+                buildCache("reportCategories", Duration.ofMinutes(5), 10),
+                buildCache("authzMe", Duration.ofMinutes(5), 500),
+                buildCache("dashboardKpis", Duration.ofMinutes(5), 200),
+                buildCache("dashboardCharts", Duration.ofMinutes(5), 500),
+                buildCache("yearlySchemas", Duration.ofMinutes(30), 10)
+        ));
+        return manager;
+    }
+
+    private CaffeineCache buildCache(String name, Duration ttl, int maxSize) {
+        return new CaffeineCache(name,
+                Caffeine.newBuilder()
+                        .expireAfterWrite(ttl)
+                        .maximumSize(maxSize)
+                        .recordStats()
+                        .build());
+    }
+}

@@ -1,0 +1,41 @@
+{
+  "key": "fin-faturalar",
+  "version": "1.0",
+  "title": "Fatura Listesi",
+  "description": "Alış ve satış faturaları detay listesi",
+  "category": "Finans",
+  "source": "INVOICE",
+  "sourceSchema": "workcube_mikrolink_1",
+  "schemaMode": "yearly",
+  "yearColumn": "INVOICE_DATE",
+  "columns": [
+    { "field": "INVOICE_ID", "headerName": "Fatura ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "INVOICE_NUMBER", "headerName": "Fatura No", "type": "text", "width": 160, "sensitive": false },
+    { "field": "SERIAL_NUMBER", "headerName": "Seri No", "type": "text", "width": 120, "sensitive": false },
+    { "field": "INVOICE_DATE", "headerName": "Fatura Tarihi", "type": "date", "width": 130, "sensitive": false },
+    { "field": "COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "PURCHASE_SALES", "headerName": "Alış/Satış", "type": "number", "width": 90, "sensitive": false },
+    { "field": "INVOICE_CAT", "headerName": "Kategori", "type": "number", "width": 90, "sensitive": false },
+    { "field": "GROSSTOTAL", "headerName": "Brüt Toplam", "type": "number", "width": 140, "sensitive": false },
+    { "field": "NETTOTAL", "headerName": "Net Toplam", "type": "number", "width": 140, "sensitive": false },
+    { "field": "TAXTOTAL", "headerName": "KDV Toplam", "type": "number", "width": 130, "sensitive": false },
+    { "field": "SA_DISCOUNT", "headerName": "İskonto", "type": "number", "width": 120, "sensitive": true },
+    { "field": "DUE_DATE", "headerName": "Vade Tarihi", "type": "date", "width": 130, "sensitive": false },
+    { "field": "PAY_METHOD", "headerName": "Ödeme Yöntemi", "type": "number", "width": 110, "sensitive": false },
+    { "field": "IS_PROCESSED", "headerName": "İşlendi", "type": "number", "width": 80, "sensitive": false },
+    { "field": "NOTE", "headerName": "Not", "type": "text", "width": 200, "sensitive": false }
+  ],
+  "defaultSort": "INVOICE_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.fin-faturalar.view",
+    "columnRestrictions": {
+      "reports.fin-faturalar.financials": ["SA_DISCOUNT"]
+    },
+    "rowFilter": {
+      "column": "COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

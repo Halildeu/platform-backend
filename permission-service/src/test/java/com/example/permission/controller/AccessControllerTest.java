@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.security.test.context.support.WithMockUser;
@@ -25,13 +25,14 @@ class AccessControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @MockBean
+    @MockitoBean
     private AccessRoleService accessRoleService;
 
     @Test
     void listRoles_returnsOk() throws Exception {
         AccessRoleDto role = new AccessRoleDto(1L, "USER_MANAGER", "", 0, false, "2025-01-01T00:00:00Z", "system",
-                List.of(new AccessModulePolicyDto("USER_MANAGEMENT", "Kullanıcı Yönetimi", "MANAGE", "2025-01-01T00:00:00Z", "system")));
+                List.of(new AccessModulePolicyDto("USER_MANAGEMENT", "Kullanıcı Yönetimi", "MANAGE", "2025-01-01T00:00:00Z", "system")),
+                List.of("users.manage"));
         when(accessRoleService.listRoles()).thenReturn(List.of(role));
 
         mockMvc.perform(get("/api/access/roles").accept(MediaType.APPLICATION_JSON))

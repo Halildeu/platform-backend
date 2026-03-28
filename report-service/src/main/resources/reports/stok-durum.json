@@ -1,0 +1,39 @@
+{
+  "key": "stok-durum",
+  "version": "1.0",
+  "title": "Sipariş Kalem Raporu",
+  "description": "Sipariş satırları detayı — ürün, miktar, fiyat, iskonto",
+  "category": "Satış",
+  "source": "ORDER_ROW",
+  "sourceSchema": "workcube_mikrolink_1",
+  "columns": [
+    { "field": "ORDER_ID", "headerName": "Sipariş ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ORDER_ROW_ID", "headerName": "Kalem ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "PRODUCT_NAME", "headerName": "Ürün Adı", "type": "text", "width": 250, "sensitive": false },
+    { "field": "PRODUCT_MANUFACT_CODE", "headerName": "Üretici Kodu", "type": "text", "width": 150, "sensitive": false },
+    { "field": "QUANTITY", "headerName": "Miktar", "type": "number", "width": 100, "sensitive": false },
+    { "field": "UNIT", "headerName": "Birim", "type": "text", "width": 80, "sensitive": false },
+    { "field": "PRICE", "headerName": "Birim Fiyat", "type": "number", "width": 120, "sensitive": false },
+    { "field": "NETTOTAL", "headerName": "Net Toplam", "type": "number", "width": 130, "sensitive": false },
+    { "field": "TAX", "headerName": "KDV (%)", "type": "number", "width": 80, "sensitive": false },
+    { "field": "DISCOUNT_1", "headerName": "İskonto 1 (%)", "type": "number", "width": 110, "sensitive": true },
+    { "field": "DISCOUNT_2", "headerName": "İskonto 2 (%)", "type": "number", "width": 110, "sensitive": true },
+    { "field": "COST_PRICE", "headerName": "Maliyet", "type": "number", "width": 120, "sensitive": true },
+    { "field": "DELIVER_DATE", "headerName": "Teslim Tarihi", "type": "date", "width": 130, "sensitive": false },
+    { "field": "LOT_NO", "headerName": "Lot No", "type": "text", "width": 120, "sensitive": false },
+    { "field": "SPECT_VAR_NAME", "headerName": "Varyant", "type": "text", "width": 150, "sensitive": false }
+  ],
+  "defaultSort": "ORDER_ID",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.stok-durum.view",
+    "columnRestrictions": {
+      "reports.stok-durum.costs": ["COST_PRICE", "DISCOUNT_1", "DISCOUNT_2"]
+    },
+    "rowFilter": {
+      "column": "ORDER_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.stok-durum.all-warehouses"
+    }
+  }
+}

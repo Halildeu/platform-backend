@@ -1,0 +1,43 @@
+{
+  "key": "fin-cari-islemler",
+  "version": "1.0",
+  "title": "Cari İşlem Detayları",
+  "description": "Borç/alacak dekontları, cari işlemler — fatura, masraf ve banka işlemlerinin cari hesaba yansıması",
+  "category": "Finans",
+  "source": "CARI_ACTIONS",
+  "sourceSchema": "workcube_mikrolink_2026_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "sourceQuery": "SELECT CA.ACTION_ID, CA.ACTION_DATE, CA.ACTION_NAME, CA.ACTION_DETAIL, CA.ACTION_VALUE, CA.ACTION_CURRENCY_ID, CA.OTHER_MONEY, CA.OTHER_CASH_ACT_VALUE, CA.DUE_DATE, CA.PAPER_NO, CA.ACTION_ACCOUNT_CODE AS HESAP_KODU, CA.TO_CMP_ID, CA.FROM_CMP_ID, CA.INVOICE_ID, CA.PROJECT_ID, ISNULL(SPC.PROCESS_CAT, 'Diger') AS ISLEM_KATEGORISI, C_TO.FULLNAME AS ALACAKLI_CARI, C_FROM.FULLNAME AS BORCLU_CARI, P.PROJECT_HEAD AS PROJE_ADI FROM [{schema}].[CARI_ACTIONS] CA WITH (NOLOCK) LEFT JOIN [workcube_mikrolink_7].[SETUP_PROCESS_CAT] SPC WITH (NOLOCK) ON SPC.PROCESS_CAT_ID = CA.PROCESS_CAT LEFT JOIN [workcube_mikrolink].[COMPANY] C_TO WITH (NOLOCK) ON C_TO.COMPANY_ID = CA.TO_CMP_ID LEFT JOIN [workcube_mikrolink].[COMPANY] C_FROM WITH (NOLOCK) ON C_FROM.COMPANY_ID = CA.FROM_CMP_ID LEFT JOIN [workcube_mikrolink].[PRO_PROJECTS] P WITH (NOLOCK) ON P.PROJECT_ID = CA.PROJECT_ID",
+  "columns": [
+    { "field": "ACTION_DATE", "headerName": "İşlem Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "ISLEM_KATEGORISI", "headerName": "İşlem Kategorisi", "type": "text", "width": 160, "sensitive": false },
+    { "field": "ACTION_NAME", "headerName": "İşlem Adı", "type": "text", "width": 200, "sensitive": false },
+    { "field": "ACTION_DETAIL", "headerName": "Detay", "type": "text", "width": 300, "sensitive": false },
+    { "field": "ACTION_VALUE", "headerName": "Tutar", "type": "number", "width": 140, "sensitive": false },
+    { "field": "ACTION_CURRENCY_ID", "headerName": "Para Birimi", "type": "text", "width": 60, "sensitive": false },
+    { "field": "OTHER_MONEY", "headerName": "Döviz", "type": "text", "width": 60, "sensitive": false },
+    { "field": "OTHER_CASH_ACT_VALUE", "headerName": "Döviz Tutar", "type": "number", "width": 120, "sensitive": false },
+    { "field": "HESAP_KODU", "headerName": "Hesap Kodu", "type": "text", "width": 130, "sensitive": false },
+    { "field": "BORCLU_CARI", "headerName": "Borçlu Cari", "type": "text", "width": 230, "sensitive": false },
+    { "field": "ALACAKLI_CARI", "headerName": "Alacaklı Cari", "type": "text", "width": 230, "sensitive": false },
+    { "field": "PROJE_ADI", "headerName": "Proje", "type": "text", "width": 200, "sensitive": false },
+    { "field": "DUE_DATE", "headerName": "Vade Tarihi", "type": "date", "width": 110, "sensitive": false },
+    { "field": "PAPER_NO", "headerName": "Belge No", "type": "text", "width": 130, "sensitive": false },
+    { "field": "INVOICE_ID", "headerName": "Fatura ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "ACTION_ID", "headerName": "İşlem ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "TO_CMP_ID", "headerName": "Alacaklı ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "FROM_CMP_ID", "headerName": "Borçlu ID", "type": "number", "width": 80, "sensitive": false }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "TO_CMP_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

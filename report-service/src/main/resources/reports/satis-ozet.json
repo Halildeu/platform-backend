@@ -1,0 +1,40 @@
+{
+  "key": "satis-ozet",
+  "version": "1.0",
+  "title": "Sipariş Özet Raporu",
+  "description": "Tüm satış ve satın alma siparişleri (özet)",
+  "category": "Satış",
+  "source": "ORDERS",
+  "sourceSchema": "workcube_mikrolink_1",
+  "columns": [
+    { "field": "ORDER_ID", "headerName": "Sipariş ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ORDER_NUMBER", "headerName": "Sipariş No", "type": "text", "width": 160, "sensitive": false },
+    { "field": "ORDER_DATE", "headerName": "Sipariş Tarihi", "type": "date", "width": 130, "sensitive": false },
+    { "field": "ORDER_HEAD", "headerName": "Başlık", "type": "text", "width": 200, "sensitive": false },
+    { "field": "PURCHASE_SALES", "headerName": "Satış/Alış", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ORDER_STATUS", "headerName": "Durum", "type": "number", "width": 80, "sensitive": false },
+    { "field": "COMPANY_ID", "headerName": "Firma ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "GROSSTOTAL", "headerName": "Brüt Toplam", "type": "number", "width": 130, "sensitive": false },
+    { "field": "NETTOTAL", "headerName": "Net Toplam", "type": "number", "width": 130, "sensitive": false },
+    { "field": "TAXTOTAL", "headerName": "KDV Toplam", "type": "number", "width": 120, "sensitive": false },
+    { "field": "DISCOUNTTOTAL", "headerName": "İskonto Toplam", "type": "number", "width": 130, "sensitive": true },
+    { "field": "OTHER_MONEY", "headerName": "Döviz", "type": "text", "width": 80, "sensitive": false },
+    { "field": "DELIVERDATE", "headerName": "Teslim Tarihi", "type": "date", "width": 130, "sensitive": false },
+    { "field": "DUE_DATE", "headerName": "Vade Tarihi", "type": "date", "width": 130, "sensitive": false },
+    { "field": "REF_NO", "headerName": "Referans No", "type": "text", "width": 120, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 130, "sensitive": false }
+  ],
+  "defaultSort": "ORDER_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.satis-ozet.view",
+    "columnRestrictions": {
+      "reports.satis-ozet.financials": ["DISCOUNTTOTAL"]
+    },
+    "rowFilter": {
+      "column": "COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.satis-ozet.all-stores"
+    }
+  }
+}

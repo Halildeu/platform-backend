@@ -3,6 +3,7 @@ package com.example.permission.dto.v1;
 import com.example.permission.dto.PermissionResponse;
 import com.example.permission.dto.access.AccessModulePolicyDto;
 import com.example.permission.dto.access.AccessRoleDto;
+import com.example.permission.model.Permission;
 
 import java.util.List;
 import java.util.Objects;
@@ -47,6 +48,17 @@ public final class PermissionDtoMapper {
         List<RolePolicyDto> policies = accessRoleDto.policies() == null ? List.of() :
                 accessRoleDto.policies().stream().filter(Objects::nonNull).map(PermissionDtoMapper::toPolicyDto).toList();
         dto.setPolicies(policies);
+        dto.setPermissions(accessRoleDto.permissions() == null ? List.of() : accessRoleDto.permissions());
+        return dto;
+    }
+
+    public static PermissionCatalogItemDto toPermissionCatalogItemDto(Permission permission) {
+        if (permission == null) return null;
+        PermissionCatalogItemDto dto = new PermissionCatalogItemDto();
+        dto.setId(permission.getId());
+        dto.setCode(permission.getCode());
+        dto.setModuleKey(permission.getModuleName());
+        dto.setModuleLabel(permission.getModuleName());
         return dto;
     }
 
@@ -65,7 +77,8 @@ public final class PermissionDtoMapper {
                 roleDto.isSystemRole(),
                 roleDto.getLastModifiedAt(),
                 roleDto.getLastModifiedBy(),
-                policies
+                policies,
+                roleDto.getPermissions() == null ? List.of() : roleDto.getPermissions()
         );
     }
 

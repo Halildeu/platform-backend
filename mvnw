@@ -107,6 +107,20 @@ trim() {
 
 scriptDir="$(dirname "$0")"
 scriptName="$(basename "$0")"
+javaRuntimeHelper="$scriptDir/scripts/java-runtime.sh"
+[ -f "$javaRuntimeHelper" ] || javaRuntimeHelper="$scriptDir/../scripts/java-runtime.sh"
+if [ -f "$javaRuntimeHelper" ]; then
+  # shellcheck source=/dev/null
+  . "$javaRuntimeHelper"
+  codex_select_java_runtime "${JAVA_RUNTIME_TARGET:-21}" "$scriptName"
+  codex_prepare_maven_wrapper_args "backend/$scriptName" "$@"
+  if [ -n "${CODEX_MAVEN_WRAPPER_TEMPDIR-}" ]; then
+    set -- "$@" "$CODEX_MAVEN_WRAPPER_TEMPDIR"
+  fi
+  if [ -n "${CODEX_MAVEN_WRAPPER_REPORT_SUFFIX-}" ]; then
+    set -- "$@" "$CODEX_MAVEN_WRAPPER_REPORT_SUFFIX"
+  fi
+fi
 
 # parse distributionUrl and optional distributionSha256Sum, requires .mvn/wrapper/maven-wrapper.properties
 while IFS="=" read -r key value; do

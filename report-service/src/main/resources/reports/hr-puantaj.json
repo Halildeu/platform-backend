@@ -1,0 +1,37 @@
+{
+  "key": "hr-puantaj",
+  "version": "1.0",
+  "title": "Puantaj / Devamsızlık Raporu",
+  "description": "Günlük giriş-çıkış, çalışma saati ve devamsızlık kayıtları (PDKS)",
+  "category": "İnsan Kaynakları",
+  "source": "EMPLOYEE_DAILY_IN_OUT",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "ROW_ID", "headerName": "Kayıt ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "EMPLOYEE_ID", "headerName": "Sicil No", "type": "number", "width": 90, "sensitive": false },
+    { "field": "BRANCH_ID", "headerName": "Şube ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "START_DATE", "headerName": "Giriş Zamanı", "type": "date", "width": 150, "sensitive": false },
+    { "field": "FINISH_DATE", "headerName": "Çıkış Zamanı", "type": "date", "width": 150, "sensitive": false },
+    { "field": "DAY_TYPE", "headerName": "Gün Tipi", "type": "number", "width": 90, "sensitive": false },
+    { "field": "TOTAL_WORK_HOUR", "headerName": "Toplam Saat", "type": "number", "width": 110, "sensitive": false },
+    { "field": "DAILY_WORKING_HOUR", "headerName": "Günlük Saat", "type": "number", "width": 110, "sensitive": false },
+    { "field": "IS_OFF_DAY", "headerName": "Tatil Günü", "type": "number", "width": 90, "sensitive": false },
+    { "field": "IS_WEEK_REST_DAY", "headerName": "Hafta Tatili", "type": "number", "width": 100, "sensitive": false },
+    { "field": "SSK_STATUE", "headerName": "SGK Statü", "type": "number", "width": 90, "sensitive": false },
+    { "field": "STATUE_TYPE", "headerName": "Statü Tipi", "type": "number", "width": 90, "sensitive": false },
+    { "field": "DETAIL", "headerName": "Açıklama", "type": "text", "width": 200, "sensitive": false },
+    { "field": "PROJECT_ID", "headerName": "Proje ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 130, "sensitive": false }
+  ],
+  "defaultSort": "START_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.hr-puantaj.view",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "BRANCH_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

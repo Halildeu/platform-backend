@@ -45,6 +45,7 @@ public class AuthService {
     private final EmailVerificationService emailVerificationService;
     private final PasswordResetService passwordResetService;
     private final EmailNotificationService emailNotificationService;
+    private final AuthAuditService authAuditService;
     private final boolean adminFallbackEnabled;
 
     public AuthService(AuthenticationManager authenticationManager,
@@ -55,6 +56,7 @@ public class AuthService {
                        EmailVerificationService emailVerificationService,
                        PasswordResetService passwordResetService,
                        EmailNotificationService emailNotificationService,
+                       AuthAuditService authAuditService,
                        @Value("${security.admin-fallback.enabled:false}") boolean adminFallbackEnabled) {
         this.authenticationManager = authenticationManager;
         this.jwtTokenProvider = jwtTokenProvider;
@@ -64,6 +66,7 @@ public class AuthService {
         this.emailVerificationService = emailVerificationService;
         this.passwordResetService = passwordResetService;
         this.emailNotificationService = emailNotificationService;
+        this.authAuditService = authAuditService;
         this.adminFallbackEnabled = adminFallbackEnabled;
     }
 
@@ -112,6 +115,20 @@ public class AuthService {
         }
 
         long expiresAt = System.currentTimeMillis() + sessionTimeoutMinutes * 60_000L;
+
+        try {
+            authAuditService.recordSessionCreated(
+                    userDetails.getId(),
+                    userDetails.getUsername(),
+                    companyId,
+                    role,
+                    permissions,
+                    sessionTimeoutMinutes,
+                    expiresAt
+            );
+        } catch (Exception ex) {
+            log.warn("Session audit olayı yazılamadı. userId={}", userDetails.getId(), ex);
+        }
 
         return new JwtResponse(token, userDetails.getUsername(), role, permissions, expiresAt, (int) sessionTimeoutMinutes);
     }

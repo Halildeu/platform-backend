@@ -38,6 +38,7 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         }
 
         AuthorizationContext base = AuthorizationContextBuilder.fromJwt(jwt);
+        Long userId = firstNonNull(base.getUserId(), extractLongClaim(jwt, "uid"));
         String email = base.getEmail();
         if (email == null || email.isBlank()) {
             String preferredUsername = jwt.getClaimAsString("preferred_username");
@@ -45,13 +46,21 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
                 email = preferredUsername;
             }
         }
+        if ((email == null || email.isBlank()) && subject != null && subject.contains("@")) {
+            email = subject;
+        }
 
         Set<String> roles = new HashSet<>(base.getRoles());
+        String directRole = jwt.getClaimAsString("role");
+        if (directRole != null && !directRole.isBlank()) {
+            roles.add(normalizeRole(directRole));
+        }
         Set<String> permissions = new HashSet<>(base.getPermissions());
 
         String cacheKey = subject;
         String finalEmail = email;
-        return cache.get(cacheKey, () -> fetchContext(base.getUserId(), finalEmail, roles, permissions, jwt.getTokenValue()));
+        Long finalUserId = userId;
+        return cache.get(cacheKey, () -> fetchContext(finalUserId, finalEmail, roles, permissions, jwt.getTokenValue()));
     }
 
     private AuthorizationContext fetchContext(Long userId,
@@ -115,6 +124,41 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         return PermissionCodes.VARIANTS_READ.equalsIgnoreCase(p)
                 || PermissionCodes.VARIANTS_WRITE.equalsIgnoreCase(p)
                 || PermissionCodes.MANAGE_GLOBAL_VARIANTS.equalsIgnoreCase(p);
+    }
+
+    private Long extractLongClaim(Jwt jwt, String claimName) {
+        Object claim = jwt.getClaim(claimName);
+        if (claim instanceof Number number) {
+            return number.longValue();
+        }
+        if (claim instanceof String text) {
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String normalizeRole(String role) {
+        if (role == null || role.isBlank()) {
+            return role;
+        }
+        return role.startsWith("ROLE_") ? role.substring(5) : role;
+    }
+
+    @SafeVarargs
+    private <T> T firstNonNull(T... values) {
+        if (values == null) {
+            return null;
+        }
+        for (T value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private Long toLong(String value) {

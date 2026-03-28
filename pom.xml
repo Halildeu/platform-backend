@@ -22,5 +22,6 @@
         <module>user-service</module>
         <module>variant-service</module>
         <module>core-data-service</module>
+        <module>report-service</module>
     </modules>
 </project>

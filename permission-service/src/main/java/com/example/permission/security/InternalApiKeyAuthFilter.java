@@ -29,6 +29,7 @@ public class InternalApiKeyAuthFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(InternalApiKeyAuthFilter.class);
     private static final String PRIMARY_HEADER = "X-Internal-Api-Key";
     private static final String LEGACY_HEADER = "X-Internal-API-Key";
+    private static final String INTERNAL_PATH_PREFIX = "/api/v1/internal/";
 
     private final String expectedApiKey;
     private final boolean legacyEnabled;
@@ -47,13 +48,13 @@ public class InternalApiKeyAuthFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (SecurityContextHolder.getContext().getAuthentication() != null) {
+        String path = request.getRequestURI();
+        if (path == null || !path.startsWith(INTERNAL_PATH_PREFIX)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        String path = request.getRequestURI();
-        if (path.startsWith("/actuator")) {
+        if (SecurityContextHolder.getContext().getAuthentication() != null) {
             filterChain.doFilter(request, response);
             return;
         }

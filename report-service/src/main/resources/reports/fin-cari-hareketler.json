@@ -1,0 +1,38 @@
+{
+  "key": "fin-cari-hareketler",
+  "version": "1.0",
+  "title": "Cari Hesap Hareketleri",
+  "description": "Cari hesap borç/alacak hareketleri (fatura, havale, masraf, devir)",
+  "category": "Finans",
+  "source": "CARI_ROWS",
+  "sourceSchema": "workcube_mikrolink_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "columns": [
+    { "field": "CARI_ACTION_ID", "headerName": "Hareket ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ACTION_NAME", "headerName": "Hareket Tipi", "type": "text", "width": 200, "sensitive": false },
+    { "field": "ACTION_DATE", "headerName": "Tarih", "type": "date", "width": 120, "sensitive": false },
+    { "field": "DUE_DATE", "headerName": "Vade Tarihi", "type": "date", "width": 120, "sensitive": false },
+    { "field": "PAPER_NO", "headerName": "Belge No", "type": "text", "width": 140, "sensitive": false },
+    { "field": "ACTION_DETAIL", "headerName": "Açıklama", "type": "text", "width": 280, "sensitive": false },
+    { "field": "ACTION_VALUE", "headerName": "Tutar", "type": "number", "width": 140, "sensitive": false },
+    { "field": "ACTION_CURRENCY_ID", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "OTHER_MONEY", "headerName": "Döviz Kur", "type": "text", "width": 90, "sensitive": false },
+    { "field": "TO_CMP_ID", "headerName": "Alacaklı Cari ID", "type": "number", "width": 120, "sensitive": false },
+    { "field": "FROM_CMP_ID", "headerName": "Borçlu Cari ID", "type": "number", "width": 120, "sensitive": false },
+    { "field": "PROCESS_CAT", "headerName": "İşlem Kat.", "type": "number", "width": 90, "sensitive": false },
+    { "field": "IS_PROCESSED", "headerName": "İşlendi", "type": "number", "width": 80, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 130, "sensitive": false }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.fin-cari-hareketler.view",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "FROM_CMP_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

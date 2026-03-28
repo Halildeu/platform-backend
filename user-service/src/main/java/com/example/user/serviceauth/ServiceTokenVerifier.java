@@ -4,6 +4,7 @@ import com.example.user.security.ServiceAuthenticationToken;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
@@ -39,8 +40,9 @@ public class ServiceTokenVerifier {
 
         // Servis token’ları için audience ve environment doğrulaması
         var audiences = jwt.getAudience();
-        if (StringUtils.hasText(verificationProperties.getExpectedAudience())
-                && (audiences == null || audiences.stream().noneMatch(verificationProperties.getExpectedAudience()::equals))) {
+        Set<String> expectedAudiences = splitCsv(verificationProperties.getExpectedAudience());
+        if (!expectedAudiences.isEmpty()
+                && (audiences == null || audiences.stream().noneMatch(expectedAudiences::contains))) {
             throw new JwtException("Unexpected audience");
         }
 
@@ -83,5 +85,15 @@ public class ServiceTokenVerifier {
                 .filter(StringUtils::hasText)
                 .map(value -> new SimpleGrantedAuthority("PERM_" + value))
                 .toList();
+    }
+
+    private Set<String> splitCsv(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return Set.of();
+        }
+        return java.util.Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .collect(java.util.stream.Collectors.toSet());
     }
 }

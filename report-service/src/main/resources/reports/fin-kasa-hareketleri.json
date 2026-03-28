@@ -1,0 +1,36 @@
+{
+  "key": "fin-kasa-hareketleri",
+  "version": "1.0",
+  "title": "Kasa Hareketleri",
+  "description": "Kasa giriş/çıkış hareketleri",
+  "category": "Finans",
+  "source": "CASH_ACTIONS",
+  "sourceSchema": "workcube_mikrolink_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "columns": [
+    { "field": "ACTION_ID", "headerName": "İşlem ID", "type": "number", "width": 100, "sensitive": false },
+    { "field": "ACTION_TYPE", "headerName": "İşlem Tipi", "type": "text", "width": 160, "sensitive": false },
+    { "field": "ACTION_DATE", "headerName": "Tarih", "type": "date", "width": 120, "sensitive": false },
+    { "field": "PAPER_NO", "headerName": "Belge No", "type": "text", "width": 140, "sensitive": false },
+    { "field": "ACTION_DETAIL", "headerName": "Açıklama", "type": "text", "width": 280, "sensitive": false },
+    { "field": "CASH_ACTION_VALUE", "headerName": "Tutar", "type": "number", "width": 140, "sensitive": false },
+    { "field": "CASH_ACTION_CURRENCY_ID", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "OTHER_MONEY", "headerName": "Döviz Kur", "type": "text", "width": 90, "sensitive": false },
+    { "field": "CASH_ACTION_FROM_CASH_ID", "headerName": "Çıkış Kasa ID", "type": "number", "width": 110, "sensitive": false },
+    { "field": "CASH_ACTION_TO_CASH_ID", "headerName": "Giriş Kasa ID", "type": "number", "width": 110, "sensitive": false },
+    { "field": "CASH_ACTION_FROM_COMPANY_ID", "headerName": "Gönderen Cari", "type": "number", "width": 120, "sensitive": false },
+    { "field": "CASH_ACTION_TO_COMPANY_ID", "headerName": "Alan Cari", "type": "number", "width": 120, "sensitive": false }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.fin-kasa-hareketleri.view",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "CASH_ACTION_FROM_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

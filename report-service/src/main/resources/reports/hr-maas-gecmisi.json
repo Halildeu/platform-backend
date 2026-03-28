@@ -1,0 +1,43 @@
+{
+  "key": "hr-maas-gecmisi",
+  "version": "1.0",
+  "title": "Maaş Değişiklik Geçmişi",
+  "description": "Maaş artışları ve değişiklik kayıtları (yıl bazlı karşılaştırma)",
+  "category": "İnsan Kaynakları",
+  "source": "EMPLOYEES_SALARY_HISTORY",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "HISTORY_ID", "headerName": "Geçmiş ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "EMPLOYEE_ID", "headerName": "Sicil No", "type": "number", "width": 90, "sensitive": false },
+    { "field": "PERIOD_YEAR", "headerName": "Yıl", "type": "number", "width": 70, "sensitive": false },
+    { "field": "MONEY", "headerName": "Döviz", "type": "text", "width": 70, "sensitive": false },
+    { "field": "M1", "headerName": "Ocak", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M2", "headerName": "Şubat", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M3", "headerName": "Mart", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M4", "headerName": "Nisan", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M5", "headerName": "Mayıs", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M6", "headerName": "Haziran", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M7", "headerName": "Temmuz", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M8", "headerName": "Ağustos", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M9", "headerName": "Eylül", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M10", "headerName": "Ekim", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M11", "headerName": "Kasım", "type": "number", "width": 110, "sensitive": true },
+    { "field": "M12", "headerName": "Aralık", "type": "number", "width": 110, "sensitive": true },
+    { "field": "SALARY_UPDATE_ID", "headerName": "Güncelleme ID", "type": "number", "width": 120, "sensitive": false },
+    { "field": "SALARY_CODE", "headerName": "Maaş Kodu", "type": "text", "width": 110, "sensitive": false },
+    { "field": "RECORD_DATE", "headerName": "Kayıt Tarihi", "type": "date", "width": 130, "sensitive": false }
+  ],
+  "defaultSort": "RECORD_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.hr-maas-gecmisi.view",
+    "columnRestrictions": {
+      "reports.hr.salary-view": ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12"]
+    },
+    "rowFilter": {
+      "column": "EMPLOYEE_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

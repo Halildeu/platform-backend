@@ -1,0 +1,305 @@
+{
+  "type": "dashboard",
+  "key": "fin-ratios",
+  "version": "1.0",
+  "title": "Finansal Oran Analizi",
+  "description": "Likidite, tahsilat, borç ödeme ve nakit akış oranları",
+  "category": "Finans",
+  "icon": "calculator",
+  "access": {
+    "permission": "dashboards.fin-analytics.view"
+  },
+  "timeRanges": ["30d", "90d", "180d", "1y", "ytd"],
+  "defaultTimeRange": "90d",
+  "kpis": [
+    {
+      "id": "nakit-orani",
+      "title": "Nakit Oranı",
+      "format": "decimal",
+      "toneRules": [
+        { "condition": ">= 0.5", "tone": "success" },
+        { "condition": ">= 0.2", "tone": "warning" },
+        { "condition": "< 0.2", "tone": "danger" }
+      ],
+      "source": "ACCOUNT_REMAINDER_LAST",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST((ISNULL(SUM(BAKIYE), 0) + ISNULL((SELECT SUM(BAKIYE) FROM [workcube_mikrolink_2026_1].[CASH_REMAINDER_LAST] WITH (NOLOCK)), 0)) AS FLOAT) / NULLIF((SELECT SUM(ABS(BAKIYE)) FROM [workcube_mikrolink_2026_1].[COMPANY_REMAINDER] WITH (NOLOCK) WHERE BAKIYE < 0), 0)",
+        "where": "1=1"
+      },
+      "drillTo": {
+        "reportKey": "fin-nakit-akis-ozet"
+      }
+    },
+    {
+      "id": "dso",
+      "title": "Alacak Tahsil Süresi (Gün)",
+      "format": "number",
+      "toneRules": [
+        { "condition": "> 90", "tone": "danger" },
+        { "condition": "> 60", "tone": "warning" },
+        { "condition": "<= 60", "tone": "success" }
+      ],
+      "source": "COMPANY_REMAINDER",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST(ISNULL(SUM(CASE WHEN BAKIYE > 0 THEN BAKIYE END), 0) AS FLOAT) / NULLIF((SELECT SUM(NETTOTAL) FROM [workcube_mikrolink_2026_1].[INVOICE] WITH (NOLOCK) WHERE INVOICE_CAT = 59 AND INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd), 0) * DATEDIFF(DAY, :_periodStart, :_periodEnd)",
+        "where": "BAKIYE > 0"
+      },
+      "drillTo": {
+        "reportKey": "fin-alacak-yaslandirma"
+      }
+    },
+    {
+      "id": "dpo",
+      "title": "Borç Ödeme Süresi (Gün)",
+      "format": "number",
+      "toneRules": [
+        { "condition": "< 15", "tone": "warning" },
+        { "condition": "<= 60", "tone": "success" },
+        { "condition": "> 60", "tone": "info" }
+      ],
+      "source": "COMPANY_REMAINDER",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST(ISNULL(SUM(CASE WHEN BAKIYE < 0 THEN ABS(BAKIYE) END), 0) AS FLOAT) / NULLIF((SELECT SUM(NETTOTAL) FROM [workcube_mikrolink_2026_1].[INVOICE] WITH (NOLOCK) WHERE INVOICE_CAT = 56 AND INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd), 0) * DATEDIFF(DAY, :_periodStart, :_periodEnd)",
+        "where": "BAKIYE < 0"
+      },
+      "drillTo": {
+        "reportKey": "fin-borc-yaslandirma"
+      }
+    },
+    {
+      "id": "alacak-devir",
+      "title": "Alacak Devir Hızı",
+      "format": "decimal",
+      "toneRules": [
+        { "condition": "< 2", "tone": "danger" },
+        { "condition": "< 4", "tone": "warning" },
+        { "condition": ">= 4", "tone": "success" }
+      ],
+      "source": "INVOICE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST(ISNULL(SUM(CASE WHEN INVOICE_CAT = 59 THEN NETTOTAL END), 0) AS FLOAT) / NULLIF((SELECT SUM(BAKIYE) FROM [workcube_mikrolink_2026_1].[COMPANY_REMAINDER] WITH (NOLOCK) WHERE BAKIYE > 0), 0)",
+        "where": "INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd"
+      },
+      "drillTo": {
+        "reportKey": "fin-cari-mutabakat"
+      }
+    },
+    {
+      "id": "cek-vade-ort",
+      "title": "Çek Ort. Vade (Gün)",
+      "format": "number",
+      "toneRules": [
+        { "condition": "> 90", "tone": "warning" },
+        { "condition": "<= 90", "tone": "info" }
+      ],
+      "source": "CHEQUE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "AVG(DATEDIFF(DAY, GETDATE(), CHEQUE_DUEDATE))",
+        "where": "CHEQUE_STATUS_ID IN (1, 6) AND CHEQUE_DUEDATE >= GETDATE()"
+      },
+      "drillTo": {
+        "reportKey": "fin-cek-vade-takip"
+      }
+    },
+    {
+      "id": "satis-buyume",
+      "title": "Satış Büyüme %",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.1", "tone": "success" },
+        { "condition": ">= 0", "tone": "info" },
+        { "condition": "< 0", "tone": "danger" }
+      ],
+      "source": "INVOICE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "ISNULL(SUM(CASE WHEN INVOICE_CAT = 59 THEN NETTOTAL END), 0)",
+        "where": "INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd"
+      },
+      "trend": {
+        "select": "ISNULL(SUM(CASE WHEN INVOICE_CAT = 59 THEN NETTOTAL END), 0)",
+        "where": "INVOICE_DATE >= :_prevPeriodStart AND INVOICE_DATE <= :_prevPeriodEnd",
+        "direction": "higher_is_better"
+      },
+      "drillTo": {
+        "reportKey": "fin-faturalar",
+        "filters": { "INVOICE_CAT": { "filterType": "number", "type": "equals", "filter": 59 } }
+      }
+    },
+    {
+      "id": "net-nakit-oran",
+      "title": "Net Nakit Akış Oranı",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "< 0", "tone": "danger" },
+        { "condition": "< 0.1", "tone": "warning" },
+        { "condition": ">= 0.1", "tone": "success" }
+      ],
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST((ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) - ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)) AS FLOAT) / NULLIF(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd"
+      },
+      "trend": {
+        "select": "CAST((ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) - ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)) AS FLOAT) / NULLIF(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0)",
+        "where": "ACTION_DATE >= :_prevPeriodStart AND ACTION_DATE <= :_prevPeriodEnd",
+        "direction": "higher_is_better"
+      },
+      "drillTo": {
+        "reportKey": "fin-banka-hareketleri"
+      }
+    },
+    {
+      "id": "tahsilat-orani",
+      "title": "Tahsilat Oranı",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "< 0.7", "tone": "danger" },
+        { "condition": "< 0.85", "tone": "warning" },
+        { "condition": ">= 0.85", "tone": "success" }
+      ],
+      "source": "CARI_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CAST(ISNULL(SUM(CASE WHEN PROCESS_CAT IN (2, 3, 5) THEN ACTION_VALUE END), 0) AS FLOAT) / NULLIF(SUM(CASE WHEN PROCESS_CAT = 1 THEN ACTION_VALUE END), 0)",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd"
+      },
+      "drillTo": {
+        "reportKey": "fin-cari-mutabakat"
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "dso-trend",
+      "title": "Aylık Alacak Tahsil Süresi (DSO)",
+      "chartType": "line",
+      "size": "lg",
+      "source": "CARI_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "FORMAT(ACTION_DATE, 'yyyy-MM') AS label, CAST(COUNT(DISTINCT CASE WHEN PROCESS_CAT = 1 THEN FROM_CMP_ID END) AS FLOAT) * 30.0 / NULLIF(COUNT(DISTINCT CASE WHEN PROCESS_CAT IN (2, 3) THEN FROM_CMP_ID END), 0) AS value",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd",
+        "groupBy": "FORMAT(ACTION_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showGrid": true,
+        "showDots": true
+      }
+    },
+    {
+      "id": "likidite-trend",
+      "title": "Aylık Nakit Pozisyonu",
+      "chartType": "line",
+      "size": "lg",
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "FORMAT(ACTION_DATE, 'yyyy-MM') AS label, ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) - ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) AS value",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd",
+        "groupBy": "FORMAT(ACTION_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showGrid": true,
+        "showDots": true
+      }
+    },
+    {
+      "id": "alacak-borc-denge",
+      "title": "Aylık Alacak vs Borç",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "CARI_ROWS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "FORMAT(ACTION_DATE, 'yyyy-MM') AS label, ISNULL(SUM(CASE WHEN PROCESS_CAT = 1 THEN ACTION_VALUE END), 0) AS value, ISNULL(SUM(CASE WHEN PROCESS_CAT IN (2, 3, 5) THEN ACTION_VALUE END), 0) AS value2",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd",
+        "groupBy": "FORMAT(ACTION_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showGrid": true,
+        "series": [
+          { "field": "value", "name": "Alacak", "color": "#3b82f6" },
+          { "field": "value2", "name": "Tahsilat", "color": "#22c55e" }
+        ]
+      },
+      "drillTo": {
+        "reportKey": "fin-cari-mutabakat"
+      }
+    },
+    {
+      "id": "cek-vade-tutar",
+      "title": "Çek Vade Dağılımı (Tutar)",
+      "chartType": "pie",
+      "size": "md",
+      "source": "CHEQUE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CASE WHEN CHEQUE_DUEDATE < GETDATE() THEN 'Vadesi Geçmiş' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 30, GETDATE()) THEN '0-30 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 60, GETDATE()) THEN '30-60 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 90, GETDATE()) THEN '60-90 Gün' ELSE '90+ Gün' END AS label, SUM(CHEQUE_VALUE) AS value",
+        "where": "CHEQUE_STATUS_ID IN (1, 6)",
+        "groupBy": "CASE WHEN CHEQUE_DUEDATE < GETDATE() THEN 'Vadesi Geçmiş' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 30, GETDATE()) THEN '0-30 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 60, GETDATE()) THEN '30-60 Gün' WHEN CHEQUE_DUEDATE < DATEADD(DAY, 90, GETDATE()) THEN '60-90 Gün' ELSE '90+ Gün' END"
+      },
+      "chartConfig": {
+        "showLegend": true,
+        "showPercentage": true
+      },
+      "drillTo": {
+        "reportKey": "fin-cek-vade-takip"
+      }
+    },
+    {
+      "id": "fatura-tipi",
+      "title": "Fatura Tipi Dağılımı (Adet)",
+      "chartType": "pie",
+      "size": "md",
+      "source": "INVOICE",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "CASE INVOICE_CAT WHEN 56 THEN 'Alış Fatura' WHEN 59 THEN 'Satış Fatura' WHEN 57 THEN 'Alış İade' WHEN 60 THEN 'Satış İade' ELSE 'Diğer' END AS label, COUNT(*) AS value",
+        "where": "INVOICE_DATE >= :_periodStart AND INVOICE_DATE <= :_periodEnd",
+        "groupBy": "CASE INVOICE_CAT WHEN 56 THEN 'Alış Fatura' WHEN 59 THEN 'Satış Fatura' WHEN 57 THEN 'Alış İade' WHEN 60 THEN 'Satış İade' ELSE 'Diğer' END"
+      },
+      "chartConfig": {
+        "showLegend": true,
+        "showPercentage": true
+      },
+      "drillTo": {
+        "reportKey": "fin-faturalar"
+      }
+    },
+    {
+      "id": "nakit-pozisyon",
+      "title": "Aylık Net Nakit Akışı",
+      "chartType": "area",
+      "size": "lg",
+      "source": "BANK_ACTIONS",
+      "sourceSchema": "workcube_mikrolink_2026_1",
+      "aggregate": {
+        "select": "FORMAT(ACTION_DATE, 'yyyy-MM') AS label, ISNULL(SUM(CASE WHEN ACTION_TO_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) - ISNULL(SUM(CASE WHEN ACTION_FROM_ACCOUNT_ID IS NOT NULL THEN ACTION_VALUE ELSE 0 END), 0) AS value",
+        "where": "ACTION_DATE >= :_periodStart AND ACTION_DATE <= :_periodEnd",
+        "groupBy": "FORMAT(ACTION_DATE, 'yyyy-MM')",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": {
+        "showGrid": true
+      }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["nakit-orani", "dso", "dpo", "alacak-devir", "cek-vade-ort", "satis-buyume", "net-nakit-oran", "tahsilat-orani"] },
+      { "type": "chart-row", "ids": ["dso-trend", "likidite-trend"] },
+      { "type": "chart-row", "ids": ["alacak-borc-denge", "cek-vade-tutar"] },
+      { "type": "chart-row", "ids": ["fatura-tipi", "nakit-pozisyon"] }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "key": "fin-butce-gerceklesen",
+  "version": "1.0",
+  "title": "Bütçe vs Gerçekleşen",
+  "description": "Bütçe planı kalemleri — planlanan gelir/gider ve fark analizi",
+  "category": "Finans",
+  "source": "BUDGET_PLAN_ROW",
+  "sourceSchema": "workcube_mikrolink",
+  "schemaMode": "standard",
+  "columns": [
+    { "field": "BUDGET_PLAN_ROW_ID", "headerName": "Satır ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "BUDGET_PLAN_ID", "headerName": "Plan ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "PLAN_DATE", "headerName": "Plan Tarihi", "type": "date", "width": 120, "sensitive": false },
+    { "field": "BUDGET_ACCOUNT_CODE", "headerName": "Hesap Kodu", "type": "text", "width": 160, "sensitive": false },
+    { "field": "DETAIL", "headerName": "Açıklama", "type": "text", "width": 280, "sensitive": false },
+    { "field": "ROW_TOTAL_INCOME", "headerName": "Planlanan Gelir", "type": "number", "width": 140, "sensitive": false },
+    { "field": "ROW_TOTAL_EXPENSE", "headerName": "Planlanan Gider", "type": "number", "width": 140, "sensitive": false },
+    { "field": "ROW_TOTAL_DIFF", "headerName": "Fark", "type": "number", "width": 130, "sensitive": false },
+    { "field": "ACTIVITY_TYPE_ID", "headerName": "Faaliyet Tipi", "type": "number", "width": 110, "sensitive": false },
+    { "field": "EXP_INC_CENTER_ID", "headerName": "Gelir/Gider Merkezi", "type": "number", "width": 140, "sensitive": false },
+    { "field": "RELATED_ACCOUNT_CODE", "headerName": "İlişkili Hesap", "type": "text", "width": 140, "sensitive": false }
+  ],
+  "defaultSort": "PLAN_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {}
+  }
+}

@@ -40,16 +40,13 @@ public class PermissionAuditEvent {
     @Column(name = "correlation_id")
     private String correlationId;
 
-    @Lob
-    @Column(name = "metadata")
+    @Column(name = "metadata", columnDefinition = "TEXT")
     private String metadata;
 
-    @Lob
-    @Column(name = "before_state")
+    @Column(name = "before_state", columnDefinition = "TEXT")
     private String beforeState;
 
-    @Lob
-    @Column(name = "after_state")
+    @Column(name = "after_state", columnDefinition = "TEXT")
     private String afterState;
 
     @Column(name = "occurred_at", nullable = false, updatable = false)

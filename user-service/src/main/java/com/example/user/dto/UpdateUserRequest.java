@@ -6,6 +6,7 @@ public class UpdateUserRequest {
     private String role;
     private Boolean enabled;
     private Integer sessionTimeoutMinutes;
+    private String locale;
 
     public String getName() {
         return name;
@@ -37,5 +38,13 @@ public class UpdateUserRequest {
 
     public void setSessionTimeoutMinutes(Integer sessionTimeoutMinutes) {
         this.sessionTimeoutMinutes = sessionTimeoutMinutes;
+    }
+
+    public String getLocale() {
+        return locale;
+    }
+
+    public void setLocale(String locale) {
+        this.locale = locale;
     }
 }

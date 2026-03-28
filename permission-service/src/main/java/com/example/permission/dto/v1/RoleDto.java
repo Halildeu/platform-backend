@@ -11,6 +11,7 @@ public class RoleDto {
     private String lastModifiedAt;
     private String lastModifiedBy;
     private List<RolePolicyDto> policies;
+    private List<String> permissions;
 
     public Long getId() {
         return id;
@@ -74,5 +75,13 @@ public class RoleDto {
 
     public void setPolicies(List<RolePolicyDto> policies) {
         this.policies = policies;
+    }
+
+    public List<String> getPermissions() {
+        return permissions;
+    }
+
+    public void setPermissions(List<String> permissions) {
+        this.permissions = permissions;
     }
 }

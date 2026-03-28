@@ -36,7 +36,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         
         // 1. Login/Register gibi halka açık yolları filtrelemeden pas geç
-        if (request.getServletPath().contains("/api/auth")) {
+        String servletPath = request.getServletPath();
+        if (servletPath.startsWith("/api/auth") || servletPath.startsWith("/api/v1/auth")) {
             filterChain.doFilter(request, response);
             return; // Metodun geri kalanını çalıştırma
         }

@@ -1,0 +1,32 @@
+{
+  "key": "hr-egitim-katilim",
+  "version": "1.0",
+  "title": "Eğitim Katılım Raporu",
+  "description": "Çalışanların eğitim katılım durumu ve katılım oranları",
+  "category": "İnsan Kaynakları",
+  "source": "TRAINING_CLASS_ATTENDER",
+  "sourceSchema": "workcube_mikrolink",
+  "columns": [
+    { "field": "CLASS_ATTENDER_ID", "headerName": "Katılım ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "CLASS_ID", "headerName": "Eğitim ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "EMP_ID", "headerName": "Çalışan ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "COMP_ID", "headerName": "Şirket ID", "type": "number", "width": 90, "sensitive": false },
+    { "field": "GRP_ID", "headerName": "Grup ID", "type": "number", "width": 80, "sensitive": false },
+    { "field": "STATUS", "headerName": "Durum", "type": "number", "width": 70, "sensitive": false },
+    { "field": "PARTICIPATION_RATE", "headerName": "Katılım Oranı (%)", "type": "number", "width": 130, "sensitive": false },
+    { "field": "IS_SELFSERVICE", "headerName": "Self-Servis", "type": "number", "width": 90, "sensitive": false },
+    { "field": "DETAIL", "headerName": "Detay", "type": "text", "width": 200, "sensitive": false },
+    { "field": "COMMENT", "headerName": "Yorum", "type": "text", "width": 250, "sensitive": false }
+  ],
+  "defaultSort": "CLASS_ATTENDER_ID",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "reports.hr-egitim-katilim.view",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "COMP_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  }
+}

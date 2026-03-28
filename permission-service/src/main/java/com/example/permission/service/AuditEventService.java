@@ -2,20 +2,20 @@ package com.example.permission.service;
 
 import com.example.permission.dto.AuditEventPageResponse;
 import com.example.permission.dto.AuditEventResponse;
+import com.example.permission.dto.v1.AuditExportJobResponseDto;
+import com.example.permission.dto.v1.AuditEventIngestRequestDto;
+import com.example.permission.model.AuditExportJob;
 import com.example.permission.model.PermissionAuditEvent;
+import com.example.permission.model.UserAuditEventMirror;
+import com.example.permission.repository.AuditExportJobRepository;
 import com.example.permission.repository.PermissionAuditEventRepository;
+import com.example.permission.repository.UserAuditEventMirrorRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.persistence.criteria.Predicate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -23,13 +23,16 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.UncheckedIOException;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -41,15 +44,21 @@ public class AuditEventService {
     private static final int MAX_EXPORT_LIMIT = 10000;
 
     private final PermissionAuditEventRepository repository;
+    private final AuditExportJobRepository auditExportJobRepository;
+    private final UserAuditEventMirrorRepository userAuditEventMirrorRepository;
     private final ObjectMapper objectMapper;
     private final AuditEventStream auditEventStream;
     private final boolean liveStreamEnabled;
 
     public AuditEventService(PermissionAuditEventRepository repository,
+                             AuditExportJobRepository auditExportJobRepository,
+                             UserAuditEventMirrorRepository userAuditEventMirrorRepository,
                              ObjectMapper objectMapper,
                              AuditEventStream auditEventStream,
                              @Value("${audit.live-stream.enabled:true}") boolean liveStreamEnabled) {
         this.repository = repository;
+        this.auditExportJobRepository = auditExportJobRepository;
+        this.userAuditEventMirrorRepository = userAuditEventMirrorRepository;
         this.objectMapper = objectMapper;
         this.auditEventStream = auditEventStream;
         this.liveStreamEnabled = liveStreamEnabled;
@@ -59,20 +68,12 @@ public class AuditEventService {
                                              int size,
                                              String sort,
                                              Map<String, String> filters) {
-        Pageable pageable = PageRequest.of(
-                Math.max(page, 0),
-                Math.min(Math.max(size, 1), MAX_PAGE_SIZE),
-                resolveSort(sort)
-        );
-        Specification<PermissionAuditEvent> specification = buildSpecification(filters);
-
-        Page<PermissionAuditEvent> result = repository.findAll(specification, pageable);
-        List<AuditEventResponse> events = result.getContent()
-                .stream()
-                .map(this::mapToResponse)
-                .toList();
-
-        return new AuditEventPageResponse(events, result.getNumber(), result.getTotalElements());
+        int safePage = Math.max(page, 0);
+        int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
+        List<AuditEventResponse> events = filterAndSortEvents(filters, sort);
+        int startIndex = Math.min(safePage * safeSize, events.size());
+        int endIndex = Math.min(startIndex + safeSize, events.size());
+        return new AuditEventPageResponse(events.subList(startIndex, endIndex), safePage, events.size());
     }
 
     public List<AuditEventResponse> exportEvents(String sort,
@@ -81,16 +82,20 @@ public class AuditEventService {
         int pageSize = limit != null
                 ? Math.min(Math.max(limit, 1), MAX_EXPORT_LIMIT)
                 : DEFAULT_EXPORT_LIMIT;
-        PageRequest pageRequest = PageRequest.of(0, pageSize, resolveSort(sort));
-        Page<PermissionAuditEvent> page = repository.findAll(buildSpecification(filters), pageRequest);
-        return page.stream()
-                .map(this::mapToResponse)
-                .toList();
+        List<AuditEventResponse> events = filterAndSortEvents(filters, sort);
+        return events.subList(0, Math.min(pageSize, events.size()));
     }
 
     public AuditEventPageResponse findByIdPage(String idString) {
+        if (idString != null && idString.startsWith("user-")) {
+            Long userAuditId = parseAuditId(idString.substring("user-".length()));
+            return userAuditEventMirrorRepository.findById(userAuditId)
+                    .map(this::mapUserAuditToResponse)
+                    .map(resp -> new AuditEventPageResponse(java.util.List.of(resp), 0, 1))
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit event not found"));
+        }
         try {
-            Long id = Long.valueOf(idString);
+            Long id = parseAuditId(idString);
             return repository.findById(id)
                     .map(this::mapToResponse)
                     .map(resp -> new AuditEventPageResponse(java.util.List.of(resp), 0, 1))
@@ -114,6 +119,81 @@ public class AuditEventService {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported export format: " + format);
     }
 
+    public AuditExportJobResponseDto createExportJob(String requestedBy,
+                                                     String format,
+                                                     Integer limit,
+                                                     String sort,
+                                                     Map<String, String> filters) {
+        String normalizedFormat = normalizeExportFormat(format);
+        AuditExportJob job = new AuditExportJob();
+        job.setId(UUID.randomUUID().toString());
+        job.setRequestedBy(requestedBy);
+        job.setStatus("PROCESSING");
+        job.setFormat(normalizedFormat);
+        job.setSortValue(sort);
+        job.setFilterSnapshot(writeJsonSafe(filters == null ? Map.of() : filters));
+        job.setCreatedAt(Instant.now());
+        auditExportJobRepository.save(job);
+
+        try {
+            List<AuditEventResponse> events = exportEvents(sort, filters == null ? Map.of() : filters, limit);
+            byte[] payload = buildExportPayload(events, normalizedFormat);
+            job.setPayload(payload);
+            job.setContentType(resolveExportContentType(normalizedFormat));
+            job.setFilename("audit-events-%s.%s".formatted(job.getId(), normalizedFormat));
+            job.setEventCount(events.size());
+            job.setStatus("COMPLETED");
+            job.setCompletedAt(Instant.now());
+            auditExportJobRepository.save(job);
+            recordEventSafely(buildExportJobAuditEvent(
+                    "AUDIT_EXPORT_JOB_CREATED",
+                    requestedBy,
+                    "Audit export job completed with %s events".formatted(events.size()),
+                    "INFO",
+                    Map.of(
+                            "jobId", job.getId(),
+                            "format", normalizedFormat,
+                            "eventCount", events.size(),
+                            "status", job.getStatus()
+                    )
+            ));
+        } catch (RuntimeException error) {
+            job.setStatus("FAILED");
+            job.setCompletedAt(Instant.now());
+            job.setErrorMessage(resolveExportErrorMessage(error));
+            auditExportJobRepository.save(job);
+            recordEventSafely(buildExportJobAuditEvent(
+                    "AUDIT_EXPORT_JOB_FAILED",
+                    requestedBy,
+                    "Audit export job failed",
+                    "ERROR",
+                    Map.of(
+                            "jobId", job.getId(),
+                            "format", normalizedFormat,
+                            "status", job.getStatus(),
+                            "error", job.getErrorMessage()
+                    )
+            ));
+        }
+
+        return toExportJobResponse(job);
+    }
+
+    public AuditExportJobResponseDto getExportJob(String jobId, String requestedBy) {
+        return toExportJobResponse(findOwnedExportJob(jobId, requestedBy));
+    }
+
+    public AuditExportJob getCompletedExportJob(String jobId, String requestedBy) {
+        AuditExportJob job = findOwnedExportJob(jobId, requestedBy);
+        if (!"COMPLETED".equalsIgnoreCase(job.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Export job is not ready");
+        }
+        if (job.getPayload() == null || job.getPayload().length == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Export payload not found");
+        }
+        return job;
+    }
+
     public SseEmitter openLiveStream() {
         if (!liveStreamEnabled) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Audit live stream disabled");
@@ -125,6 +205,23 @@ public class AuditEventService {
         PermissionAuditEvent saved = repository.save(event);
         dispatchLiveEvent(saved);
         return saved;
+    }
+
+    public PermissionAuditEvent recordMirroredEvent(AuditEventIngestRequestDto request) {
+        PermissionAuditEvent event = new PermissionAuditEvent();
+        event.setEventType(request.getEventType());
+        event.setPerformedBy(request.getPerformedBy());
+        event.setDetails(request.getDetails());
+        event.setUserEmail(request.getUserEmail());
+        event.setService(request.getService());
+        event.setLevel(request.getLevel());
+        event.setAction(request.getAction());
+        event.setCorrelationId(isNotBlank(request.getCorrelationId()) ? request.getCorrelationId() : UUID.randomUUID().toString());
+        event.setMetadata(writeJsonSafe(request.getMetadata()));
+        event.setBeforeState(writeJsonSafe(request.getBefore()));
+        event.setAfterState(writeJsonSafe(request.getAfter()));
+        event.setOccurredAt(request.getOccurredAt() != null ? request.getOccurredAt() : Instant.now());
+        return recordEvent(event);
     }
 
     public PermissionAuditEvent buildEvent(String eventType,
@@ -153,11 +250,19 @@ public class AuditEventService {
     }
 
     private void dispatchLiveEvent(PermissionAuditEvent event) {
-        if (!liveStreamEnabled) {
+        if (!liveStreamEnabled || event == null) {
             return;
         }
         AuditEventResponse response = mapToResponse(event);
         auditEventStream.publish(response);
+    }
+
+    private void recordEventSafely(PermissionAuditEvent event) {
+        try {
+            recordEvent(event);
+        } catch (RuntimeException error) {
+            log.warn("Failed to persist audit export lifecycle event", error);
+        }
     }
 
     private String buildCsvPayload(List<AuditEventResponse> events) {
@@ -205,77 +310,172 @@ public class AuditEventService {
         }
     }
 
-    private Sort resolveSort(String sort) {
+    private List<AuditEventResponse> filterAndSortEvents(Map<String, String> filters, String sort) {
+        return collectMergedEvents().stream()
+                .filter(event -> matchesFilters(event, filters))
+                .sorted(resolveResponseComparator(sort))
+                .toList();
+    }
+
+    private List<AuditEventResponse> collectMergedEvents() {
+        List<AuditEventResponse> events = new ArrayList<>();
+        repository.findAll().stream()
+                .map(this::mapToResponse)
+                .forEach(events::add);
+        userAuditEventMirrorRepository.findAll().stream()
+                .map(this::mapUserAuditToResponse)
+                .forEach(events::add);
+        return events;
+    }
+
+    private Comparator<AuditEventResponse> resolveResponseComparator(String sort) {
+        Comparator<AuditEventResponse> comparator;
         if (sort == null || sort.isBlank()) {
-            return Sort.by(Sort.Direction.DESC, "occurredAt");
+            comparator = Comparator.comparing(AuditEventResponse::timestamp, Comparator.nullsLast(Comparator.naturalOrder()));
+            return comparator.reversed();
         }
         String[] parts = sort.split(",");
         String field = parts[0];
-        Sort.Direction direction = parts.length > 1 && "asc".equalsIgnoreCase(parts[1])
-                ? Sort.Direction.ASC
-                : Sort.Direction.DESC;
-        return Sort.by(direction, switch (field) {
-            case "userEmail" -> "userEmail";
-            case "service" -> "service";
-            case "level" -> "level";
-            case "action" -> "action";
-            case "correlationId" -> "correlationId";
-            default -> "occurredAt";
-        });
+        boolean ascending = parts.length > 1 && "asc".equalsIgnoreCase(parts[1]);
+        comparator = switch (field) {
+            case "userEmail" -> Comparator.comparing(AuditEventResponse::userEmail, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "service" -> Comparator.comparing(AuditEventResponse::service, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "level" -> Comparator.comparing(AuditEventResponse::level, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "action" -> Comparator.comparing(AuditEventResponse::action, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            case "correlationId" -> Comparator.comparing(AuditEventResponse::correlationId, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER));
+            default -> Comparator.comparing(AuditEventResponse::timestamp, Comparator.nullsLast(Comparator.naturalOrder()));
+        };
+        return ascending ? comparator : comparator.reversed();
     }
 
-    private Specification<PermissionAuditEvent> buildSpecification(Map<String, String> filters) {
-        return (root, query, criteriaBuilder) -> {
-            List<Predicate> predicates = new ArrayList<>();
-            if (filters != null) {
-                String userEmail = filters.get("userEmail");
-                if (isNotBlank(userEmail)) {
-                    predicates.add(criteriaBuilder.like(criteriaBuilder.lower(root.get("userEmail")),
-                            "%" + userEmail.toLowerCase() + "%"));
-                }
-                String service = filters.get("service");
-                if (isNotBlank(service)) {
-                    predicates.add(criteriaBuilder.like(criteriaBuilder.lower(root.get("service")),
-                            "%" + service.toLowerCase() + "%"));
-                }
-                String level = filters.get("level");
-                if (isNotBlank(level)) {
-                    predicates.add(criteriaBuilder.equal(root.get("level"), level));
-                }
-                String action = filters.get("action");
-                if (isNotBlank(action)) {
-                    predicates.add(criteriaBuilder.like(criteriaBuilder.lower(root.get("action")),
-                            "%" + action.toLowerCase() + "%"));
-                }
-                String correlationId = filters.get("correlationId");
-                if (isNotBlank(correlationId)) {
-                    predicates.add(criteriaBuilder.equal(root.get("correlationId"), correlationId));
-                }
-                String dateFrom = filters.get("dateFrom");
-                if (isNotBlank(dateFrom)) {
-                    predicates.add(criteriaBuilder.greaterThanOrEqualTo(root.get("occurredAt"), Instant.parse(dateFrom)));
-                }
-                String dateTo = filters.get("dateTo");
-                if (isNotBlank(dateTo)) {
-                    predicates.add(criteriaBuilder.lessThanOrEqualTo(root.get("occurredAt"), Instant.parse(dateTo)));
-                }
-                String search = filters.get("search");
-                if (isNotBlank(search)) {
-                    String like = "%" + search.toLowerCase() + "%";
-                    predicates.add(criteriaBuilder.or(
-                            criteriaBuilder.like(criteriaBuilder.lower(root.get("details")), like),
-                            criteriaBuilder.like(criteriaBuilder.lower(root.get("action")), like),
-                            criteriaBuilder.like(criteriaBuilder.lower(root.get("userEmail")), like),
-                            criteriaBuilder.like(criteriaBuilder.lower(root.get("service")), like)
-                    ));
-                }
-            }
-            return criteriaBuilder.and(predicates.toArray(new Predicate[0]));
-        };
+    private boolean matchesFilters(AuditEventResponse event, Map<String, String> filters) {
+        if (filters == null || filters.isEmpty()) {
+            return true;
+        }
+        if (isNotBlank(filters.get("userEmail")) && !containsIgnoreCase(event.userEmail(), filters.get("userEmail"))) {
+            return false;
+        }
+        if (isNotBlank(filters.get("service")) && !containsIgnoreCase(event.service(), filters.get("service"))) {
+            return false;
+        }
+        if (isNotBlank(filters.get("level"))
+                && (event.level() == null || !event.level().equalsIgnoreCase(filters.get("level")))) {
+            return false;
+        }
+        if (isNotBlank(filters.get("action")) && !containsIgnoreCase(event.action(), filters.get("action"))) {
+            return false;
+        }
+        if (isNotBlank(filters.get("correlationId"))
+                && (event.correlationId() == null || !event.correlationId().equals(filters.get("correlationId")))) {
+            return false;
+        }
+        Instant dateFrom = parseInstant(filters.get("dateFrom"));
+        if (dateFrom != null && (event.timestamp() == null || event.timestamp().isBefore(dateFrom))) {
+            return false;
+        }
+        Instant dateTo = parseInstant(filters.get("dateTo"));
+        if (dateTo != null && (event.timestamp() == null || event.timestamp().isAfter(dateTo))) {
+            return false;
+        }
+        String search = filters.get("search");
+        if (isNotBlank(search)) {
+            return containsIgnoreCase(event.details(), search)
+                    || containsIgnoreCase(event.action(), search)
+                    || containsIgnoreCase(event.userEmail(), search)
+                    || containsIgnoreCase(event.service(), search)
+                    || containsIgnoreCase(event.correlationId(), search);
+        }
+        return true;
+    }
+
+    private Instant parseInstant(String value) {
+        if (!isNotBlank(value)) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (Exception error) {
+            log.debug("Failed to parse audit date filter: {}", value, error);
+            return null;
+        }
+    }
+
+    private boolean containsIgnoreCase(String source, String needle) {
+        if (!isNotBlank(source) || !isNotBlank(needle)) {
+            return false;
+        }
+        return source.toLowerCase(Locale.ROOT).contains(needle.toLowerCase(Locale.ROOT));
+    }
+
+    private Long parseAuditId(String idString) {
+        return Long.valueOf(idString);
     }
 
     private boolean isNotBlank(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String normalizeExportFormat(String format) {
+        return "csv".equalsIgnoreCase(format) ? "csv" : "json";
+    }
+
+    private String resolveExportContentType(String format) {
+        return "csv".equalsIgnoreCase(format) ? "text/csv" : "application/json";
+    }
+
+    private String resolveExportErrorMessage(RuntimeException error) {
+        if (error.getMessage() != null && !error.getMessage().isBlank()) {
+            return error.getMessage();
+        }
+        return "Audit export job failed";
+    }
+
+    private AuditExportJob findOwnedExportJob(String jobId, String requestedBy) {
+        AuditExportJob job = auditExportJobRepository.findById(jobId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit export job not found"));
+        String jobOwner = job.getRequestedBy() == null ? "" : job.getRequestedBy();
+        String currentUser = requestedBy == null ? "" : requestedBy;
+        if (!jobOwner.equalsIgnoreCase(currentUser)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit export job not found");
+        }
+        return job;
+    }
+
+    private AuditExportJobResponseDto toExportJobResponse(AuditExportJob job) {
+        return new AuditExportJobResponseDto(
+                job.getId(),
+                job.getStatus(),
+                job.getFormat(),
+                job.getFilename(),
+                job.getContentType(),
+                job.getEventCount(),
+                job.getRequestedBy(),
+                job.getCreatedAt(),
+                job.getCompletedAt(),
+                job.getErrorMessage(),
+                "/api/audit/events/export-jobs/%s/download".formatted(job.getId())
+        );
+    }
+
+    private PermissionAuditEvent buildExportJobAuditEvent(String eventType,
+                                                          String requestedBy,
+                                                          String details,
+                                                          String level,
+                                                          Map<String, Object> metadata) {
+        PermissionAuditEvent event = new PermissionAuditEvent();
+        event.setEventType(eventType);
+        event.setPerformedBy(null);
+        event.setDetails(details);
+        event.setUserEmail(requestedBy);
+        event.setService("permission-service");
+        event.setLevel(level);
+        event.setAction(eventType);
+        event.setCorrelationId(UUID.randomUUID().toString());
+        event.setMetadata(writeJsonSafe(metadata));
+        event.setBeforeState(writeJsonSafe(Map.of()));
+        event.setAfterState(writeJsonSafe(Map.of()));
+        event.setOccurredAt(Instant.now());
+        return event;
     }
 
     private AuditEventResponse mapToResponse(PermissionAuditEvent event) {
@@ -296,6 +496,43 @@ public class AuditEventService {
                 before,
                 after
         );
+    }
+
+    private AuditEventResponse mapUserAuditToResponse(UserAuditEventMirror event) {
+        Instant occurredAt = event.getOccurredAt() == null
+                ? Instant.now()
+                : event.getOccurredAt().atZone(ZoneId.systemDefault()).toInstant();
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("eventType", event.getEventType());
+        metadata.put("performedBy", event.getPerformedBy());
+        metadata.put("targetUserId", event.getTargetUserId());
+        return new AuditEventResponse(
+                "user-" + event.getId(),
+                occurredAt,
+                null,
+                "user-service",
+                resolveUserAuditLevel(event.getEventType()),
+                resolveUserAuditAction(event.getEventType()),
+                event.getDetails(),
+                "user-audit-" + event.getId(),
+                redactPayload(metadata),
+                Map.of(),
+                Map.of()
+        );
+    }
+
+    private String resolveUserAuditLevel(String eventType) {
+        if (eventType == null || eventType.isBlank()) {
+            return "INFO";
+        }
+        return eventType.endsWith("FAILED") ? "ERROR" : "INFO";
+    }
+
+    private String resolveUserAuditAction(String eventType) {
+        if (eventType == null || eventType.isBlank()) {
+            return "USER_EVENT";
+        }
+        return eventType.toUpperCase(Locale.ROOT);
     }
 
     private Map<String, Object> parseJson(String value) {

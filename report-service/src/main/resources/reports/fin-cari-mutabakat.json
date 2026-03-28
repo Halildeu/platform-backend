@@ -1,0 +1,101 @@
+{
+  "key": "fin-cari-mutabakat",
+  "version": "1.0",
+  "title": "Cari Mutabakat Raporu",
+  "description": "Cari bazında borç, alacak ve bakiye mutabakat tablosu",
+  "category": "Finans",
+  "source": "CARI_ROWS",
+  "sourceSchema": "workcube_mikrolink_1",
+  "schemaMode": "yearly",
+  "yearColumn": "ACTION_DATE",
+  "columns": [
+    {
+      "field": "CARI_ACTION_ID",
+      "headerName": "Hareket ID",
+      "type": "number",
+      "width": 100,
+      "sensitive": false
+    },
+    {
+      "field": "PROCESS_CAT",
+      "headerName": "İşlem Kategorisi",
+      "type": "text",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "ACTION_DATE",
+      "headerName": "Tarih",
+      "type": "date",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "DUE_DATE",
+      "headerName": "Vade Tarihi",
+      "type": "date",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "PAPER_NO",
+      "headerName": "Belge No",
+      "type": "text",
+      "width": 140,
+      "sensitive": false
+    },
+    {
+      "field": "ACTION_DETAIL",
+      "headerName": "Açıklama",
+      "type": "text",
+      "width": 280,
+      "sensitive": false
+    },
+    {
+      "field": "ACTION_VALUE",
+      "headerName": "Tutar",
+      "type": "number",
+      "width": 140,
+      "sensitive": false
+    },
+    {
+      "field": "ACTION_CURRENCY_ID",
+      "headerName": "Döviz",
+      "type": "text",
+      "width": 70,
+      "sensitive": false
+    },
+    {
+      "field": "FROM_CMP_ID",
+      "headerName": "Borçlu Cari",
+      "type": "number",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "TO_CMP_ID",
+      "headerName": "Alacaklı Cari",
+      "type": "number",
+      "width": 110,
+      "sensitive": false
+    },
+    {
+      "field": "RECORD_DATE",
+      "headerName": "Kayıt Tarihi",
+      "type": "date",
+      "width": 110,
+      "sensitive": false
+    }
+  ],
+  "defaultSort": "ACTION_DATE",
+  "defaultSortDirection": "DESC",
+  "access": {
+    "permission": "REPORT_VIEW",
+    "columnRestrictions": {},
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.fin.all-companies"
+    }
+  }
+}

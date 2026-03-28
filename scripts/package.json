@@ -1,0 +1,13 @@
+{
+  "name": "backend-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend dev-time utility scripts",
+  "scripts": {
+    "service-manager": "node service-manager-api.js"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.4",
+    "express": "^4.21.2"
+  }
+}

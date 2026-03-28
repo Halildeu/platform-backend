@@ -4,11 +4,14 @@ import com.example.permission.dto.PermissionResponse;
 import com.example.permission.dto.v1.PagedResultDto;
 import com.example.permission.dto.v1.PermissionAssignRequestDto;
 import com.example.permission.dto.v1.PermissionAssignmentDto;
+import com.example.permission.dto.v1.PermissionCatalogItemDto;
 import com.example.permission.dto.v1.PermissionAssignmentUpdateRequestDto;
 import com.example.permission.dto.v1.PermissionCheckRequestDto;
 import com.example.permission.dto.v1.PermissionCheckResultDto;
 import com.example.permission.dto.v1.PermissionDtoMapper;
 import com.example.permission.dto.v1.PermissionMutationAckDto;
+import com.example.permission.model.Permission;
+import com.example.permission.repository.PermissionRepository;
 import com.example.permission.service.PermissionService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -32,9 +35,21 @@ import java.util.List;
 public class PermissionControllerV1 {
 
     private final PermissionService permissionService;
+    private final PermissionRepository permissionRepository;
 
-    public PermissionControllerV1(PermissionService permissionService) {
+    public PermissionControllerV1(PermissionService permissionService,
+                                  PermissionRepository permissionRepository) {
         this.permissionService = permissionService;
+        this.permissionRepository = permissionRepository;
+    }
+
+    @GetMapping
+    public ResponseEntity<PagedResultDto<PermissionCatalogItemDto>> listPermissions() {
+        List<PermissionCatalogItemDto> items = permissionRepository.findAll().stream()
+                .sorted(java.util.Comparator.comparing(Permission::getCode, String.CASE_INSENSITIVE_ORDER))
+                .map(PermissionDtoMapper::toPermissionCatalogItemDto)
+                .toList();
+        return ResponseEntity.ok(PermissionDtoMapper.wrap(items, items.size()));
     }
 
     @PostMapping("/check")

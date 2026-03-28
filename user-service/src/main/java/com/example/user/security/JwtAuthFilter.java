@@ -21,6 +21,8 @@ import java.io.IOException;
 @Component
 @Profile({"local", "dev"})
 @ConditionalOnBean(JwtTokenProvider.class)
+@Deprecated // Legacy filter — prod/test uses oauth2ResourceServer(jwt); kept for local/dev fallback only.
+@SuppressWarnings("deprecation") // Intentionally uses deprecated JwtTokenProvider
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtTokenProvider tokenProvider;
@@ -37,8 +39,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                                       @NonNull FilterChain filterChain)
             throws ServletException, IOException {
         
-        // Bu kontrol auth-service'e özgüdür ama burada bir zararı olmaz.
-        if (request.getServletPath().contains("/api/auth")) {
+        String servletPath = request.getServletPath();
+
+        // Modern v1 JWT akışı oauth2ResourceServer üzerinden çözülür; legacy filtre
+        // yalnızca eski path'ler için fallback olarak kalmalı.
+        if (servletPath.contains("/api/auth")
+                || servletPath.startsWith("/api/v1/")
+                || servletPath.startsWith("/api/users/internal/")) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -54,11 +61,6 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 
                 // Veritabanından kullanıcıyı UserDetailsService ile yükle
                 UserDetails userDetails = userDetailsService.loadUserByUsername(username);
-                
-                // YENİ EKLENEN LOGLAMA KODU
-                // Bu loglar, Spring Security'nin kullanıcıyı ve yetkilerini nasıl gördüğünü bize gösterecek.
-                System.out.println(">>> JwtAuthFilter: Kullanıcı bulundu: " + userDetails.getUsername());
-                System.out.println(">>> JwtAuthFilter: Kullanıcının Yetkileri: " + userDetails.getAuthorities());
                 
                 // Kullanıcı için bir Authentication nesnesi oluştur
                 UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
