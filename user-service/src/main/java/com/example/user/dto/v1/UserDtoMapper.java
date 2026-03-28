@@ -11,7 +11,7 @@ public final class UserDtoMapper {
         if (user == null) {
             return null;
         }
-        return new UserSummaryDto(
+        UserSummaryDto dto = new UserSummaryDto(
                 user.getId(),
                 user.getName(),
                 user.getEmail(),
@@ -20,6 +20,8 @@ public final class UserDtoMapper {
                 user.getCreateDate(),
                 user.getLastLogin()
         );
+        dto.setSessionTimeoutMinutes(user.getSessionTimeoutMinutes());
+        return dto;
     }
 
     public static UserDetailDto toDetail(User user) {

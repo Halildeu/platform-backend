@@ -10,6 +10,10 @@ public class UserSummaryDto {
     private boolean enabled;
     private LocalDateTime createDate;
     private LocalDateTime lastLogin;
+    private Integer sessionTimeoutMinutes;
+
+    /** Extra fields for SSRM aggregation — holds computed values for group rows. */
+    private java.util.Map<String, Object> aggValues;
 
     public UserSummaryDto() {
     }
@@ -78,5 +82,22 @@ public class UserSummaryDto {
 
     public void setLastLogin(LocalDateTime lastLogin) {
         this.lastLogin = lastLogin;
+    }
+
+    public Integer getSessionTimeoutMinutes() {
+        return sessionTimeoutMinutes;
+    }
+
+    public void setSessionTimeoutMinutes(Integer sessionTimeoutMinutes) {
+        this.sessionTimeoutMinutes = sessionTimeoutMinutes;
+    }
+
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    public java.util.Map<String, Object> getAggValues() {
+        return aggValues;
+    }
+
+    public void setAggValues(java.util.Map<String, Object> aggValues) {
+        this.aggValues = aggValues;
     }
 }

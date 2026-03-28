@@ -157,6 +157,9 @@ public class UserControllerV1 {
                             ? (root, query, cb) -> cb.equal(root.get(col), key)
                             : groupSpec.and((root, query, cb) -> cb.equal(root.get(col), key));
                 }
+                // Parse valueCols to know field names for mapping agg results
+                String[] valueColParts = (valueCols != null && !valueCols.isBlank())
+                        ? valueCols.split(",") : new String[0];
                 List<Object[]> groups = userService.getDistinctGroupValues(search, status, role, groupSpec, groupField, parsedSort, valueCols);
                 List<UserSummaryDto> groupRows = groups.stream().map(row -> {
                     UserSummaryDto dto = new UserSummaryDto();
@@ -165,10 +168,15 @@ public class UserControllerV1 {
                     dto.setName(groupValue + " (" + childCount + ")");
                     dto.setEmail(null);
                     dto.setRole(groupField.equals("role") ? groupValue : null);
-                    // Set numeric aggregate values on known fields
-                    if (row.length > 2 && row[2] instanceof Number) {
-                        // First valueCols aggregate → sessionTimeoutMinutes
-                        // This is a simplification; real impl would map dynamically
+                    // Map aggregate values from row[2..] to dto fields
+                    for (int ai = 0; ai < valueColParts.length && (ai + 2) < row.length; ai++) {
+                        String[] vp = valueColParts[ai].split(":");
+                        String field = vp[0].trim();
+                        Object val = row[ai + 2];
+                        // Write to known DTO fields
+                        if ("sessionTimeoutMinutes".equals(field) && val instanceof Number) {
+                            dto.setSessionTimeoutMinutes(((Number) val).intValue());
+                        }
                     }
                     return dto;
                 }).collect(Collectors.toList());
