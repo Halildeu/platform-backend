@@ -179,6 +179,10 @@ public class VariantController {
     }
 
     private void requirePermission(AuthorizationContext ctx, String permissionCode) {
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        if (scope != null && scope.superAdmin()) {
+            return;
+        }
         if (ctx.isAdmin()) {
             return;
         }

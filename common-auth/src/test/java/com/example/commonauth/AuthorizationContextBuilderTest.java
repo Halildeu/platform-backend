@@ -10,16 +10,18 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class AuthorizationContextBuilderTest {
 
     @Test
-    void buildsContextFromJwt() {
+    void buildsContextFromJwt_identityOnly() {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "RS256")
                 .claim("userId", 42)
                 .claim("email", "user@example.com")
                 .claim("realm_access", Map.of("roles", Set.of("admin", "user")))
+                // JWT still has permissions claim but builder should IGNORE it
                 .claim("permissions", Set.of("MANAGE_GLOBAL_VARIANTS", "VARIANTS_WRITE", "ADMIN"))
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(60))
@@ -29,16 +31,18 @@ class AuthorizationContextBuilderTest {
 
         assertEquals(42L, ctx.getUserId());
         assertEquals("user@example.com", ctx.getEmail());
-        // Permissions set from collection and string-lists are covered; builder should tolerate mixed formats.
-        assertTrue(ctx.hasPermission("VARIANTS_WRITE"));
+        // Roles extracted from realm_access
+        assertTrue(ctx.getRoles().contains("admin"));
+        assertTrue(ctx.getRoles().contains("user"));
+        // Permissions NOT extracted from JWT (identity-only — permissions come from OpenFGA)
+        assertTrue(ctx.getPermissions().isEmpty());
+        // isAdmin still works via roles
         assertTrue(ctx.isAdmin());
         assertTrue(ctx.getAllowedCompanyIds().isEmpty());
-        assertTrue(ctx.getAllowedProjectIds().isEmpty());
-        assertTrue(ctx.getAllowedWarehouseIds().isEmpty());
     }
 
     @Test
-    void toleratesStringPermissionsClaim() {
+    void ignoresPermissionsClaimInJwt() {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "RS256")
                 .claim("userId", "99")
@@ -51,7 +55,9 @@ class AuthorizationContextBuilderTest {
         AuthorizationContext ctx = AuthorizationContextBuilder.fromJwt(jwt);
 
         assertEquals(99L, ctx.getUserId());
-        assertTrue(ctx.hasPermission(PermissionCodes.VARIANTS_WRITE));
+        // Permissions claim ignored — empty set
+        assertFalse(ctx.hasPermission(PermissionCodes.VARIANTS_WRITE));
+        assertTrue(ctx.getPermissions().isEmpty());
     }
 
     @Test

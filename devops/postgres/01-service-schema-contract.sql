@@ -3,3 +3,4 @@ CREATE SCHEMA IF NOT EXISTS user_service;
 CREATE SCHEMA IF NOT EXISTS permission_service;
 CREATE SCHEMA IF NOT EXISTS variant_service;
 CREATE SCHEMA IF NOT EXISTS core_data_service;
+CREATE SCHEMA IF NOT EXISTS openfga;

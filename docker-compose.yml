@@ -41,7 +41,7 @@ services:
     networks:
       - microservice-network
     environment:
-      SPRING_PROFILES_ACTIVE: ${USER_SERVICE_PROFILES:-docker}
+      SPRING_PROFILES_ACTIVE: ${USER_SERVICE_PROFILES:-local,docker}
       SERVICE_JWT_PRIVATE_KEY: ${SERVICE_JWT_PRIVATE_KEY:-}
       SERVICE_JWT_PUBLIC_KEY: ${SERVICE_JWT_PUBLIC_KEY:-}
       SERVICE_JWT_KEY_ID: ${SERVICE_JWT_KEY_ID:-local-service-jwt}
@@ -161,6 +161,7 @@ services:
     networks:
       - microservice-network
     environment:
+      - SPRING_PROFILES_ACTIVE=${CORE_DATA_SERVICE_PROFILES:-local,docker}
       - SERVER_PORT=8092
       - SPRING_DATASOURCE_URL=${CORE_DATA_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
       - SPRING_DATASOURCE_USERNAME=${CORE_DATA_DB_USERNAME:-postgres}
@@ -209,8 +210,6 @@ services:
       user-service:
         condition: service_healthy
       auth-service:
-        condition: service_healthy
-      permission-service:
         condition: service_healthy
       variant-service:
         condition: service_healthy
@@ -292,14 +291,51 @@ services:
       retries: 30
       start_period: 5s
 
+  openfga-migrate:
+    image: openfga/openfga:latest
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres-db:5432/${POSTGRES_DB:-users}?sslmode=disable&search_path=openfga"
+    networks:
+      - microservice-network
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+
+  openfga:
+    image: openfga/openfga:latest
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: "postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres-db:5432/${POSTGRES_DB:-users}?sslmode=disable&search_path=openfga"
+      OPENFGA_PLAYGROUND_ENABLED: "true"
+      OPENFGA_LOG_LEVEL: info
+    ports:
+      - "4000:8080"
+      - "4001:8081"
+      - "4002:3000"
+    networks:
+      - microservice-network
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   permission-service:
+    profiles: ["legacy"]  # Only starts with: docker compose --profile legacy up
     build: ./permission-service
     ports:
       - "8090:8084"
     networks:
       - microservice-network
     environment:
-      - SPRING_PROFILES_ACTIVE=${PERMISSION_SERVICE_PROFILES:-docker}
+      - SPRING_PROFILES_ACTIVE=${PERMISSION_SERVICE_PROFILES:-local,docker}
       - PERMISSION_DB_URL=${PERMISSION_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
       - PERMISSION_DB_USERNAME=${PERMISSION_DB_USERNAME:-postgres}
       - PERMISSION_DB_PASSWORD=${PERMISSION_DB_PASSWORD:-postgres}
@@ -350,7 +386,7 @@ services:
     networks:
       - microservice-network
     environment:
-      - SPRING_PROFILES_ACTIVE=${REPORT_SERVICE_PROFILES:-docker}
+      - SPRING_PROFILES_ACTIVE=${REPORT_SERVICE_PROFILES:-local,docker}
       - SERVER_PORT=8095
       - REPORT_MSSQL_HOST=${REPORT_MSSQL_HOST:-host.docker.internal}
       - REPORT_MSSQL_PORT=${REPORT_MSSQL_PORT:-1433}

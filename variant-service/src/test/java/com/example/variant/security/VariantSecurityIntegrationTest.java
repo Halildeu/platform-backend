@@ -143,6 +143,13 @@ class VariantSecurityIntegrationTest {
 
     @Test
     void variants_should_403_when_permission_missing() throws Exception {
+        // Permissions come from authz service (ADR-003: JWT is identity-only)
+        // Reset response to have no VARIANTS_READ permission
+        AuthzMeResponse noPermResponse = new AuthzMeResponse();
+        noPermResponse.setUserId("1");
+        noPermResponse.setPermissions(List.of("SOME_OTHER_PERMISSION"));
+        noPermResponse.setAllowedScopes(List.of(new ScopeSummaryDto("PROJECT", "101")));
+        permissionServiceAuthzClient.setResponse(noPermResponse);
         String token = issueToken("variant-service", List.of("SOME_OTHER_PERMISSION"));
         mockMvc.perform(get("/api/v1/variants?gridId=101")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
@@ -168,6 +175,8 @@ class VariantSecurityIntegrationTest {
     private AuthzMeResponse buildAuthzMeResponse(List<Long> projectIds) {
         AuthzMeResponse response = new AuthzMeResponse();
         response.setUserId("1");
+        // Permissions come from authz service (ADR-003: JWT is identity-only)
+        response.setPermissions(List.of(PermissionCodes.VARIANTS_READ));
         response.setAllowedScopes(projectIds.stream()
                 .map(id -> new ScopeSummaryDto("PROJECT", String.valueOf(id)))
                 .toList());

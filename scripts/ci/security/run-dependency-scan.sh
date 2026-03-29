@@ -17,7 +17,7 @@ NVD_API_RESULTS_PER_PAGE="${DEPENDENCY_CHECK_NVD_RESULTS_PER_PAGE:-2000}"
 CACHE_DIR_SUFFIX="${DC_VERSION//./_}"
 LOCAL_DC_CACHE_DIR="${REPORT_DIR}/cache-v${CACHE_DIR_SUFFIX}"
 LOCAL_DC_CACHE_SNAPSHOT_DIR="${REPORT_DIR}/cache-snapshot-v${CACHE_DIR_SUFFIX}"
-SUPPRESSION_FILE="${ROOT_DIR}/backend/scripts/ci/security/dependency-check-suppressions.xml"
+SUPPRESSION_FILE="${ROOT_DIR}/scripts/ci/security/dependency-check-suppressions.xml"
 SCAN_LOG_PATH="${REPORT_DIR}/dependency-check.log"
 
 echo "[security][dependency-check] Running OWASP Dependency-Check v${DC_VERSION} (fail on CVSS >= ${FAIL_CVSS})"

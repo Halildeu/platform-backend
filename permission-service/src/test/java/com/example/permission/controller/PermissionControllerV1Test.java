@@ -1,6 +1,7 @@
 package com.example.permission.controller;
 
 import com.example.permission.dto.PermissionResponse;
+import com.example.permission.repository.PermissionRepository;
 import com.example.permission.service.PermissionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,9 @@ class PermissionControllerV1Test {
 
     @MockitoBean
     private PermissionService permissionService;
+
+    @MockitoBean
+    private PermissionRepository permissionRepository;
 
     @Test
     void assignRoleReturnsAuditId() throws Exception {

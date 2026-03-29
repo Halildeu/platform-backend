@@ -1,0 +1,17 @@
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="org.springframework" level="ERROR" />
+  <logger name="org.hibernate" level="ERROR" />
+  <logger name="com.netflix.discovery" level="OFF" />
+  <logger name="org.springframework.cloud.netflix.eureka" level="OFF" />
+  <logger name="com.example.apigateway" level="ERROR" />
+
+  <root level="ERROR">
+    <appender-ref ref="CONSOLE" />
+  </root>
+</configuration>

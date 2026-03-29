@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @TestPropertySource(properties = {
         "eureka.client.enabled=false",
         "spring.cloud.discovery.enabled=false",
-        "spring.cloud.gateway.discovery.locator.enabled=false",
+        "spring.cloud.gateway.server.webflux.discovery.locator.enabled=false",
         "spring.main.web-application-type=reactive"
 })
 class GatewaySecurityTest {
@@ -90,13 +90,13 @@ class GatewaySecurityTest {
 
     @DynamicPropertySource
     static void routeProps(DynamicPropertyRegistry reg) {
-        reg.add("spring.cloud.gateway.routes[0].id", () -> "user-service-route");
-        reg.add("spring.cloud.gateway.routes[0].uri", () -> stub.url("/").toString());
-        reg.add("spring.cloud.gateway.routes[0].predicates[0]", () -> "Path=/api/users/**");
+        reg.add("spring.cloud.gateway.server.webflux.routes[0].id", () -> "user-service-route");
+        reg.add("spring.cloud.gateway.server.webflux.routes[0].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[0].predicates[0]", () -> "Path=/api/users/**");
 
-        reg.add("spring.cloud.gateway.routes[1].id", () -> "variant-service-route");
-        reg.add("spring.cloud.gateway.routes[1].uri", () -> stub.url("/").toString());
-        reg.add("spring.cloud.gateway.routes[1].predicates[0]", () -> "Path=/api/variants/**");
+        reg.add("spring.cloud.gateway.server.webflux.routes[1].id", () -> "variant-service-route");
+        reg.add("spring.cloud.gateway.server.webflux.routes[1].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[1].predicates[0]", () -> "Path=/api/variants/**");
 
         reg.add("SECURITY_JWT_ISSUER", () -> "auth-service");
         reg.add("SECURITY_JWT_AUDIENCE", () -> "user-service,frontend");

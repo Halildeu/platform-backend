@@ -3,6 +3,9 @@ package com.example.user.model;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
+import org.hibernate.annotations.Filter;
+import org.hibernate.annotations.FilterDef;
+import org.hibernate.annotations.ParamDef;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -13,7 +16,11 @@ import java.util.Collections;
 
 @Entity
 @Table(name = "users")
-public class User implements UserDetails { // UserDetails arayüzünü uygular
+@FilterDef(name = "companyScope",
+        parameters = @ParamDef(name = "companyIds", type = Long.class))
+@Filter(name = "companyScope",
+        condition = "company_id IS NULL OR company_id IN (:companyIds)")
+public class User implements UserDetails {
 
     public static final int DEFAULT_SESSION_TIMEOUT_MINUTES = 15;
     public static final String DEFAULT_LOCALE = "tr";

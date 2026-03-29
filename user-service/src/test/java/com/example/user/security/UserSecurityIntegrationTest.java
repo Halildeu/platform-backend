@@ -7,6 +7,7 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import java.time.Instant;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -52,7 +53,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.jpa.hibernate.ddl-auto=create-drop",
         "spring.flyway.enabled=false"
 })
-@Transactional
 class UserSecurityIntegrationTest {
 
     @Autowired
@@ -71,6 +71,12 @@ class UserSecurityIntegrationTest {
     private int exportBurstCapacity;
 
     private final java.util.concurrent.atomic.AtomicLong userIdSequence = new java.util.concurrent.atomic.AtomicLong(1);
+
+    @AfterEach
+    void cleanup() {
+        userAuditEventRepository.deleteAll();
+        userRepository.deleteAll();
+    }
 
     private String issueToken(String audience) {
         long userId = userIdSequence.getAndIncrement();
@@ -92,6 +98,7 @@ class UserSecurityIntegrationTest {
                 .audience(List.of(audience))
                 .issuedAt(now)
                 .expiresAt(now.plusSeconds(600))
+                .claim("email", email)
                 .claim("userId", userId)
                 .claim("role", "ADMIN")
                 .claim("permissions", List.of("VIEW_USERS"))
@@ -107,7 +114,7 @@ class UserSecurityIntegrationTest {
             u.setEmail(email);
             u.setPassword("test");
             u.setRole("ADMIN");
-            return userRepository.save(u);
+            return userRepository.saveAndFlush(u);
         });
     }
 

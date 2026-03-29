@@ -13,7 +13,7 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 @TestPropertySource(properties = {
         "eureka.client.enabled=false",
         "spring.cloud.discovery.enabled=false",
-        "spring.cloud.gateway.discovery.locator.enabled=false",
+        "spring.cloud.gateway.server.webflux.discovery.locator.enabled=false",
         "spring.main.web-application-type=reactive"
 })
 class GatewayLocalCorsTest {

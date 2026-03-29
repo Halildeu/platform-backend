@@ -70,6 +70,8 @@ class VariantAuthorizationServiceImplTest {
     private AuthzMeResponse buildAuthzMeResponse() {
         AuthzMeResponse response = new AuthzMeResponse();
         response.setUserId("42");
+        // Permissions now come from authz service (ADR-003: JWT is identity-only)
+        response.setPermissions(List.of("VARIANTS_READ"));
         response.setAllowedScopes(List.of(
                 new ScopeSummaryDto("PROJECT", "101"),
                 new ScopeSummaryDto("PROJECT", "102")

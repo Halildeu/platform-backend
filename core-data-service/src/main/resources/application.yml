@@ -42,3 +42,15 @@ logging:
   level:
     org.springframework.security: INFO
     org.springframework.web: INFO
+
+# OpenFGA — disabled by default (dev mode)
+erp:
+  openfga:
+    enabled: ${OPENFGA_ENABLED:false}
+    api-url: ${OPENFGA_API_URL:http://localhost:4000}
+    store-id: ${OPENFGA_STORE_ID:}
+    dev-scope:
+      company-ids: 1
+      project-ids: 1,2
+      warehouse-ids: 1
+      super-admin: true

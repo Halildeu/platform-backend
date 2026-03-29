@@ -611,10 +611,22 @@ public class UserController {
     }
 
     private void requirePermissionWithCompanyScope(String permission, Long companyId) {
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        if (scope != null && scope.superAdmin()) {
+            return;
+        }
+
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication == null || !authentication.isAuthenticated() || authentication instanceof AnonymousAuthenticationToken) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik doğrulaması gerekli");
         }
+
+        boolean hasAuthority = authentication.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equalsIgnoreCase(permission));
+        if (hasAuthority) {
+            return;
+        }
+
         Jwt jwt = authentication.getPrincipal() instanceof Jwt j ? j : null;
         AuthorizationContext ctx = authorizationContextService.buildContext(jwt, new java.util.ArrayList<>(authentication.getAuthorities()));
         if (!ctx.hasPermission(permission)) {

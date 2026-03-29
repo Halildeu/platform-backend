@@ -30,22 +30,9 @@ public final class AuthorizationContextBuilder {
             }
         }
 
-        Set<String> permissions = new HashSet<>();
-        Object permClaim = jwt.getClaim("permissions");
-        if (permClaim instanceof Collection<?> collection) {
-            collection.stream()
-                    .filter(item -> item != null)
-                    .map(Object::toString)
-                    .forEach(permissions::add);
-        } else if (permClaim instanceof String s && !s.isBlank()) {
-            permissions.add(s);
-        }
-        Collection<String> permList = jwt.getClaimAsStringList("permissions");
-        if (permList != null) {
-            permList.stream()
-                    .filter(p -> p != null && !p.isBlank())
-                    .forEach(permissions::add);
-        }
+        // Permissions no longer extracted from JWT — they come from OpenFGA via ScopeContext.
+        // JWT is identity-only: sub, email, realm_access.roles
+        Set<String> permissions = Set.of();
 
         Long userId = extractUserId(jwt);
         String email = jwt.getClaimAsString("email");

@@ -377,6 +377,10 @@ public class ThemeController {
     }
 
     private void requireThemeAdmin(AuthorizationContext ctx) {
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        if (scope != null && scope.superAdmin()) {
+            return;
+        }
         if (ctx.isAdmin()) {
             return;
         }

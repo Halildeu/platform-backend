@@ -51,7 +51,7 @@ report:
     timeout-seconds: 30
     max-export-rows: 500000
   audit:
-    internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:dev-local-audit-mirror-key}
+    internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:}
 
 logging:
   level:

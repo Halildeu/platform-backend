@@ -1,0 +1,76 @@
+{
+  "writes": {
+    "tuple_keys": [
+      {
+        "user": "user:1",
+        "relation": "admin",
+        "object": "company:1"
+      },
+      {
+        "user": "user:2",
+        "relation": "manager",
+        "object": "company:1"
+      },
+      {
+        "user": "user:3",
+        "relation": "viewer",
+        "object": "company:1"
+      },
+      {
+        "user": "user:3",
+        "relation": "viewer",
+        "object": "company:2"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "project:1"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "project:2"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "warehouse:1"
+      },
+      {
+        "user": "company:2",
+        "relation": "company",
+        "object": "project:3"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "module:USER_MANAGEMENT"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "module:ACCESS"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "module:AUDIT"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "module:REPORT"
+      },
+      {
+        "user": "user:2",
+        "relation": "can_manage",
+        "object": "module:USER_MANAGEMENT"
+      },
+      {
+        "user": "user:3",
+        "relation": "can_view",
+        "object": "module:REPORT"
+      }
+    ]
+  }
+}

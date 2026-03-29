@@ -168,13 +168,8 @@ public class SecurityConfig {
                 if (roles != null) {
                     roles.forEach(r -> {
                         authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_" + r.toUpperCase()));
-                        // admin role → grant all common permissions
-                        if ("admin".equalsIgnoreCase(r)) {
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("user-read"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("user-write"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("user-manage"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("admin"));
-                        }
+                        // Note: admin permission grants moved to OpenFGA (ScopeContext.superAdmin)
+                        // No hardcoded role→permission mapping here
                     });
                 }
             }

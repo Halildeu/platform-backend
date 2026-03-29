@@ -1,6 +1,9 @@
 package com.example.permission.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Filter;
+import org.hibernate.annotations.FilterDef;
+import org.hibernate.annotations.ParamDef;
 
 import java.time.Instant;
 
@@ -10,6 +13,10 @@ import java.time.Instant;
                 @Index(name = "idx_user_role_assignments_user_company", columnList = "user_id, company_id"),
                 @Index(name = "idx_user_role_assignments_scope", columnList = "project_id, warehouse_id")
         })
+@FilterDef(name = "companyScope",
+        parameters = @ParamDef(name = "companyIds", type = Long.class))
+@Filter(name = "companyScope",
+        condition = "company_id IN (:companyIds) OR company_id IS NULL")
 public class UserRoleAssignment {
 
     @Id
