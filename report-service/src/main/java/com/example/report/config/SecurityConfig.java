@@ -22,6 +22,7 @@ import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableMethodSecurity
+@Profile("!local & !dev")
 public class SecurityConfig {
 
     private final Environment environment;

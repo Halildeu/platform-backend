@@ -37,7 +37,8 @@ const SERVICES = [
   { name: 'vault-unseal', container: 'serban-vault-unseal-1', port: null, healthPath: null, category: 'auth' },
   // Business
   { name: 'user-service', container: 'serban-user-service-1', port: 8089, healthPath: '/actuator/health', category: 'business' },
-  { name: 'permission-service', container: 'serban-permission-service-1', port: 8090, healthPath: '/actuator/health', category: 'business' },
+  { name: 'permission-service', container: 'serban-permission-service-1', port: 8090, healthPath: '/actuator/health', category: 'business', deprecated: true },
+  { name: 'openfga', container: 'serban-openfga-1', port: 4000, healthPath: '/healthz', category: 'auth' },
   { name: 'variant-service', container: 'serban-variant-service-1', port: 8091, healthPath: '/actuator/health', category: 'business' },
   { name: 'core-data-service', container: 'serban-core-data-service-1', port: 8092, healthPath: '/actuator/health', category: 'business' },
   { name: 'report-service', container: 'serban-report-service-1', port: 8095, healthPath: '/actuator/health', category: 'business' },

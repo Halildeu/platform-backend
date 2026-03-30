@@ -29,7 +29,8 @@ public class OpenFgaAuthzConfig {
             OpenFgaAuthzService authzService, OpenFgaProperties props) {
         var reg = new FilterRegistrationBean<>(new ScopeContextFilter(authzService, props));
         reg.addUrlPatterns("/api/*");
-        reg.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
+        // AFTER Spring Security — so authentication context is available
+        reg.setOrder(Ordered.LOWEST_PRECEDENCE - 10);
         return reg;
     }
 }
