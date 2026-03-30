@@ -279,7 +279,7 @@ done
 
 # ── A15. ADR dokümantasyonu ──────────────────────────────────────
 header "A15. ADR — architecture decision records"
-ADR_DIR="$BACKEND_DIR/../docs/02-architecture/adr"
+ADR_DIR="$BACKEND_DIR/../docs/02-architecture/services/auth-service"
 if [ -d "$ADR_DIR" ]; then
   adr_count=$(ls "$ADR_DIR"/ADR-*.md 2>/dev/null | wc -l | tr -d ' ')
   [ "$adr_count" -gt 0 ] && pass "ADR: $adr_count karar kaydı var" || warn "ADR dizini var ama boş"
