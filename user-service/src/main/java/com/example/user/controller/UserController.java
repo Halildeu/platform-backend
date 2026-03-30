@@ -307,7 +307,7 @@ public class UserController {
         Sort parsedSort = parseSort(sort);
         org.springframework.data.jpa.domain.Specification<User> extraSpec = buildAdvancedFilterSpecSafe(advancedFilter);
 
-        response.setContentType("text/csv");
+        response.setContentType("text/csv; charset=UTF-8");
         response.setCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
         response.setHeader("Content-Disposition", "attachment; filename=users-export.csv");
 
@@ -317,7 +317,8 @@ public class UserController {
         String failureReason = null;
         try (java.io.Writer writer = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(response.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
-            writer.write("id,fullName,email,role,enabled,createDate,lastLogin\n");
+            writer.write('\uFEFF'); // UTF-8 BOM for Excel compatibility
+            writer.write("id;fullName;email;role;enabled;createDate;lastLogin\n");
             writer.flush();
 
             int page = 0;
@@ -326,7 +327,7 @@ public class UserController {
                 Pageable pageable = PageRequest.of(page, pageSize, parsedSort);
                 Page<User> result = userService.searchUsers(search, status, role, extraSpec, pageable);
                 for (User u : result.getContent()) {
-                    String line = String.format("%s,%s,%s,%s,%s,%s,%s\n",
+                    String line = String.format("%s;%s;%s;%s;%s;%s;%s\n",
                             safe(u.getId()), safe(u.getName()), safe(u.getEmail()), safe(u.getRole()), safe(u.isEnabled()),
                             safe(u.getCreateDate()), safe(u.getLastLogin()));
                     writer.write(line);
