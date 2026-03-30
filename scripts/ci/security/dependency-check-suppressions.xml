@@ -34,4 +34,21 @@
     <packageUrl regex="true">^pkg:maven/com\.fasterxml\.jackson\.core/jackson-databind@2\.15\.4$</packageUrl>
     <cve>CVE-2023-35116</cve>
   </suppress>
+  <suppress>
+    <notes><![CDATA[
+    netty-transport 4.1.127.Final icin CVE-2026-33871 (CVSS 8.7) ve CVE-2026-33870 (CVSS 7.5).
+    Spring Boot 3.5.6 transitif bagimliligi. Netty upgrade Spring Boot minor/patch guncelleme
+    gerektiriyor. Gecici suppress — upgrade planlaniyor.
+    TODO: Spring Boot 3.5.7+ veya netty.version override ile upgrade et.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.netty/netty-.*@4\.1\.127\.Final$</packageUrl>
+    <cve>CVE-2026-33871</cve>
+  </suppress>
+  <suppress>
+    <notes><![CDATA[
+    netty-transport 4.1.127.Final — ayni bulgunun ikinci CVE'si.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.netty/netty-.*@4\.1\.127\.Final$</packageUrl>
+    <cve>CVE-2026-33870</cve>
+  </suppress>
 </suppressions>
