@@ -37,19 +37,17 @@ public class SecurityConfigLocal {
     @Bean
     @Order(Ordered.HIGHEST_PRECEDENCE + 1)
     public SecurityFilterChain securityFilterChainLocal(
-            HttpSecurity http,
-            JwtDecoder jwtDecoder
+            HttpSecurity http
     ) throws Exception {
         var localDevAnonymousAuthFilter = new LocalDevAnonymousAuthFilter();
         http
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
-            // Local/dev ortamında request'leri bloklamıyoruz ama Bearer token varsa
-            // parse edilip SecurityContext'e taşınmasını istiyoruz.
-            .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.decoder(jwtDecoder)))
-            // JWT yoksa otomatik olarak dev admin kullanicisi ile authenticate et
-            // AnonymousAuthenticationFilter'dan SONRA calisir ki anonymous context'i override edebilsin
+            // Local/dev: NO JWT validation — permitAll for all requests.
+            // If Bearer token is present, it's ignored (not decoded).
+            // LocalDevAnonymousAuthFilter injects fake admin user for
+            // controller methods that need authentication context.
             .addFilterAfter(localDevAnonymousAuthFilter, AnonymousAuthenticationFilter.class);
         return http.build();
     }
