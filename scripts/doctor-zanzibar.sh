@@ -231,8 +231,17 @@ else
   [ "$perm_exists" -gt 0 ] && fail "docker-compose: permission-service aktif" || pass "docker-compose: permission-service kaldırılmış"
 fi
 
-# ── A12b. Schema-service AUTH_MODE ────────────────────────────────
-header "A12b. Schema-service — AUTH_MODE must be permitAll in docker"
+# ── A12b. Gateway routes — no PERMISSION-SERVICE references ──────
+header "A12b. Gateway routes — PERMISSION-SERVICE must not be referenced"
+GW_PROPS="$BACKEND_DIR/api-gateway/src/main/resources/application.properties"
+if [ -f "$GW_PROPS" ]; then
+  perm_refs=$(grep -c "PERMISSION-SERVICE" "$GW_PROPS" 2>/dev/null || true)
+  perm_refs=${perm_refs:-0}
+  [ "$perm_refs" -eq 0 ] && pass "gateway: PERMISSION-SERVICE referansı yok" || fail "gateway: $perm_refs PERMISSION-SERVICE referansı var — USER-SERVICE olmalı"
+fi
+
+# ── A12c. Schema-service AUTH_MODE ────────────────────────────────
+header "A12c. Schema-service — AUTH_MODE must be permitAll in docker"
 COMPOSE="$BACKEND_DIR/docker-compose.yml"
 schema_auth=$(grep -A20 "schema-service:" "$COMPOSE" | grep "AUTH_MODE" | head -1)
 if echo "$schema_auth" | grep -qi "permitAll" 2>/dev/null; then
