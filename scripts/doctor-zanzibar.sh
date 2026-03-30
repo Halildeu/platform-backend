@@ -336,7 +336,10 @@ else
     "themes|http://localhost:8091/api/v1/themes" \
     "companies|http://localhost:8092/api/v1/companies" \
     "reports|http://localhost:8095/api/v1/reports" \
-    "schema-health|http://localhost:8096/actuator/health"; do
+    "schema-health|http://localhost:8096/actuator/health" \
+    "audit|http://localhost:8089/api/audit/events" \
+    "me-theme|http://localhost:8091/api/v1/me/theme/resolved" \
+    "theme-reg|http://localhost:8091/api/v1/theme-registry"; do
     name="${ep%%|*}"
     url="${ep##*|}"
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
