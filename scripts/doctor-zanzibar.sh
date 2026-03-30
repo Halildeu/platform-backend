@@ -327,7 +327,7 @@ else
     "themes|http://localhost:8091/api/v1/themes" \
     "companies|http://localhost:8092/api/v1/companies" \
     "reports|http://localhost:8095/api/v1/reports" \
-    "schema|http://localhost:8096/api/v1/tables"; do
+    "schema-health|http://localhost:8096/actuator/health"; do
     name="${ep%%|*}"
     url="${ep##*|}"
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
