@@ -231,6 +231,16 @@ else
   [ "$perm_exists" -gt 0 ] && fail "docker-compose: permission-service aktif" || pass "docker-compose: permission-service kaldırılmış"
 fi
 
+# ── A12b. Schema-service AUTH_MODE ────────────────────────────────
+header "A12b. Schema-service — AUTH_MODE must be permitAll in docker"
+COMPOSE="$BACKEND_DIR/docker-compose.yml"
+schema_auth=$(grep -A20 "schema-service:" "$COMPOSE" | grep "AUTH_MODE" | head -1)
+if echo "$schema_auth" | grep -qi "permitAll" 2>/dev/null; then
+  pass "schema-service: AUTH_MODE=permitAll"
+else
+  fail "schema-service: AUTH_MODE permitAll değil — JWT 401 verir"
+fi
+
 # ── A13. .env.local koruması ─────────────────────────────────────
 header "A13. .env.local — AUTH_MODE must be keycloak"
 ENV_LOCAL="$WEB_DIR/apps/mfe-shell/.env.local"
@@ -316,7 +326,8 @@ else
     "authz/me|http://localhost:8089/api/v1/authz/me" \
     "themes|http://localhost:8091/api/v1/themes" \
     "companies|http://localhost:8092/api/v1/companies" \
-    "reports|http://localhost:8095/api/v1/reports"; do
+    "reports|http://localhost:8095/api/v1/reports" \
+    "schema|http://localhost:8096/api/v1/tables"; do
     name="${ep%%|*}"
     url="${ep##*|}"
     code=$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
