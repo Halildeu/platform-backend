@@ -1,0 +1,64 @@
+server:
+  port: ${SERVER_PORT:8096}
+  tomcat:
+    threads:
+      virtual:
+        enabled: true
+
+spring:
+  application:
+    name: schema-service
+
+  datasource:
+    url: jdbc:sqlserver://${SCHEMA_MSSQL_HOST:localhost}:${SCHEMA_MSSQL_PORT:1433};databaseName=${SCHEMA_MSSQL_DB:workcube_mikrolink};encrypt=true;trustServerCertificate=true;applicationIntent=ReadOnly
+    username: ${SCHEMA_MSSQL_USERNAME:sa}
+    password: ${SCHEMA_MSSQL_PASSWORD:}
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    hikari:
+      pool-name: schema-mssql-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 15000
+      max-lifetime: 600000
+      read-only: true
+      connection-init-sql: "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;"
+      initialization-fail-timeout: -1
+
+  cache:
+    type: simple
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${SECURITY_JWT_JWK_SET_URI:http://localhost:8080/realms/serban/protocol/openid-connect/certs}
+          issuer-uri: ${SECURITY_JWT_ISSUER:http://localhost:8080/realms/serban}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE:http://localhost:8761/eureka}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  health:
+    db:
+      enabled: false
+
+schema:
+  default-schema: ${SCHEMA_DEFAULT_SCHEMA:workcube_mikrolink}
+  cache-ttl-minutes: ${SCHEMA_CACHE_TTL:60}
+  max-tables: ${SCHEMA_MAX_TABLES:5000}
+  discovery:
+    enable-view-parsing: ${SCHEMA_ENABLE_VIEW_PARSE:true}
+    enable-sp-parsing: ${SCHEMA_ENABLE_SP_PARSE:false}
+  ai:
+    enabled: ${SCHEMA_AI_ENABLED:false}
+    api-key: ${SCHEMA_AI_API_KEY:}
+    api-url: ${SCHEMA_AI_API_URL:https://api.anthropic.com/v1/messages}
+    model: ${SCHEMA_AI_MODEL:claude-sonnet-4-20250514}

@@ -122,6 +122,19 @@
             <version>1.19.7</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- Apache POI — Excel (.xlsx) export -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <!-- Force commons-compress version compatible with POI 5.2.5 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+            <version>1.25.0</version>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
