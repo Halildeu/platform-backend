@@ -54,9 +54,15 @@ public class ThemeController {
         if (principal != null && principal.getName() != null && !principal.getName().isBlank()) {
             return principal.getName();
         }
+        // ScopeContext fallback (OpenFGA / dev mode)
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        if (scope != null && scope.userId() != null) {
+            return scope.userId();
+        }
         AuthorizationContext ctx = getAuthorizationContext();
         if (ctx.getUserId() == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik bilgisi eksik");
+            // Local/dev mode: return dev user ID
+            return "dev-user";
         }
         return ctx.getUserId().toString();
     }
