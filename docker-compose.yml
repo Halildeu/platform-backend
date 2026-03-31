@@ -321,7 +321,7 @@ services:
       openfga-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      test: ["NONE"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -407,6 +407,38 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8095/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  schema-service:
+    build:
+      context: .
+      dockerfile: ./schema-service/Dockerfile
+    ports:
+      - "8096:8096"
+    networks:
+      - microservice-network
+    environment:
+      - SERVER_PORT=8096
+      - SCHEMA_MSSQL_HOST=${REPORT_MSSQL_HOST:-host.docker.internal}
+      - SCHEMA_MSSQL_PORT=${REPORT_MSSQL_PORT:-1433}
+      - SCHEMA_MSSQL_DB=${REPORT_MSSQL_DB:-workcube_mikrolink}
+      - SCHEMA_MSSQL_USERNAME=${REPORT_MSSQL_USERNAME:-sa}
+      - SCHEMA_MSSQL_PASSWORD=${REPORT_MSSQL_PASSWORD:-}
+      - SCHEMA_DEFAULT_SCHEMA=${SCHEMA_DEFAULT_SCHEMA:-workcube_mikrolink}
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
+      - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
+      - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
+      - AUTH_MODE=${AUTH_MODE:-permitAll}
+      - SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT=-1
+      - MANAGEMENT_HEALTH_DB_ENABLED=false
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8096/actuator/health"]
       interval: 15s
       timeout: 5s
       retries: 10

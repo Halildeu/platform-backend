@@ -307,7 +307,7 @@ public class UserController {
         Sort parsedSort = parseSort(sort);
         org.springframework.data.jpa.domain.Specification<User> extraSpec = buildAdvancedFilterSpecSafe(advancedFilter);
 
-        response.setContentType("text/csv");
+        response.setContentType("text/csv; charset=UTF-8");
         response.setCharacterEncoding(java.nio.charset.StandardCharsets.UTF_8.name());
         response.setHeader("Content-Disposition", "attachment; filename=users-export.csv");
 
@@ -317,7 +317,8 @@ public class UserController {
         String failureReason = null;
         try (java.io.Writer writer = new java.io.BufferedWriter(
                 new java.io.OutputStreamWriter(response.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
-            writer.write("id,fullName,email,role,enabled,createDate,lastLogin\n");
+            writer.write('\uFEFF'); // UTF-8 BOM for Excel compatibility
+            writer.write("ID;Ad Soyad;E-posta;Rol;Durum;Oluşturma Tarihi;Son Giriş\n");
             writer.flush();
 
             int page = 0;
@@ -326,7 +327,7 @@ public class UserController {
                 Pageable pageable = PageRequest.of(page, pageSize, parsedSort);
                 Page<User> result = userService.searchUsers(search, status, role, extraSpec, pageable);
                 for (User u : result.getContent()) {
-                    String line = String.format("%s,%s,%s,%s,%s,%s,%s\n",
+                    String line = String.format("%s;%s;%s;%s;%s;%s;%s\n",
                             safe(u.getId()), safe(u.getName()), safe(u.getEmail()), safe(u.getRole()), safe(u.isEnabled()),
                             safe(u.getCreateDate()), safe(u.getLastLogin()));
                     writer.write(line);
@@ -359,6 +360,89 @@ public class UserController {
                     success,
                     failureReason
             );
+        }
+    }
+
+    // ── Excel (.xlsx) Export ──────────────────────────────────────────
+    @GetMapping(value = "/export.xlsx", produces = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    public void exportExcel(@RequestHeader(value = "X-Company-Id", required = false) Long companyId,
+                            @RequestHeader(value = "X-Project-Id", required = false) Long projectId,
+                            @RequestHeader(value = "X-Warehouse-Id", required = false) Long warehouseId,
+                            @RequestParam(value = "search", required = false) String search,
+                            @RequestParam(value = "status", required = false, defaultValue = "ALL") String status,
+                            @RequestParam(value = "role", required = false, defaultValue = "ALL") String role,
+                            @RequestParam(value = "sort", required = false) String sort,
+                            @RequestParam(value = "advancedFilter", required = false) String advancedFilter,
+                            jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
+
+        User currentUser = requireCurrentUser();
+        requirePermissionWithCompanyScope(PermissionActions.USER_EXPORT, companyId);
+        csvExportGuardService.assertWithinLimit(currentUser);
+
+        org.slf4j.LoggerFactory.getLogger(UserController.class)
+                .info("Excel export requested by userId={}, companyId={}", currentUser.getId(), companyId);
+
+        Sort parsedSort = parseSort(sort);
+        org.springframework.data.jpa.domain.Specification<User> extraSpec = buildAdvancedFilterSpecSafe(advancedFilter);
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=users-export.xlsx");
+
+        long exportedRows = 0L;
+        long startedAt = System.currentTimeMillis();
+        boolean success = false;
+        String failureReason = null;
+        try (org.apache.poi.xssf.streaming.SXSSFWorkbook workbook =
+                     new org.apache.poi.xssf.streaming.SXSSFWorkbook(500)) {
+            org.apache.poi.ss.usermodel.Sheet sheet = workbook.createSheet("Users");
+
+            // Header row
+            String[] headers = {"ID", "Ad Soyad", "E-posta", "Rol", "Durum", "Oluşturma Tarihi", "Son Giriş"};
+            org.apache.poi.ss.usermodel.Row headerRow = sheet.createRow(0);
+            org.apache.poi.ss.usermodel.CellStyle headerStyle = workbook.createCellStyle();
+            org.apache.poi.ss.usermodel.Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerStyle.setFont(headerFont);
+            for (int i = 0; i < headers.length; i++) {
+                org.apache.poi.ss.usermodel.Cell cell = headerRow.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            // Data rows — streaming page by page
+            int rowIdx = 1;
+            int page = 0;
+            int pageSize = 500;
+            while (true) {
+                Pageable pageable = PageRequest.of(page, pageSize, parsedSort);
+                Page<User> result = userService.searchUsers(search, status, role, extraSpec, pageable);
+                for (User u : result.getContent()) {
+                    org.apache.poi.ss.usermodel.Row row = sheet.createRow(rowIdx++);
+                    row.createCell(0).setCellValue(u.getId() != null ? u.getId().doubleValue() : 0);
+                    row.createCell(1).setCellValue(u.getName() != null ? u.getName() : "");
+                    row.createCell(2).setCellValue(u.getEmail() != null ? u.getEmail() : "");
+                    row.createCell(3).setCellValue(u.getRole() != null ? u.getRole() : "");
+                    row.createCell(4).setCellValue(u.isEnabled() ? "ACTIVE" : "INACTIVE");
+                    row.createCell(5).setCellValue(u.getCreateDate() != null ? u.getCreateDate().toString() : "");
+                    row.createCell(6).setCellValue(u.getLastLogin() != null ? u.getLastLogin().toString() : "");
+                    exportedRows++;
+                }
+                if (result.isLast()) break;
+                page++;
+            }
+
+            workbook.write(response.getOutputStream());
+            success = true;
+        } catch (Exception ex) {
+            failureReason = ex.getClass().getSimpleName();
+            if (ex.getMessage() != null && !ex.getMessage().isBlank()) {
+                failureReason += ":" + ex.getMessage();
+            }
+            throw ex;
+        } finally {
+            long durationMs = System.currentTimeMillis() - startedAt;
+            csvExportGuardService.recordAudit(currentUser, search, status, role, sort, advancedFilter,
+                    exportedRows, durationMs, success, failureReason);
         }
     }
 

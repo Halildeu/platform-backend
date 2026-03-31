@@ -164,7 +164,7 @@ class UserSecurityIntegrationTest {
         String body = res.getResponse().getContentAsString();
 
         assertThat(cd).contains("users-export.csv");
-        assertThat(body).contains("id,fullName,email,role,enabled,createDate,lastLogin");
+        assertThat(body).contains("ID;Ad Soyad;E-posta;Rol;Durum");
     }
 
     @Test

@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
  * tested without Keycloak / permission-service.
  */
 @Component
-@Profile("conntest")
+@Profile({"conntest", "local", "dev"})
 public class MockPermissionServiceClient implements PermissionResolver {
 
     private static final Logger log = LoggerFactory.getLogger(MockPermissionServiceClient.class);

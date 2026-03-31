@@ -37,10 +37,15 @@ const SERVICES = [
   { name: 'vault-unseal', container: 'serban-vault-unseal-1', port: null, healthPath: null, category: 'auth' },
   // Business
   { name: 'user-service', container: 'serban-user-service-1', port: 8089, healthPath: '/actuator/health', category: 'business' },
-  { name: 'permission-service', container: 'serban-permission-service-1', port: 8090, healthPath: '/actuator/health', category: 'business' },
+  { name: 'permission-service', container: 'serban-permission-service-1', port: 8090, healthPath: '/actuator/health', category: 'auth', deprecated: true },
+  // OpenFGA (Zanzibar authorization engine)
+  { name: 'openfga', container: 'serban-openfga-1', port: 4000, healthPath: '/healthz', category: 'auth' },
+  { name: 'openfga-migrate', container: 'serban-openfga-migrate-1', port: null, healthPath: null, category: 'auth' },
+  { name: 'openfga-playground', container: null, port: 4002, healthPath: '/', category: 'auth', type: 'embedded' },
   { name: 'variant-service', container: 'serban-variant-service-1', port: 8091, healthPath: '/actuator/health', category: 'business' },
   { name: 'core-data-service', container: 'serban-core-data-service-1', port: 8092, healthPath: '/actuator/health', category: 'business' },
   { name: 'report-service', container: 'serban-report-service-1', port: 8095, healthPath: '/actuator/health', category: 'business' },
+  { name: 'schema-service', container: 'serban-schema-service-1', port: 8096, healthPath: '/actuator/health', category: 'data' },
   // Data
   { name: 'postgres-db', container: 'serban-postgres-db-1', port: 5432, healthPath: null, category: 'data' },
   { name: 'pgvector', container: 'pgvector_local', port: 5433, healthPath: null, category: 'data' },
@@ -58,6 +63,7 @@ const SERVICES = [
   { name: 'mfe-access', container: null, port: 3005, healthPath: '/', category: 'frontend', type: 'process' },
   { name: 'mfe-audit', container: null, port: 3006, healthPath: '/', category: 'frontend', type: 'process' },
   { name: 'mfe-reporting', container: null, port: 3007, healthPath: '/', category: 'frontend', type: 'process' },
+  { name: 'mfe-schema-explorer', container: null, port: 3008, healthPath: '/', category: 'frontend', type: 'process' },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────

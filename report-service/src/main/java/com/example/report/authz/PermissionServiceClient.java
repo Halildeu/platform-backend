@@ -14,7 +14,7 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 @Component
-@org.springframework.context.annotation.Profile("!conntest")
+@org.springframework.context.annotation.Profile("!conntest & !local & !dev")
 public class PermissionServiceClient implements PermissionResolver {
 
     private static final Logger log = LoggerFactory.getLogger(PermissionServiceClient.class);
