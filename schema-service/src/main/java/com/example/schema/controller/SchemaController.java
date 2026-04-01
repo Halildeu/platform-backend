@@ -3,6 +3,7 @@ package com.example.schema.controller;
 import com.example.schema.model.Relationship;
 import com.example.schema.model.SchemaSnapshot;
 import com.example.schema.model.TableInfo;
+import com.example.schema.service.SchemaExtractService;
 import com.example.schema.service.SchemaSnapshotService;
 import com.example.schema.service.PathFinderService;
 import com.example.schema.service.SchemaHealthService;
@@ -21,6 +22,7 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/v1/schema")
 public class SchemaController {
 
+    private final SchemaExtractService extractService;
     private final SchemaSnapshotService snapshotService;
     private final PathFinderService pathFinderService;
     private final SchemaHealthService healthService;
@@ -33,11 +35,13 @@ public class SchemaController {
     @Value("${schema.cache-ttl-minutes:60}")
     private int cacheTtlMinutes;
 
-    public SchemaController(SchemaSnapshotService snapshotService,
+    public SchemaController(SchemaExtractService extractService,
+                            SchemaSnapshotService snapshotService,
                             PathFinderService pathFinderService,
                             SchemaHealthService healthService,
                             SchemaDriftService driftService,
                             QuerySuggestionService querySuggestionService) {
+        this.extractService = extractService;
         this.snapshotService = snapshotService;
         this.pathFinderService = pathFinderService;
         this.healthService = healthService;
@@ -297,5 +301,13 @@ public class SchemaController {
             return ResponseEntity.notFound().build();
         }
         return ResponseEntity.ok(querySuggestionService.suggest(tableName, snapshot));
+    }
+
+    /**
+     * List all available schemas with table counts.
+     */
+    @GetMapping("/schemas")
+    public ResponseEntity<List<Map<String, Object>>> listSchemas() {
+        return ResponseEntity.ok(extractService.listSchemas());
     }
 }
