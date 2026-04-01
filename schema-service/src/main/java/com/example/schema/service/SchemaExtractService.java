@@ -116,4 +116,32 @@ public class SchemaExtractService {
     public Set<String> getTableNames(String schema) {
         return extractTables(schema).keySet();
     }
+
+    /**
+     * List all available schemas (workcube_mikrolink, workcube_mikrolink_35, etc.)
+     */
+    @Cacheable("schemas")
+    public List<Map<String, Object>> listSchemas() {
+        log.info("Listing available schemas...");
+        String sql = """
+            SELECT s.name AS schema_name, COUNT(t.object_id) AS table_count
+            FROM sys.schemas s
+            LEFT JOIN sys.tables t ON s.schema_id = t.schema_id
+            WHERE s.name LIKE 'workcube_mikrolink%'
+               OR s.name = 'dbo'
+            GROUP BY s.name
+            HAVING COUNT(t.object_id) > 0
+            ORDER BY COUNT(t.object_id) DESC
+            """;
+
+        List<Map<String, Object>> schemas = new ArrayList<>();
+        jdbc.query(sql, Map.of(), rs -> {
+            schemas.add(Map.of(
+                "name", rs.getString("schema_name"),
+                "tableCount", rs.getInt("table_count")
+            ));
+        });
+        log.info("Found {} schemas", schemas.size());
+        return schemas;
+    }
 }
