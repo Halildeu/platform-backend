@@ -1,0 +1,338 @@
+{
+  "type": "dashboard",
+  "key": "hr-compensation",
+  "version": "1.0",
+  "title": "Ücret ve Yan Haklar Analitiği",
+  "description": "Mercer/WTW standardında kapsamlı ücretlendirme analizi — iç denge, cinsiyet eşitliği, yüzdelik dağılımlar, trend, APQC HC-3 ve ISO 30414 metrikleri",
+  "category": "İnsan Kaynakları",
+  "icon": "currency",
+  "access": {
+    "permission": "reports.hr-compensation.view",
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  },
+  "timeRanges": ["30d", "90d", "1y", "ytd"],
+  "defaultTimeRange": "ytd",
+  "kpis": [
+    {
+      "id": "median-salary",
+      "title": "Medyan Brüt Maaş",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "(SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0)",
+        "where": "1=1"
+      },
+      "trend": {
+        "select": "(SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 2 AND SALARY > 0)",
+        "where": "1=1",
+        "direction": "higher_is_better"
+      },
+      "benchmark": { "label": "Mercer TRS Medyan", "value": null }
+    },
+    {
+      "id": "avg-compa-ratio",
+      "title": "Compa-Ratio (Ort.)",
+      "format": "decimal",
+      "toneRules": [
+        { "condition": "> 1.15", "tone": "warning" },
+        { "condition": "< 0.85", "tone": "danger" },
+        { "condition": "default", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "AVG(CASE WHEN dept_med.dept_median > 0 THEN SALARY / dept_med.dept_median ELSE NULL END)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID LEFT JOIN (SELECT DEPARTMENT_ID, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER(PARTITION BY DEPARTMENT_ID) AS dept_median FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr2 INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep2 ON ep2.PUANTAJ_ID = epr2.PUANTAJ_ID WHERE ep2.SAL_YEAR = YEAR(GETDATE()) AND ep2.SAL_MON = MONTH(GETDATE()) - 1 AND epr2.SALARY > 0) dept_med ON dept_med.DEPARTMENT_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].DEPARTMENT_ID"
+      }
+    },
+    {
+      "id": "gender-pay-gap",
+      "title": "Cinsiyet Maaş Farkı",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.10", "tone": "danger" },
+        { "condition": "> 0.05", "tone": "warning" },
+        { "condition": "<= 0.05", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "1.0 - (AVG(CASE WHEN ed.SEX = 0 THEN SALARY END) / NULLIF(AVG(CASE WHEN ed.SEX = 1 THEN SALARY END), 0))",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID INNER JOIN [workcube_mikrolink].[EMPLOYEES] e ON e.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = e.EMPLOYEE_ID"
+      },
+      "benchmark": { "label": "EU Ort.", "value": 0.13 }
+    },
+    {
+      "id": "total-employer-cost",
+      "title": "Toplam İşveren Maliyeti",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "avg-salary-increase-yoy",
+      "title": "Ort. Maaş Artışı (YoY)",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.50", "tone": "danger" },
+        { "condition": "> 0.30", "tone": "warning" },
+        { "condition": "default", "tone": "info" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "AVG(CASE WHEN prev.SALARY > 0 THEN (cur.SALARY - prev.SALARY) / prev.SALARY ELSE NULL END)",
+        "where": "1=1",
+        "join": "(SELECT EMPLOYEE_ID, SALARY FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) cur INNER JOIN (SELECT EMPLOYEE_ID, SALARY FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) - 1 AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) prev ON cur.EMPLOYEE_ID = prev.EMPLOYEE_ID"
+      }
+    },
+    {
+      "id": "p90-p10-ratio",
+      "title": "P90/P10 Oranı",
+      "format": "decimal",
+      "toneRules": [
+        { "condition": "> 6.0", "tone": "danger" },
+        { "condition": "> 4.0", "tone": "warning" },
+        { "condition": "<= 4.0", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "(SELECT DISTINCT PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) / NULLIF((SELECT DISTINCT PERCENTILE_CONT(0.10) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0), 0)",
+        "where": "1=1"
+      }
+    },
+    {
+      "id": "overtime-ratio",
+      "title": "Fazla Mesai / Maliyet",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.15", "tone": "danger" },
+        { "condition": "> 0.08", "tone": "warning" },
+        { "condition": "<= 0.08", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(EXT_SALARY) / NULLIF(SUM(SALARY + EXT_SALARY), 0)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(EXT_SALARY) / NULLIF(SUM(SALARY + EXT_SALARY), 0)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "salary-gini",
+      "title": "Gini Katsayısı",
+      "format": "decimal",
+      "toneRules": [
+        { "condition": "> 0.45", "tone": "danger" },
+        { "condition": "> 0.35", "tone": "warning" },
+        { "condition": "<= 0.35", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "(SELECT (2.0 * SUM(rn * s.SALARY) / (cnt * SUM(s.SALARY))) - ((cnt + 1.0) / cnt) FROM (SELECT SALARY, ROW_NUMBER() OVER (ORDER BY SALARY) AS rn, COUNT(*) OVER () AS cnt FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) s GROUP BY cnt)",
+        "where": "1=1"
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "salary-histogram",
+      "title": "Maaş Dağılımı Histogramı",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN SALARY < 20000 THEN '0-20K' WHEN SALARY < 40000 THEN '20-40K' WHEN SALARY < 60000 THEN '40-60K' WHEN SALARY < 80000 THEN '60-80K' WHEN SALARY < 100000 THEN '80-100K' WHEN SALARY < 150000 THEN '100-150K' ELSE '150K+' END AS label, COUNT(*) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CASE WHEN SALARY < 20000 THEN '0-20K' WHEN SALARY < 40000 THEN '20-40K' WHEN SALARY < 60000 THEN '40-60K' WHEN SALARY < 80000 THEN '60-80K' WHEN SALARY < 100000 THEN '80-100K' WHEN SALARY < 150000 THEN '100-150K' ELSE '150K+' END",
+        "orderBy": "MIN(SALARY) ASC"
+      },
+      "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "dept-salary-comparison",
+      "title": "Departman Bazlı Maaş Karşılaştırma",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, AVG(SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "AVG(SALARY) DESC",
+        "limit": 15
+      },
+      "chartConfig": { "orientation": "horizontal", "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "gender-salary-comparison",
+      "title": "Cinsiyet Bazlı Maaş (Departman)",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, AVG(CASE WHEN ed.SEX = 1 THEN SALARY END) AS value, AVG(CASE WHEN ed.SEX = 0 THEN SALARY END) AS value2",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID INNER JOIN [workcube_mikrolink].[EMPLOYEES] e ON e.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = e.EMPLOYEE_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "AVG(SALARY) DESC",
+        "limit": 10
+      },
+      "chartConfig": { "grouped": true, "showValues": true, "seriesLabels": ["Erkek", "Kadın"] }
+    },
+    {
+      "id": "education-salary-premium",
+      "title": "Eğitim Seviyesi Primi",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE ed.LAST_SCHOOL WHEN 1 THEN 'İlkokul' WHEN 8 THEN 'Ortaokul' WHEN 2 THEN 'Lise' WHEN 9 THEN 'Meslek Lisesi' WHEN 3 THEN 'Önlisans' WHEN 4 THEN 'Lisans' WHEN 10 THEN 'Mühendislik' WHEN 11 THEN 'Fakülte' WHEN 5 THEN 'Yüksek Lisans' WHEN 6 THEN 'Doktora' ELSE 'Belirtilmemiş' END AS label, AVG(SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID INNER JOIN [workcube_mikrolink].[EMPLOYEES] e ON e.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEES_DETAIL] ed ON ed.EMPLOYEE_ID = e.EMPLOYEE_ID",
+        "groupBy": "ed.LAST_SCHOOL",
+        "orderBy": "AVG(SALARY) ASC"
+      },
+      "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "salary-trend-12m",
+      "title": "12 Aylık Maaş Trendi",
+      "chartType": "line",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2) AS label, AVG(SALARY) AS value, COUNT(EMPLOYEE_ID) AS value2",
+        "where": "(ep.SAL_YEAR = YEAR(GETDATE()) OR (ep.SAL_YEAR = YEAR(GETDATE())-1 AND ep.SAL_MON >= MONTH(GETDATE()))) AND ep.SAL_MON <= CASE WHEN ep.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": { "showValues": false, "showGrid": true, "seriesLabels": ["Ort. Maaş", "Çalışan Sayısı"] }
+    },
+    {
+      "id": "collar-type-salary",
+      "title": "Yaka Tipi Dağılımı",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END AS label, AVG(SALARY) AS value, COUNT(*) AS value2",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID AND epos.POSITION_STATUS = 1",
+        "groupBy": "epos.COLLAR_TYPE",
+        "orderBy": "AVG(SALARY) DESC"
+      },
+      "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "tenure-salary-relation",
+      "title": "Kıdem — Maaş İlişkisi",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 1 THEN '0-1 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 3 THEN '1-3 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 5 THEN '3-5 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 10 THEN '5-10 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 15 THEN '10-15 yıl' ELSE '15+ yıl' END AS label, AVG([workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].SALARY > 0 AND eio.FINISH_DATE IS NULL",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID INNER JOIN [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio ON eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL",
+        "groupBy": "CASE WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 1 THEN '0-1 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 3 THEN '1-3 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 5 THEN '3-5 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 10 THEN '5-10 yıl' WHEN DATEDIFF(YEAR, eio.START_DATE, GETDATE()) < 15 THEN '10-15 yıl' ELSE '15+ yıl' END",
+        "orderBy": "MIN(DATEDIFF(YEAR, eio.START_DATE, GETDATE())) ASC"
+      },
+      "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "cost-waterfall",
+      "title": "Maliyet Yapısı Şelale",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "'Toplam Brut' AS label, SUM(SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "chartConfig": { "showValues": true, "showGrid": true }
+    },
+    {
+      "id": "company-payroll-pie",
+      "title": "Şirket Bordro Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ep.COMP_NICK_NAME),''), 'Belirtilmemiş') AS label, SUM(SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ep.COMP_NICK_NAME),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(SALARY) DESC"
+      },
+      "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "dept-percentile-radar",
+      "title": "Departman Yüzdelik Karşılaştırma (Top 5)",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, MIN(SALARY) AS min_val, AVG(SALARY) AS value, MAX(SALARY) AS max_val",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "COUNT(*) DESC",
+        "limit": 5
+      },
+      "chartConfig": { "showValues": true, "showGrid": true }
+    }
+  ],
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["median-salary", "avg-compa-ratio", "gender-pay-gap", "total-employer-cost", "avg-salary-increase-yoy", "p90-p10-ratio", "overtime-ratio", "salary-gini"] },
+      { "type": "chart-row", "ids": ["salary-histogram"] },
+      { "type": "chart-row", "ids": ["dept-salary-comparison"] },
+      { "type": "chart-row", "ids": ["gender-salary-comparison", "education-salary-premium"] },
+      { "type": "chart-row", "ids": ["salary-trend-12m"] },
+      { "type": "chart-row", "ids": ["collar-type-salary", "tenure-salary-relation"] },
+      { "type": "chart-row", "ids": ["cost-waterfall"] },
+      { "type": "chart-row", "ids": ["company-payroll-pie", "dept-percentile-radar"] }
+    ]
+  }
+}

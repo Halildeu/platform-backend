@@ -34,8 +34,11 @@ public class MockPermissionServiceClient implements PermissionResolver {
                 "reports.hr-giris-cikis.view", "reports.hr-puantaj.view",
                 "reports.hr-maas-gecmisi.view", "reports.hr-egitim-katilim.view",
                 "reports.hr-izin-raporu.view", "reports.hr-bordro-detay.view",
+                // HR compensation
+                "reports.hr-compensation.view", "reports.hr-compensation-detay.view",
                 // HR dashboards
                 "dashboards.hr-analytics.view", "dashboards.hr-finansal.view",
+                "dashboards.hr-compensation.view",
                 // Finance reports
                 "reports.fin-banka-hareketleri.view", "reports.fin-kasa-hareketleri.view",
                 "reports.fin-faturalar.view", "reports.fin-faturalar.financials",
