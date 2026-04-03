@@ -15,7 +15,9 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @RestController
@@ -75,25 +77,45 @@ public class DashboardController {
     @GetMapping("/{key}/kpis")
     public ResponseEntity<List<KpiResultDto>> getKpis(@PathVariable String key,
                                                         @RequestParam(defaultValue = "90d") String timeRange,
+                                                        @RequestParam(required = false) String department,
+                                                        @RequestParam(required = false) String gender,
+                                                        @RequestParam(required = false) String collarType,
+                                                        @RequestParam(required = false) String education,
                                                         @AuthenticationPrincipal Jwt jwt) {
         DashboardDefinition def = findOrThrow(key);
         AuthzMeResponse authz = checkAccess(def, jwt);
         validateTimeRange(timeRange, def);
 
-        List<KpiResultDto> kpis = queryEngine.executeKpis(def, authz, timeRange);
+        Map<String, String> filterValues = buildFilterValues(department, gender, collarType, education);
+        List<KpiResultDto> kpis = queryEngine.executeKpis(def, authz, timeRange, filterValues);
         return ResponseEntity.ok(kpis);
     }
 
     @GetMapping("/{key}/charts")
     public ResponseEntity<List<ChartResultDto>> getCharts(@PathVariable String key,
                                                             @RequestParam(defaultValue = "90d") String timeRange,
+                                                            @RequestParam(required = false) String department,
+                                                            @RequestParam(required = false) String gender,
+                                                            @RequestParam(required = false) String collarType,
+                                                            @RequestParam(required = false) String education,
                                                             @AuthenticationPrincipal Jwt jwt) {
         DashboardDefinition def = findOrThrow(key);
         AuthzMeResponse authz = checkAccess(def, jwt);
         validateTimeRange(timeRange, def);
 
-        List<ChartResultDto> charts = queryEngine.executeCharts(def, authz, timeRange);
+        Map<String, String> filterValues = buildFilterValues(department, gender, collarType, education);
+        List<ChartResultDto> charts = queryEngine.executeCharts(def, authz, timeRange, filterValues);
         return ResponseEntity.ok(charts);
+    }
+
+    private Map<String, String> buildFilterValues(String department, String gender,
+                                                    String collarType, String education) {
+        Map<String, String> filterValues = new LinkedHashMap<>();
+        if (department != null) filterValues.put("department", department);
+        if (gender != null) filterValues.put("gender", gender);
+        if (collarType != null) filterValues.put("collarType", collarType);
+        if (education != null) filterValues.put("education", education);
+        return filterValues;
     }
 
     private DashboardDefinition findOrThrow(String key) {

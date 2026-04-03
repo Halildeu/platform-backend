@@ -1,22 +1,43 @@
 package com.example.report.query;
 
+import com.example.report.model.FilterColumnSpec;
 import com.example.report.registry.AggregateSpec;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Map;
 
 public class AggregateSqlBuilder {
 
     public record BuiltQuery(String sql, MapSqlParameterSource params) {}
 
+    /**
+     * Original method — delegates to the filter-aware overload with empty filter maps.
+     */
     public BuiltQuery buildAggregateQuery(String source,
                                            String sourceSchema,
                                            AggregateSpec aggregate,
                                            String rlsWhereClause,
                                            MapSqlParameterSource rlsParams,
                                            MapSqlParameterSource timeParams) {
+        return buildAggregateQuery(source, sourceSchema, aggregate,
+                rlsWhereClause, rlsParams, timeParams, Map.of(), Map.of());
+    }
+
+    /**
+     * Filter-aware query builder. Each entry in filterValues that has a matching
+     * key in filterColumns produces a named-parameter WHERE clause and optional JOIN.
+     */
+    public BuiltQuery buildAggregateQuery(String source,
+                                           String sourceSchema,
+                                           AggregateSpec aggregate,
+                                           String rlsWhereClause,
+                                           MapSqlParameterSource rlsParams,
+                                           MapSqlParameterSource timeParams,
+                                           Map<String, FilterColumnSpec> filterColumns,
+                                           Map<String, String> filterValues) {
         StringBuilder sql = new StringBuilder();
         MapSqlParameterSource params = new MapSqlParameterSource();
 
@@ -25,6 +46,24 @@ public class AggregateSqlBuilder {
 
         if (aggregate.join() != null && !aggregate.join().isBlank()) {
             sql.append(" ").append(aggregate.join());
+        }
+
+        // Append filter JOINs (deduplicated against existing aggregate join)
+        String existingJoin = aggregate.join() != null ? aggregate.join() : "";
+        if (filterColumns != null && filterValues != null) {
+            for (Map.Entry<String, String> entry : filterValues.entrySet()) {
+                FilterColumnSpec spec = filterColumns.get(entry.getKey());
+                if (spec == null) continue;
+                if (spec.join() != null && !spec.join().isBlank()) {
+                    // Deduplicate: extract table name from JOIN and check existing
+                    String filterJoin = spec.join().trim();
+                    String joinTableToken = extractJoinTable(filterJoin);
+                    if (joinTableToken != null && !existingJoin.contains(joinTableToken)
+                            && !sql.toString().contains(joinTableToken)) {
+                        sql.append(" ").append(filterJoin);
+                    }
+                }
+            }
         }
 
         sql.append(" WHERE 1=1");
@@ -38,6 +77,21 @@ public class AggregateSqlBuilder {
 
         if (aggregate.where() != null && !aggregate.where().isBlank()) {
             sql.append(" AND ").append(aggregate.where());
+        }
+
+        // Append filter WHERE clauses with named parameters
+        if (filterColumns != null && filterValues != null) {
+            for (Map.Entry<String, String> entry : filterValues.entrySet()) {
+                FilterColumnSpec spec = filterColumns.get(entry.getKey());
+                if (spec == null || spec.expression() == null) continue;
+                String paramName = "_f_" + entry.getKey();
+                sql.append(" AND ").append(spec.expression()).append(" = :").append(paramName);
+                if ("int".equalsIgnoreCase(spec.paramType())) {
+                    params.addValue(paramName, Integer.parseInt(entry.getValue()));
+                } else {
+                    params.addValue(paramName, entry.getValue());
+                }
+            }
         }
 
         if (timeParams != null) {
@@ -61,6 +115,26 @@ public class AggregateSqlBuilder {
         }
 
         return new BuiltQuery(sql.toString(), params);
+    }
+
+    /**
+     * Extracts the bracketed table reference from a JOIN clause for deduplication.
+     * E.g. "INNER JOIN [schema].[TABLE] alias ON ..." returns "[schema].[TABLE]".
+     */
+    private static String extractJoinTable(String joinClause) {
+        // Match pattern like [schema].[table]
+        int firstBracket = joinClause.indexOf('[');
+        if (firstBracket < 0) return null;
+        // Find end of second bracket pair: [schema].[table]
+        int closeBracket1 = joinClause.indexOf(']', firstBracket);
+        if (closeBracket1 < 0) return null;
+        int dot = joinClause.indexOf('.', closeBracket1);
+        if (dot < 0) return joinClause.substring(firstBracket, closeBracket1 + 1);
+        int openBracket2 = joinClause.indexOf('[', dot);
+        if (openBracket2 < 0) return joinClause.substring(firstBracket, closeBracket1 + 1);
+        int closeBracket2 = joinClause.indexOf(']', openBracket2);
+        if (closeBracket2 < 0) return joinClause.substring(firstBracket, closeBracket1 + 1);
+        return joinClause.substring(firstBracket, closeBracket2 + 1);
     }
 
     public static MapSqlParameterSource buildTimeParams(String timeRange) {
