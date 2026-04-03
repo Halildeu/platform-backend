@@ -25,12 +25,14 @@
       "source": "EMPLOYEES_PUANTAJ_ROWS",
       "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "(SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0)",
-        "where": "1=1"
+        "select": "MAX(med_sub.median_val)",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT TOP 1 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER() AS median_val FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) med_sub"
       },
       "trend": {
-        "select": "(SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 2 AND SALARY > 0)",
+        "select": "MAX(med_prev.median_val)",
         "where": "1=1",
+        "join": "CROSS JOIN (SELECT TOP 1 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY SALARY) OVER() AS median_val FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 2 AND SALARY > 0) med_prev",
         "direction": "higher_is_better"
       },
       "benchmark": { "label": "Mercer TRS Medyan", "value": null }
@@ -100,9 +102,9 @@
       "source": "EMPLOYEES_PUANTAJ_ROWS",
       "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "AVG(CASE WHEN prev.SALARY > 0 THEN (cur.SALARY - prev.SALARY) / prev.SALARY ELSE NULL END)",
+        "select": "MAX(yoy_sub.avg_increase)",
         "where": "1=1",
-        "join": "(SELECT EMPLOYEE_ID, SALARY FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) cur INNER JOIN (SELECT EMPLOYEE_ID, SALARY FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) - 1 AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) prev ON cur.EMPLOYEE_ID = prev.EMPLOYEE_ID"
+        "join": "CROSS JOIN (SELECT AVG(CASE WHEN prev.SALARY > 0 THEN (cur.SALARY - prev.SALARY) / prev.SALARY ELSE NULL END) AS avg_increase FROM (SELECT EMPLOYEE_ID, SALARY FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) cur INNER JOIN (SELECT EMPLOYEE_ID, SALARY FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) - 1 AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) prev ON cur.EMPLOYEE_ID = prev.EMPLOYEE_ID) yoy_sub"
       }
     },
     {
@@ -117,8 +119,9 @@
       "source": "EMPLOYEES_PUANTAJ_ROWS",
       "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "(SELECT DISTINCT PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) / NULLIF((SELECT DISTINCT PERCENTILE_CONT(0.10) WITHIN GROUP (ORDER BY SALARY) OVER() FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0), 0)",
-        "where": "1=1"
+        "select": "MAX(pct_sub.p90) / NULLIF(MAX(pct_sub.p10), 0)",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT TOP 1 PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY SALARY) OVER() AS p90, PERCENTILE_CONT(0.10) WITHIN GROUP (ORDER BY SALARY) OVER() AS p10 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) pct_sub"
       }
     },
     {
@@ -155,8 +158,9 @@
       "source": "EMPLOYEES_PUANTAJ_ROWS",
       "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "(SELECT (2.0 * SUM(rn * s.SALARY) / (cnt * SUM(s.SALARY))) - ((cnt + 1.0) / cnt) FROM (SELECT SALARY, ROW_NUMBER() OVER (ORDER BY SALARY) AS rn, COUNT(*) OVER () AS cnt FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) s GROUP BY cnt)",
-        "where": "1=1"
+        "select": "MAX(gini_sub.gini_val)",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT (2.0 * SUM(s.rn * s.SALARY) / (MAX(s.cnt) * SUM(s.SALARY))) - ((MAX(s.cnt) + 1.0) / MAX(s.cnt)) AS gini_val FROM (SELECT SALARY, ROW_NUMBER() OVER (ORDER BY SALARY) AS rn, COUNT(*) OVER () AS cnt FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0) s) gini_sub"
       }
     }
   ],
