@@ -255,7 +255,7 @@
       "source": "EMPLOYEES_PUANTAJ_ROWS",
       "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END AS label, AVG(SALARY) AS value, COUNT(*) AS value2",
+        "select": "CASE epos.COLLAR_TYPE WHEN 1 THEN 'Mavi Yaka' WHEN 2 THEN 'Beyaz Yaka' ELSE 'Belirtilmemiş' END AS label, AVG(SALARY) AS value, COUNT(*) AS value2",
         "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
         "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID AND epos.POSITION_STATUS = 1",
         "groupBy": "epos.COLLAR_TYPE",

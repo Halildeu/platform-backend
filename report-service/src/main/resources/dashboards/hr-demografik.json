@@ -170,9 +170,9 @@
       "id": "collar-distribution", "title": "Yaka Tipi Dağılımı", "chartType": "pie", "size": "md",
       "source": "EMPLOYEE_POSITIONS", "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Diğer' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) AS value",
+        "select": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Mavi Yaka' WHEN 2 THEN 'Beyaz Yaka' ELSE 'Diğer' END AS label, COUNT(DISTINCT [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID) AS value",
         "where": "[workcube_mikrolink].[EMPLOYEE_POSITIONS].POSITION_STATUS = 1 AND EXISTS (SELECT 1 FROM [workcube_mikrolink].[EMPLOYEES_IN_OUT] eio WHERE eio.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEE_POSITIONS].EMPLOYEE_ID AND eio.FINISH_DATE IS NULL)",
-        "groupBy": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Diğer' END"
+        "groupBy": "CASE [workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE WHEN 1 THEN 'Mavi Yaka' WHEN 2 THEN 'Beyaz Yaka' ELSE 'Diğer' END"
       }, "chartConfig": { "showLegend": true }
     },
     {

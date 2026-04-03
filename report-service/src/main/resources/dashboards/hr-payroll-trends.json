@@ -237,7 +237,7 @@
       "aggregate": {
         "select": "collar_sub.label, MAX(collar_sub.value) AS value, MAX(collar_sub.cnt) AS value2",
         "where": "1=1",
-        "join": "CROSS JOIN (SELECT CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END AS label, SUM(epr.SALARY + epr.SSK_ISVEREN_HISSESI + epr.ISSIZLIK_ISVEREN_HISSESI) AS value, COUNT(DISTINCT epr.EMPLOYEE_ID) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = epr.EMPLOYEE_ID AND epos.POSITION_STATUS = 1 WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 GROUP BY CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END) collar_sub",
+        "join": "CROSS JOIN (SELECT CASE epos.COLLAR_TYPE WHEN 1 THEN 'Mavi Yaka' WHEN 2 THEN 'Beyaz Yaka' ELSE 'Belirtilmemiş' END AS label, SUM(epr.SALARY + epr.SSK_ISVEREN_HISSESI + epr.ISSIZLIK_ISVEREN_HISSESI) AS value, COUNT(DISTINCT epr.EMPLOYEE_ID) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = epr.EMPLOYEE_ID AND epos.POSITION_STATUS = 1 WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 GROUP BY CASE epos.COLLAR_TYPE WHEN 1 THEN 'Mavi Yaka' WHEN 2 THEN 'Beyaz Yaka' ELSE 'Belirtilmemiş' END) collar_sub",
         "groupBy": "collar_sub.label",
         "orderBy": "MAX(collar_sub.value) DESC"
       },
