@@ -1,6 +1,9 @@
 package com.example.report.registry;
 
+import com.example.report.model.FilterColumnSpec;
+
 import java.util.List;
+import java.util.Map;
 
 public record DashboardDefinition(
         String type,
@@ -15,7 +18,8 @@ public record DashboardDefinition(
         String defaultTimeRange,
         List<KpiDefinition> kpis,
         List<ChartDefinition> charts,
-        LayoutConfig layout
+        LayoutConfig layout,
+        Map<String, FilterColumnSpec> filterColumns
 ) {
     public DashboardDefinition {
         if (key == null || key.isBlank()) {
@@ -38,6 +42,9 @@ public record DashboardDefinition(
         }
         if (charts == null) {
             charts = List.of();
+        }
+        if (filterColumns == null) {
+            filterColumns = Map.of();
         }
     }
 }

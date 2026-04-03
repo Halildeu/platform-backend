@@ -287,9 +287,11 @@
       "source": "EMPLOYEES_PUANTAJ_ROWS",
       "sourceSchema": "workcube_mikrolink",
       "aggregate": {
-        "select": "'Toplam Brut' AS label, SUM(SALARY) AS value",
-        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
-        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+        "select": "cost_item.label, MAX(cost_item.value) AS value",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT 'Brüt Maaş' AS label, SUM(SALARY) AS value, 1 AS sort_order FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşveren', SUM(SSK_ISVEREN_HISSESI), 2 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşçi', SUM(SSK_ISCI_HISSESI), 3 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'İşsizlik İşveren', SUM(ISSIZLIK_ISVEREN_HISSESI), 4 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'İşsizlik İşçi', SUM(ISSIZLIK_ISCI_HISSESI), 5 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Gelir Vergisi', SUM(GELIR_VERGISI), 6 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Damga Vergisi', SUM(DAMGA_VERGISI), 7 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Fazla Mesai', SUM(EXT_SALARY), 8 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Net Ücret', SUM(NET_UCRET), 9 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) cost_item",
+        "groupBy": "cost_item.label, cost_item.sort_order",
+        "orderBy": "cost_item.sort_order ASC"
       },
       "chartConfig": { "showValues": true, "showGrid": true }
     },
@@ -327,6 +329,26 @@
       "chartConfig": { "showValues": true, "showGrid": true }
     }
   ],
+  "filterColumns": {
+    "department": {
+      "expression": "[workcube_mikrolink].[EMPLOYEES_DEPARTMENT].DEPARTMENT_NAME",
+      "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_DEPARTMENT] ed ON ed.DEPARTMENT_ID = ROW_DEPARTMENT_HEAD",
+      "paramType": "string"
+    },
+    "gender": {
+      "expression": "GENDER",
+      "paramType": "int"
+    },
+    "collarType": {
+      "expression": "[workcube_mikrolink].[EMPLOYEE_POSITIONS].COLLAR_TYPE",
+      "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = EMPLOYEE_ID AND epos.IS_ACTIVE = 1",
+      "paramType": "int"
+    },
+    "education": {
+      "expression": "EDUCATION",
+      "paramType": "string"
+    }
+  },
   "layout": {
     "sections": [
       { "type": "kpi-strip", "ids": ["median-salary", "avg-compa-ratio", "gender-pay-gap", "total-employer-cost", "avg-salary-increase-yoy", "p90-p10-ratio", "overtime-ratio", "salary-gini"] },

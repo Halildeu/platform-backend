@@ -4,6 +4,7 @@ import com.example.report.access.RowFilterInjector;
 import com.example.report.authz.AuthzMeResponse;
 import com.example.report.dto.ChartResultDto;
 import com.example.report.dto.KpiResultDto;
+import com.example.report.model.FilterColumnSpec;
 import com.example.report.registry.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,14 +34,23 @@ public class DashboardQueryEngine {
         this.rowFilterInjector = rowFilterInjector;
     }
 
+    /** Backward-compatible overload (no filters). */
     public List<KpiResultDto> executeKpis(DashboardDefinition dashboard,
                                            AuthzMeResponse authz,
                                            String timeRange) {
+        return executeKpis(dashboard, authz, timeRange, Map.of());
+    }
+
+    public List<KpiResultDto> executeKpis(DashboardDefinition dashboard,
+                                           AuthzMeResponse authz,
+                                           String timeRange,
+                                           Map<String, String> filterValues) {
         MapSqlParameterSource timeParams = AggregateSqlBuilder.buildTimeParams(timeRange);
+        Map<String, FilterColumnSpec> filterColumns = dashboard.filterColumns();
 
         List<CompletableFuture<KpiResultDto>> futures = dashboard.kpis().stream()
                 .map(kpi -> CompletableFuture.supplyAsync(
-                        () -> executeKpi(kpi, dashboard.access(), authz, timeParams), executor))
+                        () -> executeKpi(kpi, dashboard.access(), authz, timeParams, filterColumns, filterValues), executor))
                 .toList();
 
         return futures.stream()
@@ -56,14 +66,23 @@ public class DashboardQueryEngine {
                 .toList();
     }
 
+    /** Backward-compatible overload (no filters). */
     public List<ChartResultDto> executeCharts(DashboardDefinition dashboard,
                                                AuthzMeResponse authz,
                                                String timeRange) {
+        return executeCharts(dashboard, authz, timeRange, Map.of());
+    }
+
+    public List<ChartResultDto> executeCharts(DashboardDefinition dashboard,
+                                               AuthzMeResponse authz,
+                                               String timeRange,
+                                               Map<String, String> filterValues) {
         MapSqlParameterSource timeParams = AggregateSqlBuilder.buildTimeParams(timeRange);
+        Map<String, FilterColumnSpec> filterColumns = dashboard.filterColumns();
 
         List<CompletableFuture<ChartResultDto>> futures = dashboard.charts().stream()
                 .map(chart -> CompletableFuture.supplyAsync(
-                        () -> executeChart(chart, dashboard.access(), authz, timeParams), executor))
+                        () -> executeChart(chart, dashboard.access(), authz, timeParams, filterColumns, filterValues), executor))
                 .toList();
 
         return futures.stream()
@@ -82,13 +101,16 @@ public class DashboardQueryEngine {
     private KpiResultDto executeKpi(KpiDefinition kpi,
                                      AccessConfig access,
                                      AuthzMeResponse authz,
-                                     MapSqlParameterSource timeParams) {
+                                     MapSqlParameterSource timeParams,
+                                     Map<String, FilterColumnSpec> filterColumns,
+                                     Map<String, String> filterValues) {
         try {
             RowFilterInjector.RlsResult rls = buildRls(kpi.source(), access, authz);
 
             AggregateSqlBuilder.BuiltQuery query = sqlBuilder.buildAggregateQuery(
                     kpi.source(), kpi.sourceSchema(), kpi.aggregate(),
-                    rls.whereClause(), rls.params(), timeParams);
+                    rls.whereClause(), rls.params(), timeParams,
+                    filterColumns, filterValues);
 
             log.debug("KPI query [{}]: {}", kpi.id(), query.sql());
 
@@ -97,7 +119,7 @@ public class DashboardQueryEngine {
             // Compute trend if configured
             KpiResultDto.TrendDto trend = null;
             if (kpi.trend() != null && kpi.trend().select() != null) {
-                trend = computeTrend(kpi, access, authz, timeParams, value);
+                trend = computeTrend(kpi, access, authz, timeParams, filterColumns, filterValues, value);
             }
 
             String tone = evaluateTone(kpi, value);
@@ -119,13 +141,16 @@ public class DashboardQueryEngine {
     private ChartResultDto executeChart(ChartDefinition chart,
                                          AccessConfig access,
                                          AuthzMeResponse authz,
-                                         MapSqlParameterSource timeParams) {
+                                         MapSqlParameterSource timeParams,
+                                         Map<String, FilterColumnSpec> filterColumns,
+                                         Map<String, String> filterValues) {
         try {
             RowFilterInjector.RlsResult rls = buildRls(chart.source(), access, authz);
 
             AggregateSqlBuilder.BuiltQuery query = sqlBuilder.buildAggregateQuery(
                     chart.source(), chart.sourceSchema(), chart.aggregate(),
-                    rls.whereClause(), rls.params(), timeParams);
+                    rls.whereClause(), rls.params(), timeParams,
+                    filterColumns, filterValues);
 
             log.debug("Chart query [{}]: {}", chart.id(), query.sql());
 
@@ -146,6 +171,8 @@ public class DashboardQueryEngine {
                                                  AccessConfig access,
                                                  AuthzMeResponse authz,
                                                  MapSqlParameterSource timeParams,
+                                                 Map<String, FilterColumnSpec> filterColumns,
+                                                 Map<String, String> filterValues,
                                                  Object currentValue) {
         try {
             AggregateSpec trendAggregate = new AggregateSpec(
@@ -157,7 +184,8 @@ public class DashboardQueryEngine {
 
             AggregateSqlBuilder.BuiltQuery trendQuery = sqlBuilder.buildAggregateQuery(
                     kpi.source(), kpi.sourceSchema(), trendAggregate,
-                    rls.whereClause(), rls.params(), timeParams);
+                    rls.whereClause(), rls.params(), timeParams,
+                    filterColumns, filterValues);
 
             Object previousValue = jdbc.queryForObject(trendQuery.sql(), trendQuery.params(), Object.class);
 
