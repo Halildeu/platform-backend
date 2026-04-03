@@ -1,0 +1,209 @@
+{
+  "type": "dashboard",
+  "key": "hr-benefits-lite",
+  "version": "1.0",
+  "title": "Yan Haklar Analitiği",
+  "description": "Ek ödeme, sağlık sigortası, SGK ve bonus analizi — tür, departman ve trend bazlı.",
+  "category": "İnsan Kaynakları",
+  "icon": "gift",
+  "access": {
+    "permission": "reports.hr-benefits-lite.view",
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  },
+  "timeRanges": ["30d", "90d", "1y", "ytd"],
+  "defaultTimeRange": "ytd",
+  "kpis": [
+    {
+      "id": "total-benefits-cost",
+      "title": "Toplam Ek Ödeme",
+      "format": "currency",
+      "tone": "info",
+      "source": "SALARYPARAM_PAY",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(AMOUNT_PAY)",
+        "where": "[workcube_mikrolink].[SALARYPARAM_PAY].AMOUNT_PAY > 0"
+      }
+    },
+    {
+      "id": "benefit-per-employee",
+      "title": "Kişi Başı Ek Ödeme",
+      "format": "currency",
+      "tone": "info",
+      "source": "SALARYPARAM_PAY",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(AMOUNT_PAY) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0)",
+        "where": "[workcube_mikrolink].[SALARYPARAM_PAY].AMOUNT_PAY > 0"
+      }
+    },
+    {
+      "id": "deduction-total",
+      "title": "Toplam Kesinti",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SSK_ISCI_HISSESI + ISSIZLIK_ISCI_HISSESI + GELIR_VERGISI + DAMGA_VERGISI)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    },
+    {
+      "id": "ssk-employer-total",
+      "title": "SGK İşveren Toplam",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SSK_ISVEREN_HISSESI)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    },
+    {
+      "id": "bonus-count",
+      "title": "Bonus Alan Kişi Sayısı",
+      "format": "number",
+      "tone": "info",
+      "source": "BONUS_PAYROLL",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "COUNT(DISTINCT EMPLOYEE_ID)",
+        "where": "PAPER_DATE >= DATEADD(YEAR, -1, GETDATE())"
+      }
+    },
+    {
+      "id": "overtime-total",
+      "title": "Fazla Mesai Toplam",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(EXT_SALARY)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "benefit-type-breakdown",
+      "title": "Ek Ödeme Türü Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "SALARYPARAM_PAY",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM([workcube_mikrolink].[SALARYPARAM_PAY].COMMENT_PAY),''), 'Belirtilmemiş') AS label, SUM(AMOUNT_PAY) AS value",
+        "where": "[workcube_mikrolink].[SALARYPARAM_PAY].AMOUNT_PAY > 0",
+        "groupBy": "ISNULL(NULLIF(RTRIM([workcube_mikrolink].[SALARYPARAM_PAY].COMMENT_PAY),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(AMOUNT_PAY) DESC",
+        "limit": 10
+      },
+      "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "cost-structure",
+      "title": "Maliyet Yapısı Kırılımı",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "cost_item.label, MAX(cost_item.value) AS value",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT 'SGK İşveren' AS label, SUM(SSK_ISVEREN_HISSESI) AS value, 1 AS sort_order FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşçi', SUM(SSK_ISCI_HISSESI), 2 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Sağlık Sigortası', SUM(HEALTH_INSURANCE_PREMIUM_WORKER + HEALTH_INSURANCE_PREMIUM_EMPLOYER), 3 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'İşsizlik Sigortası', SUM(ISSIZLIK_ISVEREN_HISSESI + ISSIZLIK_ISCI_HISSESI), 4 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Fazla Mesai', SUM(EXT_SALARY), 5 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) cost_item",
+        "groupBy": "cost_item.label, cost_item.sort_order",
+        "orderBy": "cost_item.sort_order ASC"
+      },
+      "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "ssk-trend-12m",
+      "title": "SGK + İşsizlik Trendi (12 Ay)",
+      "chartType": "line",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2) AS label, SUM(SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) AS value",
+        "where": "(ep.SAL_YEAR = YEAR(GETDATE()) OR (ep.SAL_YEAR = YEAR(GETDATE())-1 AND ep.SAL_MON >= MONTH(GETDATE()))) AND ep.SAL_MON <= CASE WHEN ep.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": { "showValues": false, "showGrid": true }
+    },
+    {
+      "id": "overtime-by-dept",
+      "title": "Departman Bazlı Fazla Mesai",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, SUM(EXT_SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND EXT_SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(EXT_SALARY) DESC",
+        "limit": 10
+      },
+      "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "deduction-breakdown",
+      "title": "Kesinti Türleri Dağılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ded_item.label, MAX(ded_item.value) AS value",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT 'Gelir Vergisi' AS label, SUM(GELIR_VERGISI) AS value, 1 AS sort_order FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Damga Vergisi', SUM(DAMGA_VERGISI), 2 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşçi Payı', SUM(SSK_ISCI_HISSESI), 3 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'İşsizlik İşçi', SUM(ISSIZLIK_ISCI_HISSESI), 4 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) ded_item",
+        "groupBy": "ded_item.label, ded_item.sort_order",
+        "orderBy": "ded_item.sort_order ASC"
+      },
+      "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "collar-benefit",
+      "title": "Yaka Tipi — İşveren Maliyet Karşılaştırma",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END AS label, AVG(SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) AS value, COUNT(*) AS value2",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID AND epos.POSITION_STATUS = 1",
+        "groupBy": "epos.COLLAR_TYPE",
+        "orderBy": "AVG(SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) DESC"
+      },
+      "chartConfig": { "showValues": true }
+    }
+  ],
+  "filterColumns": {
+    "department": { "expression": "ROW_DEPARTMENT_HEAD", "paramType": "string" },
+    "company": { "expression": "ep.COMP_NICK_NAME", "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID", "paramType": "string" },
+    "collarType": { "expression": "epos.COLLAR_TYPE", "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID AND epos.POSITION_STATUS = 1", "paramType": "int" }
+  },
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["total-benefits-cost", "benefit-per-employee", "health-insurance-total", "ssk-employer-total", "bonus-count", "overtime-total"] },
+      { "type": "chart-row", "ids": ["benefit-type-breakdown", "cost-structure"] },
+      { "type": "chart-row", "ids": ["ssk-trend-12m"] },
+      { "type": "chart-row", "ids": ["overtime-by-dept"] },
+      { "type": "chart-row", "ids": ["deduction-breakdown", "collar-benefit"] }
+    ]
+  }
+}

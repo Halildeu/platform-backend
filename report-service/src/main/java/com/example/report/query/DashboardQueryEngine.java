@@ -98,6 +98,51 @@ public class DashboardQueryEngine {
                 .toList();
     }
 
+    public List<String> executeFilterOptions(DashboardDefinition dashboard,
+                                              AuthzMeResponse authz,
+                                              String filterKey) {
+        FilterColumnSpec spec = dashboard.filterColumns().get(filterKey);
+        if (spec == null || spec.expression() == null) {
+            return List.of();
+        }
+
+        // Use the first KPI's source table as the base table
+        String source = dashboard.kpis().isEmpty() ? "EMPLOYEES_PUANTAJ_ROWS" : dashboard.kpis().get(0).source();
+        String sourceSchema = dashboard.kpis().isEmpty() ? "workcube_mikrolink" : dashboard.kpis().get(0).sourceSchema();
+
+        StringBuilder sql = new StringBuilder();
+        MapSqlParameterSource params = new MapSqlParameterSource();
+
+        sql.append("SELECT DISTINCT ").append(spec.expression()).append(" AS opt_value");
+        sql.append(" FROM [").append(sourceSchema).append("].[").append(source).append("] WITH (NOLOCK)");
+
+        if (spec.join() != null && !spec.join().isBlank()) {
+            sql.append(" ").append(spec.join().trim());
+        }
+
+        RowFilterInjector.RlsResult rls = buildRls(source, dashboard.access(), authz);
+        sql.append(" WHERE ").append(spec.expression()).append(" IS NOT NULL");
+        sql.append(" AND RTRIM(CAST(").append(spec.expression()).append(" AS VARCHAR(500))) != ''");
+
+        if (rls.whereClause() != null && !rls.whereClause().isBlank()) {
+            sql.append(" AND ").append(rls.whereClause());
+            if (rls.params() != null) {
+                rls.params().getValues().forEach(params::addValue);
+            }
+        }
+
+        sql.append(" ORDER BY opt_value");
+
+        log.debug("Filter options query [{}]: {}", filterKey, sql);
+
+        try {
+            return jdbc.queryForList(sql.toString(), params, String.class);
+        } catch (Exception e) {
+            log.error("Failed to execute filter options for {}: {}", filterKey, e.getMessage());
+            return List.of();
+        }
+    }
+
     private KpiResultDto executeKpi(KpiDefinition kpi,
                                      AccessConfig access,
                                      AuthzMeResponse authz,

@@ -7,6 +7,8 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public class AggregateSqlBuilder {
@@ -44,8 +46,13 @@ public class AggregateSqlBuilder {
         sql.append("SELECT ").append(aggregate.select());
         sql.append(" FROM [").append(sourceSchema).append("].[").append(source).append("] WITH (NOLOCK)");
 
-        if (aggregate.join() != null && !aggregate.join().isBlank()) {
-            sql.append(" ").append(aggregate.join());
+        String resolvedJoin = aggregate.join();
+        if (resolvedJoin != null && !resolvedJoin.isBlank()
+                && filterColumns != null && filterValues != null && !filterValues.isEmpty()) {
+            resolvedJoin = injectFiltersIntoSubqueries(resolvedJoin, filterColumns, filterValues);
+        }
+        if (resolvedJoin != null && !resolvedJoin.isBlank()) {
+            sql.append(" ").append(resolvedJoin);
         }
 
         // Append filter JOINs (deduplicated against existing aggregate join)
@@ -116,6 +123,99 @@ public class AggregateSqlBuilder {
 
         return new BuiltQuery(sql.toString(), params);
     }
+
+    /**
+     * Injects filter conditions into subquery WHERE clauses within a JOIN string.
+     * Subqueries (CROSS JOIN, inline CTEs) have their own scope and don't see
+     * outer WHERE filters. This method finds each WHERE inside the join clause
+     * and prepends filter conditions + JOINs so subquery results respect filters.
+     */
+    String injectFiltersIntoSubqueries(String joinClause,
+                                       Map<String, FilterColumnSpec> filterColumns,
+                                       Map<String, String> filterValues) {
+        if (joinClause == null || filterValues == null || filterValues.isEmpty()) {
+            return joinClause;
+        }
+
+        String upper = joinClause.toUpperCase();
+        if (!upper.contains("(SELECT")) {
+            return joinClause;
+        }
+
+        // Build filter fragments from active filter values
+        StringBuilder filterWhere = new StringBuilder();
+        List<FilterJoinEntry> filterJoins = new ArrayList<>();
+
+        for (Map.Entry<String, String> entry : filterValues.entrySet()) {
+            FilterColumnSpec spec = filterColumns.get(entry.getKey());
+            if (spec == null || spec.expression() == null) continue;
+
+            String paramName = "_f_" + entry.getKey();
+            filterWhere.append(" AND ").append(spec.expression()).append(" = :").append(paramName);
+
+            if (spec.join() != null && !spec.join().isBlank()) {
+                String joinTable = extractJoinTable(spec.join().trim());
+                filterJoins.add(new FilterJoinEntry(spec.join().trim(), joinTable));
+            }
+        }
+
+        if (filterWhere.isEmpty()) {
+            return joinClause;
+        }
+
+        // Find all " WHERE " positions (case-insensitive) — these are subquery WHEREs
+        List<Integer> wherePositions = new ArrayList<>();
+        String lowerJoin = joinClause.toLowerCase();
+        int searchFrom = 0;
+        while (true) {
+            int pos = lowerJoin.indexOf(" where ", searchFrom);
+            if (pos == -1) break;
+            wherePositions.add(pos);
+            searchFrom = pos + 7;
+        }
+
+        if (wherePositions.isEmpty()) {
+            return joinClause;
+        }
+
+        // Process right-to-left to preserve indices
+        StringBuilder result = new StringBuilder(joinClause);
+        for (int i = wherePositions.size() - 1; i >= 0; i--) {
+            int wherePos = wherePositions.get(i);
+            int afterWhere = wherePos + 7; // position after " WHERE "
+
+            // Insert filter WHERE conditions after "WHERE "
+            String whereInject = "1=1" + filterWhere + " AND ";
+            result.insert(afterWhere, whereInject);
+
+            // Insert filter JOINs before " WHERE " (with dedup per subquery scope)
+            if (!filterJoins.isEmpty()) {
+                String textBeforeWhere = result.substring(0, wherePos).toUpperCase();
+                // Narrow to current subquery: find nearest "(SELECT" or "UNION ALL" boundary
+                int subqStart = Math.max(
+                        textBeforeWhere.lastIndexOf("(SELECT"),
+                        textBeforeWhere.lastIndexOf("UNION ALL"));
+                String subqueryScope = subqStart >= 0
+                        ? textBeforeWhere.substring(subqStart) : textBeforeWhere;
+
+                StringBuilder joinInject = new StringBuilder();
+                for (FilterJoinEntry fj : filterJoins) {
+                    if (fj.tableToken != null
+                            && subqueryScope.contains(fj.tableToken.toUpperCase())) {
+                        continue; // table already joined in this subquery
+                    }
+                    joinInject.append(" ").append(fj.joinClause);
+                }
+                if (!joinInject.isEmpty()) {
+                    result.insert(wherePos, joinInject);
+                }
+            }
+        }
+
+        return result.toString();
+    }
+
+    private record FilterJoinEntry(String joinClause, String tableToken) {}
 
     /**
      * Extracts the bracketed table reference from a JOIN clause for deduplication.

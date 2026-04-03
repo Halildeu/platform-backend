@@ -108,6 +108,22 @@ public class DashboardController {
         return ResponseEntity.ok(charts);
     }
 
+    @GetMapping("/{key}/filter-options/{filterKey}")
+    public ResponseEntity<List<String>> getFilterOptions(@PathVariable String key,
+                                                          @PathVariable String filterKey,
+                                                          @AuthenticationPrincipal Jwt jwt) {
+        DashboardDefinition def = findOrThrow(key);
+        AuthzMeResponse authz = checkAccess(def, jwt);
+
+        if (def.filterColumns() == null || !def.filterColumns().containsKey(filterKey)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Unknown filter key: " + filterKey + ". Available: " + (def.filterColumns() != null ? def.filterColumns().keySet() : "none"));
+        }
+
+        List<String> options = queryEngine.executeFilterOptions(def, authz, filterKey);
+        return ResponseEntity.ok(options);
+    }
+
     private Map<String, String> buildFilterValues(String department, String gender,
                                                     String collarType, String education) {
         Map<String, String> filterValues = new LinkedHashMap<>();

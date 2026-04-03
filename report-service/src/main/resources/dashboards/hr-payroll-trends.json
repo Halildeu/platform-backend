@@ -1,0 +1,263 @@
+{
+  "type": "dashboard",
+  "key": "hr-payroll-trends",
+  "version": "1.0",
+  "title": "Bordro Trendleri",
+  "description": "24 aylık bordro trendi, maliyet yapısı şelale, departman ve şirket bazlı maliyet izleme.",
+  "category": "İnsan Kaynakları",
+  "icon": "trending-up",
+  "access": {
+    "permission": "reports.hr-payroll-trends.view",
+    "rowFilter": {
+      "column": "OUR_COMPANY_ID",
+      "scopeType": "COMPANY",
+      "bypassPermission": "reports.hr.all-companies"
+    }
+  },
+  "timeRanges": ["90d", "1y", "ytd"],
+  "defaultTimeRange": "ytd",
+  "kpis": [
+    {
+      "id": "monthly-payroll",
+      "title": "Aylık Toplam Bordro",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(TOTAL_SALARY)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      },
+      "trend": {
+        "select": "SUM(TOTAL_SALARY)",
+        "where": "PUANTAJ_ID IN (SELECT PUANTAJ_ID FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ] WHERE SAL_YEAR = YEAR(GETDATE()) AND SAL_MON = MONTH(GETDATE()) - 2)",
+        "direction": "lower_is_better"
+      }
+    },
+    {
+      "id": "mom-change",
+      "title": "Aylık Değişim (MoM)",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.10", "tone": "danger" },
+        { "condition": "> 0.05", "tone": "warning" },
+        { "condition": "default", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "MAX(mom_sub.change_pct)",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT (cur_total - prev_total) / NULLIF(prev_total, 0) AS change_pct FROM (SELECT SUM(SALARY) AS cur_total FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) c CROSS JOIN (SELECT SUM(SALARY) AS prev_total FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 2) p) mom_sub"
+      }
+    },
+    {
+      "id": "yoy-payroll-change",
+      "title": "Yıllık Değişim (YoY)",
+      "format": "percent",
+      "toneRules": [
+        { "condition": "> 0.40", "tone": "danger" },
+        { "condition": "> 0.20", "tone": "warning" },
+        { "condition": "default", "tone": "info" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "MAX(yoy_sub.change_pct)",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT (cur_total - prev_total) / NULLIF(prev_total, 0) AS change_pct FROM (SELECT SUM(SALARY) AS cur_total FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) c CROSS JOIN (SELECT SUM(SALARY) AS prev_total FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) - 1 AND ep.SAL_MON = MONTH(GETDATE()) - 1) p) yoy_sub"
+      }
+    },
+    {
+      "id": "avg-cost-per-head",
+      "title": "Kişi Başı Ort. Maliyet",
+      "format": "currency",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    },
+    {
+      "id": "overtime-total",
+      "title": "Fazla Mesai Toplam",
+      "format": "currency",
+      "toneRules": [
+        { "condition": "> 5000000", "tone": "danger" },
+        { "condition": "> 2000000", "tone": "warning" },
+        { "condition": "default", "tone": "success" }
+      ],
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "SUM(EXT_SALARY)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    },
+    {
+      "id": "net-gross-ratio",
+      "title": "Net/Brüt Oranı",
+      "format": "percent",
+      "tone": "info",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "AVG(CASE WHEN SALARY > 0 THEN NET_UCRET / SALARY ELSE NULL END)",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID"
+      }
+    }
+  ],
+  "charts": [
+    {
+      "id": "payroll-trend-24m",
+      "title": "24 Aylık Bordro Trendi",
+      "chartType": "line",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2) AS label, SUM(TOTAL_SALARY) AS value, COUNT(DISTINCT EMPLOYEE_ID) AS value2",
+        "where": "(ep.SAL_YEAR >= YEAR(GETDATE()) - 2) AND NOT (ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON >= MONTH(GETDATE()))",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": { "showValues": false, "showGrid": true }
+    },
+    {
+      "id": "cost-structure-waterfall",
+      "title": "Maliyet Yapısı Şelale",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "cost_item.label, MAX(cost_item.value) AS value",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT 'Brüt Maaş' AS label, SUM(SALARY) AS value, 1 AS sort_order FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşveren', SUM(SSK_ISVEREN_HISSESI), 2 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşçi', SUM(SSK_ISCI_HISSESI), 3 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'İşsizlik', SUM(ISSIZLIK_ISVEREN_HISSESI + ISSIZLIK_ISCI_HISSESI), 4 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Gelir Vergisi', SUM(GELIR_VERGISI), 5 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Damga Vergisi', SUM(DAMGA_VERGISI), 6 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Fazla Mesai', SUM(EXT_SALARY), 7 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Net Ücret', SUM(NET_UCRET), 8 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) cost_item",
+        "groupBy": "cost_item.label, cost_item.sort_order",
+        "orderBy": "cost_item.sort_order ASC"
+      },
+      "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "dept-cost-top5",
+      "title": "Departman Maliyet (Top 5)",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş') AS label, SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ROW_DEPARTMENT_HEAD),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) DESC",
+        "limit": 5
+      },
+      "chartConfig": { "orientation": "horizontal", "showValues": true }
+    },
+    {
+      "id": "company-payroll",
+      "title": "Şirket Bazlı Bordro",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "ISNULL(NULLIF(RTRIM(ep.COMP_NICK_NAME),''), 'Belirtilmemiş') AS label, SUM(TOTAL_SALARY) AS value",
+        "where": "ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "ISNULL(NULLIF(RTRIM(ep.COMP_NICK_NAME),''), 'Belirtilmemiş')",
+        "orderBy": "SUM(TOTAL_SALARY) DESC"
+      },
+      "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "overtime-trend",
+      "title": "Fazla Mesai Trendi (12 Ay)",
+      "chartType": "bar",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2) AS label, SUM(EXT_SALARY) AS value",
+        "where": "(ep.SAL_YEAR = YEAR(GETDATE()) OR (ep.SAL_YEAR = YEAR(GETDATE())-1 AND ep.SAL_MON >= MONTH(GETDATE()))) AND ep.SAL_MON <= CASE WHEN ep.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": { "showValues": true }
+    },
+    {
+      "id": "cost-per-head-trend",
+      "title": "Kişi Başı Maliyet Trendi (12 Ay)",
+      "chartType": "line",
+      "size": "lg",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2) AS label, SUM(SALARY + SSK_ISVEREN_HISSESI + ISSIZLIK_ISVEREN_HISSESI) / NULLIF(COUNT(DISTINCT EMPLOYEE_ID), 0) AS value",
+        "where": "(ep.SAL_YEAR = YEAR(GETDATE()) OR (ep.SAL_YEAR = YEAR(GETDATE())-1 AND ep.SAL_MON >= MONTH(GETDATE()))) AND ep.SAL_MON <= CASE WHEN ep.SAL_YEAR = YEAR(GETDATE()) THEN MONTH(GETDATE())-1 ELSE 12 END AND SALARY > 0",
+        "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID",
+        "groupBy": "CAST(ep.SAL_YEAR AS VARCHAR) + '-' + RIGHT('0' + CAST(ep.SAL_MON AS VARCHAR), 2)",
+        "orderBy": "label ASC"
+      },
+      "chartConfig": { "showValues": false, "showGrid": true }
+    },
+    {
+      "id": "tax-breakdown",
+      "title": "Vergi / SGK Kırılımı",
+      "chartType": "pie",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "tax_item.label, MAX(tax_item.value) AS value",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT 'SGK İşveren' AS label, SUM(SSK_ISVEREN_HISSESI) AS value, 1 AS sort_order FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'SGK İşçi', SUM(SSK_ISCI_HISSESI), 2 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Gelir Vergisi', SUM(GELIR_VERGISI), 3 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'Damga Vergisi', SUM(DAMGA_VERGISI), 4 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 UNION ALL SELECT 'İşsizlik Sigortası', SUM(ISSIZLIK_ISVEREN_HISSESI + ISSIZLIK_ISCI_HISSESI), 5 FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1) tax_item",
+        "groupBy": "tax_item.label, tax_item.sort_order",
+        "orderBy": "tax_item.sort_order ASC"
+      },
+      "chartConfig": { "showLegend": true }
+    },
+    {
+      "id": "collar-cost",
+      "title": "Yaka Tipi Maliyet Karşılaştırma",
+      "chartType": "bar",
+      "size": "md",
+      "source": "EMPLOYEES_PUANTAJ_ROWS",
+      "sourceSchema": "workcube_mikrolink",
+      "aggregate": {
+        "select": "collar_sub.label, MAX(collar_sub.value) AS value, MAX(collar_sub.cnt) AS value2",
+        "where": "1=1",
+        "join": "CROSS JOIN (SELECT CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END AS label, SUM(epr.SALARY + epr.SSK_ISVEREN_HISSESI + epr.ISSIZLIK_ISVEREN_HISSESI) AS value, COUNT(DISTINCT epr.EMPLOYEE_ID) AS cnt FROM [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS] epr INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = epr.PUANTAJ_ID LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = epr.EMPLOYEE_ID AND epos.POSITION_STATUS = 1 WHERE ep.SAL_YEAR = YEAR(GETDATE()) AND ep.SAL_MON = MONTH(GETDATE()) - 1 GROUP BY CASE epos.COLLAR_TYPE WHEN 1 THEN 'Beyaz Yaka' WHEN 2 THEN 'Mavi Yaka' ELSE 'Belirtilmemiş' END) collar_sub",
+        "groupBy": "collar_sub.label",
+        "orderBy": "MAX(collar_sub.value) DESC"
+      },
+      "chartConfig": { "showValues": true }
+    }
+  ],
+  "filterColumns": {
+    "department": { "expression": "ROW_DEPARTMENT_HEAD", "paramType": "string" },
+    "company": { "expression": "ep.COMP_NICK_NAME", "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_PUANTAJ] ep ON ep.PUANTAJ_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].PUANTAJ_ID", "paramType": "string" },
+    "collarType": { "expression": "epos.COLLAR_TYPE", "join": "LEFT JOIN [workcube_mikrolink].[EMPLOYEE_POSITIONS] epos ON epos.EMPLOYEE_ID = [workcube_mikrolink].[EMPLOYEES_PUANTAJ_ROWS].EMPLOYEE_ID AND epos.POSITION_STATUS = 1", "paramType": "int" }
+  },
+  "layout": {
+    "sections": [
+      { "type": "kpi-strip", "ids": ["monthly-payroll", "mom-change", "yoy-payroll-change", "avg-cost-per-head", "overtime-total", "net-gross-ratio"] },
+      { "type": "chart-row", "ids": ["payroll-trend-24m"] },
+      { "type": "chart-row", "ids": ["cost-structure-waterfall"] },
+      { "type": "chart-row", "ids": ["dept-cost-top5", "company-payroll"] },
+      { "type": "chart-row", "ids": ["overtime-trend"] },
+      { "type": "chart-row", "ids": ["cost-per-head-trend"] },
+      { "type": "chart-row", "ids": ["tax-breakdown", "collar-cost"] }
+    ]
+  }
+}

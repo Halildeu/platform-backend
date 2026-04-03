@@ -331,8 +331,7 @@
   ],
   "filterColumns": {
     "department": {
-      "expression": "[workcube_mikrolink].[EMPLOYEES_DEPARTMENT].DEPARTMENT_NAME",
-      "join": "INNER JOIN [workcube_mikrolink].[EMPLOYEES_DEPARTMENT] ed ON ed.DEPARTMENT_ID = ROW_DEPARTMENT_HEAD",
+      "expression": "ROW_DEPARTMENT_HEAD",
       "paramType": "string"
     },
     "gender": {
