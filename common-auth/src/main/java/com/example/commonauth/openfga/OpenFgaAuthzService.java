@@ -2,6 +2,7 @@ package com.example.commonauth.openfga;
 
 import dev.openfga.sdk.api.client.OpenFgaClient;
 import dev.openfga.sdk.api.client.model.ClientCheckRequest;
+import dev.openfga.sdk.api.client.model.ClientExpandRequest;
 import dev.openfga.sdk.api.client.model.ClientListObjectsRequest;
 import dev.openfga.sdk.api.client.model.ClientWriteRequest;
 import dev.openfga.sdk.api.client.model.ClientTupleKey;
@@ -10,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -167,6 +169,46 @@ public class OpenFgaAuthzService {
                     userId, relation, objectType, objectId, e);
             throw new RuntimeException("Failed to delete authorization tuple", e);
         }
+    }
+
+    /**
+     * Expand the relationship tree for an object and relation.
+     * Returns the raw tree structure showing how access is derived.
+     * Used for "explain why" features.
+     */
+    public Object expand(String objectType, String objectId, String relation) {
+        if (!enabled) {
+            return Map.of("allowed", true, "source", "dev-mode-bypass");
+        }
+        try {
+            var request = new ClientExpandRequest()
+                    .relation(relation)
+                    ._object(objectType + ":" + objectId);
+
+            var response = client.expand(request).get();
+            log.debug("OpenFGA expand: {} {}:{} → tree returned", relation, objectType, objectId);
+            return response.getTree();
+        } catch (Exception e) {
+            log.error("OpenFGA expand failed: {} {}:{}", relation, objectType, objectId, e);
+            return Map.of("error", e.getMessage());
+        }
+    }
+
+    /**
+     * Explain access: check + expand combined for a user.
+     * Returns allowed flag + relationship chain.
+     */
+    public Map<String, Object> explainAccess(String userId, String relation, String objectType, String objectId) {
+        boolean allowed = check(userId, relation, objectType, objectId);
+        Object tree = expand(objectType, objectId, relation);
+        return Map.of(
+                "allowed", allowed,
+                "userId", userId,
+                "relation", relation,
+                "objectType", objectType,
+                "objectId", objectId,
+                "tree", tree
+        );
     }
 
     public boolean isEnabled() {

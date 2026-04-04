@@ -60,4 +60,6 @@ public interface UserRoleAssignmentRepository extends JpaRepository<UserRoleAssi
     List<UserRoleAssignment> findByUserIdAndCompanyIdAndActiveTrue(Long userId, Long companyId);
 
     long countByRoleAndActiveTrue(com.example.permission.model.Role role);
+
+    List<UserRoleAssignment> findByRoleAndActiveTrue(com.example.permission.model.Role role);
 }
