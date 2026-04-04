@@ -4,6 +4,21 @@
       {
         "user": "user:1",
         "relation": "admin",
+        "object": "organization:default"
+      },
+      {
+        "user": "company:1",
+        "relation": "org",
+        "object": "organization:default"
+      },
+      {
+        "user": "company:2",
+        "relation": "org",
+        "object": "organization:default"
+      },
+      {
+        "user": "user:1",
+        "relation": "admin",
         "object": "company:1"
       },
       {

@@ -6,6 +6,9 @@ import com.example.coredata.dto.CompanySearchRequest;
 import com.example.coredata.dto.CompanyUpdateRequest;
 import com.example.coredata.model.Company;
 import com.example.coredata.repository.CompanyRepository;
+import com.example.commonauth.openfga.OpenFgaAuthzService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -19,10 +22,14 @@ import java.util.Optional;
 @Service
 public class CompanyService {
 
-    private final CompanyRepository companyRepository;
+    private static final Logger log = LoggerFactory.getLogger(CompanyService.class);
 
-    public CompanyService(CompanyRepository companyRepository) {
+    private final CompanyRepository companyRepository;
+    private final OpenFgaAuthzService authzService;
+
+    public CompanyService(CompanyRepository companyRepository, OpenFgaAuthzService authzService) {
         this.companyRepository = companyRepository;
+        this.authzService = authzService;
     }
 
     @Transactional(readOnly = true)
@@ -55,7 +62,20 @@ public class CompanyService {
         c.setStatus(Optional.ofNullable(req.status()).orElse("ACTIVE"));
         c.setCreatedBy(actor);
         Company saved = companyRepository.save(c);
+
+        writeCompanyTuples(saved.getId(), actor);
+
         return toDto(saved);
+    }
+
+    private void writeCompanyTuples(Long companyId, String actorUserId) {
+        String companyObj = String.valueOf(companyId);
+        try {
+            authzService.writeTuple(actorUserId, "admin", "company", companyObj);
+            log.info("OpenFGA: granted admin on company:{} to user:{}", companyId, actorUserId);
+        } catch (Exception e) {
+            log.error("OpenFGA: failed to grant admin on company:{} to user:{}", companyId, actorUserId, e);
+        }
     }
 
     @Transactional

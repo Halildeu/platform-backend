@@ -171,10 +171,16 @@ services:
       - SECURITY_JWT_JWK_SET_URI=${SECURITY_JWT_JWK_SET_URI:-http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
       - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       - SECURITY_JWT_AUDIENCE=${CORE_DATA_SECURITY_JWT_AUDIENCE:-frontend,user-service,core-data-service}
+      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-false}
+      - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:4000}
+      - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
+      - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
     depends_on:
       discovery-server:
         condition: service_healthy
       postgres-db:
+        condition: service_healthy
+      openfga:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8092/actuator/health"]
