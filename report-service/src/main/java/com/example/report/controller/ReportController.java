@@ -13,8 +13,10 @@ import com.example.report.query.QueryEngine;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
 import com.example.report.registry.ReportRegistry;
+import com.example.report.repository.CustomReportRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -23,11 +25,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestController
@@ -37,6 +35,7 @@ public class ReportController {
     private static final Logger log = LoggerFactory.getLogger(ReportController.class);
 
     private final ReportRegistry registry;
+    private final CustomReportRepository customReportRepository;
     private final PermissionResolver permissionClient;
     private final ReportAccessEvaluator accessEvaluator;
     private final ColumnFilter columnFilter;
@@ -45,6 +44,7 @@ public class ReportController {
     private final ObjectMapper objectMapper;
 
     public ReportController(ReportRegistry registry,
+                            CustomReportRepository customReportRepository,
                             PermissionResolver permissionClient,
                             ReportAccessEvaluator accessEvaluator,
                             ColumnFilter columnFilter,
@@ -52,6 +52,7 @@ public class ReportController {
                             ReportAuditClient auditClient,
                             ObjectMapper objectMapper) {
         this.registry = registry;
+        this.customReportRepository = customReportRepository;
         this.permissionClient = permissionClient;
         this.accessEvaluator = accessEvaluator;
         this.columnFilter = columnFilter;
@@ -64,12 +65,68 @@ public class ReportController {
     public ResponseEntity<List<ReportListItemDto>> listReports(@AuthenticationPrincipal Jwt jwt) {
         AuthzMeResponse authz = permissionClient.getAuthzMe(jwt);
 
-        List<ReportListItemDto> reports = registry.getAll().stream()
+        // Static reports from JSON registry
+        List<ReportListItemDto> staticReports = registry.getAll().stream()
                 .filter(def -> accessEvaluator.evaluate(def, authz) == ReportAccessEvaluator.AccessResult.ALLOWED)
                 .map(def -> new ReportListItemDto(def.key(), def.title(), def.description(), def.category()))
                 .toList();
 
-        return ResponseEntity.ok(reports);
+        // Custom reports from PostgreSQL
+        List<ReportListItemDto> customReports = List.of();
+        try {
+            customReports = customReportRepository.findAll().stream()
+                    .map(row -> new ReportListItemDto(
+                            (String) row.get("key"),
+                            (String) row.get("title"),
+                            (String) row.get("description"),
+                            (String) row.get("category")
+                    ))
+                    .toList();
+        } catch (Exception e) {
+            log.warn("Failed to load custom reports from PostgreSQL: {}", e.getMessage());
+        }
+
+        // Merge: static + custom (static wins on key conflict)
+        var staticKeys = staticReports.stream().map(ReportListItemDto::key).collect(java.util.stream.Collectors.toSet());
+        List<ReportListItemDto> merged = new ArrayList<>(staticReports);
+        customReports.stream()
+                .filter(r -> !staticKeys.contains(r.key()))
+                .forEach(merged::add);
+
+        return ResponseEntity.ok(merged);
+    }
+
+    /* ---- Custom Report CRUD ---- */
+
+    @PostMapping
+    public ResponseEntity<Map<String, Object>> createCustomReport(
+            @RequestBody Map<String, Object> body,
+            @AuthenticationPrincipal Jwt jwt) {
+        body.put("createdBy", jwt != null ? jwt.getClaimAsString("preferred_username") : "system");
+        Map<String, Object> saved = customReportRepository.save(body);
+        return ResponseEntity.status(201).body(saved);
+    }
+
+    @PutMapping("/{key}")
+    public ResponseEntity<Map<String, Object>> updateCustomReport(
+            @PathVariable String key,
+            @RequestBody Map<String, Object> body,
+            @AuthenticationPrincipal Jwt jwt) {
+        body.put("createdBy", jwt != null ? jwt.getClaimAsString("preferred_username") : "system");
+        Map<String, Object> updated = customReportRepository.update(key, body);
+        return ResponseEntity.ok(updated);
+    }
+
+    @DeleteMapping("/{key}")
+    public ResponseEntity<Void> deleteCustomReport(@PathVariable String key) {
+        boolean deleted = customReportRepository.softDelete(key);
+        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+    }
+
+    @GetMapping("/{key}/history")
+    public ResponseEntity<List<Map<String, Object>>> getReportHistory(@PathVariable String key) {
+        List<Map<String, Object>> history = customReportRepository.getVersionHistory(key);
+        return ResponseEntity.ok(history);
     }
 
     @GetMapping("/categories")
