@@ -10,6 +10,7 @@ import com.example.permission.repository.RoleRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.commonauth.openfga.OpenFgaAuthzService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -36,15 +37,68 @@ public class PermissionService {
     private final RoleRepository roleRepository;
     private final AuditEventService auditEventService;
     private final ObjectMapper objectMapper;
+    private final OpenFgaAuthzService authzService;
+
+    /** Permission code → OpenFGA module key mapping */
+    private static final Map<String, String> PERM_TO_MODULE = Map.ofEntries(
+            Map.entry("VIEW_USERS", "USER_MANAGEMENT"),
+            Map.entry("MANAGE_USERS", "USER_MANAGEMENT"),
+            Map.entry("VIEW_ACCESS", "ACCESS"),
+            Map.entry("MANAGE_ACCESS", "ACCESS"),
+            Map.entry("VIEW_AUDIT", "AUDIT"),
+            Map.entry("VIEW_PURCHASE", "PURCHASE"),
+            Map.entry("APPROVE_PURCHASE", "PURCHASE"),
+            Map.entry("VIEW_WAREHOUSE", "WAREHOUSE"),
+            Map.entry("MANAGE_WAREHOUSE", "WAREHOUSE"),
+            Map.entry("VIEW_REPORT", "REPORT"),
+            Map.entry("MANAGE_REPORT", "REPORT")
+    );
+
+    /** Permission code → OpenFGA relation mapping */
+    private static final Map<String, String> PERM_TO_RELATION = Map.ofEntries(
+            Map.entry("VIEW_USERS", "can_view"),
+            Map.entry("MANAGE_USERS", "can_manage"),
+            Map.entry("VIEW_ACCESS", "can_view"),
+            Map.entry("MANAGE_ACCESS", "can_manage"),
+            Map.entry("VIEW_AUDIT", "can_view"),
+            Map.entry("VIEW_PURCHASE", "can_view"),
+            Map.entry("APPROVE_PURCHASE", "can_manage"),
+            Map.entry("VIEW_WAREHOUSE", "can_view"),
+            Map.entry("MANAGE_WAREHOUSE", "can_manage"),
+            Map.entry("VIEW_REPORT", "can_view"),
+            Map.entry("MANAGE_REPORT", "can_manage")
+    );
 
     public PermissionService(UserRoleAssignmentRepository assignmentRepository,
                              RoleRepository roleRepository,
                              AuditEventService auditEventService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             OpenFgaAuthzService authzService) {
         this.assignmentRepository = assignmentRepository;
         this.roleRepository = roleRepository;
         this.auditEventService = auditEventService;
         this.objectMapper = objectMapper;
+        this.authzService = authzService;
+    }
+
+    /** Sync role permissions to OpenFGA tuples for a user */
+    private void syncTuplesToOpenFga(Long userId, Role role, boolean write) {
+        if (role.getRolePermissions() == null) return;
+        for (var rp : role.getRolePermissions()) {
+            String code = rp.getPermission().getCode().toUpperCase(Locale.ROOT);
+            String module = PERM_TO_MODULE.get(code);
+            String relation = PERM_TO_RELATION.get(code);
+            if (module == null || relation == null) continue;
+            try {
+                if (write) {
+                    authzService.writeTuple(String.valueOf(userId), relation, "module", module);
+                } else {
+                    authzService.deleteTuple(String.valueOf(userId), relation, "module", module);
+                }
+            } catch (Exception e) {
+                log.warn("OpenFGA tuple sync failed for user:{} {}:{} — {}", userId, relation, module, e.getMessage());
+            }
+        }
     }
 
     @Transactional(readOnly = true)
@@ -117,6 +171,9 @@ public class PermissionService {
                 snapshotAssignment(savedAssignment)
         );
         PermissionAuditEvent savedEvent = auditEventService.recordEvent(auditEvent);
+
+        // Sync to OpenFGA — write module tuples for user
+        syncTuplesToOpenFga(request.getUserId(), role, true);
 
         PermissionResponse response = toResponse(savedAssignment);
         if (savedEvent != null && savedEvent.getId() != null) {
@@ -245,6 +302,9 @@ public class PermissionService {
                 beforeSnapshot,
                 snapshotAssignment(revokedAssignment)
         );
+        // Sync to OpenFGA — delete module tuples for user
+        syncTuplesToOpenFga(assignment.getUserId(), assignment.getRole(), false);
+
         PermissionAuditEvent saved = auditEventService.recordEvent(auditEvent);
         return saved != null && saved.getId() != null ? saved.getId().toString() : null;
     }

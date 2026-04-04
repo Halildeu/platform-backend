@@ -4,6 +4,7 @@ import com.example.permission.dto.v1.AuthzUserScopesResponseDto;
 import com.example.permission.dto.v1.AuthzMeResponseDto;
 import com.example.permission.dto.v1.AuthzScopeSummaryDto;
 import com.example.permission.dto.v1.ScopeSummaryDto;
+import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.permission.service.AuthenticatedUserLookupService;
 import com.example.permission.service.AuthorizationQueryService;
 import com.example.permission.service.PermissionService;
@@ -31,18 +32,25 @@ public class AuthorizationControllerV1 {
 
     private static final CacheControl SCOPES_CACHE_CONTROL = CacheControl.maxAge(Duration.ofMinutes(5)).cachePublic();
 
+    private static final String[] MODULE_KEYS = {
+            "USER_MANAGEMENT", "ACCESS", "AUDIT", "REPORT", "WAREHOUSE", "PURCHASE", "THEME"
+    };
+
     private final AuthorizationQueryService authorizationQueryService;
     private final AuthenticatedUserLookupService authenticatedUserLookupService;
     private final PermissionService permissionService;
+    private final OpenFgaAuthzService authzService;
 
     public AuthorizationControllerV1(
             AuthorizationQueryService authorizationQueryService,
             AuthenticatedUserLookupService authenticatedUserLookupService,
-            PermissionService permissionService
+            PermissionService permissionService,
+            OpenFgaAuthzService authzService
     ) {
         this.authorizationQueryService = authorizationQueryService;
         this.authenticatedUserLookupService = authenticatedUserLookupService;
         this.permissionService = permissionService;
+        this.authzService = authzService;
     }
 
     @GetMapping("/user/{userId}/scopes")
@@ -85,18 +93,37 @@ public class AuthorizationControllerV1 {
     }
 
     private Set<String> resolvePermissions(Jwt jwt, Long numericUserId) {
-        Set<String> jwtPermissions = jwt.getClaimAsStringList("permissions") == null
-                ? Set.of()
-                : Set.copyOf(jwt.getClaimAsStringList("permissions"));
         if (numericUserId == null) {
+            Set<String> jwtPermissions = jwt.getClaimAsStringList("permissions") == null
+                    ? Set.of()
+                    : Set.copyOf(jwt.getClaimAsStringList("permissions"));
             return jwtPermissions;
         }
-        Set<String> resolvedPermissions = permissionService.getAssignments(numericUserId, null, null, null).stream()
+
+        // OpenFGA-first: check each module for can_view and can_manage
+        String userId = String.valueOf(numericUserId);
+        Set<String> resolved = new java.util.LinkedHashSet<>();
+
+        for (String module : MODULE_KEYS) {
+            if (authzService.check(userId, "can_manage", "module", module)) {
+                resolved.add(module);
+            } else if (authzService.check(userId, "can_view", "module", module)) {
+                resolved.add(module);
+            }
+        }
+
+        // If OpenFGA returned results, use them. Otherwise fallback to DB.
+        if (!resolved.isEmpty()) {
+            return resolved;
+        }
+
+        // Fallback: DB-based resolution (legacy, will be removed)
+        Set<String> dbPermissions = permissionService.getAssignments(numericUserId, null, null, null).stream()
                 .flatMap(assignment -> assignment.getPermissions() == null
                         ? java.util.stream.Stream.empty()
                         : assignment.getPermissions().stream())
                 .filter(permission -> permission != null && !permission.isBlank())
                 .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
-        return resolvedPermissions.isEmpty() ? jwtPermissions : resolvedPermissions;
+        return dbPermissions;
     }
 }
