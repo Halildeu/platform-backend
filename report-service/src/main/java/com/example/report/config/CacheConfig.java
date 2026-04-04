@@ -25,7 +25,11 @@ public class CacheConfig {
                 buildCache("authzMe", Duration.ofMinutes(5), 500),
                 buildCache("dashboardKpis", Duration.ofMinutes(5), 200),
                 buildCache("dashboardCharts", Duration.ofMinutes(5), 500),
-                buildCache("yearlySchemas", Duration.ofMinutes(30), 10)
+                buildCache("yearlySchemas", Duration.ofMinutes(30), 10),
+                buildCache("contextHealthFiles", Duration.ofSeconds(30), 20),
+                buildCache("contextHealthKpis", Duration.ofSeconds(30), 1),
+                buildCache("contextHealthCharts", Duration.ofSeconds(30), 1),
+                buildCache("contextHealthGrids", Duration.ofSeconds(30), 10)
         ));
         return manager;
     }

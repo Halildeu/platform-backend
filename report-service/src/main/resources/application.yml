@@ -60,6 +60,12 @@ report:
   audit:
     internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:}
 
+context-health:
+  data-dir: ${CONTEXT_HEALTH_DATA_DIR:}
+  index-dir: ${CONTEXT_HEALTH_INDEX_DIR:}
+  cache-ttl-seconds: ${CONTEXT_HEALTH_CACHE_TTL:30}
+  enabled: ${CONTEXT_HEALTH_ENABLED:false}
+
 logging:
   level:
     org.springframework.security: INFO
