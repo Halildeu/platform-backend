@@ -52,6 +52,8 @@ public class PermissionControllerV1 {
         return ResponseEntity.ok(PermissionDtoMapper.wrap(items, items.size()));
     }
 
+    /** @deprecated Use OpenFGA check() directly instead. This endpoint will be removed. */
+    @Deprecated
     @PostMapping("/check")
     public ResponseEntity<PermissionCheckResultDto> checkPermission(@Valid @RequestBody PermissionCheckRequestDto request) {
         boolean allowed = permissionService.hasPermission(

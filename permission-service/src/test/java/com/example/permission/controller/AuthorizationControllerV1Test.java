@@ -34,6 +34,9 @@ class AuthorizationControllerV1Test {
     @Mock
     private PermissionService permissionService;
 
+    @Mock
+    private com.example.commonauth.openfga.OpenFgaAuthzService authzService;
+
     @InjectMocks
     private AuthorizationControllerV1 controller;
 

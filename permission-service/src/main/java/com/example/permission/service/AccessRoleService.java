@@ -14,6 +14,9 @@ import com.example.permission.repository.PermissionRepository;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.RoleRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
+import com.example.commonauth.openfga.OpenFgaAuthzService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,22 +28,27 @@ import java.util.stream.Collectors;
 @Service
 public class AccessRoleService {
 
+    private static final Logger log = LoggerFactory.getLogger(AccessRoleService.class);
+
     private final RoleRepository roleRepository;
     private final RolePermissionRepository rolePermissionRepository;
     private final PermissionRepository permissionRepository;
     private final UserRoleAssignmentRepository assignmentRepository;
     private final AuditEventService auditEventService;
+    private final OpenFgaAuthzService authzService;
 
     public AccessRoleService(RoleRepository roleRepository,
                              RolePermissionRepository rolePermissionRepository,
                              PermissionRepository permissionRepository,
                              UserRoleAssignmentRepository assignmentRepository,
-                             AuditEventService auditEventService) {
+                             AuditEventService auditEventService,
+                             OpenFgaAuthzService authzService) {
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;
         this.assignmentRepository = assignmentRepository;
         this.auditEventService = auditEventService;
+        this.authzService = authzService;
     }
 
     @Transactional(readOnly = true)
