@@ -5,6 +5,7 @@ import com.example.schema.model.SchemaSnapshot;
 import com.example.schema.model.TableInfo;
 import com.example.schema.service.SchemaExtractService;
 import com.example.schema.service.SchemaSnapshotService;
+import com.example.schema.service.SchemaLookupService;
 import com.example.schema.service.PathFinderService;
 import com.example.schema.service.SchemaHealthService;
 import com.example.schema.service.SchemaDriftService;
@@ -24,6 +25,7 @@ public class SchemaController {
 
     private final SchemaExtractService extractService;
     private final SchemaSnapshotService snapshotService;
+    private final SchemaLookupService lookupService;
     private final PathFinderService pathFinderService;
     private final SchemaHealthService healthService;
     private final SchemaDriftService driftService;
@@ -37,12 +39,14 @@ public class SchemaController {
 
     public SchemaController(SchemaExtractService extractService,
                             SchemaSnapshotService snapshotService,
+                            SchemaLookupService lookupService,
                             PathFinderService pathFinderService,
                             SchemaHealthService healthService,
                             SchemaDriftService driftService,
                             QuerySuggestionService querySuggestionService) {
         this.extractService = extractService;
         this.snapshotService = snapshotService;
+        this.lookupService = lookupService;
         this.pathFinderService = pathFinderService;
         this.healthService = healthService;
         this.driftService = driftService;
@@ -301,6 +305,29 @@ public class SchemaController {
             return ResponseEntity.notFound().build();
         }
         return ResponseEntity.ok(querySuggestionService.suggest(tableName, snapshot));
+    }
+
+    /**
+     * FK Lookup — resolve foreign key IDs to display values.
+     *
+     * Example: /api/v1/schema/lookup?table=EMPLOYEES&ids=1,2,3&displayCol=NAME&schema=dbo
+     * Returns: { table, pkColumn, displayColumn, values: { "1": "Ahmet", "2": "Mehmet" } }
+     */
+    @GetMapping("/lookup")
+    public ResponseEntity<Map<String, Object>> lookupValues(
+            @RequestParam String table,
+            @RequestParam List<String> ids,
+            @RequestParam(required = false) String displayCol,
+            @RequestParam(required = false) String schema) {
+        if (ids == null || ids.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "ids parameter is required"));
+        }
+        try {
+            Map<String, Object> result = lookupService.lookupValues(table, ids, displayCol, schema);
+            return ResponseEntity.ok(result);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     /**
