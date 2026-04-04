@@ -334,7 +334,7 @@ services:
       start_period: 5s
 
   permission-service:
-    profiles: ["legacy"]  # Only starts with: docker compose --profile legacy up
+    # profiles: ["legacy"]  # Re-enabled: roles CRUD still lives here, synced with OpenFGA
     build: ./permission-service
     ports:
       - "8090:8084"
