@@ -41,6 +41,9 @@ class PermissionServiceTest {
     @Mock
     private AuditEventService auditEventService;
 
+    @Mock
+    private com.example.commonauth.openfga.OpenFgaAuthzService authzService;
+
     private ObjectMapper objectMapper;
 
     private PermissionService permissionService;
@@ -48,7 +51,7 @@ class PermissionServiceTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        permissionService = new PermissionService(assignmentRepository, roleRepository, auditEventService, objectMapper);
+        permissionService = new PermissionService(assignmentRepository, roleRepository, auditEventService, objectMapper, authzService);
     }
 
     @Test
