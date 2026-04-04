@@ -59,6 +59,28 @@ public class AccessControllerV1 {
         return ResponseEntity.ok(PermissionDtoMapper.toRoleDto(role));
     }
 
+    @PostMapping
+    @PreAuthorize("hasAuthority('role-manage')")
+    public ResponseEntity<RoleDto> createRole(@RequestBody CloneRoleRequestDto request) {
+        if (request.getName() == null || request.getName().trim().length() < 3) {
+            return ResponseEntity.badRequest().build();
+        }
+        RoleDto created = accessRoleService.createRole(
+                request.getName().trim(),
+                request.getDescription(),
+                request.getPerformedBy()
+        );
+        return ResponseEntity.status(201).body(created);
+    }
+
+    @DeleteMapping("/{roleId}")
+    @PreAuthorize("hasAuthority('role-manage')")
+    public ResponseEntity<Void> deleteRole(@PathVariable Long roleId,
+                                           @RequestParam(value = "performedBy", required = false) Long performedBy) {
+        accessRoleService.deleteRole(roleId, performedBy);
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/{roleId}/clone")
     @PreAuthorize("hasAuthority('role-manage')")
     public ResponseEntity<RoleCloneResponseDto> cloneRole(@PathVariable Long roleId,

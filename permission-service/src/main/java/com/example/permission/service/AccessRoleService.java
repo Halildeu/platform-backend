@@ -57,6 +57,72 @@ public class AccessRoleService {
     }
 
     @Transactional
+    public RoleDto createRole(String name, String description, Long performedBy) {
+        if (roleRepository.findByNameIgnoreCase(name).isPresent()) {
+            throw new IllegalArgumentException("Role name already exists: " + name);
+        }
+        Role role = new Role();
+        role.setName(name);
+        role.setDescription(description);
+        role.setCreatedAt(Instant.now());
+        role.setUpdatedAt(Instant.now());
+        Role saved = roleRepository.save(role);
+
+        auditEventService.recordEvent(
+                auditEventService.buildEvent(
+                        "CREATE_ROLE",
+                        performedBy,
+                        "Role created: %s".formatted(saved.getName()),
+                        null,
+                        "INFO",
+                        "ROLE_CREATED",
+                        Map.of("roleId", saved.getId(), "roleName", saved.getName()),
+                        null,
+                        Map.of("role", saved.getName())
+                )
+        );
+
+        return PermissionDtoMapper.toRoleDto(toDto(saved));
+    }
+
+    @Transactional
+    public void deleteRole(Long roleId, Long performedBy) {
+        Role role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new IllegalArgumentException("Role not found: " + roleId));
+
+        // Capture before state for audit
+        Map<String, Object> beforeState = Map.of(
+                "role", role.getName(),
+                "permissionCount", role.getRolePermissions().size(),
+                "memberCount", assignmentRepository.countByRoleAndActiveTrue(role)
+        );
+
+        // Deactivate all assignments
+        assignmentRepository.findByRoleAndActiveTrue(role).forEach(assignment -> {
+            assignment.setActive(false);
+            assignmentRepository.save(assignment);
+        });
+
+        // Delete role permissions and role
+        rolePermissionRepository.deleteAll(role.getRolePermissions());
+        roleRepository.delete(role);
+
+        auditEventService.recordEvent(
+                auditEventService.buildEvent(
+                        "DELETE_ROLE",
+                        performedBy,
+                        "Role deleted: %s".formatted(role.getName()),
+                        null,
+                        "WARN",
+                        "ROLE_DELETED",
+                        Map.of("roleId", roleId, "roleName", role.getName()),
+                        beforeState,
+                        null
+                )
+        );
+    }
+
+    @Transactional
     public RoleCloneResponseDto cloneRole(Long sourceRoleId, String name, String description, Long performedBy) {
         Role source = roleRepository.findById(sourceRoleId)
                 .orElseThrow(() -> new IllegalArgumentException("Role not found: " + sourceRoleId));
