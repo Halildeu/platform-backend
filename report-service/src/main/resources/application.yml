@@ -21,7 +21,14 @@ spring:
   jpa:
     open-in-view: false
   flyway:
-    enabled: false
+    enabled: true
+
+# PostgreSQL metadata persistence (custom reports, alerts, schedules)
+report:
+  postgres:
+    url: jdbc:postgresql://${REPORT_PG_HOST:localhost}:${REPORT_PG_PORT:5432}/${REPORT_PG_DB:users}
+    username: ${REPORT_PG_USERNAME:postgres}
+    password: ${REPORT_PG_PASSWORD:postgres}
 
 server:
   port: ${SERVER_PORT:8095}
