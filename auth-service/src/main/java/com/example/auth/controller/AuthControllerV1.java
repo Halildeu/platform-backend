@@ -16,7 +16,6 @@ import com.example.auth.dto.v1.response.RegisterResponseDto;
 import com.example.auth.service.AuthService;
 import com.example.auth.service.AuthService.RegistrationResult;
 import jakarta.validation.Valid;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,7 +26,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/auth")
-@Profile({"local", "dev"})
 // STORY-0033: Auth REST/DTO v1 Migration
 public class AuthControllerV1 {
 
