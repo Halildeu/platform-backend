@@ -36,7 +36,7 @@ kv_get_json() {
 json_get() {
   local json="$1"
   local key="$2"
-  jq -r --arg key "${key}" '.data.data[$key] // empty' <<< "${json}"
+  printf '%s' "${json}" | python3 -c 'import json, sys; payload = json.load(sys.stdin); print(payload.get("data", {}).get("data", {}).get(sys.argv[1], "") or "", end="")' "${key}"
 }
 
 check_keys() {
@@ -72,7 +72,7 @@ check_keys() {
 
 main() {
   require_cmd curl
-  require_cmd jq
+  require_cmd python3
 
   local mount
   local backend_config_path
