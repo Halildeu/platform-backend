@@ -4,6 +4,8 @@ x-runtime-defaults: &runtime-defaults
   restart: unless-stopped
   networks:
     - microservice-network
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 x-common-env: &common-env
   TZ: ${TZ:-Europe/Istanbul}
