@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_NAME="${ENV:-stage}"
+VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR required}"
+VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN required}"
+
+echo "[vault] target=${VAULT_ADDR} env=${ENV_NAME}"
+
+build_json() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+args = sys.argv[1:]
+data = {}
+for i in range(0, len(args), 2):
+    key = args[i]
+    value = args[i + 1]
+    if value:
+        data[key] = value
+print(json.dumps(data))
+PY
+}
+
+kv_put() {
+  local path="$1"
+  local json="$2"
+
+  curl -sSf \
+    -H "X-Vault-Token: ${VAULT_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -X POST "${VAULT_ADDR}/v1/secret/data/${ENV_NAME}/${path}" \
+    -d "{\"data\": ${json} }" >/dev/null
+  echo "[vault] wrote secret/${ENV_NAME}/${path}"
+}
+
+backend_deploy_payload="$(build_json \
+  GIT_REMOTE_URL "${GIT_REMOTE_URL:-}" \
+  REPO_BRANCH "${REPO_BRANCH:-}" \
+  GHCR_OWNER "${GHCR_OWNER:-}" \
+  GHCR_USERNAME "${GHCR_USERNAME:-}" \
+  GHCR_TOKEN "${GHCR_TOKEN:-}" \
+  IMAGE_TAG "${IMAGE_TAG:-}" \
+  COMPOSE_PROJECT_NAME "${COMPOSE_PROJECT_NAME:-}" \
+  TZ "${TZ:-}" \
+  COMPOSE_PROFILES "${COMPOSE_PROFILES:-}" \
+  VAULT_URI "${VAULT_URI:-}" \
+  VAULT_SCHEME "${VAULT_SCHEME:-}" \
+  VAULT_TOKEN "${RUNTIME_VAULT_TOKEN:-${BACKEND_RUNTIME_VAULT_TOKEN:-}}" \
+  VAULT_FAIL_FAST "${VAULT_FAIL_FAST:-}" \
+  KEYCLOAK_ISSUER_URI "${KEYCLOAK_ISSUER_URI:-}" \
+  KEYCLOAK_JWKS_URI "${KEYCLOAK_JWKS_URI:-}" \
+  WEB_ORIGIN "${WEB_ORIGIN:-}" \
+  AUTH_VERIFICATION_BASE_URL "${AUTH_VERIFICATION_BASE_URL:-}" \
+  AUTH_RESET_BASE_URL "${AUTH_RESET_BASE_URL:-}" \
+  SERVICE_CLIENT_USER_SERVICE_SECRET "${SERVICE_CLIENT_USER_SERVICE_SECRET:-}" \
+  PERMISSION_SERVICE_INTERNAL_API_KEY "${PERMISSION_SERVICE_INTERNAL_API_KEY:-}" \
+  SECURITY_AUTH_ALLOWED_CLIENT_IDS "${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-}" \
+  POSTGRES_USER "${POSTGRES_USER:-}" \
+  POSTGRES_PASSWORD "${POSTGRES_PASSWORD:-}" \
+  POSTGRES_DB "${POSTGRES_DB:-}" \
+  AUTH_DB_SCHEMA "${AUTH_DB_SCHEMA:-}" \
+  USER_DB_SCHEMA "${USER_DB_SCHEMA:-}" \
+  PERMISSION_DB_SCHEMA "${PERMISSION_DB_SCHEMA:-}" \
+  VARIANT_DB_SCHEMA "${VARIANT_DB_SCHEMA:-}" \
+  CORE_DATA_DB_SCHEMA "${CORE_DATA_DB_SCHEMA:-}" \
+  OPENFGA_STORE_ID "${OPENFGA_STORE_ID:-}" \
+  OPENFGA_MODEL_ID "${OPENFGA_MODEL_ID:-}" \
+  OPENFGA_LOG_LEVEL "${OPENFGA_LOG_LEVEL:-}" \
+  CORE_DATA_DB_URL "${CORE_DATA_DB_URL:-}" \
+  CORE_DATA_DB_USERNAME "${CORE_DATA_DB_USERNAME:-}" \
+  CORE_DATA_DB_PASSWORD "${CORE_DATA_DB_PASSWORD:-}" \
+  REPORT_MSSQL_HOST "${REPORT_MSSQL_HOST:-}" \
+  REPORT_MSSQL_PORT "${REPORT_MSSQL_PORT:-}" \
+  REPORT_MSSQL_DB "${REPORT_MSSQL_DB:-}" \
+  REPORT_MSSQL_USERNAME "${REPORT_MSSQL_USERNAME:-}" \
+  REPORT_MSSQL_PASSWORD "${REPORT_MSSQL_PASSWORD:-}" \
+  REPORT_PG_HOST "${REPORT_PG_HOST:-}" \
+  REPORT_PG_PORT "${REPORT_PG_PORT:-}" \
+  REPORT_PG_DB "${REPORT_PG_DB:-}" \
+  REPORT_PG_USERNAME "${REPORT_PG_USERNAME:-}" \
+  REPORT_PG_PASSWORD "${REPORT_PG_PASSWORD:-}" \
+  SCHEMA_MSSQL_HOST "${SCHEMA_MSSQL_HOST:-}" \
+  SCHEMA_MSSQL_PORT "${SCHEMA_MSSQL_PORT:-}" \
+  SCHEMA_MSSQL_DB "${SCHEMA_MSSQL_DB:-}" \
+  SCHEMA_MSSQL_USERNAME "${SCHEMA_MSSQL_USERNAME:-}" \
+  SCHEMA_MSSQL_PASSWORD "${SCHEMA_MSSQL_PASSWORD:-}" \
+  SCHEMA_DEFAULT_SCHEMA "${SCHEMA_DEFAULT_SCHEMA:-}")"
+
+if [[ "${backend_deploy_payload}" != "{}" ]]; then
+  kv_put "backend-deploy/config" "${backend_deploy_payload}"
+else
+  echo "[vault] skip backend-deploy/config (env empty)"
+fi
+
+github_payload="$(build_json \
+  BACKEND_SSH_DEPLOY_ENABLED "${BACKEND_SSH_DEPLOY_ENABLED:-}" \
+  BACKEND_DEPLOY_SSH_HOST "${BACKEND_DEPLOY_SSH_HOST:-}" \
+  BACKEND_DEPLOY_SSH_PORT "${BACKEND_DEPLOY_SSH_PORT:-}" \
+  BACKEND_DEPLOY_SSH_USER "${BACKEND_DEPLOY_SSH_USER:-}" \
+  BACKEND_DEPLOY_SSH_KEY "${BACKEND_DEPLOY_SSH_KEY:-}" \
+  BACKEND_DEPLOY_SSH_KNOWN_HOSTS "${BACKEND_DEPLOY_SSH_KNOWN_HOSTS:-}" \
+  BACKEND_DEPLOY_REMOTE_ENV_FILE "${BACKEND_DEPLOY_REMOTE_ENV_FILE:-}" \
+  BACKEND_DEPLOY_REMOTE_REPO_DIR "${BACKEND_DEPLOY_REMOTE_REPO_DIR:-}" \
+  BACKEND_DEPLOY_REMOTE_COMPOSE_PROFILES "${BACKEND_DEPLOY_REMOTE_COMPOSE_PROFILES:-}" \
+  BACKEND_HEALTH_URLS "${BACKEND_HEALTH_URLS:-}")"
+
+if [[ "${github_payload}" != "{}" ]]; then
+  kv_put "ops/github/backend-deploy" "${github_payload}"
+else
+  echo "[vault] skip ops/github/backend-deploy (env empty)"
+fi
+
+echo "[vault] done"

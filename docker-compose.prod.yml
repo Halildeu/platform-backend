@@ -1,0 +1,369 @@
+name: ${COMPOSE_PROJECT_NAME:-platform}
+
+x-runtime-defaults: &runtime-defaults
+  restart: unless-stopped
+  networks:
+    - microservice-network
+
+x-common-env: &common-env
+  TZ: ${TZ:-Europe/Istanbul}
+
+x-vault-env: &vault-env
+  VAULT_URI: ${VAULT_URI}
+  VAULT_SCHEME: ${VAULT_SCHEME:-https}
+  VAULT_TOKEN: ${VAULT_TOKEN}
+  VAULT_FAIL_FAST: ${VAULT_FAIL_FAST:-true}
+
+services:
+  discovery-server:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-discovery-server:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8761:8761"
+    environment:
+      <<: *common-env
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8761/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  postgres-db:
+    <<: *runtime-defaults
+    image: pgvector/pgvector:pg18
+    ports:
+      - "5432:5432"
+    environment:
+      <<: *common-env
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-users}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./devops/postgres:/docker-entrypoint-initdb.d:ro
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  openfga-migrate:
+    <<: *runtime-defaults
+    image: openfga/openfga:latest
+    restart: "no"
+    command: migrate
+    environment:
+      <<: *common-env
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-db:5432/${POSTGRES_DB:-users}?sslmode=disable&search_path=openfga
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+
+  openfga:
+    <<: *runtime-defaults
+    image: openfga/openfga:latest
+    command: run
+    ports:
+      - "4000:8080"
+      - "4001:8081"
+    environment:
+      <<: *common-env
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-db:5432/${POSTGRES_DB:-users}?sslmode=disable&search_path=openfga
+      OPENFGA_PLAYGROUND_ENABLED: "false"
+      OPENFGA_LOG_LEVEL: ${OPENFGA_LOG_LEVEL:-info}
+    depends_on:
+      openfga-migrate:
+        condition: service_completed_successfully
+    mem_limit: 256m
+
+  permission-service:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-permission-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8090:8084"
+    environment:
+      <<: [*common-env, *vault-env]
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka
+      PERMISSION_DB_SCHEMA: ${PERMISSION_DB_SCHEMA:-permission_service}
+      PERMISSION_SERVICE_INTERNAL_API_KEY: ${PERMISSION_SERVICE_INTERNAL_API_KEY}
+      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web}
+      SECURITY_JWT_ISSUER: ${KEYCLOAK_ISSUER_URI}
+      SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_USER_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_AUDIENCE: permission-service
+      ERP_OPENFGA_ENABLED: "true"
+      ERP_OPENFGA_API_URL: http://openfga:8080
+      ERP_OPENFGA_STORE_ID: ${OPENFGA_STORE_ID}
+      ERP_OPENFGA_MODEL_ID: ${OPENFGA_MODEL_ID}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+      openfga:
+        condition: service_started
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  auth-service:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-auth-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8088:8088"
+    environment:
+      <<: [*common-env, *vault-env]
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      PERMISSION_SERVICE_BASE_URL: http://permission-service:8084
+      USER_SERVICE_BASE_URL: http://user-service:8089
+      AUTH_DB_SCHEMA: ${AUTH_DB_SCHEMA:-auth_service}
+      SERVICE_CLIENT_USER_SERVICE_SECRET: ${SERVICE_CLIENT_USER_SERVICE_SECRET}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_ISSUER_URI}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      AUTH_VERIFICATION_BASE_URL: ${AUTH_VERIFICATION_BASE_URL}
+      AUTH_RESET_BASE_URL: ${AUTH_RESET_BASE_URL}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+      permission-service:
+        condition: service_healthy
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  user-service:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-user-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8089:8089"
+    environment:
+      <<: [*common-env, *vault-env]
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      USER_DB_SCHEMA: ${USER_DB_SCHEMA:-user_service}
+      PERMISSION_SERVICE_BASE_URL: http://permission-service:8084
+      SERVICE_TOKEN_MINT_URL: http://auth-service:8088/oauth2/token
+      SERVICE_TOKEN_CLIENT_ID: user-service
+      SERVICE_TOKEN_CLIENT_SECRET: ${SERVICE_CLIENT_USER_SERVICE_SECRET}
+      SERVICE_AUTH_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
+      SERVICE_AUTH_ISSUER: auth-service
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_ISSUER_URI}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+      permission-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8089/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  variant-service:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-variant-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8091:8091"
+    environment:
+      <<: [*common-env, *vault-env]
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      EUREKA_SERVER_URL: http://discovery-server:8761/eureka
+      VARIANT_DB_SCHEMA: ${VARIANT_DB_SCHEMA:-variant_service}
+      SECURITY_JWT_ISSUER: ${KEYCLOAK_ISSUER_URI}
+      SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_AUDIENCE: variant-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  core-data-service:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-core-data-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8092:8092"
+    environment:
+      <<: *common-env
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      SERVER_PORT: "8092"
+      SPRING_DATASOURCE_URL: ${CORE_DATA_DB_URL}
+      SPRING_DATASOURCE_USERNAME: ${CORE_DATA_DB_USERNAME}
+      SPRING_DATASOURCE_PASSWORD: ${CORE_DATA_DB_PASSWORD}
+      CORE_DATA_DB_SCHEMA: ${CORE_DATA_DB_SCHEMA:-core_data_service}
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
+      SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_ISSUER: ${KEYCLOAK_ISSUER_URI}
+      CORE_DATA_SECURITY_JWT_AUDIENCE: frontend,user-service,core-data-service
+      ERP_OPENFGA_ENABLED: "true"
+      ERP_OPENFGA_API_URL: http://openfga:8080
+      ERP_OPENFGA_STORE_ID: ${OPENFGA_STORE_ID}
+      ERP_OPENFGA_MODEL_ID: ${OPENFGA_MODEL_ID}
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+      openfga:
+        condition: service_started
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  api-gateway:
+    <<: *runtime-defaults
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-api-gateway:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *common-env
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_ISSUER_URI}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_ISSUER: ${KEYCLOAK_ISSUER_URI}
+      SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_AUDIENCE: user-service,permission-service,variant-service,core-data-service
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      permission-service:
+        condition: service_healthy
+      variant-service:
+        condition: service_healthy
+      core-data-service:
+        condition: service_healthy
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+
+  report-service:
+    <<: *runtime-defaults
+    profiles: ["extras"]
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-report-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8095:8095"
+    environment:
+      <<: *common-env
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      SERVER_PORT: "8095"
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
+      REPORT_MSSQL_HOST: ${REPORT_MSSQL_HOST}
+      REPORT_MSSQL_PORT: ${REPORT_MSSQL_PORT:-1433}
+      REPORT_MSSQL_DB: ${REPORT_MSSQL_DB}
+      REPORT_MSSQL_USERNAME: ${REPORT_MSSQL_USERNAME}
+      REPORT_MSSQL_PASSWORD: ${REPORT_MSSQL_PASSWORD}
+      REPORT_PG_HOST: ${REPORT_PG_HOST:-postgres-db}
+      REPORT_PG_PORT: ${REPORT_PG_PORT:-5432}
+      REPORT_PG_DB: ${REPORT_PG_DB:-users}
+      REPORT_PG_USERNAME: ${REPORT_PG_USERNAME}
+      REPORT_PG_PASSWORD: ${REPORT_PG_PASSWORD}
+      SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_ISSUER: ${KEYCLOAK_ISSUER_URI}
+      SECURITY_JWT_AUDIENCE: report-service,account,frontend
+      PERMISSION_SERVICE_INTERNAL_API_KEY: ${PERMISSION_SERVICE_INTERNAL_API_KEY}
+      MANAGEMENT_HEALTH_DB_ENABLED: "false"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+      postgres-db:
+        condition: service_healthy
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8095/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  schema-service:
+    <<: *runtime-defaults
+    profiles: ["extras"]
+    image: ghcr.io/${GHCR_OWNER}/platform-ssot-schema-service:${IMAGE_TAG:-main-stable}
+    pull_policy: always
+    ports:
+      - "8096:8096"
+    environment:
+      <<: *common-env
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      SERVER_PORT: "8096"
+      EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
+      SCHEMA_MSSQL_HOST: ${SCHEMA_MSSQL_HOST}
+      SCHEMA_MSSQL_PORT: ${SCHEMA_MSSQL_PORT:-1433}
+      SCHEMA_MSSQL_DB: ${SCHEMA_MSSQL_DB}
+      SCHEMA_MSSQL_USERNAME: ${SCHEMA_MSSQL_USERNAME}
+      SCHEMA_MSSQL_PASSWORD: ${SCHEMA_MSSQL_PASSWORD}
+      SCHEMA_DEFAULT_SCHEMA: ${SCHEMA_DEFAULT_SCHEMA}
+      SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SECURITY_JWT_ISSUER: ${KEYCLOAK_ISSUER_URI}
+      MANAGEMENT_HEALTH_DB_ENABLED: "false"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8096/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+networks:
+  microservice-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
