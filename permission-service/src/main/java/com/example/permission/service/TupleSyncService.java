@@ -165,16 +165,29 @@ public class TupleSyncService {
         }
     }
 
+    /**
+     * Delete known feature tuples for a user before re-sync.
+     * Uses individual deleteTuple calls since batch delete is not available in OpenFgaAuthzService.
+     */
     private void deleteAllFeatureTuples(String userId) {
-        for (PermissionType type : PermissionType.values()) {
-            String objectType = type.name().toLowerCase();
-            for (String relation : getRelationsForType(type)) {
-                try {
-                    authzService.deleteTuplesForUser(userId, relation, objectType);
-                } catch (Exception e) {
-                    log.debug("OpenFGA tuple delete (no-op if empty) for user:{} {}:{} — {}",
-                            userId, relation, objectType, e.getMessage());
+        Long numericUserId = Long.parseLong(userId);
+        List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(numericUserId);
+        List<Long> roleIds = assignments.stream().map(a -> a.getRole().getId()).distinct().toList();
+        if (roleIds.isEmpty()) return;
+
+        List<RolePermission> allPerms = rolePermissionRepository.findByRoleIdIn(roleIds);
+        for (RolePermission rp : allPerms) {
+            if (rp.getPermissionType() == null || rp.getPermissionKey() == null || rp.getGrantType() == null) continue;
+            TupleMapping mapping = toTupleMapping(rp.getPermissionType(), rp.getGrantType());
+            if (mapping == null) continue;
+            try {
+                authzService.deleteTuple(userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey());
+                if (rp.getGrantType() == GrantType.DENY) {
+                    authzService.deleteTuple(userId, "blocked", rp.getPermissionType().name().toLowerCase(), rp.getPermissionKey());
                 }
+            } catch (Exception e) {
+                log.debug("OpenFGA tuple delete (no-op if missing) for user:{} {}:{}:{} — {}",
+                        userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey(), e.getMessage());
             }
         }
     }
