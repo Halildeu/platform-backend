@@ -21,8 +21,7 @@ type project
     define company: [company]
     define admin: [user] or admin from company
     define manager: [user]
-    define editor: [user] or manager or admin
-    define viewer: [user] or editor or viewer from company
+    define viewer: [user] or manager or admin
 
 type warehouse
   relations
@@ -30,11 +29,38 @@ type warehouse
     define admin: [user] or admin from company
     define manager: [user]
     define operator: [user] or manager or admin
-    define viewer: [user] or operator or viewer from company
+    define viewer: [user] or operator
 
-type module
+type branch
   relations
     define company: [company]
     define admin: [user] or admin from company
-    define can_manage: [user] or admin
-    define can_view: [user] or can_manage or viewer from company
+    define manager: [user]
+    define member: [user] or manager or admin
+    define viewer: [user] or member
+
+type module
+  relations
+    define can_manage: [user] but not blocked
+    define can_view: [user] or can_manage but not blocked
+    define blocked: [user]
+
+type action
+  relations
+    define allowed: [user] but not blocked
+    define blocked: [user]
+
+type report
+  relations
+    define can_view: [user] but not blocked
+    define blocked: [user]
+
+type page
+  relations
+    define can_access: [user] but not blocked
+    define blocked: [user]
+
+type field
+  relations
+    define can_view: [user] but not blocked
+    define blocked: [user]

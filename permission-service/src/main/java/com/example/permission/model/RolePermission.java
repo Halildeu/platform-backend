@@ -15,31 +15,45 @@ public class RolePermission {
     @JoinColumn(name = "role_id", nullable = false, foreignKey = @ForeignKey(name = "fk_role_permissions_role"))
     private Role role;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "permission_id", nullable = false, foreignKey = @ForeignKey(name = "fk_role_permissions_permission"))
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "permission_id", foreignKey = @ForeignKey(name = "fk_role_permissions_permission"))
     private Permission permission;
 
-    public Long getId() {
-        return id;
-    }
+    @Column(name = "permission_type", nullable = false, length = 20)
+    @Enumerated(EnumType.STRING)
+    private PermissionType permissionType;
 
-    public void setId(Long id) {
-        this.id = id;
-    }
+    @Column(name = "permission_key", nullable = false, length = 100)
+    private String permissionKey;
 
-    public Role getRole() {
-        return role;
-    }
+    @Column(name = "grant_type", nullable = false, length = 10)
+    @Enumerated(EnumType.STRING)
+    private GrantType grantType;
 
-    public void setRole(Role role) {
+    public RolePermission() {}
+
+    public RolePermission(Role role, PermissionType permissionType, String permissionKey, GrantType grantType) {
         this.role = role;
+        this.permissionType = permissionType;
+        this.permissionKey = permissionKey;
+        this.grantType = grantType;
     }
 
-    public Permission getPermission() {
-        return permission;
-    }
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
 
-    public void setPermission(Permission permission) {
-        this.permission = permission;
-    }
+    public Role getRole() { return role; }
+    public void setRole(Role role) { this.role = role; }
+
+    public Permission getPermission() { return permission; }
+    public void setPermission(Permission permission) { this.permission = permission; }
+
+    public PermissionType getPermissionType() { return permissionType; }
+    public void setPermissionType(PermissionType permissionType) { this.permissionType = permissionType; }
+
+    public String getPermissionKey() { return permissionKey; }
+    public void setPermissionKey(String permissionKey) { this.permissionKey = permissionKey; }
+
+    public GrantType getGrantType() { return grantType; }
+    public void setGrantType(GrantType grantType) { this.grantType = grantType; }
 }
