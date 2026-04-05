@@ -128,6 +128,24 @@ public class AuthorizationControllerV1 {
     }
 
     /**
+     * Get roles assigned to a user.
+     */
+    @GetMapping("/users/{userId}/roles")
+    public ResponseEntity<List<Map<String, Object>>> getUserRoles(@PathVariable Long userId) {
+        List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(userId);
+        List<Map<String, Object>> roles = assignments.stream()
+                .map(a -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("roleId", a.getRole().getId());
+                    m.put("roleName", a.getRole().getName());
+                    m.put("assignedAt", a.getAssignedAt() != null ? a.getAssignedAt().toString() : null);
+                    return m;
+                })
+                .toList();
+        return ResponseEntity.ok(roles);
+    }
+
+    /**
      * Assign roles + scopes to a user.
      */
     @PostMapping("/users/{userId}/assignments")

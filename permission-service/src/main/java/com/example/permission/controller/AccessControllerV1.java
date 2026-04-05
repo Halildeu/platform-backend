@@ -12,24 +12,22 @@ import com.example.permission.dto.v1.RolePermissionsUpdateRequestDto;
 import com.example.permission.dto.v1.RolePermissionsUpdateResponseDto;
 import com.example.permission.dto.v1.ScopeAssignmentRequestDto;
 import com.example.permission.dto.v1.ScopeSummaryDto;
+import com.example.permission.repository.RolePermissionRepository;
+import com.example.permission.repository.RoleRepository;
+import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.example.permission.service.AccessRoleService;
+import com.example.permission.service.PermissionService;
+import com.example.permission.service.TupleSyncService;
 import com.example.permission.service.UserScopeService;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PatchMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
+
 /**
- * v1 roles endpoint'leri; legacy AccessController korunur.
+ * v1 roles endpoint'leri; STORY-0318: members, granules eklendi.
  */
 @RestController
 @RequestMapping("/api/v1/roles")
@@ -37,11 +35,26 @@ public class AccessControllerV1 {
 
     private final AccessRoleService accessRoleService;
     private final UserScopeService userScopeService;
+    private final UserRoleAssignmentRepository assignmentRepository;
+    private final RolePermissionRepository rolePermissionRepository;
+    private final RoleRepository roleRepository;
+    private final PermissionService permissionService;
+    private final TupleSyncService tupleSyncService;
 
     public AccessControllerV1(AccessRoleService accessRoleService,
-                              UserScopeService userScopeService) {
+                              UserScopeService userScopeService,
+                              UserRoleAssignmentRepository assignmentRepository,
+                              RolePermissionRepository rolePermissionRepository,
+                              RoleRepository roleRepository,
+                              PermissionService permissionService,
+                              TupleSyncService tupleSyncService) {
         this.accessRoleService = accessRoleService;
         this.userScopeService = userScopeService;
+        this.assignmentRepository = assignmentRepository;
+        this.rolePermissionRepository = rolePermissionRepository;
+        this.roleRepository = roleRepository;
+        this.permissionService = permissionService;
+        this.tupleSyncService = tupleSyncService;
     }
 
     @GetMapping
@@ -120,6 +133,93 @@ public class AccessControllerV1 {
                 payload.getPerformedBy()
         );
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Get users assigned to a role (bidirectional: role → users).
+     */
+    @GetMapping("/{roleId}/members")
+    public ResponseEntity<List<Map<String, Object>>> getRoleMembers(@PathVariable Long roleId) {
+        var assignments = assignmentRepository.findByRoleIdAndActiveTrue(roleId);
+        List<Map<String, Object>> members = assignments.stream()
+                .map(a -> {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("userId", a.getUserId());
+                    m.put("assignedAt", a.getAssignedAt() != null ? a.getAssignedAt().toString() : null);
+                    return m;
+                })
+                .toList();
+        return ResponseEntity.ok(members);
+    }
+
+    /**
+     * Add user(s) to a role (bidirectional: role → user assignment).
+     */
+    @PostMapping("/{roleId}/members")
+    @PreAuthorize("hasAuthority('permission-manage')")
+    public ResponseEntity<Map<String, Object>> addRoleMembers(@PathVariable Long roleId,
+                                                               @RequestBody Map<String, List<Long>> body) {
+        List<Long> userIds = body.getOrDefault("userIds", List.of());
+        for (Long userId : userIds) {
+            var existing = assignmentRepository.findActiveAssignment(userId, null, roleId, null, null);
+            if (existing.isEmpty()) {
+                var req = new com.example.permission.dto.PermissionAssignRequest();
+                req.setUserId(userId);
+                req.setRoleId(roleId);
+                permissionService.assignRole(req);
+            }
+        }
+        return ResponseEntity.ok(Map.of("roleId", roleId, "addedUserIds", userIds));
+    }
+
+    /**
+     * Remove a user from a role.
+     */
+    @DeleteMapping("/{roleId}/members/{userId}")
+    @PreAuthorize("hasAuthority('permission-manage')")
+    public ResponseEntity<Void> removeRoleMember(@PathVariable Long roleId, @PathVariable Long userId) {
+        var assignments = assignmentRepository.findActiveAssignments(userId);
+        assignments.stream()
+                .filter(a -> a.getRole().getId().equals(roleId))
+                .forEach(a -> permissionService.revokeRole(a.getId(), null));
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Update role permissions with 5-granule format + DENY support.
+     * Triggers tuple propagation for all assigned users.
+     */
+    @PutMapping("/{roleId}/granules")
+    @PreAuthorize("hasAuthority('permission-manage')")
+    public ResponseEntity<Map<String, Object>> updateRoleGranules(
+            @PathVariable Long roleId,
+            @RequestBody Map<String, List<com.example.permission.dto.v1.RolePermissionItemDto>> body) {
+        var role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new IllegalArgumentException("Role not found: " + roleId));
+
+        var items = body.getOrDefault("permissions", List.of());
+
+        // Delete old granule-based permissions
+        rolePermissionRepository.deleteByRoleId(roleId);
+
+        // Insert new
+        for (var item : items) {
+            var rp = new com.example.permission.model.RolePermission(
+                    role,
+                    com.example.permission.model.PermissionType.valueOf(item.type().toUpperCase()),
+                    item.key(),
+                    com.example.permission.model.GrantType.valueOf(item.grant().toUpperCase())
+            );
+            rolePermissionRepository.save(rp);
+        }
+
+        role.setUpdatedAt(java.time.Instant.now());
+        roleRepository.save(role);
+
+        // Propagate to all assigned users
+        tupleSyncService.propagateRoleChange(roleId);
+
+        return ResponseEntity.ok(Map.of("roleId", roleId, "granuleCount", items.size(), "propagated", true));
     }
 
     @GetMapping("/users/{userId}/scopes")

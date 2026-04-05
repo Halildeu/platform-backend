@@ -274,6 +274,10 @@ public class AccessRoleService {
         return new RolePermissionsUpdateResponseDto(true, auditId);
     }
 
+    /**
+     * @deprecated STORY-0318: Use PUT /v1/roles/{id}/granules with 5-granule format instead.
+     * This hardcoded mapping will be removed after all consumers migrate.
+     */
     private boolean applyLevelForModule(Role role, String moduleKey, String level) {
         // Şimdilik sadece USER_MANAGEMENT için deterministik mapping
         List<String> addPerms = new ArrayList<>();
