@@ -404,10 +404,21 @@ services:
       - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
       - SECURITY_JWT_AUDIENCE=report-service,account,frontend
       - PERMISSION_SERVICE_INTERNAL_API_KEY=${PERMISSION_SERVICE_INTERNAL_API_KEY:-dev-local-audit-mirror-key}
+      # PostgreSQL — Docker network hostname
+      - REPORT_PG_HOST=postgres-db
+      - REPORT_PG_PORT=5432
+      - REPORT_PG_DB=${POSTGRES_DB:-users}
       # SQL Server baglantisi optional — erisim yoksa servis yine de baslar
       - SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT=-1
       # DB health indicator'u devre disi birak (SQL Server ulasılamaz oldugunda timeout yapar)
       - MANAGEMENT_HEALTH_DB_ENABLED=false
+      # Context Health Dashboard — orchestrator JSON dosyalarini okur
+      - CONTEXT_HEALTH_ENABLED=${CONTEXT_HEALTH_ENABLED:-false}
+      - CONTEXT_HEALTH_DATA_DIR=/opt/context-health/reports
+      - CONTEXT_HEALTH_INDEX_DIR=/opt/context-health/index
+    volumes:
+      - ${CONTEXT_HEALTH_HOST_REPORTS:-/dev/null}:/opt/context-health/reports:ro
+      - ${CONTEXT_HEALTH_HOST_INDEX:-/dev/null}:/opt/context-health/index:ro
     depends_on:
       discovery-server:
         condition: service_healthy

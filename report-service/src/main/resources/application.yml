@@ -23,12 +23,17 @@ spring:
   flyway:
     enabled: true
 
-# PostgreSQL metadata persistence (custom reports, alerts, schedules)
 report:
   postgres:
     url: jdbc:postgresql://${REPORT_PG_HOST:localhost}:${REPORT_PG_PORT:5432}/${REPORT_PG_DB:users}
     username: ${REPORT_PG_USERNAME:postgres}
     password: ${REPORT_PG_PASSWORD:postgres}
+  definitions-path: classpath:reports/
+  query:
+    timeout-seconds: 30
+    max-export-rows: 500000
+  audit:
+    internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:}
 
 server:
   port: ${SERVER_PORT:8095}
@@ -51,14 +56,6 @@ security:
     jwk-set-uri: ${SECURITY_JWT_JWK_SET_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
     issuer: ${SECURITY_JWT_ISSUER:http://localhost:8081/realms/serban}
     audience: ${SECURITY_JWT_AUDIENCE:report-service}
-
-report:
-  definitions-path: classpath:reports/
-  query:
-    timeout-seconds: 30
-    max-export-rows: 500000
-  audit:
-    internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:}
 
 context-health:
   data-dir: ${CONTEXT_HEALTH_DATA_DIR:}
