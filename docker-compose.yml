@@ -335,7 +335,9 @@ services:
 
   permission-service:
     # profiles: ["legacy"]  # Re-enabled: roles CRUD still lives here, synced with OpenFGA
-    build: ./permission-service
+    build:
+      context: .
+      dockerfile: ./permission-service/Dockerfile
     ports:
       - "8090:8084"
     networks:
