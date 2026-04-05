@@ -3,11 +3,9 @@ package com.example.auth.serviceauth;
 import java.util.HashSet;
 import java.util.Set;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 @Component
-@Profile({"local", "dev"})
 @ConfigurationProperties(prefix = "security.service-mint")
 public class ServiceMintPolicyProperties {
     /** Allowed audiences (e.g., permission-service, user-service-internal) */
