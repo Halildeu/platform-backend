@@ -21,7 +21,9 @@ ENV_NAME="${ENV:-stage}"
 KEYCLOAK_BASE="${KEYCLOAK_BASE:?Set KEYCLOAK_BASE (e.g. https://keycloak-stage.example.com)}"
 KC_ADMIN_USER="${KC_ADMIN_USER:?Set KC_ADMIN_USER}"
 KC_ADMIN_PASS="${KC_ADMIN_PASS:?Set KC_ADMIN_PASS}"
+KC_ADMIN_REALM="${KC_ADMIN_REALM:-master}"
 REALM="${REALM:-platform}"
+REALM_IMPORT_FILE="${REALM_IMPORT_FILE:-}"
 
 CLIENTS=( "gateway" "user-service" "permission-service" "variant-service" "frontend" )
 SCOPES=( "aud-user-service:user-service" "aud-permission-service:permission-service" )
@@ -29,7 +31,7 @@ SCOPES=( "aud-user-service:user-service" "aud-permission-service:permission-serv
 echo "[kc] base=${KEYCLOAK_BASE} realm=${REALM} env=${ENV_NAME}"
 
 token() {
-  curl -s -S -X POST "${KEYCLOAK_BASE}/realms/serban/protocol/openid-connect/token" \
+  curl -s -S -X POST "${KEYCLOAK_BASE}/realms/${KC_ADMIN_REALM}/protocol/openid-connect/token" \
     -H 'Content-Type: application/x-www-form-urlencoded' \
     -d "grant_type=password&client_id=admin-cli&username=${KC_ADMIN_USER}&password=${KC_ADMIN_PASS}" | jq -r '.access_token'
 }
@@ -46,8 +48,13 @@ kc_put() { curl -s -S -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Content-Type
 
 # Ensure realm exists
 if ! kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}" | jq -e .realm >/dev/null 2>&1; then
-  echo "[kc] creating realm ${REALM}"
-  kc_post "${KEYCLOAK_BASE}/admin/realms" "{\"realm\":\"${REALM}\",\"enabled\":true}" >/dev/null
+  if [[ -n "${REALM_IMPORT_FILE}" && -f "${REALM_IMPORT_FILE}" ]]; then
+    echo "[kc] importing realm ${REALM} from ${REALM_IMPORT_FILE}"
+    kc_post "${KEYCLOAK_BASE}/admin/realms" "$(cat "${REALM_IMPORT_FILE}")" >/dev/null
+  else
+    echo "[kc] creating realm ${REALM}"
+    kc_post "${KEYCLOAK_BASE}/admin/realms" "{\"realm\":\"${REALM}\",\"enabled\":true}" >/dev/null
+  fi
 else
   echo "[kc] realm ${REALM} exists"
 fi
