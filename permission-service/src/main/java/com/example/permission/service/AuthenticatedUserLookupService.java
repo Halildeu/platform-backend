@@ -2,6 +2,7 @@ package com.example.permission.service;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -28,6 +29,7 @@ public class AuthenticatedUserLookupService {
     private final String userTable;
     private final RestClient userLookupClient;
 
+    @Autowired
     public AuthenticatedUserLookupService(
             JdbcTemplate jdbcTemplate,
             @Value("${permission.authz.user-table:users}") String userTable,
