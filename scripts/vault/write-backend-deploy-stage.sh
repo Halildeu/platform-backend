@@ -39,6 +39,8 @@ backend_deploy_payload="$(build_json \
   GIT_REMOTE_URL "${GIT_REMOTE_URL:-}" \
   REPO_BRANCH "${REPO_BRANCH:-}" \
   GHCR_OWNER "${GHCR_OWNER:-}" \
+  GHCR_USERNAME "${GHCR_USERNAME:-}" \
+  GHCR_TOKEN "${GHCR_TOKEN:-}" \
   IMAGE_TAG "${IMAGE_TAG:-}" \
   COMPOSE_PROJECT_NAME "${COMPOSE_PROJECT_NAME:-}" \
   TZ "${TZ:-}" \
