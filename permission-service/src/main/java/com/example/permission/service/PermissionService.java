@@ -39,7 +39,10 @@ public class PermissionService {
     private final ObjectMapper objectMapper;
     private final OpenFgaAuthzService authzService;
 
-    /** Permission code → OpenFGA module key mapping */
+    /**
+     * @deprecated STORY-0318: Use TupleSyncService for tuple management.
+     * Kept for backward compat with legacy assignRole() flow.
+     */
     private static final Map<String, String> PERM_TO_MODULE = Map.ofEntries(
             Map.entry("VIEW_USERS", "USER_MANAGEMENT"),
             Map.entry("MANAGE_USERS", "USER_MANAGEMENT"),
@@ -54,7 +57,10 @@ public class PermissionService {
             Map.entry("MANAGE_REPORT", "REPORT")
     );
 
-    /** Permission code → OpenFGA relation mapping */
+    /**
+     * @deprecated STORY-0318: Use TupleSyncService for tuple management.
+     * Kept for backward compat with legacy assignRole() flow.
+     */
     private static final Map<String, String> PERM_TO_RELATION = Map.ofEntries(
             Map.entry("VIEW_USERS", "can_view"),
             Map.entry("MANAGE_USERS", "can_manage"),

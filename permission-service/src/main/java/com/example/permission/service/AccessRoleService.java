@@ -146,7 +146,7 @@ public class AccessRoleService {
         for (RolePermission rp : source.getRolePermissions()) {
             RolePermission nrp = new RolePermission();
             nrp.setRole(saved);
-            nrp.setPermission(rp.getPermission());
+            RolePermissionGranuleDefaults.apply(nrp, rp.getPermission());
             rolePermissionRepository.save(nrp);
         }
 
@@ -240,7 +240,7 @@ public class AccessRoleService {
             }
             RolePermission rolePermission = new RolePermission();
             rolePermission.setRole(role);
-            rolePermission.setPermission(permission);
+            RolePermissionGranuleDefaults.apply(rolePermission, permission);
             rolePermissionRepository.save(rolePermission);
             role.getRolePermissions().add(rolePermission);
         }
@@ -274,6 +274,10 @@ public class AccessRoleService {
         return new RolePermissionsUpdateResponseDto(true, auditId);
     }
 
+    /**
+     * @deprecated STORY-0318: Use PUT /v1/roles/{id}/granules with 5-granule format instead.
+     * This hardcoded mapping will be removed after all consumers migrate.
+     */
     private boolean applyLevelForModule(Role role, String moduleKey, String level) {
         // Şimdilik sadece USER_MANAGEMENT için deterministik mapping
         List<String> addPerms = new ArrayList<>();
@@ -339,7 +343,7 @@ public class AccessRoleService {
             if (!exists) {
                 RolePermission rp = new RolePermission();
                 rp.setRole(role);
-                rp.setPermission(p);
+                RolePermissionGranuleDefaults.apply(rp, p);
                 rolePermissionRepository.save(rp);
                 changed = true;
             }

@@ -6,6 +6,7 @@ import com.example.permission.model.RolePermission;
 import com.example.permission.repository.PermissionRepository;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.RoleRepository;
+import com.example.permission.service.RolePermissionGranuleDefaults;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -225,7 +226,7 @@ public class PermissionDataInitializer implements CommandLineRunner {
                     .forEach(permission -> {
                         RolePermission rolePermission = new RolePermission();
                         rolePermission.setRole(role);
-                        rolePermission.setPermission(permission);
+                        RolePermissionGranuleDefaults.apply(rolePermission, permission);
                         rolePermissionRepository.save(rolePermission);
                         log.info("Linked permission {} to role {}", permission.getCode(), role.getName());
                     });

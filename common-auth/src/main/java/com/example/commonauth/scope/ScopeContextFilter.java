@@ -1,5 +1,6 @@
 package com.example.commonauth.scope;
 
+import com.example.commonauth.AuthenticatedUserLookupService;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.commonauth.openfga.OpenFgaProperties;
 import jakarta.servlet.FilterChain;
@@ -33,10 +34,18 @@ public class ScopeContextFilter extends OncePerRequestFilter {
 
     private final OpenFgaAuthzService authzService;
     private final OpenFgaProperties properties;
+    private final AuthenticatedUserLookupService authenticatedUserLookupService;
 
     public ScopeContextFilter(OpenFgaAuthzService authzService, OpenFgaProperties properties) {
+        this(authzService, properties, null);
+    }
+
+    public ScopeContextFilter(OpenFgaAuthzService authzService,
+                              OpenFgaProperties properties,
+                              AuthenticatedUserLookupService authenticatedUserLookupService) {
         this.authzService = authzService;
         this.properties = properties;
+        this.authenticatedUserLookupService = authenticatedUserLookupService;
     }
 
     @Override
@@ -102,7 +111,12 @@ public class ScopeContextFilter extends OncePerRequestFilter {
         }
         Object principal = auth.getPrincipal();
         if (principal instanceof Jwt jwt) {
-            // Try numeric userId claim first, then sub
+            if (authenticatedUserLookupService != null) {
+                var resolved = authenticatedUserLookupService.resolve(jwt);
+                if (resolved.responseUserId() != null) {
+                    return resolved.responseUserId();
+                }
+            }
             Object userIdClaim = jwt.getClaim("userId");
             if (userIdClaim != null) {
                 return String.valueOf(userIdClaim);
