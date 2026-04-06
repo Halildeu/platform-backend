@@ -1,12 +1,10 @@
 package com.example.auth.serviceauth;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Component
-@Profile({"local", "dev"})
 @ConfigurationProperties(prefix = "security.service-jwt")
 public class ServiceJwtKeyProperties {
 

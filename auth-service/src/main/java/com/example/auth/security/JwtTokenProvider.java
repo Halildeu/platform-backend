@@ -3,7 +3,6 @@ package com.example.auth.security;
 import com.example.auth.config.JwtProperties;
 import java.time.Instant;
 import java.util.Set;
-import org.springframework.context.annotation.Profile;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -19,7 +18,6 @@ import org.springframework.stereotype.Component;
  * Keycloak access tokenlarını oauth2ResourceServer(jwt) ile doğrular.
  */
 @Component
-@Profile({"local", "dev"})
 @Deprecated
 public class JwtTokenProvider {
 

@@ -10,7 +10,6 @@ import com.example.auth.user.UserAlreadyExistsException;
 import com.example.auth.service.AuthService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.context.annotation.Profile;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.*;
 
@@ -18,7 +17,6 @@ import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/auth")
-@Profile({"local", "dev"})
 public class AuthController {
 
     private final AuthService authService;

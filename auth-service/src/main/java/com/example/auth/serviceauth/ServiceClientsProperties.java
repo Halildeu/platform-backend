@@ -3,11 +3,9 @@ package com.example.auth.serviceauth;
 import java.util.HashMap;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 @Component
-@Profile({"local", "dev"})
 @ConfigurationProperties(prefix = "security.service-clients")
 public class ServiceClientsProperties {
     /**

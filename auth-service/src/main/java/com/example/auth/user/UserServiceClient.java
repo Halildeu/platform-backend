@@ -3,7 +3,6 @@ package com.example.auth.user;
 import java.util.Optional;
 
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -16,7 +15,6 @@ import com.example.auth.serviceauth.ServiceTokenProvider;
 import java.util.List;
 
 @Component
-@Profile({"local", "dev"})
 public class UserServiceClient {
 
     private static final String USER_SERVICE_AUDIENCE = "user-service";
