@@ -11,6 +11,9 @@ set +x
 #   KEYCLOAK_CLIENT_ID
 #   KEYCLOAK_CLIENT_SECRET
 #   KEYCLOAK_SCOPE
+# Optional env:
+#   PW_REAL_USER_EMAIL
+#   PW_REAL_USER_PASSWORD
 # Auth:
 #   VAULT_TOKEN (preferred) or backend/.vault-dev/vault-init.json root_token (local dev convenience)
 #
@@ -52,8 +55,13 @@ if [[ "${#missing[@]}" -gt 0 ]]; then
 fi
 
 config_payload="$(
-  jq -n --arg baseUrl "${PLAYWRIGHT_BASE_URL}" \
-    '{data:{PLAYWRIGHT_BASE_URL:$baseUrl}}'
+  jq -n \
+    --arg baseUrl "${PLAYWRIGHT_BASE_URL}" \
+    --arg realUserEmail "${PW_REAL_USER_EMAIL:-}" \
+    --arg realUserPassword "${PW_REAL_USER_PASSWORD:-}" \
+    '{data:({PLAYWRIGHT_BASE_URL:$baseUrl}
+      + (if $realUserEmail != "" then {PW_REAL_USER_EMAIL:$realUserEmail} else {} end)
+      + (if $realUserPassword != "" then {PW_REAL_USER_PASSWORD:$realUserPassword} else {} end))}'
 )"
 
 keycloak_payload="$(
@@ -79,5 +87,9 @@ curl -sSf \
   -d "${keycloak_payload}" \
   >/dev/null
 
-echo "[seed] WROTE keys: secret/stage/web-playwright/config: PLAYWRIGHT_BASE_URL"
+config_keys=("PLAYWRIGHT_BASE_URL")
+[[ -n "${PW_REAL_USER_EMAIL:-}" ]] && config_keys+=("PW_REAL_USER_EMAIL")
+[[ -n "${PW_REAL_USER_PASSWORD:-}" ]] && config_keys+=("PW_REAL_USER_PASSWORD")
+
+echo "[seed] WROTE keys: secret/stage/web-playwright/config: ${config_keys[*]}"
 echo "[seed] WROTE keys: secret/stage/web-playwright/keycloak: KEYCLOAK_TOKEN_URL KEYCLOAK_CLIENT_ID KEYCLOAK_CLIENT_SECRET KEYCLOAK_SCOPE"
