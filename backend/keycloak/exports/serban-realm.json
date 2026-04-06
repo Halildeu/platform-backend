@@ -910,18 +910,21 @@
       "clientId": "frontend",
       "name": "Frontend SPA",
       "description": "",
-      "rootUrl": "",
+      "rootUrl": "https://ai.acik.com",
       "adminUrl": "",
-      "baseUrl": "",
+      "baseUrl": "https://ai.acik.com",
       "surrogateAuthRequired": false,
       "enabled": true,
       "alwaysDisplayInConsole": false,
       "clientAuthenticatorType": "client-secret",
       "redirectUris": [
+        "https://ai.acik.com",
+        "https://ai.acik.com/*",
         "http://127.0.0.1:3000/*",
         "http://localhost:3000/*"
       ],
       "webOrigins": [
+        "https://ai.acik.com",
         "http://127.0.0.1:3000",
         "http://localhost:3000"
       ],
