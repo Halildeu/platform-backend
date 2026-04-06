@@ -94,6 +94,28 @@ else
   echo "[kc] realm ${REALM} exists"
 fi
 
+if [[ -n "${FRONTEND_PUBLIC_ORIGIN}" ]]; then
+  echo "[kc] syncing realm browser origin -> ${FRONTEND_PUBLIC_ORIGIN}"
+  CURRENT_REALM="$(kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}")"
+  UPDATED_REALM="$(
+    printf '%s' "${CURRENT_REALM}" | python3 - "${FRONTEND_PUBLIC_ORIGIN}" <<'PY'
+import json
+import sys
+
+realm = json.load(sys.stdin)
+origin = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
+attrs = realm.get("attributes") or {}
+if origin:
+    attrs["frontendUrl"] = origin
+realm["attributes"] = attrs
+realm["sslRequired"] = "EXTERNAL"
+print(json.dumps(realm))
+PY
+  )"
+  kc_put "${KEYCLOAK_BASE}/admin/realms/${REALM}" "${UPDATED_REALM}" >/dev/null
+  printf '%s' "${UPDATED_REALM}" | python3 -c 'import json,sys; realm=json.load(sys.stdin); attrs=realm.get("attributes") or {}; print("[kc] realm=" + str(realm.get("realm","unknown"))); print("[kc] sslRequired=" + str(realm.get("sslRequired",""))); print("[kc] frontendUrl=" + str(attrs.get("frontendUrl","")));'
+fi
+
 # Ensure audience client scopes
 for entry in "${SCOPES[@]}"; do
   SCOPE_NAME="${entry%%:*}"
