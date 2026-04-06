@@ -111,6 +111,8 @@ services:
       ERP_OPENFGA_API_URL: http://openfga:8080
       ERP_OPENFGA_STORE_ID: ${OPENFGA_STORE_ID}
       ERP_OPENFGA_MODEL_ID: ${OPENFGA_MODEL_ID}
+      PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE: ${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-user_service.users}
+      PERMISSION_AUTHZ_USER_TABLE: ${PERMISSION_AUTHZ_USER_TABLE:-user_service.users}
     depends_on:
       discovery-server:
         condition: service_healthy

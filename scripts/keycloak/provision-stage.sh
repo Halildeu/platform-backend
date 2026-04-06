@@ -24,6 +24,7 @@ KC_ADMIN_PASS="${KC_ADMIN_PASS:?Set KC_ADMIN_PASS}"
 KC_ADMIN_REALM="${KC_ADMIN_REALM:-master}"
 REALM="${REALM:-platform}"
 REALM_IMPORT_FILE="${REALM_IMPORT_FILE:-}"
+FRONTEND_PUBLIC_ORIGIN="${FRONTEND_PUBLIC_ORIGIN:-}"
 
 CLIENTS=( "gateway" "user-service" "permission-service" "variant-service" "frontend" )
 SCOPES=( "aud-user-service:user-service" "aud-permission-service:permission-service" )
@@ -46,6 +47,40 @@ kc_get() { curl -s -S -H "Authorization: Bearer ${ADMIN_TOKEN}" "$@"; }
 kc_post() { curl -s -S -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Content-Type: application/json' -X POST "$1" -d "$2"; }
 kc_put() { curl -s -S -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Content-Type: application/json' -X PUT "$1" -d "$2"; }
 
+build_frontend_client_payload() {
+  python3 - "${FRONTEND_PUBLIC_ORIGIN}" <<'PY'
+import json
+import sys
+
+origin = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
+redirects = ["http://127.0.0.1:3000/*", "http://localhost:3000/*"]
+web_origins = ["http://127.0.0.1:3000", "http://localhost:3000"]
+
+if origin:
+    redirects.extend([origin, f"{origin}/*"])
+    web_origins.append(origin)
+
+payload = {
+    "clientId": "frontend",
+    "protocol": "openid-connect",
+    "serviceAccountsEnabled": False,
+    "publicClient": True,
+    "standardFlowEnabled": True,
+    "directAccessGrantsEnabled": False,
+    "redirectUris": redirects,
+    "webOrigins": web_origins,
+    "rootUrl": origin,
+    "baseUrl": origin,
+    "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+",
+    },
+}
+
+print(json.dumps(payload))
+PY
+}
+
 # Ensure realm exists
 if ! kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}" | jq -e .realm >/dev/null 2>&1; then
   if [[ -n "${REALM_IMPORT_FILE}" && -f "${REALM_IMPORT_FILE}" ]]; then
@@ -57,6 +92,28 @@ if ! kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}" | jq -e .realm >/dev/null 2
   fi
 else
   echo "[kc] realm ${REALM} exists"
+fi
+
+if [[ -n "${FRONTEND_PUBLIC_ORIGIN}" ]]; then
+  echo "[kc] syncing realm browser origin -> ${FRONTEND_PUBLIC_ORIGIN}"
+  CURRENT_REALM="$(kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}")"
+  UPDATED_REALM="$(
+    printf '%s' "${CURRENT_REALM}" | python3 - "${FRONTEND_PUBLIC_ORIGIN}" <<'PY'
+import json
+import sys
+
+realm = json.load(sys.stdin)
+origin = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
+attrs = realm.get("attributes") or {}
+if origin:
+    attrs["frontendUrl"] = origin
+realm["attributes"] = attrs
+realm["sslRequired"] = "EXTERNAL"
+print(json.dumps(realm))
+PY
+  )"
+  kc_put "${KEYCLOAK_BASE}/admin/realms/${REALM}" "${UPDATED_REALM}" >/dev/null
+  printf '%s' "${UPDATED_REALM}" | python3 -c 'import json,sys; realm=json.load(sys.stdin); attrs=realm.get("attributes") or {}; print("[kc] realm=" + str(realm.get("realm","unknown"))); print("[kc] sslRequired=" + str(realm.get("sslRequired",""))); print("[kc] frontendUrl=" + str(attrs.get("frontendUrl","")));'
 fi
 
 # Ensure audience client scopes
@@ -79,10 +136,57 @@ done
 for cid in "${CLIENTS[@]}"; do
   echo "[kc] ensuring client ${cid}"
   if ! kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients?clientId=${cid}" | jq -e '.[0].id' >/dev/null; then
-    kc_post "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients" \
-      "{\"clientId\":\"${cid}\",\"protocol\":\"openid-connect\",\"serviceAccountsEnabled\":true,\"publicClient\":false,\"standardFlowEnabled\":false,\"directAccessGrantsEnabled\":false}" >/dev/null
+    if [[ "${cid}" == "frontend" ]]; then
+      kc_post "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients" "$(build_frontend_client_payload)" >/dev/null
+    else
+      kc_post "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients" \
+        "{\"clientId\":\"${cid}\",\"protocol\":\"openid-connect\",\"serviceAccountsEnabled\":true,\"publicClient\":false,\"standardFlowEnabled\":false,\"directAccessGrantsEnabled\":false}" >/dev/null
+    fi
   fi
   CID=$(kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients?clientId=${cid}" | jq -r '.[0].id')
+  if [[ "${cid}" == "frontend" ]]; then
+    CURRENT_FRONTEND="$(kc_get "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients/${CID}")"
+    UPDATED_FRONTEND="$(
+      printf '%s' "${CURRENT_FRONTEND}" | python3 - "${FRONTEND_PUBLIC_ORIGIN}" <<'PY'
+import json
+import sys
+
+client = json.load(sys.stdin)
+origin = (sys.argv[1] if len(sys.argv) > 1 else "").rstrip("/")
+redirects = [str(item).strip() for item in client.get("redirectUris", []) if str(item).strip()]
+web_origins = [str(item).strip() for item in client.get("webOrigins", []) if str(item).strip()]
+
+def add_unique(items, value):
+    if value and value not in items:
+        items.append(value)
+
+for value in ("http://127.0.0.1:3000/*", "http://localhost:3000/*"):
+    add_unique(redirects, value)
+for value in ("http://127.0.0.1:3000", "http://localhost:3000"):
+    add_unique(web_origins, value)
+if origin:
+    add_unique(redirects, origin)
+    add_unique(redirects, f"{origin}/*")
+    add_unique(web_origins, origin)
+
+client["publicClient"] = True
+client["serviceAccountsEnabled"] = False
+client["standardFlowEnabled"] = True
+client["directAccessGrantsEnabled"] = False
+client["bearerOnly"] = False
+client["redirectUris"] = redirects
+client["webOrigins"] = web_origins
+client["rootUrl"] = origin
+client["baseUrl"] = origin
+attributes = client.setdefault("attributes", {})
+attributes["pkce.code.challenge.method"] = "S256"
+attributes["post.logout.redirect.uris"] = "+"
+
+print(json.dumps(client))
+PY
+    )"
+    kc_put "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients/${CID}" "${UPDATED_FRONTEND}" >/dev/null
+  fi
   # assign default client scopes
   for entry in "${SCOPES[@]}"; do
     SCOPE_NAME="${entry%%:*}"
@@ -90,13 +194,15 @@ for cid in "${CLIENTS[@]}"; do
     kc_put "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients/${CID}/default-client-scopes/${SCOPE_ID}" '{}' >/dev/null || true
   done
   # get or regenerate secret
-  SECRET=$(kc_post "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients/${CID}/client-secret" '{}' | jq -r .value)
-  echo "[kc] ${cid} client-secret: ${SECRET:0:4}********"
-  if [[ -n "${VAULT_ADDR:-}" && -n "${VAULT_TOKEN:-}" && "${cid}" == "permission-service" ]]; then
-    echo "[vault] writing permission-service oauth secret to secret/${ENV_NAME}/permission-service/oauth"
-    curl -s -S -H "X-Vault-Token: ${VAULT_TOKEN}" -H 'Content-Type: application/json' \
-      -X POST "${VAULT_ADDR}/v1/secret/data/${ENV_NAME}/permission-service/oauth" \
-      -d "{\"data\":{\"client-id\":\"permission-service\",\"client-secret\":\"${SECRET}\"}}" >/dev/null
+  if [[ "${cid}" != "frontend" ]]; then
+    SECRET=$(kc_post "${KEYCLOAK_BASE}/admin/realms/${REALM}/clients/${CID}/client-secret" '{}' | jq -r .value)
+    echo "[kc] ${cid} client-secret: ${SECRET:0:4}********"
+    if [[ -n "${VAULT_ADDR:-}" && -n "${VAULT_TOKEN:-}" && "${cid}" == "permission-service" ]]; then
+      echo "[vault] writing permission-service oauth secret to secret/${ENV_NAME}/permission-service/oauth"
+      curl -s -S -H "X-Vault-Token: ${VAULT_TOKEN}" -H 'Content-Type: application/json' \
+        -X POST "${VAULT_ADDR}/v1/secret/data/${ENV_NAME}/permission-service/oauth" \
+        -d "{\"data\":{\"client-id\":\"permission-service\",\"client-secret\":\"${SECRET}\"}}" >/dev/null
+    fi
   fi
 done
 
