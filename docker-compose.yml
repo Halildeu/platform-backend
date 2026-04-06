@@ -61,6 +61,10 @@ services:
       # Service token doğrulaması için auth-service JWKS (lokal senaryo)
       SERVICE_AUTH_JWK_SET_URI: ${SERVICE_AUTH_JWK_SET_URI:-http://auth-service:8088/oauth2/jwks}
       SERVICE_AUTH_ISSUER: ${SERVICE_AUTH_ISSUER:-auth-service}
+      ERP_OPENFGA_ENABLED: ${ERP_OPENFGA_ENABLED:-false}
+      ERP_OPENFGA_API_URL: ${ERP_OPENFGA_API_URL:-http://openfga:8080}
+      ERP_OPENFGA_STORE_ID: ${ERP_OPENFGA_STORE_ID:-}
+      ERP_OPENFGA_MODEL_ID: ${ERP_OPENFGA_MODEL_ID:-}
       # Ek issuer/JWKS listesi Keycloak serban realm'ini işaret eder
       SECURITY_JWT_JWK_SET_URIS: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       SECURITY_JWT_ISSUERS: http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban
@@ -181,7 +185,7 @@ services:
       postgres-db:
         condition: service_healthy
       openfga:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8092/actuator/health"]
       interval: 30s
@@ -201,7 +205,7 @@ services:
       - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
       - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service,core-data-service
       # Ek issuer: Keycloak (lokal dev)
-      - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
+      - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs,http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban
       - SECURITY_JWT_SECONDARY_ISSUER=http://localhost:8081/realms/serban
       - SECURITY_JWT_SECONDARY_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
@@ -368,6 +372,10 @@ services:
       - SECURITY_JWT_SECONDARY_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_SECONDARY_ISSUER=http://localhost:8081/realms/serban
       - SECURITY_JWT_SECONDARY_AUDIENCE=permission-service
+      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-false}
+      - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:8080}
+      - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
+      - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
       - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-user_service.users}
       - PERMISSION_AUTHZ_USER_TABLE=${PERMISSION_AUTHZ_USER_TABLE:-user_service.users}
     depends_on:

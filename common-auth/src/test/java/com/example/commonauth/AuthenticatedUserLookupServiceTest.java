@@ -1,0 +1,84 @@
+package com.example.commonauth;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.oauth2.jwt.Jwt;
+
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
+class AuthenticatedUserLookupServiceTest {
+
+    @Test
+    void resolve_prefersNumericUidClaim() {
+        AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(new StubJdbcTemplate(List.of()), "users");
+        Jwt jwt = buildJwt(Map.of(
+                "uid", 42L,
+                "email", "admin@example.com"
+        ), "kc-user-uuid");
+
+        var resolved = service.resolve(jwt);
+
+        assertEquals(42L, resolved.numericUserId());
+        assertEquals("42", resolved.responseUserId());
+        assertEquals("admin@example.com", resolved.email());
+    }
+
+    @Test
+    void resolve_fallsBackToEmailLookupWhenSubjectIsNotNumeric() {
+        AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(
+                new StubJdbcTemplate(List.of(Map.of("id", 7L))),
+                "user_service.users"
+        );
+        Jwt jwt = buildJwt(Map.of(
+                "email", "admin@example.com"
+        ), "7d31b1a8-0f4d-43d8-a5df-d7cfbb5304f4");
+
+        var resolved = service.resolve(jwt);
+
+        assertEquals(7L, resolved.numericUserId());
+        assertEquals("7", resolved.responseUserId());
+        assertEquals("admin@example.com", resolved.email());
+    }
+
+    @Test
+    void resolve_returnsSubjectWhenLookupCannotResolveNumericUserId() {
+        AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(new StubJdbcTemplate(List.of()), "users");
+        Jwt jwt = buildJwt(Map.of(
+                "preferred_username", "admin@example.com"
+        ), "7d31b1a8-0f4d-43d8-a5df-d7cfbb5304f4");
+
+        var resolved = service.resolve(jwt);
+
+        assertNull(resolved.numericUserId());
+        assertEquals("7d31b1a8-0f4d-43d8-a5df-d7cfbb5304f4", resolved.responseUserId());
+        assertEquals("admin@example.com", resolved.email());
+    }
+
+    private static Jwt buildJwt(Map<String, Object> claims, String subject) {
+        var builder = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .subject(subject);
+        claims.forEach(builder::claim);
+        return builder.build();
+    }
+
+    private static final class StubJdbcTemplate extends JdbcTemplate {
+        private final List<Map<String, Object>> rows;
+
+        private StubJdbcTemplate(List<Map<String, Object>> rows) {
+            this.rows = rows;
+        }
+
+        @Override
+        public List<Map<String, Object>> queryForList(String sql, Object... args) {
+            return rows;
+        }
+    }
+}
