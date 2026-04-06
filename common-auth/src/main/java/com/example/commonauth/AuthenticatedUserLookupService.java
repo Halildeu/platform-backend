@@ -1,5 +1,8 @@
 package com.example.commonauth;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 
@@ -10,6 +13,7 @@ import java.util.regex.Pattern;
 
 public class AuthenticatedUserLookupService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthenticatedUserLookupService.class);
     private static final Pattern QUALIFIED_TABLE_NAME =
             Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?");
 
@@ -51,7 +55,13 @@ public class AuthenticatedUserLookupService {
             return null;
         }
         String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, email.toLowerCase(Locale.ROOT));
+        List<Map<String, Object>> rows;
+        try {
+            rows = jdbcTemplate.queryForList(sql, email.toLowerCase(Locale.ROOT));
+        } catch (DataAccessException ex) {
+            log.warn("Authenticated user lookup SQL başarısız oldu. cause={}", ex.getMessage());
+            return null;
+        }
         if (rows.isEmpty()) {
             return null;
         }

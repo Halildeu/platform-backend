@@ -86,21 +86,19 @@ public class AuthorizationControllerV1 {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "JWT missing");
         }
         AuthzMeResponseDto dto = new AuthzMeResponseDto();
-        var resolvedUser = authenticatedUserLookupService.resolve(jwt);
+        var resolvedUser = resolveAuthenticatedUser(jwt);
         dto.setUserId(resolvedUser.responseUserId());
 
         Long numericUserId = resolvedUser.numericUserId();
 
         // Legacy permissions (backward compat)
-        dto.setPermissions(resolvePermissions(jwt, numericUserId));
+        dto.setPermissions(resolvePermissionsSafely(jwt, numericUserId));
         boolean isSuperAdmin = dto.getPermissions().stream()
                 .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
         dto.setSuperAdmin(isSuperAdmin);
 
         // Scopes (existing)
-        Map<String, Set<Long>> scopeSummary = numericUserId == null
-                ? Collections.emptyMap()
-                : authorizationQueryService.getUserScopeSummary(numericUserId);
+        Map<String, Set<Long>> scopeSummary = resolveScopeSummarySafely(numericUserId);
         List<AuthzScopeSummaryDto> scopes = scopeSummary.entrySet().stream()
                 .map(e -> new AuthzScopeSummaryDto(e.getKey(), e.getValue().stream().toList()))
                 .collect(Collectors.toList());
@@ -112,7 +110,7 @@ public class AuthorizationControllerV1 {
 
         // STORY-0318: Enhanced response fields
         if (numericUserId != null) {
-            populateEnhancedFields(dto, numericUserId);
+            populateEnhancedFieldsSafely(dto, numericUserId);
         }
 
         return ResponseEntity.ok(dto);
@@ -310,10 +308,7 @@ public class AuthorizationControllerV1 {
 
     private Set<String> resolvePermissions(Jwt jwt, Long numericUserId) {
         if (numericUserId == null) {
-            Set<String> jwtPermissions = jwt.getClaimAsStringList("permissions") == null
-                    ? Set.of()
-                    : Set.copyOf(jwt.getClaimAsStringList("permissions"));
-            return jwtPermissions;
+            return jwtPermissions(jwt);
         }
 
         // OpenFGA-first: check each module from catalog
@@ -340,5 +335,89 @@ public class AuthorizationControllerV1 {
                 .filter(permission -> permission != null && !permission.isBlank())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         return dbPermissions;
+    }
+
+    private AuthenticatedUserLookupService.ResolvedAuthenticatedUser resolveAuthenticatedUser(Jwt jwt) {
+        try {
+            return authenticatedUserLookupService.resolve(jwt);
+        } catch (RuntimeException ex) {
+            log.warn("Authz /me kullanıcı çözümleme başarısız; JWT fallback kullanılacak. cause={}", ex.getMessage());
+            return new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                    null,
+                    fallbackResponseUserId(jwt),
+                    fallbackEmail(jwt)
+            );
+        }
+    }
+
+    private Set<String> resolvePermissionsSafely(Jwt jwt, Long numericUserId) {
+        try {
+            return resolvePermissions(jwt, numericUserId);
+        } catch (RuntimeException ex) {
+            log.warn("Authz /me izin çözümleme başarısız; JWT permissions fallback kullanılacak. cause={}", ex.getMessage());
+            return jwtPermissions(jwt);
+        }
+    }
+
+    private Map<String, Set<Long>> resolveScopeSummarySafely(Long numericUserId) {
+        if (numericUserId == null) {
+            return Collections.emptyMap();
+        }
+        try {
+            return authorizationQueryService.getUserScopeSummary(numericUserId);
+        } catch (RuntimeException ex) {
+            log.warn("Authz /me scope summary çözümleme başarısız; boş scope dönülecek. cause={}", ex.getMessage());
+            return Collections.emptyMap();
+        }
+    }
+
+    private void populateEnhancedFieldsSafely(AuthzMeResponseDto dto, Long numericUserId) {
+        try {
+            populateEnhancedFields(dto, numericUserId);
+        } catch (RuntimeException ex) {
+            log.warn("Authz /me enhanced field çözümleme başarısız; boş enhanced alanlarla devam edilecek. cause={}", ex.getMessage());
+        }
+    }
+
+    private String fallbackResponseUserId(Jwt jwt) {
+        return firstNonBlank(
+                stringClaim(jwt, "userId"),
+                stringClaim(jwt, "uid"),
+                jwt.getSubject(),
+                fallbackEmail(jwt)
+        );
+    }
+
+    private String fallbackEmail(Jwt jwt) {
+        return firstNonBlank(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
+    }
+
+    private Set<String> jwtPermissions(Jwt jwt) {
+        List<String> permissions = jwt.getClaimAsStringList("permissions");
+        if (permissions == null || permissions.isEmpty()) {
+            return Set.of();
+        }
+        return Set.copyOf(permissions);
+    }
+
+    private String stringClaim(Jwt jwt, String claimName) {
+        Object value = jwt.getClaim(claimName);
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 }

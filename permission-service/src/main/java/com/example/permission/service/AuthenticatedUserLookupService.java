@@ -1,9 +1,17 @@
 package com.example.permission.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.List;
 import java.util.Locale;
@@ -13,18 +21,30 @@ import java.util.regex.Pattern;
 @Service
 public class AuthenticatedUserLookupService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthenticatedUserLookupService.class);
     private static final Pattern QUALIFIED_TABLE_NAME =
             Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?");
 
     private final JdbcTemplate jdbcTemplate;
     private final String userTable;
+    private final RestClient userLookupClient;
 
+    @Autowired
     public AuthenticatedUserLookupService(
             JdbcTemplate jdbcTemplate,
-            @Value("${permission.authz.user-table:users}") String userTable
+            @Value("${permission.authz.user-table:users}") String userTable,
+            @Value("${permission.authz.user-lookup-base-url:http://user-service:8089}") String userLookupBaseUrl,
+            RestClient.Builder restClientBuilder
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.userTable = normalizeTableName(userTable);
+        this.userLookupClient = buildLookupClient(restClientBuilder, userLookupBaseUrl);
+    }
+
+    AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.userTable = normalizeTableName(userTable);
+        this.userLookupClient = null;
     }
 
     public ResolvedAuthenticatedUser resolve(Jwt jwt) {
@@ -56,13 +76,52 @@ public class AuthenticatedUserLookupService {
         if (email == null || email.isBlank()) {
             return null;
         }
-        String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, email.toLowerCase(Locale.ROOT));
-        if (rows.isEmpty()) {
+
+        String normalizedEmail = email.toLowerCase(Locale.ROOT);
+        try {
+            String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, normalizedEmail);
+            if (!rows.isEmpty()) {
+                Object idValue = rows.get(0).get("id");
+                return idValue instanceof Number number ? number.longValue() : null;
+            }
+        } catch (DataAccessException ex) {
+            log.warn("Authz user lookup SQL ile çözülemedi; user-service fallback denenecek. cause={}", ex.getMessage());
+        }
+
+        return lookupUserIdByEmailViaUserService(normalizedEmail);
+    }
+
+    private Long lookupUserIdByEmailViaUserService(String email) {
+        if (userLookupClient == null || !StringUtils.hasText(email)) {
             return null;
         }
-        Object idValue = rows.get(0).get("id");
-        return idValue instanceof Number number ? number.longValue() : null;
+
+        try {
+            UserLookupResponse response = userLookupClient.get()
+                    .uri("/api/users/by-email/{email}", email)
+                    .retrieve()
+                    .body(UserLookupResponse.class);
+            return response == null ? null : response.id();
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() == 404) {
+                return null;
+            }
+            log.warn("Authz user lookup user-service fallback HTTP {} ile başarısız oldu.", ex.getStatusCode().value());
+            return null;
+        } catch (RestClientException ex) {
+            log.warn("Authz user lookup user-service fallback başarısız oldu. cause={}", ex.getMessage());
+            return null;
+        }
+    }
+
+    private static RestClient buildLookupClient(RestClient.Builder restClientBuilder, String baseUrl) {
+        if (restClientBuilder == null || !StringUtils.hasText(baseUrl)) {
+            return null;
+        }
+        return restClientBuilder
+                .baseUrl(baseUrl.trim())
+                .build();
     }
 
     private static Long extractLongClaim(Jwt jwt, String claimName) {
@@ -131,5 +190,8 @@ public class AuthenticatedUserLookupService {
     }
 
     public record ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email) {
+    }
+
+    private record UserLookupResponse(Long id) {
     }
 }
