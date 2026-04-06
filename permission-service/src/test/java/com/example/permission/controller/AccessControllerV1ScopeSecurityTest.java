@@ -1,5 +1,8 @@
 package com.example.permission.controller;
 
+import com.example.permission.repository.RolePermissionRepository;
+import com.example.permission.repository.RoleRepository;
+import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.example.permission.security.SecurityConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +14,8 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.example.permission.service.AccessRoleService;
+import com.example.permission.service.PermissionService;
+import com.example.permission.service.TupleSyncService;
 import com.example.permission.service.UserScopeService;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -30,6 +35,21 @@ class AccessControllerV1ScopeSecurityTest {
 
     @MockitoBean
     private UserScopeService userScopeService;
+
+    @MockitoBean
+    private UserRoleAssignmentRepository assignmentRepository;
+
+    @MockitoBean
+    private RolePermissionRepository rolePermissionRepository;
+
+    @MockitoBean
+    private RoleRepository roleRepository;
+
+    @MockitoBean
+    private PermissionService permissionService;
+
+    @MockitoBean
+    private TupleSyncService tupleSyncService;
 
     @Test
     void whenMissingScopeManagePermission_thenScopeCrudIsForbidden() throws Exception {

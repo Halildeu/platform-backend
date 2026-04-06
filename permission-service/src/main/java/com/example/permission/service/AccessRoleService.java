@@ -146,7 +146,7 @@ public class AccessRoleService {
         for (RolePermission rp : source.getRolePermissions()) {
             RolePermission nrp = new RolePermission();
             nrp.setRole(saved);
-            nrp.setPermission(rp.getPermission());
+            RolePermissionGranuleDefaults.apply(nrp, rp.getPermission());
             rolePermissionRepository.save(nrp);
         }
 
@@ -240,7 +240,7 @@ public class AccessRoleService {
             }
             RolePermission rolePermission = new RolePermission();
             rolePermission.setRole(role);
-            rolePermission.setPermission(permission);
+            RolePermissionGranuleDefaults.apply(rolePermission, permission);
             rolePermissionRepository.save(rolePermission);
             role.getRolePermissions().add(rolePermission);
         }
@@ -343,7 +343,7 @@ public class AccessRoleService {
             if (!exists) {
                 RolePermission rp = new RolePermission();
                 rp.setRole(role);
-                rp.setPermission(p);
+                RolePermissionGranuleDefaults.apply(rp, p);
                 rolePermissionRepository.save(rp);
                 changed = true;
             }

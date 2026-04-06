@@ -4,7 +4,12 @@ import com.example.permission.dto.v1.BulkPermissionsResponseDto;
 import com.example.permission.dto.v1.RoleCloneResponseDto;
 import com.example.permission.dto.v1.RoleDto;
 import com.example.permission.dto.v1.RolePolicyDto;
+import com.example.permission.repository.RolePermissionRepository;
+import com.example.permission.repository.RoleRepository;
+import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.example.permission.service.AccessRoleService;
+import com.example.permission.service.PermissionService;
+import com.example.permission.service.TupleSyncService;
 import com.example.permission.service.UserScopeService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +43,21 @@ class AccessControllerV1Test {
 
     @MockitoBean
     private UserScopeService userScopeService;
+
+    @MockitoBean
+    private UserRoleAssignmentRepository assignmentRepository;
+
+    @MockitoBean
+    private RolePermissionRepository rolePermissionRepository;
+
+    @MockitoBean
+    private RoleRepository roleRepository;
+
+    @MockitoBean
+    private PermissionService permissionService;
+
+    @MockitoBean
+    private TupleSyncService tupleSyncService;
 
     @Test
     void getRoleReturnsRoleDetail() throws Exception {

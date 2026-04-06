@@ -1,9 +1,13 @@
 package com.example.permission.controller;
 
 import com.example.permission.dto.v1.AuthzMeResponseDto;
+import com.example.permission.repository.RolePermissionRepository;
+import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.example.permission.service.AuthenticatedUserLookupService;
 import com.example.permission.service.AuthorizationQueryService;
 import com.example.permission.service.PermissionService;
+import com.example.permission.service.PermissionCatalogService;
+import com.example.permission.service.TupleSyncService;
 import com.example.permission.dto.PermissionResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,7 +39,19 @@ class AuthorizationControllerV1Test {
     private PermissionService permissionService;
 
     @Mock
+    private PermissionCatalogService catalogService;
+
+    @Mock
+    private TupleSyncService tupleSyncService;
+
+    @Mock
     private com.example.commonauth.openfga.OpenFgaAuthzService authzService;
+
+    @Mock
+    private UserRoleAssignmentRepository assignmentRepository;
+
+    @Mock
+    private RolePermissionRepository rolePermissionRepository;
 
     @InjectMocks
     private AuthorizationControllerV1 controller;
@@ -53,10 +69,12 @@ class AuthorizationControllerV1Test {
                 .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "admin@example.com"));
         when(authorizationQueryService.getUserScopeSummary(15L))
                 .thenReturn(Map.of("COMPANY", Set.of(11L)));
+        when(catalogService.getModuleKeys()).thenReturn(List.of());
         PermissionResponse assignment = new PermissionResponse();
         assignment.setPermissions(Set.of("VIEW_USERS", "MANAGE_USERS"));
         when(permissionService.getAssignments(15L, null, null, null))
                 .thenReturn(List.of(assignment));
+        when(assignmentRepository.findActiveAssignments(15L)).thenReturn(List.of());
 
         ResponseEntity<AuthzMeResponseDto> response = controller.getMe(jwt);
 
