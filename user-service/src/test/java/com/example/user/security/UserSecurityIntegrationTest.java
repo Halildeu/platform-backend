@@ -42,6 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         // RS256/JWKS doğrulaması için beklenen issuer/audience
         "SECURITY_JWT_ISSUER=auth-service",
+        "SECURITY_JWT_ISSUERS=https://ai.acik.com/realms/serban",
         "SECURITY_JWT_AUDIENCE=user-service",
         // Testlerde bean override'a izin ver (serviceRsaKey testte geçersiz kılınacak)
         "spring.main.allow-bean-definition-overriding=true",
@@ -138,6 +139,49 @@ class UserSecurityIntegrationTest {
         mockMvc.perform(get("/api/users/all?page=1&pageSize=2")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void users_all_should_return_200_when_authorized_party_matches() throws Exception {
+        ensureUserExists("azp@example.com");
+        Instant now = Instant.now();
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .subject("azp@example.com")
+                .issuer("auth-service")
+                .audience(List.of("other-service"))
+                .issuedAt(now)
+                .expiresAt(now.plusSeconds(600))
+                .claim("email", "azp@example.com")
+                .claim("userId", 99L)
+                .claim("azp", "frontend")
+                .build();
+        var headers = JwsHeader.with(SignatureAlgorithm.RS256).build();
+        String token = jwtEncoder.encode(JwtEncoderParameters.from(headers, claims)).getTokenValue();
+
+        mockMvc.perform(get("/api/users/all?page=1&pageSize=2")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void users_all_should_return_200_for_secondary_public_issuer() throws Exception {
+        ensureUserExists("public-issuer@example.com");
+        Instant now = Instant.now();
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .subject("public-issuer@example.com")
+                .issuer("https://ai.acik.com/realms/serban")
+                .audience(List.of("user-service"))
+                .issuedAt(now)
+                .expiresAt(now.plusSeconds(600))
+                .claim("email", "public-issuer@example.com")
+                .claim("userId", 100L)
+                .build();
+        var headers = JwsHeader.with(SignatureAlgorithm.RS256).build();
+        String token = jwtEncoder.encode(JwtEncoderParameters.from(headers, claims)).getTokenValue();
+
+        mockMvc.perform(get("/api/users/all?page=1&pageSize=2")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -340,17 +384,33 @@ class UserSecurityIntegrationTest {
         @Bean
         @Primary
         public JwtDecoder testJwtDecoder(RSAKey serviceRsaKey) {
-            NimbusJwtDecoder decoder;
+            NimbusJwtDecoder primary;
+            NimbusJwtDecoder publicIssuer;
             try {
-                decoder = NimbusJwtDecoder.withPublicKey(serviceRsaKey.toRSAPublicKey()).build();
+                primary = NimbusJwtDecoder.withPublicKey(serviceRsaKey.toRSAPublicKey()).build();
+                publicIssuer = NimbusJwtDecoder.withPublicKey(serviceRsaKey.toRSAPublicKey()).build();
             } catch (com.nimbusds.jose.JOSEException e) {
                 throw new RuntimeException(e);
             }
-            decoder.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
+            var audienceOrAuthorizedPartyValidator = new AudienceOrAuthorizedPartyValidator(
+                    java.util.List.of("user-service"),
+                    java.util.List.of("frontend", "admin-cli", "serban-web", "account")
+            );
+            primary.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
                     org.springframework.security.oauth2.jwt.JwtValidators.createDefaultWithIssuer("auth-service"),
-                    new AudienceValidator(java.util.List.of("user-service"))
+                    audienceOrAuthorizedPartyValidator
             ));
-            return decoder;
+            publicIssuer.setJwtValidator(new org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator<>(
+                    org.springframework.security.oauth2.jwt.JwtValidators.createDefaultWithIssuer("https://ai.acik.com/realms/serban"),
+                    audienceOrAuthorizedPartyValidator
+            ));
+            return token -> {
+                try {
+                    return primary.decode(token);
+                } catch (Exception ignored) {
+                    return publicIssuer.decode(token);
+                }
+            };
         }
 
         /**

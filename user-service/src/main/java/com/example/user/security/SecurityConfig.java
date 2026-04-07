@@ -114,10 +114,11 @@ public class SecurityConfig {
         );
 
         java.util.List<JwtDecoder> decoders = new java.util.ArrayList<>();
+        java.util.List<String> allowedClientIds = resolveAllowedClientIds();
         java.util.function.Function<String, OAuth2TokenValidator<Jwt>> validatorForIssuer = iss ->
                 new DelegatingOAuth2TokenValidator<>(
                         JwtValidators.createDefaultWithIssuer(iss),
-                        new AudienceValidator(audiences)
+                        new AudienceOrAuthorizedPartyValidator(audiences, allowedClientIds)
                 );
 
         NimbusJwtDecoder primary = NimbusJwtDecoder.withJwkSetUri(primaryJwk).build();
@@ -213,6 +214,15 @@ public class SecurityConfig {
                 "user-service"
         );
         return splitCsv(audienceProp);
+    }
+
+    private java.util.List<String> resolveAllowedClientIds() {
+        String raw = firstNonBlank(
+                environment.getProperty("security.service-auth.allowed-client-ids"),
+                environment.getProperty("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+                "frontend,admin-cli,serban-web,account"
+        );
+        return splitCsv(raw);
     }
 
     private static java.util.List<String> splitCsv(String value) {
