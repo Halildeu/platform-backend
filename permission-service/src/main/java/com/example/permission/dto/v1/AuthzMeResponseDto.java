@@ -7,6 +7,7 @@ import java.util.Set;
 public class AuthzMeResponseDto {
     private String userId;
     private Set<String> permissions;        // legacy — backward compat
+    private List<String> allowedModules;    // frontend compatibility
     private List<AuthzScopeSummaryDto> scopes;
     private boolean superAdmin;
     private List<ScopeSummaryDto> allowedScopes;
@@ -23,6 +24,9 @@ public class AuthzMeResponseDto {
 
     public Set<String> getPermissions() { return permissions; }
     public void setPermissions(Set<String> permissions) { this.permissions = permissions; }
+
+    public List<String> getAllowedModules() { return allowedModules; }
+    public void setAllowedModules(List<String> allowedModules) { this.allowedModules = allowedModules; }
 
     public List<AuthzScopeSummaryDto> getScopes() { return scopes; }
     public void setScopes(List<AuthzScopeSummaryDto> scopes) { this.scopes = scopes; }
