@@ -3,10 +3,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BACKEND_POM="${ROOT_DIR}/pom.xml"
+MVN_CMD="${ROOT_DIR}/mvnw"
 REPORT_DIR="${ROOT_DIR}/test-results/security/dependency-check"
 TARGET_REPORT_DIR="${ROOT_DIR}/target"
+LOCAL_ENV_LOADER="${ROOT_DIR}/../scripts/ops/load_local_env.sh"
 mkdir -p "${REPORT_DIR}"
 cd "${ROOT_DIR}"
+
+if [[ -f "${LOCAL_ENV_LOADER}" ]]; then
+  # shellcheck source=/dev/null
+  source "${LOCAL_ENV_LOADER}" \
+    NVD_API_KEY \
+    DEPENDENCY_CHECK_VERSION \
+    DEPENDENCY_CHECK_FAIL_CVSS \
+    DEPENDENCY_CHECK_NVD_API_DELAY_MS \
+    DEPENDENCY_CHECK_NVD_MAX_RETRY_COUNT \
+    DEPENDENCY_CHECK_NVD_RESULTS_PER_PAGE
+fi
 
 DC_VERSION="${DEPENDENCY_CHECK_VERSION:-12.2.0}"
 FAIL_CVSS="${DEPENDENCY_CHECK_FAIL_CVSS:-7.0}"
@@ -61,7 +74,7 @@ build_cmd() {
   local use_cached_data="$1"
 
   cmd=(
-    mvn -B
+    "${MVN_CMD}" -B
     -f "${BACKEND_POM}"
     package
     "org.owasp:dependency-check-maven:${DC_VERSION}:aggregate"
