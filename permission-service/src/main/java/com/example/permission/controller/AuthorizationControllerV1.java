@@ -85,35 +85,41 @@ public class AuthorizationControllerV1 {
         if (jwt == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "JWT missing");
         }
-        AuthzMeResponseDto dto = new AuthzMeResponseDto();
-        var resolvedUser = resolveAuthenticatedUser(jwt);
-        dto.setUserId(resolvedUser.responseUserId());
+        try {
+            AuthzMeResponseDto dto = new AuthzMeResponseDto();
+            var resolvedUser = resolveAuthenticatedUser(jwt);
+            dto.setUserId(resolvedUser.responseUserId());
 
-        Long numericUserId = resolvedUser.numericUserId();
+            Long numericUserId = resolvedUser.numericUserId();
 
-        // Legacy permissions (backward compat)
-        dto.setPermissions(resolvePermissionsSafely(jwt, numericUserId));
-        boolean isSuperAdmin = dto.getPermissions().stream()
-                .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
-        dto.setSuperAdmin(isSuperAdmin);
+            // Legacy permissions (backward compat)
+            dto.setPermissions(resolvePermissionsSafely(jwt, numericUserId));
+            boolean isSuperAdmin = dto.getPermissions().stream()
+                    .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
+            dto.setSuperAdmin(isSuperAdmin);
 
-        // Scopes (existing)
-        Map<String, Set<Long>> scopeSummary = resolveScopeSummarySafely(numericUserId);
-        List<AuthzScopeSummaryDto> scopes = scopeSummary.entrySet().stream()
-                .map(e -> new AuthzScopeSummaryDto(e.getKey(), e.getValue().stream().toList()))
-                .collect(Collectors.toList());
-        dto.setScopes(scopes);
-        List<ScopeSummaryDto> allowedScopes = scopes.stream()
-                .flatMap(s -> s.getRefIds().stream().map(id -> new ScopeSummaryDto(s.getScopeType(), id)))
-                .toList();
-        dto.setAllowedScopes(allowedScopes);
+            // Scopes (existing)
+            Map<String, Set<Long>> scopeSummary = resolveScopeSummarySafely(numericUserId);
+            List<AuthzScopeSummaryDto> scopes = scopeSummary.entrySet().stream()
+                    .map(e -> new AuthzScopeSummaryDto(e.getKey(), e.getValue().stream().toList()))
+                    .collect(Collectors.toList());
+            dto.setScopes(scopes);
+            List<ScopeSummaryDto> allowedScopes = scopes.stream()
+                    .flatMap(s -> s.getRefIds().stream().map(id -> new ScopeSummaryDto(s.getScopeType(), id)))
+                    .toList();
+            dto.setAllowedScopes(allowedScopes);
 
-        // STORY-0318: Enhanced response fields
-        if (numericUserId != null) {
-            populateEnhancedFieldsSafely(dto, numericUserId);
+            // STORY-0318: Enhanced response fields
+            if (numericUserId != null) {
+                populateEnhancedFieldsSafely(dto, numericUserId);
+            }
+
+            applyFrontendCompatibilityFallback(dto, jwt);
+            return ResponseEntity.ok(dto);
+        } catch (RuntimeException ex) {
+            log.error("Authz /me beklenmeyen hata ile sonuçlandı; JWT fallback response döndürülecek. cause={}", ex.getMessage(), ex);
+            return ResponseEntity.ok(buildJwtFallbackResponse(jwt));
         }
-
-        return ResponseEntity.ok(dto);
     }
 
     /**
@@ -376,6 +382,154 @@ public class AuthorizationControllerV1 {
             populateEnhancedFields(dto, numericUserId);
         } catch (RuntimeException ex) {
             log.warn("Authz /me enhanced field çözümleme başarısız; boş enhanced alanlarla devam edilecek. cause={}", ex.getMessage());
+        }
+    }
+
+    private void applyFrontendCompatibilityFallback(AuthzMeResponseDto dto, Jwt jwt) {
+        if (dto.getPermissions() == null) {
+            dto.setPermissions(Set.of());
+        }
+        if (dto.getScopes() == null) {
+            dto.setScopes(List.of());
+        }
+        if (dto.getAllowedScopes() == null) {
+            dto.setAllowedScopes(List.of());
+        }
+        if (dto.getRoles() == null) {
+            dto.setRoles(extractJwtRoles(jwt));
+        }
+        if (dto.getActions() == null) {
+            dto.setActions(Map.of());
+        }
+        if (dto.getReports() == null) {
+            dto.setReports(Map.of());
+        }
+        if (dto.getPages() == null) {
+            dto.setPages(Map.of());
+        }
+
+        Map<String, String> moduleGrants = dto.getModules();
+        if (moduleGrants == null || moduleGrants.isEmpty()) {
+            moduleGrants = deriveModuleGrants(dto.getPermissions(), dto.getRoles());
+            dto.setModules(moduleGrants);
+        }
+
+        if (dto.getAllowedModules() == null || dto.getAllowedModules().isEmpty()) {
+            dto.setAllowedModules(List.copyOf(moduleGrants.keySet()));
+        }
+    }
+
+    private AuthzMeResponseDto buildJwtFallbackResponse(Jwt jwt) {
+        AuthzMeResponseDto dto = new AuthzMeResponseDto();
+        Set<String> permissions = safeJwtPermissions(jwt);
+        List<String> roles = extractJwtRoles(jwt);
+        Map<String, String> moduleGrants = deriveModuleGrants(permissions, roles);
+
+        dto.setUserId(fallbackResponseUserId(jwt));
+        dto.setPermissions(permissions);
+        dto.setAllowedModules(List.copyOf(moduleGrants.keySet()));
+        dto.setScopes(List.of());
+        dto.setAllowedScopes(List.of());
+        dto.setRoles(roles);
+        dto.setModules(moduleGrants);
+        dto.setActions(Map.of());
+        dto.setReports(Map.of());
+        dto.setPages(Map.of());
+        dto.setSuperAdmin(
+                permissions.stream().anyMatch(p -> p != null && p.equalsIgnoreCase("admin"))
+                        || roles.stream().anyMatch(role -> role != null && role.equalsIgnoreCase("admin"))
+        );
+        return dto;
+    }
+
+    private Set<String> safeJwtPermissions(Jwt jwt) {
+        try {
+            return jwtPermissions(jwt);
+        } catch (RuntimeException ex) {
+            log.warn("JWT permissions parse edilemedi; boş permissions döndürülecek. cause={}", ex.getMessage());
+            return Set.of();
+        }
+    }
+
+    private List<String> extractJwtRoles(Jwt jwt) {
+        if (jwt == null) {
+            return List.of();
+        }
+        Object realmAccessClaim = jwt.getClaim("realm_access");
+        if (!(realmAccessClaim instanceof Map<?, ?> realmAccess)) {
+            return List.of();
+        }
+        Object rolesClaim = realmAccess.get("roles");
+        if (!(rolesClaim instanceof Collection<?> rolesCollection)) {
+            return List.of();
+        }
+        return rolesCollection.stream()
+                .map(String::valueOf)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private Map<String, String> deriveModuleGrants(Set<String> permissions, List<String> roles) {
+        Map<String, String> modules = new LinkedHashMap<>();
+
+        if (permissions != null) {
+            for (String permission : permissions) {
+                registerModuleGrant(modules, permission);
+            }
+        }
+
+        if (roles != null) {
+            for (String role : roles) {
+                if (role != null && role.equalsIgnoreCase("admin")) {
+                    for (String module : catalogService.getModuleKeys()) {
+                        upsertGrant(modules, module, "MANAGE");
+                    }
+                }
+            }
+        }
+
+        return modules;
+    }
+
+    private void registerModuleGrant(Map<String, String> modules, String rawPermission) {
+        String value = rawPermission == null ? "" : rawPermission.trim().toUpperCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return;
+        }
+
+        switch (value) {
+            case "ACCESS", "ACCESS-READ", "VIEW_ACCESS", "ACCESS-WRITE", "ACCESS-MANAGE", "ROLE-READ", "ROLE-WRITE", "ROLE-MANAGE", "PERMISSION-MANAGE" ->
+                    upsertGrant(modules, "ACCESS", value.contains("MANAGE") || value.contains("WRITE") ? "MANAGE" : "VIEW");
+            case "AUDIT", "AUDIT-READ", "VIEW_AUDIT" ->
+                    upsertGrant(modules, "AUDIT", "VIEW");
+            case "REPORT", "REPORT_VIEW", "VIEW_REPORTS", "REPORT_EXPORT", "REPORT_MANAGE" ->
+                    upsertGrant(modules, "REPORT", value.contains("MANAGE") ? "MANAGE" : "VIEW");
+            case "THEME", "THEME_ADMIN" ->
+                    upsertGrant(modules, "THEME", value.contains("ADMIN") ? "MANAGE" : "VIEW");
+            case "USER_MANAGEMENT", "USER-READ", "VIEW_USERS", "MANAGE_USERS", "USER-UPDATE", "USER-CREATE", "USER-DELETE", "USER-EXPORT", "USER-IMPORT" ->
+                    upsertGrant(modules, "USER_MANAGEMENT", value.contains("MANAGE") || value.contains("CREATE") || value.contains("UPDATE") || value.contains("DELETE") ? "MANAGE" : "VIEW");
+            case "WAREHOUSE", "WAREHOUSE_VIEW", "WAREHOUSE_MANAGE" ->
+                    upsertGrant(modules, "WAREHOUSE", value.contains("MANAGE") ? "MANAGE" : "VIEW");
+            case "PURCHASE", "PURCHASE_VIEW", "PURCHASE_MANAGE", "CREATE_PO", "DELETE_PO", "APPROVE_PURCHASE" ->
+                    upsertGrant(modules, "PURCHASE", value.contains("MANAGE") || value.equals("CREATE_PO") || value.equals("DELETE_PO") || value.equals("APPROVE_PURCHASE") ? "MANAGE" : "VIEW");
+            default -> {
+                if (catalogService.getModuleKeys().contains(value)) {
+                    upsertGrant(modules, value, "VIEW");
+                }
+            }
+        }
+    }
+
+    private void upsertGrant(Map<String, String> modules, String module, String candidateGrant) {
+        if (module == null || module.isBlank()) {
+            return;
+        }
+        String normalizedGrant = "MANAGE".equalsIgnoreCase(candidateGrant) ? "MANAGE" : "VIEW";
+        String existingGrant = modules.get(module);
+        if (existingGrant == null || ("MANAGE".equals(normalizedGrant) && !"MANAGE".equals(existingGrant))) {
+            modules.put(module, normalizedGrant);
         }
     }
 

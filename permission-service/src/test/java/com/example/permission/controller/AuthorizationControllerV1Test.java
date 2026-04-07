@@ -24,6 +24,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -109,5 +110,44 @@ class AuthorizationControllerV1Test {
         assertEquals(Set.of("VIEW_USERS"), body.getPermissions());
         assertEquals(List.of(), body.getAllowedScopes());
         assertEquals(List.of(), body.getScopes());
+    }
+
+    @Test
+    void getMe_buildsFrontendCompatibleModuleFallbackWhenEnhancedFieldsFail() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("15")
+                .claim("permissions", List.of("ACCESS", "AUDIT", "REPORT"))
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+
+        when(authenticatedUserLookupService.resolve(jwt))
+                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "user3@example.com"));
+        when(authorizationQueryService.getUserScopeSummary(15L)).thenReturn(Map.of());
+        when(catalogService.getModuleKeys()).thenReturn(List.of("ACCESS", "AUDIT", "REPORT", "THEME"));
+        when(authzService.check("15", "can_manage", "module", "ACCESS")).thenReturn(false);
+        when(authzService.check("15", "can_view", "module", "ACCESS")).thenReturn(true);
+        when(authzService.check("15", "can_manage", "module", "AUDIT")).thenReturn(false);
+        when(authzService.check("15", "can_view", "module", "AUDIT")).thenReturn(true);
+        when(authzService.check("15", "can_manage", "module", "REPORT")).thenReturn(false);
+        when(authzService.check("15", "can_view", "module", "REPORT")).thenReturn(true);
+        when(authzService.check("15", "can_manage", "module", "THEME")).thenReturn(false);
+        when(authzService.check("15", "can_view", "module", "THEME")).thenReturn(false);
+        when(assignmentRepository.findActiveAssignments(15L))
+                .thenThrow(new RuntimeException("role repository unavailable"));
+
+        ResponseEntity<AuthzMeResponseDto> response = controller.getMe(jwt);
+
+        assertEquals(200, response.getStatusCode().value());
+        AuthzMeResponseDto body = response.getBody();
+        assertNotNull(body);
+        assertNotNull(body.getModules());
+        assertEquals("VIEW", body.getModules().get("ACCESS"));
+        assertEquals("VIEW", body.getModules().get("AUDIT"));
+        assertEquals("VIEW", body.getModules().get("REPORT"));
+        assertTrue(body.getAllowedModules().contains("ACCESS"));
+        assertTrue(body.getAllowedModules().contains("AUDIT"));
+        assertTrue(body.getAllowedModules().contains("REPORT"));
     }
 }
