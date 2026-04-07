@@ -102,7 +102,7 @@ services:
       EUREKA_SERVER_URL: http://discovery-server:8761/eureka
       PERMISSION_DB_SCHEMA: ${PERMISSION_DB_SCHEMA:-permission_service}
       PERMISSION_SERVICE_INTERNAL_API_KEY: ${PERMISSION_SERVICE_INTERNAL_API_KEY}
-      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web}
+      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
       SECURITY_JWT_ISSUER: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
       SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_USER_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
@@ -191,7 +191,7 @@ services:
       SERVICE_AUTH_ISSUER: auth-service
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_ISSUER_URI}
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
-      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web}
+      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
     depends_on:
       discovery-server:
         condition: service_healthy
@@ -297,6 +297,7 @@ services:
       SECURITY_JWT_ISSUERS: ${KEYCLOAK_ISSUER_URI}
       SECURITY_JWT_JWK_SET_URIS: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_AUDIENCE: user-service,permission-service,variant-service,core-data-service
+      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
     depends_on:
       discovery-server:
         condition: service_healthy

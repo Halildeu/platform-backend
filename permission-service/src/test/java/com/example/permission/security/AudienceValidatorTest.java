@@ -40,6 +40,23 @@ class AudienceValidatorTest {
     }
 
     @Test
+    void acceptsKeycloakAccountClientWhenExplicitlyAllowed() {
+        AudienceValidator validator = new AudienceValidator(
+                List.of("permission-service"),
+                List.of("frontend", "admin-cli", "serban-web", "account")
+        );
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("123")
+                .claim("azp", "account")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+
+        assertTrue(validator.validate(jwt).hasErrors() == false);
+    }
+
+    @Test
     void rejectsTokenWhenNeitherAudienceNorAuthorizedPartyMatches() {
         AudienceValidator validator = new AudienceValidator(List.of("permission-service"), List.of("frontend"));
         Jwt jwt = Jwt.withTokenValue("token")
