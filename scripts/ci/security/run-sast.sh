@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BACKEND_POM="${ROOT_DIR}/pom.xml"
+MVN_CMD="${ROOT_DIR}/mvnw"
 REPORT_DIR="${ROOT_DIR}/test-results/security"
 mkdir -p "${REPORT_DIR}"
 cd "${ROOT_DIR}"
@@ -10,7 +11,7 @@ cd "${ROOT_DIR}"
 SPOTBUGS_VERSION="${SPOTBUGS_VERSION:-4.8.6.2}"
 echo "[security][sast] Running SpotBugs scan with version ${SPOTBUGS_VERSION}"
 
-mvn -B \
+"${MVN_CMD}" -B \
   -f "${BACKEND_POM}" \
   package \
   com.github.spotbugs:spotbugs-maven-plugin:"${SPOTBUGS_VERSION}":spotbugs \
