@@ -87,6 +87,7 @@ public class SecurityConfig {
                 ""
         );
         java.util.List<String> audiences = resolveAudiences();
+        java.util.List<String> allowedClientIds = resolveAllowedClientIds();
 
         List<NimbusReactiveJwtDecoder> decoders = new ArrayList<>();
 
@@ -97,7 +98,7 @@ public class SecurityConfig {
             }
             return new DelegatingOAuth2TokenValidator<>(
                     JwtValidators.createDefaultWithIssuer(iss),
-                    new AudienceValidator(audiences)
+                    new AudienceValidator(audiences, allowedClientIds)
             );
         };
 
@@ -156,6 +157,15 @@ public class SecurityConfig {
                 ""
         );
         return splitCsv(audienceProp);
+    }
+
+    private java.util.List<String> resolveAllowedClientIds() {
+        String allowedClientIds = firstNonBlank(
+                environment.getProperty("security.jwt.allowed-client-ids"),
+                env("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+                "frontend,admin-cli,serban-web,account"
+        );
+        return splitCsv(allowedClientIds);
     }
 
     private static java.util.List<String> splitCsv(String value) {
