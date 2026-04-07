@@ -17,7 +17,11 @@ Secrets eklemek için GitHub → **Settings → Secrets and variables → Action
 - Node guardrail komutları (`tokens:build`, lint seti, permission registry testi, Keycloak CLI tests) kırmızıya düşerse pipeline erken biter.
 - `scripts/ci/security/run-sast.sh` SpotBugs’ı `Max` effort/`Low` threshold ile çalıştırır; raporlar `test-results/security/spotbugs/` altına yazılır.
 - `scripts/ci/security/run-dependency-scan.sh` OWASP Dependency-Check’in aggregate hedefini çağırır ve CVSS ≥7 bulunduğunda build’i kırar.
+- Pull request akışında dependency scan varsayılan olarak `cache-only` hızlı modda çalışır; yalnız `pom.xml`, Maven wrapper, dependency-check suppression/script veya workflow yüzeyi değiştiyse otomatik olarak `full` moda yükselir.
+- `workflow_dispatch` çağrısında `dependency_scan_mode` seçilebilir (`full` veya `cache-only`).
+- Workflow hafta içi her gece bir kez `full` refresh olarak da tetiklenir; böylece PR hattı hızlı kalırken NVD verisi tazelenir.
 - Lokal kullanım: `./scripts/ci/security/setup-nvd-api-key.sh <key>` komutu ile shell’e NVD anahtarını export edip ardından `run-dependency-scan.sh` çalıştırabilirsiniz.
+- Zorunlu local gate varsayılan olarak `cache-only` mod kullanır; gerekirse `LOCAL_GATE_DEPENDENCY_SCAN_MODE=full bash scripts/run_local_gate_chain.sh` ile tam tarama istenebilir.
 - `scripts/ci/security/run-dast.sh` varsayılan olarak `ZAP_TARGET_URL` secret’ını tarar; secret yoksa `DAST_FALLBACK_URL` repo var’ı (varsayılan `https://example.com`) kullanılarak baseline taraması çalışır. Raporlar (`xml/json/html`) `test-results/security/zap/` altındadır.
 - `scripts/ci/security/generate-sbom-and-sign.sh` CycloneDX aggregate SBOM üretir (`test-results/security/sbom/bom.json`). `COSIGN_PRIVATE_KEY` set edildiğinde cosign SBOM’u imzalar ve `.sig` + `.cert` üretir.
 - Workflow sonunda `test-results/security/**` klasörü `security-reports` adıyla artefact olarak yüklendiği için raporlar Actions sekmesinden indirilebilir.
@@ -35,6 +39,12 @@ Secrets eklemek için GitHub → **Settings → Secrets and variables → Action
 
 # Bağımlılık taraması
 ./scripts/ci/security/run-dependency-scan.sh
+
+# Hızlı cache-only tarama
+DEPENDENCY_CHECK_MODE=cache-only ./scripts/ci/security/run-dependency-scan.sh
+
+# Tam NVD refresh taraması
+DEPENDENCY_CHECK_MODE=full ./scripts/ci/security/run-dependency-scan.sh
 
 # DAST (preview URL'i ile)
 ZAP_TARGET_URL=https://preview.platform-security.internal ./scripts/ci/security/run-dast.sh
