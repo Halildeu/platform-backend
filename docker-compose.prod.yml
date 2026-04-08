@@ -94,7 +94,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SPRING_DATASOURCE_URL: ${PERMISSION_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${PERMISSION_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${PERMISSION_SERVICE_DB_PASSWORD}
@@ -105,6 +105,8 @@ services:
       SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
       SECURITY_JWT_ISSUER: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
       SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
       SECURITY_JWT_USER_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_SECONDARY_ISSUER: ${KEYCLOAK_ISSUER_URI}
       SECURITY_JWT_SECONDARY_USER_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
@@ -139,7 +141,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SPRING_DATASOURCE_URL: ${AUTH_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${AUTH_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${AUTH_SERVICE_DB_PASSWORD}
@@ -150,7 +152,7 @@ services:
       USER_SERVICE_BASE_URL: http://user-service:8089
       AUTH_DB_SCHEMA: ${AUTH_DB_SCHEMA:-auth_service}
       SERVICE_CLIENT_USER_SERVICE_SECRET: ${SERVICE_CLIENT_USER_SERVICE_SECRET}
-      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_ISSUER_URI}
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
       AUTH_VERIFICATION_BASE_URL: ${AUTH_VERIFICATION_BASE_URL}
       AUTH_RESET_BASE_URL: ${AUTH_RESET_BASE_URL}
@@ -177,7 +179,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SPRING_DATASOURCE_URL: ${USER_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${USER_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${USER_SERVICE_DB_PASSWORD}
@@ -191,7 +193,7 @@ services:
       SERVICE_AUTH_ISSUER: auth-service
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
-      SECURITY_JWT_ISSUERS: ${KEYCLOAK_ISSUER_URI}
+      SECURITY_JWT_ISSUERS: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}},${KEYCLOAK_ISSUER_URI}
       SECURITY_JWT_AUDIENCE: user-service,frontend,account,serban-web
       SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
     depends_on:
@@ -219,7 +221,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SPRING_DATASOURCE_URL: ${VARIANT_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${VARIANT_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${VARIANT_SERVICE_DB_PASSWORD}
@@ -250,7 +252,7 @@ services:
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SERVER_PORT: "8092"
       SPRING_DATASOURCE_URL: ${CORE_DATA_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${CORE_DATA_DB_USERNAME}
@@ -299,11 +301,11 @@ services:
       SECURITY_JWT_ISSUERS: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}},${KEYCLOAK_ISSUER_URI}
       SECURITY_JWT_JWK_SET_URIS: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_AUDIENCE: user-service,permission-service,variant-service,core-data-service
-      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
       VAULT_URI: ${VAULT_URI:-}
       VAULT_SCHEME: ${VAULT_SCHEME:-https}
       VAULT_TOKEN: ${VAULT_TOKEN:-}
-      VAULT_FAIL_FAST: ${VAULT_FAIL_FAST:-false}
+      VAULT_FAIL_FAST: "false"
+      SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
     depends_on:
       discovery-server:
         condition: service_healthy
@@ -334,7 +336,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SERVER_PORT: "8095"
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
       EUREKA_PREFER_IP_ADDRESS: "true"
@@ -376,7 +378,7 @@ services:
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
       SERVER_PORT: "8096"
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
       SCHEMA_MSSQL_HOST: ${SCHEMA_MSSQL_HOST}
