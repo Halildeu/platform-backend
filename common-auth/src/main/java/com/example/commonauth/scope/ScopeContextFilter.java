@@ -79,6 +79,7 @@ public class ScopeContextFilter extends OncePerRequestFilter {
             Set<Long> companyIds = authzService.listObjectIds(userId, "viewer", "company");
             Set<Long> projectIds = authzService.listObjectIds(userId, "viewer", "project");
             Set<Long> warehouseIds = authzService.listObjectIds(userId, "viewer", "warehouse");
+            Set<Long> branchIds = authzService.listObjectIds(userId, "member", "branch");
 
             boolean isSuperAdmin = authzService.check(userId, "admin", "organization", "default");
 
@@ -86,7 +87,7 @@ public class ScopeContextFilter extends OncePerRequestFilter {
                 return ScopeContext.superAdmin(userId);
             }
 
-            return new ScopeContext(userId, companyIds, projectIds, warehouseIds, false);
+            return new ScopeContext(userId, companyIds, projectIds, warehouseIds, branchIds, false);
         } catch (Exception e) {
             log.error("Failed to build ScopeContext from OpenFGA for user {}, falling back to dev scope", userId, e);
             return buildDevScopeContext();

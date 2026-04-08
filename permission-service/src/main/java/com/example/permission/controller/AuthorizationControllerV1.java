@@ -132,6 +132,14 @@ public class AuthorizationControllerV1 {
     }
 
     /**
+     * List all module keys. Replaces hardcoded module lists in frontend.
+     */
+    @GetMapping("/modules")
+    public ResponseEntity<List<String>> getModules() {
+        return ResponseEntity.ok(catalogService.getModuleKeys());
+    }
+
+    /**
      * Get roles assigned to a user.
      */
     @GetMapping("/users/{userId}/roles")
@@ -203,6 +211,9 @@ public class AuthorizationControllerV1 {
         String userIdStr = request.get("userId");
         String permTypeStr = request.get("permissionType");
         String permKey = request.get("permissionKey");
+        // Optional scope check: "can user access company:35?"
+        String scopeType = request.get("scopeType");     // company, project, warehouse, branch
+        String scopeRefId = request.get("scopeRefId");    // e.g. "35"
 
         if (userIdStr == null || permTypeStr == null || permKey == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "userId, permissionType, permissionKey required");
@@ -216,6 +227,19 @@ public class AuthorizationControllerV1 {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid permissionType: " + permTypeStr);
         }
 
+        Map<String, List<Long>> userScopes = buildScopeMap(userId);
+
+        // Scope-level denial check (if requested)
+        if (scopeType != null && scopeRefId != null) {
+            List<Long> scopeIds = userScopes.getOrDefault(scopeType, List.of());
+            Long refId = Long.parseLong(scopeRefId);
+            if (!scopeIds.contains(refId)) {
+                List<String> userRoles = resolveUserRoleNames(userId);
+                return ResponseEntity.ok(ExplainResponseDto.denied(
+                        "NO_SCOPE", scopeType, scopeRefId, null, null, userRoles, userScopes));
+            }
+        }
+
         // Get user's roles
         List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(userId);
         List<String> userRoles = assignments.stream()
@@ -224,7 +248,6 @@ public class AuthorizationControllerV1 {
                 .toList();
 
         if (assignments.isEmpty()) {
-            Map<String, List<Long>> userScopes = buildScopeMap(userId);
             return ResponseEntity.ok(ExplainResponseDto.denied(
                     "NO_ROLE", permTypeStr, permKey, null, null, userRoles, userScopes));
         }
@@ -241,8 +264,6 @@ public class AuthorizationControllerV1 {
         String compositeKey = permType.name() + ":" + permKey;
         TupleSyncService.ResolvedGrant grant = effective.get(compositeKey);
 
-        Map<String, List<Long>> userScopes = buildScopeMap(userId);
-
         if (grant == null) {
             return ResponseEntity.ok(ExplainResponseDto.denied(
                     "NO_PERMISSION", permTypeStr, permKey, null, null, userRoles, userScopes));
@@ -257,6 +278,13 @@ public class AuthorizationControllerV1 {
         return ResponseEntity.ok(ExplainResponseDto.allowed(
                 permTypeStr, permKey, grant.sourceRole(),
                 grant.grantType().name(), userRoles, userScopes));
+    }
+
+    private List<String> resolveUserRoleNames(Long userId) {
+        return assignmentRepository.findActiveAssignments(userId).stream()
+                .map(a -> a.getRole().getName())
+                .distinct()
+                .toList();
     }
 
     // --- Private helpers ---

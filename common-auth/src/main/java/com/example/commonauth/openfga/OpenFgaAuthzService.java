@@ -6,6 +6,7 @@ import dev.openfga.sdk.api.client.model.ClientExpandRequest;
 import dev.openfga.sdk.api.client.model.ClientListObjectsRequest;
 import dev.openfga.sdk.api.client.model.ClientWriteRequest;
 import dev.openfga.sdk.api.client.model.ClientTupleKey;
+import dev.openfga.sdk.api.client.model.ClientTupleKeyWithoutCondition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -169,6 +170,61 @@ public class OpenFgaAuthzService {
                     userId, relation, objectType, objectId, e);
             throw new RuntimeException("Failed to delete authorization tuple", e);
         }
+    }
+
+    /**
+     * Batch write multiple tuples in a single API call.
+     * Significantly faster than individual writeTuple calls for role propagation.
+     */
+    public void writeTuples(List<ClientTupleKey> tuples) {
+        if (!enabled || tuples == null || tuples.isEmpty()) {
+            return;
+        }
+        try {
+            var request = new ClientWriteRequest().writes(tuples);
+            client.write(request).get();
+            log.info("OpenFGA batch write: {} tuples", tuples.size());
+        } catch (Exception e) {
+            log.error("OpenFGA batch writeTuples failed ({} tuples)", tuples.size(), e);
+            throw new RuntimeException("Failed to batch write authorization tuples", e);
+        }
+    }
+
+    /**
+     * Batch delete multiple tuples in a single API call.
+     */
+    public void deleteTuples(List<ClientTupleKeyWithoutCondition> tuples) {
+        if (!enabled || tuples == null || tuples.isEmpty()) {
+            return;
+        }
+        try {
+            var request = new ClientWriteRequest().deletes(tuples);
+            client.write(request).get();
+            log.info("OpenFGA batch delete: {} tuples", tuples.size());
+        } catch (Exception e) {
+            log.error("OpenFGA batch deleteTuples failed ({} tuples)", tuples.size(), e);
+            throw new RuntimeException("Failed to batch delete authorization tuples", e);
+        }
+    }
+
+    /**
+     * Build a ClientTupleKey for use with batch write operations.
+     */
+    public static ClientTupleKey writeTupleKey(String userId, String relation, String objectType, String objectId) {
+        return new ClientTupleKey()
+                .user("user:" + userId)
+                .relation(relation)
+                ._object(objectType + ":" + objectId);
+    }
+
+    /**
+     * Build a ClientTupleKeyWithoutCondition for use with batch delete operations.
+     */
+    public static ClientTupleKeyWithoutCondition deleteTupleKey(String userId, String relation, String objectType, String objectId) {
+        return new ClientTupleKeyWithoutCondition()
+                .user("user:" + userId)
+                .relation(relation)
+                ._object(objectType + ":" + objectId);
     }
 
     /**

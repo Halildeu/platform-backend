@@ -19,12 +19,20 @@ public record ScopeContext(
         Set<Long> allowedCompanyIds,
         Set<Long> allowedProjectIds,
         Set<Long> allowedWarehouseIds,
+        Set<Long> allowedBranchIds,
         boolean superAdmin
 ) {
+    /** Backward-compatible constructor (without branchIds). */
+    public ScopeContext(String userId, Set<Long> allowedCompanyIds, Set<Long> allowedProjectIds,
+                        Set<Long> allowedWarehouseIds, boolean superAdmin) {
+        this(userId, allowedCompanyIds, allowedProjectIds, allowedWarehouseIds, Set.of(), superAdmin);
+    }
+
     public ScopeContext {
         allowedCompanyIds = allowedCompanyIds == null ? Collections.emptySet() : Set.copyOf(allowedCompanyIds);
         allowedProjectIds = allowedProjectIds == null ? Collections.emptySet() : Set.copyOf(allowedProjectIds);
         allowedWarehouseIds = allowedWarehouseIds == null ? Collections.emptySet() : Set.copyOf(allowedWarehouseIds);
+        allowedBranchIds = allowedBranchIds == null ? Collections.emptySet() : Set.copyOf(allowedBranchIds);
     }
 
     /**
@@ -58,5 +66,9 @@ public record ScopeContext(
 
     public boolean canAccessWarehouse(Long warehouseId) {
         return superAdmin || (warehouseId != null && allowedWarehouseIds.contains(warehouseId));
+    }
+
+    public boolean canAccessBranch(Long branchId) {
+        return superAdmin || (branchId != null && allowedBranchIds.contains(branchId));
     }
 }
