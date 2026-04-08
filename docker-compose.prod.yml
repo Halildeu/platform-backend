@@ -22,7 +22,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-discovery-server:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8761:8761"
+      - "127.0.0.1:8761:8761"
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
@@ -38,7 +38,7 @@ services:
     <<: *runtime-defaults
     image: pgvector/pgvector:pg18
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       <<: *common-env
       POSTGRES_USER: ${POSTGRES_USER}
@@ -72,8 +72,8 @@ services:
     image: openfga/openfga:latest
     command: run
     ports:
-      - "4000:8080"
-      - "4001:8081"
+      - "127.0.0.1:4000:8080"
+      - "127.0.0.1:4001:8081"
     environment:
       <<: *common-env
       OPENFGA_DATASTORE_ENGINE: postgres
@@ -90,7 +90,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-permission-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8090:8084"
+      - "127.0.0.1:8090:8084"
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
@@ -135,7 +135,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-auth-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8088:8088"
+      - "127.0.0.1:8088:8088"
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
@@ -173,7 +173,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-user-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8089:8089"
+      - "127.0.0.1:8089:8089"
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
@@ -215,7 +215,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-variant-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8091:8091"
+      - "127.0.0.1:8091:8091"
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
@@ -246,7 +246,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-core-data-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8092:8092"
+      - "127.0.0.1:8092:8092"
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
@@ -283,7 +283,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-api-gateway:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "${API_GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${API_GATEWAY_PORT:-8082}:8080"
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
@@ -296,10 +296,14 @@ services:
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_ISSUER: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
       SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
-      SECURITY_JWT_ISSUERS: ${KEYCLOAK_ISSUER_URI}
+      SECURITY_JWT_ISSUERS: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}},${KEYCLOAK_ISSUER_URI}
       SECURITY_JWT_JWK_SET_URIS: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_AUDIENCE: user-service,permission-service,variant-service,core-data-service
       SECURITY_AUTH_ALLOWED_CLIENT_IDS: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account}
+      VAULT_URI: ${VAULT_URI:-}
+      VAULT_SCHEME: ${VAULT_SCHEME:-https}
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      VAULT_FAIL_FAST: ${VAULT_FAIL_FAST:-false}
     depends_on:
       discovery-server:
         condition: service_healthy
@@ -323,17 +327,17 @@ services:
 
   report-service:
     <<: *runtime-defaults
-    profiles: ["extras"]
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-report-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8095:8095"
+      - "127.0.0.1:8095:8095"
     environment:
-      <<: *common-env
+      <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
       JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0
       SERVER_PORT: "8095"
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
+      EUREKA_PREFER_IP_ADDRESS: "true"
       REPORT_MSSQL_HOST: ${REPORT_MSSQL_HOST}
       REPORT_MSSQL_PORT: ${REPORT_MSSQL_PORT:-1433}
       REPORT_MSSQL_DB: ${REPORT_MSSQL_DB}
@@ -346,7 +350,7 @@ services:
       REPORT_PG_PASSWORD: ${REPORT_PG_PASSWORD}
       SECURITY_JWT_JWK_SET_URI: ${KEYCLOAK_JWKS_URI}
       SECURITY_JWT_ISSUER: ${KEYCLOAK_PUBLIC_ISSUER_URI:-${KEYCLOAK_ISSUER_URI}}
-      SECURITY_JWT_AUDIENCE: report-service,account,frontend
+      SECURITY_JWT_AUDIENCE: report-service,user-service,permission-service,variant-service,core-data-service,account,frontend
       PERMISSION_SERVICE_INTERNAL_API_KEY: ${PERMISSION_SERVICE_INTERNAL_API_KEY}
       MANAGEMENT_HEALTH_DB_ENABLED: "false"
     depends_on:
@@ -368,7 +372,7 @@ services:
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-schema-service:${IMAGE_TAG:-main-stable}
     pull_policy: always
     ports:
-      - "8096:8096"
+      - "127.0.0.1:8096:8096"
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod

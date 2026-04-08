@@ -94,8 +94,10 @@ public class AuthorizationControllerV1 {
 
             // Legacy permissions (backward compat)
             dto.setPermissions(resolvePermissionsSafely(jwt, numericUserId));
-            boolean isSuperAdmin = dto.getPermissions().stream()
-                    .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
+            // SuperAdmin: check OpenFGA organization admin first, then fall back to permissions list
+            boolean isSuperAdmin = checkOrganizationAdmin(numericUserId)
+                    || dto.getPermissions().stream()
+                            .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
             dto.setSuperAdmin(isSuperAdmin);
 
             // Scopes (existing)
@@ -381,6 +383,22 @@ public class AuthorizationControllerV1 {
                     fallbackResponseUserId(jwt),
                     fallbackEmail(jwt)
             );
+        }
+    }
+
+    /**
+     * Check if the user is an organization admin via OpenFGA.
+     * Falls back to false on any error (fail-closed).
+     */
+    private boolean checkOrganizationAdmin(Long numericUserId) {
+        if (numericUserId == null) {
+            return false;
+        }
+        try {
+            return authzService.check(String.valueOf(numericUserId), "admin", "organization", "default");
+        } catch (RuntimeException ex) {
+            log.warn("Authz /me OpenFGA organization admin check failed; defaulting to false. cause={}", ex.getMessage());
+            return false;
         }
     }
 
