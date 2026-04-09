@@ -11,7 +11,7 @@ x-common-env: &common-env
   TZ: ${TZ:-Europe/Istanbul}
 
 x-vault-env: &vault-env
-  VAULT_URI: ${VAULT_URI}
+  VAULT_URI: ${VAULT_URI:-https://vault:8200}
   VAULT_SCHEME: ${VAULT_SCHEME:-https}
   VAULT_TOKEN: ${VAULT_TOKEN}
   VAULT_FAIL_FAST: ${VAULT_FAIL_FAST:-true}
