@@ -24,37 +24,72 @@ app.use(express.json());
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
 const PORT = parseInt(process.env.SERVICE_MANAGER_PORT || '8795', 10);
+const PROJECT_PREFIX = process.env.COMPOSE_PROJECT_NAME || process.env.SERVICE_MANAGER_PROJECT || '';
+
+// ── Dynamic Service Discovery ───────────────────────────────────────
+// Auto-detect container prefix from running containers
+let detectedPrefix = '';
+async function detectPrefix() {
+  try {
+    const containers = await docker.listContainers({ all: true });
+    // Find most common prefix pattern: xxx-service-name-1
+    const prefixes = {};
+    for (const c of containers) {
+      const name = (c.Names[0] || '').replace(/^\//, '');
+      const match = name.match(/^(.+?)-(discovery-server|api-gateway|postgres-db|keycloak|vault)-\d+$/);
+      if (match) {
+        prefixes[match[1]] = (prefixes[match[1]] || 0) + 1;
+      }
+    }
+    const sorted = Object.entries(prefixes).sort((a, b) => b[1] - a[1]);
+    if (sorted.length > 0) {
+      detectedPrefix = sorted[0][0];
+      console.log(`[service-manager] Auto-detected project prefix: "${detectedPrefix}"`);
+    }
+  } catch (e) {
+    console.warn('[service-manager] Could not auto-detect prefix:', e.message);
+  }
+}
+
+function resolveContainer(baseName) {
+  const prefix = PROJECT_PREFIX || detectedPrefix || 'platform';
+  // Special cases
+  if (baseName === 'pgvector') return 'pgvector_local';
+  if (baseName === 'prometheus') return 'observability-prometheus';
+  if (baseName === 'grafana') return 'observability-grafana';
+  return `${prefix}-${baseName}-1`;
+}
 
 // ── Service Registry ────────────────────────────────────────────────
 const SERVICES = [
   // Core
-  { name: 'discovery-server', container: 'serban-discovery-server-1', port: 8761, healthPath: '/actuator/health', category: 'core' },
-  { name: 'api-gateway', container: 'serban-api-gateway-1', port: 8080, healthPath: '/actuator/health', category: 'core' },
+  { name: 'discovery-server', container: null /* auto: discovery-server-1 */, port: 8761, healthPath: '/actuator/health', category: 'core' },
+  { name: 'api-gateway', container: null /* auto: api-gateway-1 */, port: 8080, healthPath: '/actuator/health', category: 'core' },
   // Auth & Security
-  { name: 'auth-service', container: 'serban-auth-service-1', port: 8088, healthPath: '/actuator/health', category: 'auth' },
-  { name: 'keycloak', container: 'serban-keycloak-1', port: 8081, healthPath: '/realms/master', category: 'auth' },
-  { name: 'vault', container: 'backend-vault-1', port: 8200, healthPath: '/v1/sys/health', category: 'auth' },
-  { name: 'vault-unseal', container: 'serban-vault-unseal-1', port: null, healthPath: null, category: 'auth' },
+  { name: 'auth-service', container: null /* auto: auth-service-1 */, port: 8088, healthPath: '/actuator/health', category: 'auth' },
+  { name: 'keycloak', container: null /* auto: keycloak-1 */, port: 8081, healthPath: '/realms/master', category: 'auth' },
+  { name: 'vault', container: null /* auto: vault-1 */, port: 8200, healthPath: '/v1/sys/health', category: 'auth' },
+  { name: 'vault-unseal', container: null /* auto: vault-unseal-1 */, port: null, healthPath: null, category: 'auth' },
   // Business
-  { name: 'user-service', container: 'serban-user-service-1', port: 8089, healthPath: '/actuator/health', category: 'business' },
-  { name: 'permission-service', container: 'serban-permission-service-1', port: 8090, healthPath: '/actuator/health', category: 'auth', deprecated: true },
+  { name: 'user-service', container: null /* auto: user-service-1 */, port: 8089, healthPath: '/actuator/health', category: 'business' },
+  { name: 'permission-service', container: null /* auto: permission-service-1 */, port: 8090, healthPath: '/actuator/health', category: 'auth', deprecated: true },
   // OpenFGA (Zanzibar authorization engine)
-  { name: 'openfga', container: 'serban-openfga-1', port: 4000, healthPath: '/healthz', category: 'auth' },
-  { name: 'openfga-migrate', container: 'serban-openfga-migrate-1', port: null, healthPath: null, category: 'auth' },
+  { name: 'openfga', container: null /* auto: openfga-1 */, port: 4000, healthPath: '/healthz', category: 'auth' },
+  { name: 'openfga-migrate', container: null /* auto: openfga-migrate-1 */, port: null, healthPath: null, category: 'auth' },
   { name: 'openfga-playground', container: null, port: 4002, healthPath: '/', category: 'auth', type: 'embedded' },
-  { name: 'variant-service', container: 'serban-variant-service-1', port: 8091, healthPath: '/actuator/health', category: 'business' },
-  { name: 'core-data-service', container: 'serban-core-data-service-1', port: 8092, healthPath: '/actuator/health', category: 'business' },
-  { name: 'report-service', container: 'serban-report-service-1', port: 8095, healthPath: '/actuator/health', category: 'business' },
-  { name: 'schema-service', container: 'serban-schema-service-1', port: 8096, healthPath: '/actuator/health', category: 'data' },
+  { name: 'variant-service', container: null /* auto: variant-service-1 */, port: 8091, healthPath: '/actuator/health', category: 'business' },
+  { name: 'core-data-service', container: null /* auto: core-data-service-1 */, port: 8092, healthPath: '/actuator/health', category: 'business' },
+  { name: 'report-service', container: null /* auto: report-service-1 */, port: 8095, healthPath: '/actuator/health', category: 'business' },
+  { name: 'schema-service', container: null /* auto: schema-service-1 */, port: 8096, healthPath: '/actuator/health', category: 'data' },
   // Data
-  { name: 'postgres-db', container: 'serban-postgres-db-1', port: 5432, healthPath: null, category: 'data' },
-  { name: 'pgvector', container: 'pgvector_local', port: 5433, healthPath: null, category: 'data' },
+  { name: 'postgres-db', container: null /* auto: postgres-db-1 */, port: 5432, healthPath: null, category: 'data' },
+  { name: 'pgvector', container: null /* auto: pgvector */, port: 5433, healthPath: null, category: 'data' },
   // Observability
-  { name: 'loki', container: 'serban-loki-1', port: 3100, healthPath: '/ready', category: 'observability' },
-  { name: 'tempo', container: 'serban-tempo-1', port: 3200, healthPath: '/ready', category: 'observability' },
-  { name: 'prometheus', container: 'observability-prometheus', port: 9090, healthPath: '/-/healthy', category: 'observability' },
-  { name: 'grafana', container: 'observability-grafana', port: 3010, healthPath: '/api/health', category: 'observability' },
-  { name: 'promtail', container: 'serban-promtail-1', port: null, healthPath: null, category: 'observability' },
+  { name: 'loki', container: null /* auto: loki-1 */, port: 3100, healthPath: '/ready', category: 'observability' },
+  { name: 'tempo', container: null /* auto: tempo-1 */, port: 3200, healthPath: '/ready', category: 'observability' },
+  { name: 'prometheus', container: null /* auto: prometheus */, port: 9090, healthPath: '/-/healthy', category: 'observability' },
+  { name: 'grafana', container: null /* auto: grafana */, port: 3010, healthPath: '/api/health', category: 'observability' },
+  { name: 'promtail', container: null /* auto: promtail-1 */, port: null, healthPath: null, category: 'observability' },
   // Frontend MFEs (process-based, not Docker)
   { name: 'mfe-shell', container: null, port: 3000, healthPath: '/', category: 'frontend', type: 'process' },
   { name: 'mfe-suggestions', container: null, port: 3001, healthPath: '/', category: 'frontend', type: 'process' },
@@ -113,14 +148,15 @@ async function getContainerInfo(containerName) {
   }
 }
 
-function checkHealth(port, path, timeoutMs = 5000) {
+function checkHealth(port, path, host, timeoutMs = 5000) {
   return new Promise((resolve) => {
     if (!port || !path) {
       resolve({ status: 'no_healthcheck', responseTime: null, details: null });
       return;
     }
+    const target = host || '127.0.0.1';
     const start = Date.now();
-    const req = http.get(`http://127.0.0.1:${port}${path}`, { timeout: timeoutMs }, (res) => {
+    const req = http.get(`http://${target}:${port}${path}`, { timeout: timeoutMs }, (res) => {
       const elapsed = Date.now() - start;
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
@@ -168,7 +204,7 @@ app.get('/api/services', async (_req, res) => {
       if (isProcessService(svc)) {
         const procInfo = getProcessInfo(svc.port);
         const healthInfo = procInfo.running
-          ? await checkHealth(svc.port, svc.healthPath)
+          ? await checkHealth(svc.port, svc.healthPath, svc.name)
           : { status: 'DOWN', responseTime: null };
         return {
           name: svc.name,
@@ -186,13 +222,15 @@ app.get('/api/services', async (_req, res) => {
           responseTime: healthInfo.responseTime,
         };
       }
-      const [containerInfo, healthInfo] = await Promise.all([
-        getContainerInfo(svc.container),
-        checkHealth(svc.port, svc.healthPath),
-      ]);
+      const containerName = svc.container || resolveContainer(svc.name);
+      const containerInfo = await getContainerInfo(containerName);
+      // Use Docker's own health check status instead of HTTP probe
+      const health = containerInfo.health === 'healthy' ? 'UP'
+        : containerInfo.running ? (containerInfo.health || 'UP')
+        : 'DOWN';
       return {
         name: svc.name,
-        container: svc.container,
+        container: containerName,
         port: svc.port,
         category: svc.category,
         type: 'docker',
@@ -202,8 +240,8 @@ app.get('/api/services', async (_req, res) => {
         startedAt: containerInfo.startedAt,
         uptime: formatUptime(containerInfo.startedAt),
         dockerHealth: containerInfo.health,
-        health: healthInfo.status,
-        responseTime: healthInfo.responseTime,
+        health,
+        responseTime: null,
       };
     }),
   );
@@ -215,7 +253,7 @@ app.get('/api/services/:name/health', async (req, res) => {
   const svc = findService(req.params.name);
   if (!svc) return res.status(404).json({ error: 'Service not found' });
 
-  const healthInfo = await checkHealth(svc.port, svc.healthPath);
+  const healthInfo = await checkHealth(svc.port, svc.healthPath, svc.name);
   res.json({ name: svc.name, ...healthInfo });
 });
 
@@ -251,7 +289,7 @@ app.post('/api/services/:name/start', async (req, res) => {
   }
 
   try {
-    const container = docker.getContainer(svc.container);
+    const container = docker.getContainer((svc.container || resolveContainer(svc.name)));
     await container.start();
     res.json({ ok: true, action: 'start', name: svc.name });
   } catch (err) {
@@ -279,7 +317,7 @@ app.post('/api/services/:name/stop', async (req, res) => {
   }
 
   try {
-    const container = docker.getContainer(svc.container);
+    const container = docker.getContainer((svc.container || resolveContainer(svc.name)));
     await container.stop({ t: 10 });
     res.json({ ok: true, action: 'stop', name: svc.name });
   } catch (err) {
@@ -300,7 +338,7 @@ app.post('/api/services/:name/restart', async (req, res) => {
   }
 
   try {
-    const container = docker.getContainer(svc.container);
+    const container = docker.getContainer((svc.container || resolveContainer(svc.name)));
     await container.restart({ t: 10 });
     res.json({ ok: true, action: 'restart', name: svc.name });
   } catch (err) {
@@ -335,7 +373,7 @@ app.post('/api/services/bulk-action', async (req, res) => {
         return { name: svc.name, ok: false, note: 'Process services: use npm scripts for start/restart' };
       }
       try {
-        const container = docker.getContainer(svc.container);
+        const container = docker.getContainer((svc.container || resolveContainer(svc.name)));
         if (action === 'start') await container.start();
         else if (action === 'stop') await container.stop({ t: 10 });
         else await container.restart({ t: 10 });
@@ -361,7 +399,7 @@ app.get('/api/services/:name/logs', async (req, res) => {
   }
 
   try {
-    const container = docker.getContainer(svc.container);
+    const container = docker.getContainer((svc.container || resolveContainer(svc.name)));
     const logs = await container.logs({
       stdout: true,
       stderr: true,
@@ -376,7 +414,9 @@ app.get('/api/services/:name/logs', async (req, res) => {
 });
 
 // ── Start ────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`[service-manager] API listening on http://localhost:${PORT}`);
-  console.log(`[service-manager] Managing ${SERVICES.length} services`);
+detectPrefix().then(() => {
+  app.listen(PORT, () => {
+    console.log(`[service-manager] API listening on http://localhost:${PORT}`);
+    console.log(`[service-manager] Managing ${SERVICES.length} services (prefix: ${PROJECT_PREFIX || detectedPrefix || 'auto'})`);
+  });
 });
