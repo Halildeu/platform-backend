@@ -20,7 +20,7 @@ services:
   discovery-server:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-discovery-server:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8761:8761"
     environment:
@@ -88,7 +88,7 @@ services:
   permission-service:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-permission-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8090:8084"
     environment:
@@ -135,7 +135,7 @@ services:
   auth-service:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-auth-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8088:8088"
     environment:
@@ -173,7 +173,7 @@ services:
   user-service:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-user-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8089:8089"
     environment:
@@ -215,7 +215,7 @@ services:
   variant-service:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-variant-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8091:8091"
     environment:
@@ -246,7 +246,7 @@ services:
   core-data-service:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-core-data-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8092:8092"
     environment:
@@ -283,7 +283,7 @@ services:
   api-gateway:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-api-gateway:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:${API_GATEWAY_PORT:-8082}:8080"
     environment:
@@ -330,7 +330,7 @@ services:
   report-service:
     <<: *runtime-defaults
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-report-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8095:8095"
     environment:
@@ -372,7 +372,7 @@ services:
     <<: *runtime-defaults
     profiles: ["extras"]
     image: ghcr.io/${GHCR_OWNER}/platform-ssot-schema-service:${IMAGE_TAG:-main-stable}
-    pull_policy: always
+    pull_policy: ${DOCKER_PULL_POLICY:-always}
     ports:
       - "127.0.0.1:8096:8096"
     environment:
