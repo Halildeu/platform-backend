@@ -13,8 +13,15 @@ export VAULT_ADDR
 
 echo "[vault-unseal] Waiting for Vault at ${VAULT_ADDR}..."
 
-# Wait for Vault to be reachable
-until vault status -address="${VAULT_ADDR}" 2>/dev/null; do
+# Wait for Vault API to be reachable (sealed or unsealed).
+# vault status exit codes: 0=unsealed, 1=error/unreachable, 2=sealed
+# Both 0 and 2 mean Vault is running — proceed to unseal check.
+while true; do
+  vault status -address="${VAULT_ADDR}" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+    break
+  fi
   sleep 2
 done
 
