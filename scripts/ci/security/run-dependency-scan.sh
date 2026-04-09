@@ -19,8 +19,20 @@ echo "[security][osv-scanner] Starting dependency vulnerability scan"
 if ! command -v osv-scanner &>/dev/null; then
   echo "[security][osv-scanner] Installing osv-scanner (pre-built binary)..."
   OSV_VERSION="2.0.2"
-  curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" -o /usr/local/bin/osv-scanner
-  chmod +x /usr/local/bin/osv-scanner
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) OSV_ASSET="osv-scanner_darwin_arm64" ;;
+    Darwin-x86_64) OSV_ASSET="osv-scanner_darwin_amd64" ;;
+    Linux-x86_64) OSV_ASSET="osv-scanner_linux_amd64" ;;
+    Linux-aarch64) OSV_ASSET="osv-scanner_linux_arm64" ;;
+    *) echo "[security][osv-scanner] Unsupported platform: $(uname -s)-$(uname -m), skipping"; OSV_ASSET="" ;;
+  esac
+  if [[ -n "${OSV_ASSET}" ]]; then
+    OSV_INSTALL_DIR="${HOME}/.local/bin"
+    mkdir -p "${OSV_INSTALL_DIR}"
+    curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/${OSV_ASSET}" -o "${OSV_INSTALL_DIR}/osv-scanner"
+    chmod +x "${OSV_INSTALL_DIR}/osv-scanner"
+    export PATH="${OSV_INSTALL_DIR}:${PATH}"
+  fi
 fi
 
 scan_exit=0

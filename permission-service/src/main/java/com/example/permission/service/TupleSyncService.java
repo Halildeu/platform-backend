@@ -154,20 +154,22 @@ public class TupleSyncService {
     // --- Private helpers ---
 
     private void writeScopeTuples(String userId, String relation, String objectType, List<Long> ids) {
-        if (ids == null) return;
-        for (Long id : ids) {
-            try {
-                authzService.writeTuple(userId, relation, objectType, String.valueOf(id));
-            } catch (Exception e) {
-                log.warn("OpenFGA scope tuple write failed for user:{} {}:{}:{} — {}",
-                        userId, relation, objectType, id, e.getMessage());
-            }
+        if (ids == null || ids.isEmpty()) return;
+        var tuples = ids.stream()
+                .map(id -> OpenFgaAuthzService.writeTupleKey(userId, relation, objectType, String.valueOf(id)))
+                .toList();
+        try {
+            authzService.writeTuples(tuples);
+            log.debug("OpenFGA batch scope write: {} tuples for user:{} {}:{}", tuples.size(), userId, relation, objectType);
+        } catch (Exception e) {
+            log.warn("OpenFGA batch scope write failed for user:{} {}:{} ({} tuples) — {}",
+                    userId, relation, objectType, tuples.size(), e.getMessage());
         }
     }
 
     /**
      * Delete known feature tuples for a user before re-sync.
-     * Uses individual deleteTuple calls since batch delete is not available in OpenFgaAuthzService.
+     * Uses batch deleteTuples for efficiency.
      */
     private void deleteAllFeatureTuples(String userId) {
         Long numericUserId = Long.parseLong(userId);
@@ -176,19 +178,28 @@ public class TupleSyncService {
         if (roleIds.isEmpty()) return;
 
         List<RolePermission> allPerms = rolePermissionRepository.findByRoleIdIn(roleIds);
-        for (RolePermission rp : allPerms) {
-            if (rp.getPermissionType() == null || rp.getPermissionKey() == null || rp.getGrantType() == null) continue;
-            TupleMapping mapping = toTupleMapping(rp.getPermissionType(), rp.getGrantType());
-            if (mapping == null) continue;
-            try {
-                authzService.deleteTuple(userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey());
-                if (rp.getGrantType() == GrantType.DENY) {
-                    authzService.deleteTuple(userId, "blocked", rp.getPermissionType().name().toLowerCase(), rp.getPermissionKey());
-                }
-            } catch (Exception e) {
-                log.debug("OpenFGA tuple delete (no-op if missing) for user:{} {}:{}:{} — {}",
-                        userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey(), e.getMessage());
-            }
+        var deleteTuples = new ArrayList<>(allPerms.stream()
+                .filter(rp -> rp.getPermissionType() != null && rp.getPermissionKey() != null && rp.getGrantType() != null)
+                .flatMap(rp -> {
+                    TupleMapping mapping = toTupleMapping(rp.getPermissionType(), rp.getGrantType());
+                    if (mapping == null) return java.util.stream.Stream.empty();
+                    var items = new ArrayList<>(List.of(
+                            OpenFgaAuthzService.deleteTupleKey(userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey())
+                    ));
+                    if (rp.getGrantType() == GrantType.DENY) {
+                        items.add(OpenFgaAuthzService.deleteTupleKey(userId, "blocked", rp.getPermissionType().name().toLowerCase(), rp.getPermissionKey()));
+                    }
+                    return items.stream();
+                })
+                .toList());
+
+        if (deleteTuples.isEmpty()) return;
+        try {
+            authzService.deleteTuples(deleteTuples);
+            log.debug("OpenFGA batch feature delete: {} tuples for user:{}", deleteTuples.size(), userId);
+        } catch (Exception e) {
+            log.debug("OpenFGA batch feature delete (partial no-op) for user:{} ({} tuples) — {}",
+                    userId, deleteTuples.size(), e.getMessage());
         }
     }
 

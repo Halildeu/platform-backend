@@ -4,6 +4,7 @@ import com.example.permission.dto.access.AccessRoleDto;
 import com.example.permission.dto.v1.BulkPermissionsRequestDto;
 import com.example.permission.dto.v1.BulkPermissionsResponseDto;
 import com.example.permission.dto.v1.CloneRoleRequestDto;
+import com.example.permission.dto.v1.CreateRoleRequestDto;
 import com.example.permission.dto.v1.PagedResultDto;
 import com.example.permission.dto.v1.PermissionDtoMapper;
 import com.example.permission.dto.v1.RoleCloneResponseDto;
@@ -74,14 +75,14 @@ public class AccessControllerV1 {
 
     @PostMapping
     @PreAuthorize("hasAuthority('role-manage')")
-    public ResponseEntity<RoleDto> createRole(@RequestBody CloneRoleRequestDto request) {
-        if (request.getName() == null || request.getName().trim().length() < 3) {
+    public ResponseEntity<RoleDto> createRole(@RequestBody CreateRoleRequestDto request) {
+        if (request.name() == null || request.name().trim().length() < 3) {
             return ResponseEntity.badRequest().build();
         }
         RoleDto created = accessRoleService.createRole(
-                request.getName().trim(),
-                request.getDescription(),
-                request.getPerformedBy()
+                request.name().trim(),
+                request.description(),
+                null
         );
         return ResponseEntity.status(201).body(created);
     }

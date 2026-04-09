@@ -94,7 +94,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SPRING_DATASOURCE_URL: ${PERMISSION_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${PERMISSION_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${PERMISSION_SERVICE_DB_PASSWORD}
@@ -141,7 +141,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SPRING_DATASOURCE_URL: ${AUTH_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${AUTH_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${AUTH_SERVICE_DB_PASSWORD}
@@ -179,7 +179,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SPRING_DATASOURCE_URL: ${USER_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${USER_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${USER_SERVICE_DB_PASSWORD}
@@ -221,7 +221,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SPRING_DATASOURCE_URL: ${VARIANT_SERVICE_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${VARIANT_SERVICE_DB_USERNAME}
       SPRING_DATASOURCE_PASSWORD: ${VARIANT_SERVICE_DB_PASSWORD}
@@ -252,7 +252,7 @@ services:
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SERVER_PORT: "8092"
       SPRING_DATASOURCE_URL: ${CORE_DATA_DB_URL}
       SPRING_DATASOURCE_USERNAME: ${CORE_DATA_DB_USERNAME}
@@ -336,7 +336,7 @@ services:
     environment:
       <<: [*common-env, *vault-env]
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SERVER_PORT: "8095"
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
       EUREKA_PREFER_IP_ADDRESS: "true"
@@ -378,7 +378,7 @@ services:
     environment:
       <<: *common-env
       SPRING_PROFILES_ACTIVE: prod
-      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=60.0 -XX:InitialRAMPercentage=20.0 -Dspring.security.oauth2.resourceserver.jwt.issuer-uri=${KEYCLOAK_PUBLIC_ISSUER_URI} -Dspring.security.oauth2.resourceserver.jwt.jwk-set-uri=${KEYCLOAK_JWKS_URI} -Deureka.client.service-url.defaultZone=http://discovery-server:8761/eureka"
       SERVER_PORT: "8096"
       EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE: http://discovery-server:8761/eureka
       SCHEMA_MSSQL_HOST: ${SCHEMA_MSSQL_HOST}
