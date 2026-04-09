@@ -78,7 +78,7 @@ services:
       <<: *common-env
       OPENFGA_DATASTORE_ENGINE: postgres
       OPENFGA_DATASTORE_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-db:5432/${POSTGRES_DB:-users}?sslmode=disable&search_path=openfga
-      OPENFGA_PLAYGROUND_ENABLED: "false"
+      OPENFGA_PLAYGROUND_ENABLED: "true"
       OPENFGA_LOG_LEVEL: ${OPENFGA_LOG_LEVEL:-info}
     depends_on:
       openfga-migrate:
@@ -441,6 +441,7 @@ services:
       VAULT_CACERT: "/vault/tls/tls.crt"
     volumes:
       - vault_data:/vault/file
+      - vault_logs:/vault/logs
       - ./devops/vault:/vault/config:ro
       - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     mem_limit: 384m
@@ -466,6 +467,45 @@ services:
       VAULT_ADDR: "https://vault:8200"
       VAULT_CACERT: "/vault/tls/tls.crt"
     entrypoint: ["/bin/sh", "/vault/config/prod-unseal-loop.sh"]
+    mem_limit: 64m
+
+  # ── Infrastructure: Vault audit log init ──────────────────
+  vault-audit-init:
+    <<: *runtime-defaults
+    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
+    restart: "no"
+    depends_on:
+      vault:
+        condition: service_healthy
+    volumes:
+      - vault_logs:/vault/logs
+      - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
+      - ./devops/vault:/vault/config:ro
+      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
+    environment:
+      VAULT_ADDR: "https://vault:8200"
+      VAULT_CACERT: "/vault/tls/tls.crt"
+    entrypoint: ["/bin/sh", "/vault/config/vault-init-audit.sh"]
+    mem_limit: 64m
+
+  # ── Infrastructure: Vault Raft snapshot (daily backup) ────
+  vault-snapshot:
+    <<: *runtime-defaults
+    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
+    depends_on:
+      vault:
+        condition: service_healthy
+    volumes:
+      - vault_snapshots:/vault/snapshots
+      - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
+      - ./devops/vault:/vault/config:ro
+      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
+    environment:
+      VAULT_ADDR: "https://vault:8200"
+      VAULT_CACERT: "/vault/tls/tls.crt"
+      SNAPSHOT_INTERVAL: "${VAULT_SNAPSHOT_INTERVAL:-86400}"
+      SNAPSHOT_RETAIN: "${VAULT_SNAPSHOT_RETAIN:-7}"
+    entrypoint: ["/bin/sh", "/vault/config/vault-raft-snapshot.sh"]
     mem_limit: 64m
 
   # ── Infrastructure: Service Manager API ────────────────────
@@ -558,6 +598,7 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./scripts/perf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${VAULT_PROMETHEUS_TOKEN_FILE:-/dev/null}:/etc/prometheus/vault-token:ro
     mem_limit: 256m
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
@@ -601,3 +642,5 @@ volumes:
   loki_data:
   tempo_data:
   vault_data:
+  vault_logs:
+  vault_snapshots:

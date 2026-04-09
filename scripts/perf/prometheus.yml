@@ -12,3 +12,14 @@ scrape_configs:
     static_configs:
       - targets: ['host.docker.internal:8089']
 
+  - job_name: 'vault'
+    metrics_path: /v1/sys/metrics
+    params:
+      format: ['prometheus']
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
+    bearer_token_file: /etc/prometheus/vault-token
+    static_configs:
+      - targets: ['vault:8200']
+
