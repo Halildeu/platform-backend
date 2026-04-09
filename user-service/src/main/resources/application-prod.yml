@@ -1,17 +1,24 @@
 spring:
   config:
-    import: vault://secret/db/user-service
+    import: vault://secret/${VAULT_SECRET_PREFIX:stage}/db/${spring.application.name}
   cloud:
     vault:
       enabled: true
-      authentication: TOKEN
-      token: ${VAULT_TOKEN:root}
+      authentication: ${VAULT_AUTH_METHOD:TOKEN}
+      token: ${VAULT_TOKEN:}
+      app-role:
+        role-id: ${VAULT_ROLE_ID:}
+        secret-id: ${VAULT_SECRET_ID:}
+        app-role-path: approle
       kv:
         enabled: true
         backend: secret
-      uri: ${VAULT_URI:http://localhost:8200}
-      scheme: ${VAULT_SCHEME:http}
+      uri: ${VAULT_URI:https://vault:8200}
+      scheme: ${VAULT_SCHEME:https}
       fail-fast: ${VAULT_FAIL_FAST:true}
+      ssl:
+        trust-store: ${VAULT_TRUSTSTORE:}
+        trust-store-type: PEM
   security:
     oauth2:
       resourceserver:

@@ -437,13 +437,15 @@ services:
       - "127.0.0.1:8201:8201"
     environment:
       <<: *common-env
-      VAULT_ADDR: "http://127.0.0.1:8200"
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      VAULT_CACERT: "/vault/tls/tls.crt"
     volumes:
       - vault_data:/vault/file
       - ./devops/vault:/vault/config:ro
+      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     mem_limit: 384m
     healthcheck:
-      test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
+      test: ["CMD", "vault", "status", "-address=https://127.0.0.1:8200", "-ca-cert=/vault/tls/tls.crt"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -459,8 +461,10 @@ services:
     volumes:
       - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
       - ./devops/vault:/vault/config:ro
+      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     environment:
-      VAULT_ADDR: "http://vault:8200"
+      VAULT_ADDR: "https://vault:8200"
+      VAULT_CACERT: "/vault/tls/tls.crt"
     entrypoint: ["/bin/sh", "/vault/config/prod-unseal-loop.sh"]
     mem_limit: 64m
 
