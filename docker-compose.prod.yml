@@ -11,8 +11,8 @@ x-common-env: &common-env
   TZ: ${TZ:-Europe/Istanbul}
 
 x-vault-env: &vault-env
-  VAULT_URI: ${VAULT_URI:-https://vault:8200}
-  VAULT_SCHEME: ${VAULT_SCHEME:-https}
+  VAULT_URI: ${VAULT_URI:-http://vault:8200}
+  VAULT_SCHEME: ${VAULT_SCHEME:-http}
   VAULT_TOKEN: ${VAULT_TOKEN}
   VAULT_FAIL_FAST: ${VAULT_FAIL_FAST:-true}
 
@@ -437,16 +437,14 @@ services:
       - "127.0.0.1:8201:8201"
     environment:
       <<: *common-env
-      VAULT_ADDR: "https://127.0.0.1:8200"
-      VAULT_CACERT: "/vault/tls/tls.crt"
+      VAULT_ADDR: "http://127.0.0.1:8200"
     volumes:
       - vault_data:/vault/file
       - vault_logs:/vault/logs
       - ./devops/vault:/vault/config:ro
-      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     mem_limit: 384m
     healthcheck:
-      test: ["CMD", "vault", "status", "-address=https://127.0.0.1:8200", "-ca-cert=/vault/tls/tls.crt"]
+      test: ["CMD", "vault", "status"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -462,10 +460,8 @@ services:
     volumes:
       - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
       - ./devops/vault:/vault/config:ro
-      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     environment:
-      VAULT_ADDR: "https://vault:8200"
-      VAULT_CACERT: "/vault/tls/tls.crt"
+      VAULT_ADDR: "http://vault:8200"
     entrypoint: ["/bin/sh", "/vault/config/prod-unseal-loop.sh"]
     mem_limit: 64m
 
@@ -481,10 +477,8 @@ services:
       - vault_logs:/vault/logs
       - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
       - ./devops/vault:/vault/config:ro
-      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     environment:
-      VAULT_ADDR: "https://vault:8200"
-      VAULT_CACERT: "/vault/tls/tls.crt"
+      VAULT_ADDR: "http://vault:8200"
     entrypoint: ["/bin/sh", "/vault/config/vault-init-audit.sh"]
     mem_limit: 64m
 
@@ -499,10 +493,8 @@ services:
       - vault_snapshots:/vault/snapshots
       - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
       - ./devops/vault:/vault/config:ro
-      - ${VAULT_TLS_DIR:-/home/halil/platform/state/vault/tls}:/vault/tls:ro
     environment:
-      VAULT_ADDR: "https://vault:8200"
-      VAULT_CACERT: "/vault/tls/tls.crt"
+      VAULT_ADDR: "http://vault:8200"
       SNAPSHOT_INTERVAL: "${VAULT_SNAPSHOT_INTERVAL:-86400}"
       SNAPSHOT_RETAIN: "${VAULT_SNAPSHOT_RETAIN:-7}"
     entrypoint: ["/bin/sh", "/vault/config/vault-raft-snapshot.sh"]

@@ -14,7 +14,7 @@ spring:
         enabled: true
         backend: secret
       uri: ${VAULT_URI:https://vault:8200}
-      scheme: ${VAULT_SCHEME:https}
+      scheme: ${VAULT_SCHEME:http}
       fail-fast: ${VAULT_FAIL_FAST:true}
       ssl:
         trust-store: ${VAULT_TRUSTSTORE:}
