@@ -55,8 +55,6 @@ function resolveContainer(baseName) {
   const prefix = PROJECT_PREFIX || detectedPrefix || 'platform';
   // Special cases
   if (baseName === 'pgvector') return 'pgvector_local';
-  if (baseName === 'prometheus') return 'observability-prometheus';
-  if (baseName === 'grafana') return 'observability-grafana';
   return `${prefix}-${baseName}-1`;
 }
 
@@ -75,15 +73,15 @@ const SERVICES = [
   { name: 'permission-service', container: null /* auto: permission-service-1 */, port: 8090, healthPath: '/actuator/health', category: 'auth', deprecated: true },
   // OpenFGA (Zanzibar authorization engine)
   { name: 'openfga', container: null /* auto: openfga-1 */, port: 4000, healthPath: '/healthz', category: 'auth' },
-  { name: 'openfga-migrate', container: null /* auto: openfga-migrate-1 */, port: null, healthPath: null, category: 'auth' },
-  { name: 'openfga-playground', container: null, port: 4002, healthPath: '/', category: 'auth', type: 'embedded' },
+  // openfga-migrate: one-time migration, exits after completion — not monitored
+  // openfga-playground: deprecated, 127.0.0.1 bind — use fga.dev instead
   { name: 'variant-service', container: null /* auto: variant-service-1 */, port: 8091, healthPath: '/actuator/health', category: 'business' },
   { name: 'core-data-service', container: null /* auto: core-data-service-1 */, port: 8092, healthPath: '/actuator/health', category: 'business' },
   { name: 'report-service', container: null /* auto: report-service-1 */, port: 8095, healthPath: '/actuator/health', category: 'business' },
   { name: 'schema-service', container: null /* auto: schema-service-1 */, port: 8096, healthPath: '/actuator/health', category: 'data' },
   // Data
   { name: 'postgres-db', container: null /* auto: postgres-db-1 */, port: 5432, healthPath: null, category: 'data' },
-  { name: 'pgvector', container: null /* auto: pgvector */, port: 5433, healthPath: null, category: 'data' },
+  // pgvector: lokal dev only
   // Observability
   { name: 'loki', container: null /* auto: loki-1 */, port: 3100, healthPath: '/ready', category: 'observability' },
   { name: 'tempo', container: null /* auto: tempo-1 */, port: 3200, healthPath: '/ready', category: 'observability' },
@@ -91,14 +89,7 @@ const SERVICES = [
   { name: 'grafana', container: null /* auto: grafana */, port: 3010, healthPath: '/api/health', category: 'observability' },
   { name: 'promtail', container: null /* auto: promtail-1 */, port: null, healthPath: null, category: 'observability' },
   // Frontend MFEs (process-based, not Docker)
-  { name: 'mfe-shell', container: null, port: 3000, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-suggestions', container: null, port: 3001, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-ethic', container: null, port: 3002, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-users', container: null, port: 3004, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-access', container: null, port: 3005, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-audit', container: null, port: 3006, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-reporting', container: null, port: 3007, healthPath: '/', category: 'frontend', type: 'process' },
-  { name: 'mfe-schema-explorer', container: null, port: 3008, healthPath: '/', category: 'frontend', type: 'process' },
+  // MFE'ler canlıda statik serve — dev server yok, sadece lokal'de process olarak çalışır
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -133,18 +124,41 @@ async function getContainerInfo(containerName) {
     const container = docker.getContainer(containerName);
     const info = await container.inspect();
     const state = info.State;
+
+    // Get resource stats (CPU + memory)
+    let rssMb = null;
+    let cpu = null;
+    if (state.Running) {
+      try {
+        const stats = await new Promise((resolve, reject) => {
+          container.stats({ stream: false }, (err, data) => err ? reject(err) : resolve(data));
+        });
+        // Memory: usage in bytes → MB
+        const memUsage = stats.memory_stats?.usage || 0;
+        const memCache = stats.memory_stats?.stats?.cache || stats.memory_stats?.stats?.inactive_file || 0;
+        rssMb = Math.round((memUsage - memCache) / 1024 / 1024);
+        // CPU: delta usage / delta system × 100
+        const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage || 0) - (stats.precpu_stats?.cpu_usage?.total_usage || 0);
+        const sysDelta = (stats.cpu_stats?.system_cpu_usage || 0) - (stats.precpu_stats?.system_cpu_usage || 0);
+        const numCpus = stats.cpu_stats?.online_cpus || 1;
+        cpu = sysDelta > 0 ? Math.round((cpuDelta / sysDelta) * numCpus * 1000) / 10 : 0;
+      } catch { /* stats not available */ }
+    }
+
     return {
       id: info.Id.slice(0, 12),
       status: state.Running ? 'running' : state.Status,
       running: state.Running,
       startedAt: state.StartedAt,
       health: state.Health ? state.Health.Status : null,
+      rssMb,
+      cpu,
     };
   } catch (err) {
     if (err.statusCode === 404) {
-      return { id: null, status: 'not_found', running: false, startedAt: null, health: null };
+      return { id: null, status: 'not_found', running: false, startedAt: null, health: null, rssMb: null, cpu: null };
     }
-    return { id: null, status: 'error', running: false, startedAt: null, health: null, error: err.message };
+    return { id: null, status: 'error', running: false, startedAt: null, health: null, rssMb: null, cpu: null, error: err.message };
   }
 }
 
@@ -242,6 +256,8 @@ app.get('/api/services', async (_req, res) => {
         dockerHealth: containerInfo.health,
         health,
         responseTime: null,
+        rssMb: containerInfo.rssMb,
+        cpu: containerInfo.cpu,
       };
     }),
   );
@@ -415,7 +431,7 @@ app.get('/api/services/:name/logs', async (req, res) => {
 
 // ── Start ────────────────────────────────────────────────────────────
 detectPrefix().then(() => {
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`[service-manager] API listening on http://localhost:${PORT}`);
     console.log(`[service-manager] Managing ${SERVICES.length} services (prefix: ${PROJECT_PREFIX || detectedPrefix || 'auto'})`);
   });
