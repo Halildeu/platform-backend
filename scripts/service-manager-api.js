@@ -429,10 +429,17 @@ app.get('/api/services/:name/logs', async (req, res) => {
   }
 });
 
+// ── Health endpoint ──────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', services: SERVICES.length, prefix: PROJECT_PREFIX || detectedPrefix || 'auto' });
+});
+
 // ── Start ────────────────────────────────────────────────────────────
-detectPrefix().then(() => {
+detectPrefix().catch(err => {
+  console.error(`[service-manager] prefix detection failed: ${err.message}, using default`);
+}).finally(() => {
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[service-manager] API listening on http://localhost:${PORT}`);
+    console.log(`[service-manager] API listening on http://0.0.0.0:${PORT}`);
     console.log(`[service-manager] Managing ${SERVICES.length} services (prefix: ${PROJECT_PREFIX || detectedPrefix || 'auto'})`);
   });
 });
