@@ -22,7 +22,7 @@ import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.*;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.springframework.boot.test.web.client.TestRestTemplate;
@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class UserServicePerformanceTest {
 
     @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine");
+    static PostgreSQLContainer postgres = new PostgreSQLContainer("postgres:15-alpine");
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry reg) {
