@@ -425,25 +425,44 @@ services:
       timeout: 5s
       retries: 10
 
-  # ── Infrastructure: Vault ──────────────────────────────────
+  # ── Infrastructure: Vault (prod mode — Raft storage, persistent) ──
   vault:
     <<: *runtime-defaults
-    image: hashicorp/vault:${VAULT_VERSION:-1.19}
+    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
     cap_add:
       - IPC_LOCK
-    command: server -dev
+    command: vault server -config=/vault/config/vault.hcl
     ports:
       - "127.0.0.1:8200:8200"
+      - "127.0.0.1:8201:8201"
     environment:
       <<: *common-env
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_TOKEN}
-      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
-    mem_limit: 256m
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    volumes:
+      - vault_data:/vault/file
+      - ./devops/vault:/vault/config:ro
+    mem_limit: 384m
     healthcheck:
       test: ["CMD", "vault", "status", "-address=http://127.0.0.1:8200"]
       interval: 10s
       timeout: 3s
-      retries: 5
+      retries: 10
+      start_period: 15s
+
+  # ── Infrastructure: Vault auto-unseal ──────────────────────
+  vault-unseal:
+    <<: *runtime-defaults
+    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
+    depends_on:
+      vault:
+        condition: service_started
+    volumes:
+      - ${VAULT_UNSEAL_KEYS_DIR:-/home/halil/platform/state/vault}:/vault-keys:ro
+      - ./devops/vault:/vault/config:ro
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    entrypoint: ["/bin/sh", "/vault/config/prod-unseal-loop.sh"]
+    mem_limit: 64m
 
   # ── Infrastructure: Service Manager API ────────────────────
   service-manager:
@@ -489,3 +508,4 @@ networks:
 volumes:
   postgres_data:
   keycloak_data:
+  vault_data:
