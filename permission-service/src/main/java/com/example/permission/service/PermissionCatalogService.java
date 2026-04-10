@@ -35,9 +35,13 @@ public class PermissionCatalogService {
             new ActionCatalogItem("TOGGLE_STATUS", "Durum Değiştir", "USER_MANAGEMENT", true)
     );
 
+    // P1-B: Report groups (CNS-20260410-001 consensus)
     private static final List<ReportCatalogItem> REPORTS = List.of(
+            new ReportCatalogItem("HR_REPORTS", "İK Raporları", "USER_MANAGEMENT"),
+            new ReportCatalogItem("FINANCE_REPORTS", "Finans Raporları", "REPORT"),
+            new ReportCatalogItem("SALES_REPORTS", "Satış Raporları", "PURCHASE"),
+            new ReportCatalogItem("ANALYTICS_REPORTS", "Analitik Dashboardlar", "REPORT"),
             new ReportCatalogItem("PURCHASE_SUMMARY", "Satın Alma Özeti", "PURCHASE"),
-            new ReportCatalogItem("HR_COMPENSATION", "İK Maaş Raporu", "USER_MANAGEMENT"),
             new ReportCatalogItem("WAREHOUSE_STOCK", "Stok Raporu", "WAREHOUSE")
     );
 
