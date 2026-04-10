@@ -44,9 +44,9 @@ public class AccessRoleService {
                              PermissionRepository permissionRepository,
                              UserRoleAssignmentRepository assignmentRepository,
                              AuditEventService auditEventService,
-                             OpenFgaAuthzService authzService,
-                             AuthzVersionService authzVersionService,
-                             TupleSyncService tupleSyncService) {
+                             @org.springframework.lang.Nullable OpenFgaAuthzService authzService,
+                             @org.springframework.lang.Nullable AuthzVersionService authzVersionService,
+                             @org.springframework.lang.Nullable TupleSyncService tupleSyncService) {
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;

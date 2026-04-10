@@ -79,7 +79,7 @@ public class PermissionService {
                              RoleRepository roleRepository,
                              AuditEventService auditEventService,
                              ObjectMapper objectMapper,
-                             OpenFgaAuthzService authzService) {
+                             @org.springframework.lang.Nullable OpenFgaAuthzService authzService) {
         this.assignmentRepository = assignmentRepository;
         this.roleRepository = roleRepository;
         this.auditEventService = auditEventService;

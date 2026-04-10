@@ -48,7 +48,7 @@ public class AccessControllerV1 {
                               RolePermissionRepository rolePermissionRepository,
                               RoleRepository roleRepository,
                               PermissionService permissionService,
-                              TupleSyncService tupleSyncService) {
+                              @org.springframework.lang.Nullable TupleSyncService tupleSyncService) {
         this.accessRoleService = accessRoleService;
         this.userScopeService = userScopeService;
         this.assignmentRepository = assignmentRepository;

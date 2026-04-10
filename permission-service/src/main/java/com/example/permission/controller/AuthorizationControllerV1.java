@@ -57,11 +57,11 @@ public class AuthorizationControllerV1 {
             AuthenticatedUserLookupService authenticatedUserLookupService,
             PermissionService permissionService,
             PermissionCatalogService catalogService,
-            TupleSyncService tupleSyncService,
-            OpenFgaAuthzService authzService,
+            @org.springframework.lang.Nullable TupleSyncService tupleSyncService,
+            @org.springframework.lang.Nullable OpenFgaAuthzService authzService,
             UserRoleAssignmentRepository assignmentRepository,
             RolePermissionRepository rolePermissionRepository,
-            AuthzVersionService authzVersionService
+            @org.springframework.lang.Nullable AuthzVersionService authzVersionService
     ) {
         this.authorizationQueryService = authorizationQueryService;
         this.authenticatedUserLookupService = authenticatedUserLookupService;

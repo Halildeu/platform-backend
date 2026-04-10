@@ -1,9 +1,15 @@
 package com.example.permission;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
+/**
+ * MVT-1: Spring Boot context smoke test.
+ * Catches: missing @Autowired, broken bean wiring, invalid @ConditionalOnProperty.
+ *
+ * Uses H2 in PostgreSQL mode with Flyway disabled and OpenFGA disabled.
+ * This ensures ALL non-conditional beans load successfully.
+ */
 @SpringBootTest(
         classes = PermissionServiceApplication.class,
         properties = {
@@ -14,13 +20,16 @@ import org.springframework.boot.test.context.SpringBootTest;
                 "spring.jpa.hibernate.ddl-auto=create-drop",
                 "spring.sql.init.mode=never",
                 "eureka.client.enabled=false",
-                "spring.flyway.enabled=false"
+                "spring.flyway.enabled=false",
+                "spring.cloud.vault.enabled=false",
+                "erp.openfga.enabled=false"
         }
 )
-@Disabled("OpenFGA TupleSyncService requires running OpenFGA container — re-enable after testcontainers setup")
 class HaloApplicationTests {
 
     @Test
-    void contextLoads() {
+    void contextLoads_openfgaDisabled() {
+        // If this test passes, all non-OpenFGA beans wire correctly.
+        // Catches: missing @Autowired, circular deps, broken constructor injection.
     }
 }
