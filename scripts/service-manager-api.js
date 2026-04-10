@@ -88,8 +88,10 @@ const SERVICES = [
   { name: 'prometheus', container: null /* auto: prometheus */, port: 9090, healthPath: '/-/healthy', category: 'observability' },
   { name: 'grafana', container: null /* auto: grafana */, port: 3010, healthPath: '/api/health', category: 'observability' },
   { name: 'promtail', container: null /* auto: promtail-1 */, port: null, healthPath: null, category: 'observability' },
-  // Frontend MFEs (process-based, not Docker)
-  // MFE'ler canlıda statik serve — dev server yok, sadece lokal'de process olarak çalışır
+  // Infrastructure
+  { name: 'web-nginx', container: null /* auto: web-nginx-1 */, port: 80, healthPath: '/nginx-healthz', category: 'core' },
+  { name: 'vault-snapshot', container: null /* auto: vault-snapshot-1 */, port: null, healthPath: null, category: 'auth' },
+  { name: 'service-manager', container: null /* auto: service-manager-1 */, port: 8795, healthPath: '/health', category: 'core' },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────
