@@ -31,20 +31,33 @@ if vault status -address="${VAULT_ADDR}" -format=json 2>/dev/null | grep -q '"se
 else
   echo "[vault-unseal] Vault is sealed. Attempting unseal..."
 
-  # Read and apply unseal keys
-  for key_file in "${KEYS_DIR}"/vault-unseal-key-*; do
-    if [ -f "$key_file" ]; then
-      key=$(cat "$key_file")
-      echo "[vault-unseal] Applying key from $(basename "$key_file")..."
-      vault operator unseal -address="${VAULT_ADDR}" "$key" 2>/dev/null || true
+  # Read and apply unseal keys with retry
+  attempt=0
+  max_attempts=5
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    attempt=$((attempt + 1))
+    echo "[vault-unseal] Unseal attempt ${attempt}/${max_attempts}..."
+
+    for key_file in "${KEYS_DIR}"/vault-unseal-key-*; do
+      if [ -f "$key_file" ]; then
+        key=$(cat "$key_file" | tr -d '[:space:]')
+        vault operator unseal -address="${VAULT_ADDR}" "$key" 2>/dev/null || true
+      fi
+    done
+
+    if vault status -address="${VAULT_ADDR}" -format=json 2>/dev/null | grep -q '"sealed":false'; then
+      echo "[vault-unseal] Vault successfully unsealed on attempt ${attempt}."
+      break
+    fi
+
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      echo "[vault-unseal] Still sealed, retrying in 3s..."
+      sleep 3
     fi
   done
 
-  # Verify
-  if vault status -address="${VAULT_ADDR}" -format=json 2>/dev/null | grep -q '"sealed":false'; then
-    echo "[vault-unseal] Vault successfully unsealed."
-  else
-    echo "[vault-unseal] WARNING: Vault still sealed after applying all keys."
+  if vault status -address="${VAULT_ADDR}" -format=json 2>/dev/null | grep -q '"sealed":true'; then
+    echo "[vault-unseal] WARNING: Vault still sealed after ${max_attempts} attempts."
   fi
 fi
 
