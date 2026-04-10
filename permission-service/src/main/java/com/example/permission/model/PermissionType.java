@@ -7,5 +7,10 @@ package com.example.permission.model;
 public enum PermissionType {
     MODULE,
     ACTION,
-    REPORT
+    REPORT,
+
+    /** @deprecated P1-A removed page/field from Zanzibar model. Kept for Hibernate backward compat with existing DB rows. */
+    @Deprecated PAGE,
+    /** @deprecated P1-A removed page/field from Zanzibar model. Kept for Hibernate backward compat with existing DB rows. */
+    @Deprecated FIELD
 }

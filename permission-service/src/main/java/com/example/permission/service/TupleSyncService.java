@@ -252,6 +252,7 @@ public class TupleSyncService {
             case MODULE -> List.of("can_manage", "can_view", "blocked");
             case ACTION -> List.of("allowed", "blocked");
             case REPORT -> List.of("can_view", "blocked");
+            case PAGE, FIELD -> List.of(); // deprecated — no OpenFGA tuples
         };
     }
 
@@ -273,6 +274,7 @@ public class TupleSyncService {
                 case DENY -> new TupleMapping("blocked", "report");
                 default -> null;
             };
+            case PAGE, FIELD -> null; // deprecated — skip
         };
     }
 
