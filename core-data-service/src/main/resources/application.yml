@@ -46,7 +46,7 @@ logging:
 # P0: ScopeContext cache
 scope:
   cache:
-    enabled: ${SCOPE_CACHE_ENABLED:true}
+    enabled: ${SCOPE_CACHE_ENABLED:false}
     ttl-seconds: ${SCOPE_CACHE_TTL_SECONDS:30}
     max-size: ${SCOPE_CACHE_MAX_SIZE:5000}
 
