@@ -33,18 +33,12 @@ public class TupleSyncService {
     private final AuthzVersionService authzVersionService;
     private final ScopeContextCache scopeContextCache;
 
-    public TupleSyncService(OpenFgaAuthzService authzService,
-                            RolePermissionRepository rolePermissionRepository,
-                            UserRoleAssignmentRepository assignmentRepository,
-                            AuthzVersionService authzVersionService) {
-        this(authzService, rolePermissionRepository, assignmentRepository, authzVersionService, null);
-    }
-
+    @org.springframework.beans.factory.annotation.Autowired
     public TupleSyncService(OpenFgaAuthzService authzService,
                             RolePermissionRepository rolePermissionRepository,
                             UserRoleAssignmentRepository assignmentRepository,
                             AuthzVersionService authzVersionService,
-                            ScopeContextCache scopeContextCache) {
+                            @org.springframework.lang.Nullable ScopeContextCache scopeContextCache) {
         this.authzService = authzService;
         this.rolePermissionRepository = rolePermissionRepository;
         this.assignmentRepository = assignmentRepository;
