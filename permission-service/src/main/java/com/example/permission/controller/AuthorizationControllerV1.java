@@ -27,6 +27,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Duration;
@@ -81,6 +82,7 @@ public class AuthorizationControllerV1 {
     }
 
     @GetMapping("/me")
+    @Transactional(readOnly = true)
     public ResponseEntity<AuthzMeResponseDto> getMe(@AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "JWT missing");
@@ -145,6 +147,7 @@ public class AuthorizationControllerV1 {
      * Get roles assigned to a user.
      */
     @GetMapping("/users/{userId}/roles")
+    @Transactional(readOnly = true)
     public ResponseEntity<List<Map<String, Object>>> getUserRoles(@PathVariable Long userId) {
         List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(userId);
         List<Map<String, Object>> roles = assignments.stream()
@@ -209,6 +212,7 @@ public class AuthorizationControllerV1 {
      * Explain why a user can or cannot perform a specific permission.
      */
     @PostMapping("/explain")
+    @Transactional(readOnly = true)
     public ResponseEntity<ExplainResponseDto> explain(@RequestBody Map<String, String> request) {
         String userIdStr = request.get("userId");
         String permTypeStr = request.get("permissionType");
