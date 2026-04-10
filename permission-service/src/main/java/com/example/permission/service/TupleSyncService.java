@@ -22,6 +22,7 @@ import java.util.stream.Collectors;
  * Implements deny-wins semantics when combining permissions from multiple roles.
  */
 @Service
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "erp.openfga.enabled", havingValue = "true", matchIfMissing = false)
 public class TupleSyncService {
 
     private static final Logger log = LoggerFactory.getLogger(TupleSyncService.class);
