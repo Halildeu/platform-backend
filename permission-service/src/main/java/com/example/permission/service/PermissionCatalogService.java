@@ -4,7 +4,6 @@ import com.example.permission.dto.v1.PermissionCatalogDto;
 import com.example.permission.dto.v1.PermissionCatalogDto.ModuleCatalogItem;
 import com.example.permission.dto.v1.PermissionCatalogDto.ActionCatalogItem;
 import com.example.permission.dto.v1.PermissionCatalogDto.ReportCatalogItem;
-import com.example.permission.dto.v1.PermissionCatalogDto.PageCatalogItem;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -42,13 +41,8 @@ public class PermissionCatalogService {
             new ReportCatalogItem("WAREHOUSE_STOCK", "Stok Raporu", "WAREHOUSE")
     );
 
-    private static final List<PageCatalogItem> PAGES = List.of(
-            new PageCatalogItem("ADMIN_SETTINGS", "Yönetici Ayarları", "ACCESS"),
-            new PageCatalogItem("PURCHASE_SETTINGS", "Satın Alma Ayarları", "PURCHASE")
-    );
-
     public PermissionCatalogDto getCatalog() {
-        return new PermissionCatalogDto(MODULES, ACTIONS, REPORTS, PAGES);
+        return new PermissionCatalogDto(MODULES, ACTIONS, REPORTS);
     }
 
     public List<String> getModuleKeys() {

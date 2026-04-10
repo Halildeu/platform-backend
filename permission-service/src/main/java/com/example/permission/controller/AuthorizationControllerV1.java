@@ -330,7 +330,6 @@ public class AuthorizationControllerV1 {
         Map<String, String> modules = new LinkedHashMap<>();
         Map<String, String> actions = new LinkedHashMap<>();
         Map<String, String> reports = new LinkedHashMap<>();
-        Map<String, String> pages = new LinkedHashMap<>();
 
         for (var entry : effective.entrySet()) {
             String[] parts = entry.getKey().split(":", 2);
@@ -342,15 +341,12 @@ public class AuthorizationControllerV1 {
                 case MODULE -> modules.put(key, grantStr);
                 case ACTION -> actions.put(key, grantStr);
                 case REPORT -> reports.put(key, grantStr);
-                case PAGE -> pages.put(key, grantStr);
-                case FIELD -> {} // fields not included in /me for now
             }
         }
 
         dto.setModules(modules);
         dto.setActions(actions);
         dto.setReports(reports);
-        dto.setPages(pages);
     }
 
     private Map<String, List<Long>> buildScopeMap(Long userId) {
@@ -468,10 +464,6 @@ public class AuthorizationControllerV1 {
         if (dto.getReports() == null) {
             dto.setReports(Map.of());
         }
-        if (dto.getPages() == null) {
-            dto.setPages(Map.of());
-        }
-
         Map<String, String> moduleGrants = dto.getModules();
         if (moduleGrants == null || moduleGrants.isEmpty()) {
             moduleGrants = deriveModuleGrants(dto.getPermissions(), dto.getRoles());
@@ -498,7 +490,6 @@ public class AuthorizationControllerV1 {
         dto.setModules(moduleGrants);
         dto.setActions(Map.of());
         dto.setReports(Map.of());
-        dto.setPages(Map.of());
         dto.setSuperAdmin(
                 permissions.stream().anyMatch(p -> p != null && p.equalsIgnoreCase("admin"))
                         || roles.stream().anyMatch(role -> role != null && role.equalsIgnoreCase("admin"))

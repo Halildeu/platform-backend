@@ -257,8 +257,6 @@ public class TupleSyncService {
             case MODULE -> List.of("can_manage", "can_view", "blocked");
             case ACTION -> List.of("allowed", "blocked");
             case REPORT -> List.of("can_view", "blocked");
-            case PAGE -> List.of("can_access", "blocked");
-            case FIELD -> List.of("can_view", "blocked");
         };
     }
 
@@ -278,16 +276,6 @@ public class TupleSyncService {
             case REPORT -> switch (grant) {
                 case ALLOW, VIEW -> new TupleMapping("can_view", "report");
                 case DENY -> new TupleMapping("blocked", "report");
-                default -> null;
-            };
-            case PAGE -> switch (grant) {
-                case ALLOW -> new TupleMapping("can_access", "page");
-                case DENY -> new TupleMapping("blocked", "page");
-                default -> null;
-            };
-            case FIELD -> switch (grant) {
-                case ALLOW, VIEW -> new TupleMapping("can_view", "field");
-                case DENY -> new TupleMapping("blocked", "field");
                 default -> null;
             };
         };

@@ -37,9 +37,11 @@ public final class RolePermissionGranuleDefaults {
                     normalizedCode.endsWith(".view") ? GrantType.VIEW : GrantType.ALLOW
             );
         }
+        // P1-A: dashboards.* no longer mapped to PAGE (removed type)
+        // Dashboard access is handled via hasModule('ACCESS'/'PURCHASE') in frontend
         if (normalizedCode.startsWith("dashboards.")) {
             return new Granule(
-                    PermissionType.PAGE,
+                    PermissionType.REPORT,
                     normalizedCode.substring("dashboards.".length()),
                     GrantType.ALLOW
             );

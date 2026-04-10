@@ -4,7 +4,7 @@ import com.example.commonauth.AuthenticatedUserLookupService;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.commonauth.openfga.OpenFgaConfig;
 import com.example.commonauth.openfga.OpenFgaProperties;
-import com.example.commonauth.scope.ConstantAuthzVersionProvider;
+import com.example.commonauth.scope.RemoteAuthzVersionProvider;
 import com.example.commonauth.scope.ScopeContextCache;
 import com.example.commonauth.scope.ScopeContextFilter;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,6 +37,12 @@ public class OpenFgaAuthzConfig {
     }
 
     @Bean
+    public RemoteAuthzVersionProvider remoteAuthzVersionProvider(
+            @Value("${permission.service.base-url:http://127.0.0.1:8091}") String baseUrl) {
+        return new RemoteAuthzVersionProvider(baseUrl + "/api/v1/authz/version", 5000);
+    }
+
+    @Bean
     public ScopeContextCache scopeContextCache(
             @Value("${scope.cache.enabled:true}") boolean enabled,
             @Value("${scope.cache.ttl-seconds:30}") int ttlSeconds,
@@ -50,10 +56,11 @@ public class OpenFgaAuthzConfig {
             OpenFgaAuthzService authzService,
             OpenFgaProperties props,
             AuthenticatedUserLookupService authenticatedUserLookupService,
-            ScopeContextCache scopeContextCache) {
+            ScopeContextCache scopeContextCache,
+            RemoteAuthzVersionProvider remoteAuthzVersionProvider) {
         var reg = new FilterRegistrationBean<>(
                 new ScopeContextFilter(authzService, props, authenticatedUserLookupService,
-                        scopeContextCache, new ConstantAuthzVersionProvider())
+                        scopeContextCache, remoteAuthzVersionProvider)
         );
         reg.addUrlPatterns("/api/*");
         reg.setOrder(Ordered.LOWEST_PRECEDENCE - 10);

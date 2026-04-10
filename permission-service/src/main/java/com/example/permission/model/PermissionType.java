@@ -7,7 +7,5 @@ package com.example.permission.model;
 public enum PermissionType {
     MODULE,
     ACTION,
-    REPORT,
-    PAGE,
-    FIELD
+    REPORT
 }
