@@ -54,6 +54,9 @@ class AuthorizationControllerV1Test {
     @Mock
     private RolePermissionRepository rolePermissionRepository;
 
+    @Mock
+    private com.example.permission.service.AuthzVersionService authzVersionService;
+
     @InjectMocks
     private AuthorizationControllerV1 controller;
 

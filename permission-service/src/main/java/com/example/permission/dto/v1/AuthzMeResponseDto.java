@@ -19,6 +19,9 @@ public class AuthzMeResponseDto {
     private Map<String, String> reports;     // key → "ALLOW" | "DENY"
     private Map<String, String> pages;       // key → "ALLOW" | "DENY"
 
+    // P0 cache invalidation (CNS-20260410-001)
+    private Long authzVersion;
+
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
 
@@ -51,4 +54,7 @@ public class AuthzMeResponseDto {
 
     public Map<String, String> getPages() { return pages; }
     public void setPages(Map<String, String> pages) { this.pages = pages; }
+
+    public Long getAuthzVersion() { return authzVersion; }
+    public void setAuthzVersion(Long authzVersion) { this.authzVersion = authzVersion; }
 }

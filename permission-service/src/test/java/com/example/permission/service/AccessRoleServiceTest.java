@@ -26,12 +26,14 @@ public class AccessRoleServiceTest {
     private UserRoleAssignmentRepository assignmentRepository = mock(UserRoleAssignmentRepository.class);
     private AuditEventService auditEventService = mock(AuditEventService.class);
     private com.example.commonauth.openfga.OpenFgaAuthzService authzService = mock(com.example.commonauth.openfga.OpenFgaAuthzService.class);
+    private AuthzVersionService authzVersionService = mock(AuthzVersionService.class);
+    private TupleSyncService tupleSyncService = mock(TupleSyncService.class);
 
     private AccessRoleService service;
 
     @BeforeEach
     void setUp() {
-        service = new AccessRoleService(roleRepository, rolePermissionRepository, permissionRepository, assignmentRepository, auditEventService, authzService);
+        service = new AccessRoleService(roleRepository, rolePermissionRepository, permissionRepository, assignmentRepository, auditEventService, authzService, authzVersionService, tupleSyncService);
         when(assignmentRepository.countByRoleAndActiveTrue(any())).thenReturn(0L);
     }
 

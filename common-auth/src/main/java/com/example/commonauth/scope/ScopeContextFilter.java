@@ -35,17 +35,29 @@ public class ScopeContextFilter extends OncePerRequestFilter {
     private final OpenFgaAuthzService authzService;
     private final OpenFgaProperties properties;
     private final AuthenticatedUserLookupService authenticatedUserLookupService;
+    private final ScopeContextCache scopeContextCache;
+    private final AuthzVersionProvider versionProvider;
 
     public ScopeContextFilter(OpenFgaAuthzService authzService, OpenFgaProperties properties) {
-        this(authzService, properties, null);
+        this(authzService, properties, null, null, null);
     }
 
     public ScopeContextFilter(OpenFgaAuthzService authzService,
                               OpenFgaProperties properties,
                               AuthenticatedUserLookupService authenticatedUserLookupService) {
+        this(authzService, properties, authenticatedUserLookupService, null, null);
+    }
+
+    public ScopeContextFilter(OpenFgaAuthzService authzService,
+                              OpenFgaProperties properties,
+                              AuthenticatedUserLookupService authenticatedUserLookupService,
+                              ScopeContextCache scopeContextCache,
+                              AuthzVersionProvider versionProvider) {
         this.authzService = authzService;
         this.properties = properties;
         this.authenticatedUserLookupService = authenticatedUserLookupService;
+        this.scopeContextCache = scopeContextCache;
+        this.versionProvider = versionProvider;
     }
 
     @Override
@@ -75,23 +87,44 @@ public class ScopeContextFilter extends OncePerRequestFilter {
             return ScopeContext.empty(null);
         }
 
-        try {
-            Set<Long> companyIds = authzService.listObjectIds(userId, "viewer", "company");
-            Set<Long> projectIds = authzService.listObjectIds(userId, "viewer", "project");
-            Set<Long> warehouseIds = authzService.listObjectIds(userId, "viewer", "warehouse");
-            Set<Long> branchIds = authzService.listObjectIds(userId, "member", "branch");
-
-            boolean isSuperAdmin = authzService.check(userId, "admin", "organization", "default");
-
-            if (isSuperAdmin) {
-                return ScopeContext.superAdmin(userId);
+        // P0: Cache lookup — avoid 5 OpenFGA calls on repeat requests
+        if (scopeContextCache != null && scopeContextCache.isEnabled() && versionProvider != null) {
+            long version = versionProvider.getCurrentVersion();
+            String cacheKey = ScopeContextCache.cacheKey(
+                    userId, version, properties.getStoreId(), properties.getModelId());
+            ScopeContext cached = scopeContextCache.get(cacheKey);
+            if (cached != null) {
+                log.debug("ScopeContext cache HIT for user:{}", userId);
+                return cached;
             }
+            try {
+                ScopeContext ctx = fetchScopeFromOpenFga(userId);
+                scopeContextCache.put(cacheKey, ctx);
+                return ctx;
+            } catch (Exception e) {
+                log.error("Failed to build ScopeContext from OpenFGA for user {}, falling back to dev scope", userId, e);
+                return buildDevScopeContext();
+            }
+        }
 
-            return new ScopeContext(userId, companyIds, projectIds, warehouseIds, branchIds, false);
+        try {
+            return fetchScopeFromOpenFga(userId);
         } catch (Exception e) {
             log.error("Failed to build ScopeContext from OpenFGA for user {}, falling back to dev scope", userId, e);
             return buildDevScopeContext();
         }
+    }
+
+    private ScopeContext fetchScopeFromOpenFga(String userId) {
+        Set<Long> companyIds = authzService.listObjectIds(userId, "viewer", "company");
+        Set<Long> projectIds = authzService.listObjectIds(userId, "viewer", "project");
+        Set<Long> warehouseIds = authzService.listObjectIds(userId, "viewer", "warehouse");
+        Set<Long> branchIds = authzService.listObjectIds(userId, "member", "branch");
+        boolean isSuperAdmin = authzService.check(userId, "admin", "organization", "default");
+        if (isSuperAdmin) {
+            return ScopeContext.superAdmin(userId);
+        }
+        return new ScopeContext(userId, companyIds, projectIds, warehouseIds, branchIds, false);
     }
 
     private ScopeContext buildDevScopeContext() {

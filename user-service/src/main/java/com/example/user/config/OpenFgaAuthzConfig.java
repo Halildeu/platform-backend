@@ -4,6 +4,8 @@ import com.example.commonauth.AuthenticatedUserLookupService;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.commonauth.openfga.OpenFgaConfig;
 import com.example.commonauth.openfga.OpenFgaProperties;
+import com.example.commonauth.scope.ConstantAuthzVersionProvider;
+import com.example.commonauth.scope.ScopeContextCache;
 import com.example.commonauth.scope.ScopeContextFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -35,15 +37,25 @@ public class OpenFgaAuthzConfig {
     }
 
     @Bean
+    public ScopeContextCache scopeContextCache(
+            @Value("${scope.cache.enabled:true}") boolean enabled,
+            @Value("${scope.cache.ttl-seconds:30}") int ttlSeconds,
+            @Value("${scope.cache.ttl-jitter-seconds:3}") int jitterSeconds,
+            @Value("${scope.cache.max-size:5000}") long maxSize) {
+        return new ScopeContextCache(java.time.Duration.ofSeconds(ttlSeconds), java.time.Duration.ofSeconds(jitterSeconds), maxSize, enabled);
+    }
+
+    @Bean
     public FilterRegistrationBean<ScopeContextFilter> scopeContextFilter(
             OpenFgaAuthzService authzService,
             OpenFgaProperties props,
-            AuthenticatedUserLookupService authenticatedUserLookupService) {
+            AuthenticatedUserLookupService authenticatedUserLookupService,
+            ScopeContextCache scopeContextCache) {
         var reg = new FilterRegistrationBean<>(
-                new ScopeContextFilter(authzService, props, authenticatedUserLookupService)
+                new ScopeContextFilter(authzService, props, authenticatedUserLookupService,
+                        scopeContextCache, new ConstantAuthzVersionProvider())
         );
         reg.addUrlPatterns("/api/*");
-        // AFTER Spring Security — so authentication context is available
         reg.setOrder(Ordered.LOWEST_PRECEDENCE - 10);
         return reg;
     }

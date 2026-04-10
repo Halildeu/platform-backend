@@ -18,6 +18,7 @@ import com.example.permission.service.AuthenticatedUserLookupService;
 import com.example.permission.service.AuthorizationQueryService;
 import com.example.permission.service.PermissionCatalogService;
 import com.example.permission.service.PermissionService;
+import com.example.permission.service.AuthzVersionService;
 import com.example.permission.service.TupleSyncService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,7 @@ public class AuthorizationControllerV1 {
     private final OpenFgaAuthzService authzService;
     private final UserRoleAssignmentRepository assignmentRepository;
     private final RolePermissionRepository rolePermissionRepository;
+    private final AuthzVersionService authzVersionService;
 
     public AuthorizationControllerV1(
             AuthorizationQueryService authorizationQueryService,
@@ -58,7 +60,8 @@ public class AuthorizationControllerV1 {
             TupleSyncService tupleSyncService,
             OpenFgaAuthzService authzService,
             UserRoleAssignmentRepository assignmentRepository,
-            RolePermissionRepository rolePermissionRepository
+            RolePermissionRepository rolePermissionRepository,
+            AuthzVersionService authzVersionService
     ) {
         this.authorizationQueryService = authorizationQueryService;
         this.authenticatedUserLookupService = authenticatedUserLookupService;
@@ -68,6 +71,12 @@ public class AuthorizationControllerV1 {
         this.authzService = authzService;
         this.assignmentRepository = assignmentRepository;
         this.rolePermissionRepository = rolePermissionRepository;
+        this.authzVersionService = authzVersionService;
+    }
+
+    @GetMapping("/version")
+    public ResponseEntity<Map<String, Long>> getVersion() {
+        return ResponseEntity.ok(Map.of("authzVersion", authzVersionService.getCurrentVersion()));
     }
 
     @GetMapping("/user/{userId}/scopes")
@@ -119,6 +128,7 @@ public class AuthorizationControllerV1 {
             }
 
             applyFrontendCompatibilityFallback(dto, jwt);
+            dto.setAuthzVersion(authzVersionService.getCurrentVersion());
             return ResponseEntity.ok(dto);
         } catch (RuntimeException ex) {
             log.error("Authz /me beklenmeyen hata ile sonuçlandı; JWT fallback response döndürülecek. cause={}", ex.getMessage(), ex);
@@ -185,7 +195,7 @@ public class AuthorizationControllerV1 {
             permissionService.assignRole(assignRequest);
         }
 
-        // Sync scope tuples
+        // Sync scope tuples (skip individual version increments)
         if (request.scopes() != null) {
             var scopes = request.scopes();
             tupleSyncService.syncScopeTuples(
@@ -193,13 +203,17 @@ public class AuthorizationControllerV1 {
                     scopes.companyIds(),
                     scopes.projectIds(),
                     scopes.warehouseIds(),
-                    scopes.branchIds()
+                    scopes.branchIds(),
+                    true
             );
         }
 
-        // Refresh feature tuples (union of all roles, deny-wins)
+        // Refresh feature tuples (union of all roles, deny-wins — skip individual version increment)
         List<RolePermission> allPermissions = rolePermissionRepository.findByRoleIdIn(roleIds);
-        tupleSyncService.syncFeatureTuplesForUser(String.valueOf(userId), allPermissions);
+        tupleSyncService.syncFeatureTuplesForUser(String.valueOf(userId), allPermissions, true);
+
+        // P0: Single version increment after all tuple syncs complete
+        authzVersionService.incrementVersion();
 
         return ResponseEntity.ok(Map.of(
                 "userId", userId,
