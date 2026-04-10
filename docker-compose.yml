@@ -140,9 +140,9 @@ services:
       SERVICE_AUTH_ISSUER: auth-service
       SECURITY_JWT_AUDIENCE: variant-service
       # Opsiyonel diğer ayarlar
-      VARIANT_DB_URL: ${VARIANT_DB_URL}
-      VARIANT_DB_USERNAME: ${VARIANT_DB_USERNAME}
-      VARIANT_DB_PASSWORD: ${VARIANT_DB_PASSWORD}
+      VARIANT_DB_URL: ${VARIANT_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
+      VARIANT_DB_USERNAME: ${VARIANT_DB_USERNAME:-postgres}
+      VARIANT_DB_PASSWORD: ${VARIANT_DB_PASSWORD:-postgres}
       VARIANT_DB_SCHEMA: ${VARIANT_DB_SCHEMA:-variant_service}
       EUREKA_SERVER_URL: ${EUREKA_SERVER_URL}
     depends_on:
@@ -242,7 +242,7 @@ services:
       # start-dev modunda hostname kontrolü otomatik kapalı
       - KC_HTTP_ENABLED=true
       - KC_PROXY_HEADERS=${KC_PROXY_HEADERS:-xforwarded}
-      - KC_HOSTNAME=${KC_HOSTNAME:-https://ai.acik.com}
+      - KC_HOSTNAME=${KC_HOSTNAME:-http://localhost:8081}
       - KC_HOSTNAME_BACKCHANNEL_DYNAMIC=${KC_HOSTNAME_BACKCHANNEL_DYNAMIC:-true}
       - KC_HOSTNAME_DEBUG=true
     ports:
