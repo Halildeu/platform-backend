@@ -41,7 +41,8 @@ type branch
 
 type module
   relations
-    define can_manage: [user] but not blocked
+    define can_edit: [user] but not blocked
+    define can_manage: [user] or can_edit but not blocked
     define can_view: [user] or can_manage but not blocked
     define blocked: [user]
 
@@ -52,5 +53,6 @@ type action
 
 type report
   relations
-    define can_view: [user] but not blocked
+    define can_edit: [user] but not blocked
+    define can_view: [user] or can_edit but not blocked
     define blocked: [user]

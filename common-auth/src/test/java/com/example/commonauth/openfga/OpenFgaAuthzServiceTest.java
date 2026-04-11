@@ -88,6 +88,45 @@ class OpenFgaAuthzServiceTest {
             var svc = createDevService();
             assertFalse(svc.isEnabled());
         }
+
+        @Test
+        void checkWithReason_returns_granted_in_dev_mode() {
+            var svc = createDevService();
+            var result = svc.checkWithReason("user1", "can_view", "report", "HR_REPORTS");
+            assertTrue(result.allowed());
+            assertEquals("granted", result.reason());
+        }
+
+        @Test
+        void checkWithReason_returns_granted_for_any_relation_in_dev_mode() {
+            var svc = createDevService();
+            var result = svc.checkWithReason("user1", "can_edit", "report", "FINANCE_REPORTS");
+            assertTrue(result.allowed());
+            assertEquals("granted", result.reason());
+        }
+
+        @Test
+        void batchCheck_returns_all_granted_in_dev_mode() {
+            var svc = createDevService();
+            var requests = List.of(
+                    new OpenFgaAuthzService.BatchCheckRequest("can_view", "report", "HR_REPORTS"),
+                    new OpenFgaAuthzService.BatchCheckRequest("can_edit", "report", "FINANCE_REPORTS"),
+                    new OpenFgaAuthzService.BatchCheckRequest("can_manage", "module", "AUDIT")
+            );
+            var results = svc.batchCheck("user1", requests);
+            assertEquals(3, results.size());
+            for (var r : results) {
+                assertTrue(r.allowed());
+                assertEquals("granted", r.reason());
+            }
+        }
+
+        @Test
+        void batchCheck_empty_list_returns_empty() {
+            var svc = createDevService();
+            var results = svc.batchCheck("user1", List.of());
+            assertTrue(results.isEmpty());
+        }
     }
 
     @Nested

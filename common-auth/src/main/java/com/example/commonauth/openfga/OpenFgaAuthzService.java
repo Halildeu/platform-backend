@@ -267,6 +267,49 @@ public class OpenFgaAuthzService {
         );
     }
 
+    /**
+     * Check with reason — distinguishes "blocked" from "no_relation".
+     * Required for frontend AccessLevel mapping (disabled vs hidden).
+     * CNS-20260411-005: Codex MODIFY — reason field mandatory for UI semantics.
+     */
+    public record CheckResult(boolean allowed, String reason) {}
+
+    public CheckResult checkWithReason(String userId, String relation, String objectType, String objectId) {
+        if (!enabled) {
+            return new CheckResult(true, "granted");
+        }
+        try {
+            boolean allowed = check(userId, relation, objectType, objectId);
+            if (allowed) {
+                return new CheckResult(true, "granted");
+            }
+            // Distinguish: explicitly blocked vs no relation at all
+            boolean isBlocked = check(userId, "blocked", objectType, objectId);
+            return new CheckResult(false, isBlocked ? "blocked" : "no_relation");
+        } catch (Exception e) {
+            log.error("OpenFGA checkWithReason failed: user:{} {} {}:{}", userId, relation, objectType, objectId, e);
+            return new CheckResult(false, "error");
+        }
+    }
+
+    /**
+     * Batch check with reason — bounded parallelism for UI component-level checks.
+     * CNS-20260411-005: Codex REJECT (without batch) — batch endpoint mandatory.
+     * Max 20 checks per call enforced at controller level.
+     */
+    public List<CheckResult> batchCheck(String userId, List<BatchCheckRequest> requests) {
+        if (!enabled) {
+            return requests.stream()
+                    .map(r -> new CheckResult(true, "granted"))
+                    .toList();
+        }
+        return requests.parallelStream()
+                .map(r -> checkWithReason(userId, r.relation(), r.objectType(), r.objectId()))
+                .toList();
+    }
+
+    public record BatchCheckRequest(String relation, String objectType, String objectId) {}
+
     public boolean isEnabled() {
         return enabled;
     }

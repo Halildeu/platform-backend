@@ -249,9 +249,9 @@ public class TupleSyncService {
 
     private List<String> getRelationsForType(PermissionType type) {
         return switch (type) {
-            case MODULE -> List.of("can_manage", "can_view", "blocked");
+            case MODULE -> List.of("can_manage", "can_edit", "can_view", "blocked");
             case ACTION -> List.of("allowed", "blocked");
-            case REPORT -> List.of("can_view", "blocked");
+            case REPORT -> List.of("can_edit", "can_view", "blocked");
             case PAGE, FIELD -> List.of(); // deprecated — no OpenFGA tuples
         };
     }
@@ -270,9 +270,9 @@ public class TupleSyncService {
                 default -> null;
             };
             case REPORT -> switch (grant) {
+                case MANAGE -> new TupleMapping("can_edit", "report");
                 case ALLOW, VIEW -> new TupleMapping("can_view", "report");
                 case DENY -> new TupleMapping("blocked", "report");
-                default -> null;
             };
             case PAGE, FIELD -> null; // deprecated — skip
         };
