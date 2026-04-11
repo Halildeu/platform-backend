@@ -159,11 +159,27 @@
 				<artifactId>maven-surefire-plugin</artifactId>
 				<version>3.1.2</version>
 				<configuration>
-					<argLine>-Xshare:off -javaagent:${settings.localRepository}/org/mockito/mockito-core/${mockito.version}/mockito-core-${mockito.version}.jar -Dnet.bytebuddy.experimental=true</argLine>
+					<argLine>@{argLine} -Xshare:off -javaagent:${settings.localRepository}/org/mockito/mockito-core/${mockito.version}/mockito-core-${mockito.version}.jar -Dnet.bytebuddy.experimental=true</argLine>
 					<systemPropertyVariables>
 						<net.bytebuddy.experimental>true</net.bytebuddy.experimental>
 					</systemPropertyVariables>
 				</configuration>
+			</plugin>
+			<!-- JaCoCo: baseline coverage report (no threshold) — CNS-003 PR2 -->
+			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>0.8.12</version>
+				<executions>
+					<execution>
+						<goals><goal>prepare-agent</goal></goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>test</phase>
+						<goals><goal>report</goal></goals>
+					</execution>
+				</executions>
 			</plugin>
 		</plugins>
 	</build>

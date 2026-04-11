@@ -133,17 +133,19 @@ else
 fi
 
 # ── A7. Vite proxy yapılandırması ────────────────────────────────
+# D-003 TRANSFORMED: permission-service is OpenFGA hub (not removed).
+# Authz endpoints (/authz, /roles, /permissions) correctly route to 8090.
 header "A7. Vite proxy — routing correctness"
 VITE_CONFIG="$WEB_DIR/apps/mfe-shell/vite.config.ts"
 if [ -f "$VITE_CONFIG" ]; then
-  # 8090 (permission-service) referansı olmamalı
-  has_8090=$(grep -v '^\s*//' "$VITE_CONFIG" | grep -c "localhost:8090" 2>/dev/null || true)
-  has_8090=${has_8090:-0}
-  [ "$has_8090" -gt 0 ] && fail "vite: 8090 (permission-service) referansı var" || pass "vite: 8090 referansı yok"
+  # D-003: 8090 is correct — permission-service is the OpenFGA hub
+  has_authz_proxy=$(grep -v '^\s*//' "$VITE_CONFIG" | grep -c "api/v1/authz" 2>/dev/null || true)
+  has_authz_proxy=${has_authz_proxy:-0}
+  [ "$has_authz_proxy" -gt 0 ] && pass "vite: /api/v1/authz proxy tanımlı" || fail "vite: /api/v1/authz proxy eksik"
 
-  # authz → 8089 olmalı
+  # authz → 8090 (permission-service = OpenFGA hub, D-003 TRANSFORMED)
   authz_target=$(grep "api/v1/authz" "$VITE_CONFIG" | grep -o "localhost:[0-9]*" | head -1)
-  [ "$authz_target" = "localhost:8089" ] && pass "vite: /api/v1/authz → 8089" || fail "vite: /api/v1/authz → ${authz_target:-TANIMSIZ} (8089 olmalı)"
+  [ "$authz_target" = "localhost:8090" ] && pass "vite: /api/v1/authz → 8090 (permission-service hub)" || fail "vite: /api/v1/authz → ${authz_target:-TANIMSIZ} (8090 olmalı — D-003)"
 
   # companies direct route olmalı
   has_companies=$(grep -c "api/v1/companies" "$VITE_CONFIG" 2>/dev/null || true)
@@ -219,25 +221,28 @@ else
 fi
 
 # ── A12. Permission-service durumu ───────────────────────────────
-header "A12. Permission-service — must be REMOVED or legacy-only"
+# D-003 TRANSFORMED (CNS-20260411-001): permission-service is OpenFGA hub,
+# NOT removed. It hosts TupleSyncService, AuthzVersionService, roles CRUD, /authz/me.
+header "A12. Permission-service — must be ACTIVE as OpenFGA hub (D-003 TRANSFORMED)"
 COMPOSE="$BACKEND_DIR/docker-compose.yml"
-perm_legacy=$(grep -c 'profiles.*legacy' "$COMPOSE" 2>/dev/null || true)
-perm_legacy=${perm_legacy:-0}
-if [ "$perm_legacy" -gt 0 ]; then
-  pass "docker-compose: permission-service profiles=[legacy]"
-else
-  perm_exists=$(grep -c 'permission-service:' "$COMPOSE" 2>/dev/null || true)
-  perm_exists=${perm_exists:-0}
-  [ "$perm_exists" -gt 0 ] && fail "docker-compose: permission-service aktif" || pass "docker-compose: permission-service kaldırılmış"
-fi
+perm_exists=$(grep -c 'permission-service:' "$COMPOSE" 2>/dev/null || true)
+perm_exists=${perm_exists:-0}
+[ "$perm_exists" -gt 0 ] && pass "docker-compose: permission-service tanımlı (OpenFGA hub)" || fail "docker-compose: permission-service eksik — D-003 TRANSFORMED hub gerekli"
 
-# ── A12b. Gateway routes — no PERMISSION-SERVICE references ──────
-header "A12b. Gateway routes — PERMISSION-SERVICE must not be referenced"
+# ── A12b. Gateway routes — PERMISSION-SERVICE is the authz hub ──────
+# D-003 TRANSFORMED: gateway routes for /authz, /roles, /permissions
+# correctly point to PERMISSION-SERVICE (not USER-SERVICE).
+header "A12b. Gateway routes — PERMISSION-SERVICE must route authz endpoints"
 GW_PROPS="$BACKEND_DIR/api-gateway/src/main/resources/application.properties"
 if [ -f "$GW_PROPS" ]; then
-  perm_refs=$(grep -c "PERMISSION-SERVICE" "$GW_PROPS" 2>/dev/null || true)
-  perm_refs=${perm_refs:-0}
-  [ "$perm_refs" -eq 0 ] && pass "gateway: PERMISSION-SERVICE referansı yok" || fail "gateway: $perm_refs PERMISSION-SERVICE referansı var — USER-SERVICE olmalı"
+  # Find authz route index, then check its uri points to PERMISSION-SERVICE
+  authz_idx=$(grep "authz" "$GW_PROPS" | grep -o 'routes\[[0-9]*\]' | head -1 | grep -o '[0-9]*')
+  if [ -n "$authz_idx" ]; then
+    authz_uri=$(grep "routes\[${authz_idx}\].uri" "$GW_PROPS" 2>/dev/null || true)
+    echo "$authz_uri" | grep -q "PERMISSION-SERVICE" && pass "gateway: /authz → PERMISSION-SERVICE (D-003 hub)" || fail "gateway: /authz route ${authz_uri:-TANIMSIZ} (PERMISSION-SERVICE olmalı)"
+  else
+    fail "gateway: /authz route tanımı bulunamadı"
+  fi
 fi
 
 # ── A12c. Schema-service AUTH_MODE ────────────────────────────────

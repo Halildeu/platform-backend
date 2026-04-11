@@ -5,6 +5,7 @@ import java.util.Map;
 
 public record AccessConfig(
         String permission,
+        String reportGroup,
         Map<String, List<String>> columnRestrictions,
         RowFilter rowFilter
 ) {

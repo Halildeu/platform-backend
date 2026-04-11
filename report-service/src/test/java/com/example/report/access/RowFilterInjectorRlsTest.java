@@ -28,7 +28,7 @@ class RowFilterInjectorRlsTest {
 
     private static ReportDefinition defWithRowFilter(String column, String scopeType, String bypassPermission) {
         AccessConfig.RowFilter rf = new AccessConfig.RowFilter(column, scopeType, bypassPermission);
-        AccessConfig access = new AccessConfig(null, null, rf);
+        AccessConfig access = new AccessConfig(null, null, null, rf);
         return new ReportDefinition(
                 "test-report", "1.0", "Test", "", "test",
                 "MY_TABLE", "dbo", "static", null, null,
@@ -358,7 +358,7 @@ class RowFilterInjectorRlsTest {
         @Test
         @DisplayName("report with access but null row filter returns null clause")
         void accessWithoutRowFilter_nullClause() {
-            AccessConfig access = new AccessConfig("read:report", null, null);
+            AccessConfig access = new AccessConfig("read:report", null, null, null);
             ReportDefinition def = new ReportDefinition(
                     "test-no-rf", "1.0", "Test", "", "test",
                     "MY_TABLE", "dbo", "static", null, null,
