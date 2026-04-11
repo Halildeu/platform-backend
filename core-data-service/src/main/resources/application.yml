@@ -43,6 +43,17 @@ security:
     audience: ${SECURITY_JWT_AUDIENCE:core-data-service,frontend,account,serban-web}
     allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+
 logging:
   level:
     org.springframework.security: INFO

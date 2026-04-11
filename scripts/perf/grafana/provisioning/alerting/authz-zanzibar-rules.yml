@@ -154,8 +154,8 @@ groups:
               datasource: { type: prometheus, uid: prometheus }
               expr: |
                 1 - (
-                  rate(authz_cache_hit_total{job="permission-service"}[10m])
-                  / clamp_min(rate(authz_cache_hit_total{job="permission-service"}[10m]) + rate(authz_cache_miss_total{job="permission-service"}[10m]), 0.001)
+                  rate(authz_cache_hit_count{job="permission-service"}[10m])
+                  / clamp_min(rate(authz_cache_hit_count{job="permission-service"}[10m]) + rate(authz_cache_miss_count{job="permission-service"}[10m]), 0.001)
                 )
               refId: A
               range: true
