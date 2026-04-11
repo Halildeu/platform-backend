@@ -1,12 +1,19 @@
 package com.example.permission.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Filter;
+import org.hibernate.annotations.FilterDef;
+import org.hibernate.annotations.ParamDef;
 
 import java.time.Instant;
 
 @Entity
 @Table(name = "user_permission_scope",
         uniqueConstraints = @UniqueConstraint(name = "uk_user_permission_scope", columnNames = {"user_id", "permission_id", "scope_id"}))
+@FilterDef(name = "userScope",
+        parameters = @ParamDef(name = "userId", type = Long.class))
+@Filter(name = "userScope",
+        condition = "user_id = :userId")
 public class UserPermissionScope {
 
     @Id

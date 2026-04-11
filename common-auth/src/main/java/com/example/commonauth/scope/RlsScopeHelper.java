@@ -40,6 +40,16 @@ public final class RlsScopeHelper {
             return;
         }
 
+        // Set user_id for user-scoped RLS (e.g., user_permission_scope)
+        if (ctx.userId() != null && !ctx.userId().isBlank()) {
+            try (PreparedStatement ps = connection.prepareStatement(
+                    "SELECT set_config('app.scope.user_id', ?, true)")) {
+                ps.setString(1, ctx.userId());
+                ps.execute();
+            }
+            log.debug("RLS scope set: user_id={}", ctx.userId());
+        }
+
         if (!ctx.allowedCompanyIds().isEmpty()) {
             String ids = ctx.allowedCompanyIds().stream()
                     .map(String::valueOf)

@@ -1,11 +1,18 @@
 package com.example.permission.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Filter;
+import org.hibernate.annotations.FilterDef;
+import org.hibernate.annotations.ParamDef;
 
 import java.time.Instant;
 
 @Entity
 @Table(name = "scopes", uniqueConstraints = @UniqueConstraint(name = "uk_scopes_type_ref", columnNames = {"scope_type", "ref_id"}))
+@FilterDef(name = "scopeCompanyFilter",
+        parameters = @ParamDef(name = "companyIds", type = Long.class))
+@Filter(name = "scopeCompanyFilter",
+        condition = "scope_type != 'COMPANY' OR ref_id IN (:companyIds)")
 public class Scope {
 
     @Id

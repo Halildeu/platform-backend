@@ -1,11 +1,23 @@
 package com.example.variant.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Filter;
+import org.hibernate.annotations.FilterDef;
+import org.hibernate.annotations.ParamDef;
 
 import java.time.OffsetDateTime;
 
 @Entity
 @Table(name = "variant_visibility")
+@FilterDef(name = "visibilityScope", parameters = {
+        @ParamDef(name = "companyIds", type = Long.class),
+        @ParamDef(name = "userId", type = String.class)
+})
+@Filter(name = "visibilityScope", condition =
+        "visibility_type = 'GLOBAL' OR " +
+        "(visibility_type = 'COMPANY' AND CAST(ref_id AS BIGINT) IN (:companyIds)) OR " +
+        "(visibility_type = 'USER' AND ref_id = :userId) OR " +
+        "visibility_type = 'ROLE'")
 public class VariantVisibility {
 
     @Id

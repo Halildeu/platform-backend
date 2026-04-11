@@ -1,6 +1,9 @@
 package com.example.coredata.model;
 
 import jakarta.persistence.*;
+import org.hibernate.annotations.Filter;
+import org.hibernate.annotations.FilterDef;
+import org.hibernate.annotations.ParamDef;
 
 import java.time.OffsetDateTime;
 
@@ -8,6 +11,10 @@ import java.time.OffsetDateTime;
 @Table(name = "companies", uniqueConstraints = {
         @UniqueConstraint(columnNames = "company_code")
 })
+@FilterDef(name = "companyScope",
+        parameters = @ParamDef(name = "companyIds", type = Long.class))
+@Filter(name = "companyScope",
+        condition = "id IN (:companyIds)")
 public class Company {
 
     @Id
