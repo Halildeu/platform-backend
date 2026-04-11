@@ -33,10 +33,17 @@ public class OpenFgaAuthzService {
     private final OpenFgaProperties properties;
     private final boolean enabled;
 
+    // SK-2: Check result cache — reduces OpenFGA API calls for repeated checks
+    private final com.github.benmanes.caffeine.cache.Cache<String, Boolean> checkCache;
+
     public OpenFgaAuthzService(OpenFgaClient client, OpenFgaProperties properties) {
         this.client = client;
         this.properties = properties;
         this.enabled = properties.isEnabled() && client != null;
+        this.checkCache = com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                .expireAfterWrite(java.time.Duration.ofSeconds(10))
+                .maximumSize(1000)
+                .build();
         if (!enabled) {
             log.warn("OpenFGA is DISABLED — all checks return true, scopes from dev config");
         }
@@ -50,6 +57,13 @@ public class OpenFgaAuthzService {
         if (!enabled) {
             return true;
         }
+        // SK-2: Check cache — 10s TTL, avoids repeated OpenFGA calls for same check
+        String cacheKey = userId + ":" + relation + ":" + objectType + ":" + objectId;
+        Boolean cached = checkCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            log.debug("OpenFGA check (cached): user:{} {} {}:{} → {}", userId, relation, objectType, objectId, cached);
+            return cached;
+        }
         try {
             var request = new ClientCheckRequest()
                     .user("user:" + userId)
@@ -58,6 +72,7 @@ public class OpenFgaAuthzService {
 
             var response = client.check(request).get();
             boolean allowed = Boolean.TRUE.equals(response.getAllowed());
+            checkCache.put(cacheKey, allowed);
 
             log.debug("OpenFGA check: user:{} {} {}:{} → {}",
                     userId, relation, objectType, objectId, allowed);
@@ -326,13 +341,21 @@ public class OpenFgaAuthzService {
             var batchRequest = ClientBatchCheckRequest.ofChecks(items);
             var response = client.batchCheck(batchRequest).get();
 
-            return response.getResult().stream()
-                    .map(single -> {
-                        boolean allowed = single.isAllowed();
-                        String reason = allowed ? "granted" : "no_relation";
-                        return new CheckResult(allowed, reason);
-                    })
-                    .toList();
+            var results = new java.util.ArrayList<CheckResult>();
+            var singleResults = response.getResult();
+            for (int i = 0; i < singleResults.size(); i++) {
+                var single = singleResults.get(i);
+                boolean allowed = single.isAllowed();
+                String reason = allowed ? "granted" : "no_relation";
+                // SK-5: Per-decision audit log — batch path
+                var req = i < requests.size() ? requests.get(i) : null;
+                if (req != null) {
+                    log.info("authz.decision user={} relation={} object={}:{} allowed={} reason={} mode=batch",
+                            userId, req.relation(), req.objectType(), req.objectId(), allowed, reason);
+                }
+                results.add(new CheckResult(allowed, reason));
+            }
+            return results;
         } catch (Exception e) {
             log.warn("BatchCheck failed, falling back to parallel individual checks: {}", e.getMessage());
             // Fallback to parallel individual checks
