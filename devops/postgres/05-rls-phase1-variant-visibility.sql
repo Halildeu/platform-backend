@@ -1,14 +1,14 @@
--- V19: RLS Phase 1 — row-level security for variant_visibility table
+-- V19: RLS Phase 1 — row-level security for variant_service.variant_visibility table
 -- Enforces visibility rules at the database level:
 --   GLOBAL: always visible
 --   COMPANY: visible only if ref_id matches user's allowed company IDs
 --   USER: visible only if ref_id matches current user ID
 --   ROLE: always visible (role check is done at application layer)
 
-ALTER TABLE variant_visibility ENABLE ROW LEVEL SECURITY;
-ALTER TABLE variant_visibility FORCE ROW LEVEL SECURITY;
+ALTER TABLE variant_service.variant_visibility ENABLE ROW LEVEL SECURITY;
+ALTER TABLE variant_service.variant_visibility FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY visibility_scope_vv ON variant_visibility FOR ALL USING (
+CREATE POLICY visibility_scope_vv ON variant_service.variant_visibility FOR ALL USING (
     -- superAdmin bypass
     current_setting('app.scope.bypass_rls', true) = 'true'
     -- GLOBAL and ROLE are always visible

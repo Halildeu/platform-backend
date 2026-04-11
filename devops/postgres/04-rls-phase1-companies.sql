@@ -2,10 +2,10 @@
 -- Users can only see companies they are authorized to access.
 -- SuperAdmin bypasses via app.scope.bypass_rls session variable.
 
-ALTER TABLE companies ENABLE ROW LEVEL SECURITY;
-ALTER TABLE companies FORCE ROW LEVEL SECURITY;
+ALTER TABLE core_data_service.companies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE core_data_service.companies FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY company_scope_companies ON companies FOR ALL USING (
+CREATE POLICY company_scope_companies ON core_data_service.companies FOR ALL USING (
     current_setting('app.scope.bypass_rls', true) = 'true'
     OR current_setting('app.scope.company_ids', true) IS NULL
     OR current_setting('app.scope.company_ids', true) = ''

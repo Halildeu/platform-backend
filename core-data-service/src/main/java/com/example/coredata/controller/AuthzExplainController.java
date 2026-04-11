@@ -68,7 +68,7 @@ public class AuthzExplainController {
     public record BatchCheckItem(boolean allowed, String reason,
                                  String relation, String objectType, String objectId) {}
 
-    @PostMapping("/check/batch")
+    @PostMapping("/batch-check")
     public ResponseEntity<?> batchCheck(@RequestBody BatchCheckRequest request) {
         if (request.checks() == null || request.checks().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "checks array is required"));
