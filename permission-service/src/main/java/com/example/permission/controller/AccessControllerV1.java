@@ -41,6 +41,7 @@ public class AccessControllerV1 {
     private final RoleRepository roleRepository;
     private final PermissionService permissionService;
     private final TupleSyncService tupleSyncService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     public AccessControllerV1(AccessRoleService accessRoleService,
                               UserScopeService userScopeService,
@@ -48,7 +49,8 @@ public class AccessControllerV1 {
                               RolePermissionRepository rolePermissionRepository,
                               RoleRepository roleRepository,
                               PermissionService permissionService,
-                              @org.springframework.lang.Nullable TupleSyncService tupleSyncService) {
+                              @org.springframework.lang.Nullable TupleSyncService tupleSyncService,
+                              org.springframework.context.ApplicationEventPublisher eventPublisher) {
         this.accessRoleService = accessRoleService;
         this.userScopeService = userScopeService;
         this.assignmentRepository = assignmentRepository;
@@ -56,6 +58,7 @@ public class AccessControllerV1 {
         this.roleRepository = roleRepository;
         this.permissionService = permissionService;
         this.tupleSyncService = tupleSyncService;
+        this.eventPublisher = eventPublisher;
     }
 
     @GetMapping
@@ -217,8 +220,8 @@ public class AccessControllerV1 {
         role.setUpdatedAt(java.time.Instant.now());
         roleRepository.save(role);
 
-        // Propagate to all assigned users
-        tupleSyncService.propagateRoleChange(roleId);
+        // CNS-002 #2-3: Publish event — handled AFTER_COMMIT to avoid stale state
+        eventPublisher.publishEvent(new com.example.permission.event.RoleChangeEvent(roleId));
 
         return ResponseEntity.ok(Map.of("roleId", roleId, "granuleCount", items.size(), "propagated", true));
     }

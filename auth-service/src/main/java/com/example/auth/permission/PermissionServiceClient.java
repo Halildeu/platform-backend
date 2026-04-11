@@ -36,40 +36,40 @@ public class PermissionServiceClient {
         this.serviceTokenProvider = serviceTokenProvider;
     }
 
+    /**
+     * Fetch user permissions via new /api/v1/authz/me endpoint (OpenFGA-backed).
+     * CNS-20260411-002 #4: migrate from legacy /api/permissions/assignments.
+     * Returns flat permission set for backward compat with AuthService login flow.
+     */
     public Set<String> getPermissions(Long userId, Long companyId) {
         try {
-            PermissionAssignmentResponse[] body = webClient.get()
-                    .uri(uriBuilder -> {
-                        uriBuilder.path("/api/permissions/assignments")
-                                .queryParam("userId", userId);
-                        if (companyId != null) {
-                            uriBuilder.queryParam("companyId", companyId);
-                        }
-                        return uriBuilder.build();
-                    })
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> body = webClient.get()
+                    .uri("/api/v1/authz/me")
                     .headers(headers -> headers.setBearerAuth(
                             serviceTokenProvider.getToken(PERMISSION_SERVICE_AUDIENCE, List.of(REQUIRED_PERMISSION))
                     ))
                     .retrieve()
-                    .bodyToMono(PermissionAssignmentResponse[].class)
+                    .bodyToMono(java.util.Map.class)
                     .block();
             if (body == null) {
                 return Collections.emptySet();
             }
-            return List.of(body).stream()
-                    .filter(PermissionAssignmentResponse::isActive)
-                    .flatMap(assignment -> {
-                        Set<String> permissions = assignment.getPermissions();
-                        return permissions == null ? Collections.<String>emptySet().stream() : permissions.stream();
-                    })
-                    .map(String::trim)
-                    .filter(StringUtils::hasText)
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            // Extract permissions from legacy field (backward compat)
+            Object permsObj = body.get("permissions");
+            if (permsObj instanceof List<?> permsList) {
+                return permsList.stream()
+                        .filter(p -> p instanceof String)
+                        .map(p -> ((String) p).trim())
+                        .filter(StringUtils::hasText)
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+            }
+            return Collections.emptySet();
         } catch (WebClientResponseException ex) {
-            log.warn("PermissionService izin çözümünde HTTP hata: status={} message={}", ex.getStatusCode(), ex.getMessage());
+            log.warn("AuthzMe izin çözümünde HTTP hata: status={} message={}", ex.getStatusCode(), ex.getMessage());
             return Collections.emptySet();
         } catch (Exception ex) {
-            log.warn("PermissionService'den izinler alınamadı: {}. Varsayılan olarak boş liste dönülecek.", ex.getMessage());
+            log.warn("AuthzMe'den izinler alınamadı: {}. Varsayılan olarak boş liste dönülecek.", ex.getMessage());
             return Collections.emptySet();
         }
     }

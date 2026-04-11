@@ -17,8 +17,10 @@ import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.example.permission.event.RoleChangeEvent;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -38,6 +40,7 @@ public class AccessRoleService {
     private final OpenFgaAuthzService authzService;
     private final AuthzVersionService authzVersionService;
     private final TupleSyncService tupleSyncService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public AccessRoleService(RoleRepository roleRepository,
                              RolePermissionRepository rolePermissionRepository,
@@ -46,7 +49,8 @@ public class AccessRoleService {
                              AuditEventService auditEventService,
                              @org.springframework.lang.Nullable OpenFgaAuthzService authzService,
                              @org.springframework.lang.Nullable AuthzVersionService authzVersionService,
-                             @org.springframework.lang.Nullable TupleSyncService tupleSyncService) {
+                             @org.springframework.lang.Nullable TupleSyncService tupleSyncService,
+                             ApplicationEventPublisher eventPublisher) {
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;
@@ -55,6 +59,7 @@ public class AccessRoleService {
         this.authzService = authzService;
         this.authzVersionService = authzVersionService;
         this.tupleSyncService = tupleSyncService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional(readOnly = true)
@@ -280,8 +285,8 @@ public class AccessRoleService {
                 )
         );
 
-        // P0: Propagate tuple changes to all users assigned to this role
-        tupleSyncService.propagateRoleChange(roleId);
+        // CNS-002 #2-3: Publish event — handled AFTER_COMMIT to avoid stale state
+        eventPublisher.publishEvent(new RoleChangeEvent(roleId));
 
         String auditId = audit != null && audit.getId() != null ? audit.getId().toString() : null;
         return new RolePermissionsUpdateResponseDto(true, auditId);

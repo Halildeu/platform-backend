@@ -33,7 +33,7 @@ public class AccessRoleServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AccessRoleService(roleRepository, rolePermissionRepository, permissionRepository, assignmentRepository, auditEventService, authzService, authzVersionService, tupleSyncService);
+        service = new AccessRoleService(roleRepository, rolePermissionRepository, permissionRepository, assignmentRepository, auditEventService, authzService, authzVersionService, tupleSyncService, mock(org.springframework.context.ApplicationEventPublisher.class));
         when(assignmentRepository.countByRoleAndActiveTrue(any())).thenReturn(0L);
     }
 
