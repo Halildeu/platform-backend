@@ -80,15 +80,20 @@ public class AuthzExplainController {
         var scope = ScopeContextHolder.get();
         String userId = scope != null ? scope.userId() : "0";
 
-        List<BatchCheckItem> results = request.checks().stream()
-                .map(c -> {
-                    var result = authzService.checkWithReason(
-                            userId, c.relation(), c.objectType(), c.objectId());
-                    return new BatchCheckItem(
-                            result.allowed(), result.reason(),
-                            c.relation(), c.objectType(), c.objectId());
-                })
+        var batchRequests = request.checks().stream()
+                .map(c -> new OpenFgaAuthzService.BatchCheckRequest(
+                        c.relation(), c.objectType(), c.objectId()))
                 .toList();
+
+        var checkResults = authzService.batchCheck(userId, batchRequests);
+
+        List<BatchCheckItem> results = new java.util.ArrayList<>();
+        for (int i = 0; i < request.checks().size(); i++) {
+            var c = request.checks().get(i);
+            var r = checkResults.get(i);
+            results.add(new BatchCheckItem(r.allowed(), r.reason(),
+                    c.relation(), c.objectType(), c.objectId()));
+        }
 
         return ResponseEntity.ok(Map.of("results", results));
     }
