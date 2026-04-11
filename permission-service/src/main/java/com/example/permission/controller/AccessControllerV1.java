@@ -193,6 +193,7 @@ public class AccessControllerV1 {
      * Update role permissions with 5-granule format + DENY support.
      * Triggers tuple propagation for all assigned users.
      */
+    @org.springframework.transaction.annotation.Transactional
     @PutMapping("/{roleId}/granules")
     @PreAuthorize("hasAuthority('permission-manage')")
     public ResponseEntity<Map<String, Object>> updateRoleGranules(

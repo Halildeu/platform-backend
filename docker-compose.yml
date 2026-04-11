@@ -550,7 +550,7 @@ services:
       - ./scripts/perf/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./scripts/perf/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./scripts/perf/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
-      - ./docs/observability:/var/lib/grafana/dashboards:ro
+      - ./scripts/perf/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks:
       - observability-network
     depends_on:

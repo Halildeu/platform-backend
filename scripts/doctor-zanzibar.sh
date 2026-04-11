@@ -160,17 +160,19 @@ else
   fail "vite.config.ts bulunamadı"
 fi
 
-# ── A8. Frontend useAuthorization mapping ────────────────────────
-header "A8. useAuthorization — OpenFGA module→legacy permission mapping"
-AUTH_HOOK="$WEB_DIR/apps/mfe-shell/src/features/auth/model/use-authorization.model.ts"
-if [ -f "$AUTH_HOOK" ]; then
-  for module in USER_MANAGEMENT ACCESS AUDIT REPORT THEME WAREHOUSE; do
-    has=$(grep -c "'$module'" "$AUTH_HOOK" 2>/dev/null || true)
-    has=${has:-0}
-    [ "$has" -gt 0 ] && pass "mapping: $module → legacy" || fail "mapping: $module eksik — menü gizlenir"
-  done
+# ── A8. Frontend @mfe/auth usePermissions migration ────────────────
+# Dalga 4: useAuthorization removed, usePermissions is the canonical hook.
+header "A8. usePermissions — @mfe/auth canonical hook check"
+AUTH_PKG_PROVIDER="$WEB_DIR/packages/auth/src/PermissionProvider.tsx"
+if [ -f "$AUTH_PKG_PROVIDER" ]; then
+  has_deny=$(grep -c "grant === 'ALLOW'" "$AUTH_PKG_PROVIDER" 2>/dev/null || true)
+  has_deny=${has_deny:-0}
+  [ "$has_deny" -gt 0 ] && pass "canViewReport: deny-default aktif" || fail "canViewReport: deny-default eksik"
+
+  OLD_AUTH="$WEB_DIR/apps/mfe-shell/src/features/auth/model/use-authorization.model.ts"
+  [ ! -f "$OLD_AUTH" ] && pass "legacy use-authorization.model.ts silinmiş (doğru)" || warn "legacy use-authorization.model.ts hala mevcut"
 else
-  fail "use-authorization.model.ts bulunamadı"
+  fail "PermissionProvider.tsx bulunamadı"
 fi
 
 # ── A9. @mfe/auth package ────────────────────────────────────────

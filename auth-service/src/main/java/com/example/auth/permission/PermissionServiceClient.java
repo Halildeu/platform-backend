@@ -45,7 +45,12 @@ public class PermissionServiceClient {
         try {
             @SuppressWarnings("unchecked")
             java.util.Map<String, Object> body = webClient.get()
-                    .uri("/api/v1/authz/me")
+                    .uri(uriBuilder -> {
+                        uriBuilder.path("/api/v1/authz/me");
+                        if (userId != null) uriBuilder.queryParam("userId", userId);
+                        if (companyId != null) uriBuilder.queryParam("companyId", companyId);
+                        return uriBuilder.build();
+                    })
                     .headers(headers -> headers.setBearerAuth(
                             serviceTokenProvider.getToken(PERMISSION_SERVICE_AUDIENCE, List.of(REQUIRED_PERMISSION))
                     ))
