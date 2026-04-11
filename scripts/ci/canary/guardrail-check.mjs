@@ -46,6 +46,8 @@ const thresholds = {
   errorRate: Number.parseFloat(resolveArg('--error-rate', process.env.GUARDRAIL_ERROR_RATE ?? '2')),
   sentry: Number.parseFloat(resolveArg('--sentry', process.env.GUARDRAIL_SENTRY_RATE ?? '1')),
   auditFilterUsage: Number.parseFloat(resolveArg('--audit-filter-usage', process.env.GUARDRAIL_AUDIT_FILTER_USAGE_MIN_PCT ?? '20')),
+  authzCheckP95: Number.parseFloat(resolveArg('--authz-check-p95', process.env.GUARDRAIL_AUTHZ_CHECK_P95_MS ?? '50')),
+  authzDenyRate: Number.parseFloat(resolveArg('--authz-deny-rate', process.env.GUARDRAIL_AUTHZ_DENY_RATE ?? '10')),
 };
 
 const readMetrics = (filePath) => {
@@ -97,13 +99,27 @@ if (metrics.audit_filter_usage_pct < thresholds.auditFilterUsage) {
   );
 }
 
+// Zanzibar authz guardrails (optional — only checked if metrics present)
+if (typeof metrics.authz_check_p95_ms === 'number' && metrics.authz_check_p95_ms > thresholds.authzCheckP95) {
+  violations.push(
+    `AuthZ check p95 ${metrics.authz_check_p95_ms}ms > eşik ${thresholds.authzCheckP95}ms`,
+  );
+}
+if (typeof metrics.authz_deny_rate_pct === 'number' && metrics.authz_deny_rate_pct > thresholds.authzDenyRate) {
+  violations.push(
+    `AuthZ deny oranı ${metrics.authz_deny_rate_pct}% > eşik ${thresholds.authzDenyRate}%`,
+  );
+}
+
 const summary = [
   `Canary weight: ${weight}%`,
   `TTFB p95: ${metrics.ttfb_p95_ms}ms (eşik ${thresholds.ttfb}ms)`,
   `Error rate: ${metrics.error_rate_pct}% (eşik ${thresholds.errorRate}%)`,
   `Sentry error: ${metrics.sentry_error_rate_pct}% (eşik ${thresholds.sentry}%)`,
   `Audit filter kullanımı: ${metrics.audit_filter_usage_pct}% (min ${thresholds.auditFilterUsage}%)`,
-].join(' | ');
+  typeof metrics.authz_check_p95_ms === 'number' ? `AuthZ p95: ${metrics.authz_check_p95_ms}ms (eşik ${thresholds.authzCheckP95}ms)` : '',
+  typeof metrics.authz_deny_rate_pct === 'number' ? `AuthZ deny: ${metrics.authz_deny_rate_pct}% (eşik ${thresholds.authzDenyRate}%)` : '',
+].filter(Boolean).join(' | ');
 
 if (violations.length > 0) {
   console.error('❌ Guardrail ihlali tespit edildi.');
