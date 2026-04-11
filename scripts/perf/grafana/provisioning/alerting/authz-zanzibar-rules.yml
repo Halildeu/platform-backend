@@ -1,0 +1,177 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: authz-zanzibar
+    folder: Operations / Zanzibar AuthZ
+    interval: 1m
+    rules:
+      # ── OpenFGA check latency ──────────────────────────────────
+      - uid: authz-check-latency-warning
+        title: AuthZ check p95 latency (warning)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                histogram_quantile(0.95,
+                  rate(http_server_requests_seconds_bucket{uri=~"/v1/authz/check|/v1/authz/batch-check|/api/v1/authz/check"}[5m])
+                )
+              refId: A
+              range: true
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.05] }
+                  operator: { type: and }
+                  query: { params: [A, 5m, now] }
+                  reducer: { type: avg, params: [] }
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations: { summary: "AuthZ check p95 latency > 50ms (5 dk ortalama). SK-11 hedefi tehlikede." }
+        labels: { severity: warning, component: zanzibar-authz }
+        isPaused: false
+
+      - uid: authz-check-latency-critical
+        title: AuthZ check p95 latency (critical)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                histogram_quantile(0.95,
+                  rate(http_server_requests_seconds_bucket{uri=~"/v1/authz/check|/v1/authz/batch-check|/api/v1/authz/check"}[5m])
+                )
+              refId: A
+              range: true
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.15] }
+                  operator: { type: and }
+                  query: { params: [A, 5m, now] }
+                  reducer: { type: avg, params: [] }
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations: { summary: "AuthZ check p95 latency > 150ms (5 dk ortalama). Canary rollback düşünülmeli." }
+        labels: { severity: critical, component: zanzibar-authz }
+        isPaused: false
+
+      # ── Deny / error rate ──────────────────────────────────────
+      - uid: authz-deny-rate-warning
+        title: AuthZ deny rate high (warning)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                sum(rate(http_server_requests_seconds_count{uri=~"/v1/authz/check|/api/v1/authz/check",status=~"403|401"}[5m]))
+                / clamp_min(sum(rate(http_server_requests_seconds_count{uri=~"/v1/authz/check|/api/v1/authz/check"}[5m])), 0.001)
+              refId: A
+              range: true
+          - refId: B
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.10] }
+                  operator: { type: and }
+                  query: { params: [A, 5m, now] }
+                  reducer: { type: avg, params: [] }
+        noDataState: NoData
+        execErrState: Error
+        for: 5m
+        annotations: { summary: "AuthZ deny oranı %10 üzerinde (5 dk). Permission model veya RLS regresyonu olabilir." }
+        labels: { severity: warning, component: zanzibar-authz }
+        isPaused: false
+
+      # ── OpenFGA upstream health ────────────────────────────────
+      - uid: openfga-down
+        title: OpenFGA service down
+        condition: A
+        data:
+          - refId: A
+            queryType: ''
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: up{job="openfga"} == 0
+              intervalMs: 1000
+              maxDataPoints: 43200
+        for: 2m
+        labels: { severity: critical, component: zanzibar-authz }
+        annotations: { summary: "OpenFGA servisi DOWN — fail-closed davranış aktif, tüm check'ler true dönüyor." }
+        isPaused: false
+
+      - uid: permission-service-down
+        title: Permission-service down
+        condition: A
+        data:
+          - refId: A
+            queryType: ''
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: up{job="permission-service"} == 0
+              intervalMs: 1000
+              maxDataPoints: 43200
+        for: 2m
+        labels: { severity: critical, component: zanzibar-authz }
+        annotations: { summary: "Permission-service (OpenFGA hub) DOWN — tuple sync ve version endpoint'leri erişilemez." }
+        isPaused: false
+
+      # ── Scope cache effectiveness ──────────────────────────────
+      - uid: authz-cache-miss-rate-high
+        title: AuthZ cache miss rate high (warning)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                1 - (
+                  rate(authz_cache_hit_total{job="permission-service"}[10m])
+                  / clamp_min(rate(authz_cache_hit_total{job="permission-service"}[10m]) + rate(authz_cache_miss_total{job="permission-service"}[10m]), 0.001)
+                )
+              refId: A
+              range: true
+          - refId: B
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: __expr__
+            model:
+              type: classic_conditions
+              conditions:
+                - evaluator: { type: gt, params: [0.50] }
+                  operator: { type: and }
+                  query: { params: [A, 10m, now] }
+                  reducer: { type: avg, params: [] }
+        noDataState: NoData
+        execErrState: Error
+        for: 10m
+        annotations: { summary: "ScopeContext cache miss oranı %50 üzerinde (10 dk). Cache warm-up veya TTL sorunu." }
+        labels: { severity: warning, component: zanzibar-authz }
+        isPaused: false
