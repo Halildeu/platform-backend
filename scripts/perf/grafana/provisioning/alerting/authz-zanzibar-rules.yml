@@ -175,3 +175,29 @@ groups:
         annotations: { summary: "ScopeContext cache miss oranı %50 üzerinde (10 dk). Cache warm-up veya TTL sorunu." }
         labels: { severity: warning, component: zanzibar-authz }
         isPaused: false
+
+      # ── Decision audit log alert (SK-5 / Faz 4-c) ──────────────
+      - uid: authz-decision-deny-spike
+        title: AuthZ deny decision spike (audit alert)
+        condition: B
+        data:
+          - refId: A
+            queryType: ''
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: loki
+            model:
+              expr: sum(rate({job="permission-service"} |= "authz.decision" |= "allowed=false" [5m]))
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            queryType: ''
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [5] }
+        for: 5m
+        labels: { severity: warning, component: zanzibar-authz }
+        annotations: { summary: "Deny decision rate spike — >5/min sustained. Check tuple sync, model consistency, role assignments." }
+        isPaused: false

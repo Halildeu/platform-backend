@@ -5,6 +5,10 @@ import dev.openfga.sdk.api.client.model.ClientCheckRequest;
 import dev.openfga.sdk.api.client.model.ClientExpandRequest;
 import dev.openfga.sdk.api.client.model.ClientListObjectsRequest;
 import dev.openfga.sdk.api.client.model.ClientWriteRequest;
+import dev.openfga.sdk.api.client.model.ClientBatchCheckItem;
+import dev.openfga.sdk.api.client.model.ClientBatchCheckRequest;
+import dev.openfga.sdk.api.client.model.ClientBatchCheckResponse;
+import dev.openfga.sdk.api.client.model.ClientBatchCheckSingleResponse;
 import dev.openfga.sdk.api.client.model.ClientTupleKey;
 import dev.openfga.sdk.api.client.model.ClientTupleKeyWithoutCondition;
 import org.slf4j.Logger;
@@ -280,14 +284,21 @@ public class OpenFgaAuthzService {
         }
         try {
             boolean allowed = check(userId, relation, objectType, objectId);
+            String reason;
             if (allowed) {
-                return new CheckResult(true, "granted");
+                reason = "granted";
+            } else {
+                boolean isBlocked = check(userId, "blocked", objectType, objectId);
+                reason = isBlocked ? "blocked" : "no_relation";
             }
-            // Distinguish: explicitly blocked vs no relation at all
-            boolean isBlocked = check(userId, "blocked", objectType, objectId);
-            return new CheckResult(false, isBlocked ? "blocked" : "no_relation");
+            // SK-5: Per-decision audit log — every authorization decision recorded
+            log.info("authz.decision user={} relation={} object={}:{} allowed={} reason={}",
+                    userId, relation, objectType, objectId, allowed, reason);
+            return new CheckResult(allowed, reason);
         } catch (Exception e) {
             log.error("OpenFGA checkWithReason failed: user:{} {} {}:{}", userId, relation, objectType, objectId, e);
+            log.info("authz.decision user={} relation={} object={}:{} allowed=false reason=error",
+                    userId, relation, objectType, objectId);
             return new CheckResult(false, "error");
         }
     }
@@ -303,9 +314,32 @@ public class OpenFgaAuthzService {
                     .map(r -> new CheckResult(true, "granted"))
                     .toList();
         }
-        return requests.parallelStream()
-                .map(r -> checkWithReason(userId, r.relation(), r.objectType(), r.objectId()))
-                .toList();
+        try {
+            // Use OpenFGA native BatchCheck — single HTTP call for N checks (SK-11)
+            List<ClientBatchCheckItem> items = requests.stream()
+                    .map(r -> new ClientBatchCheckItem()
+                            .user("user:" + userId)
+                            .relation(r.relation())
+                            ._object(r.objectType() + ":" + r.objectId()))
+                    .toList();
+
+            var batchRequest = ClientBatchCheckRequest.ofChecks(items);
+            var response = client.batchCheck(batchRequest).get();
+
+            return response.getResult().stream()
+                    .map(single -> {
+                        boolean allowed = single.isAllowed();
+                        String reason = allowed ? "granted" : "no_relation";
+                        return new CheckResult(allowed, reason);
+                    })
+                    .toList();
+        } catch (Exception e) {
+            log.warn("BatchCheck failed, falling back to parallel individual checks: {}", e.getMessage());
+            // Fallback to parallel individual checks
+            return requests.parallelStream()
+                    .map(r -> checkWithReason(userId, r.relation(), r.objectType(), r.objectId()))
+                    .toList();
+        }
     }
 
     public record BatchCheckRequest(String relation, String objectType, String objectId) {}
