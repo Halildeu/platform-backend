@@ -38,6 +38,11 @@ eureka:
     hostname: ${EUREKA_INSTANCE_HOSTNAME:127.0.0.1}
     instance-id: ${spring.application.name}:${eureka.instance.hostname}:${server.port}
 
+security:
+  jwt:
+    audience: ${SECURITY_JWT_AUDIENCE:core-data-service,frontend,account,serban-web}
+    allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}
+
 logging:
   level:
     org.springframework.security: INFO

@@ -54,11 +54,12 @@ public class SecurityConfig {
                 "http://localhost:8081/realms/serban"
         );
         List<String> audiences = resolveAudiences();
+        List<String> allowedClientIds = resolveAllowedClientIds();
 
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
-                new AudienceValidator(audiences)
+                new AudienceValidator(audiences, allowedClientIds)
         );
         decoder.setJwtValidator(validator);
         return decoder;
@@ -75,6 +76,21 @@ public class SecurityConfig {
             return List.of();
         }
         return Arrays.stream(audienceCsv.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .toList();
+    }
+
+    private List<String> resolveAllowedClientIds() {
+        String clientIdCsv = firstNonBlank(
+                environment.getProperty("security.jwt.allowed-client-ids"),
+                environment.getProperty("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+                "frontend,admin-cli,serban-web"
+        );
+        if (clientIdCsv == null || clientIdCsv.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(clientIdCsv.split(","))
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
                 .toList();
