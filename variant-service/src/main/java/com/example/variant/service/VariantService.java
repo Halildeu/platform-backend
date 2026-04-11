@@ -12,7 +12,6 @@ import com.example.variant.model.PreferenceType;
 import com.example.variant.repository.GridVariantPreferenceRepository;
 import com.example.variant.repository.GridVariantRepository;
 import com.example.variant.security.AuthenticatedUser;
-import com.example.commonauth.PermissionCodes;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,7 +30,7 @@ import java.util.stream.Collectors;
 public class VariantService {
 
     private static final Logger log = LoggerFactory.getLogger(VariantService.class);
-    private static final String MANAGE_GLOBAL_VARIANTS_PERMISSION = PermissionCodes.MANAGE_GLOBAL_VARIANTS;
+    private static final String MANAGE_GLOBAL_VARIANTS_PERMISSION = "MANAGE_GLOBAL_VARIANTS";
 
     private final GridVariantRepository repository;
     private final GridVariantPreferenceRepository preferenceRepository;
@@ -50,7 +49,7 @@ public class VariantService {
         enforceGridScope(user, gridId);
         List<GridVariant> variants = user.isAdmin()
                 ? repository.findAllByGridIdOrdered(gridId)
-                : (user.hasPermission(PermissionCodes.MANAGE_GLOBAL_VARIANTS)
+                : (user.hasPermission("MANAGE_GLOBAL_VARIANTS")
                     ? repository.findVisibleVariants(user.id(), gridId)
                     : repository.findPersonalVariants(user.id(), gridId));
 

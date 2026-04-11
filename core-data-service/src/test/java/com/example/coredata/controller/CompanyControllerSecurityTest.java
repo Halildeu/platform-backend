@@ -72,7 +72,7 @@ class CompanyControllerSecurityTest {
     void listWithReadPermissionIsOk() throws Exception {
         mockMvc.perform(get("/api/v1/companies")
                         .with(SecurityMockMvcRequestPostProcessors.jwt()
-                                .authorities(new SimpleGrantedAuthority(PermissionCodes.COMPANY_READ))))
+                                .authorities(new SimpleGrantedAuthority("company-read"))))
                 .andExpect(status().isOk());
     }
 
@@ -86,7 +86,7 @@ class CompanyControllerSecurityTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req))
                         .with(SecurityMockMvcRequestPostProcessors.jwt()
-                                .authorities(new SimpleGrantedAuthority(PermissionCodes.COMPANY_READ))))
+                                .authorities(new SimpleGrantedAuthority("company-read"))))
                 .andExpect(status().isForbidden());
     }
 
@@ -100,7 +100,7 @@ class CompanyControllerSecurityTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req))
                         .with(SecurityMockMvcRequestPostProcessors.jwt()
-                                .authorities(new SimpleGrantedAuthority(PermissionCodes.COMPANY_WRITE))))
+                                .authorities(new SimpleGrantedAuthority("company-write"))))
                 .andExpect(status().isCreated());
     }
 
@@ -114,7 +114,7 @@ class CompanyControllerSecurityTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(req))
                         .with(SecurityMockMvcRequestPostProcessors.jwt()
-                                .authorities(new SimpleGrantedAuthority(PermissionCodes.COMPANY_WRITE))))
+                                .authorities(new SimpleGrantedAuthority("company-write"))))
                 .andExpect(status().isConflict());
     }
 
@@ -164,14 +164,14 @@ class CompanyControllerSecurityTest {
 
         private String resolveReadAuthority(String module) {
             return switch (module) {
-                case PermissionCodes.MODULE_COMPANY -> PermissionCodes.COMPANY_READ;
+                case PermissionCodes.MODULE_COMPANY -> "company-read";
                 default -> null;
             };
         }
 
         private String resolveWriteAuthority(String module) {
             return switch (module) {
-                case PermissionCodes.MODULE_COMPANY -> PermissionCodes.COMPANY_WRITE;
+                case PermissionCodes.MODULE_COMPANY -> "company-write";
                 default -> null;
             };
         }

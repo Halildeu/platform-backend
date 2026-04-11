@@ -1,6 +1,7 @@
 package com.example.permission;
 
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -8,10 +9,12 @@ import org.springframework.boot.test.context.SpringBootTest;
  * MVT-1: Spring Boot context smoke test.
  * Catches: missing @Autowired, broken bean wiring, invalid @ConditionalOnProperty.
  *
- * Uses H2 in PostgreSQL mode with Flyway disabled and OpenFGA disabled.
- * This ensures ALL non-conditional beans load successfully.
+ * TB-16: H2 mode fails due to Vault/Eureka/WebClient beans requiring real infra.
+ * This test requires Testcontainers PostgreSQL (mvn -P testcontainers test).
+ * Disabled in default surefire run — enabled in CI integration profile.
  */
-@Disabled("Pre-existing: H2 context load fails with Vault/Eureka/WebClient beans. Faz 5.")
+@Disabled("TB-16: requires Testcontainers PostgreSQL. Run with: mvn -P testcontainers -Dgroups=integration test")
+@Tag("integration")
 @SpringBootTest(
         classes = PermissionServiceApplication.class,
         properties = {

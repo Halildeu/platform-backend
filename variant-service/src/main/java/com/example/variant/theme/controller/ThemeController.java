@@ -1,7 +1,6 @@
 package com.example.variant.theme.controller;
 
 import com.example.commonauth.AuthorizationContext;
-import com.example.commonauth.PermissionCodes;
 import com.example.variant.authz.VariantAuthorizationService;
 import com.example.variant.security.AuthenticatedUser;
 import com.example.variant.security.AuthenticatedUserPrincipal;
@@ -390,7 +389,7 @@ public class ThemeController {
         if (ctx.isAdmin()) {
             return;
         }
-        if (ctx.hasPermission(PermissionCodes.THEME_ADMIN) || ctx.hasPermission(PermissionCodes.SYSTEM_CONFIGURE)) {
+        if (ctx.hasPermission("THEME_ADMIN") || ctx.hasPermission("system-configure")) {
             return;
         }
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "THEME_ADMIN permission required");

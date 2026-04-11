@@ -10,7 +10,6 @@ import com.example.variant.authz.VariantAuthorizationService;
 import com.example.variant.security.AuthenticatedUser;
 import com.example.variant.security.AuthenticatedUserPrincipal;
 import com.example.variant.service.VariantService;
-import com.example.commonauth.PermissionCodes;
 import com.example.commonauth.AuthorizationContext;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -59,14 +58,14 @@ public class VariantController {
     @GetMapping
     public ResponseEntity<List<VariantResponse>> listVariants(@RequestParam("gridId") String gridId) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_READ);
+        requirePermission(resolved.authz(), "VARIANTS_READ");
         return ResponseEntity.ok(variantService.getVariants(resolved.user(), gridId));
     }
 
     @PostMapping
     public ResponseEntity<VariantResponse> createVariant(@Valid @RequestBody CreateVariantRequest createRequest) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_WRITE);
+        requirePermission(resolved.authz(), "VARIANTS_WRITE");
         VariantResponse response = variantService.createVariant(resolved.user(), createRequest);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
@@ -75,7 +74,7 @@ public class VariantController {
     public ResponseEntity<VariantResponse> updateVariant(@PathVariable("variantId") UUID variantId,
                                                          @Valid @RequestBody UpdateVariantRequest updateRequest) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_WRITE);
+        requirePermission(resolved.authz(), "VARIANTS_WRITE");
         VariantResponse response = variantService.updateVariant(resolved.user(), variantId, updateRequest);
         return ResponseEntity.ok(response);
     }
@@ -84,7 +83,7 @@ public class VariantController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void reorderVariants(@Valid @RequestBody ReorderVariantsRequest reorderRequest) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_WRITE);
+        requirePermission(resolved.authz(), "VARIANTS_WRITE");
         variantService.reorderVariants(resolved.user(), reorderRequest);
     }
 
@@ -92,7 +91,7 @@ public class VariantController {
     public ResponseEntity<VariantResponse> updateVariantPreference(@PathVariable("variantId") UUID variantId,
                                                                    @RequestBody VariantPreferenceUpdateRequest preferenceRequest) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_WRITE);
+        requirePermission(resolved.authz(), "VARIANTS_WRITE");
         log.info("[VariantPreference] userId={} variantId={} payload={{isDefault={}, isSelected={}}}",
                 resolved.user().id(), variantId, preferenceRequest.getDefault(), preferenceRequest.getSelected());
         VariantResponse response = variantService.updateVariantPreference(resolved.user(), variantId, preferenceRequest);
@@ -105,7 +104,7 @@ public class VariantController {
     public ResponseEntity<VariantResponse> cloneGlobalVariant(@PathVariable("variantId") UUID variantId,
                                                               @RequestBody(required = false) CloneVariantRequest cloneRequest) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_WRITE);
+        requirePermission(resolved.authz(), "VARIANTS_WRITE");
         VariantResponse response = variantService.cloneGlobalVariantToPersonal(
                 resolved.user(),
                 variantId,
@@ -118,7 +117,7 @@ public class VariantController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deleteVariant(@PathVariable("variantId") UUID variantId) {
         ResolvedUser resolved = getCurrentUser();
-        requirePermission(resolved.authz(), PermissionCodes.VARIANTS_WRITE);
+        requirePermission(resolved.authz(), "VARIANTS_WRITE");
         variantService.deleteVariant(resolved.user(), variantId);
     }
 

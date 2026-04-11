@@ -11,7 +11,6 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import com.example.commonauth.PermissionCodes;
 import com.example.variant.authz.VariantAuthorizationService;
 import com.example.variant.authz.AuthzMeResponse;
 import com.example.variant.authz.ScopeSummaryDto;
@@ -126,7 +125,7 @@ class VariantSecurityIntegrationTest {
 
     @Test
     void variants_should_200_with_valid_token() throws Exception {
-        String token = issueToken("variant-service", List.of(PermissionCodes.VARIANTS_READ));
+        String token = issueToken("variant-service", List.of("VARIANTS_READ"));
         mockMvc.perform(get("/api/v1/variants?gridId=101")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk());
@@ -135,7 +134,7 @@ class VariantSecurityIntegrationTest {
     @Test
     void variants_should_403_when_scope_not_allowed() throws Exception {
         permissionServiceAuthzClient.setResponse(buildAuthzMeResponse(List.of(999L)));
-        String token = issueToken("variant-service", List.of(PermissionCodes.VARIANTS_READ));
+        String token = issueToken("variant-service", List.of("VARIANTS_READ"));
         mockMvc.perform(get("/api/v1/variants?gridId=101")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isForbidden());
@@ -158,7 +157,7 @@ class VariantSecurityIntegrationTest {
 
     @Test
     void variants_should_401_with_audience_mismatch() throws Exception {
-        String token = issueToken("user-service", List.of(PermissionCodes.VARIANTS_READ));
+        String token = issueToken("user-service", List.of("VARIANTS_READ"));
         mockMvc.perform(get("/api/v1/variants?gridId=101")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isUnauthorized());
@@ -176,7 +175,7 @@ class VariantSecurityIntegrationTest {
         AuthzMeResponse response = new AuthzMeResponse();
         response.setUserId("1");
         // Permissions come from authz service (ADR-003: JWT is identity-only)
-        response.setPermissions(List.of(PermissionCodes.VARIANTS_READ));
+        response.setPermissions(List.of("VARIANTS_READ"));
         response.setAllowedScopes(projectIds.stream()
                 .map(id -> new ScopeSummaryDto("PROJECT", String.valueOf(id)))
                 .toList());

@@ -56,7 +56,7 @@ class AuthorizationContextBuilderTest {
 
         assertEquals(99L, ctx.getUserId());
         // Permissions claim ignored — empty set
-        assertFalse(ctx.hasPermission(PermissionCodes.VARIANTS_WRITE));
+        assertFalse(ctx.hasPermission("VARIANTS_WRITE"));
         assertTrue(ctx.getPermissions().isEmpty());
     }
 

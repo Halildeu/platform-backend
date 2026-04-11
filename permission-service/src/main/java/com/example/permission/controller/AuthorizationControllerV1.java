@@ -341,7 +341,7 @@ public class AuthorizationControllerV1 {
                 case MODULE -> modules.put(key, grantStr);
                 case ACTION -> actions.put(key, grantStr);
                 case REPORT -> reports.put(key, grantStr);
-                case PAGE, FIELD -> {} // deprecated — skip
+                // PAGE, FIELD removed in V10 migration (TB-21)
             }
         }
 

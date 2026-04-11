@@ -252,7 +252,7 @@ public class TupleSyncService {
             case MODULE -> List.of("can_manage", "can_edit", "can_view", "blocked");
             case ACTION -> List.of("allowed", "blocked");
             case REPORT -> List.of("can_edit", "can_view", "blocked");
-            case PAGE, FIELD -> List.of(); // deprecated — no OpenFGA tuples
+            // PAGE, FIELD removed in V10 migration (TB-21)
         };
     }
 
@@ -274,7 +274,7 @@ public class TupleSyncService {
                 case ALLOW, VIEW -> new TupleMapping("can_view", "report");
                 case DENY -> new TupleMapping("blocked", "report");
             };
-            case PAGE, FIELD -> null; // deprecated — skip
+            // PAGE, FIELD removed in V10 migration (TB-21)
         };
     }
 

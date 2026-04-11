@@ -158,17 +158,7 @@ class TupleSyncMappingTest {
             assertTrue(result.isEmpty());
         }
 
-        @Test
-        void deprecated_page_field_skipped() {
-            var svc = createServiceForMappingTests();
-            var perms = List.of(
-                    createPerm("Legacy", PermissionType.PAGE, "dashboard", GrantType.ALLOW),
-                    createPerm("Legacy", PermissionType.FIELD, "salary", GrantType.VIEW)
-            );
-            var result = svc.resolveEffectiveGrants(perms);
-            // PAGE and FIELD are resolved but toTupleMapping returns null for them
-            assertEquals(2, result.size());
-        }
+        // TB-21: deprecated_page_field_skipped test removed — PAGE/FIELD enum deleted
 
         @Test
         void empty_list_returns_empty() {

@@ -3,7 +3,6 @@ package com.example.variant.authz;
 import com.example.commonauth.AuthorizationContext;
 import com.example.commonauth.AuthorizationContextCache;
 import com.example.commonauth.AuthorizationContextBuilder;
-import com.example.commonauth.PermissionCodes;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
@@ -77,7 +76,7 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
 
         String normalizedEmail = email != null ? email.toLowerCase(Locale.ROOT) : "";
         if ("admin@example.com".equals(normalizedEmail) || "admin1@example.com".equals(normalizedEmail)) {
-            effectivePermissions.add(PermissionCodes.THEME_ADMIN);
+            effectivePermissions.add("THEME_ADMIN");
         }
 
         // Scope kısıtı bugün uygulanmıyor (variant permission-only). Kanca hazır:
@@ -121,9 +120,9 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
     private boolean isVariantPermission(String permission) {
         if (permission == null) return false;
         String p = permission.trim().toUpperCase();
-        return PermissionCodes.VARIANTS_READ.equalsIgnoreCase(p)
-                || PermissionCodes.VARIANTS_WRITE.equalsIgnoreCase(p)
-                || PermissionCodes.MANAGE_GLOBAL_VARIANTS.equalsIgnoreCase(p);
+        return "VARIANTS_READ".equalsIgnoreCase(p)
+                || "VARIANTS_WRITE".equalsIgnoreCase(p)
+                || "MANAGE_GLOBAL_VARIANTS".equalsIgnoreCase(p);
     }
 
     private Long extractLongClaim(Jwt jwt, String claimName) {
