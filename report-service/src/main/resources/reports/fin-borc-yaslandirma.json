@@ -8,8 +8,20 @@
   "sourceSchema": "workcube_mikrolink_1",
   "schemaMode": "yearly",
   "columns": [
-    { "field": "COMPANY_ID", "headerName": "Cari ID", "type": "number", "width": 90, "sensitive": false },
-    { "field": "BAKIYE", "headerName": "Toplam Borç", "type": "number", "width": 150, "sensitive": false }
+    {
+      "field": "COMPANY_ID",
+      "headerName": "Cari ID",
+      "type": "number",
+      "width": 90,
+      "sensitive": false
+    },
+    {
+      "field": "BAKIYE",
+      "headerName": "Toplam Borç",
+      "type": "number",
+      "width": 150,
+      "sensitive": false
+    }
   ],
   "defaultSort": "BAKIYE",
   "defaultSortDirection": "ASC",
@@ -20,6 +32,7 @@
       "column": "OUR_COMPANY_ID",
       "scopeType": "COMPANY",
       "bypassPermission": "reports.fin.all-companies"
-    }
+    },
+    "reportGroup": "FINANCE_REPORTS"
   }
 }
