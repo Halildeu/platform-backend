@@ -52,15 +52,13 @@ public class SecurityConfig {
 
                 // 3. İstekler için yetkilendirme kurallarını belirliyoruz.
                 .authorizeHttpRequests(auth -> auth
-                        // Herkese açık (public) endpoint'ler. Kimlik doğrulaması gerektirmez.
                         .requestMatchers(
                                 "/api/users/by-email/**",
                                 "/api/users/public/register",
                                 "/actuator/**"
                         ).permitAll()
                         .requestMatchers("/api/users/internal/**").hasAuthority("PERM_users:internal")
-                        .requestMatchers("/api/v1/**").authenticated()
-                        .anyRequest().permitAll()
+                        .anyRequest().authenticated()
                 );
 
         // Local API Key filtresini bilinen bir filtreye göre konumlandır (BearerTokenAuthenticationFilter'dan önce)

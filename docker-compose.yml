@@ -61,7 +61,7 @@ services:
       # Service token doğrulaması için auth-service JWKS (lokal senaryo)
       SERVICE_AUTH_JWK_SET_URI: ${SERVICE_AUTH_JWK_SET_URI:-http://auth-service:8088/oauth2/jwks}
       SERVICE_AUTH_ISSUER: ${SERVICE_AUTH_ISSUER:-auth-service}
-      ERP_OPENFGA_ENABLED: ${ERP_OPENFGA_ENABLED:-false}
+      ERP_OPENFGA_ENABLED: ${ERP_OPENFGA_ENABLED:-true}
       ERP_OPENFGA_API_URL: ${ERP_OPENFGA_API_URL:-http://openfga:8080}
       ERP_OPENFGA_STORE_ID: ${ERP_OPENFGA_STORE_ID:-}
       ERP_OPENFGA_MODEL_ID: ${ERP_OPENFGA_MODEL_ID:-}
@@ -139,7 +139,7 @@ services:
       SERVICE_AUTH_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
       SERVICE_AUTH_ISSUER: auth-service
       SECURITY_JWT_AUDIENCE: variant-service
-      ERP_OPENFGA_ENABLED: ${ERP_OPENFGA_ENABLED:-false}
+      ERP_OPENFGA_ENABLED: ${ERP_OPENFGA_ENABLED:-true}
       ERP_OPENFGA_API_URL: ${ERP_OPENFGA_API_URL:-http://openfga:8080}
       ERP_OPENFGA_STORE_ID: ${ERP_OPENFGA_STORE_ID:-}
       ERP_OPENFGA_MODEL_ID: ${ERP_OPENFGA_MODEL_ID:-}
@@ -179,7 +179,7 @@ services:
       - SECURITY_JWT_JWK_SET_URI=${SECURITY_JWT_JWK_SET_URI:-http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
       - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       - SECURITY_JWT_AUDIENCE=${CORE_DATA_SECURITY_JWT_AUDIENCE:-frontend,user-service,core-data-service}
-      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-false}
+      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-true}
       - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:4000}
       - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
       - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
@@ -265,7 +265,7 @@ services:
 
   vault:
     image: hashicorp/vault:1.21.4
-    container_name: backend-vault-1
+    container_name: platform-vault-1
     user: "0:0"
     cap_add:
       - IPC_LOCK
@@ -382,7 +382,7 @@ services:
       - SECURITY_JWT_SECONDARY_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_SECONDARY_ISSUER=http://localhost:8081/realms/serban
       - SECURITY_JWT_SECONDARY_AUDIENCE=permission-service
-      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-false}
+      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-true}
       - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:8080}
       - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
       - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
