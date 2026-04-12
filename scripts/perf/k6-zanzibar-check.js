@@ -11,7 +11,7 @@ import { Rate, Trend } from 'k6/metrics';
  */
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8092';
-const TOKEN = __ENV.AUTH_TOKEN || '';
+const TOKEN = __ENV.AUTH_TOKEN || __ENV.TOKEN || '';
 
 const checkLatency = new Trend('authz_check_latency', true);
 const batchLatency = new Trend('authz_batch_latency', true);

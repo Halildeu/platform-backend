@@ -163,11 +163,35 @@ const main = async () => {
   const totalCount = await fetchScalar(auditBase, auditTotalExpr, queryTimestamp);
   const auditUsage = totalCount > 0 ? (filterCount / totalCount) * 100 : 0;
 
+  // Zanzibar authz metrics (optional — skipped if queries not provided)
+  const authzCheckP95Expr = resolveArg('--authz-check-query', process.env.CANARY_AUTHZ_CHECK_QUERY);
+  const authzDenyExpr = resolveArg('--authz-deny-query', process.env.CANARY_AUTHZ_DENY_QUERY);
+  const authzErrorExpr = resolveArg('--authz-error-query', process.env.CANARY_AUTHZ_ERROR_QUERY);
+  const authzCacheMissExpr = resolveArg('--authz-cache-miss-query', process.env.CANARY_AUTHZ_CACHE_MISS_QUERY);
+
+  const authzBase = resolveArg('--authz-url', process.env.CANARY_AUTHZ_URL) ?? promBase;
+  const authzCheckP95 = authzCheckP95Expr
+    ? await fetchScalar(authzBase, authzCheckP95Expr, queryTimestamp)
+    : undefined;
+  const authzDenyRate = authzDenyExpr
+    ? await fetchScalar(authzBase, authzDenyExpr, queryTimestamp)
+    : undefined;
+  const authzErrorRate = authzErrorExpr
+    ? await fetchScalar(authzBase, authzErrorExpr, queryTimestamp)
+    : undefined;
+  const authzCacheMissRate = authzCacheMissExpr
+    ? await fetchScalar(authzBase, authzCacheMissExpr, queryTimestamp)
+    : undefined;
+
   const payload = {
     ttfb_p95_ms: Number(ttfbMs.toFixed(2)),
     error_rate_pct: Number(errorRate.toFixed(3)),
     sentry_error_rate_pct: Number(sentryRate.toFixed(3)),
     audit_filter_usage_pct: Number(auditUsage.toFixed(3)),
+    ...(authzCheckP95 !== undefined && { authz_check_p95_ms: Number(authzCheckP95.toFixed(2)) }),
+    ...(authzDenyRate !== undefined && { authz_deny_rate_pct: Number(authzDenyRate.toFixed(3)) }),
+    ...(authzErrorRate !== undefined && { authz_error_rate_pct: Number(authzErrorRate.toFixed(3)) }),
+    ...(authzCacheMissRate !== undefined && { authz_cache_miss_rate_pct: Number(authzCacheMissRate.toFixed(3)) }),
     windowMinutes,
     timestamp: nowIso,
   };

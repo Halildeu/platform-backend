@@ -377,9 +377,9 @@ else
   KC_STATUS=$(curl -sf "http://localhost:8081/realms/serban" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
   [ "$KC_STATUS" = "200" ] && pass "Keycloak: UP (realm serban)" || warn "Keycloak: $KC_STATUS"
 
-  header "B7. Permission-service container"
+  header "B7. Permission-service container (D-003: OpenFGA hub)"
   PERM_RUNNING=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -c "permission" || true)
-  [ "$PERM_RUNNING" -eq 0 ] && pass "permission-service: NOT RUNNING (doğru)" || warn "permission-service: RUNNING (legacy modda olmalı)"
+  [ "$PERM_RUNNING" -ge 1 ] && pass "permission-service: RUNNING (D-003 OpenFGA hub)" || warn "permission-service: NOT RUNNING (hub gerekli — D-003)"
 
   header "B8. Service profiles"
   for svc in user-service variant-service core-data-service report-service; do

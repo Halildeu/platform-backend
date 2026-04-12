@@ -48,6 +48,8 @@ const thresholds = {
   auditFilterUsage: Number.parseFloat(resolveArg('--audit-filter-usage', process.env.GUARDRAIL_AUDIT_FILTER_USAGE_MIN_PCT ?? '20')),
   authzCheckP95: Number.parseFloat(resolveArg('--authz-check-p95', process.env.GUARDRAIL_AUTHZ_CHECK_P95_MS ?? '50')),
   authzDenyRate: Number.parseFloat(resolveArg('--authz-deny-rate', process.env.GUARDRAIL_AUTHZ_DENY_RATE ?? '10')),
+  authzErrorRate: Number.parseFloat(resolveArg('--authz-error-rate', process.env.GUARDRAIL_AUTHZ_ERROR_RATE ?? '0.5')),
+  authzCacheMiss: Number.parseFloat(resolveArg('--authz-cache-miss', process.env.GUARDRAIL_AUTHZ_CACHE_MISS ?? '50')),
 };
 
 const readMetrics = (filePath) => {
@@ -110,6 +112,16 @@ if (typeof metrics.authz_deny_rate_pct === 'number' && metrics.authz_deny_rate_p
     `AuthZ deny oranı ${metrics.authz_deny_rate_pct}% > eşik ${thresholds.authzDenyRate}%`,
   );
 }
+if (typeof metrics.authz_error_rate_pct === 'number' && metrics.authz_error_rate_pct > thresholds.authzErrorRate) {
+  violations.push(
+    `AuthZ error oranı ${metrics.authz_error_rate_pct}% > eşik ${thresholds.authzErrorRate}%`,
+  );
+}
+if (typeof metrics.authz_cache_miss_rate_pct === 'number' && metrics.authz_cache_miss_rate_pct > thresholds.authzCacheMiss) {
+  violations.push(
+    `AuthZ cache miss oranı ${metrics.authz_cache_miss_rate_pct}% > eşik ${thresholds.authzCacheMiss}%`,
+  );
+}
 
 const summary = [
   `Canary weight: ${weight}%`,
@@ -119,6 +131,8 @@ const summary = [
   `Audit filter kullanımı: ${metrics.audit_filter_usage_pct}% (min ${thresholds.auditFilterUsage}%)`,
   typeof metrics.authz_check_p95_ms === 'number' ? `AuthZ p95: ${metrics.authz_check_p95_ms}ms (eşik ${thresholds.authzCheckP95}ms)` : '',
   typeof metrics.authz_deny_rate_pct === 'number' ? `AuthZ deny: ${metrics.authz_deny_rate_pct}% (eşik ${thresholds.authzDenyRate}%)` : '',
+  typeof metrics.authz_error_rate_pct === 'number' ? `AuthZ error: ${metrics.authz_error_rate_pct}% (eşik ${thresholds.authzErrorRate}%)` : '',
+  typeof metrics.authz_cache_miss_rate_pct === 'number' ? `AuthZ cache miss: ${metrics.authz_cache_miss_rate_pct}% (eşik ${thresholds.authzCacheMiss}%)` : '',
 ].filter(Boolean).join(' | ');
 
 if (violations.length > 0) {
