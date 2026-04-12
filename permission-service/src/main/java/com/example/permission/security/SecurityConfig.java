@@ -183,32 +183,23 @@ public class SecurityConfig {
         userConverter.setJwtGrantedAuthoritiesConverter(jwt -> {
             java.util.Set<org.springframework.security.core.GrantedAuthority> authorities = new java.util.LinkedHashSet<>();
 
-            // 1. "permissions" claim (if present)
-            java.util.List<String> permissions = jwt.getClaimAsStringList("permissions");
-            if (permissions != null) {
-                permissions.forEach(p -> authorities.add(
-                    new org.springframework.security.core.authority.SimpleGrantedAuthority(p)));
-            }
+            // ADR-0012 Phase 3: "permissions" claim removed from JWT.
+            // All permission checks now go through OpenFGA via @RequireModule.
+            // JWT only carries identity (sub, email, realm_access.roles).
 
-            // 2. "realm_access.roles" (Keycloak standard)
+            // "realm_access.roles" (Keycloak standard — identity only, not for authz)
             @SuppressWarnings("unchecked")
             java.util.Map<String, Object> realmAccess = jwt.getClaim("realm_access");
             if (realmAccess != null) {
                 @SuppressWarnings("unchecked")
                 java.util.List<String> roles = (java.util.List<String>) realmAccess.get("roles");
                 if (roles != null) {
-                    roles.forEach(r -> {
-                        authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_" + r.toUpperCase()));
-                        if ("admin".equalsIgnoreCase(r)) {
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("access-read"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("access-write"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("access-manage"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("role-read"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("role-write"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("role-manage"));
-                            authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("permission-manage"));
-                        }
-                    });
+                    // ADR-0012 Phase 3: Only ROLE_ authorities from realm_access.
+                    // Hardcoded admin→permission mapping REMOVED.
+                    // All fine-grained permissions now via OpenFGA @RequireModule.
+                    roles.forEach(r ->
+                        authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_" + r.toUpperCase()))
+                    );
                 }
             }
 

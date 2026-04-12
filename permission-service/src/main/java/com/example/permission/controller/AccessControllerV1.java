@@ -1,5 +1,6 @@
 package com.example.permission.controller;
 
+import com.example.commonauth.openfga.RequireModule;
 import com.example.permission.dto.access.AccessRoleDto;
 import com.example.permission.dto.v1.BulkPermissionsRequestDto;
 import com.example.permission.dto.v1.BulkPermissionsResponseDto;
@@ -62,7 +63,7 @@ public class AccessControllerV1 {
     }
 
     @GetMapping
-    @PreAuthorize("hasAuthority('access-read')")
+    @RequireModule(value = "ACCESS", relation = "viewer")
     public ResponseEntity<PagedResultDto<RoleDto>> listRoles() {
         List<AccessRoleDto> roles = accessRoleService.listRoles();
         List<RoleDto> items = roles.stream().map(PermissionDtoMapper::toRoleDto).toList();
@@ -70,14 +71,14 @@ public class AccessControllerV1 {
     }
 
     @GetMapping("/{roleId}")
-    @PreAuthorize("hasAuthority('access-read')")
+    @RequireModule(value = "ACCESS", relation = "viewer")
     public ResponseEntity<RoleDto> getRole(@PathVariable Long roleId) {
         AccessRoleDto role = accessRoleService.getRole(roleId);
         return ResponseEntity.ok(PermissionDtoMapper.toRoleDto(role));
     }
 
     @PostMapping
-    @PreAuthorize("hasAuthority('role-manage')")
+    @RequireModule(value = "ACCESS", relation = "manager")
     public ResponseEntity<RoleDto> createRole(@RequestBody CreateRoleRequestDto request) {
         if (request.name() == null || request.name().trim().length() < 3) {
             return ResponseEntity.badRequest().build();
@@ -91,7 +92,7 @@ public class AccessControllerV1 {
     }
 
     @DeleteMapping("/{roleId}")
-    @PreAuthorize("hasAuthority('role-manage')")
+    @RequireModule(value = "ACCESS", relation = "manager")
     public ResponseEntity<Void> deleteRole(@PathVariable Long roleId,
                                            @RequestParam(value = "performedBy", required = false) Long performedBy) {
         accessRoleService.deleteRole(roleId, performedBy);
@@ -99,7 +100,7 @@ public class AccessControllerV1 {
     }
 
     @PostMapping("/{roleId}/clone")
-    @PreAuthorize("hasAuthority('role-manage')")
+    @RequireModule(value = "ACCESS", relation = "manager")
     public ResponseEntity<RoleCloneResponseDto> cloneRole(@PathVariable Long roleId,
                                                          @RequestBody(required = false) CloneRoleRequestDto request) {
         CloneRoleRequestDto payload = request == null ? new CloneRoleRequestDto() : request;
@@ -113,7 +114,7 @@ public class AccessControllerV1 {
     }
 
     @PatchMapping("/{roleId}/permissions/bulk")
-    @PreAuthorize("hasAuthority('permission-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<BulkPermissionsResponseDto> bulkPermissions(@PathVariable Long roleId,
                                                                 @RequestBody BulkPermissionsRequestDto request) {
         BulkPermissionsResponseDto result = accessRoleService.bulkUpdateModuleLevel(
@@ -127,7 +128,7 @@ public class AccessControllerV1 {
     }
 
     @PutMapping("/{roleId}/permissions")
-    @PreAuthorize("hasAuthority('permission-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<RolePermissionsUpdateResponseDto> updateRolePermissions(@PathVariable Long roleId,
                                                                                   @RequestBody(required = false) RolePermissionsUpdateRequestDto request) {
         RolePermissionsUpdateRequestDto payload = request == null ? new RolePermissionsUpdateRequestDto() : request;
@@ -160,7 +161,7 @@ public class AccessControllerV1 {
      * Add user(s) to a role (bidirectional: role → user assignment).
      */
     @PostMapping("/{roleId}/members")
-    @PreAuthorize("hasAuthority('permission-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<Map<String, Object>> addRoleMembers(@PathVariable Long roleId,
                                                                @RequestBody Map<String, List<Long>> body) {
         List<Long> userIds = body.getOrDefault("userIds", List.of());
@@ -180,7 +181,7 @@ public class AccessControllerV1 {
      * Remove a user from a role.
      */
     @DeleteMapping("/{roleId}/members/{userId}")
-    @PreAuthorize("hasAuthority('permission-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<Void> removeRoleMember(@PathVariable Long roleId, @PathVariable Long userId) {
         var assignments = assignmentRepository.findActiveAssignments(userId);
         assignments.stream()
@@ -195,7 +196,7 @@ public class AccessControllerV1 {
      */
     @org.springframework.transaction.annotation.Transactional
     @PutMapping("/{roleId}/granules")
-    @PreAuthorize("hasAuthority('permission-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<Map<String, Object>> updateRoleGranules(
             @PathVariable Long roleId,
             @RequestBody Map<String, List<com.example.permission.dto.v1.RolePermissionItemDto>> body) {
@@ -228,13 +229,13 @@ public class AccessControllerV1 {
     }
 
     @GetMapping("/users/{userId}/scopes")
-    @PreAuthorize("hasAuthority('permission-scope-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<List<ScopeSummaryDto>> listUserScopes(@PathVariable Long userId) {
         return ResponseEntity.ok(userScopeService.listUserScopes(userId));
     }
 
     @PostMapping("/users/{userId}/scopes")
-    @PreAuthorize("hasAuthority('permission-scope-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<Void> addUserScope(@PathVariable Long userId,
                                              @RequestBody ScopeAssignmentRequestDto scope) {
         userScopeService.addScope(userId, scope.scopeType(), scope.scopeRefId(), scope.permissionCode());
@@ -242,7 +243,7 @@ public class AccessControllerV1 {
     }
 
     @DeleteMapping("/users/{userId}/scopes/{scopeType}/{scopeRefId}")
-    @PreAuthorize("hasAuthority('permission-scope-manage')")
+    @RequireModule(value = "ACCESS", relation = "admin")
     public ResponseEntity<Void> removeUserScope(@PathVariable Long userId,
                                                 @PathVariable String scopeType,
                                                 @PathVariable Long scopeRefId,

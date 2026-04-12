@@ -1,5 +1,6 @@
 package com.example.permission.controller;
 
+import com.example.commonauth.openfga.RequireModule;
 import com.example.permission.dto.AuditEventPageResponse;
 import com.example.permission.dto.v1.AuditExportJobCreateRequestDto;
 import com.example.permission.dto.v1.AuditExportJobResponseDto;
@@ -33,7 +34,7 @@ public class AuditEventController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAuthority('audit-read')")
+    @RequireModule(value = "AUDIT", relation = "viewer")
     public ResponseEntity<AuditEventPageResponse> listEvents(@RequestParam(defaultValue = "1") int page,
                                                              @RequestParam(name = "pageSize", defaultValue = "50") int pageSize,
                                                              @RequestParam(required = false) String sort,
@@ -59,7 +60,7 @@ public class AuditEventController {
     }
 
     @GetMapping("/export")
-    @PreAuthorize("hasAuthority('audit-export')")
+    @RequireModule(value = "AUDIT", relation = "manager")
     public ResponseEntity<byte[]> exportEvents(@RequestParam(defaultValue = "json") String format,
                                                @RequestParam(required = false) Integer limit,
                                                @RequestParam(required = false) String sort,
@@ -80,7 +81,7 @@ public class AuditEventController {
     }
 
     @PostMapping("/export-jobs")
-    @PreAuthorize("hasAuthority('audit-export')")
+    @RequireModule(value = "AUDIT", relation = "manager")
     public ResponseEntity<AuditExportJobResponseDto> createExportJob(@Valid @RequestBody(required = false) AuditExportJobCreateRequestDto request,
                                                                      Authentication authentication) {
         AuditExportJobCreateRequestDto payload = request == null ? new AuditExportJobCreateRequestDto() : request;
@@ -95,14 +96,14 @@ public class AuditEventController {
     }
 
     @GetMapping("/export-jobs/{jobId}")
-    @PreAuthorize("hasAuthority('audit-export')")
+    @RequireModule(value = "AUDIT", relation = "manager")
     public ResponseEntity<AuditExportJobResponseDto> getExportJob(@PathVariable String jobId,
                                                                   Authentication authentication) {
         return ResponseEntity.ok(auditEventService.getExportJob(jobId, resolveRequestedBy(authentication)));
     }
 
     @GetMapping("/export-jobs/{jobId}/download")
-    @PreAuthorize("hasAuthority('audit-export')")
+    @RequireModule(value = "AUDIT", relation = "manager")
     public ResponseEntity<byte[]> downloadExportJob(@PathVariable String jobId,
                                                     Authentication authentication) {
         var job = auditEventService.getCompletedExportJob(jobId, resolveRequestedBy(authentication));
