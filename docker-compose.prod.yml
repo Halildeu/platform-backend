@@ -56,7 +56,7 @@ services:
 
   openfga-migrate:
     <<: *runtime-defaults
-    image: openfga/openfga:latest
+    image: openfga/openfga:${OPENFGA_VERSION:-v1.11.2}
     restart: "no"
     command: migrate
     environment:
@@ -69,7 +69,7 @@ services:
 
   openfga:
     <<: *runtime-defaults
-    image: openfga/openfga:latest
+    image: openfga/openfga:${OPENFGA_VERSION:-v1.11.2}
     command: run
     ports:
       - "127.0.0.1:4000:8080"
@@ -117,8 +117,8 @@ services:
       ERP_OPENFGA_STORE_ID: ${OPENFGA_STORE_ID}
       ERP_OPENFGA_MODEL_ID: ${OPENFGA_MODEL_ID}
       SCOPE_CACHE_ENABLED: ${SCOPE_CACHE_ENABLED:-true}
-      SCOPE_CACHE_TTL_SECONDS: ${SCOPE_CACHE_TTL_SECONDS:-30}
-      SCOPE_CACHE_MAX_SIZE: ${SCOPE_CACHE_MAX_SIZE:-5000}
+      SCOPE_CACHE_TTL_SECONDS: ${SCOPE_CACHE_TTL_SECONDS:-120}
+      SCOPE_CACHE_MAX_SIZE: ${SCOPE_CACHE_MAX_SIZE:-10000}
       AUTHZ_VERSION_ENABLED: ${AUTHZ_VERSION_ENABLED:-true}
       PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE: ${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-user_service.users}
       PERMISSION_AUTHZ_USER_TABLE: ${PERMISSION_AUTHZ_USER_TABLE:-user_service.users}

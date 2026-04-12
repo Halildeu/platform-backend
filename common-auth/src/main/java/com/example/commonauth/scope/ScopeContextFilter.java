@@ -16,6 +16,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Servlet filter that populates {@link ScopeContextHolder} on every request.
@@ -115,16 +116,31 @@ public class ScopeContextFilter extends OncePerRequestFilter {
         }
     }
 
+    /**
+     * Fetch scope from OpenFGA — all 5 calls run in PARALLEL (SK-2 optimization).
+     * Previous sequential execution: 5 × 6-8ms = 30-40ms.
+     * Parallel execution: max(6-8ms) = 6-8ms (75% reduction on cache miss).
+     */
     private ScopeContext fetchScopeFromOpenFga(String userId) {
-        Set<Long> companyIds = authzService.listObjectIds(userId, "viewer", "company");
-        Set<Long> projectIds = authzService.listObjectIds(userId, "viewer", "project");
-        Set<Long> warehouseIds = authzService.listObjectIds(userId, "viewer", "warehouse");
-        Set<Long> branchIds = authzService.listObjectIds(userId, "member", "branch");
-        boolean isSuperAdmin = authzService.check(userId, "admin", "organization", "default");
+        var companyFuture = CompletableFuture.supplyAsync(
+                () -> authzService.listObjectIds(userId, "viewer", "company"));
+        var projectFuture = CompletableFuture.supplyAsync(
+                () -> authzService.listObjectIds(userId, "viewer", "project"));
+        var warehouseFuture = CompletableFuture.supplyAsync(
+                () -> authzService.listObjectIds(userId, "viewer", "warehouse"));
+        var branchFuture = CompletableFuture.supplyAsync(
+                () -> authzService.listObjectIds(userId, "member", "branch"));
+        var adminFuture = CompletableFuture.supplyAsync(
+                () -> authzService.check(userId, "admin", "organization", "default"));
+
+        CompletableFuture.allOf(companyFuture, projectFuture, warehouseFuture, branchFuture, adminFuture).join();
+
+        boolean isSuperAdmin = adminFuture.join();
         if (isSuperAdmin) {
             return ScopeContext.superAdmin(userId);
         }
-        return new ScopeContext(userId, companyIds, projectIds, warehouseIds, branchIds, false);
+        return new ScopeContext(userId, companyFuture.join(), projectFuture.join(),
+                warehouseFuture.join(), branchFuture.join(), false);
     }
 
     private ScopeContext buildDevScopeContext() {

@@ -305,7 +305,7 @@ services:
       start_period: 5s
 
   openfga-migrate:
-    image: openfga/openfga:latest
+    image: openfga/openfga:${OPENFGA_VERSION:-v1.11.2}
     command: migrate
     environment:
       OPENFGA_DATASTORE_ENGINE: postgres
@@ -317,7 +317,7 @@ services:
         condition: service_healthy
 
   openfga:
-    image: openfga/openfga:latest
+    image: openfga/openfga:${OPENFGA_VERSION:-v1.11.2}
     command: run
     environment:
       OPENFGA_DATASTORE_ENGINE: postgres

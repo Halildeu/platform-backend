@@ -19,6 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -68,18 +69,21 @@ public class ReportController {
         // Static reports from JSON registry
         List<ReportListItemDto> staticReports = registry.getAll().stream()
                 .filter(def -> accessEvaluator.evaluate(def, authz) == ReportAccessEvaluator.AccessResult.ALLOWED)
-                .map(def -> new ReportListItemDto(def.key(), def.title(), def.description(), def.category()))
+                .map(def -> new ReportListItemDto(def.key(), def.title(), def.description(), def.category(),
+                        def.access() != null ? def.access().reportGroup() : null))
                 .toList();
 
-        // Custom reports from PostgreSQL
+        // Custom reports from PostgreSQL — filtered by access_config reportGroup (CNS-006 R17)
         List<ReportListItemDto> customReports = List.of();
         try {
             customReports = customReportRepository.findAll().stream()
+                    .filter(row -> evaluateCustomReportAccess(row, authz))
                     .map(row -> new ReportListItemDto(
                             (String) row.get("key"),
                             (String) row.get("title"),
                             (String) row.get("description"),
-                            (String) row.get("category")
+                            (String) row.get("category"),
+                            extractReportGroup(row)
                     ))
                     .toList();
         } catch (Exception e) {
@@ -96,14 +100,19 @@ public class ReportController {
         return ResponseEntity.ok(merged);
     }
 
-    /* ---- Custom Report CRUD ---- */
+    /* ---- Custom Report CRUD (CNS-006 R16: OpenFGA permission enforced) ---- */
 
     @PostMapping
     public ResponseEntity<Map<String, Object>> createCustomReport(
             @RequestBody Map<String, Object> body,
             @AuthenticationPrincipal Jwt jwt) {
-        body.put("createdBy", jwt != null ? jwt.getClaimAsString("preferred_username") : "system");
+        AuthzMeResponse authz = permissionClient.getAuthzMe(jwt);
+        requireReportManage(authz, jwt, "CREATE");
+
+        String username = jwt != null ? jwt.getClaimAsString("preferred_username") : "system";
+        body.put("createdBy", username);
         Map<String, Object> saved = customReportRepository.save(body);
+        auditClient.logReportAccess("custom:" + saved.get("key"), authz.getUserId(), extractEmail(jwt));
         return ResponseEntity.status(201).body(saved);
     }
 
@@ -112,19 +121,36 @@ public class ReportController {
             @PathVariable String key,
             @RequestBody Map<String, Object> body,
             @AuthenticationPrincipal Jwt jwt) {
-        body.put("createdBy", jwt != null ? jwt.getClaimAsString("preferred_username") : "system");
+        AuthzMeResponse authz = permissionClient.getAuthzMe(jwt);
+        requireReportManageOrOwner(authz, jwt, key, "UPDATE");
+
+        String username = jwt != null ? jwt.getClaimAsString("preferred_username") : "system";
+        body.put("createdBy", username);
         Map<String, Object> updated = customReportRepository.update(key, body);
         return ResponseEntity.ok(updated);
     }
 
     @DeleteMapping("/{key}")
-    public ResponseEntity<Void> deleteCustomReport(@PathVariable String key) {
+    public ResponseEntity<Void> deleteCustomReport(
+            @PathVariable String key,
+            @AuthenticationPrincipal Jwt jwt) {
+        AuthzMeResponse authz = permissionClient.getAuthzMe(jwt);
+        requireReportManageOrOwner(authz, jwt, key, "DELETE");
+
         boolean deleted = customReportRepository.softDelete(key);
+        if (deleted) {
+            auditClient.logReportAccessDenied("custom:" + key, authz.getUserId(), extractEmail(jwt), "SOFT_DELETED");
+        }
         return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 
     @GetMapping("/{key}/history")
-    public ResponseEntity<List<Map<String, Object>>> getReportHistory(@PathVariable String key) {
+    public ResponseEntity<List<Map<String, Object>>> getReportHistory(
+            @PathVariable String key,
+            @AuthenticationPrincipal Jwt jwt) {
+        AuthzMeResponse authz = permissionClient.getAuthzMe(jwt);
+        requireReportView(authz, jwt);
+
         List<Map<String, Object>> history = customReportRepository.getVersionHistory(key);
         return ResponseEntity.ok(history);
     }
@@ -201,6 +227,80 @@ public class ReportController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, result.name());
         }
         return authz;
+    }
+
+    /* ---- Authorization helpers (CNS-006 R16/R17) ---- */
+
+    private void requireReportView(AuthzMeResponse authz, Jwt jwt) {
+        if (authz == null || (!authz.isSuperAdmin() && !authz.hasPermission("REPORT_VIEW"))) {
+            auditClient.logReportAccessDenied("custom:*",
+                    authz != null ? authz.getUserId() : "unknown",
+                    extractEmail(jwt), "DENIED_NO_REPORT_VIEW");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "DENIED_NO_REPORT_VIEW");
+        }
+    }
+
+    private void requireReportManage(AuthzMeResponse authz, Jwt jwt, String action) {
+        if (authz == null || (!authz.isSuperAdmin() && !authz.hasPermission("REPORT_MANAGE"))) {
+            auditClient.logReportAccessDenied("custom:" + action,
+                    authz != null ? authz.getUserId() : "unknown",
+                    extractEmail(jwt), "DENIED_NO_REPORT_MANAGE");
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "DENIED_NO_REPORT_MANAGE");
+        }
+    }
+
+    private void requireReportManageOrOwner(AuthzMeResponse authz, Jwt jwt, String key, String action) {
+        if (authz != null && authz.isSuperAdmin()) {
+            return;
+        }
+        if (authz != null && authz.hasPermission("REPORT_MANAGE")) {
+            return;
+        }
+        // Fallback: owner can modify their own reports
+        String username = jwt != null ? jwt.getClaimAsString("preferred_username") : null;
+        if (username != null) {
+            Optional<Map<String, Object>> existing = customReportRepository.findByKey(key);
+            if (existing.isPresent() && username.equals(existing.get().get("createdBy"))) {
+                return;
+            }
+        }
+        auditClient.logReportAccessDenied("custom:" + key + ":" + action,
+                authz != null ? authz.getUserId() : "unknown",
+                extractEmail(jwt), "DENIED_NOT_OWNER_OR_MANAGE");
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "DENIED_NOT_OWNER_OR_MANAGE");
+    }
+
+    /**
+     * Evaluate access to a custom report based on its access_config.reportGroup field.
+     * CNS-006 R17: deny-default when reportGroup is set and user doesn't have ALLOW grant.
+     */
+    @SuppressWarnings("unchecked")
+    private boolean evaluateCustomReportAccess(Map<String, Object> row, AuthzMeResponse authz) {
+        if (authz.isSuperAdmin()) {
+            return true;
+        }
+        if (!authz.hasPermission("REPORT_VIEW")) {
+            return false;
+        }
+        Object accessConfigObj = row.get("accessConfig");
+        if (accessConfigObj instanceof Map<?, ?> accessConfig) {
+            Object reportGroup = accessConfig.get("reportGroup");
+            if (reportGroup instanceof String group && !group.isBlank()) {
+                return authz.canViewReport(group);
+            }
+        }
+        // No reportGroup in access_config → allow if user has REPORT_VIEW (backwards compat)
+        return true;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractReportGroup(Map<String, Object> row) {
+        Object accessConfigObj = row.get("accessConfig");
+        if (accessConfigObj instanceof Map<?, ?> accessConfig) {
+            Object group = accessConfig.get("reportGroup");
+            return group instanceof String s ? s : null;
+        }
+        return null;
     }
 
     private <T> T parseJson(String json, TypeReference<T> typeRef) {
