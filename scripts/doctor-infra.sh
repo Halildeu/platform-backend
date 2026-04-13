@@ -301,6 +301,74 @@ else
   fail "G3: Compose project name missing or incorrect"
 fi
 
+# ── H: DEV/PROD COMPOSE SYNC CHECK ──────────────────────────────────
+echo ""
+echo "=== H: Dev/Prod Compose Sync ==="
+
+PROD_COMPOSE="${ROOT_DIR}/../deploy/docker-compose.prod.yml"
+if [ ! -f "$PROD_COMPOSE" ]; then
+  warn "H0: docker-compose.prod.yml not found at deploy/"
+else
+  # H1: Same services
+  DEV_SVCS=$(grep -E "^  [a-z][a-z0-9_-]+:" "$COMPOSE_FILE" | sed 's/:.*//' | tr -d ' ' | sort)
+  PROD_SVCS=$(grep -E "^  [a-z][a-z0-9_-]+:" "$PROD_COMPOSE" | sed 's/:.*//' | tr -d ' ' | sort)
+  MISSING_IN_PROD=$(comm -23 <(echo "$DEV_SVCS") <(echo "$PROD_SVCS") | tr '\n' ' ')
+  MISSING_IN_DEV=$(comm -13 <(echo "$DEV_SVCS") <(echo "$PROD_SVCS") | tr '\n' ' ')
+  if [ -z "$(echo "$MISSING_IN_PROD" | tr -d ' ')" ] && [ -z "$(echo "$MISSING_IN_DEV" | tr -d ' ')" ]; then
+    pass "H1: Dev and prod have identical service sets"
+  else
+    [ -n "$(echo "$MISSING_IN_PROD" | tr -d ' ')" ] && warn "H1a: In dev not prod: $MISSING_IN_PROD"
+    [ -n "$(echo "$MISSING_IN_DEV" | tr -d ' ')" ] && warn "H1b: In prod not dev: $MISSING_IN_DEV"
+  fi
+
+  # H2: Same project name
+  DEV_NAME=$(grep '^name:' "$COMPOSE_FILE" | awk '{print $2}')
+  PROD_NAME=$(grep '^name:' "$PROD_COMPOSE" | awk '{print $2}')
+  if [ "$DEV_NAME" = "$PROD_NAME" ]; then
+    pass "H2: Same project name ($DEV_NAME)"
+  else
+    fail "H2: Project name mismatch: dev=$DEV_NAME prod=$PROD_NAME"
+  fi
+
+  # H3: Keycloak PG in prod
+  if grep -q 'KC_DB.*postgres' "$PROD_COMPOSE"; then
+    pass "H3: Prod Keycloak uses PostgreSQL"
+  else
+    fail "H3: Prod Keycloak missing KC_DB=postgres"
+  fi
+
+  # H4: KC_HEALTH_ENABLED in prod
+  if grep -q 'KC_HEALTH_ENABLED' "$PROD_COMPOSE"; then
+    pass "H4: Prod KC_HEALTH_ENABLED set"
+  else
+    fail "H4: Prod Keycloak missing KC_HEALTH_ENABLED"
+  fi
+
+  # H5: Healthcheck port 9000 in prod
+  if grep -A5 'keycloak' "$PROD_COMPOSE" | grep -q '9000'; then
+    pass "H5: Prod Keycloak healthcheck port 9000"
+  else
+    fail "H5: Prod Keycloak healthcheck not on port 9000"
+  fi
+
+  # H6: OpenFGA playground off in prod
+  if grep -q 'OPENFGA_PLAYGROUND_ENABLED.*false' "$PROD_COMPOSE"; then
+    pass "H6: Prod OpenFGA playground disabled"
+  elif grep -q 'OPENFGA_PLAYGROUND_ENABLED.*true' "$PROD_COMPOSE"; then
+    fail "H6: Prod OpenFGA playground ENABLED"
+  else
+    pass "H6: Prod OpenFGA playground default (off)"
+  fi
+
+  # H7: Prod ports bind 127.0.0.1
+  OPEN_PORTS=$(grep -E '^\s+- "[0-9]+:' "$PROD_COMPOSE" | grep -v '127.0.0.1' | head -3 || true)
+  if [ -z "$OPEN_PORTS" ]; then
+    pass "H7: All prod ports bind 127.0.0.1"
+  else
+    fail "H7: Prod ports exposed to 0.0.0.0"
+  fi
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"
