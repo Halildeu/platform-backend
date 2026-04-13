@@ -234,6 +234,45 @@ else
   warn "E4: .env.example missing COMPOSE_PROJECT_NAME — risk of default name"
 fi
 
+# ── F: VAULT AUTO-UNSEAL READINESS ──────────────────────────────────
+echo ""
+echo "=== F: Vault Auto-Unseal ==="
+
+# F1: vault-unseal container defined in compose
+if grep -q "vault-unseal" "$COMPOSE_FILE"; then
+  pass "F1: vault-unseal service defined"
+else
+  fail "F1: vault-unseal service missing — manual unseal required on every restart"
+fi
+
+# F2: dev-unseal-loop.sh exists
+UNSEAL_SCRIPT="${ROOT_DIR}/devops/vault/dev-unseal-loop.sh"
+if [ -f "$UNSEAL_SCRIPT" ]; then
+  pass "F2: dev-unseal-loop.sh exists"
+else
+  fail "F2: dev-unseal-loop.sh missing"
+fi
+
+# F3: .vault-dev directory exists
+VAULT_DEV_DIR="${ROOT_DIR}/.vault-dev"
+if [ -d "$VAULT_DEV_DIR" ]; then
+  pass "F3: .vault-dev directory exists"
+  if [ -s "${VAULT_DEV_DIR}/vault-unseal-key" ]; then
+    pass "F4: vault-unseal-key file present"
+  else
+    warn "F4: vault-unseal-key missing — vault needs manual unseal after restart"
+  fi
+else
+  warn "F3: .vault-dev directory missing — run vault init first"
+fi
+
+# F5: Keycloak depends_on postgres-db
+if grep -A5 "keycloak:" "$COMPOSE_FILE" | grep -q "postgres-db"; then
+  pass "F5: Keycloak depends_on postgres-db"
+else
+  fail "F5: Keycloak missing postgres-db dependency"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"
