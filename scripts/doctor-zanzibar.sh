@@ -409,13 +409,13 @@ else
 fi
 
 # C2: prod compose name=platform (hardcoded, not variable)
-PROD_NAME=$(grep -m1 '^name:' "$BACKEND_DIR/docker-compose.prod.yml" 2>/dev/null | awk '{print $2}')
+PROD_NAME=$(grep -m1 '^name:' "$BACKEND_DIR/../deploy/docker-compose.prod.yml" 2>/dev/null | awk '{print $2}')
 if [[ "$PROD_NAME" == "platform" ]]; then
-  pass "C2" "docker-compose.prod.yml name=platform"
+  pass "C2" "../deploy/docker-compose.prod.yml name=platform"
 elif [[ "$PROD_NAME" == *'$'* ]]; then
-  fail "C2" "docker-compose.prod.yml name değişken ($PROD_NAME) — hardcoded 'platform' olmalı"
+  fail "C2" "../deploy/docker-compose.prod.yml name değişken ($PROD_NAME) — hardcoded 'platform' olmalı"
 else
-  fail "C2" "docker-compose.prod.yml name='$PROD_NAME' (beklenen: platform)"
+  fail "C2" "../deploy/docker-compose.prod.yml name='$PROD_NAME' (beklenen: platform)"
 fi
 
 # C3: No stray container_name (except vault)

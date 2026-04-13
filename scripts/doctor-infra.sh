@@ -212,7 +212,7 @@ else
 fi
 
 # E3: No prod compose file should be used on staging (check for conflicting profiles)
-PROD_COMPOSE="${ROOT_DIR}/docker-compose.prod.yml"
+PROD_COMPOSE="${ROOT_DIR}/../deploy/docker-compose.prod.yml"
 if [ -f "$PROD_COMPOSE" ]; then
   # Check if prod compose has different port mappings than dev
   prod_ports=$(grep -E "^\s+- \"[0-9]+:" "$PROD_COMPOSE" 2>/dev/null | sort || true)
@@ -271,6 +271,34 @@ if grep -A5 "keycloak:" "$COMPOSE_FILE" | grep -q "postgres-db"; then
   pass "F5: Keycloak depends_on postgres-db"
 else
   fail "F5: Keycloak missing postgres-db dependency"
+fi
+
+# ── G: COMPOSE SINGLE-INSTANCE GUARD ────────────────────────────────
+echo ""
+echo "=== G: Single Instance Guard ==="
+
+# G1: Only one compose file in backend/ root (prod moved to deploy/)
+COMPOSE_COUNT=$(find "${ROOT_DIR}" -maxdepth 1 -name "docker-compose*.yml" -o -name "docker-compose*.yaml" 2>/dev/null | wc -l | tr -d " ")
+if [ "$COMPOSE_COUNT" -eq 1 ]; then
+  pass "G1: Single compose file in backend/ ($COMPOSE_COUNT)"
+elif [ "$COMPOSE_COUNT" -eq 0 ]; then
+  fail "G1: No compose file found in backend/"
+else
+  fail "G1: Multiple compose files in backend/ ($COMPOSE_COUNT) — prod should be in deploy/"
+fi
+
+# G2: docker-compose.prod.yml NOT in backend/ (must be in deploy/)
+if [ -f "${ROOT_DIR}/docker-compose.prod.yml" ]; then
+  fail "G2: docker-compose.prod.yml still in backend/ — must be in deploy/"
+else
+  pass "G2: docker-compose.prod.yml not in backend/ (correct)"
+fi
+
+# G3: Compose project name consistency
+if grep -q "^name: platform" "$COMPOSE_FILE" 2>/dev/null; then
+  pass "G3: Compose project name = platform"
+else
+  fail "G3: Compose project name missing or incorrect"
 fi
 
 # ── SUMMARY ──────────────────────────────────────────────────────────
