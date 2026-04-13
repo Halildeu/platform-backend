@@ -369,6 +369,53 @@ else
   fi
 fi
 
+# ── I: ENVIRONMENT & COMPOSE SELECTION GUARD ─────────────────────────
+echo ""
+echo "=== I: Environment & Compose Selection ==="
+
+# I1: Dev compose uses local build (not registry)
+if grep -q "build:" "$COMPOSE_FILE" && ! grep -q "ghcr.io" "$COMPOSE_FILE"; then
+  pass "I1: Dev compose uses local build (not registry)"
+elif grep -q "ghcr.io" "$COMPOSE_FILE"; then
+  fail "I1: Dev compose references GHCR registry"
+else
+  warn "I1: Dev compose has no build or image directives"
+fi
+
+# I2: Prod compose uses registry images
+if [ -f "$PROD_COMPOSE" ]; then
+  if grep -q "ghcr.io" "$PROD_COMPOSE" && ! grep -q "build:" "$PROD_COMPOSE"; then
+    pass "I2: Prod compose uses GHCR registry images"
+  elif grep -q "build:" "$PROD_COMPOSE"; then
+    fail "I2: Prod compose uses local build — must use GHCR"
+  else
+    warn "I2: Prod compose image source unclear"
+  fi
+else
+  warn "I2: Prod compose not found"
+fi
+
+# I3: Dev profiles include local
+if grep "SPRING_PROFILES_ACTIVE" "$COMPOSE_FILE" | grep -q "local"; then
+  pass "I3: Dev compose profiles include local"
+else
+  fail "I3: Dev compose profiles missing local"
+fi
+
+# I4: Prod profiles = prod
+if [ -f "$PROD_COMPOSE" ] && grep "SPRING_PROFILES_ACTIVE" "$PROD_COMPOSE" | grep -q "prod"; then
+  pass "I4: Prod compose profiles = prod"
+elif [ -f "$PROD_COMPOSE" ]; then
+  fail "I4: Prod compose profiles not prod"
+fi
+
+# I5: No accidental prod compose in .env
+if grep -q "COMPOSE_FILE.*prod" "${ROOT_DIR}/.env" 2>/dev/null; then
+  fail "I5: COMPOSE_FILE in .env points to prod"
+else
+  pass "I5: No prod compose override in .env"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"
