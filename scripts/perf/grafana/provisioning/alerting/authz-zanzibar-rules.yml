@@ -201,3 +201,61 @@ groups:
         labels: { severity: warning, component: zanzibar-authz }
         annotations: { summary: "Deny decision rate spike — >5/min sustained. Check tuple sync, model consistency, role assignments." }
         isPaused: false
+
+      # ── Outbox dead letter monitoring (C3) ──────────────────────
+      - uid: authz-outbox-failed-entries
+        title: Tuple sync outbox — failed entries (dead letter)
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                tuple_sync_outbox_failed_total{job="permission-service"}
+              legendFormat: failed_entries
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            queryType: ''
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        for: 1m
+        labels: { severity: critical, component: zanzibar-authz }
+        annotations: { summary: "Outbox has FAILED entries (dead letters). Tuple sync for role changes may be stale. Check permission-service logs and run manual reconciliation." }
+        isPaused: false
+
+      # ── Circuit breaker state monitoring (C1) ───────────────────
+      - uid: authz-circuit-breaker-open
+        title: OpenFGA circuit breaker OPEN
+        condition: B
+        data:
+          - refId: A
+            queryType: timeSeriesQuery
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              expr: |
+                openfga_circuit_breaker_state{job=~".*service.*"} > 0
+              legendFormat: "{{job}}"
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            queryType: ''
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+        for: 1m
+        labels: { severity: critical, component: zanzibar-authz }
+        annotations: { summary: "OpenFGA circuit breaker is OPEN — all authz checks are being short-circuited (fail-closed). Check OpenFGA container health and connectivity." }
+        isPaused: false

@@ -94,7 +94,24 @@ public class AuthorizationControllerV1 {
     @Transactional(readOnly = true)
     public ResponseEntity<AuthzMeResponseDto> getMe(@AuthenticationPrincipal Jwt jwt) {
         if (jwt == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "JWT missing");
+            // D-103: Local/dev profile fallback — return superAdmin response
+            // when JWT is not available (SecurityConfigLocal permitAll mode)
+            log.info("authz/me: JWT null — returning dev superAdmin fallback");
+            AuthzMeResponseDto devDto = new AuthzMeResponseDto();
+            devDto.setUserId("dev-admin");
+            devDto.setSuperAdmin(true);
+            devDto.setPermissions(Set.of("admin"));
+            devDto.setAllowedModules(List.of("USER_MANAGEMENT", "ACCESS", "AUDIT", "REPORT", "THEME", "WAREHOUSE", "PURCHASE"));
+            devDto.setModules(Map.of(
+                    "USER_MANAGEMENT", "MANAGE", "ACCESS", "MANAGE", "AUDIT", "MANAGE",
+                    "REPORT", "MANAGE", "THEME", "MANAGE", "WAREHOUSE", "MANAGE", "PURCHASE", "MANAGE"));
+            devDto.setScopes(List.of());
+            devDto.setAllowedScopes(List.of());
+            devDto.setRoles(List.of());
+            devDto.setActions(Map.of());
+            devDto.setReports(Map.of());
+            devDto.setAuthzVersion(authzVersionService != null ? authzVersionService.getCurrentVersion() : 0L);
+            return ResponseEntity.ok(devDto);
         }
         try {
             AuthzMeResponseDto dto = new AuthzMeResponseDto();

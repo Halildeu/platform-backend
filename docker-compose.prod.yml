@@ -1,4 +1,4 @@
-name: ${COMPOSE_PROJECT_NAME:-platform}
+name: platform
 
 x-runtime-defaults: &runtime-defaults
   restart: unless-stopped
@@ -78,7 +78,7 @@ services:
       <<: *common-env
       OPENFGA_DATASTORE_ENGINE: postgres
       OPENFGA_DATASTORE_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres-db:5432/${POSTGRES_DB:-users}?sslmode=disable&search_path=openfga
-      OPENFGA_PLAYGROUND_ENABLED: "true"
+      OPENFGA_PLAYGROUND_ENABLED: "false"
       OPENFGA_METRICS_ENABLED: "true"
       OPENFGA_LOG_LEVEL: ${OPENFGA_LOG_LEVEL:-info}
     depends_on:

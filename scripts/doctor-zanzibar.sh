@@ -395,6 +395,93 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════
+# SECTION C: COMPOSE TUTARLILIK (code-level, Docker gerekmez)
+# ═══════════════════════════════════════════════════════════════════
+$JSON_MODE || echo ""
+$JSON_MODE || echo "── Compose Tutarlılık ──"
+
+# C1: dev compose name=platform
+DEV_NAME=$(grep -m1 '^name:' "$BACKEND_DIR/docker-compose.yml" 2>/dev/null | awk '{print $2}')
+if [[ "$DEV_NAME" == "platform" ]]; then
+  pass "C1" "docker-compose.yml name=platform"
+else
+  fail "C1" "docker-compose.yml name='$DEV_NAME' (beklenen: platform)"
+fi
+
+# C2: prod compose name=platform (hardcoded, not variable)
+PROD_NAME=$(grep -m1 '^name:' "$BACKEND_DIR/docker-compose.prod.yml" 2>/dev/null | awk '{print $2}')
+if [[ "$PROD_NAME" == "platform" ]]; then
+  pass "C2" "docker-compose.prod.yml name=platform"
+elif [[ "$PROD_NAME" == *'$'* ]]; then
+  fail "C2" "docker-compose.prod.yml name değişken ($PROD_NAME) — hardcoded 'platform' olmalı"
+else
+  fail "C2" "docker-compose.prod.yml name='$PROD_NAME' (beklenen: platform)"
+fi
+
+# C3: No stray container_name (except vault)
+CUSTOM_NAMES=$(grep "container_name:" "$BACKEND_DIR/docker-compose.yml" 2>/dev/null | grep -v vault | grep -v "^#" | grep -v "^[[:space:]]*#" || true)
+if [[ -z "$CUSTOM_NAMES" ]]; then
+  pass "C3" "container_name override yok (vault hariç)"
+else
+  warn "C3" "container_name override: $CUSTOM_NAMES"
+fi
+
+if ! $QUICK_MODE; then
+  $JSON_MODE || echo ""
+  $JSON_MODE || echo "── Compose Runtime ──"
+
+  # C4: Single compose project
+  PROJECTS=$(docker ps --format "{{.Labels}}" 2>/dev/null | grep -oP "com\.docker\.compose\.project=\K[^,]+" | sort -u)
+  if [[ "$PROJECTS" == "platform" ]]; then
+    pass "C4: Tek compose project: platform"
+  else
+    fail "C4: Projeler: $PROJECTS (tek 'platform' olmalı)"
+  fi
+
+  # C5: All containers from same compose file
+  CONFIG_FILES=$(docker ps --format "{{.Labels}}" 2>/dev/null | grep -oP "com\.docker\.compose\.project\.config_files=\K[^,]+" | sort -u | head -5)
+  CONFIG_COUNT=$(echo "$CONFIG_FILES" | grep -c . 2>/dev/null || echo 0)
+  if [[ "$CONFIG_COUNT" -le 1 ]]; then
+    pass "C5: Tüm container'lar aynı compose dosyasından"
+  else
+    fail "C5: $CONFIG_COUNT farklı compose dosyası"
+  fi
+
+  # C6: Spring profiles consistent (not prod for local-mode services)
+  PROD_PROFILE_SVCS=""
+  for SVC_CONTAINER in platform-report-service-1 platform-schema-service-1 platform-permission-service-1; do
+    PROF=$(docker exec "$SVC_CONTAINER" printenv SPRING_PROFILES_ACTIVE 2>/dev/null || echo "?")
+    if [[ "$PROF" == "prod" ]]; then
+      PROD_PROFILE_SVCS="$PROD_PROFILE_SVCS $SVC_CONTAINER"
+    fi
+  done
+  if [[ -z "$PROD_PROFILE_SVCS" ]]; then
+    pass "C6: Profil tutarlı (prod profilde çalışan yok)"
+  else
+    fail "C6: Prod profilde çalışıyor:$PROD_PROFILE_SVCS"
+  fi
+
+  # C7: Eureka — critical services registered with container IP
+  BAD_EUREKA=""
+  for APP in PERMISSION-SERVICE REPORT-SERVICE; do
+    HOST=$(curl -s -H "Accept: application/json" "http://127.0.0.1:8761/eureka/apps/$APP" 2>/dev/null \
+      | python3 -c "import sys,json
+try:
+  d=json.load(sys.stdin);i=d['application']['instance']
+  i=i[0] if isinstance(i,list) else i;print(i.get('hostName','?'))
+except: print('?')" 2>/dev/null)
+    if [[ "$HOST" == "127.0.0.1" ]]; then
+      BAD_EUREKA="$BAD_EUREKA $APP"
+    fi
+  done
+  if [[ -z "$BAD_EUREKA" ]]; then
+    pass "C7: Eureka IP doğru (container IP kullanılıyor)"
+  else
+    fail "C7: Eureka 127.0.0.1 kayıtlı:$BAD_EUREKA"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
 # SONUÇ
 # ═══════════════════════════════════════════════════════════════════
 $JSON_MODE || echo ""

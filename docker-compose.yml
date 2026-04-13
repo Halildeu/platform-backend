@@ -1,4 +1,4 @@
-name: serban
+name: platform
 
 services:
   discovery-server:
@@ -180,7 +180,7 @@ services:
       - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       - SECURITY_JWT_AUDIENCE=${CORE_DATA_SECURITY_JWT_AUDIENCE:-frontend,user-service,core-data-service}
       - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-true}
-      - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:4000}
+      - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:8080}
       - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
       - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
     depends_on:
@@ -308,6 +308,43 @@ services:
       retries: 30
       start_period: 5s
 
+  vault-snapshot:
+    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
+    profiles: ["extras"]
+    entrypoint: /bin/sh
+    command: ["-c", "sleep infinity"]
+    networks:
+      - microservice-network
+    restart: unless-stopped
+
+  vault-audit-init:
+    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
+    profiles: ["extras"]
+    entrypoint: /bin/sh
+    command: ["-c", "sleep infinity"]
+    networks:
+      - microservice-network
+    restart: unless-stopped
+
+  service-manager:
+    image: node:22-alpine
+    profiles: ["extras"]
+    working_dir: /app
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts:/app
+    command: ["sh", "-c", "npm install --production && node service-manager-api.js --port 8795"]
+    ports:
+      - "8795:8795"
+    networks:
+      - microservice-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8795/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   openfga-migrate:
     image: openfga/openfga:${OPENFGA_VERSION:-v1.11.2}
     command: migrate
@@ -339,11 +376,11 @@ services:
       openfga-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["NONE"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 5s
+      start_period: 10s
 
   permission-service:
     # profiles: ["legacy"]  # Re-enabled: roles CRUD still lives here, synced with OpenFGA
@@ -360,7 +397,9 @@ services:
       - PERMISSION_DB_USERNAME=${PERMISSION_DB_USERNAME:-postgres}
       - PERMISSION_DB_PASSWORD=${PERMISSION_DB_PASSWORD:-postgres}
       - PERMISSION_DB_SCHEMA=${PERMISSION_DB_SCHEMA:-public}
-      - EUREKA_SERVER_URL=${EUREKA_SERVER_URL}
+      - EUREKA_SERVER_URL=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
+      - SECURITY_LOCAL_DEV_USER_ID=${SECURITY_LOCAL_DEV_USER_ID:-local-dev}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       - SPRING_CLOUD_VAULT_ENABLED=false
@@ -418,6 +457,7 @@ services:
       - REPORT_MSSQL_USERNAME=${REPORT_MSSQL_USERNAME:-sa}
       - REPORT_MSSQL_PASSWORD=${REPORT_MSSQL_PASSWORD:-}
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
+      - EUREKA_INSTANCE_PREFER_IP_ADDRESS=true
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
       - SECURITY_JWT_AUDIENCE=report-service,account,frontend
@@ -426,6 +466,8 @@ services:
       - REPORT_PG_HOST=postgres-db
       - REPORT_PG_PORT=5432
       - REPORT_PG_DB=${POSTGRES_DB:-users}
+      - REPORT_PG_USERNAME=${POSTGRES_USER:-postgres}
+      - REPORT_PG_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       # SQL Server baglantisi optional — erisim yoksa servis yine de baslar
       - SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT=-1
       # DB health indicator'u devre disi birak (SQL Server ulasılamaz oldugunda timeout yapar)
@@ -524,9 +566,9 @@ services:
       timeout: 5s
       retries: 5
 
-  observability-prometheus:
+  prometheus:
     image: prom/prometheus:latest
-    container_name: observability-prometheus
+    # container_name removed — compose auto-names as platform-prometheus-1
     volumes:
       - ./scripts/perf/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
@@ -541,9 +583,9 @@ services:
       retries: 5
       start_period: 10s
 
-  observability-grafana:
+  grafana:
     image: grafana/grafana:12.4.1
-    container_name: observability-grafana
+    # container_name removed — compose auto-names as platform-grafana-1
     environment:
       - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
@@ -558,7 +600,7 @@ services:
     networks:
       - observability-network
     depends_on:
-      observability-prometheus:
+      prometheus:
         condition: service_started
     restart: unless-stopped
     healthcheck:

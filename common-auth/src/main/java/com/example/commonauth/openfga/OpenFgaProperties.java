@@ -14,6 +14,9 @@ public class OpenFgaProperties {
     private String storeId;
     private String modelId;
 
+    /** TTL in seconds for check result cache. Default: 10s. Set to 0 to disable caching. */
+    private int checkCacheTtlSeconds = 10;
+
     /** Dev/permitAll mode: fallback scope when OpenFGA is disabled. */
     private DevScope devScope = new DevScope();
 
@@ -47,6 +50,14 @@ public class OpenFgaProperties {
 
     public void setModelId(String modelId) {
         this.modelId = modelId;
+    }
+
+    public int getCheckCacheTtlSeconds() {
+        return checkCacheTtlSeconds;
+    }
+
+    public void setCheckCacheTtlSeconds(int checkCacheTtlSeconds) {
+        this.checkCacheTtlSeconds = checkCacheTtlSeconds;
     }
 
     public DevScope getDevScope() {

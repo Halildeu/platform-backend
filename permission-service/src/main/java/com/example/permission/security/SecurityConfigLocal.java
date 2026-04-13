@@ -43,6 +43,9 @@ public class SecurityConfigLocal {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityConfigLocal.class);
 
+    @org.springframework.beans.factory.annotation.Value("${security.local.dev-user-id:local-dev}")
+    private String devUserId;
+
     @Bean
     public SecurityFilterChain securityFilterChainLocal(HttpSecurity http) throws Exception {
         var autoAuthFilter = new OncePerRequestFilter() {
@@ -50,7 +53,14 @@ public class SecurityConfigLocal {
             protected void doFilterInternal(@NonNull HttpServletRequest request,
                                             @NonNull HttpServletResponse response,
                                             @NonNull FilterChain filterChain) throws ServletException, IOException {
+                // If request already has a real Bearer token, let it through without fake auth
+                String authHeader = request.getHeader("Authorization");
                 var auth = SecurityContextHolder.getContext().getAuthentication();
+                if (authHeader != null && authHeader.startsWith("Bearer ") && authHeader.length() > 20) {
+                    // Real token present — skip fake auth, let downstream handle it
+                    filterChain.doFilter(request, response);
+                    return;
+                }
                 if (auth == null || !auth.isAuthenticated() || auth instanceof AnonymousAuthenticationToken) {
                     Jwt fakeJwt = new Jwt(
                         "local-dev-token",
@@ -58,7 +68,7 @@ public class SecurityConfigLocal {
                         Instant.now().plusSeconds(3600),
                         Map.of("alg", "none"),
                         Map.of(
-                            "sub", "local-dev",
+                            "sub", devUserId,
                             "email", "admin@serban.dev",
                             "preferred_username", "admin@serban.dev"
                         )
