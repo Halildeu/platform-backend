@@ -385,12 +385,9 @@ services:
     depends_on:
       openfga-migrate:
         condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    # healthcheck removed: OpenFGA minimal image has no /bin/sh or wget.
+    # Health verified externally via curl http://localhost:4000/healthz
+    # Service readiness ensured by depends_on openfga-migrate: service_completed_successfully
 
   permission-service:
     # profiles: ["legacy"]  # Re-enabled: roles CRUD still lives here, synced with OpenFGA

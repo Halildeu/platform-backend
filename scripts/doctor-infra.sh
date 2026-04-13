@@ -85,7 +85,7 @@ if [ -f "$COMPOSE_FILE" ]; then
     fail "B3: KC_HEALTH_ENABLED not set — healthcheck will fail"
   fi
 
-  # B4: Keycloak healthcheck must use port 9000 (management)
+  # B4: Keycloak healthcheck must use port 9000 (management) — OpenFGA has no healthcheck (minimal image)
   if grep -A3 "keycloak" "$COMPOSE_FILE" | grep -q "9000"; then
     pass "B4: Keycloak healthcheck targets port 9000"
   else
