@@ -319,6 +319,77 @@ if [ -n "$CTX_BUILDER" ]; then
   [ "$empty_perms" -gt 0 ] && pass "Permissions = Set.of() (identity-only JWT)" || warn "Permissions Set.of() bulunamadı"
 fi
 
+# ── A18. Canary docs synced (CNS-20260414-003 Q6) ────────────────
+# Fail-closed check: plan + runbook + registry counts must reflect shipped state.
+# Source: Codex consultation CNS-20260414-003 recommendation
+header "A18. Canary docs synced — plan/runbook/registry hizalamasi"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PLAN_FILE="$REPO_ROOT/.claude/plans/zanzibar-master-plan.md"
+RUNBOOK_FILE="$REPO_ROOT/docs/04-operations/RUNBOOKS/RB-zanzibar-canary.md"
+REGISTRY_FILE="$REPO_ROOT/decisions/topics/zanzibar-openfga.v1.json"
+
+if [ -f "$PLAN_FILE" ]; then
+  # No "karar bekliyor" language for B1/B2
+  karar_bekliyor=$(grep -c 'B[12].*karar bekliyor\|karar bekliyor.*B[12]' "$PLAN_FILE" 2>/dev/null || true)
+  karar_bekliyor=${karar_bekliyor:-0}
+  [ "$karar_bekliyor" -eq 0 ] && pass "plan: B1/B2 karar bekliyor metni yok" || fail "plan: B1/B2 karar bekliyor metni var ($karar_bekliyor)"
+
+  # Plan count line must match registry (8/8/rev 4 after D-008)
+  stale_count=$(grep -c '7 FINAL karar\|7 Constraint' "$PLAN_FILE" 2>/dev/null || true)
+  stale_count=${stale_count:-0}
+  [ "$stale_count" -eq 0 ] && pass "plan: sayim satiri guncel (7/7 drift yok)" || fail "plan: eski '7 FINAL / 7 Constraint' drift ($stale_count)"
+else
+  warn "plan dosyasi bulunamadi: $PLAN_FILE"
+fi
+
+if [ -f "$RUNBOOK_FILE" ]; then
+  # Precondition "4/4 metrics" must be checked
+  unchecked_4_4=$(grep -c '^- \[ \] Canary authz guardrail wiring complete (4/4 metrics)' "$RUNBOOK_FILE" 2>/dev/null || true)
+  unchecked_4_4=${unchecked_4_4:-0}
+  [ "$unchecked_4_4" -eq 0 ] && pass "runbook: '4/4 metrics' precondition [x]" || fail "runbook: '4/4 metrics' hala [ ] ($unchecked_4_4)"
+else
+  warn "runbook dosyasi bulunamadi: $RUNBOOK_FILE"
+fi
+
+if [ -f "$REGISTRY_FILE" ]; then
+  reg_rev=$(grep -E '"revision"\s*:\s*[0-9]+' "$REGISTRY_FILE" | head -1 | grep -oE '[0-9]+' || echo "0")
+  [ "$reg_rev" -ge 4 ] && pass "registry revision >= 4 (D-008 formalize)" || warn "registry revision=$reg_rev (beklenen >=4)"
+fi
+
+# ── A19. Auth-service legacy permission bootstrap (CNS-20260414-003 Q6) ──
+# Warning-level drift guard for PR6a readiness.
+# Source: Codex consultation CNS-20260414-003 Q6 + D-002 identity-only JWT
+header "A19. Auth-service legacy permission bootstrap — PR6a drift guard"
+AUTH_CLIENT="$BACKEND_DIR/auth-service/src/main/java/com/example/auth/permission/PermissionServiceClient.java"
+AUTH_SERVICE="$BACKEND_DIR/auth-service/src/main/java/com/example/auth/service/AuthService.java"
+JWT_PROVIDER="$BACKEND_DIR/auth-service/src/main/java/com/example/auth/security/JwtTokenProvider.java"
+
+if [ -f "$AUTH_CLIENT" ]; then
+  warn "auth-service: PermissionServiceClient.java hala mevcut (PR6a ile temizlenecek)"
+else
+  pass "auth-service: PermissionServiceClient.java yok (PR6a tamam)"
+fi
+
+if [ -f "$AUTH_SERVICE" ]; then
+  psc_refs=$(grep -c 'permissionServiceClient\|PermissionServiceClient' "$AUTH_SERVICE" 2>/dev/null || true)
+  psc_refs=${psc_refs:-0}
+  if [ "$psc_refs" -gt 0 ]; then
+    warn "AuthService.java: PermissionServiceClient $psc_refs referans (PR6a ile temizlenecek)"
+  else
+    pass "AuthService.java: PermissionServiceClient referans yok"
+  fi
+fi
+
+if [ -f "$JWT_PROVIDER" ]; then
+  jwt_perm_claim=$(grep -v '^\s*//' "$JWT_PROVIDER" | grep -c 'claim.*"permissions"\|"permissions".*claim\|setClaims.*permissions' 2>/dev/null || true)
+  jwt_perm_claim=${jwt_perm_claim:-0}
+  if [ "$jwt_perm_claim" -gt 0 ]; then
+    warn "JwtTokenProvider: 'permissions' claim hala yaziliyor ($jwt_perm_claim ref, PR6b ile temizlenecek)"
+  else
+    pass "JwtTokenProvider: 'permissions' claim yazilmiyor"
+  fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════
 # SECTION B: RUNTIME CHECKS (Docker required)
 # ═══════════════════════════════════════════════════════════════════
