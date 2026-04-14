@@ -54,8 +54,44 @@ if [ -f "$DEPLOY_SCRIPT" ]; then
   else
     warn "A3: Keycloak upstream pattern not found"
   fi
+
+  # A4: NGINX_TLS_CERT_PATH default must NOT point to Vault TLS directory
+  # (2026-04-14 regression: Vault's dev self-signed cert CN=vault was served).
+  if grep -qE 'NGINX_TLS_CERT_PATH.*[:-].*/vault/tls/' "$DEPLOY_SCRIPT"; then
+    fail "A4: NGINX_TLS_CERT_PATH default points to Vault TLS dir — will serve CN=vault cert (2026-04-14 regression)"
+  elif grep -qE 'NGINX_TLS_CERT_PATH.*[:-].*' "$DEPLOY_SCRIPT"; then
+    pass "A4: NGINX_TLS_CERT_PATH default not pointing to Vault TLS dir"
+  else
+    warn "A4: NGINX_TLS_CERT_PATH default not found in deploy script"
+  fi
+
+  # A5: Cert pre-flight guard must be present (CN=vault rejection + CN/SAN match)
+  if grep -q "NGINX_SKIP_CERT_GUARD\|CN\\\\s\\*=\\\\s\\*vault" "$DEPLOY_SCRIPT"; then
+    pass "A5: Cert pre-flight guard present (rejects CN=vault, verifies CN/SAN)"
+  else
+    fail "A5: Cert pre-flight guard missing — deploy may silently serve wrong cert"
+  fi
 else
   warn "A0: Deploy script not found at $DEPLOY_SCRIPT"
+fi
+
+# A6: Runtime cert served on nginx matches server_name (requires running container)
+# Fail-closed if container running; skip if not (deploy-time static checks A4/A5 cover defaults)
+if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^platform-web-nginx$"; then
+  # Prefer host openssl; skip gracefully if missing
+  if command -v openssl >/dev/null 2>&1; then
+    cert_sub=$(echo | openssl s_client -servername ai.acik.com -connect localhost:443 2>/dev/null \
+               | openssl x509 -noout -subject 2>/dev/null || true)
+    if echo "$cert_sub" | grep -qE 'CN\s*=\s*vault'; then
+      fail "A6: Nginx (running) serves Vault's CN=vault self-signed cert — 2026-04-14 regression active"
+    elif echo "$cert_sub" | grep -qE 'CN\s*=\s*\*?\.?(acik\.com|ai\.acik\.com)'; then
+      pass "A6: Nginx (running) serves a cert covering ai.acik.com"
+    else
+      warn "A6: Nginx cert subject unrecognized: $cert_sub"
+    fi
+  else
+    warn "A6: openssl not available on host — runtime cert check skipped"
+  fi
 fi
 
 # ── B: DOCKER COMPOSE CONSISTENCY ────────────────────────────────────
