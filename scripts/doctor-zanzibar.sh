@@ -390,6 +390,39 @@ if [ -f "$JWT_PROVIDER" ]; then
   fi
 fi
 
+# ── A20. Permission-service "REMOVED" stale language drift guard ─────
+# Non-legacy docs'ta agent'i yaniltabilecek eski "permission-service REMOVED" dili.
+# D-003 TRANSFORMED (2026-04-11) sonrasi bu dil aspirasyonel kabul edildi.
+# Agent ajanlar eski dili okuyup permission-service'i silerse Zanzibar bozulur (C-005).
+# Muafiyet anahtarlari: OUTDATED, aspirasyon, TRANSFORMED, "Original D-003",
+# "was changed", "REMOVED" tut/label (acıklayıcı baglam).
+header "A20. 'permission-service REMOVED' stale language drift guard (non-legacy docs)"
+DOCS_ROOT="$BACKEND_DIR/.."
+SCAN_PATHS=(
+  "$DOCS_ROOT/docs/02-architecture"
+  "$DOCS_ROOT/docs/04-operations"
+  "$DOCS_ROOT/docs/03-delivery"
+  "$DOCS_ROOT/.claude/rules"
+)
+STALE_FILES=()
+for scan_path in "${SCAN_PATHS[@]}"; do
+  [ -d "$scan_path" ] || continue
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    # Dosya aciklayici baglam iceriyorsa muaf
+    if ! grep -qE 'OUTDATED|aspirasyon|TRANSFORMED|Original D-003|was changed|REMOVED.{0,15}(tut|label|etiketin|claim|language)|kaldırılamaz|kaldırılmamış' "$f" 2>/dev/null; then
+      STALE_FILES+=("${f#$DOCS_ROOT/}")
+    fi
+  done < <(grep -rlE 'permission-service[^"]{0,60}REMOVED' "$scan_path" 2>/dev/null)
+done
+if [ ${#STALE_FILES[@]} -eq 0 ]; then
+  pass "A20: non-legacy docs'ta 'permission-service REMOVED' stale dili yok"
+else
+  for sf in "${STALE_FILES[@]}"; do
+    fail "A20: $sf — 'permission-service REMOVED' stale dili (D-003 ihlali riski)"
+  done
+fi
+
 # ═══════════════════════════════════════════════════════════════════
 # SECTION B: RUNTIME CHECKS (Docker required)
 # ═══════════════════════════════════════════════════════════════════

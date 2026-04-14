@@ -308,7 +308,11 @@ services:
     networks:
       - microservice-network
     volumes:
-      - ./.vault-dev:/vault-dev:ro
+      # VAULT_DEV_PATH override: staging/prod'da permanent state path kullanilir
+      # (self-hosted runner workdir ephemeral — bind mount stale olur).
+      # Local dev: default "./.vault-dev" (dev_init.sh ile uyumlu).
+      # Staging: env'de VAULT_DEV_PATH=/home/halil/platform/state/vault-dev set edilmeli.
+      - ${VAULT_DEV_PATH:-./.vault-dev}:/vault-dev:ro
       - ./devops/vault:/vault/config:ro
     environment:
       VAULT_ADDR: http://vault:8200
@@ -353,7 +357,10 @@ services:
       - microservice-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8795/health"]
+      # IPv4 explicit: /etc/hosts'ta "::1 localhost" once geldiginde wget IPv6'ya
+      # baglanir; app 0.0.0.0 (IPv4 only) dinledigi icin "connection refused" alinir
+      # ve healthcheck false-positive fail olur. 127.0.0.1 ile bu belirsizlik biter.
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8795/health"]
       interval: 15s
       timeout: 5s
       retries: 5
