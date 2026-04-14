@@ -11,6 +11,8 @@ import dev.openfga.sdk.api.client.model.ClientBatchCheckResponse;
 import dev.openfga.sdk.api.client.model.ClientBatchCheckSingleResponse;
 import dev.openfga.sdk.api.client.model.ClientTupleKey;
 import dev.openfga.sdk.api.client.model.ClientTupleKeyWithoutCondition;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +41,16 @@ public class OpenFgaAuthzService {
     // C1: Circuit breaker — prevents cascade when OpenFGA is down
     private final OpenFgaCircuitBreaker circuitBreaker;
 
+    // B3 (Rev 19): Authz decision counters — deny rate metric
+    private final Counter allowCounter;
+    private final Counter denyCounter;
+
     public OpenFgaAuthzService(OpenFgaClient client, OpenFgaProperties properties) {
+        this(client, properties, null);
+    }
+
+    public OpenFgaAuthzService(OpenFgaClient client, OpenFgaProperties properties,
+                               MeterRegistry meterRegistry) {
         this.client = client;
         this.properties = properties;
         this.enabled = properties.isEnabled() && client != null;
@@ -49,7 +60,28 @@ public class OpenFgaAuthzService {
                 .expireAfterWrite(java.time.Duration.ofSeconds(cacheTtlSeconds))
                 .maximumSize(1000)
                 .build();
-        this.circuitBreaker = new OpenFgaCircuitBreaker(); // 5 failures → 30s open
+        this.circuitBreaker = new OpenFgaCircuitBreaker(); // 5 failures -> 30s open
+
+        // B3 (Rev 19): Decision counters for deny rate metric
+        if (meterRegistry != null) {
+            this.allowCounter = Counter.builder("authz_decisions_total")
+                    .tag("allowed", "true")
+                    .description("Total authz decisions (allowed)")
+                    .register(meterRegistry);
+            this.denyCounter = Counter.builder("authz_decisions_total")
+                    .tag("allowed", "false")
+                    .description("Total authz decisions (denied)")
+                    .register(meterRegistry);
+            // B4 (Rev 19): Circuit breaker state gauge
+            io.micrometer.core.instrument.Gauge.builder("openfga_circuit_breaker_state",
+                    circuitBreaker, cb -> cb.getState().ordinal())
+                    .description("OpenFGA circuit breaker state: 0=CLOSED, 1=OPEN, 2=HALF_OPEN")
+                    .register(meterRegistry);
+        } else {
+            this.allowCounter = null;
+            this.denyCounter = null;
+        }
+
         if (!enabled) {
             log.warn("OpenFGA is DISABLED — all checks return true, scopes from dev config");
         }
@@ -77,6 +109,7 @@ public class OpenFgaAuthzService {
         }
         // C1: Circuit breaker guard — short-circuit when OpenFGA is down
         if (!circuitBreaker.allowRequest()) {
+            if (denyCounter != null) denyCounter.increment();
             log.warn("OpenFGA circuit OPEN — denying access: user:{} {} {}:{}",
                     userId, relation, objectType, objectId);
             return false;
@@ -92,11 +125,16 @@ public class OpenFgaAuthzService {
             checkCache.put(cacheKey, allowed);
             circuitBreaker.recordSuccess();
 
-            log.debug("OpenFGA check: user:{} {} {}:{} → {}",
+            // B3 (Rev 19): Increment decision counter
+            if (allowed && allowCounter != null) allowCounter.increment();
+            if (!allowed && denyCounter != null) denyCounter.increment();
+
+            log.debug("OpenFGA check: user:{} {} {}:{} -> {}",
                     userId, relation, objectType, objectId, allowed);
             return allowed;
         } catch (Exception e) {
             circuitBreaker.recordFailure();
+            if (denyCounter != null) denyCounter.increment();
             log.error("OpenFGA check failed, denying access: user:{} {} {}:{}",
                     userId, relation, objectType, objectId, e);
             return false;

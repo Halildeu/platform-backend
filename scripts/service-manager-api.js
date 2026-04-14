@@ -70,7 +70,8 @@ const SERVICES = [
   { name: 'vault-unseal', container: null /* auto: vault-unseal-1 */, port: null, healthPath: null, category: 'auth' },
   // Business
   { name: 'user-service', container: null /* auto: user-service-1 */, port: 8089, healthPath: '/actuator/health', category: 'business' },
-  { name: 'permission-service', container: null /* auto: permission-service-1 */, port: 8090, healthPath: '/actuator/health', category: 'auth', deprecated: true },
+  // permission-service: OpenFGA Hub (D-003/D-008 FINAL, 2026-04-14) — TupleSyncService, AuthzVersionService, /authz/me. Port 8090 ACTIVE. NEVER mark as deprecated.
+  { name: 'permission-service', container: null /* auto: permission-service-1 */, port: 8090, healthPath: '/actuator/health', category: 'auth' },
   // OpenFGA (Zanzibar authorization engine)
   { name: 'openfga', container: null /* auto: openfga-1 */, port: 4000, healthPath: '/healthz', category: 'auth' },
   // openfga-migrate: one-time migration, exits after completion — not monitored

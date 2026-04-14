@@ -153,4 +153,92 @@ class AuthorizationControllerV1Test {
         assertTrue(body.getAllowedModules().contains("AUDIT"));
         assertTrue(body.getAllowedModules().contains("REPORT"));
     }
+// ---- B1 (Rev 19): Tests for new /check, /batch-check endpoints ----
+
+    @org.junit.jupiter.api.Nested
+    @org.junit.jupiter.api.DisplayName("B1: /authz/check endpoint")
+    class CheckEndpoint {
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("check returns 200 with allowed=true when OpenFGA allows")
+        void check_returnsAllowed() {
+            var request = new AuthorizationControllerV1.AuthzCheckRequest("can_view", "report", "HR_REPORTS");
+            when(authzService.checkWithReason("0", "can_view", "report", "HR_REPORTS"))
+                    .thenReturn(new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(true, "ALLOWED"));
+
+            ResponseEntity<Map<String, Object>> response = controller.check(request);
+
+            assertEquals(200, response.getStatusCode().value());
+            Map<String, Object> body = response.getBody();
+            assertNotNull(body);
+            assertEquals(true, body.get("allowed"));
+            assertEquals("ALLOWED", body.get("reason"));
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("check returns 200 with allowed=false when OpenFGA denies (no 403)")
+        void check_returnsDenied() {
+            var request = new AuthorizationControllerV1.AuthzCheckRequest("can_view", "report", "SECRET_REPORT");
+            when(authzService.checkWithReason("0", "can_view", "report", "SECRET_REPORT"))
+                    .thenReturn(new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(false, "blocked"));
+
+            ResponseEntity<Map<String, Object>> response = controller.check(request);
+
+            // B3 semantics: deny is in payload, NOT in HTTP status
+            assertEquals(200, response.getStatusCode().value());
+            Map<String, Object> body = response.getBody();
+            assertNotNull(body);
+            assertEquals(false, body.get("allowed"));
+            assertEquals("blocked", body.get("reason"));
+        }
+    }
+
+    @org.junit.jupiter.api.Nested
+    @org.junit.jupiter.api.DisplayName("B1: /authz/batch-check endpoint")
+    class BatchCheckEndpoint {
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("batch-check returns 400 when checks array is empty")
+        void batchCheck_emptyReturns400() {
+            var request = new AuthorizationControllerV1.BatchCheckRequest(List.of());
+
+            ResponseEntity<?> response = controller.batchCheck(request);
+
+            assertEquals(400, response.getStatusCode().value());
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("batch-check returns 400 when >20 checks")
+        void batchCheck_tooManyReturns400() {
+            var checks = new java.util.ArrayList<AuthorizationControllerV1.AuthzCheckRequest>();
+            for (int i = 0; i < 21; i++) {
+                checks.add(new AuthorizationControllerV1.AuthzCheckRequest("can_view", "report", "R" + i));
+            }
+            var request = new AuthorizationControllerV1.BatchCheckRequest(checks);
+
+            ResponseEntity<?> response = controller.batchCheck(request);
+
+            assertEquals(400, response.getStatusCode().value());
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("batch-check returns 200 with mixed results")
+        void batchCheck_mixedResults() {
+            var checks = List.of(
+                    new AuthorizationControllerV1.AuthzCheckRequest("can_view", "report", "R1"),
+                    new AuthorizationControllerV1.AuthzCheckRequest("can_view", "report", "R2")
+            );
+            var request = new AuthorizationControllerV1.BatchCheckRequest(checks);
+
+            when(authzService.batchCheck(org.mockito.ArgumentMatchers.eq("0"), org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of(
+                            new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(true, "ALLOWED"),
+                            new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(false, "blocked")
+                    ));
+
+            ResponseEntity<?> response = controller.batchCheck(request);
+
+            assertEquals(200, response.getStatusCode().value());
+        }
+    }
 }

@@ -143,6 +143,8 @@ services:
       ERP_OPENFGA_API_URL: ${ERP_OPENFGA_API_URL:-http://openfga:8080}
       ERP_OPENFGA_STORE_ID: ${ERP_OPENFGA_STORE_ID:-}
       ERP_OPENFGA_MODEL_ID: ${ERP_OPENFGA_MODEL_ID:-}
+      # B5 (Rev 19): AuthzVersion polling needs permission-service base URL
+      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
       # Opsiyonel diğer ayarlar
       VARIANT_DB_URL: ${VARIANT_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
       VARIANT_DB_USERNAME: ${VARIANT_DB_USERNAME:-postgres}
@@ -182,6 +184,8 @@ services:
       - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-true}
       - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:8080}
       - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
+      # B5 (Rev 19): AuthzVersion polling needs permission-service base URL
+      - PERMISSION_SERVICE_BASE_URL=${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
       - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
     depends_on:
       discovery-server:
@@ -431,6 +435,8 @@ services:
       - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-true}
       - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:8080}
       - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
+      # B5 (Rev 19): AuthzVersion polling needs permission-service base URL
+      - PERMISSION_SERVICE_BASE_URL=${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
       - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
       - PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE=${PERMISSION_BOOTSTRAP_DEFAULT_ADMIN_ASSIGNMENTS_USER_TABLE:-user_service.users}
       - PERMISSION_AUTHZ_USER_TABLE=${PERMISSION_AUTHZ_USER_TABLE:-user_service.users}

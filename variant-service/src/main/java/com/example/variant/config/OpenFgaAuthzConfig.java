@@ -2,6 +2,8 @@ package com.example.variant.config;
 
 import com.example.commonauth.AuthenticatedUserLookupService;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import com.example.commonauth.openfga.OpenFgaConfig;
 import com.example.commonauth.openfga.OpenFgaProperties;
 import com.example.commonauth.scope.RemoteAuthzVersionProvider;
@@ -25,8 +27,10 @@ public class OpenFgaAuthzConfig {
     }
 
     @Bean
-    public OpenFgaAuthzService openFgaAuthzService(OpenFgaProperties props) {
-        return OpenFgaConfig.createAuthzService(props);
+    public OpenFgaAuthzService openFgaAuthzService(OpenFgaProperties props,
+                                                        ObjectProvider<MeterRegistry> meterRegistryProvider) {
+        // B3/B4 (Rev 19): MeterRegistry optional — null safe when actuator absent (test context)
+        return OpenFgaConfig.createAuthzService(props, meterRegistryProvider.getIfAvailable());
     }
 
     @Bean

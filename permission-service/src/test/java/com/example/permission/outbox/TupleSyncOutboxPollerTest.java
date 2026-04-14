@@ -1,6 +1,8 @@
 package com.example.permission.outbox;
 
 import com.example.permission.service.TupleSyncService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -29,8 +31,21 @@ class TupleSyncOutboxPollerTest {
     @Mock
     TupleSyncService tupleSyncService;
 
-    @InjectMocks
     TupleSyncOutboxPoller poller;
+
+    @BeforeEach
+    void setUp() {
+        // B4 (Rev 19): SimpleMeterRegistry wrapped in ObjectProvider for null-safe counter
+        io.micrometer.core.instrument.MeterRegistry registry = new SimpleMeterRegistry();
+        org.springframework.beans.factory.ObjectProvider<io.micrometer.core.instrument.MeterRegistry> provider =
+                new org.springframework.beans.factory.ObjectProvider<>() {
+                    @Override public io.micrometer.core.instrument.MeterRegistry getObject() { return registry; }
+                    @Override public io.micrometer.core.instrument.MeterRegistry getObject(Object... args) { return registry; }
+                    @Override public io.micrometer.core.instrument.MeterRegistry getIfAvailable() { return registry; }
+                    @Override public io.micrometer.core.instrument.MeterRegistry getIfUnique() { return registry; }
+                };
+        poller = new TupleSyncOutboxPoller(outboxRepository, tupleSyncService, provider);
+    }
 
     private TupleSyncOutboxEntry createEntry(Long roleId) {
         return new TupleSyncOutboxEntry(roleId);

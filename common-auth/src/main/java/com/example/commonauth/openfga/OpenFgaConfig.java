@@ -1,6 +1,7 @@
 package com.example.commonauth.openfga;
 
 import dev.openfga.sdk.api.client.OpenFgaClient;
+import io.micrometer.core.instrument.MeterRegistry;
 import dev.openfga.sdk.api.configuration.ClientConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,5 +72,14 @@ public final class OpenFgaConfig {
     public static OpenFgaAuthzService createAuthzService(OpenFgaProperties properties) {
         OpenFgaClient client = createClient(properties);
         return new OpenFgaAuthzService(client, properties);
+    }
+
+    /**
+     * B3/B4 (Rev 19): Create authz service with Micrometer metrics support.
+     */
+    public static OpenFgaAuthzService createAuthzService(OpenFgaProperties properties,
+                                                          MeterRegistry meterRegistry) {
+        OpenFgaClient client = createClient(properties);
+        return new OpenFgaAuthzService(client, properties, meterRegistry);
     }
 }

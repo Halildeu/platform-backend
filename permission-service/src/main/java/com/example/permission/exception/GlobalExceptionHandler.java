@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindingResult;
@@ -57,8 +58,16 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
+    public ResponseEntity<ErrorResponse> handleGeneric(Exception ex, HttpServletRequest request) {
         log.error("Unhandled exception", ex);
+        // B2 (Rev 19): /authz/me errors must return 503 (not 200+empty body, not 500).
+        // Variant-service caches empty AuthzMeResponse for 5 minutes -> sticky 403.
+        // 503 signals degraded state; clients should retry instead of caching empty data.
+        String path = request != null ? request.getRequestURI() : "";
+        if (path.endsWith("/api/v1/authz/me") || path.endsWith("/v1/authz/me")) {
+            log.warn("B2: /authz/me hata; 503 dönülüyor (path={})", path);
+            return build(HttpStatus.SERVICE_UNAVAILABLE, "AUTHZ_DEGRADED", "Yetki servisi geçici olarak kullanılamıyor.");
+        }
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Beklenmeyen bir hata oluştu.");
     }
 

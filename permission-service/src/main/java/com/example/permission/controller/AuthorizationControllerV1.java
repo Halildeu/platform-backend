@@ -93,6 +93,16 @@ public class AuthorizationControllerV1 {
     @GetMapping("/me")
     @Transactional(readOnly = true)
     public ResponseEntity<AuthzMeResponseDto> getMe(@AuthenticationPrincipal Jwt jwt) {
+        try {
+            return doGetMe(jwt);
+        } catch (RuntimeException ex) {
+            // B2 (Rev 19): All-paths 503 — covers dev branch + JWT branch
+            log.error("Authz /me beklenmeyen hata; 503 dönülüyor (B2: JWT fallback kaldırıldı). cause={}", ex.getMessage(), ex);
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(null);
+        }
+    }
+
+    private ResponseEntity<AuthzMeResponseDto> doGetMe(Jwt jwt) {
         if (jwt == null) {
             // D-103: Local/dev profile fallback — return superAdmin response
             // when JWT is not available (SecurityConfigLocal permitAll mode)
@@ -113,10 +123,9 @@ public class AuthorizationControllerV1 {
             devDto.setAuthzVersion(authzVersionService != null ? authzVersionService.getCurrentVersion() : 0L);
             return ResponseEntity.ok(devDto);
         }
-        try {
-            AuthzMeResponseDto dto = new AuthzMeResponseDto();
-            var resolvedUser = resolveAuthenticatedUser(jwt);
-            dto.setUserId(resolvedUser.responseUserId());
+        AuthzMeResponseDto dto = new AuthzMeResponseDto();
+        var resolvedUser = resolveAuthenticatedUser(jwt);
+        dto.setUserId(resolvedUser.responseUserId());
 
             Long numericUserId = resolvedUser.numericUserId();
 
@@ -146,11 +155,89 @@ public class AuthorizationControllerV1 {
 
             applyFrontendCompatibilityFallback(dto, jwt);
             dto.setAuthzVersion(authzVersionService.getCurrentVersion());
-            return ResponseEntity.ok(dto);
-        } catch (RuntimeException ex) {
-            log.error("Authz /me beklenmeyen hata ile sonuçlandı; JWT fallback response döndürülecek. cause={}", ex.getMessage(), ex);
-            return ResponseEntity.ok(buildJwtFallbackResponse(jwt));
+        return ResponseEntity.ok(dto);
+    }
+
+    // ---- Object-level authorization checks (B1: moved from core-data-service) ----
+
+    public record AuthzCheckRequest(String relation, String objectType, String objectId) {}
+
+    /**
+     * Single object-level authorization check via OpenFGA.
+     * Returns 200 with {allowed, reason} — never 403 for deny (deny is in payload).
+     */
+    @PostMapping("/check")
+    public ResponseEntity<Map<String, Object>> check(@RequestBody AuthzCheckRequest request) {
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        String userId = scope != null ? scope.userId() : "0";
+
+        var result = authzService.checkWithReason(
+                userId,
+                request.relation(),
+                request.objectType(),
+                request.objectId()
+        );
+
+        return ResponseEntity.ok(Map.of(
+                "allowed", result.allowed(),
+                "reason", result.reason()
+        ));
+    }
+
+    /**
+     * Batch object-level authorization check — multiple checks in a single request.
+     * Max 20 checks per call.
+     */
+    public record BatchCheckRequest(java.util.List<AuthzCheckRequest> checks) {}
+    public record BatchCheckItem(boolean allowed, String reason,
+                                 String relation, String objectType, String objectId) {}
+
+    @PostMapping("/batch-check")
+    public ResponseEntity<?> batchCheck(@RequestBody BatchCheckRequest request) {
+        if (request.checks() == null || request.checks().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "checks array is required"));
         }
+        if (request.checks().size() > 20) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Max 20 checks per batch request"));
+        }
+
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        String userId = scope != null ? scope.userId() : "0";
+
+        var batchRequests = request.checks().stream()
+                .map(c -> new OpenFgaAuthzService.BatchCheckRequest(
+                        c.relation(), c.objectType(), c.objectId()))
+                .toList();
+
+        var checkResults = authzService.batchCheck(userId, batchRequests);
+
+        List<BatchCheckItem> results = new java.util.ArrayList<>();
+        for (int i = 0; i < request.checks().size(); i++) {
+            var c = request.checks().get(i);
+            var r = checkResults.get(i);
+            results.add(new BatchCheckItem(r.allowed(), r.reason(),
+                    c.relation(), c.objectType(), c.objectId()));
+        }
+
+        return ResponseEntity.ok(Map.of("results", results));
+    }
+
+    /**
+     * Object-level explain — exposes OpenFGA expand for "Why can't I access?" feature.
+     */
+    @PostMapping("/object-explain")
+    public ResponseEntity<Map<String, Object>> objectExplain(@RequestBody AuthzCheckRequest request) {
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        String userId = scope != null ? scope.userId() : "0";
+
+        Map<String, Object> result = authzService.explainAccess(
+                userId,
+                request.relation(),
+                request.objectType(),
+                request.objectId()
+        );
+
+        return ResponseEntity.ok(result);
     }
 
     /**

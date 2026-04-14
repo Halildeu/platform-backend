@@ -12,9 +12,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Explain endpoint — exposes OpenFGA check + expand for the "Why can't I access?" feature.
- * Lives in core-data-service because it has OpenFgaAuthzService injected.
+ * @deprecated B1 (Rev 19): /check, /batch-check, /object-explain moved to permission-service
+ * AuthorizationControllerV1. This controller will be removed in Dalga 3 (legacy cleanup).
+ * Keep temporarily for backward compatibility until gateway/Vite routes are verified.
  */
+@Deprecated(since = "rev19-B1")
 @RestController
 @RequestMapping("/api/v1/authz")
 public class AuthzExplainController {

@@ -22,7 +22,7 @@
   },
   "prometheus_queries": {
     "authz_check_p95_ms": "histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{uri=~'/v1/authz/check|/api/v1/authz/check|/v1/authz/batch-check'}[5m])) * 1000",
-    "authz_deny_rate_pct": "sum(rate(http_server_requests_seconds_count{uri=~'/v1/authz/check|/api/v1/authz/check',status='403'}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{uri=~'/v1/authz/check|/api/v1/authz/check'}[5m])), 0.001) * 100",
+    "authz_deny_rate_pct": "sum(rate(authz_decisions_total{allowed="false"}[5m])) / clamp_min(sum(rate(authz_decisions_total[5m])), 0.001) * 100",
     "authz_cache_miss_rate_pct": "authz_cache_miss_count{cache='scope_context'} / clamp_min(authz_cache_hit_count{cache='scope_context'} + authz_cache_miss_count{cache='scope_context'}, 1) * 100",
     "authz_error_rate_pct": "sum(rate(http_server_requests_seconds_count{uri=~'/v1/authz/.*',status=~'5..'}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{uri=~'/v1/authz/.*'}[5m])), 0.001) * 100"
   }

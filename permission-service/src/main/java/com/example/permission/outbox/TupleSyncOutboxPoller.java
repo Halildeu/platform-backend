@@ -1,6 +1,8 @@
 package com.example.permission.outbox;
 
 import com.example.permission.service.TupleSyncService;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -24,11 +26,20 @@ public class TupleSyncOutboxPoller {
 
     private final TupleSyncOutboxRepository outboxRepository;
     private final TupleSyncService tupleSyncService;
+    private final Counter failedCounter;
 
     public TupleSyncOutboxPoller(TupleSyncOutboxRepository outboxRepository,
-                                  TupleSyncService tupleSyncService) {
+                                  TupleSyncService tupleSyncService,
+                                  org.springframework.beans.factory.ObjectProvider<MeterRegistry> meterRegistryProvider) {
         this.outboxRepository = outboxRepository;
         this.tupleSyncService = tupleSyncService;
+        // B4 (Rev 19): Outbox failed entry counter (null-safe when MeterRegistry absent, e.g. test)
+        MeterRegistry meterRegistry = meterRegistryProvider.getIfAvailable();
+        this.failedCounter = meterRegistry != null
+                ? Counter.builder("tuple_sync_outbox_failed_total")
+                        .description("Total outbox entries that exhausted max retries")
+                        .register(meterRegistry)
+                : null;
     }
 
     private static final int BATCH_SIZE = 50;
@@ -54,6 +65,10 @@ public class TupleSyncOutboxPoller {
                         entry.getId(), entry.getRoleId(), entry.getAttempts());
             } catch (Exception e) {
                 entry.markFailed(e.getMessage());
+                // B4 (Rev 19): Increment counter when entry exhausts retries
+                if (entry.getAttempts() >= entry.getMaxAttempts() && failedCounter != null) {
+                    failedCounter.increment();
+                }
                 log.warn("Outbox entry {} (role {}) failed attempt {}/{}: {}",
                         entry.getId(), entry.getRoleId(), entry.getAttempts(),
                         entry.getMaxAttempts(), e.getMessage());

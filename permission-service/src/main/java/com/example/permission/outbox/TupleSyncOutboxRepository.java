@@ -21,7 +21,7 @@ public interface TupleSyncOutboxRepository extends JpaRepository<TupleSyncOutbox
      * Ensures safe concurrent polling in multi-instance deployments:
      * each instance claims a distinct batch of rows.
      */
-    @Query(value = "SELECT * FROM tuple_sync_outbox "
+    @Query(value = "SELECT * FROM {h-schema}tuple_sync_outbox "
             + "WHERE status = 'PENDING' "
             + "ORDER BY created_at ASC "
             + "LIMIT :limit "
