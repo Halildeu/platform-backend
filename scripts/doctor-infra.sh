@@ -452,6 +452,111 @@ else
   pass "I5: No prod compose override in .env"
 fi
 
+# ============================================================================
+# Section K: Compose Volume SSOT (staging ↔ prod must define the same volumes
+# with the same Docker-level names). Drift causes fresh-volume incidents when
+# deploy-backend.sh switches between compose files (2026-04-14 root cause).
+#
+# K1: backend & prod compose top-level volume keys are identical
+# K2: each volume has an explicit `name: platform_*` override (Docker-level
+#     pin; immune to compose project name changes or file-origin drift)
+# K3: no stale volume declarations (declared but no service mounts it)
+# K4: no dash/underscore naming drift (vault-data vs vault_data etc.)
+# ============================================================================
+STAGING_COMPOSE="${ROOT_DIR}/docker-compose.yml"
+PROD_COMPOSE="${ROOT_DIR}/../deploy/docker-compose.prod.yml"
+
+# Extract top-level volume keys (first-level under "volumes:" block).
+extract_volume_keys() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  awk '
+    /^volumes:/ { in_vol=1; next }
+    in_vol && /^[a-z]/ { in_vol=0 }
+    in_vol && /^  [a-z_][a-z0-9_-]*:$/ {
+      gsub(/[: ]/, "", $0); print
+    }
+  ' "$file" | sort -u
+}
+
+# Extract explicit `name:` overrides under each volume key.
+extract_volume_names() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  awk '
+    /^volumes:/ { in_vol=1; next }
+    in_vol && /^[a-z]/ { in_vol=0 }
+    in_vol && /^    name:/ {
+      gsub(/^.*name:[ ]*/, "", $0); print
+    }
+  ' "$file" | sort -u
+}
+
+if [ -f "$STAGING_COMPOSE" ] && [ -f "$PROD_COMPOSE" ]; then
+  STAGING_KEYS="$(extract_volume_keys "$STAGING_COMPOSE")"
+  PROD_KEYS="$(extract_volume_keys "$PROD_COMPOSE")"
+  STAGING_NAMES="$(extract_volume_names "$STAGING_COMPOSE")"
+  PROD_NAMES="$(extract_volume_names "$PROD_COMPOSE")"
+
+  # K1: identical top-level keys
+  if [ "$STAGING_KEYS" = "$PROD_KEYS" ]; then
+    pass "K1: Compose volume keys identical across staging↔prod"
+  else
+    fail "K1: Compose volume key drift (staging↔prod mismatch — see 'diff <(keys staging) <(keys prod)')"
+  fi
+
+  # K2: every key has explicit name: override
+  K2_MISSING=""
+  for keys_file in "$STAGING_COMPOSE" "$PROD_COMPOSE"; do
+    k_count=$(extract_volume_keys "$keys_file" | wc -l | tr -d ' ')
+    n_count=$(extract_volume_names "$keys_file" | wc -l | tr -d ' ')
+    if [ "$k_count" != "$n_count" ]; then
+      K2_MISSING="$K2_MISSING ${keys_file##*/}($k_count keys vs $n_count names)"
+    fi
+  done
+  if [ -z "$K2_MISSING" ]; then
+    pass "K2: Every volume has explicit name: override (Docker-level pin)"
+  else
+    fail "K2: Volumes missing explicit name: override —$K2_MISSING"
+  fi
+
+  # K3: no stale declarations — every declared volume is mounted by some service
+  K3_STALE=""
+  for key in $STAGING_KEYS; do
+    if ! grep -qE "^\s+- ${key}:/" "$STAGING_COMPOSE"; then
+      # Also check vault_logs/vault_snapshots which are optional on staging
+      if [ "$key" != "vault_logs" ] && [ "$key" != "vault_snapshots" ]; then
+        K3_STALE="$K3_STALE staging:$key"
+      fi
+    fi
+  done
+  for key in $PROD_KEYS; do
+    if ! grep -qE "^\s+- ${key}:/" "$PROD_COMPOSE"; then
+      K3_STALE="$K3_STALE prod:$key"
+    fi
+  done
+  if [ -z "$K3_STALE" ]; then
+    pass "K3: No stale volume declarations"
+  else
+    fail "K3: Stale volume declarations (no service mounts them):$K3_STALE"
+  fi
+
+  # K4: no dash-vs-underscore drift in volume keys
+  K4_DRIFT=""
+  for file in "$STAGING_COMPOSE" "$PROD_COMPOSE"; do
+    if extract_volume_keys "$file" | grep -q '-'; then
+      K4_DRIFT="$K4_DRIFT ${file##*/}"
+    fi
+  done
+  if [ -z "$K4_DRIFT" ]; then
+    pass "K4: No dash-in-key naming drift (underscore-only)"
+  else
+    fail "K4: Dash in volume key (use underscore):$K4_DRIFT"
+  fi
+else
+  warn "K: Compose file(s) missing — SSOT check skipped"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"

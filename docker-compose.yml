@@ -289,7 +289,7 @@ services:
     networks:
       - microservice-network
     volumes:
-      - vault-data:/vault/file
+      - vault_data:/vault/file
       - ./devops/vault:/vault/config:ro
     healthcheck:
       # vault status: exit 0=unsealed+healthy, exit 1=error, exit 2=sealed
@@ -547,7 +547,7 @@ services:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
-      - loki-data:/loki
+      - loki_data:/loki
     networks:
       - observability-network
     healthcheck:
@@ -577,7 +577,7 @@ services:
     command: ["-config.file=/etc/tempo/config.yml"]
     volumes:
       - ./infra/tempo/config.yml:/etc/tempo/config.yml:ro
-      - tempo-data:/var/tempo
+      - tempo_data:/var/tempo
     networks:
       - observability-network
     healthcheck:
@@ -631,11 +631,24 @@ services:
       start_period: 15s
 
 volumes:
+  # SSOT canonical volume definitions (must match deploy/docker-compose.prod.yml).
+  # 2026-04-14: staging↔prod volume name drift (vault-data vs vault_data, etc.)
+  # caused repeated fresh-volume incidents when deploy-backend.sh switched
+  # between composes. Explicit `name:` pins Docker-level volume name regardless
+  # of compose project name or file origin. See doctor-infra.sh Section K and
+  # RB-compose-volume-ssot.md for drift guard + migration.
   postgres_data:
-  backend_keycloak_data:
-  vault-data:
-  loki-data:
-  tempo-data:
+    name: platform_postgres_data
+  vault_data:
+    name: platform_vault_data
+  vault_logs:
+    name: platform_vault_logs
+  vault_snapshots:
+    name: platform_vault_snapshots
+  loki_data:
+    name: platform_loki_data
+  tempo_data:
+    name: platform_tempo_data
 
 networks:
   microservice-network:
