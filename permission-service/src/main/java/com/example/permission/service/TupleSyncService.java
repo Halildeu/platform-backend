@@ -71,11 +71,11 @@ public class TupleSyncService {
             try {
                 authzService.writeTuple(userId, mapping.relation(), mapping.objectType(), key);
 
-                // If DENY, also write the blocked relation
-                if (grant.grantType() == GrantType.DENY) {
-                    String blockedObjectType = type.name().toLowerCase();
-                    authzService.writeTuple(userId, "blocked", blockedObjectType, key);
-                }
+                // CNS-20260415-004 Codex bulgu #3: Eskiden DENY icin ikinci "blocked"
+                // tuple yazilirdi. Ancak toTupleMapping(DENY) zaten "blocked" relation
+                // donduruyor (MODULE → "blocked"/"module"; ACTION → "blocked"/"action";
+                // REPORT → "blocked"/"report"). Yukaridaki writeTuple cagrisi zaten
+                // blocked tuple'ini yaziyor → duplicate write. Kaldirildi.
             } catch (Exception e) {
                 anyWriteFailed = true;
                 log.warn("OpenFGA tuple write failed for user:{} {}:{} — {}", userId, mapping.relation(), key, e.getMessage());
@@ -227,13 +227,12 @@ public class TupleSyncService {
                 .flatMap(rp -> {
                     TupleMapping mapping = toTupleMapping(rp.getPermissionType(), rp.getGrantType());
                     if (mapping == null) return java.util.stream.Stream.empty();
-                    var items = new ArrayList<>(List.of(
+                    // CNS-20260415-004 Codex bulgu #3: DENY icin ikinci "blocked" tuple
+                    // delete'i duplicate. toTupleMapping(DENY) zaten "blocked"
+                    // relation donduruyor. Tek delete yeterli.
+                    return java.util.stream.Stream.of(
                             OpenFgaAuthzService.deleteTupleKey(userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey())
-                    ));
-                    if (rp.getGrantType() == GrantType.DENY) {
-                        items.add(OpenFgaAuthzService.deleteTupleKey(userId, "blocked", rp.getPermissionType().name().toLowerCase(), rp.getPermissionKey()));
-                    }
-                    return items.stream();
+                    );
                 })
                 .toList());
 
