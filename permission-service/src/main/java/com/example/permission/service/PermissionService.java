@@ -87,10 +87,23 @@ public class PermissionService {
         this.authzService = authzService;
     }
 
-    /** Sync role permissions to OpenFGA tuples for a user */
+    /**
+     * Sync role permissions to OpenFGA tuples for a user (LEGACY PATH).
+     *
+     * CNS-20260416-001 B3 fix: Granule-only roles (created via
+     * AccessControllerV1.updateRoleGranules) populate type/key/grant but leave
+     * the legacy {@code permission} relation NULL. This legacy sync path is
+     * kept for backward-compat with permission-registry roles; granule-aware
+     * sync is handled separately by
+     * {@link com.example.permission.service.TupleSyncService#syncFeatureTuplesForUser}.
+     * Without this null guard, assigning canary/granule-only roles triggers
+     * NPE at {@code rp.getPermission().getCode()}.
+     */
     private void syncTuplesToOpenFga(Long userId, Role role, boolean write) {
         if (role.getRolePermissions() == null) return;
         for (var rp : role.getRolePermissions()) {
+            // Granule-only rolePermission: permission entity null, tuple sync TupleSyncService tarafından yapılır
+            if (rp.getPermission() == null) continue;
             String code = rp.getPermission().getCode().toUpperCase(Locale.ROOT);
             String module = PERM_TO_MODULE.get(code);
             String relation = PERM_TO_RELATION.get(code);
@@ -125,8 +138,12 @@ public class PermissionService {
             mergeAssignments(assignments, globalAssignments);
         }
 
+        // CNS-20260416-001 B3 fix (parallel): legacy hasPermission() yolu için de
+        // null-safe. Granule-only roller permission entity null → eski permission-code
+        // check path'i skip (TupleSync OpenFGA tarafında bağımsız çalışır).
         return assignments.stream()
                 .flatMap(assignment -> assignment.getRole().getRolePermissions().stream())
+                .filter(rp -> rp.getPermission() != null)
                 .map(rolePermission -> rolePermission.getPermission().getCode().toUpperCase(Locale.ROOT))
                 .anyMatch(permissionCode -> permissionCode.equals(normalizedAction));
     }

@@ -51,7 +51,18 @@ const thresholds = {
   authzErrorRate: Number.parseFloat(resolveArg('--authz-error-rate', process.env.GUARDRAIL_AUTHZ_ERROR_RATE ?? '0.5')),
   authzCacheMiss: Number.parseFloat(resolveArg('--authz-cache-miss', process.env.GUARDRAIL_AUTHZ_CACHE_MISS ?? '50')),
   authzMinDecisions: Number.parseInt(resolveArg('--authz-min-decisions', process.env.GUARDRAIL_AUTHZ_MIN_DECISIONS ?? '1000'), 10),
+  // CNS-20260415-004: circuit breaker state (0=CLOSED, 1=OPEN, 2=HALF_OPEN)
+  // Kabul edilebilir max = 0 (CLOSED). OPEN veya HALF_OPEN rollback tetikler.
+  openFgaCbMax: Number.parseInt(resolveArg('--openfga-cb-max', process.env.GUARDRAIL_OPENFGA_CB_MAX ?? '0'), 10),
 };
+
+// CNS-20260415-004 Codex Q3: Cache miss rate threshold'u faz bazlı uygula.
+// - cold phase'de miss rate yüksek beklenir (cache soğuk) → soften/skip
+// - warm phase'de miss rate < 50% zorunlu (rollback eşiği)
+// Aynı check binary tarafından çağrıldığında --phase cold|warm ile geçilir.
+const phase = (resolveArg('--phase', process.env.GUARDRAIL_PHASE ?? '') || '').toLowerCase();
+const phaseIsCold = phase === 'cold';
+const phaseIsWarm = phase === 'warm';
 
 // CNS-20260415-003 Codex uzlasisi: Zanzibar canary modunda authz metric'leri
 // OPSIYONEL DEGIL, ZORUNLU. Mode --zanzibar-canary flag veya
@@ -135,7 +146,33 @@ const checkAuthzMetric = (key, threshold, unit, label) => {
 checkAuthzMetric('authz_check_p95_ms', thresholds.authzCheckP95, 'ms', 'AuthZ check p95');
 checkAuthzMetric('authz_deny_rate_pct', thresholds.authzDenyRate, '%', 'AuthZ deny oranı');
 checkAuthzMetric('authz_error_rate_pct', thresholds.authzErrorRate, '%', 'AuthZ error oranı');
-checkAuthzMetric('authz_cache_miss_rate_pct', thresholds.authzCacheMiss, '%', 'AuthZ cache miss oranı');
+
+// CNS-20260415-004 Codex Q3: cache miss rate cold phase'de soften
+// - cold (cache soğuk) → miss rate yüksek doğal, violation YOK
+// - warm (cache ısınmış) → threshold uygulanır
+// - phase belirtilmediyse → legacy behavior (threshold uygula)
+if (phaseIsCold) {
+  const cacheMiss = metrics.authz_cache_miss_rate_pct;
+  if (typeof cacheMiss === 'number') {
+    console.log(`ℹ️  [cold phase] authz_cache_miss_rate_pct=${cacheMiss}% — threshold atlandı (cache soğuk, beklenen)`);
+  }
+} else {
+  checkAuthzMetric('authz_cache_miss_rate_pct', thresholds.authzCacheMiss, '%', 'AuthZ cache miss oranı');
+}
+
+// CNS-20260415-004 Codex önerisi: OpenFGA circuit breaker state
+// - metrics.openfga_circuit_breaker_state (servisler arası max)
+// - 0 = CLOSED (sağlıklı), 1 = OPEN (rollback!), 2 = HALF_OPEN (recovery)
+// - authzRequired modda ZORUNLU, diğerinde optional
+const cbState = metrics.openfga_circuit_breaker_state;
+if (typeof cbState !== 'number') {
+  if (authzRequired) {
+    violations.push('[zanzibar-canary] openfga_circuit_breaker_state metric eksik — CB durumu tespit edilemiyor');
+  }
+} else if (cbState > thresholds.openFgaCbMax) {
+  const label = cbState === 1 ? 'OPEN' : cbState === 2 ? 'HALF_OPEN' : `UNKNOWN(${cbState})`;
+  violations.push(`OpenFGA circuit breaker state=${cbState} (${label}) > eşik ${thresholds.openFgaCbMax} (CLOSED). Rollback değerlendir.`);
+}
 
 // NO_SIGNAL tespit: canary mode'da authz_decisions_total minimum
 // threshold'un altında ise "synthetic yük yeterli değil" violation.
@@ -154,6 +191,7 @@ if (authzRequired) {
 
 const summary = [
   `Canary weight: ${weight}%`,
+  phase ? `Phase: ${phase}` : '',
   `TTFB p95: ${metrics.ttfb_p95_ms}ms (eşik ${thresholds.ttfb}ms)`,
   `Error rate: ${metrics.error_rate_pct}% (eşik ${thresholds.errorRate}%)`,
   `Sentry error: ${metrics.sentry_error_rate_pct}% (eşik ${thresholds.sentry}%)`,
@@ -161,7 +199,10 @@ const summary = [
   typeof metrics.authz_check_p95_ms === 'number' ? `AuthZ p95: ${metrics.authz_check_p95_ms}ms (eşik ${thresholds.authzCheckP95}ms)` : '',
   typeof metrics.authz_deny_rate_pct === 'number' ? `AuthZ deny: ${metrics.authz_deny_rate_pct}% (eşik ${thresholds.authzDenyRate}%)` : '',
   typeof metrics.authz_error_rate_pct === 'number' ? `AuthZ error: ${metrics.authz_error_rate_pct}% (eşik ${thresholds.authzErrorRate}%)` : '',
-  typeof metrics.authz_cache_miss_rate_pct === 'number' ? `AuthZ cache miss: ${metrics.authz_cache_miss_rate_pct}% (eşik ${thresholds.authzCacheMiss}%)` : '',
+  typeof metrics.authz_cache_miss_rate_pct === 'number'
+    ? `AuthZ cache miss: ${metrics.authz_cache_miss_rate_pct}%${phaseIsCold ? ' (cold: soften)' : phaseIsWarm ? ` (warm eşik ${thresholds.authzCacheMiss}%)` : ` (eşik ${thresholds.authzCacheMiss}%)`}`
+    : '',
+  typeof metrics.openfga_circuit_breaker_state === 'number' ? `OpenFGA CB: ${metrics.openfga_circuit_breaker_state} (0=CLOSED)` : '',
 ].filter(Boolean).join(' | ');
 
 if (violations.length > 0) {

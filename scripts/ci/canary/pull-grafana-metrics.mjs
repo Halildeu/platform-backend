@@ -169,6 +169,13 @@ const main = async () => {
   const authzErrorExpr = resolveArg('--authz-error-query', process.env.CANARY_AUTHZ_ERROR_QUERY);
   const authzCacheMissExpr = resolveArg('--authz-cache-miss-query', process.env.CANARY_AUTHZ_CACHE_MISS_QUERY);
 
+  // CNS-20260416-001 B4 fix: guardrail-check zanzibar-canary modda
+  // authz_decisions_total >= 1000 (NO_SIGNAL) ve openfga_circuit_breaker_state == 0 (CLOSED)
+  // metric'lerini ZORUNLU kılıyor. Bunları collector'da ek argüman/env ile toplanabilir yap.
+  // PR-2'de query_range + phase window eklenecek; PR-1'de instant scalar yeterli.
+  const authzDecisionsExpr = resolveArg('--authz-decisions-query', process.env.CANARY_AUTHZ_DECISIONS_QUERY);
+  const openFgaCbExpr = resolveArg('--openfga-cb-query', process.env.CANARY_OPENFGA_CB_QUERY);
+
   const authzBase = resolveArg('--authz-url', process.env.CANARY_AUTHZ_URL) ?? promBase;
   const authzCheckP95 = authzCheckP95Expr
     ? await fetchScalar(authzBase, authzCheckP95Expr, queryTimestamp)
@@ -182,6 +189,12 @@ const main = async () => {
   const authzCacheMissRate = authzCacheMissExpr
     ? await fetchScalar(authzBase, authzCacheMissExpr, queryTimestamp)
     : undefined;
+  const authzDecisionsTotal = authzDecisionsExpr
+    ? await fetchScalar(authzBase, authzDecisionsExpr, queryTimestamp)
+    : undefined;
+  const openFgaCbState = openFgaCbExpr
+    ? await fetchScalar(authzBase, openFgaCbExpr, queryTimestamp)
+    : undefined;
 
   const payload = {
     ttfb_p95_ms: Number(ttfbMs.toFixed(2)),
@@ -192,6 +205,8 @@ const main = async () => {
     ...(authzDenyRate !== undefined && { authz_deny_rate_pct: Number(authzDenyRate.toFixed(3)) }),
     ...(authzErrorRate !== undefined && { authz_error_rate_pct: Number(authzErrorRate.toFixed(3)) }),
     ...(authzCacheMissRate !== undefined && { authz_cache_miss_rate_pct: Number(authzCacheMissRate.toFixed(3)) }),
+    ...(authzDecisionsTotal !== undefined && { authz_decisions_total: Math.round(authzDecisionsTotal) }),
+    ...(openFgaCbState !== undefined && { openfga_circuit_breaker_state: Math.round(openFgaCbState) }),
     windowMinutes,
     timestamp: nowIso,
   };

@@ -1,11 +1,7 @@
 {
+  "_comment": "CNS-20260415-004 (Codex) kuralı: feature tuples (can_view/can_manage/blocked) raw seed'e YAZILMAZ. Tuple sync path (AccessControllerV1 granule update → TupleSyncService) assignment üzerinden üretir. Bu dosya yalnızca org/scope BOOTSTRAP içindir: organization root, company-org üyeliği, project/warehouse-company bağı. Feature tuple'ları setup script (zanzibar-canary-setup.mjs) rol atamaları üzerinden tetikler.",
   "writes": {
     "tuple_keys": [
-      {
-        "user": "user:1",
-        "relation": "admin",
-        "object": "organization:default"
-      },
       {
         "user": "company:1",
         "relation": "org",
@@ -15,26 +11,6 @@
         "user": "company:2",
         "relation": "org",
         "object": "organization:default"
-      },
-      {
-        "user": "user:1",
-        "relation": "admin",
-        "object": "company:1"
-      },
-      {
-        "user": "user:2",
-        "relation": "manager",
-        "object": "company:1"
-      },
-      {
-        "user": "user:3",
-        "relation": "viewer",
-        "object": "company:1"
-      },
-      {
-        "user": "user:3",
-        "relation": "viewer",
-        "object": "company:2"
       },
       {
         "user": "company:1",
@@ -55,36 +31,6 @@
         "user": "company:2",
         "relation": "company",
         "object": "project:3"
-      },
-      {
-        "user": "company:1",
-        "relation": "company",
-        "object": "module:USER_MANAGEMENT"
-      },
-      {
-        "user": "company:1",
-        "relation": "company",
-        "object": "module:ACCESS"
-      },
-      {
-        "user": "company:1",
-        "relation": "company",
-        "object": "module:AUDIT"
-      },
-      {
-        "user": "company:1",
-        "relation": "company",
-        "object": "module:REPORT"
-      },
-      {
-        "user": "user:2",
-        "relation": "can_manage",
-        "object": "module:USER_MANAGEMENT"
-      },
-      {
-        "user": "user:3",
-        "relation": "can_view",
-        "object": "module:REPORT"
       }
     ]
   }
