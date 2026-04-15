@@ -7,3 +7,6 @@ DO $$ BEGIN
   END IF;
 END $$;
 GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak_user;
+
+\connect keycloak
+GRANT USAGE, CREATE ON SCHEMA public TO keycloak_user;
