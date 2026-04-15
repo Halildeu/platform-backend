@@ -13,6 +13,20 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+/**
+ * PR6c (TB-11, 2026-04-15): DEPRECATED. report-service authz yetki karari
+ * /authz/me full snapshot yerine OpenFgaAuthzService.check() ile yapmali
+ * (D-008 constraint C-008). Consumer refactor gerekli — 3 controller etkilenir:
+ * DashboardController, ReportController, ReportExportController.
+ *
+ * Follow-up: ayri story — "report-service authz refactor: PermissionResolver
+ * usage'lari per-endpoint Zanzibar check() ile replace". Class kendisi
+ * forRemoval=true; consumer'lar temizlenene kadar koruma icin tutuluyor.
+ *
+ * Bu PR'da sadece @Deprecated annotation eklendi, davranis degismedi.
+ * TB-11 inventory'de "PR6c partial" olarak isaretlendi.
+ */
+@Deprecated(since = "2026-04-15", forRemoval = true)
 @Component
 @org.springframework.context.annotation.Profile("!conntest & !local & !dev")
 public class PermissionServiceClient implements PermissionResolver {

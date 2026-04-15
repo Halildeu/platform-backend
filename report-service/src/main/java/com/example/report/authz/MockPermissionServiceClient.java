@@ -10,7 +10,12 @@ import org.springframework.stereotype.Component;
 /**
  * Conntest-only mock — returns a super-admin response so reports can be
  * tested without Keycloak / permission-service.
+ *
+ * PR6c (TB-11, 2026-04-15): DEPRECATED along with real PermissionServiceClient.
+ * Will be removed when report-service controller authz refactor completes
+ * (OpenFgaAuthzService.check() per-endpoint pattern).
  */
+@Deprecated(since = "2026-04-15", forRemoval = true)
 @Component
 @Profile({"conntest", "local", "dev"})
 public class MockPermissionServiceClient implements PermissionResolver {
