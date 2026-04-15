@@ -1,6 +1,5 @@
 package com.example.variant.authz;
 
-import java.net.URI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -8,7 +7,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
@@ -21,11 +19,10 @@ public class PermissionServiceAuthzClient {
     private final WebClient webClient;
 
     @Autowired
-    public PermissionServiceAuthzClient(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder loadBalancedWebClientBuilder,
-                                        @Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
+    public PermissionServiceAuthzClient(@Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
                                         @Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
-        WebClient.Builder selectedBuilder = requiresDirectHttp(baseUrl) ? plainWebClientBuilder : loadBalancedWebClientBuilder;
-        this.webClient = selectedBuilder.baseUrl(baseUrl).build();
+        // D7: @LoadBalanced kaldırıldı — K8s DNS ile plain builder yeterli.
+        this.webClient = plainWebClientBuilder.baseUrl(baseUrl).build();
     }
 
     public PermissionServiceAuthzClient(WebClient.Builder builder) {
@@ -56,18 +53,4 @@ public class PermissionServiceAuthzClient {
         }
     }
 
-    private boolean requiresDirectHttp(String baseUrl) {
-        try {
-            URI uri = URI.create(baseUrl);
-            String host = uri.getHost();
-            if (!StringUtils.hasText(host)) {
-                return false;
-            }
-            return "localhost".equalsIgnoreCase(host)
-                    || host.contains(".")
-                    || host.contains(":");
-        } catch (IllegalArgumentException ex) {
-            return false;
-        }
-    }
 }

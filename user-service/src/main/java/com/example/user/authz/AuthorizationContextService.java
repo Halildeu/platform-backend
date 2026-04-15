@@ -30,7 +30,7 @@ public class AuthorizationContextService {
     private final WebClient webClient;
     private final AuthorizationContextCache cache;
 
-    public AuthorizationContextService(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder webClientBuilder,
+    public AuthorizationContextService(@Qualifier("plainWebClientBuilder") WebClient.Builder webClientBuilder,
                                        AuthorizationContextCache cache,
                                        @Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
         this.webClient = webClientBuilder == null ? null : webClientBuilder.baseUrl(baseUrl).build();

@@ -1,6 +1,5 @@
 package com.example.report.audit;
 
-import java.net.URI;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
@@ -25,12 +24,11 @@ public class ReportAuditClient {
     private final WebClient webClient;
     private final String internalApiKey;
 
-    public ReportAuditClient(WebClient.Builder loadBalancedWebClientBuilder,
-                             @Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
+    public ReportAuditClient(@Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
                              @Value("${permission.service.base-url:http://permission-service}") String baseUrl,
                              @Value("${report.audit.internal-api-key:}") String internalApiKey) {
-        WebClient.Builder selectedBuilder = requiresDirectHttp(baseUrl) ? plainWebClientBuilder : loadBalancedWebClientBuilder;
-        this.webClient = selectedBuilder.baseUrl(baseUrl).build();
+        // D7: @LoadBalanced kaldırıldı — K8s DNS ile plain builder yeterli.
+        this.webClient = plainWebClientBuilder.baseUrl(baseUrl).build();
         this.internalApiKey = internalApiKey;
     }
 
@@ -103,21 +101,6 @@ public class ReportAuditClient {
     private String resolveCorrelationId() {
         String traceId = MDC.get("traceId");
         return StringUtils.hasText(traceId) ? traceId : UUID.randomUUID().toString();
-    }
-
-    private boolean requiresDirectHttp(String baseUrl) {
-        try {
-            URI uri = URI.create(baseUrl);
-            String host = uri.getHost();
-            if (!StringUtils.hasText(host)) {
-                return false;
-            }
-            return "localhost".equalsIgnoreCase(host)
-                    || host.contains(".")
-                    || host.contains(":");
-        } catch (IllegalArgumentException ex) {
-            return false;
-        }
     }
 
     private record AuditEventIngestRequest(

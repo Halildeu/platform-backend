@@ -26,7 +26,7 @@ public class UserAuditMirrorClient {
     private final boolean enabled;
     private final String internalApiKey;
 
-    public UserAuditMirrorClient(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder webClientBuilder,
+    public UserAuditMirrorClient(@Qualifier("plainWebClientBuilder") WebClient.Builder webClientBuilder,
                                  @Qualifier("directWebClientBuilder") WebClient.Builder directWebClientBuilder,
                                  @Value("${permission.audit-mirror.base-url:${permission.service.base-url:http://permission-service}}") String baseUrl,
                                  @Value("${permission.audit-mirror.enabled:true}") boolean enabled,

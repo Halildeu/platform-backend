@@ -23,10 +23,8 @@
 
 
     <dependencies>
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
-        </dependency>
+        <!-- D7 (platform-k8s-gitops 2026-04-15): Eureka KALDIRILDI.
+             K8s native DNS kullanılır (svc.cluster.local). -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-vault-config</artifactId>
