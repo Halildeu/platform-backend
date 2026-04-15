@@ -125,8 +125,10 @@ class AuthServiceTest {
                 .thenReturn(successfulAuthentication);
 
         // --- ACT (Eylem) ---
-        // Test edeceğimiz asıl login metodunu çağırıyoruz.
-        when(permissionServiceClient.getPermissions(99L, 1L)).thenReturn(Collections.singleton("VIEW_USERS"));
+        // PR6a (2026-04-15): AuthService artik permissionServiceClient cagirmiyor,
+        // permissions = Set.of() direkt atiyor (D-002 identity-only JWT).
+        // Eski `when(getPermissions).thenReturn(singleton("VIEW_USERS"))` stub'u
+        // unused oldugu icin kaldirildi (Mockito STRICT_STUBS hata).
 
         JwtResponse jwtResponse = authService.login("test@example.com", "password", 1L);
 
@@ -136,8 +138,10 @@ class AuthServiceTest {
         assertFalse(jwtResponse.getToken().isBlank());
         assertEquals("test@example.com", jwtResponse.getEmail());
         assertEquals("USER", jwtResponse.getRole());
-        assertTrue(jwtResponse.getPermissions().contains("VIEW_USERS"));
-        System.out.println(">>> Başarılı login testi geçti!");
+        // PR6a: permissions artik empty set (Zanzibar check'i endpoint seviyesinde)
+        assertNotNull(jwtResponse.getPermissions());
+        assertTrue(jwtResponse.getPermissions().isEmpty());
+        System.out.println(">>> Başarılı login testi geçti (PR6a: permissions=Set.of())");
     }
 
     @Test

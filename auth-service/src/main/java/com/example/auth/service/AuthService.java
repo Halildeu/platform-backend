@@ -80,19 +80,16 @@ public class AuthService {
                 .map(grantedAuthority -> grantedAuthority.getAuthority().replace("ROLE_", ""))
                 .orElse("USER");
 
-        Set<String> permissions = permissionServiceClient.getPermissions(userDetails.getId(), companyId);
-        if ((permissions == null || permissions.isEmpty()) && "ADMIN".equalsIgnoreCase(role) && adminFallbackEnabled) {
-            // Geliştirme kolaylığı: yalnızca admin-fallback özelliği açıkken dev/profiller için varsayılan yetkiler eklenir.
-            permissions = java.util.Set.of(
-                    "VIEW_USERS",
-                    "MANAGE_USERS",
-                    "VIEW_ACCESS",
-                    "VIEW_AUDIT",
-                    "APPROVE_PURCHASE",
-                    "MANAGE_WAREHOUSE"
-            );
-            log.warn("PermissionService boş döndü; ADMIN için varsayılan yetkiler eklendi (dev fallback, security.admin-fallback.enabled=true)");
-        }
+        // PR6a (TB-11): Zanzibar migration. Auth-service artik permission-service'ten
+        // yetki listesi CEKMEZ — D-002 identity-only JWT. Permissions Set.of() doner,
+        // frontend `auth.slice.ts` + `LoginPopover.tsx` breaking drop'a karsi kompat
+        // (Set<String> alani korunur, icerik empty). Gercek yetki karari OpenFGA
+        // tuple check ile yapilir (`/v1/authz/*` endpoints).
+        // Admin fallback logic kaldirildi: dev'de SecurityConfigLocal permitAll'a guvenir,
+        // prod'da gercek Zanzibar check zorunlu.
+        // PR6b: JWT `permissions` claim da silinecek; PR6c: report-service'ten
+        // PermissionServiceClient HTTP cagrilari OpenFGA SDK'ya tasinacak.
+        Set<String> permissions = Set.of();
 
         long configuredDefaultMinutes = Math.max(1, Math.round(Math.ceil(jwtProperties.getExpiration() / 60000.0)));
         int maxAllowedTimeout = configuredDefaultMinutes > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) configuredDefaultMinutes;

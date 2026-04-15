@@ -120,7 +120,8 @@ class AuthServiceSessionAuditTest {
         when(successfulAuthentication.getPrincipal()).thenReturn(userDetails);
         when(authenticationManager.authenticate(any(UsernamePasswordAuthenticationToken.class)))
                 .thenReturn(successfulAuthentication);
-        when(permissionServiceClient.getPermissions(99L, 42L)).thenReturn(Set.of("audit-read"));
+        // PR6a (2026-04-15): AuthService artik PermissionServiceClient.getPermissions()
+        // cagirmiyor, permissions = Set.of() direkt atiyor. Eski mock stub kaldirildi.
 
         JwtResponse jwtResponse = authService.login("test@example.com", "password", 42L);
 
@@ -132,7 +133,7 @@ class AuthServiceSessionAuditTest {
                 "test@example.com",
                 42L,
                 "USER",
-                Set.of("audit-read"),
+                Set.of(),
                 15,
                 jwtResponse.getExpiresAt()
         );
