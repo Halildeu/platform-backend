@@ -41,14 +41,19 @@ public class JwtTokenProvider {
         Instant now = Instant.now();
         Instant expiresAt = now.plusSeconds(Math.max(60L, sessionTimeoutMinutes * 60L));
 
+        // PR6b (TB-11 Dalga 3): `permissions` claim artik yazilmiyor. D-002
+        // identity-only JWT kurali. Downstream servisler /v1/authz/check ile
+        // Zanzibar tuple kontrol yapar; JWT claim'den yetki cikartma kod tabani
+        // disindadir (doctor A17 check sureklidir).
+        // Parametre imzasi backward compat icin korundu (AuthService PR6a'da
+        // Set.of() geciyor); ileride signature simplification ayri story.
         JwtClaimsSet.Builder claims = JwtClaimsSet.builder()
                 .subject(userDetails.getUsername())
                 .issuer(jwtProperties.getIssuer())
                 .issuedAt(now)
                 .expiresAt(expiresAt)
                 .claim("uid", userDetails.getId())
-                .claim("role", role)
-                .claim("permissions", permissions);
+                .claim("role", role);
 
         if (companyId != null) {
             claims.claim("companyId", companyId);
