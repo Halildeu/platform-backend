@@ -434,6 +434,16 @@ public class OpenFgaAuthzService {
                     log.info("authz.decision user={} relation={} object={}:{} allowed={} reason={} mode=batch",
                             userId, req.relation(), req.objectType(), req.objectId(), allowed, reason);
                 }
+                // CNS-20260415-004 (Codex): Native batch path'te authz_decisions_total
+                // counter eksikti; synthetic canary NO_SIGNAL yanlis tespit yapiyordu.
+                // Her batch sonucu icin allow/deny counter increment — single check
+                // path ile ayni sayac semantigi. Fallback path checkWithReason icin
+                // kendi counter'ini kullanir; double count riski yok.
+                if (allowed) {
+                    if (allowCounter != null) allowCounter.increment();
+                } else {
+                    if (denyCounter != null) denyCounter.increment();
+                }
                 results.add(new CheckResult(allowed, reason));
             }
             return results;
