@@ -423,6 +423,45 @@ else
   done
 fi
 
+# ── A21. Smoke isolation — docker-smoke-test.sh drift guard ──────
+# 2026-04-15 P0 incident: smoke script 'platform' project'e up + trap
+# cleanup yapinca canli stack'i sildi (17 servis yok).
+# Fix: izole COMPOSE_PROJECT_NAME='platform-smoke-*' + fail-closed guard.
+# Bu check, izolasyon guardrail'lerinin accidentally silinmesini yakalar.
+# Dokuman: docs/04-operations/RUNBOOKS/RB-smoke-isolation.md
+header "A21. Smoke isolation — docker-smoke-test.sh drift guard"
+SMOKE_SCRIPT="$BACKEND_DIR/../scripts/docker-smoke-test.sh"
+if [ ! -f "$SMOKE_SCRIPT" ]; then
+  warn "A21: scripts/docker-smoke-test.sh bulunamadi (skip)"
+else
+  if grep -q 'export COMPOSE_PROJECT_NAME="platform-smoke-' "$SMOKE_SCRIPT"; then
+    pass "A21: smoke script COMPOSE_PROJECT_NAME izolasyonu mevcut"
+  else
+    fail "A21: smoke script COMPOSE_PROJECT_NAME izolasyonu eksik (canli stack cleanup riski)"
+  fi
+  if grep -q 'SMOKE ISOLATION VIOLATION' "$SMOKE_SCRIPT"; then
+    pass "A21: smoke script drift guard (fail-closed) mevcut"
+  else
+    fail "A21: smoke script drift guard eksik (COMPOSE_PROJECT_NAME override unsafe)"
+  fi
+fi
+
+# ── A22. Smoke workflow auto-trigger — disabled during containment ───
+# 2026-04-15 P0 incident sonrasi smoke-zanzibar.yml'in deploy-backend
+# completion uzerine auto-trigger'i GECICI kapatildi. Containment test
+# edildikten sonra re-enable edilecek. Kriterler RB-smoke-isolation.md.
+header "A22. Smoke workflow auto-trigger — disabled during containment"
+SMOKE_WF="$BACKEND_DIR/../.github/workflows/smoke-zanzibar.yml"
+if [ ! -f "$SMOKE_WF" ]; then
+  warn "A22: .github/workflows/smoke-zanzibar.yml bulunamadi (skip)"
+else
+  if grep -qE '^\s*workflow_run:' "$SMOKE_WF"; then
+    fail "A22: workflow_run auto-trigger hala aktif — containment phase'de disabled olmali"
+  else
+    pass "A22: workflow_run auto-trigger disabled (containment phase)"
+  fi
+fi
+
 # ═══════════════════════════════════════════════════════════════════
 # SECTION B: RUNTIME CHECKS (Docker required)
 # ═══════════════════════════════════════════════════════════════════
