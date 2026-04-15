@@ -4,26 +4,52 @@ set -euo pipefail
 # Zanzibar restricted user deny probe
 # Logs into Keycloak as a restricted user and verifies THEME module is denied.
 # Used in canary validation to ensure deny-path regressions are caught.
-# Ref: CNS-20260411-001 (Codex objection #2 — admin-only canary is insufficient)
+#
+# Refs:
+#   - CNS-20260411-001 (Codex objection #2 — admin-only canary is insufficient)
+#   - CNS-20260416-001 Q5 (canary-load dedicated client; frontend direct-grants disabled)
+#   - CNS-20260416-002 PR-2 (persona seed user koordinasyonu)
+#
+# Client seçimi:
+#   CANARY_CLIENT_ID (önerilen, stage-only canary-load client — direct grants enabled):
+#     KC admin'de confidential/public client olarak canary-load tanımlı olmalı,
+#     direct access grants aktif olmalı. Persona user'lar (CANARY_RESTRICTED rolüyle)
+#     zanzibar-canary-setup.mjs ile hazırlanır.
+#   CLIENT_ID (geriye dönük, frontend — not: realm export'ta direct grants DISABLED
+#     olabilir, auth-enabled staging'de fail eder):
+#     Sadece dev/legacy fallback için.
 
 KC_BASE_URL="${KC_BASE_URL:-http://localhost:8081}"
 KC_REALM="${KC_REALM:-serban}"
-RESTRICTED_USER_EMAIL="${RESTRICTED_USER_EMAIL:-user3@example.com}"
-RESTRICTED_USER_PASSWORD="${RESTRICTED_USER_PASSWORD:?RESTRICTED_USER_PASSWORD required}"
+# CANARY_CLIENT_ID önceliklidir; yoksa legacy CLIENT_ID fallback
+CLIENT_ID="${CANARY_CLIENT_ID:-${CLIENT_ID:-frontend}}"
+CANARY_CLIENT_SECRET="${CANARY_CLIENT_SECRET:-}"
+
+# Persona seed ile aynı user (zanzibar-canary-setup.mjs: canary-restricted@stage.local + CanaryPass123!)
+# Override için RESTRICTED_USER_EMAIL + RESTRICTED_USER_PASSWORD env'leri kullanılır.
+RESTRICTED_USER_EMAIL="${RESTRICTED_USER_EMAIL:-canary-restricted@stage.local}"
+RESTRICTED_USER_PASSWORD="${RESTRICTED_USER_PASSWORD:-${CANARY_PASSWORD:-CanaryPass123!}}"
 AUTHZ_ME_URL="${AUTHZ_ME_URL:-http://localhost:8090/api/v1/authz/me}"
-CLIENT_ID="${CLIENT_ID:-frontend}"
 
 echo "[probe] Restricted user deny probe starting..."
-echo "[probe] user=${RESTRICTED_USER_EMAIL} realm=${KC_REALM}"
+echo "[probe] user=${RESTRICTED_USER_EMAIL} realm=${KC_REALM} client=${CLIENT_ID}"
 
-# Step 1: Get Keycloak token
+# Step 1: Get Keycloak token (client_secret destekli — canary-load confidential ise)
+TOKEN_BODY=(
+  -d "client_id=${CLIENT_ID}"
+  -d "username=${RESTRICTED_USER_EMAIL}"
+  -d "password=${RESTRICTED_USER_PASSWORD}"
+  -d "grant_type=password"
+)
+if [[ -n "$CANARY_CLIENT_SECRET" ]]; then
+  TOKEN_BODY+=(-d "client_secret=${CANARY_CLIENT_SECRET}")
+fi
+
 TOKEN_RESPONSE=$(curl -sf -X POST \
   "${KC_BASE_URL}/realms/${KC_REALM}/protocol/openid-connect/token" \
-  -d "client_id=${CLIENT_ID}" \
-  -d "username=${RESTRICTED_USER_EMAIL}" \
-  -d "password=${RESTRICTED_USER_PASSWORD}" \
-  -d "grant_type=password" 2>&1) || {
-  echo "[probe] FAIL: Keycloak login failed for ${RESTRICTED_USER_EMAIL}"
+  "${TOKEN_BODY[@]}" 2>&1) || {
+  echo "[probe] FAIL: Keycloak login failed for ${RESTRICTED_USER_EMAIL} (client=${CLIENT_ID})"
+  echo "[probe]       Hint: auth-enabled staging'de CANARY_CLIENT_ID=canary-load + CANARY_CLIENT_SECRET set edilmeli."
   exit 1
 }
 

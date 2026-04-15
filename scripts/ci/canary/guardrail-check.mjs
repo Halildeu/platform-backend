@@ -54,6 +54,12 @@ const thresholds = {
   // CNS-20260415-004: circuit breaker state (0=CLOSED, 1=OPEN, 2=HALF_OPEN)
   // Kabul edilebilir max = 0 (CLOSED). OPEN veya HALF_OPEN rollback tetikler.
   openFgaCbMax: Number.parseInt(resolveArg('--openfga-cb-max', process.env.GUARDRAIL_OPENFGA_CB_MAX ?? '0'), 10),
+  // CNS-20260416-002 (PR-2): v2 operasyonel metric threshold'ları
+  authzMeP95: Number.parseFloat(resolveArg('--authz-me-p95', process.env.GUARDRAIL_AUTHZ_ME_P95_MS ?? '100')),
+  outboxPendingMax: Number.parseInt(resolveArg('--outbox-pending-max', process.env.GUARDRAIL_OUTBOX_PENDING_MAX ?? '50'), 10),
+  outboxOldestAgeMax: Number.parseInt(resolveArg('--outbox-oldest-age-max', process.env.GUARDRAIL_OUTBOX_OLDEST_AGE_MAX ?? '300'), 10),
+  outboxFailedMax: Number.parseInt(resolveArg('--outbox-failed-max', process.env.GUARDRAIL_OUTBOX_FAILED_MAX ?? '5'), 10),
+  openFgaUpMin: Number.parseInt(resolveArg('--openfga-up-min', process.env.GUARDRAIL_OPENFGA_UP_MIN ?? '1'), 10),
 };
 
 // CNS-20260415-004 Codex Q3: Cache miss rate threshold'u faz bazlı uygula.
@@ -174,6 +180,40 @@ if (typeof cbState !== 'number') {
   violations.push(`OpenFGA circuit breaker state=${cbState} (${label}) > eşik ${thresholds.openFgaCbMax} (CLOSED). Rollback değerlendir.`);
 }
 
+// CNS-20260416-002 (PR-2): v2 operasyonel metric enforcement.
+// Codex review (CNS-20260416-002 tur 5) öneri: Evidence PASS modunda
+// eksik v2 metric silent skip edilmemeli — staging misconfig sessizce yeşil
+// geçebilir. --require-v2-ops flag veya GUARDRAIL_REQUIRE_V2_OPS=1 env aktifse
+// v2 ops metric'leri authz core gibi REQUIRED (eksikse violation).
+//
+// Varsayılan davranış (flag yok): optional skip (geriye dönük uyumlu).
+// Wrapper --zanzibar-canary --require-v2-ops ile Evidence PASS modunda strict.
+const requireV2Ops =
+  args.has('--require-v2-ops') ||
+  (process.env.GUARDRAIL_REQUIRE_V2_OPS ?? '').toLowerCase() === 'true' ||
+  process.env.GUARDRAIL_REQUIRE_V2_OPS === '1';
+
+const checkOpsMetric = (key, operator, threshold, unit, label) => {
+  const value = metrics[key];
+  if (typeof value !== 'number') {
+    if (requireV2Ops) {
+      violations.push(`[require-v2-ops] ${label} metric eksik (metrics.${key}) — Evidence PASS modunda ZORUNLU`);
+    }
+    return;
+  }
+  if (operator === 'max' && value > threshold) {
+    violations.push(`${label} ${value}${unit} > eşik ${threshold}${unit}`);
+  } else if (operator === 'min' && value < threshold) {
+    violations.push(`${label} ${value}${unit} < eşik ${threshold}${unit}`);
+  }
+};
+
+checkOpsMetric('authz_me_p95_ms', 'max', thresholds.authzMeP95, 'ms', '/authz/me p95');
+checkOpsMetric('tuple_sync_outbox_pending_total', 'max', thresholds.outboxPendingMax, '', 'Outbox pending');
+checkOpsMetric('tuple_sync_outbox_oldest_age_s', 'max', thresholds.outboxOldestAgeMax, 's', 'Outbox oldest age');
+checkOpsMetric('tuple_sync_outbox_failed_total', 'max', thresholds.outboxFailedMax, '', 'Outbox failed total');
+checkOpsMetric('openfga_up', 'min', thresholds.openFgaUpMin, '', 'OpenFGA up');
+
 // NO_SIGNAL tespit: canary mode'da authz_decisions_total minimum
 // threshold'un altında ise "synthetic yük yeterli değil" violation.
 if (authzRequired) {
@@ -203,6 +243,11 @@ const summary = [
     ? `AuthZ cache miss: ${metrics.authz_cache_miss_rate_pct}%${phaseIsCold ? ' (cold: soften)' : phaseIsWarm ? ` (warm eşik ${thresholds.authzCacheMiss}%)` : ` (eşik ${thresholds.authzCacheMiss}%)`}`
     : '',
   typeof metrics.openfga_circuit_breaker_state === 'number' ? `OpenFGA CB: ${metrics.openfga_circuit_breaker_state} (0=CLOSED)` : '',
+  typeof metrics.authz_me_p95_ms === 'number' ? `/me p95: ${metrics.authz_me_p95_ms}ms (eşik ${thresholds.authzMeP95}ms)` : '',
+  typeof metrics.tuple_sync_outbox_pending_total === 'number' ? `Outbox pending: ${metrics.tuple_sync_outbox_pending_total} (max ${thresholds.outboxPendingMax})` : '',
+  typeof metrics.tuple_sync_outbox_oldest_age_s === 'number' ? `Outbox oldest: ${metrics.tuple_sync_outbox_oldest_age_s}s (max ${thresholds.outboxOldestAgeMax}s)` : '',
+  typeof metrics.tuple_sync_outbox_failed_total === 'number' ? `Outbox failed: ${metrics.tuple_sync_outbox_failed_total} (max ${thresholds.outboxFailedMax})` : '',
+  typeof metrics.openfga_up === 'number' ? `OpenFGA up: ${metrics.openfga_up} (min ${thresholds.openFgaUpMin})` : '',
 ].filter(Boolean).join(' | ');
 
 if (violations.length > 0) {

@@ -16,6 +16,8 @@
 #   SKIP_SETUP=1     → setup script atlanır (seed zaten var, tekrar run)
 #   SKIP_PROBE=1     → restricted probe atlanır (auth-disabled lokal için)
 #   SKIP_METRICS=1   → Prometheus pull + guardrail-check atlanır (local smoke)
+#   REQUIRE_V2_OPS=0 → v2 ops metric'leri (authz_me_p95, outbox_*, openfga_up)
+#                      silent-skip moduna al; default=1 (Evidence PASS strict)
 #
 # Env:
 #   BASE_URL (default http://localhost:8090)
@@ -81,13 +83,13 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$SKIP_SETUP" == "1" ]]; then
-  echo "[1/8] SETUP atlandı (SKIP_SETUP=1)"
+  echo "[1/10] SETUP atlandı (SKIP_SETUP=1)"
   if [[ ! -f "$PERSONA_TOKENS" ]]; then
     echo "  ⚠️  Persona tokens dosyası yok: $PERSONA_TOKENS"
     echo "  → k6 fallback AUTH_TOKEN env'ine düşecek (local permitAll için ok)"
   fi
 else
-  echo "[1/8] SETUP: zanzibar-canary-setup.mjs"
+  echo "[1/10] SETUP: zanzibar-canary-setup.mjs"
   node "$REPO_ROOT/backend/scripts/ci/canary/zanzibar-canary-setup.mjs" \
     --output "$PERSONA_TOKENS" \
     2>&1 | tee "$REPORT_DIR/setup.log"
@@ -98,9 +100,9 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$SKIP_PROBE" == "1" ]]; then
-  echo "[2/8] PROBE PRE atlandı (SKIP_PROBE=1)"
+  echo "[2/10] PROBE PRE atlandı (SKIP_PROBE=1)"
 else
-  echo "[2/8] PROBE PRE: zanzibar-restricted-probe.sh"
+  echo "[2/10] PROBE PRE: zanzibar-restricted-probe.sh"
   if bash "$REPO_ROOT/backend/scripts/ci/canary/zanzibar-restricted-probe.sh" \
     2>&1 | tee "$REPORT_DIR/probe-pre.log"; then
     echo "  ✅ probe-pre PASS"
@@ -115,7 +117,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$ESTIMATE_ONLY" == "1" ]]; then
-  echo "[3/8] ESTIMATE_ONLY run (k6 HTTP yok, decision floor projeksiyonu)"
+  echo "[3/10] ESTIMATE_ONLY run (k6 HTTP yok, decision floor projeksiyonu)"
   ESTIMATE_ONLY=1 BASE_URL="$BASE_URL" PHASE=estimate \
   LOCAL_PERMIT_ALL="$LOCAL_PERMIT_ALL" \
   SUMMARY_PATH="$REPORT_DIR/estimate.json" \
@@ -131,7 +133,7 @@ fi
 # 4. k6 COLD phase
 # ─────────────────────────────────────────────────────────────────────────────
 
-echo "[4/8] k6 COLD phase"
+echo "[4/10] k6 COLD phase"
 PERSONA_TOKENS_JSON=""
 if [[ -f "$PERSONA_TOKENS" ]]; then
   PERSONA_TOKENS_JSON="$(jq -c '.tokens // {}' "$PERSONA_TOKENS")"
@@ -149,10 +151,30 @@ k6 run \
 COLD_END_TS="$(date +%s)"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 4b. Metrics pull COLD (CNS-20260416-002: cold phase snapshot)
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ "$SKIP_METRICS" == "1" ]]; then
+  echo "[4b] METRICS PULL cold atlandı (SKIP_METRICS=1)"
+else
+  echo "[4b] METRICS PULL cold (phase=cold, query-time=$COLD_END_TS)"
+  # CNS-20260416-002 B5 fix: --output ile dosya kayıt, stdout log'a.
+  # PR-1'deki pattern (> prom-metrics.json) broken idi: collector kendi outputPath'ine
+  # JSON yazıyor, stdout'a console.log payload basıyor → stdout JSON değil.
+  node "$REPO_ROOT/backend/scripts/ci/canary/pull-grafana-metrics.mjs" \
+    --phase cold \
+    --output "$REPORT_DIR/prom-cold.json" \
+    --query-time "$COLD_END_TS" \
+    2>&1 | tee "$REPORT_DIR/prom-cold-pull.log" || {
+      echo "  ⚠️  cold metrics pull başarısız — guardrail-check cold 'no data' ile fail edecek"
+    }
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5. k6 WARM phase — cold hemen sonrası, version bump YOK
 # ─────────────────────────────────────────────────────────────────────────────
 
-echo "[5/8] k6 WARM phase (cold bitişinden hemen sonra)"
+echo "[5/10] k6 WARM phase (cold bitişinden hemen sonra)"
 PHASE=warm \
 BASE_URL="$BASE_URL" \
 PERSONA_TOKENS_JSON="$PERSONA_TOKENS_JSON" \
@@ -165,13 +187,30 @@ k6 run \
 WARM_END_TS="$(date +%s)"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5b. Metrics pull WARM (CNS-20260416-002)
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ "$SKIP_METRICS" == "1" ]]; then
+  echo "[5b] METRICS PULL warm atlandı (SKIP_METRICS=1)"
+else
+  echo "[5b] METRICS PULL warm (phase=warm, query-time=$WARM_END_TS)"
+  node "$REPO_ROOT/backend/scripts/ci/canary/pull-grafana-metrics.mjs" \
+    --phase warm \
+    --output "$REPORT_DIR/prom-warm.json" \
+    --query-time "$WARM_END_TS" \
+    2>&1 | tee "$REPORT_DIR/prom-warm-pull.log" || {
+      echo "  ⚠️  warm metrics pull başarısız — guardrail-check warm 'no data' ile fail edecek"
+    }
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 6. Restricted probe — post-check
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$SKIP_PROBE" == "1" ]]; then
-  echo "[6/8] PROBE POST atlandı (SKIP_PROBE=1)"
+  echo "[6/10] PROBE POST atlandı (SKIP_PROBE=1)"
 else
-  echo "[6/8] PROBE POST"
+  echo "[6/10] PROBE POST"
   if bash "$REPO_ROOT/backend/scripts/ci/canary/zanzibar-restricted-probe.sh" \
     2>&1 | tee "$REPORT_DIR/probe-post.log"; then
     echo "  ✅ probe-post PASS"
@@ -182,44 +221,68 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. Prometheus metrics pull
+# 7+8. Guardrail-check cold + warm (CNS-20260416-002: iki ayrı phase checker)
 # ─────────────────────────────────────────────────────────────────────────────
 
 if [[ "$SKIP_METRICS" == "1" ]]; then
-  echo "[7/8] METRICS PULL atlandı (SKIP_METRICS=1)"
-else
-  echo "[7/8] METRICS PULL: pull-grafana-metrics.mjs"
-  node "$REPO_ROOT/backend/scripts/ci/canary/pull-grafana-metrics.mjs" \
-    > "$REPORT_DIR/prom-metrics.json" \
-    2> "$REPORT_DIR/prom-metrics.log" || {
-      echo "  ⚠️  metrics pull başarısız — guardrail-check 'no data' ile fail edecek"
-    }
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. Guardrail-check
-# ─────────────────────────────────────────────────────────────────────────────
-
-if [[ "$SKIP_METRICS" == "1" ]]; then
-  echo "[8/8] GUARDRAIL atlandı (SKIP_METRICS=1)"
+  echo "[7+8] GUARDRAIL atlandı (SKIP_METRICS=1)"
   echo ""
   echo "✅ Run tamamlandı (no-metrics mode): $REPORT_DIR"
   exit 0
 fi
 
-echo "[8/8] GUARDRAIL-CHECK (zanzibar-canary mode, phase=warm — strict cache miss)"
-# CNS-20260416-001: --phase warm → guardrail cache miss threshold'u warm phase için
-# strict uygulanır (cold phase olsaydı soften olurdu). PR-2'de cold+warm ayrı guardrail
-# çağrısı planlanıyor (ayrı prom-cold.json / prom-warm.json artifacts sonrası).
-if node "$REPO_ROOT/backend/scripts/ci/canary/guardrail-check.mjs" \
-  --zanzibar-canary \
-  --phase warm \
-  --metrics "$REPORT_DIR/prom-metrics.json" \
-  2>&1 | tee "$REPORT_DIR/guardrail.log"; then
-  echo ""
-  echo "✅ GUARDRAIL PASS: $REPORT_DIR"
+COLD_GUARDRAIL_PASS=0
+WARM_GUARDRAIL_PASS=0
+
+# CNS-20260416-002 Codex tur 5 öneri: Evidence PASS modunda v2 ops metric'leri
+# zorunlu (authz_me_p95, outbox_*, openfga_up eksikse violation). Wrapper canary
+# run'ında hepsini strict istiyoruz; opt-out için REQUIRE_V2_OPS=0 env.
+REQUIRE_V2_OPS="${REQUIRE_V2_OPS:-1}"
+V2_OPS_FLAG=""
+if [[ "$REQUIRE_V2_OPS" == "1" ]]; then
+  V2_OPS_FLAG="--require-v2-ops"
+fi
+
+echo "[7/10] GUARDRAIL-CHECK cold (cache miss threshold SOFTEN)"
+if [[ -f "$REPORT_DIR/prom-cold.json" ]]; then
+  if node "$REPO_ROOT/backend/scripts/ci/canary/guardrail-check.mjs" \
+    --zanzibar-canary \
+    $V2_OPS_FLAG \
+    --phase cold \
+    --metrics "$REPORT_DIR/prom-cold.json" \
+    2>&1 | tee "$REPORT_DIR/guardrail-cold.log"; then
+    echo "  ✅ cold guardrail PASS"
+    COLD_GUARDRAIL_PASS=1
+  else
+    echo "  ❌ cold guardrail FAIL"
+  fi
 else
-  echo ""
-  echo "❌ GUARDRAIL FAIL: $REPORT_DIR"
+  echo "  ⚠️  prom-cold.json yok (metrics pull cold başarısız) — cold guardrail skip"
+fi
+
+echo ""
+echo "[8/10] GUARDRAIL-CHECK warm (cache miss threshold STRICT)"
+if [[ -f "$REPORT_DIR/prom-warm.json" ]]; then
+  if node "$REPO_ROOT/backend/scripts/ci/canary/guardrail-check.mjs" \
+    --zanzibar-canary \
+    $V2_OPS_FLAG \
+    --phase warm \
+    --metrics "$REPORT_DIR/prom-warm.json" \
+    2>&1 | tee "$REPORT_DIR/guardrail-warm.log"; then
+    echo "  ✅ warm guardrail PASS"
+    WARM_GUARDRAIL_PASS=1
+  else
+    echo "  ❌ warm guardrail FAIL"
+  fi
+else
+  echo "  ⚠️  prom-warm.json yok (metrics pull warm başarısız) — warm guardrail skip"
+fi
+
+echo ""
+if [[ "$COLD_GUARDRAIL_PASS" == "1" && "$WARM_GUARDRAIL_PASS" == "1" ]]; then
+  echo "✅ GUARDRAIL PASS (cold + warm): $REPORT_DIR"
+  exit 0
+else
+  echo "❌ GUARDRAIL FAIL (cold=$COLD_GUARDRAIL_PASS warm=$WARM_GUARDRAIL_PASS): $REPORT_DIR"
   exit 1
 fi

@@ -1,29 +1,71 @@
 {
-  "version": "v1",
-  "description": "Zanzibar-specific canary guardrail thresholds. Extends base guardrails with authz metrics.",
-  "ref": "CNS-20260411-001",
+  "version": "v2",
+  "description": "Zanzibar-specific canary guardrail thresholds + PromQL query library. Extends base guardrails with authz + outbox + OpenFGA CB + phase-aware metrics.",
+  "ref": "CNS-20260411-001 + CNS-20260415-004 + CNS-20260416-002",
   "thresholds": {
     "authz_check_p95_ms": {
       "max": 50,
-      "description": "AuthZ check (single + batch) p95 latency. SK-11 target."
+      "description": "AuthZ check (single + batch) p95 latency. SK-11 target. >150ms = rollback."
     },
     "authz_deny_rate_pct": {
       "max": 10,
-      "description": "Percentage of authz checks returning deny. High rate may indicate model regression."
+      "description": "Percentage of authz checks returning deny. High rate may indicate model regression. Not applied if persona matrix is running — synthetic intentional deny is separated by k6 custom metric."
     },
     "authz_cache_miss_rate_pct": {
       "max": 50,
-      "description": "ScopeContext cache miss rate. >50% indicates cache warm-up issue or TTL too short."
+      "description": "ScopeContext cache miss rate. Cold phase: soften (log-only). Warm phase: strict threshold."
     },
     "authz_error_rate_pct": {
       "max": 0.5,
       "description": "AuthZ endpoint 5xx error rate. >0.5% triggers rollback consideration."
+    },
+    "authz_decisions_total": {
+      "min": 1000,
+      "description": "NO_SIGNAL guard — synthetic canary 30-35dk window'da minimum decision sayısı. Altında ise k6 persona matrix yetersiz yük üretmiş demektir."
+    },
+    "openfga_circuit_breaker_state": {
+      "max": 0,
+      "description": "OpenFGA SDK CB state: 0=CLOSED, 1=OPEN, 2=HALF_OPEN. OPEN → rollback; HALF_OPEN → recovery izle."
+    },
+    "authz_me_p95_ms": {
+      "max": 100,
+      "description": "/authz/me endpoint p95 latency. Persona snapshot çağrısı — slowdown önce burada görülür."
+    },
+    "tuple_sync_outbox_pending_total": {
+      "max": 50,
+      "description": "Birikmiş outbox entry sayısı. Poller 30s interval ile çalışır; kalıcı birikim drift sinyali."
+    },
+    "tuple_sync_outbox_oldest_age_s": {
+      "max": 300,
+      "description": "En eski pending entry yaşı (5dk). Üstü sync gecikmesi — rollback düşünülmeli."
+    },
+    "tuple_sync_outbox_failed_total": {
+      "max": 5,
+      "description": "Dead-letter entry sayısı (cumulative). Artış silent failure sinyali — manuel inceleme."
+    },
+    "openfga_up": {
+      "min": 1,
+      "description": "OpenFGA target up=1 (Prometheus up metric). Down ise CB OPEN olur, ancak direkt up kontrolü daha hızlı sinyal."
     }
   },
   "prometheus_queries": {
-    "authz_check_p95_ms": "histogram_quantile(0.95, rate(http_server_requests_seconds_bucket{uri=~'/v1/authz/check|/api/v1/authz/check|/v1/authz/batch-check'}[5m])) * 1000",
+    "authz_check_p95_ms": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{uri=~\"/v1/authz/check|/api/v1/authz/check|/v1/authz/batch-check|/api/v1/authz/batch-check\"}[5m]))) * 1000",
     "authz_deny_rate_pct": "sum(rate(authz_decisions_total{allowed=\"false\"}[5m])) / clamp_min(sum(rate(authz_decisions_total[5m])), 0.001) * 100",
-    "authz_cache_miss_rate_pct": "authz_cache_miss_count{cache='scope_context'} / clamp_min(authz_cache_hit_count{cache='scope_context'} + authz_cache_miss_count{cache='scope_context'}, 1) * 100",
-    "authz_error_rate_pct": "sum(rate(http_server_requests_seconds_count{uri=~'/v1/authz/.*',status=~'5..'}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{uri=~'/v1/authz/.*'}[5m])), 0.001) * 100"
-  }
+    "authz_cache_miss_rate_pct": "authz_cache_miss_count{cache=\"scope_context\"} / clamp_min(authz_cache_hit_count{cache=\"scope_context\"} + authz_cache_miss_count{cache=\"scope_context\"}, 1) * 100",
+    "authz_error_rate_pct": "sum(rate(http_server_requests_seconds_count{uri=~\"/api/v1/authz/.*\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{uri=~\"/api/v1/authz/.*\"}[5m])), 0.001) * 100",
+    "authz_decisions_total": "sum(increase(authz_decisions_total[35m]))",
+    "openfga_circuit_breaker_state": "max(openfga_circuit_breaker_state)",
+    "authz_me_p95_ms": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/api/v1/authz/me\"}[5m]))) * 1000",
+    "tuple_sync_outbox_pending_total": "sum(tuple_sync_outbox_pending)",
+    "tuple_sync_outbox_oldest_age_s": "max(tuple_sync_outbox_oldest_age_seconds)",
+    "tuple_sync_outbox_failed_total": "sum(tuple_sync_outbox_failed_total)",
+    "openfga_up": "min(up{job=~\".*openfga.*\"})"
+  },
+  "usage_notes": [
+    "Thresholds yalnızca referans değer. Actual guardrail-check uygulaması: backend/scripts/ci/canary/guardrail-check.mjs + --phase cold|warm flag.",
+    "PromQL query'leri run-zanzibar-canary.sh içinde CANARY_*_QUERY env olarak set edilir. Wrapper komutları zanzibar-canary yönergeleri için RB-zanzibar-canary.md'ye bakın.",
+    "Cold phase threshold'ları: cache miss soften; diğer metric'ler strict.",
+    "Warm phase threshold'ları: tüm metric'ler strict (production-like davranış).",
+    "Outbox ve OpenFGA up metric'leri Prometheus scrape için servislerde exposed olmalı — Grafana alert kural dosyası: infra/prometheus/rules/authz-zanzibar-rules.yml."
+  ]
 }

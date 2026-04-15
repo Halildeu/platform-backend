@@ -55,9 +55,16 @@ const toNumber = (value, label) => {
   return num;
 };
 
+// CNS-20260416-002 (PR-2): --phase cold|warm flag ile output filename auto-resolve.
+// Wrapper cold phase sonrası ve warm phase sonrası ayrı çağrı yapar → ayrı artifact
+// (prom-cold.json / prom-warm.json). Eski --output yolu geriye dönük korunur.
+const phase = (resolveArg('--phase', process.env.CANARY_PHASE ?? '') || '').toLowerCase();
+const defaultOutputName = phase
+  ? `prom-${phase}.json`
+  : 'scripts/ci/canary/canary-metrics.json';
 const outputPath = path.resolve(
   process.cwd(),
-  resolveArg('--output', 'scripts/ci/canary/canary-metrics.json'),
+  resolveArg('--output', defaultOutputName),
 );
 const samplePath = resolveArg('--sample', process.env.CANARY_SAMPLE_FILE);
 const windowMinutes = toNumber(
@@ -172,9 +179,21 @@ const main = async () => {
   // CNS-20260416-001 B4 fix: guardrail-check zanzibar-canary modda
   // authz_decisions_total >= 1000 (NO_SIGNAL) ve openfga_circuit_breaker_state == 0 (CLOSED)
   // metric'lerini ZORUNLU kılıyor. Bunları collector'da ek argüman/env ile toplanabilir yap.
-  // PR-2'de query_range + phase window eklenecek; PR-1'de instant scalar yeterli.
   const authzDecisionsExpr = resolveArg('--authz-decisions-query', process.env.CANARY_AUTHZ_DECISIONS_QUERY);
   const openFgaCbExpr = resolveArg('--openfga-cb-query', process.env.CANARY_OPENFGA_CB_QUERY);
+
+  // CNS-20260416-002 (PR-2): Ek operasyonel guardrail metric'leri (Rev 22 backlog #7-9).
+  // Tüm optional — query basılmazsa payload'a eklenmez.
+  //   authz_me_p95_ms                     → /authz/me latency (persona snapshot sağlığı)
+  //   tuple_sync_outbox_pending_total     → birikmiş outbox (drift guard)
+  //   tuple_sync_outbox_oldest_age_s      → en eski pending entry yaşı (sync gecikme guard)
+  //   tuple_sync_outbox_failed_total      → dead-letter counter (silent failure guard)
+  //   openfga_up                          → target=1 (down tespiti için)
+  const authzMeP95Expr = resolveArg('--authz-me-p95-query', process.env.CANARY_AUTHZ_ME_P95_QUERY);
+  const outboxPendingExpr = resolveArg('--outbox-pending-query', process.env.CANARY_OUTBOX_PENDING_QUERY);
+  const outboxOldestAgeExpr = resolveArg('--outbox-oldest-age-query', process.env.CANARY_OUTBOX_OLDEST_AGE_QUERY);
+  const outboxFailedExpr = resolveArg('--outbox-failed-query', process.env.CANARY_OUTBOX_FAILED_QUERY);
+  const openFgaUpExpr = resolveArg('--openfga-up-query', process.env.CANARY_OPENFGA_UP_QUERY);
 
   const authzBase = resolveArg('--authz-url', process.env.CANARY_AUTHZ_URL) ?? promBase;
   const authzCheckP95 = authzCheckP95Expr
@@ -195,6 +214,21 @@ const main = async () => {
   const openFgaCbState = openFgaCbExpr
     ? await fetchScalar(authzBase, openFgaCbExpr, queryTimestamp)
     : undefined;
+  const authzMeP95 = authzMeP95Expr
+    ? await fetchScalar(authzBase, authzMeP95Expr, queryTimestamp)
+    : undefined;
+  const outboxPending = outboxPendingExpr
+    ? await fetchScalar(authzBase, outboxPendingExpr, queryTimestamp)
+    : undefined;
+  const outboxOldestAge = outboxOldestAgeExpr
+    ? await fetchScalar(authzBase, outboxOldestAgeExpr, queryTimestamp)
+    : undefined;
+  const outboxFailed = outboxFailedExpr
+    ? await fetchScalar(authzBase, outboxFailedExpr, queryTimestamp)
+    : undefined;
+  const openFgaUp = openFgaUpExpr
+    ? await fetchScalar(authzBase, openFgaUpExpr, queryTimestamp)
+    : undefined;
 
   const payload = {
     ttfb_p95_ms: Number(ttfbMs.toFixed(2)),
@@ -207,6 +241,12 @@ const main = async () => {
     ...(authzCacheMissRate !== undefined && { authz_cache_miss_rate_pct: Number(authzCacheMissRate.toFixed(3)) }),
     ...(authzDecisionsTotal !== undefined && { authz_decisions_total: Math.round(authzDecisionsTotal) }),
     ...(openFgaCbState !== undefined && { openfga_circuit_breaker_state: Math.round(openFgaCbState) }),
+    ...(authzMeP95 !== undefined && { authz_me_p95_ms: Number(authzMeP95.toFixed(2)) }),
+    ...(outboxPending !== undefined && { tuple_sync_outbox_pending_total: Math.round(outboxPending) }),
+    ...(outboxOldestAge !== undefined && { tuple_sync_outbox_oldest_age_s: Number(outboxOldestAge.toFixed(1)) }),
+    ...(outboxFailed !== undefined && { tuple_sync_outbox_failed_total: Math.round(outboxFailed) }),
+    ...(openFgaUp !== undefined && { openfga_up: Math.round(openFgaUp) }),
+    ...(phase && { phase }),
     windowMinutes,
     timestamp: nowIso,
   };
