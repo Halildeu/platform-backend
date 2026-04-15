@@ -167,9 +167,10 @@ public class AuthorizationControllerV1 {
      * Returns 200 with {allowed, reason} — never 403 for deny (deny is in payload).
      */
     @PostMapping("/check")
-    public ResponseEntity<Map<String, Object>> check(@RequestBody AuthzCheckRequest request) {
-        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
-        String userId = scope != null ? scope.userId() : "0";
+    public ResponseEntity<Map<String, Object>> check(
+            @RequestBody AuthzCheckRequest request,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt) {
+        String userId = resolveUserId(jwt);
 
         var result = authzService.checkWithReason(
                 userId,
@@ -185,6 +186,37 @@ public class AuthorizationControllerV1 {
     }
 
     /**
+     * CNS-20260415-004 (Codex bulgu #2): Permission-service'te ScopeContextFilter
+     * registration eksik/degisken oldugu icin ScopeContextHolder.get() persona
+     * token'larinda null donup userId="0" fallback'ine dusuyordu — tum persona
+     * checklerini ayni user'a yoneltip synthetic canary'yi bozuyordu.
+     *
+     * Fix: JWT'den direct userId extraction. Oncelik sirasi:
+     *  1. ScopeContextHolder (legacy, filter registered ise)
+     *  2. JWT 'uid' claim (JwtTokenProvider tarafindan yazildi, PR6b sonrasi
+     *     permissions claim yok ama uid hala var)
+     *  3. JWT 'sub' claim (email; userId degil ama fallback olarak guvenilir)
+     *  4. "0" local profile/permitAll fallback
+     */
+    private String resolveUserId(org.springframework.security.oauth2.jwt.Jwt jwt) {
+        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
+        if (scope != null && scope.userId() != null && !"0".equals(scope.userId())) {
+            return scope.userId();
+        }
+        if (jwt != null) {
+            Object uid = jwt.getClaim("uid");
+            if (uid != null) {
+                return uid.toString();
+            }
+            String sub = jwt.getSubject();
+            if (sub != null && !sub.isBlank()) {
+                return sub;
+            }
+        }
+        return "0";  // local profile / permitAll fallback
+    }
+
+    /**
      * Batch object-level authorization check — multiple checks in a single request.
      * Max 20 checks per call.
      */
@@ -193,7 +225,9 @@ public class AuthorizationControllerV1 {
                                  String relation, String objectType, String objectId) {}
 
     @PostMapping("/batch-check")
-    public ResponseEntity<?> batchCheck(@RequestBody BatchCheckRequest request) {
+    public ResponseEntity<?> batchCheck(
+            @RequestBody BatchCheckRequest request,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt) {
         if (request.checks() == null || request.checks().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of("error", "checks array is required"));
         }
@@ -201,8 +235,9 @@ public class AuthorizationControllerV1 {
             return ResponseEntity.badRequest().body(Map.of("error", "Max 20 checks per batch request"));
         }
 
-        var scope = com.example.commonauth.scope.ScopeContextHolder.get();
-        String userId = scope != null ? scope.userId() : "0";
+        // CNS-20260415-004: resolveUserId() JWT bazli — ScopeContextFilter persona
+        // token'lari icin guvenilir degildi (Codex bulgu #2).
+        String userId = resolveUserId(jwt);
 
         var batchRequests = request.checks().stream()
                 .map(c -> new OpenFgaAuthzService.BatchCheckRequest(

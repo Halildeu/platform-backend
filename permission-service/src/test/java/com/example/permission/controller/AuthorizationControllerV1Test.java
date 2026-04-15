@@ -166,7 +166,8 @@ class AuthorizationControllerV1Test {
             when(authzService.checkWithReason("0", "can_view", "report", "HR_REPORTS"))
                     .thenReturn(new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(true, "ALLOWED"));
 
-            ResponseEntity<Map<String, Object>> response = controller.check(request);
+            // CNS-004 fix #2: check() signature genisletildi (Jwt param). Mock null → "0" fallback.
+            ResponseEntity<Map<String, Object>> response = controller.check(request, null);
 
             assertEquals(200, response.getStatusCode().value());
             Map<String, Object> body = response.getBody();
@@ -182,7 +183,8 @@ class AuthorizationControllerV1Test {
             when(authzService.checkWithReason("0", "can_view", "report", "SECRET_REPORT"))
                     .thenReturn(new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(false, "blocked"));
 
-            ResponseEntity<Map<String, Object>> response = controller.check(request);
+            // CNS-004 fix #2: check() signature genisletildi (Jwt param). Mock null → "0" fallback.
+            ResponseEntity<Map<String, Object>> response = controller.check(request, null);
 
             // B3 semantics: deny is in payload, NOT in HTTP status
             assertEquals(200, response.getStatusCode().value());
@@ -202,7 +204,8 @@ class AuthorizationControllerV1Test {
         void batchCheck_emptyReturns400() {
             var request = new AuthorizationControllerV1.BatchCheckRequest(List.of());
 
-            ResponseEntity<?> response = controller.batchCheck(request);
+            // CNS-004 fix #2: batchCheck() signature genisletildi (Jwt param). Mock null → "0" fallback.
+            ResponseEntity<?> response = controller.batchCheck(request, null);
 
             assertEquals(400, response.getStatusCode().value());
         }
@@ -216,7 +219,8 @@ class AuthorizationControllerV1Test {
             }
             var request = new AuthorizationControllerV1.BatchCheckRequest(checks);
 
-            ResponseEntity<?> response = controller.batchCheck(request);
+            // CNS-004 fix #2: batchCheck() signature genisletildi (Jwt param). Mock null → "0" fallback.
+            ResponseEntity<?> response = controller.batchCheck(request, null);
 
             assertEquals(400, response.getStatusCode().value());
         }
@@ -236,7 +240,8 @@ class AuthorizationControllerV1Test {
                             new com.example.commonauth.openfga.OpenFgaAuthzService.CheckResult(false, "blocked")
                     ));
 
-            ResponseEntity<?> response = controller.batchCheck(request);
+            // CNS-004 fix #2: batchCheck() signature genisletildi (Jwt param). Mock null → "0" fallback.
+            ResponseEntity<?> response = controller.batchCheck(request, null);
 
             assertEquals(200, response.getStatusCode().value());
         }
