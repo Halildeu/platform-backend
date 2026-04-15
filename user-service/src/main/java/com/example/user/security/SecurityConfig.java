@@ -1,6 +1,7 @@
 package com.example.user.security;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.core.env.Environment;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -52,10 +53,10 @@ public class SecurityConfig {
 
                 // 3. İstekler için yetkilendirme kurallarını belirliyoruz.
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
                         .requestMatchers(
                                 "/api/users/by-email/**",
-                                "/api/users/public/register",
-                                "/actuator/**"
+                                "/api/users/public/register"
                         ).permitAll()
                         .requestMatchers("/api/users/internal/**").hasAuthority("PERM_users:internal")
                         .anyRequest().authenticated()
