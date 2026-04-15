@@ -24,14 +24,17 @@ RUN mvn clean package -DskipTests
 # 'jammy' etiketi, Ubuntu 22.04 (Jammy Jellyfish) tabanlı olduğunu belirtir ve stabil bir seçenektir.
 FROM eclipse-temurin:21-jre-jammy
 
-# Çalışma dizini.
+# D14: non-root user
+RUN groupadd --gid 1000 --system app \
+    && useradd  --uid 1000 --gid 1000 --system --shell /usr/sbin/nologin app
+
 WORKDIR /app
 
-# Derlenmiş JAR dosyasını build aşamasından bu yeni imajın içine kopyalıyoruz.
 COPY --from=build /app/target/*.jar app.jar
+RUN chown app:app app.jar
 
-# Uygulamanın çalışacağı portu dışarıya açıyoruz (bilgilendirme amaçlı).
-EXPOSE 8080
+EXPOSE 8080 8081
 
-# Container başladığında çalıştırılacak komut.
+USER 1000:1000
+
 ENTRYPOINT ["java", "-jar", "app.jar"]

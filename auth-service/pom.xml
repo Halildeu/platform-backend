@@ -27,11 +27,9 @@
     </properties>
 
     <dependencies>
-        <!-- Spring Cloud ve Eureka Client için -->
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
-        </dependency>
+        <!-- D7 (platform-k8s-gitops 2026-04-15): Eureka KALDIRILDI.
+             K8s native DNS kullanılır (svc.cluster.local). Compose ortamında
+             zaten discovery-server opsiyoneldi. -->
 
         <!-- Web ve Güvenlik için -->
         <dependency>

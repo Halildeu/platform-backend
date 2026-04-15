@@ -27,7 +27,7 @@ public class PermissionServiceClient {
     private final WebClient webClient;
     private final ServiceTokenProvider serviceTokenProvider;
 
-    public PermissionServiceClient(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder webClientBuilder,
+    public PermissionServiceClient(@Qualifier("plainWebClientBuilder") WebClient.Builder webClientBuilder,
                                    @Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
                                    @org.springframework.beans.factory.annotation.Value("${permission.service.base-url:http://permission-service}") String baseUrl,
                                    ServiceTokenProvider serviceTokenProvider) {

@@ -1,0 +1,153 @@
+# application-k8s.yml
+# K8s ortamı (testai.acik.com, platform-prod, platform-test) için profil.
+# platform-k8s-gitops repo manifest'leri bu profil ile uyumlu.
+#
+# D7 (2026-04-15): Eureka kaldırıldı — K8s native DNS
+# D14: management port 8081 (actuator auth-free)
+# D19: host services Service+Endpoints IP pin
+# D26: secrets ESO/Vault üzerinden env olarak gelir (application-prod.yml gibi
+#      config-tree değil)
+#
+# Bu profil prod/test fark etmez — overlay patch'leri namespace-specific
+# URL'leri set eder.
+
+spring:
+  application:
+    name: auth-service
+  threads:
+    virtual:
+      enabled: true
+
+  # Vault tamamen devre dışı (K8s'te ESO handle ediyor).
+  # application-prod.yml Vault import eder; k8s profilinde o import YOK.
+  cloud:
+    vault:
+      enabled: false
+    discovery:
+      enabled: false
+    service-registry:
+      auto-registration:
+        enabled: false
+
+  # ===== DataSource — ESO-fed env via Secret envFrom =====
+  datasource:
+    # SPRING_DATASOURCE_URL, _USERNAME, _PASSWORD env convention
+    # (Spring Boot otomatik map eder — explicit tanıma gerek yok)
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      connection-timeout: 30000
+
+  # ===== JPA =====
+  jpa:
+    hibernate:
+      # Prod/test override: validate (migration tamamlanmış olmalı)
+      # Boş DB'de bootstrap için env ile `update` yapılabilir (test overlay)
+      ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:validate}
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: ${AUTH_DB_SCHEMA:public}
+
+  # ===== Flyway =====
+  # K8s'te Flyway migration image içinde bundle'lı olmalı. Test ortamında
+  # boş DB için env ile disable edilebilir.
+  flyway:
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    table: auth_flyway_history
+    default-schema: ${AUTH_DB_SCHEMA:public}
+    schemas: ${AUTH_DB_SCHEMA:public}
+
+  # ===== Security =====
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/serban}
+          jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
+
+# ===== Server =====
+server:
+  port: ${SERVER_PORT:8088}
+
+# ===== Actuator (ayrı management port — D26 auth hardening) =====
+management:
+  server:
+    port: ${MANAGEMENT_SERVER_PORT:8081}
+  endpoints:
+    web:
+      exposure:
+        # Prometheus scrape (ServiceMonitor) için prometheus endpoint açık
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,prometheus}
+  endpoint:
+    health:
+      probes:
+        enabled: true     # /actuator/health/liveness + /readiness için
+      show-details: never  # D26 hardening
+
+# ===== Application-specific (JWT, service clients) =====
+jwt:
+  secret: ${JWT_SECRET:}
+  expiration: ${JWT_EXPIRATION:86400000}
+  issuer: auth-service
+
+permission:
+  service:
+    base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service.platform-prod.svc.cluster.local:8090}
+  audit-mirror:
+    base-url: ${PERMISSION_AUDIT_MIRROR_BASE_URL:${PERMISSION_SERVICE_BASE_URL:http://permission-service.platform-prod.svc.cluster.local:8090}}
+    enabled: ${PERMISSION_AUDIT_MIRROR_ENABLED:true}
+    internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:}
+
+user:
+  service:
+    base-url: ${USER_SERVICE_BASE_URL:http://user-service.platform-prod.svc.cluster.local:8089}
+
+security:
+  # Service-to-service JWT
+  service-token:
+    audience: ${SERVICE_TOKEN_AUDIENCE:permission-service}
+    ttl-seconds: ${SERVICE_TOKEN_TTL_SECONDS:60}
+    permissions: ${SERVICE_TOKEN_PERMISSIONS:permissions:read}
+    environment: ${SERVICE_TOKEN_ENV:k8s}
+  service-jwt:
+    # ESO tarafından Vault'tan doldurulur — AUTH_SERVICE_JWT_PRIVATE_KEY +
+    # AUTH_SERVICE_JWT_PUBLIC_KEY base64 DER PKCS#8 format
+    private-key: ${AUTH_SERVICE_JWT_PRIVATE_KEY:}
+    public-key: ${AUTH_SERVICE_JWT_PUBLIC_KEY:}
+    key-id: ${SERVICE_JWT_KEY_ID:service-jwt-key-k8s}
+  service-clients:
+    user-service: ${SERVICE_CLIENT_USER_SERVICE_SECRET:}
+  service-mint:
+    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write}
+    rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
+  admin-fallback:
+    enabled: ${SECURITY_ADMIN_FALLBACK_ENABLED:false}
+
+auth:
+  tokens:
+    verification-ttl: ${AUTH_VERIFICATION_TTL:PT24H}
+    password-reset-ttl: ${AUTH_PASSWORD_RESET_TTL:PT1H}
+    verification-base-url: ${AUTH_VERIFICATION_BASE_URL:https://testai.acik.com/verify-email}
+    reset-base-url: ${AUTH_RESET_BASE_URL:https://testai.acik.com/reset-password}
+
+# ===== Logging =====
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    org.springframework.security: ${LOGGING_LEVEL_SPRING_SECURITY:INFO}
+    com.example.auth: ${LOGGING_LEVEL_COM_ACIK:INFO}
+  # JSON log format (Promtail → Loki parse için)
+  pattern:
+    console: '{"timestamp":"%d{yyyy-MM-dd HH:mm:ss.SSSXXX}","level":"%p","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}","thread":"%t","logger":"%logger{36}","message":"%m"}%n'
+
+# ===== Tracing (Micrometer → Tempo) =====
+# base'de kapalı, overlay ile prod'da açılır
+management.tracing:
+  enabled: ${MANAGEMENT_TRACING_ENABLED:false}
+  sampling:
+    probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
