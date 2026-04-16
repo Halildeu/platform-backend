@@ -483,9 +483,22 @@ services:
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
       - EUREKA_INSTANCE_PREFER_IP_ADDRESS=true
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
+      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
+      - SECURITY_JWT_ISSUERS=${SECURITY_JWT_ISSUERS:-http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
       - SECURITY_JWT_AUDIENCE=report-service,account,frontend
       - PERMISSION_SERVICE_INTERNAL_API_KEY=${PERMISSION_SERVICE_INTERNAL_API_KEY:-dev-local-audit-mirror-key}
+      # PR6c-1 follow-up (CNS-20260416-003 post-deploy): Zanzibar / OpenFGA
+      # wiring for direct SDK authz. Mirrors user-service, variant-service,
+      # core-data-service environment blocks. Without these the resolver in
+      # backend/report-service/.../authz/OpenFgaAuthzMeBuilder falls back to
+      # disabled mode and /api/v1/reports returns an empty list for every
+      # caller — including super-admins.
+      - ERP_OPENFGA_ENABLED=${ERP_OPENFGA_ENABLED:-true}
+      - ERP_OPENFGA_API_URL=${ERP_OPENFGA_API_URL:-http://openfga:8080}
+      - ERP_OPENFGA_STORE_ID=${ERP_OPENFGA_STORE_ID:-}
+      - ERP_OPENFGA_MODEL_ID=${ERP_OPENFGA_MODEL_ID:-}
+      - PERMISSION_SERVICE_BASE_URL=${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
+      - AUTHZ_USER_TABLE=${AUTHZ_USER_TABLE:-user_service.users}
       # PostgreSQL — Docker network hostname
       - REPORT_PG_HOST=postgres-db
       - REPORT_PG_PORT=5432
