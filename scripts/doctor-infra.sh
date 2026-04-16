@@ -557,6 +557,46 @@ else
   warn "K: Compose file(s) missing — SSOT check skipped"
 fi
 
+# ── L: SPRING PROFILES STAGING GUARD (STORY-0319) ───────────────────
+# Staging'de SPRING_PROFILES_ACTIVE içinde 'local' varsa canary metrics
+# anlamsız — SecurityConfigLocal permitAll aktif olur.
+# Runtime container env'i kontrol edilir (Docker exec).
+echo ""
+echo "=== L: Spring Profiles Staging Guard (STORY-0319) ==="
+
+SERVICES_TO_CHECK="user-service auth-service variant-service core-data-service api-gateway permission-service report-service"
+for svc in $SERVICES_TO_CHECK; do
+  CONTAINER="platform-${svc}-1"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+    ACTIVE=$(docker exec "$CONTAINER" printenv SPRING_PROFILES_ACTIVE 2>/dev/null || echo "N/A")
+    if echo "$ACTIVE" | grep -qi "local"; then
+      fail "L1-${svc}: SPRING_PROFILES_ACTIVE='${ACTIVE}' hâlâ 'local' içeriyor (canary metrics anlamsız)"
+    else
+      pass "L1-${svc}: '${ACTIVE}' (local yok)"
+    fi
+  else
+    warn "L1-${svc}: container '${CONTAINER}' çalışmıyor (skip)"
+  fi
+done
+
+# L2: Token'sız /authz/check 401/403 doğrulaması (prod profile = JWT zorunlu)
+# CNS-20260416-003 Codex fix: -sf flag'i kaldırıldı. -f ile 4xx status'ta curl exit 22
+# döner, || echo "000" tetiklenir, gerçek HTTP status (401/403) yakalanmaz.
+# Doğru pattern: -s -o /dev/null -w '%{http_code}' → her durumda status code döner.
+AUTHZ_CHECK_URL="${AUTHZ_CHECK_URL:-http://localhost:8090/api/v1/authz/check}"
+AUTHZ_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AUTHZ_CHECK_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"relation":"can_view","objectType":"module","objectId":"TEST"}' 2>/dev/null || echo "000")
+if [ "$AUTHZ_STATUS" = "401" ] || [ "$AUTHZ_STATUS" = "403" ]; then
+  pass "L2: Token'sız /authz/check → ${AUTHZ_STATUS} (JWT zorunlu, permitAll kapalı)"
+elif [ "$AUTHZ_STATUS" = "200" ]; then
+  fail "L2: Token'sız /authz/check → 200 (SecurityConfigLocal permitAll hâlâ aktif!)"
+elif [ "$AUTHZ_STATUS" = "000" ]; then
+  warn "L2: /authz/check ulaşılamadı (permission-service down veya network?)"
+else
+  warn "L2: Token'sız /authz/check → ${AUTHZ_STATUS} (beklenmeyen — 401/403 bekleniyor)"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"
