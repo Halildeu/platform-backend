@@ -597,6 +597,45 @@ else
   warn "L2: Token'sız /authz/check → ${AUTHZ_STATUS} (beklenmeyen — 401/403 bekleniyor)"
 fi
 
+# L3-L8: report-service Zanzibar env drift guard (PR #424, CNS-20260416-003).
+#
+# When BACKEND_DEPLOY_REMOTE_ENV_FILE (the canonical /home/halil/platform/env/backend.env
+# used by deploy-backend.sh) drifts from the repo .env contract, containers come up
+# with blank ERP_OPENFGA_* values — OpenFgaAuthzMeBuilder silently falls back to
+# disabled mode and every /api/v1/reports response becomes an empty list (sahte yeşil).
+# These assertions fail-close the scenario so post-deploy drift cannot slip through.
+REPORT_CONTAINER="platform-report-service-1"
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REPORT_CONTAINER}$"; then
+  check_nonblank_env() {
+    local id="$1"
+    local var="$2"
+    local label="$3"
+    local value
+    value=$(docker exec "$REPORT_CONTAINER" printenv "$var" 2>/dev/null || echo "")
+    if [ -z "$value" ]; then
+      fail "${id}-${var}: ${label} empty — canonical backend.env likely drifted (compose default fell through)"
+    else
+      pass "${id}-${var}: ${label} set (${value:0:40}...)"
+    fi
+  }
+  check_nonblank_env "L3" "ERP_OPENFGA_ENABLED"       "Zanzibar enabled"
+  check_nonblank_env "L4" "ERP_OPENFGA_STORE_ID"      "OpenFGA store id"
+  check_nonblank_env "L5" "ERP_OPENFGA_MODEL_ID"      "OpenFGA model id"
+  check_nonblank_env "L6" "PERMISSION_SERVICE_BASE_URL" "Permission-service base URL"
+  check_nonblank_env "L7" "AUTHZ_USER_TABLE"          "AuthenticatedUserLookup user table"
+  # L8: issuer must be the ai.acik.com public URL OR match SECURITY_JWT_ISSUERS list —
+  # token iss=https://ai.acik.com/realms/serban otherwise gets rejected.
+  ISSUER=$(docker exec "$REPORT_CONTAINER" printenv SECURITY_JWT_ISSUER 2>/dev/null || echo "")
+  ISSUERS=$(docker exec "$REPORT_CONTAINER" printenv SECURITY_JWT_ISSUERS 2>/dev/null || echo "")
+  if echo "$ISSUER$ISSUERS" | grep -q "ai.acik.com"; then
+    pass "L8-SECURITY_JWT_ISSUER: accepts ai.acik.com tokens (${ISSUER:-<from ISSUERS>})"
+  else
+    fail "L8-SECURITY_JWT_ISSUER: neither ISSUER nor ISSUERS contains 'ai.acik.com' — production tokens will 401"
+  fi
+else
+  warn "L3-L8: container '${REPORT_CONTAINER}' çalışmıyor (skip Zanzibar env drift guard)"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"
