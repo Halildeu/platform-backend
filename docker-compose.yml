@@ -21,6 +21,7 @@ services:
       - "5432:5432"
     networks:
       - microservice-network
+      - platform-test-net
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
@@ -265,6 +266,7 @@ services:
       - "8081:8080"
     networks:
       - microservice-network
+      - platform-test-net
     volumes:
       - ./backend/keycloak/exports:/opt/keycloak/data/import
       - ./backend/keycloak/themes:/opt/keycloak/themes
@@ -657,3 +659,5 @@ networks:
     driver: bridge
   observability-network:
     driver: bridge
+  platform-test-net:
+    external: true
