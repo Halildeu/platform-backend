@@ -213,13 +213,21 @@ services:
       - SPRING_PROFILES_ACTIVE=${API_GATEWAY_PROFILES:-local,docker}
       # RS256/JWKS doğrulaması gateway tarafında Keycloak JWKS üzerinden yapılır
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      - SECURITY_JWT_ISSUER=http://keycloak:8080/realms/serban
+      - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service,core-data-service
       # Ek issuer: Keycloak (lokal dev)
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs,http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=${SECURITY_JWT_ISSUERS:-http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
       - SECURITY_JWT_SECONDARY_ISSUER=http://localhost:8081/realms/serban
       - SECURITY_JWT_SECONDARY_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
+      # PR #426 (CNS-20260416-003 gateway 500 root cause fix).
+      # AudienceValidator fallback order: aud match → azp in allowedClientIds → client_id match.
+      # Token audience is "account" (Keycloak default) and azp is the client that minted
+      # the token (e.g. canary-load, frontend, serban-web). Without this env var the gateway
+      # falls back to a code default that does not include canary-load, so every canary
+      # token returns 500 "No suitable decoder accepted the token". Prod compose already
+      # forwards this variable — staging was the drift.
+      - SECURITY_AUTH_ALLOWED_CLIENT_IDS=${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account,canary-load}
       - SPRING_CLOUD_VAULT_ENABLED="false"
       - SPRING_CLOUD_VAULT_FAIL_FAST="false"
       - SPRING_CLOUD_VAULT_KV_ENABLED="false"
