@@ -1,6 +1,6 @@
 spring:
   config:
-    import: vault://secret/${VAULT_SECRET_PREFIX:stage}/db/${spring.application.name}
+    import: optional:vault://secret/${VAULT_SECRET_PREFIX:stage}/db/${spring.application.name}
   cloud:
     vault:
       enabled: true

@@ -1,8 +1,8 @@
 spring:
   config:
     import:
-      - vault://secret/${VAULT_SECRET_PREFIX:stage}/db/auth-service
-      - vault://secret/${VAULT_SECRET_PREFIX:stage}/jwt/auth-service
+      - optional:vault://secret/${VAULT_SECRET_PREFIX:stage}/db/auth-service
+      - optional:vault://secret/${VAULT_SECRET_PREFIX:stage}/jwt/auth-service
   cloud:
     vault:
       enabled: true
