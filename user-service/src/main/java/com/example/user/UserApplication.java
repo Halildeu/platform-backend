@@ -2,10 +2,14 @@ package com.example.user;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.cloud.client.discovery.EnableDiscoveryClient; // YENİ IMPORT
 
+/**
+ * D7 (platform-k8s-gitops 2026-04-15):
+ * @EnableDiscoveryClient kaldırıldı — K8s ortamında Eureka yok,
+ * svc DNS (<svc>.<ns>.svc.cluster.local) ile doğrudan routing.
+ * pom.xml'den spring-cloud-starter-netflix-eureka-client dep'i de çıkarıldı.
+ */
 @SpringBootApplication
-@EnableDiscoveryClient // YENİ ANOTASYON
 public class UserApplication {
     public static void main(String[] args) {
         SpringApplication.run(UserApplication.class, args);

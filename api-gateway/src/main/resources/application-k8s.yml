@@ -1,0 +1,107 @@
+# application-k8s.yml — api-gateway (platform-k8s-gitops uyumlu)
+#
+# D7: Eureka kaldırıldı, route URI'leri K8s svc DNS ile set edilir
+# D18: management port 8081 ayrı port (actuator auth-free, probe için)
+# D25: Dilim 1+2+3 path prefix routing (/auth, /users, /variants, /core, /reports, /schemas)
+
+spring:
+  application:
+    name: api-gateway
+  threads:
+    virtual:
+      enabled: true
+
+  cloud:
+    vault:
+      enabled: false
+    discovery:
+      enabled: false
+    service-registry:
+      auto-registration:
+        enabled: false
+    loadbalancer:
+      cache:
+        enabled: false
+
+    # Gateway route tanımları — env override (PLACEHOLDER_NS overlay patch ile)
+    gateway:
+      discovery:
+        locator:
+          enabled: false        # ReactiveDiscoveryClient bean çakışmasını önler
+      routes:
+        - id: auth-service
+          uri: ${AUTH_SERVICE_URL:http://auth-service:8088}
+          predicates:
+            - Path=/auth/**
+          filters:
+            - StripPrefix=1
+        - id: user-service
+          uri: ${USER_SERVICE_URL:http://user-service:8089}
+          predicates:
+            - Path=/users/**
+          filters:
+            - StripPrefix=1
+        - id: variant-service
+          uri: ${VARIANT_SERVICE_URL:http://variant-service:8091}
+          predicates:
+            - Path=/variants/**
+          filters:
+            - StripPrefix=1
+        - id: core-data-service
+          uri: ${CORE_DATA_URL:http://core-data-service:8092}
+          predicates:
+            - Path=/core/**
+          filters:
+            - StripPrefix=1
+        - id: report-service
+          uri: ${REPORT_URL:http://report-service:8095}
+          predicates:
+            - Path=/reports/**
+          filters:
+            - StripPrefix=1
+        - id: schema-service
+          uri: ${SCHEMA_URL:http://schema-service:8096}
+          predicates:
+            - Path=/schemas/**
+          filters:
+            - StripPrefix=1
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/serban}
+          jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
+
+# Spring Cloud auto-config'ten Eureka ilişkili class'ları hariç tut — dependency
+# kaldırıldı ama Spring Cloud Gateway native modüllerinden kalan bean reference
+# fail olabilir. Bu eksikliği cover eden final safety net:
+# (dep kaldırıldığı için bu exclude fiilen no-op; bırakıyoruz çünkü
+#  main-stable rollout sürecinde her node aynı anda upgrade olmaz, karışıklık önler)
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  server:
+    port: ${MANAGEMENT_SERVER_PORT:8081}
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,prometheus,gateway}
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  tracing:
+    enabled: ${MANAGEMENT_TRACING_ENABLED:false}
+    sampling:
+      probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
+
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    org.springframework.cloud.gateway: ${LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_CLOUD_GATEWAY:INFO}
+  pattern:
+    console: '{"timestamp":"%d{yyyy-MM-dd HH:mm:ss.SSSXXX}","level":"%p","trace_id":"%X{traceId:-}","span_id":"%X{spanId:-}","thread":"%t","logger":"%logger{36}","message":"%m"}%n'

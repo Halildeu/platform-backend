@@ -23,7 +23,7 @@ public class UserServiceClient {
     private final WebClient webClient;
     private final ServiceTokenProvider serviceTokenProvider;
 
-    public UserServiceClient(@Qualifier("loadBalancedWebClientBuilder") WebClient.Builder webClientBuilder,
+    public UserServiceClient(@Qualifier("plainWebClientBuilder") WebClient.Builder webClientBuilder,
                              @org.springframework.beans.factory.annotation.Value("${user.service.base-url:http://user-service}") String baseUrl,
                              ServiceTokenProvider serviceTokenProvider) {
         this.webClient = webClientBuilder.baseUrl(baseUrl).build();

@@ -15,10 +15,19 @@ RUN mvn -f core-data-service/pom.xml clean package -Dmaven.test.skip=true
 ## Runtime Stage
 FROM eclipse-temurin:21-jre-jammy
 
+# D14: non-root user (K8s PSS restricted + runAsNonRoot uyumlu)
+# UID 1000 platform-k8s-gitops Deployment securityContext ile eşleşir
+RUN groupadd --gid 1000 --system app \
+    && useradd  --uid 1000 --gid 1000 --system --shell /usr/sbin/nologin app
+
 WORKDIR /app
 
 COPY --from=build /app/core-data-service/target/*.jar app.jar
+RUN chown app:app app.jar
 
-EXPOSE 8092
+# Main app (8092) + management actuator (8081) — application-k8s.yml ile eşleşir
+EXPOSE 8092 8081
+
+USER 1000:1000
 
 ENTRYPOINT ["java", "-jar", "app.jar"]

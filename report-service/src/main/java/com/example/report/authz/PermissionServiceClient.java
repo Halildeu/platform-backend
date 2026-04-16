@@ -1,6 +1,5 @@
 package com.example.report.authz;
 
-import java.net.URI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -9,7 +8,6 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
@@ -35,11 +33,10 @@ public class PermissionServiceClient implements PermissionResolver {
 
     private final WebClient webClient;
 
-    public PermissionServiceClient(WebClient.Builder loadBalancedWebClientBuilder,
-                                   @Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
+    public PermissionServiceClient(@Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
                                    @Value("${permission.service.base-url:http://permission-service}") String baseUrl) {
-        WebClient.Builder selectedBuilder = requiresDirectHttp(baseUrl) ? plainWebClientBuilder : loadBalancedWebClientBuilder;
-        this.webClient = selectedBuilder.baseUrl(baseUrl).build();
+        // D7: @LoadBalanced kaldırıldı — K8s DNS ile plain builder yeterli.
+        this.webClient = plainWebClientBuilder.baseUrl(baseUrl).build();
     }
 
     @Cacheable(value = "authzMe", key = "#jwt.subject")
@@ -55,20 +52,5 @@ public class PermissionServiceClient implements PermissionResolver {
                 })
                 .defaultIfEmpty(new AuthzMeResponse())
                 .block();
-    }
-
-    private boolean requiresDirectHttp(String baseUrl) {
-        try {
-            URI uri = URI.create(baseUrl);
-            String host = uri.getHost();
-            if (!StringUtils.hasText(host)) {
-                return false;
-            }
-            return "localhost".equalsIgnoreCase(host)
-                    || host.contains(".")
-                    || host.contains(":");
-        } catch (IllegalArgumentException ex) {
-            return false;
-        }
     }
 }
