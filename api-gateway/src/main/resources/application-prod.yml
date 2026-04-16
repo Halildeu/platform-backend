@@ -3,5 +3,5 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: http://localhost:8081/realms/serban
-          jwk-set-uri: http://localhost:8081/realms/serban/protocol/openid-connect/certs
+          issuer-uri: http://keycloak:8080/realms/serban
+          jwk-set-uri: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
