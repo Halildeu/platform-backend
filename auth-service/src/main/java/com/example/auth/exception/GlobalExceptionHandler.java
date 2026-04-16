@@ -14,6 +14,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.List;
 import java.util.UUID;
@@ -54,6 +55,15 @@ public class GlobalExceptionHandler {
                 .map(error -> new FieldError(error.getField(), error.getDefaultMessage()))
                 .toList();
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
+    }
+
+    // Spring Boot 3.2+ — bilinmeyen path / static resource bulunamazsa.
+    // Codex Tur-3 #5: main port 8088'de /actuator/* (management ayrı port'ta) erişen
+    // istek bu exception'a düşüyordu, handleGeneric 500 dönüyordu → gateway ve client
+    // için kontrollü 404.
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(NoResourceFoundException ex) {
+        return build(HttpStatus.NOT_FOUND, "NOT_FOUND", "Kaynak bulunamadı.");
     }
 
     @ExceptionHandler(Exception.class)
