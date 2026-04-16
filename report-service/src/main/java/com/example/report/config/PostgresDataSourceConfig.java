@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.flyway.FlywayDataSource;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import javax.sql.DataSource;
@@ -43,5 +44,17 @@ public class PostgresDataSourceConfig {
     @Bean("pgJdbc")
     public NamedParameterJdbcTemplate pgJdbcTemplate() {
         return new NamedParameterJdbcTemplate(pgDataSource());
+    }
+
+    /**
+     * Plain {@link JdbcTemplate} backed by the PostgreSQL datasource — used by
+     * {@code AuthenticatedUserLookupService} (common-auth) which does not accept
+     * {@link NamedParameterJdbcTemplate}. The primary {@code spring.datasource}
+     * is MSSQL (reporting queries, read-only), so this qualifier is mandatory
+     * to avoid the lookup service wiring against MSSQL by mistake.
+     */
+    @Bean("pgJdbcPlain")
+    public JdbcTemplate pgPlainJdbcTemplate() {
+        return new JdbcTemplate(pgDataSource());
     }
 }

@@ -63,6 +63,38 @@ context-health:
   cache-ttl-seconds: ${CONTEXT_HEALTH_CACHE_TTL:30}
   enabled: ${CONTEXT_HEALTH_ENABLED:false}
 
+# --- Zanzibar / OpenFGA wiring (PR6c-1, CNS-20260416-003) ---
+# Env names MUST use the ERP_OPENFGA_* prefix — that is the contract shared
+# with compose/.env, user-service and variant-service. A bare OPENFGA_*
+# variant would not be picked up in staging/prod.
+erp:
+  openfga:
+    enabled: ${ERP_OPENFGA_ENABLED:true}
+    api-url: ${ERP_OPENFGA_API_URL:http://openfga:8080}
+    store-id: ${ERP_OPENFGA_STORE_ID:}
+    model-id: ${ERP_OPENFGA_MODEL_ID:}
+    check-cache-ttl-seconds: ${ERP_OPENFGA_CHECK_CACHE_TTL_SECONDS:10}
+
+# AuthenticatedUserLookupService — user table (PostgreSQL, same DB as user-service).
+authz:
+  user-table: ${AUTHZ_USER_TABLE:user_service.users}
+
+# Permission-service hub — default follows the repo-wide contract
+# (DNS name `permission-service`); env override pins a specific host:port in
+# compose/k8s. report-service only uses this for the
+# RemoteAuthzVersionProvider poll; all authz decisions go through the local
+# OpenFgaAuthzService (C-008 compliance).
+permission:
+  service:
+    base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service}
+
+scope:
+  cache:
+    enabled: ${SCOPE_CACHE_ENABLED:true}
+    ttl-seconds: ${SCOPE_CACHE_TTL_SECONDS:30}
+    ttl-jitter-seconds: ${SCOPE_CACHE_TTL_JITTER_SECONDS:3}
+    max-size: ${SCOPE_CACHE_MAX_SIZE:5000}
+
 logging:
   level:
     org.springframework.security: INFO
