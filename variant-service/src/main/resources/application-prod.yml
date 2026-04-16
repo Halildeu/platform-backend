@@ -19,9 +19,3 @@ spring:
       ssl:
         trust-store: ${VAULT_TRUSTSTORE:}
         trust-store-type: PEM
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ${SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI:http://keycloak:8080/realms/serban}
-          jwk-set-uri: ${SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
