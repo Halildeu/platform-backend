@@ -81,12 +81,22 @@ main() {
   local github_json
   local missing=0
   local ssh_enabled
+  # STORY-0319 PR #3c — AppRole-first Vault auth migration.
+  # VAULT_TOKEN required listeden çıkarıldı; yerine AppRole credentials
+  # (VAULT_ROLE_ID + VAULT_SECRET_ID) ve feature flag'ler zorunlu.
   local config_required=(
     GIT_REMOTE_URL
     REPO_BRANCH
     GHCR_OWNER
     VAULT_URI
-    VAULT_TOKEN
+    VAULT_ROLE_ID
+    VAULT_SECRET_ID
+    VAULT_AUTH_METHOD
+    VAULT_SECRET_PREFIX
+    VAULT_FAIL_FAST
+    SPRING_CLOUD_VAULT_ENABLED
+    SPRING_CLOUD_VAULT_KV_ENABLED
+    SPRING_CLOUD_VAULT_FAIL_FAST
     KEYCLOAK_ISSUER_URI
     KEYCLOAK_JWKS_URI
     AUTH_VERIFICATION_BASE_URL
