@@ -303,7 +303,14 @@ services:
     user: "0:0"
     cap_add:
       - IPC_LOCK
-    command: vault server -config=/vault/config/vault.hcl
+    # Vault merges every .hcl file in the -config directory. Base vault.hcl
+    # stays unchanged; the active seal file is mounted alongside it via
+    # VAULT_SEAL_FILE (P1.10). Default `vault-seal-disabled.hcl` is a no-op
+    # placeholder → Shamir seal (local/staging behaviour preserved). Prod
+    # overrides VAULT_SEAL_FILE in deploy/docker-compose.prod.yml to select
+    # one of vault-seal-awskms.hcl / gcpckms / azurekeyvault / transit. See
+    # docs/04-operations/RUNBOOKS/RB-vault.md.
+    command: vault server -config=/vault/config/
     ports:
       - "8200:8200"
       - "8201:8201"
@@ -311,7 +318,8 @@ services:
       - microservice-network
     volumes:
       - vault_data:/vault/file
-      - ./devops/vault:/vault/config:ro
+      - ./devops/vault/vault.hcl:/vault/config/vault.hcl:ro
+      - ${VAULT_SEAL_FILE:-./devops/vault/vault-seal-disabled.hcl}:/vault/config/active-seal.hcl:ro
     healthcheck:
       # vault status: exit 0=unsealed+healthy, exit 1=error, exit 2=sealed
       # unseal-loop scripti otomatik acar, sonra exit 0 doner
