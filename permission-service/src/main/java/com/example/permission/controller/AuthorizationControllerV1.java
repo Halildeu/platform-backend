@@ -372,13 +372,18 @@ public class AuthorizationControllerV1 {
         String permKey = request.get("permissionKey");
         // Optional scope check: "can user access company:35?"
         String scopeType = request.get("scopeType");     // company, project, warehouse, branch
-        String scopeRefId = request.get("scopeRefId");    // e.g. "35"
+        String scopeRefIdStr = request.get("scopeRefId"); // e.g. "35"
 
         if (userIdStr == null || permTypeStr == null || permKey == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "userId, permissionType, permissionKey required");
         }
 
-        Long userId = Long.parseLong(userIdStr);
+        Long userId;
+        try {
+            userId = Long.parseLong(userIdStr);
+        } catch (NumberFormatException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "userId must be numeric");
+        }
         PermissionType permType;
         try {
             permType = PermissionType.valueOf(permTypeStr.toUpperCase());
@@ -388,14 +393,22 @@ public class AuthorizationControllerV1 {
 
         Map<String, List<Long>> userScopes = buildScopeMap(userId);
 
-        // Scope-level denial check (if requested)
-        if (scopeType != null && scopeRefId != null) {
+        // P1.9: Scope-level denial check (if both scopeType + scopeRefId provided).
+        // NO_SCOPE preserves permType/permKey in details and carries scopeType/scopeRefId
+        // in dedicated fields via deniedNoScope — previous code overloaded the
+        // permissionType/permissionKey slots with scope values (regression fix).
+        if (scopeType != null && !scopeType.isBlank() && scopeRefIdStr != null && !scopeRefIdStr.isBlank()) {
+            Long refId;
+            try {
+                refId = Long.parseLong(scopeRefIdStr);
+            } catch (NumberFormatException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "scopeRefId must be numeric");
+            }
             List<Long> scopeIds = userScopes.getOrDefault(scopeType, List.of());
-            Long refId = Long.parseLong(scopeRefId);
             if (!scopeIds.contains(refId)) {
                 List<String> userRoles = resolveUserRoleNames(userId);
-                return ResponseEntity.ok(ExplainResponseDto.denied(
-                        "NO_SCOPE", scopeType, scopeRefId, null, null, userRoles, userScopes));
+                return ResponseEntity.ok(ExplainResponseDto.deniedNoScope(
+                        permTypeStr, permKey, scopeType, refId, userRoles, userScopes));
             }
         }
 

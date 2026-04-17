@@ -14,14 +14,16 @@ public record ExplainResponseDto(
             String roleName,
             String grantType,
             String permissionType,
-            String permissionKey
+            String permissionKey,
+            String scopeType,
+            Long scopeRefId
     ) {}
 
     public static ExplainResponseDto allowed(String permissionType, String permissionKey,
                                              String roleName, String grantType,
                                              List<String> userRoles, Map<String, List<Long>> scopes) {
         return new ExplainResponseDto(true, "ALLOWED",
-                new ExplainDetails(roleName, grantType, permissionType, permissionKey),
+                new ExplainDetails(roleName, grantType, permissionType, permissionKey, null, null),
                 userRoles, scopes);
     }
 
@@ -29,7 +31,23 @@ public record ExplainResponseDto(
                                             String roleName, String grantType,
                                             List<String> userRoles, Map<String, List<Long>> scopes) {
         return new ExplainResponseDto(false, reason,
-                new ExplainDetails(roleName, grantType, permissionType, permissionKey),
+                new ExplainDetails(roleName, grantType, permissionType, permissionKey, null, null),
+                userRoles, scopes);
+    }
+
+    /**
+     * NO_SCOPE deny — preserves the original permissionType/permissionKey under
+     * ExplainDetails and carries the requested scopeType/scopeRefId in dedicated
+     * fields so the UI can render both "permission X was requested" and
+     * "scope {type}:{refId} is not accessible" without overloading the
+     * permissionType/permissionKey slots (P1.9 regression guard).
+     */
+    public static ExplainResponseDto deniedNoScope(String permissionType, String permissionKey,
+                                                    String scopeType, Long scopeRefId,
+                                                    List<String> userRoles,
+                                                    Map<String, List<Long>> scopes) {
+        return new ExplainResponseDto(false, "NO_SCOPE",
+                new ExplainDetails(null, null, permissionType, permissionKey, scopeType, scopeRefId),
                 userRoles, scopes);
     }
 }

@@ -246,4 +246,112 @@ class AuthorizationControllerV1Test {
             assertEquals(200, response.getStatusCode().value());
         }
     }
+
+    // ---- P1.9: NO_SCOPE explain path ----
+
+    @org.junit.jupiter.api.Nested
+    @org.junit.jupiter.api.DisplayName("P1.9: /authz/explain NO_SCOPE path")
+    class ExplainNoScope {
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("explain with scopeType+scopeRefId outside userScopes returns NO_SCOPE with both permission and scope fields populated")
+        void explain_noScope_preservesPermissionAndScopeSlots() {
+            when(authorizationQueryService.getUserScopeSummary(15L))
+                    .thenReturn(Map.of("COMPANY", Set.of(11L)));
+            when(assignmentRepository.findActiveAssignments(15L))
+                    .thenReturn(List.of());
+
+            Map<String, String> request = new java.util.HashMap<>();
+            request.put("userId", "15");
+            request.put("permissionType", "MODULE");
+            request.put("permissionKey", "PURCHASE");
+            request.put("scopeType", "COMPANY");
+            request.put("scopeRefId", "99");
+
+            ResponseEntity<com.example.permission.dto.v1.ExplainResponseDto> response = controller.explain(request);
+
+            assertEquals(200, response.getStatusCode().value());
+            com.example.permission.dto.v1.ExplainResponseDto body = response.getBody();
+            assertNotNull(body);
+            org.junit.jupiter.api.Assertions.assertFalse(body.allowed());
+            assertEquals("NO_SCOPE", body.reason());
+            assertEquals("MODULE", body.details().permissionType());
+            assertEquals("PURCHASE", body.details().permissionKey());
+            assertEquals("COMPANY", body.details().scopeType());
+            assertEquals(99L, body.details().scopeRefId());
+            org.junit.jupiter.api.Assertions.assertNull(body.details().roleName());
+            org.junit.jupiter.api.Assertions.assertNull(body.details().grantType());
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("explain with scopeType in userScopes falls through to permission evaluation (no NO_SCOPE short-circuit)")
+        void explain_scopeInUserScopes_doesNotShortCircuit() {
+            when(authorizationQueryService.getUserScopeSummary(15L))
+                    .thenReturn(Map.of("COMPANY", Set.of(11L, 35L)));
+            when(assignmentRepository.findActiveAssignments(15L))
+                    .thenReturn(List.of());
+
+            Map<String, String> request = new java.util.HashMap<>();
+            request.put("userId", "15");
+            request.put("permissionType", "MODULE");
+            request.put("permissionKey", "PURCHASE");
+            request.put("scopeType", "COMPANY");
+            request.put("scopeRefId", "35");
+
+            ResponseEntity<com.example.permission.dto.v1.ExplainResponseDto> response = controller.explain(request);
+
+            assertEquals(200, response.getStatusCode().value());
+            com.example.permission.dto.v1.ExplainResponseDto body = response.getBody();
+            assertNotNull(body);
+            // NO_ROLE fallback — user has no role assignments, so permission evaluation yields NO_ROLE, not NO_SCOPE
+            assertEquals("NO_ROLE", body.reason());
+            assertEquals("MODULE", body.details().permissionType());
+            assertEquals("PURCHASE", body.details().permissionKey());
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("explain with blank scopeType is treated as absent — skips scope check")
+        void explain_blankScopeType_skipsScopeCheck() {
+            when(authorizationQueryService.getUserScopeSummary(15L))
+                    .thenReturn(Map.of());
+            when(assignmentRepository.findActiveAssignments(15L))
+                    .thenReturn(List.of());
+
+            Map<String, String> request = new java.util.HashMap<>();
+            request.put("userId", "15");
+            request.put("permissionType", "MODULE");
+            request.put("permissionKey", "PURCHASE");
+            request.put("scopeType", "");  // blank — ignored
+            request.put("scopeRefId", "99");
+
+            ResponseEntity<com.example.permission.dto.v1.ExplainResponseDto> response = controller.explain(request);
+
+            assertEquals(200, response.getStatusCode().value());
+            com.example.permission.dto.v1.ExplainResponseDto body = response.getBody();
+            assertNotNull(body);
+            // Skips NO_SCOPE, falls through to NO_ROLE
+            assertEquals("NO_ROLE", body.reason());
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("explain with non-numeric scopeRefId returns 400")
+        void explain_nonNumericScopeRefId_returns400() {
+            when(authorizationQueryService.getUserScopeSummary(15L))
+                    .thenReturn(Map.of("COMPANY", Set.of(11L)));
+
+            Map<String, String> request = new java.util.HashMap<>();
+            request.put("userId", "15");
+            request.put("permissionType", "MODULE");
+            request.put("permissionKey", "PURCHASE");
+            request.put("scopeType", "COMPANY");
+            request.put("scopeRefId", "not-a-number");
+
+            org.springframework.web.server.ResponseStatusException ex =
+                    org.junit.jupiter.api.Assertions.assertThrows(
+                            org.springframework.web.server.ResponseStatusException.class,
+                            () -> controller.explain(request));
+            assertEquals(400, ex.getStatusCode().value());
+            assertTrue(ex.getReason() != null && ex.getReason().contains("scopeRefId"));
+        }
+    }
 }
