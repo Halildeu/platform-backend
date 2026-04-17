@@ -228,6 +228,11 @@ services:
       # token returns 500 "No suitable decoder accepted the token". Prod compose already
       # forwards this variable — staging was the drift.
       - SECURITY_AUTH_ALLOWED_CLIENT_IDS=${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account,canary-load}
+      # Gateway CORS allowed-origins (PR C, Codex CNS thread 019d97c7 Tur 10).
+      # Browser Origin header ile gelen istek fixed localhost allowlist'te olmadığında
+      # 403 dönüyordu; stage/prod'da https://ai.acik.com zorunlu. Exact match, wildcard yok
+      # (allow-credentials=true ile wildcard güvensiz).
+      - GATEWAY_CORS_ALLOWED_ORIGINS=${GATEWAY_CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3004}
       - SPRING_CLOUD_VAULT_ENABLED="false"
       - SPRING_CLOUD_VAULT_FAIL_FAST="false"
       - SPRING_CLOUD_VAULT_KV_ENABLED="false"
