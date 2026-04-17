@@ -8,7 +8,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Profile;
 import org.springframework.lang.NonNull;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -16,8 +15,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+/**
+ * P1.8 (STORY-0320): {@code @Profile} kaldırıldı — filter tüm profile'larda
+ * aktif (local/dev/prod/docker/test). Önceden yalnız local/dev'de mount
+ * ediliyordu, bu yüzden non-local profile'larda auth-service tarafından mint
+ * edilen servis token'ları reddediliyordu. Filter artık her zaman bean
+ * halinde hazır; hem {@link SecurityConfigLocal} hem non-local
+ * {@link SecurityConfig} {@code /api/users/internal/**} chain'ine wire edebilir.
+ * {@link com.example.user.serviceauth.ServiceTokenVerifier} zaten profile
+ * bağımsız bir {@code @Component}.
+ */
 @Component
-@Profile({"local", "dev"})
 public class ServiceTokenAuthenticationFilter extends OncePerRequestFilter {
 
     private static final Logger logger = LoggerFactory.getLogger(ServiceTokenAuthenticationFilter.class);

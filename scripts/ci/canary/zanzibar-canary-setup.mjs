@@ -81,6 +81,29 @@ const OPENFGA_STORE_ID = process.env.OPENFGA_STORE_ID || '';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const CANARY_PASSWORD = process.env.CANARY_PASSWORD || 'CanaryPass123!';
 
+// P1.8 (STORY-0320): canonical service-token path. Auth-service mints scoped
+// service tokens via /oauth2/token client_credentials grant. Three distinct
+// audiences consumed by this script:
+//   - KC admin API        (Keycloak master realm, not auth-service — keeps ADMIN_TOKEN env)
+//   - user-service internal  (audience=user-service, permissions=users:internal)
+//   - permission-service     (audience=permission-service, permissions=permissions:read+write)
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:8088';
+const SERVICE_TOKEN_CLIENT_ID = process.env.SERVICE_TOKEN_CLIENT_ID || 'user-service';
+const SERVICE_TOKEN_CLIENT_SECRET = process.env.SERVICE_TOKEN_CLIENT_SECRET
+  || process.env.SERVICE_CLIENT_USER_SERVICE_SECRET
+  || '';
+// Optional explicit overrides (skip mint when provided, e.g. for local testing
+// with static tokens). Normal flow lazy-mints via mintServiceToken().
+const USER_SERVICE_INTERNAL_TOKEN_OVERRIDE = process.env.USER_SERVICE_INTERNAL_TOKEN || '';
+const PERM_SERVICE_ADMIN_TOKEN_OVERRIDE = process.env.PERM_SERVICE_ADMIN_TOKEN || '';
+
+// Legacy compat: explicit opt-in for Hybrid B ADMIN_TOKEN mode. Default is
+// canonical (auth-service mint, fail-fast). CANARY_USE_LEGACY_ADMIN_TOKEN=1
+// keeps the pre-P1.8 behaviour for environments that cannot reach
+// auth-service yet (e.g. mid-migration). Codex verdict: implicit fallback
+// masks misconfiguration; canonical must be the default.
+const LEGACY_ADMIN_TOKEN_MODE = process.env.CANARY_USE_LEGACY_ADMIN_TOKEN === '1';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Persona tanımları — Codex CNS-004 tablosu
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +327,79 @@ async function kcEnsureUser(adminToken, persona) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// auth-service service-token mint (P1.8 canonical path)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _userServiceInternalToken = null;
+let _permServiceAdminToken = null;
+
+/**
+ * Mint a service token via auth-service /oauth2/token (client_credentials).
+ * Repeats the `permissions` form field per spec so multi-permission requests
+ * map to a list claim on the minted JWT.
+ */
+async function mintServiceToken(audience, permissions) {
+  if (DRY_RUN) {
+    // DRY_RUN contract: do not make network calls, just log the plan.
+    // Returning a sentinel token keeps downstream Bearer header construction
+    // intact; fetchJson() short-circuits in DRY_RUN so no live request fires.
+    log(`[DRY_RUN] mintServiceToken audience=${audience} permissions=${(permissions || []).join(',') || '(none)'}`);
+    return 'dry-run-service-token';
+  }
+  if (!SERVICE_TOKEN_CLIENT_SECRET) {
+    throw new Error(
+      `SERVICE_TOKEN_CLIENT_SECRET (or SERVICE_CLIENT_USER_SERVICE_SECRET) is empty — ` +
+      `cannot mint service token for audience=${audience}. Set the env or provide ` +
+      `USER_SERVICE_INTERNAL_TOKEN / PERM_SERVICE_ADMIN_TOKEN override.`,
+    );
+  }
+  const body = new URLSearchParams();
+  body.append('grant_type', 'client_credentials');
+  body.append('audience', audience);
+  (permissions || []).forEach((p) => body.append('permissions', p));
+
+  const basic = Buffer
+    .from(`${SERVICE_TOKEN_CLIENT_ID}:${SERVICE_TOKEN_CLIENT_SECRET}`)
+    .toString('base64');
+
+  const res = await fetchJson(`${AUTH_SERVICE_URL}/oauth2/token`, {
+    method: 'POST',
+    body: body.toString(),
+    headers: {
+      'Authorization': `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+  });
+  if (!res.ok || !res.body?.access_token) {
+    throw new Error(
+      `auth-service mint failed audience=${audience}: ${res.status} ${truncate(res.body)}`,
+    );
+  }
+  return res.body.access_token;
+}
+
+async function getUserServiceInternalToken() {
+  if (USER_SERVICE_INTERNAL_TOKEN_OVERRIDE) return USER_SERVICE_INTERNAL_TOKEN_OVERRIDE;
+  if (!_userServiceInternalToken) {
+    _userServiceInternalToken = await mintServiceToken('user-service', ['users:internal']);
+    log('minted service token: audience=user-service permissions=users:internal');
+  }
+  return _userServiceInternalToken;
+}
+
+async function getPermServiceAdminToken() {
+  if (PERM_SERVICE_ADMIN_TOKEN_OVERRIDE) return PERM_SERVICE_ADMIN_TOKEN_OVERRIDE;
+  if (!_permServiceAdminToken) {
+    _permServiceAdminToken = await mintServiceToken(
+      'permission-service',
+      ['permissions:read', 'permissions:write'],
+    );
+    log('minted service token: audience=permission-service permissions=permissions:read,write');
+  }
+  return _permServiceAdminToken;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // user-service helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -316,7 +412,21 @@ async function userServiceProvision(persona) {
     enabled: true,
   };
   const headers = {};
-  if (ADMIN_TOKEN) headers.Authorization = `Bearer ${ADMIN_TOKEN}`;
+  // P1.8: canonical path (auth-service mint, audience=user-service, perm=users:internal).
+  // Fail-fast by default — misconfigured auth-service / JWKS / secret surfaces
+  // immediately rather than being masked by the legacy admin token.
+  if (LEGACY_ADMIN_TOKEN_MODE) {
+    if (!ADMIN_TOKEN) {
+      throw new Error(
+        'CANARY_USE_LEGACY_ADMIN_TOKEN=1 set but ADMIN_TOKEN env is empty — ' +
+        'either unset the flag (canonical mint) or provide ADMIN_TOKEN.',
+      );
+    }
+    warn('LEGACY mode (CANARY_USE_LEGACY_ADMIN_TOKEN=1): using ADMIN_TOKEN for user-service internal — deprecated, migrate to auth-service mint.');
+    headers.Authorization = `Bearer ${ADMIN_TOKEN}`;
+  } else {
+    headers.Authorization = `Bearer ${await getUserServiceInternalToken()}`;
+  }
   const res = await fetchJson(url, { method: 'POST', body: JSON.stringify(payload), headers });
   if (DRY_RUN) return { userId: 0 };
   if (!res.ok) {
@@ -334,7 +444,21 @@ async function userServiceProvision(persona) {
 
 async function psAuthHeaders() {
   const h = {};
-  if (ADMIN_TOKEN) h.Authorization = `Bearer ${ADMIN_TOKEN}`;
+  // P1.8: canonical path (auth-service mint, audience=permission-service,
+  // perm=permissions:read+write). Same fail-fast + opt-in legacy semantics
+  // as userServiceProvision().
+  if (LEGACY_ADMIN_TOKEN_MODE) {
+    if (!ADMIN_TOKEN) {
+      throw new Error(
+        'CANARY_USE_LEGACY_ADMIN_TOKEN=1 set but ADMIN_TOKEN env is empty — ' +
+        'either unset the flag (canonical mint) or provide ADMIN_TOKEN.',
+      );
+    }
+    warn('LEGACY mode (CANARY_USE_LEGACY_ADMIN_TOKEN=1): using ADMIN_TOKEN for permission-service — deprecated.');
+    h.Authorization = `Bearer ${ADMIN_TOKEN}`;
+  } else {
+    h.Authorization = `Bearer ${await getPermServiceAdminToken()}`;
+  }
   return h;
 }
 

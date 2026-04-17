@@ -2,6 +2,8 @@ package com.example.user.security;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.core.env.Environment;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -42,7 +44,31 @@ public class SecurityConfig {
         this.environment = environment;
     }
 
+    /**
+     * P1.8 (STORY-0320): canonical service-token path — non-local SecurityFilterChain.
+     * Matches {@code /api/users/internal/**} and {@code /api/v1/users/internal/**}
+     * before the default user-JWT chain, authenticates via the auth-service-minted
+     * service token (via {@link ServiceTokenAuthenticationFilter}), and requires
+     * {@code PERM_users:internal} authority (mapped from the {@code perm} claim).
+     * Mirrors {@link SecurityConfigLocal#internalServiceSecurityFilterChain}.
+     */
     @Bean
+    @Order(Ordered.HIGHEST_PRECEDENCE)
+    public SecurityFilterChain internalServiceTokenFilterChain(
+            HttpSecurity http,
+            ServiceTokenAuthenticationFilter serviceTokenFilter) throws Exception {
+        http
+            .securityMatcher("/api/users/internal/**", "/api/v1/users/internal/**")
+            .csrf(AbstractHttpConfigurer::disable)
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                    .anyRequest().hasAuthority("PERM_users:internal"))
+            .addFilterBefore(serviceTokenFilter, BearerTokenAuthenticationFilter.class);
+        return http.build();
+    }
+
+    @Bean
+    @Order(Ordered.HIGHEST_PRECEDENCE + 1)
     public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
         http
                 // 1. CSRF korumasını devre dışı bırakıyoruz (Stateless API'ler için standarttır).
