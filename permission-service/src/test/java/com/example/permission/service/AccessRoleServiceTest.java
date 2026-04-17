@@ -14,6 +14,7 @@ import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.RoleRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,10 +31,12 @@ public class AccessRoleServiceTest {
     private TupleSyncService tupleSyncService = mock(TupleSyncService.class);
 
     private AccessRoleService service;
+    private PermissionCatalogService permissionCatalogService;
 
     @BeforeEach
     void setUp() {
-        service = new AccessRoleService(roleRepository, rolePermissionRepository, permissionRepository, assignmentRepository, auditEventService, authzService, authzVersionService, tupleSyncService, mock(org.springframework.context.ApplicationEventPublisher.class));
+        permissionCatalogService = new PermissionCatalogService();
+        service = new AccessRoleService(roleRepository, rolePermissionRepository, permissionRepository, assignmentRepository, auditEventService, authzService, authzVersionService, tupleSyncService, mock(org.springframework.context.ApplicationEventPublisher.class), permissionCatalogService);
         when(assignmentRepository.countByRoleAndActiveTrue(any())).thenReturn(0L);
     }
 
@@ -88,6 +91,136 @@ public class AccessRoleServiceTest {
         BulkPermissionsResponseDto result = service.bulkUpdateModuleLevel(List.of(3L), "USER_MANAGEMENT", "Kullanıcı Yönetimi", "NONE", 1L);
         List<Long> updated = result.getUpdatedRoleIds();
         assertThat(updated).contains(3L);
+    }
+
+    // P1.2: canonical module key regression suite.
+    // /v1/roles response policies[].moduleKey MUST match /v1/authz/catalog seed keys
+    // (REPORT, PURCHASE, WAREHOUSE, USER_MANAGEMENT, ...) regardless of JVM locale.
+    // Prior bug: label-derived normalization produced "RAPORLAMA" in tr_TR locale
+    // because AccessRoleService.deriveModuleIdentity() only special-cased USERS.
+
+    @Test
+    void deriveModuleIdentity_reportCode_returnsCanonicalKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("REPORT_SALES_VIEW", "Raporlama"))),
+                "Raporlama");
+        assertThat(identity[0]).isEqualTo("REPORT");
+        assertThat(identity[1]).isEqualTo("Raporlama");
+    }
+
+    @Test
+    void deriveModuleIdentity_purchaseCode_returnsCanonicalKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("VIEW_PURCHASE", "Satın Alma"))),
+                "Satın Alma");
+        assertThat(identity[0]).isEqualTo("PURCHASE");
+        assertThat(identity[1]).isEqualTo("Satın Alma");
+    }
+
+    @Test
+    void deriveModuleIdentity_warehouseCode_returnsCanonicalKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("MANAGE_WAREHOUSE", "Depo"))),
+                "Depo");
+        assertThat(identity[0]).isEqualTo("WAREHOUSE");
+        assertThat(identity[1]).isEqualTo("Depo");
+    }
+
+    @Test
+    void deriveModuleIdentity_userManagementCode_returnsCanonicalKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("VIEW_USERS", "Kullanıcı Yönetimi"))),
+                "Kullanıcı Yönetimi");
+        assertThat(identity[0]).isEqualTo("USER_MANAGEMENT");
+        assertThat(identity[1]).isEqualTo("Kullanıcı Yönetimi");
+    }
+
+    @Test
+    void deriveModuleIdentity_accessCode_returnsCanonicalKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("access-view", "Erişim Yönetimi"))),
+                "Erişim Yönetimi");
+        assertThat(identity[0]).isEqualTo("ACCESS");
+        // Label comes from PermissionCatalogService (single source of truth),
+        // not fallbackLabel — guards against drift with /v1/authz/catalog response.
+        assertThat(identity[1]).isEqualTo("Erişim Yönetimi");
+    }
+
+    @Test
+    void deriveModuleIdentity_approvePurchaseCode_returnsPurchaseCanonical() {
+        // APPROVE_PURCHASE resolves to MODULE granule in RolePermissionGranuleDefaults
+        // (`module("PURCHASE", upperCode)` branch) — canonical PURCHASE.
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("APPROVE_PURCHASE", "Satın Alma"))),
+                "Satın Alma");
+        assertThat(identity[0]).isEqualTo("PURCHASE");
+        assertThat(identity[1]).isEqualTo("Satın Alma");
+    }
+
+    // Note: non-MODULE granules (e.g. `reports.sales.view` → PermissionType.REPORT,
+    // system-configure → PermissionType.ACTION) intentionally fall back to label-
+    // derived keys with a WARN log. PermissionCatalogService.REPORTS entries have
+    // per-report parent module assignments (HR_REPORTS → USER_MANAGEMENT,
+    // SALES_REPORTS → PURCHASE) that a simple code prefix rule cannot reproduce.
+    // Catalog-driven parent lookup for non-MODULE granules is a separate story —
+    // P1.2 scope is MODULE granule locale regression only.
+
+    @Test
+    void deriveModuleIdentity_labelComesFromCatalogNotFallback() {
+        // Even if fallbackLabel (DB moduleName) is drifted, canonical label
+        // from PermissionCatalogService wins. Prevents /v1/authz/catalog drift.
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("REPORT_SALES_VIEW", "FARKLI_LABEL"))),
+                "FARKLI_LABEL");
+        assertThat(identity[0]).isEqualTo("REPORT");
+        assertThat(identity[1]).isEqualTo("Raporlama");  // canonical, not "FARKLI_LABEL"
+    }
+
+    @Test
+    void deriveModuleIdentity_auditCode_returnsCanonicalKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("audit-view", "Denetim"))),
+                "Denetim");
+        assertThat(identity[0]).isEqualTo("AUDIT");
+        assertThat(identity[1]).isEqualTo("Denetim");
+    }
+
+    @Test
+    void deriveModuleIdentity_unknownCode_fallsBackToLabelDerivedKey() {
+        String[] identity = service.deriveModuleIdentity(
+                List.of(rpWith(permissionWithModule("unknown-xyz-code", "Bilinmeyen Modül"))),
+                "Bilinmeyen Modül");
+        assertThat(identity[1]).isEqualTo("Bilinmeyen Modül");
+        // key is legacy label-derived (WARN log emitted); value is not asserted here
+        // because it's intentionally non-canonical fallback — caller must add a
+        // RolePermissionGranuleDefaults mapping to canonicalize.
+    }
+
+    @Test
+    void deriveModuleIdentity_turkishLocale_reportKeyRemainsCanonical() {
+        Locale previous = Locale.getDefault();
+        try {
+            Locale.setDefault(new Locale("tr", "TR"));
+            String[] identity = service.deriveModuleIdentity(
+                    List.of(rpWith(permissionWithModule("REPORT_SALES_VIEW", "Raporlama"))),
+                    "Raporlama");
+            assertThat(identity[0]).isEqualTo("REPORT");
+        } finally {
+            Locale.setDefault(previous);
+        }
+    }
+
+    private Permission permissionWithModule(String code, String moduleName) {
+        Permission p = new Permission();
+        p.setCode(code);
+        p.setModuleName(moduleName);
+        return p;
+    }
+
+    private RolePermission rpWith(Permission permission) {
+        RolePermission rp = new RolePermission();
+        rp.setPermission(permission);
+        return rp;
     }
 
     private Role roleWithPermissions(String name, List<Permission> permissions) {

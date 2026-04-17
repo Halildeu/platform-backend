@@ -41,6 +41,7 @@ public class AccessRoleService {
     private final AuthzVersionService authzVersionService;
     private final TupleSyncService tupleSyncService;
     private final ApplicationEventPublisher eventPublisher;
+    private final PermissionCatalogService permissionCatalogService;
 
     public AccessRoleService(RoleRepository roleRepository,
                              RolePermissionRepository rolePermissionRepository,
@@ -50,7 +51,8 @@ public class AccessRoleService {
                              @org.springframework.lang.Nullable OpenFgaAuthzService authzService,
                              @org.springframework.lang.Nullable AuthzVersionService authzVersionService,
                              @org.springframework.lang.Nullable TupleSyncService tupleSyncService,
-                             ApplicationEventPublisher eventPublisher) {
+                             ApplicationEventPublisher eventPublisher,
+                             PermissionCatalogService permissionCatalogService) {
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;
@@ -60,6 +62,7 @@ public class AccessRoleService {
         this.authzVersionService = authzVersionService;
         this.tupleSyncService = tupleSyncService;
         this.eventPublisher = eventPublisher;
+        this.permissionCatalogService = permissionCatalogService;
     }
 
     @Transactional(readOnly = true)
@@ -463,12 +466,26 @@ public class AccessRoleService {
         return codes.isEmpty() ? "NONE" : "MANAGE";
     }
 
-    private String[] deriveModuleIdentity(List<RolePermission> rps, String fallbackLabel) {
-        Set<String> codes = rps.stream().map(rp -> rp.getPermission().getCode().toUpperCase()).collect(Collectors.toSet());
-        if (codes.stream().anyMatch(code -> code.contains("USERS"))) {
-            return new String[]{"USER_MANAGEMENT", "Kullanıcı Yönetimi"};
+    // Package-private for AccessRoleServiceTest direct coverage.
+    String[] deriveModuleIdentity(List<RolePermission> rps, String fallbackLabel) {
+        // Prefer canonical module key derived from permission code (locale-independent,
+        // matches /v1/authz/catalog seed). Delegates to RolePermissionGranuleDefaults
+        // which is the single source of truth for code→module mapping; label is
+        // resolved via PermissionCatalogService (single source for module labels).
+        for (RolePermission rp : rps) {
+            Optional<String> canonical = RolePermissionGranuleDefaults.canonicalModuleKey(rp.getPermission());
+            if (canonical.isPresent()) {
+                String key = canonical.get();
+                String label = permissionCatalogService.getModuleLabel(key).orElseGet(() ->
+                        fallbackLabel != null && !fallbackLabel.isBlank() ? fallbackLabel : key);
+                return new String[]{key, label};
+            }
         }
+        // Legacy fallback: no canonical mapping found. Emit WARN so we can track
+        // which permission codes still need RolePermissionGranuleDefaults entries.
         String label = fallbackLabel != null && !fallbackLabel.isBlank() ? fallbackLabel : "Genel Modül";
+        log.warn("deriveModuleIdentity: no canonical module key for permissions={} (falling back to label-derived key from label='{}')",
+                rps.stream().map(rp -> rp.getPermission().getCode()).collect(Collectors.toList()), label);
         return new String[]{normalizeModuleKey(label), label};
     }
 }

@@ -7,6 +7,7 @@ import com.example.permission.dto.v1.PermissionCatalogDto.ReportCatalogItem;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Provides the permission catalog — all available permission granules.
@@ -51,5 +52,18 @@ public class PermissionCatalogService {
 
     public List<String> getModuleKeys() {
         return MODULES.stream().map(ModuleCatalogItem::key).toList();
+    }
+
+    /**
+     * Returns the Turkish user-facing label for a canonical module key
+     * (matches /v1/authz/catalog seed). Used by AccessRoleService to
+     * produce /v1/roles policies[].moduleLabel from a canonical key.
+     */
+    public Optional<String> getModuleLabel(String moduleKey) {
+        if (moduleKey == null) return Optional.empty();
+        return MODULES.stream()
+                .filter(m -> m.key().equals(moduleKey))
+                .map(ModuleCatalogItem::label)
+                .findFirst();
     }
 }
