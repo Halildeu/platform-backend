@@ -214,7 +214,11 @@ services:
       # RS256/JWKS doğrulaması gateway tarafında Keycloak JWKS üzerinden yapılır
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
-      - SECURITY_JWT_AUDIENCE=user-service,permission-service,variant-service,core-data-service
+      # PR F (Codex CNS thread 019d99ba Tur 12): hardcoded audience staging'de
+      # browser PKCE `frontend` token (aud=[user-service,...,realm-management,broker,account])
+      # için "No suitable decoder accepted the token" 500 üretiyordu. Canonical+repo env
+      # `frontend,account,realm-management,broker` içerir ama compose hardcode eziyordu.
+      - SECURITY_JWT_AUDIENCE=${SECURITY_JWT_AUDIENCE:-user-service,permission-service,variant-service,core-data-service}
       # Ek issuer: Keycloak (lokal dev)
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs,http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=${SECURITY_JWT_ISSUERS:-http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
