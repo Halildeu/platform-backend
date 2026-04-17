@@ -96,9 +96,21 @@ services:
       SERVICE_JWT_PUBLIC_KEY: ${SERVICE_JWT_PUBLIC_KEY:-}
       SERVICE_JWT_KEY_ID: ${SERVICE_JWT_KEY_ID:-local-service-jwt}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-key-32-bytes-placeholder}
-      SPRING_CLOUD_VAULT_ENABLED: "false"
-      SPRING_CLOUD_VAULT_FAIL_FAST: "false"
-      SPRING_CLOUD_VAULT_KV_ENABLED: "false"
+      # STORY-0319 PR #3b: Vault env zinciri placeholder pattern.
+      # Compose default `false` korunur (D-105 + C-103 gereği); canonical env
+      # staging/prod'da `SPRING_CLOUD_VAULT_ENABLED=true` + AppRole material
+      # override eder. Container-side secret fetch böylece aktive olur.
+      SPRING_CLOUD_VAULT_ENABLED: ${SPRING_CLOUD_VAULT_ENABLED:-false}
+      SPRING_CLOUD_VAULT_FAIL_FAST: ${SPRING_CLOUD_VAULT_FAIL_FAST:-false}
+      SPRING_CLOUD_VAULT_KV_ENABLED: ${SPRING_CLOUD_VAULT_KV_ENABLED:-false}
+      VAULT_URI: ${VAULT_URI:-http://vault:8200}
+      VAULT_SCHEME: ${VAULT_SCHEME:-http}
+      VAULT_AUTH_METHOD: ${VAULT_AUTH_METHOD:-TOKEN}
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      VAULT_ROLE_ID: ${VAULT_ROLE_ID:-}
+      VAULT_SECRET_ID: ${VAULT_SECRET_ID:-}
+      VAULT_SECRET_PREFIX: ${VAULT_SECRET_PREFIX:-stage}
+      VAULT_FAIL_FAST: ${VAULT_FAIL_FAST:-false}
       PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
       USER_SERVICE_BASE_URL: ${USER_SERVICE_BASE_URL:-http://user-service}
       AUTH_DB_SCHEMA: ${AUTH_DB_SCHEMA:-public}
@@ -449,9 +461,19 @@ services:
       - SECURITY_LOCAL_DEV_USER_ID=${SECURITY_LOCAL_DEV_USER_ID:-local-dev}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-      - SPRING_CLOUD_VAULT_ENABLED=false
-      - SPRING_CLOUD_VAULT_FAIL_FAST=false
-      - SPRING_CLOUD_VAULT_KV_ENABLED=false
+      # STORY-0319 PR #3b: Vault env zinciri placeholder pattern. Compose
+      # default `false` korunur (D-105 + C-103); canonical env override eder.
+      - SPRING_CLOUD_VAULT_ENABLED=${SPRING_CLOUD_VAULT_ENABLED:-false}
+      - SPRING_CLOUD_VAULT_FAIL_FAST=${SPRING_CLOUD_VAULT_FAIL_FAST:-false}
+      - SPRING_CLOUD_VAULT_KV_ENABLED=${SPRING_CLOUD_VAULT_KV_ENABLED:-false}
+      - VAULT_URI=${VAULT_URI:-http://vault:8200}
+      - VAULT_SCHEME=${VAULT_SCHEME:-http}
+      - VAULT_AUTH_METHOD=${VAULT_AUTH_METHOD:-TOKEN}
+      - VAULT_TOKEN=${VAULT_TOKEN:-}
+      - VAULT_ROLE_ID=${VAULT_ROLE_ID:-}
+      - VAULT_SECRET_ID=${VAULT_SECRET_ID:-}
+      - VAULT_SECRET_PREFIX=${VAULT_SECRET_PREFIX:-stage}
+      - VAULT_FAIL_FAST=${VAULT_FAIL_FAST:-false}
       # Legacy internal API key doğrulaması kapatıldı (JWT zorunlu)
       - SECURITY_LEGACY_API_KEY_ENABLED=false
       # User JWT'leri için RS256 (JWK) doğrulaması. FE token'ları Keycloak (serban) realm'inden gelir.

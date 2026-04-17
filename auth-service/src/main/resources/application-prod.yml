@@ -21,3 +21,17 @@ spring:
       ssl:
         trust-store: ${VAULT_TRUSTSTORE:}
         trust-store-type: PEM
+# STORY-0319 PR #3b: Spring Cloud Vault actuator health indicator wiring.
+# /actuator/health/vault endpoint internal-only expose edilir — AC-0319
+# Senaryo 4 bu endpoint'e staging host'tan curl ile "UP" bekliyor.
+# application.properties'ta exposure `health,info` zaten mevcut; burada
+# sadece show-details + probes + vault indicator eklendi.
+management:
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  health:
+    vault:
+      enabled: true
