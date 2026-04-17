@@ -46,7 +46,8 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 "admin@example.com",
                 1,
                 0,
-                "users"
+                "users",
+                null
         );
 
         initializer.run();
@@ -81,7 +82,8 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 "admin@example.com",
                 1,
                 0,
-                "users"
+                "users",
+                null
         );
 
         initializer.run();
@@ -111,11 +113,86 @@ class DefaultAdminRoleAssignmentInitializerTest {
                 "admin@example.com",
                 1,
                 0,
-                "user_service.users"
+                "user_service.users",
+                null
         );
 
         initializer.run();
 
         verify(jdbcTemplate).queryForList(contains("from user_service.users"), any(Object[].class));
+    }
+
+    @Test
+    void writesOrganizationAdminTupleWhenOpenFgaAvailable() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RoleRepository roleRepository = mock(RoleRepository.class);
+        UserRoleAssignmentRepository assignmentRepository = mock(UserRoleAssignmentRepository.class);
+        com.example.commonauth.openfga.OpenFgaAuthzService authzService =
+                mock(com.example.commonauth.openfga.OpenFgaAuthzService.class);
+
+        Role adminRole = new Role();
+        adminRole.setId(99L);
+        adminRole.setName("ADMIN");
+
+        when(roleRepository.findByNameIgnoreCase("ADMIN")).thenReturn(Optional.of(adminRole));
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenReturn(List.of(Map.of("id", 7L, "email", "admin@example.com")));
+        when(assignmentRepository.findActiveAssignment(7L, null, 99L, null, null))
+                .thenReturn(Optional.empty());
+
+        DefaultAdminRoleAssignmentInitializer initializer = new DefaultAdminRoleAssignmentInitializer(
+                jdbcTemplate,
+                roleRepository,
+                assignmentRepository,
+                true,
+                "admin@example.com",
+                1,
+                0,
+                "users",
+                authzService
+        );
+
+        initializer.run();
+
+        verify(assignmentRepository).save(any(UserRoleAssignment.class));
+        verify(authzService).writeTuple(eq("7"), eq("admin"), eq("organization"), eq("default"));
+    }
+
+    @Test
+    void swallowsOpenFgaWriteFailureWithoutBlockingAssignment() {
+        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
+        RoleRepository roleRepository = mock(RoleRepository.class);
+        UserRoleAssignmentRepository assignmentRepository = mock(UserRoleAssignmentRepository.class);
+        com.example.commonauth.openfga.OpenFgaAuthzService authzService =
+                mock(com.example.commonauth.openfga.OpenFgaAuthzService.class);
+
+        Role adminRole = new Role();
+        adminRole.setId(99L);
+        adminRole.setName("ADMIN");
+
+        when(roleRepository.findByNameIgnoreCase("ADMIN")).thenReturn(Optional.of(adminRole));
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenReturn(List.of(Map.of("id", 7L, "email", "admin@example.com")));
+        when(assignmentRepository.findActiveAssignment(7L, null, 99L, null, null))
+                .thenReturn(Optional.empty());
+        org.mockito.Mockito.doThrow(new RuntimeException("openfga unavailable"))
+                .when(authzService).writeTuple(anyString(), anyString(), anyString(), anyString());
+
+        DefaultAdminRoleAssignmentInitializer initializer = new DefaultAdminRoleAssignmentInitializer(
+                jdbcTemplate,
+                roleRepository,
+                assignmentRepository,
+                true,
+                "admin@example.com",
+                1,
+                0,
+                "users",
+                authzService
+        );
+
+        // Must not throw — DB assignment must remain unaffected by OpenFGA failure.
+        initializer.run();
+
+        verify(assignmentRepository).save(any(UserRoleAssignment.class));
     }
 }

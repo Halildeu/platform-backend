@@ -1,5 +1,6 @@
 package com.example.permission.config;
 
+import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.permission.model.Role;
 import com.example.permission.model.UserRoleAssignment;
 import com.example.permission.repository.RoleRepository;
@@ -11,6 +12,7 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -38,6 +40,7 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
     private final int maxAttempts;
     private final long retryDelayMs;
     private final String userTable;
+    private final OpenFgaAuthzService openFgaAuthzService;
 
     public DefaultAdminRoleAssignmentInitializer(
             JdbcTemplate jdbcTemplate,
@@ -47,7 +50,8 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
             @Value("${permission.bootstrap.default-admin-assignments.admin-emails:admin@example.com,admin1@example.com}") String adminEmails,
             @Value("${permission.bootstrap.default-admin-assignments.max-attempts:10}") int maxAttempts,
             @Value("${permission.bootstrap.default-admin-assignments.retry-delay-ms:2000}") long retryDelayMs,
-            @Value("${permission.bootstrap.default-admin-assignments.user-table:users}") String userTable
+            @Value("${permission.bootstrap.default-admin-assignments.user-table:users}") String userTable,
+            @Nullable OpenFgaAuthzService openFgaAuthzService
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.roleRepository = roleRepository;
@@ -57,6 +61,7 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retryDelayMs = Math.max(0L, retryDelayMs);
         this.userTable = normalizeTableName(userTable);
+        this.openFgaAuthzService = openFgaAuthzService;
     }
 
     @Override
@@ -114,17 +119,36 @@ public class DefaultAdminRoleAssignmentInitializer implements CommandLineRunner 
                 continue;
             }
             boolean exists = assignmentRepository.findActiveAssignment(userId, null, adminRole.getId(), null, null).isPresent();
-            if (exists) {
-                continue;
+            if (!exists) {
+                UserRoleAssignment assignment = new UserRoleAssignment();
+                assignment.setUserId(userId);
+                assignment.setRole(adminRole);
+                assignment.setActive(true);
+                assignment.setAssignedAt(Instant.now());
+                assignment.setAssignedBy(null);
+                assignmentRepository.save(assignment);
+                log.info("Default ADMIN role assignment olusturuldu. email={} userId={}", entry.getKey(), userId);
             }
-            UserRoleAssignment assignment = new UserRoleAssignment();
-            assignment.setUserId(userId);
-            assignment.setRole(adminRole);
-            assignment.setActive(true);
-            assignment.setAssignedAt(Instant.now());
-            assignment.setAssignedBy(null);
-            assignmentRepository.save(assignment);
-            log.info("Default ADMIN role assignment olusturuldu. email={} userId={}", entry.getKey(), userId);
+            // ScopeContextFilter, OpenFgaAuthzMeBuilder and AuthorizationControllerV1
+            // treat `organization:default#admin` membership as super-admin. DB role
+            // grants alone are not sufficient — ensure the tuple exists whenever
+            // OpenFGA is enabled. Idempotent: writeTuple is a no-op when the tuple
+            // already exists (OpenFGA write semantics). Failure is logged and
+            // swallowed so the DB assignment is not blocked by a transient OpenFGA
+            // outage during boot.
+            ensureOrganizationAdminTuple(String.valueOf(userId), entry.getKey());
+        }
+    }
+
+    private void ensureOrganizationAdminTuple(String userId, String email) {
+        if (openFgaAuthzService == null) {
+            return;
+        }
+        try {
+            openFgaAuthzService.writeTuple(userId, "admin", "organization", "default");
+        } catch (RuntimeException ex) {
+            log.warn("Default admin OpenFGA organization tuple write failed (non-blocking). email={} userId={} reason={}",
+                    email, userId, ex.getClass().getSimpleName());
         }
     }
 
