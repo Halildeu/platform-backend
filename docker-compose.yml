@@ -45,8 +45,14 @@ services:
       - microservice-network
     environment:
       SPRING_PROFILES_ACTIVE: ${USER_SERVICE_PROFILES:-local,docker}
-      SERVICE_JWT_PRIVATE_KEY: ${SERVICE_JWT_PRIVATE_KEY:-}
-      SERVICE_JWT_PUBLIC_KEY: ${SERVICE_JWT_PUBLIC_KEY:-}
+      # OI-02 post-mortem (2026-04-18): rename SERVICE_JWT_* → AUTH_SERVICE_JWT_*.
+      # auth-service application.properties reads AUTH_SERVICE_JWT_PRIVATE_KEY
+      # (canonical). Legacy SERVICE_JWT_PRIVATE_KEY compose env was IGNORED
+      # (naming drift) → ephemeral RSA key generation on every boot.
+      # render-backend-env.sh + deploy/docker-compose.prod.yml already use
+      # AUTH_SERVICE_JWT_*. Stage compose aligned here.
+      AUTH_SERVICE_JWT_PRIVATE_KEY: ${AUTH_SERVICE_JWT_PRIVATE_KEY:-}
+      AUTH_SERVICE_JWT_PUBLIC_KEY: ${AUTH_SERVICE_JWT_PUBLIC_KEY:-}
       SERVICE_JWT_KEY_ID: ${SERVICE_JWT_KEY_ID:-local-service-jwt}
       SPRING_CLOUD_VAULT_ENABLED: "false"
       SPRING_CLOUD_VAULT_FAIL_FAST: "false"
@@ -92,8 +98,10 @@ services:
       - microservice-network
     environment:
       SPRING_PROFILES_ACTIVE: ${AUTH_SERVICE_PROFILES:-local,docker}
-      SERVICE_JWT_PRIVATE_KEY: ${SERVICE_JWT_PRIVATE_KEY:-}
-      SERVICE_JWT_PUBLIC_KEY: ${SERVICE_JWT_PUBLIC_KEY:-}
+      # OI-02 post-mortem (2026-04-18): rename SERVICE_JWT_* → AUTH_SERVICE_JWT_*.
+      # See user-service block above for rationale.
+      AUTH_SERVICE_JWT_PRIVATE_KEY: ${AUTH_SERVICE_JWT_PRIVATE_KEY:-}
+      AUTH_SERVICE_JWT_PUBLIC_KEY: ${AUTH_SERVICE_JWT_PUBLIC_KEY:-}
       SERVICE_JWT_KEY_ID: ${SERVICE_JWT_KEY_ID:-local-service-jwt}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-key-32-bytes-placeholder}
       # STORY-0319 PR #3b: Vault env zinciri placeholder pattern.

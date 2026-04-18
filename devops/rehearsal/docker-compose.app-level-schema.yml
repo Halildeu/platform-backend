@@ -84,8 +84,8 @@ services:
       EUREKA_SERVER_URL: http://discovery-server:8761/eureka
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      SERVICE_JWT_PRIVATE_KEY: ""
-      SERVICE_JWT_PUBLIC_KEY: ""
+      AUTH_SERVICE_JWT_PRIVATE_KEY: ""
+      AUTH_SERVICE_JWT_PUBLIC_KEY: ""
       JWT_SECRET: dev-secret-key-32-bytes-placeholder
       AUTH_VERIFICATION_BASE_URL: http://localhost:3000/verify-email
       AUTH_RESET_BASE_URL: http://localhost:3000/reset-password

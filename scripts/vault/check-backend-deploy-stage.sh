@@ -213,7 +213,7 @@ main() {
       missing=1
     fi
   else
-    echo "[check] jwt/auth-service path=${mount}/${jwt_path} not set (optional — auth-service falls back to SERVICE_JWT_PRIVATE_KEY env)"
+    echo "[check] jwt/auth-service path=${mount}/${jwt_path} not set (optional — auth-service falls back to AUTH_SERVICE_JWT_PRIVATE_KEY env)"
   fi
 
   if [[ "${missing}" = "1" ]]; then
