@@ -183,6 +183,39 @@ main() {
     echo "[check] github-backend(optional) missing=${optional_missing[*]}"
   fi
 
+  # Codex Thread 3 drift hunt Drift #4 (2026-04-18): per-service DB creds +
+  # JWT keys checker. write-secrets-stage.sh writes to these paths but there
+  # was no post-write existence verification. Silent gap: if DB creds or JWT
+  # signing key drift (missing path / wrong field), render-backend-env.sh falls
+  # back to shared/default creds and per-service isolation is lost — no doctor
+  # signal until integration failure.
+  local db_services=(auth-service user-service permission-service variant-service)
+  for svc in "${db_services[@]}"; do
+    local db_path
+    db_path="$(resolve_path "<env>/db/${svc}")"
+    if kv_get_json "${db_path}" "${mount}" >/dev/null 2>&1; then
+      local db_json
+      db_json="$(kv_get_json "${db_path}" "${mount}")"
+      if ! check_keys "db/${svc}" "${mount}" "${db_path}" "${db_json}" url user password; then
+        missing=1
+      fi
+    else
+      echo "[check] db/${svc} path=${mount}/${db_path} not set (optional — render falls back to shared POSTGRES_* creds)"
+    fi
+  done
+
+  local jwt_path
+  jwt_path="$(resolve_path "<env>/jwt/auth-service")"
+  if kv_get_json "${jwt_path}" "${mount}" >/dev/null 2>&1; then
+    local jwt_json
+    jwt_json="$(kv_get_json "${jwt_path}" "${mount}")"
+    if ! check_keys "jwt/auth-service" "${mount}" "${jwt_path}" "${jwt_json}" privateKey publicKey; then
+      missing=1
+    fi
+  else
+    echo "[check] jwt/auth-service path=${mount}/${jwt_path} not set (optional — auth-service falls back to SERVICE_JWT_PRIVATE_KEY env)"
+  fi
+
   if [[ "${missing}" = "1" ]]; then
     echo "[check] result=FAIL"
     exit 1
