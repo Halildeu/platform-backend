@@ -12,6 +12,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -23,6 +24,7 @@ public class CsvExportGuardService {
 
     private final int burstCapacity;
     private final double refillPerSecond;
+    private final Clock clock;
     private final Map<String, TokenBucket> buckets = new ConcurrentHashMap<>();
     private final UserAuditEventService userAuditEventService;
     private final Counter rateLimitAllowedCounter;
@@ -34,10 +36,12 @@ public class CsvExportGuardService {
     public CsvExportGuardService(@Value("${export.rate-limit.per-minute:12}") int replenishPerMinute,
                                  @Value("${export.rate-limit.burst:24}") int burstCapacity,
                                  UserAuditEventService userAuditEventService,
-                                 MeterRegistry meterRegistry) {
+                                 MeterRegistry meterRegistry,
+                                 Clock clock) {
         int safePerMinute = Math.max(replenishPerMinute, 1);
         this.refillPerSecond = safePerMinute / 60.0;
         this.burstCapacity = Math.max(burstCapacity, safePerMinute);
+        this.clock = clock;
         this.userAuditEventService = userAuditEventService;
         this.rateLimitAllowedCounter = Counter.builder("users_export_rate_limit_total")
                 .description("CSV export guard istekleri (allow)")
@@ -63,7 +67,7 @@ public class CsvExportGuardService {
 
     public void assertWithinLimit(User user) {
         String key = resolveKey(user);
-        TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(this.burstCapacity, this.refillPerSecond));
+        TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(this.burstCapacity, this.refillPerSecond, this.clock));
         if (!bucket.tryConsume()) {
             rateLimitBlockedCounter.increment();
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "export_rate_limit");
@@ -157,14 +161,16 @@ public class CsvExportGuardService {
     private static final class TokenBucket {
         private final int capacity;
         private final double refillPerSecond;
+        private final Clock clock;
         private double tokens;
         private Instant lastRefill;
 
-        private TokenBucket(int capacity, double refillPerSecond) {
+        private TokenBucket(int capacity, double refillPerSecond, Clock clock) {
             this.capacity = capacity;
             this.refillPerSecond = refillPerSecond;
+            this.clock = clock;
             this.tokens = capacity;
-            this.lastRefill = Instant.now();
+            this.lastRefill = clock.instant();
         }
 
         synchronized boolean tryConsume() {
@@ -177,7 +183,7 @@ public class CsvExportGuardService {
         }
 
         private void refill() {
-            Instant now = Instant.now();
+            Instant now = clock.instant();
             double seconds = Duration.between(lastRefill, now).toMillis() / 1000.0;
             if (seconds <= 0) {
                 return;
