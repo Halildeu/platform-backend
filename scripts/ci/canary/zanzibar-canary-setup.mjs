@@ -297,8 +297,23 @@ async function kcEnsureUser(adminToken, persona) {
   const searchUrl = `${KC_BASE_URL}/admin/realms/${KC_REALM}/users?email=${encodeURIComponent(persona.email)}&exact=true`;
   const found = await fetchJson(searchUrl, { headers: { Authorization: `Bearer ${adminToken}` } });
   if (found.ok && Array.isArray(found.body) && found.body.length > 0) {
-    log(`KC user mevcut: ${persona.email} (id=${found.body[0].id})`);
-    return found.body[0].id;
+    const existingId = found.body[0].id;
+    log(`KC user mevcut: ${persona.email} (id=${existingId})`);
+    // 2026-04-18 Bug 3 fix (Codex thread 019da124): existing user path previously
+    // skipped password set — password grant tokens failed 401 for all personas
+    // beyond the first create. Now reset password each run (idempotent).
+    const resetPasswordUrl = `${KC_BASE_URL}/admin/realms/${KC_REALM}/users/${existingId}/reset-password`;
+    const resetResp = await fetchJson(resetPasswordUrl, {
+      method: 'PUT',
+      body: JSON.stringify({ type: 'password', value: CANARY_PASSWORD, temporary: false }),
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (resetResp.ok || resetResp.status === 204) {
+      log(`KC user password reset: ${persona.email}`);
+    } else {
+      warn(`${persona.email} password reset başarısız: ${resetResp.status} (devam)`);
+    }
+    return existingId;
   }
   // Create
   const createUrl = `${KC_BASE_URL}/admin/realms/${KC_REALM}/users`;
@@ -332,6 +347,7 @@ async function kcEnsureUser(adminToken, persona) {
 
 let _userServiceInternalToken = null;
 let _permServiceAdminToken = null;
+let _superAdminUserToken = null;
 
 /**
  * Mint a service token via auth-service /oauth2/token (client_credentials).
@@ -430,7 +446,19 @@ async function userServiceProvision(persona) {
   const res = await fetchJson(url, { method: 'POST', body: JSON.stringify(payload), headers });
   if (DRY_RUN) return { userId: 0 };
   if (!res.ok) {
-    warn(`user-service provision başarısız (${persona.email}): ${res.status} ${truncate(res.body)}`);
+    // 2026-04-18 Bug 1 fix (Codex thread 019da124): backend provision INSERT
+    // may hit users_pkey duplicate for pre-existing personas (seed/manual).
+    // Backend UserService.provisionFromKeycloak is logical UPSERT (findByEmail
+    // + update path), but users_id_seq drift or ADMIN DefaultInitializer race
+    // can still cause duplicates. Fallback: lookup by email and proceed.
+    warn(`user-service provision başarısız (${persona.email}): ${res.status} ${truncate(res.body)} — trying lookup-by-email fallback`);
+    const lookupUrl = `${USER_SERVICE_URL}/api/users/internal/by-email/${encodeURIComponent(persona.email)}`;
+    const lookup = await fetchJson(lookupUrl, { headers });
+    if (lookup.ok && lookup.body?.id) {
+      log(`user-service lookup-by-email ok: ${persona.email} → userId=${lookup.body.id}`);
+      return { userId: lookup.body.id };
+    }
+    warn(`user-service lookup-by-email de başarısız: ${lookup.status} ${truncate(lookup.body)}`);
     return { userId: null };
   }
   const userId = res.body?.id ?? res.body?.userId ?? null;
@@ -447,6 +475,12 @@ async function psAuthHeaders() {
   // P1.8: canonical path (auth-service mint, audience=permission-service,
   // perm=permissions:read+write). Same fail-fast + opt-in legacy semantics
   // as userServiceProvision().
+  //
+  // 2026-04-18 Bug 2 fix (Codex thread 019da124): /api/v1/roles endpoint uses
+  // @RequireModule (user-based OpenFGA check), not service-token path — a
+  // minted service token has no authenticated user context so auth chain
+  // rejects with 401 null. Use super-admin persona user JWT (password grant)
+  // instead. Legacy ADMIN_TOKEN mode preserved for break-glass.
   if (LEGACY_ADMIN_TOKEN_MODE) {
     if (!ADMIN_TOKEN) {
       throw new Error(
@@ -457,9 +491,28 @@ async function psAuthHeaders() {
     warn('LEGACY mode (CANARY_USE_LEGACY_ADMIN_TOKEN=1): using ADMIN_TOKEN for permission-service — deprecated.');
     h.Authorization = `Bearer ${ADMIN_TOKEN}`;
   } else {
-    h.Authorization = `Bearer ${await getPermServiceAdminToken()}`;
+    const adminUserToken = await getSuperAdminUserToken();
+    if (adminUserToken) {
+      h.Authorization = `Bearer ${adminUserToken}`;
+    } else {
+      warn('Super-admin user JWT alınamadı — service-token fallback (will 401 on /api/v1/roles).');
+      h.Authorization = `Bearer ${await getPermServiceAdminToken()}`;
+    }
   }
   return h;
+}
+
+// 2026-04-18 Bug 2 fix: super-admin persona user JWT for permission-service
+// /api/v1/roles POST (user-based @RequireModule auth).
+async function getSuperAdminUserToken() {
+  if (_superAdminUserToken) return _superAdminUserToken;
+  const superAdmin = PERSONAS.find((p) => p.openFgaAdmin);
+  if (!superAdmin) {
+    warn('No openFgaAdmin persona found — cannot mint super-admin user JWT');
+    return null;
+  }
+  _superAdminUserToken = await kcUserPasswordToken(superAdmin.email);
+  return _superAdminUserToken;
 }
 
 async function psListRoles() {
