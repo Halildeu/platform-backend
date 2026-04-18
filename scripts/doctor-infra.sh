@@ -636,6 +636,77 @@ else
   warn "L3-L8: container '${REPORT_CONTAINER}' çalışmıyor (skip Zanzibar env drift guard)"
 fi
 
+# ── M: STAGE PORT DRIFT GUARD (2026-04-18 incident) ──────────────────
+# Stage compose hardcodes `api-gateway: 8080:8080`. Any upstream config
+# (nginx, post-deploy health URLs) referencing 8082 causes silent failures:
+#   - nginx /api/* → 502 (connection refused to 8082)
+#   - post-deploy-validate → FAIL (curl -fsS on 8082)
+# These checks catch drift before it surfaces as a production-facing 502.
+echo ""
+echo "=== M: Stage Port Drift Guard ==="
+
+GATEWAY_CONTAINER="platform-api-gateway-1"
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${GATEWAY_CONTAINER}$"; then
+  # M1: Gateway container must bind host port 8080 on stage compose
+  GATEWAY_HOST_PORT=$(docker inspect "$GATEWAY_CONTAINER" \
+    --format '{{range $p, $conf := .HostConfig.PortBindings}}{{range $conf}}{{if eq $p "8080/tcp"}}{{.HostPort}}{{end}}{{end}}{{end}}' 2>/dev/null || echo "")
+  if [ "$GATEWAY_HOST_PORT" = "8080" ]; then
+    pass "M1: api-gateway host port binding → 8080 (stage compose reality)"
+  elif [ -n "$GATEWAY_HOST_PORT" ]; then
+    fail "M1: api-gateway host port is ${GATEWAY_HOST_PORT}, stage compose expects 8080 (compose/env drift)"
+  else
+    warn "M1: api-gateway host port binding not detected (docker inspect failed)"
+  fi
+
+  # M2: nginx upstream must match gateway host port (if nginx running)
+  # Matches `location /api/ {` exactly (not `/api/services/` or `/api/v1/authz`).
+  NGINX_CONTAINER="platform-web-nginx"
+  NGINX_CONF_PATH="/home/halil/platform/web/nginx/default.conf"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${NGINX_CONTAINER}$" \
+     && [ -f "$NGINX_CONF_PATH" ]; then
+    NGINX_API_UPSTREAM_PORT=$(awk '/location[[:space:]]+\/api\/[[:space:]]*\{/ {found=1; next} found && /proxy_pass/ {print; exit}' "$NGINX_CONF_PATH" 2>/dev/null \
+      | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 | cut -d: -f2)
+    if [ -n "$NGINX_API_UPSTREAM_PORT" ] && [ "$NGINX_API_UPSTREAM_PORT" = "$GATEWAY_HOST_PORT" ]; then
+      pass "M2: nginx /api/ upstream → 127.0.0.1:${NGINX_API_UPSTREAM_PORT} (matches gateway bind)"
+    elif [ -n "$NGINX_API_UPSTREAM_PORT" ]; then
+      fail "M2: nginx /api/ upstream → 127.0.0.1:${NGINX_API_UPSTREAM_PORT} but gateway binds ${GATEWAY_HOST_PORT} (WEB_GATEWAY_UPSTREAM env drift → 502 likely)"
+    else
+      warn "M2: nginx /api/ upstream port not detected in ${NGINX_CONF_PATH}"
+    fi
+  else
+    warn "M2: nginx container or config not present (skip upstream drift check)"
+  fi
+
+  # M3: Live smoke — /api/v1/authz/version must NOT return 502 via nginx
+  # (runtime end-to-end proof that M1+M2 alignment holds under traffic)
+  if command -v curl >/dev/null 2>&1; then
+    AUTHZ_NGINX_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+      --max-time 5 \
+      -k https://ai.acik.com/api/v1/authz/version 2>/dev/null || echo "000")
+    case "$AUTHZ_NGINX_STATUS" in
+      401|403)
+        pass "M3: nginx /api/v1/authz/version → ${AUTHZ_NGINX_STATUS} (auth gate, route healthy)"
+        ;;
+      200)
+        warn "M3: nginx /api/v1/authz/version → 200 (auth bypass? check security profile)"
+        ;;
+      502|503|504)
+        fail "M3: nginx /api/v1/authz/version → ${AUTHZ_NGINX_STATUS} (gateway upstream down — drift regression)"
+        ;;
+      000)
+        warn "M3: nginx /api/v1/authz/version unreachable (network/TLS? skip)"
+        ;;
+      *)
+        warn "M3: nginx /api/v1/authz/version → ${AUTHZ_NGINX_STATUS} (unexpected)"
+        ;;
+    esac
+  else
+    warn "M3: curl not available — live nginx smoke skipped"
+  fi
+else
+  warn "M1-M3: api-gateway container not running (skip stage port drift guard)"
+fi
+
 # ── SUMMARY ──────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════"
