@@ -647,42 +647,97 @@ echo "=== M: Stage Port Drift Guard ==="
 
 GATEWAY_CONTAINER="platform-api-gateway-1"
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${GATEWAY_CONTAINER}$"; then
-  # M1: Gateway container must bind host port 8080 on stage compose
-  GATEWAY_HOST_PORT=$(docker inspect "$GATEWAY_CONTAINER" \
-    --format '{{range $p, $conf := .HostConfig.PortBindings}}{{range $conf}}{{if eq $p "8080/tcp"}}{{.HostPort}}{{end}}{{end}}{{end}}' 2>/dev/null || echo "")
+  # M1: Gateway container must bind host port 8080 on stage compose.
+  # Codex PR #466 review: `docker port` is the official Docker CLI pattern;
+  # .HostConfig.PortBindings Go template is more brittle and format-dependent.
+  # Tolerant parse handles IPv4 (0.0.0.0:8080), IPv6 (:::8080), multi-bind.
+  GATEWAY_HOST_PORT=$(docker port "$GATEWAY_CONTAINER" 8080/tcp 2>/dev/null \
+    | awk -F: '{print $NF}' | sort -u | head -1 || echo "")
   if [ "$GATEWAY_HOST_PORT" = "8080" ]; then
     pass "M1: api-gateway host port binding → 8080 (stage compose reality)"
   elif [ -n "$GATEWAY_HOST_PORT" ]; then
     fail "M1: api-gateway host port is ${GATEWAY_HOST_PORT}, stage compose expects 8080 (compose/env drift)"
   else
-    warn "M1: api-gateway host port binding not detected (docker inspect failed)"
+    warn "M1: api-gateway host port binding not detected (docker port failed)"
   fi
 
-  # M2: nginx upstream must match gateway host port (if nginx running)
-  # Matches `location /api/ {` exactly (not `/api/services/` or `/api/v1/authz`).
+  # M2: nginx upstream must match gateway host port (if nginx running).
+  # Codex PR #466 review: file-based awk is fragile against `location /api {`,
+  # `location ~* /api/`, envsubst/include variants. `nginx -T` renders the
+  # effective runtime config, which is what the server actually uses — parse
+  # that instead. Fallback to static file if container/-T unavailable (WARN only).
   NGINX_CONTAINER="platform-web-nginx"
   NGINX_CONF_PATH="/home/halil/platform/web/nginx/default.conf"
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${NGINX_CONTAINER}$" \
-     && [ -f "$NGINX_CONF_PATH" ]; then
-    NGINX_API_UPSTREAM_PORT=$(awk '/location[[:space:]]+\/api\/[[:space:]]*\{/ {found=1; next} found && /proxy_pass/ {print; exit}' "$NGINX_CONF_PATH" 2>/dev/null \
-      | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 | cut -d: -f2)
-    if [ -n "$NGINX_API_UPSTREAM_PORT" ] && [ "$NGINX_API_UPSTREAM_PORT" = "$GATEWAY_HOST_PORT" ]; then
-      pass "M2: nginx /api/ upstream → 127.0.0.1:${NGINX_API_UPSTREAM_PORT} (matches gateway bind)"
-    elif [ -n "$NGINX_API_UPSTREAM_PORT" ]; then
-      fail "M2: nginx /api/ upstream → 127.0.0.1:${NGINX_API_UPSTREAM_PORT} but gateway binds ${GATEWAY_HOST_PORT} (WEB_GATEWAY_UPSTREAM env drift → 502 likely)"
-    else
-      warn "M2: nginx /api/ upstream port not detected in ${NGINX_CONF_PATH}"
-    fi
+  NGINX_API_UPSTREAM_PORT=""
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${NGINX_CONTAINER}$"; then
+    # `nginx -T` dumps effective config including all includes.
+    # awk tracks the most recently entered `location` block and picks the
+    # proxy_pass whose location token matches /api/ (with or without trailing
+    # slash, allowing modifiers = | ~ | ~* | ^~).
+    NGINX_API_UPSTREAM_PORT=$(docker exec "$NGINX_CONTAINER" nginx -T 2>/dev/null \
+      | awk '
+          BEGIN { match_block = 0 }
+          /^[[:space:]]*location[[:space:]]/ {
+            match_block = 0
+            # Strip leading whitespace + "location" keyword
+            line = $0
+            sub(/^[[:space:]]*location[[:space:]]+/, "", line)
+            # Strip optional modifier (=, ~, ~*, ^~) and its trailing whitespace
+            sub(/^(=|~\*|~|\^~)[[:space:]]+/, "", line)
+            # Grab URI up to "{" or whitespace
+            sub(/[[:space:]]*\{.*/, "", line)
+            # Normalize trailing slash + regex anchor: /api, /api/, ^/api, ^/api/
+            # (regex modifiers ~ and ~* allow ^ anchor which is not a URI literal
+            # but a PCRE metacharacter; stripping it normalizes to canonical path)
+            gsub(/\/$/, "", line)
+            gsub(/^\^/, "", line)
+            if (line == "/api") { match_block = 1 }
+          }
+          match_block && /proxy_pass[[:space:]]+http/ { print; match_block = 0 }
+        ' \
+      | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 | cut -d: -f2 || echo "")
+  fi
+  # Static fallback (WARN-level) if nginx -T not reachable
+  if [ -z "$NGINX_API_UPSTREAM_PORT" ] && [ -f "$NGINX_CONF_PATH" ]; then
+    NGINX_API_UPSTREAM_PORT=$(awk '
+        BEGIN { match_block = 0 }
+        /^[[:space:]]*location[[:space:]]/ {
+          match_block = 0
+          line = $0
+          sub(/^[[:space:]]*location[[:space:]]+/, "", line)
+          sub(/^(=|~\*|~|\^~)[[:space:]]+/, "", line)
+          sub(/[[:space:]]*\{.*/, "", line)
+          gsub(/\/$/, "", line)
+          if (line == "/api") { match_block = 1 }
+        }
+        match_block && /proxy_pass[[:space:]]+http/ { print; match_block = 0 }
+      ' "$NGINX_CONF_PATH" 2>/dev/null \
+      | grep -oE '127\.0\.0\.1:[0-9]+' | head -1 | cut -d: -f2 || echo "")
+  fi
+  if [ -n "$NGINX_API_UPSTREAM_PORT" ] && [ "$NGINX_API_UPSTREAM_PORT" = "$GATEWAY_HOST_PORT" ]; then
+    pass "M2: nginx /api upstream → 127.0.0.1:${NGINX_API_UPSTREAM_PORT} (matches gateway bind)"
+  elif [ -n "$NGINX_API_UPSTREAM_PORT" ]; then
+    fail "M2: nginx /api upstream → 127.0.0.1:${NGINX_API_UPSTREAM_PORT} but gateway binds ${GATEWAY_HOST_PORT} (WEB_GATEWAY_UPSTREAM env drift → 502 likely)"
   else
-    warn "M2: nginx container or config not present (skip upstream drift check)"
+    warn "M2: nginx /api upstream port not detected (nginx -T + static fallback both empty)"
   fi
 
-  # M3: Live smoke — /api/v1/authz/version must NOT return 502 via nginx
-  # (runtime end-to-end proof that M1+M2 alignment holds under traffic)
-  if command -v curl >/dev/null 2>&1; then
+  # M3: Live smoke — /api/v1/authz/version must NOT return 502 via nginx.
+  # Codex PR #466 review: `-k` (TLS verify disable) unconditional bypasses
+  # cert guards and is dangerous for prod reuse. Default to verified TLS;
+  # operator must explicitly opt in to insecure mode for stage self-signed
+  # cert via DOCTOR_INFRA_INSECURE_LIVE_SMOKE=1. Live smoke can also be
+  # fully skipped via DOCTOR_INFRA_SKIP_LIVE_SMOKE=1.
+  if [ "${DOCTOR_INFRA_SKIP_LIVE_SMOKE:-0}" = "1" ]; then
+    warn "M3: DOCTOR_INFRA_SKIP_LIVE_SMOKE=1 — live nginx smoke explicitly skipped"
+  elif command -v curl >/dev/null 2>&1; then
+    curl_insecure_flag=""
+    if [ "${DOCTOR_INFRA_INSECURE_LIVE_SMOKE:-0}" = "1" ]; then
+      curl_insecure_flag="-k"
+    fi
     AUTHZ_NGINX_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
       --max-time 5 \
-      -k https://ai.acik.com/api/v1/authz/version 2>/dev/null || echo "000")
+      ${curl_insecure_flag} https://ai.acik.com/api/v1/authz/version 2>/dev/null || echo "000")
     case "$AUTHZ_NGINX_STATUS" in
       401|403)
         pass "M3: nginx /api/v1/authz/version → ${AUTHZ_NGINX_STATUS} (auth gate, route healthy)"
@@ -694,7 +749,11 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${GATEWAY_CONTAINER}$
         fail "M3: nginx /api/v1/authz/version → ${AUTHZ_NGINX_STATUS} (gateway upstream down — drift regression)"
         ;;
       000)
-        warn "M3: nginx /api/v1/authz/version unreachable (network/TLS? skip)"
+        if [ -z "$curl_insecure_flag" ]; then
+          warn "M3: nginx /api/v1/authz/version unreachable with verified TLS — for stage self-signed set DOCTOR_INFRA_INSECURE_LIVE_SMOKE=1"
+        else
+          warn "M3: nginx /api/v1/authz/version unreachable (network? skip)"
+        fi
         ;;
       *)
         warn "M3: nginx /api/v1/authz/version → ${AUTHZ_NGINX_STATUS} (unexpected)"
