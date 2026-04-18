@@ -218,6 +218,11 @@ services:
   api-gateway:
     build: ./api-gateway
     ports:
+      # Stage/local: host port hardcoded 8080 (matches stage `WEB_GATEWAY_UPSTREAM`).
+      # Prod uses `deploy/docker-compose.prod.yml` which honors `${API_GATEWAY_PORT:-8082}`.
+      # 2026-04-18 incident: canonical env populated `API_GATEWAY_PORT=8082` from
+      # prod example confused stage operators → nginx upstream 8082 → 502. Stage
+      # compose intentionally ignores the variable to avoid this drift class.
       - "8080:8080"
     networks:
       - microservice-network
