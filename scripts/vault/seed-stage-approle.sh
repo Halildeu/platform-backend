@@ -107,23 +107,25 @@ sys.exit(0 if mount in data else 1)
 }
 
 write_policy() {
-  local approle_mount kv_mount tmp_policy
+  local approle_mount kv_mount policy_template tmp_policy
   approle_mount="$(normalize_mount "${VAULT_APPROLE_MOUNT}")"
   kv_mount="$(normalize_mount "${VAULT_KV_MOUNT}")"
+
+  # Policy source-of-truth: HCL file in repo, not inline heredoc. Inline drift
+  # (2026-04-18 OI-02 incident) — seed script's heredoc lacked `jwt/auth-service`
+  # and service-specific `db/*` paths while `backend/infra/vault/policies/
+  # backend-deploy-runtime.hcl` already had them. Single source of truth.
+  policy_template="${VAULT_POLICY_TEMPLATE:-${REPO_ROOT}/backend/infra/vault/policies/backend-deploy-runtime.hcl}"
+  if [[ ! -f "${policy_template}" ]]; then
+    echo "[error] policy template not found: ${policy_template}" >&2
+    exit 1
+  fi
   tmp_policy="$(mktemp)"
 
-  cat > "${tmp_policy}" <<EOF
-path "${kv_mount}/data/${ENV_NAME}/backend-deploy/config" {
-  capabilities = ["read"]
-}
-
-path "${kv_mount}/data/${ENV_NAME}/db/*" {
-  capabilities = ["read"]
-}
-
-path "${kv_mount}/metadata/${ENV_NAME}/db/*" {
-  capabilities = ["list"]
-}
+  # Render {{env}} placeholders with ${ENV_NAME} and append role-id/secret-id
+  # paths (self-binding, not in HCL template since template is role-agnostic).
+  sed "s|{{env}}|${ENV_NAME}|g" "${policy_template}" > "${tmp_policy}"
+  cat >> "${tmp_policy}" <<EOF
 
 path "${approle_mount}/role/${ROLE_NAME}/role-id" {
   capabilities = ["read"]
