@@ -132,11 +132,12 @@ main() {
     # NOTE: report-service reads ISSUER (not ISSUERS); both must be canonical.
     SECURITY_JWT_ISSUER
     SECURITY_JWT_ISSUERS
-    # SECURITY_JWT_SECONDARY_AUDIENCE is intentionally NOT required here —
-    # render-backend-env.sh (deploy/ubuntu) injects a canonical 8-audience
-    # default when Vault KV value is empty (OI-03 canary fix). Operators MAY
-    # write a custom value via write-backend-deploy-stage.sh; when unset the
-    # render layer still produces a working multi-audience allowlist.
+    # SECURITY_JWT_SECONDARY_AUDIENCE + KC_HOSTNAME trio are intentionally NOT
+    # required here — render-backend-env.sh (deploy/ubuntu) injects canonical
+    # stage defaults when Vault KV values are empty (OI-03 canary + browser
+    # login fix). Operators MAY push custom values via
+    # write-backend-deploy-stage.sh; when unset the render layer still
+    # produces working audience allowlist + public KC hostname.
     SECURITY_AUTH_ALLOWED_CLIENT_IDS
   )
   local github_base_required=(
