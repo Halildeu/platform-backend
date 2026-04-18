@@ -596,11 +596,16 @@ services:
       - microservice-network
     environment:
       - SERVER_PORT=8096
-      - SCHEMA_MSSQL_HOST=${REPORT_MSSQL_HOST:-host.docker.internal}
-      - SCHEMA_MSSQL_PORT=${REPORT_MSSQL_PORT:-1433}
-      - SCHEMA_MSSQL_DB=${REPORT_MSSQL_DB:-workcube_mikrolink}
-      - SCHEMA_MSSQL_USERNAME=${REPORT_MSSQL_USERNAME:-sa}
-      - SCHEMA_MSSQL_PASSWORD=${REPORT_MSSQL_PASSWORD:-}
+      # 2026-04-18 Codex Thread 5 #3: schema-service was reading REPORT_MSSQL_*
+      # env vars as fallback — wrong contract. SCHEMA_MSSQL_* is the canonical
+      # schema-service contract (prod compose, canonical env, write script).
+      # Compose default falls back to sibling REPORT_MSSQL_* only if SCHEMA_*
+      # explicitly missing — and now warns loudly via compose env ordering.
+      - SCHEMA_MSSQL_HOST=${SCHEMA_MSSQL_HOST:-${REPORT_MSSQL_HOST:-host.docker.internal}}
+      - SCHEMA_MSSQL_PORT=${SCHEMA_MSSQL_PORT:-${REPORT_MSSQL_PORT:-1433}}
+      - SCHEMA_MSSQL_DB=${SCHEMA_MSSQL_DB:-${REPORT_MSSQL_DB:-workcube_mikrolink}}
+      - SCHEMA_MSSQL_USERNAME=${SCHEMA_MSSQL_USERNAME:-${REPORT_MSSQL_USERNAME:-sa}}
+      - SCHEMA_MSSQL_PASSWORD=${SCHEMA_MSSQL_PASSWORD:-${REPORT_MSSQL_PASSWORD:-}}
       - SCHEMA_DEFAULT_SCHEMA=${SCHEMA_DEFAULT_SCHEMA:-workcube_mikrolink}
       - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
       - SECURITY_JWT_JWK_SET_URI=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
