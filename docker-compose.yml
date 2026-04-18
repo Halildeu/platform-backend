@@ -506,6 +506,13 @@ services:
       - SECURITY_JWT_ISSUER=${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       # Audience doğrulaması; token üretimindeki aud ile eşleşmeli
       - SECURITY_JWT_AUDIENCE=${SECURITY_JWT_AUDIENCE:-permission-service}
+      # 2026-04-18 OI-03 Bug B (Codex thread 019da137): canary-restricted
+      # valid KC token ile /api/v1/authz/me 401. Root cause: permission-service
+      # AudienceValidator uses SECURITY_AUTH_ALLOWED_CLIENT_IDS as azp fallback
+      # when aud doesn't match (PR #426 CNS-20260416-003). Canonical env has
+      # this key but container env chain didn't propagate it → canary-load
+      # client tokens rejected at aud-validator fallback.
+      - SECURITY_AUTH_ALLOWED_CLIENT_IDS=${SECURITY_AUTH_ALLOWED_CLIENT_IDS:-frontend,admin-cli,serban-web,account,canary-load}
       # Ek issuer listesi Keycloak serban realm'i işaret eder
       - SECURITY_JWT_JWK_SET_URIS=http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       - SECURITY_JWT_ISSUERS=${SECURITY_JWT_ISSUERS:-http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
