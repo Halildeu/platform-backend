@@ -79,6 +79,102 @@ echo "  SKIP_METRICS:$SKIP_METRICS"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 0. Preflight — fail-closed on tooling + env + reachability gaps
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-04-18 Codex Thread 5 finding #5 (preflight eksik): the canary wrapper
+# was starting the expensive k6/setup path before verifying the host had the
+# required tools or that the target URLs were reachable. Failures showed up
+# mid-stream as node/k6/jq missing errors or curl connection refused, masking
+# the actual drift. This preflight block runs upfront, fail-closed, producing
+# a clear error BEFORE any orchestration work.
+
+echo "[0/10] PREFLIGHT"
+preflight_fail=0
+
+# Step A — Required CLI tools. SKIP_METRICS / SKIP_PROBE don't waive node/k6
+# because setup + k6 k6-zanzibar-check.js are the canary core.
+required_tools=(bash curl python3)
+if [[ "$SKIP_SETUP" != "1" ]]; then
+  required_tools+=(node)
+fi
+if [[ "$ESTIMATE_ONLY" != "1" ]] || [[ "$SKIP_SETUP" != "1" ]]; then
+  required_tools+=(k6)
+fi
+if [[ "$SKIP_METRICS" != "1" ]]; then
+  required_tools+=(jq)
+fi
+missing_tools=()
+for t in "${required_tools[@]}"; do
+  command -v "$t" >/dev/null 2>&1 || missing_tools+=("$t")
+done
+if (( ${#missing_tools[@]} > 0 )); then
+  echo "  ❌ Required tools missing: ${missing_tools[*]}" >&2
+  echo "  → Install before run. For staging Ubuntu:" >&2
+  echo "     apt install -y nodejs jq" >&2
+  echo "     # k6: https://grafana.com/docs/k6/latest/set-up/install-k6/" >&2
+  preflight_fail=1
+fi
+
+# Step B — Target reachability. Check curl exit code first (DNS failure,
+# connection refused, timeout all produce non-zero), then HTTP status (any
+# status = route reachable, even 401/404/500). --max-redirs 0 prevents
+# multi-redirect chains that concat zeros in %{http_code} output.
+if base_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --connect-timeout 3 --max-redirs 0 "$BASE_URL" 2>/dev/null)"; then
+  echo "  ✅ BASE_URL reachable ($base_status): $BASE_URL"
+else
+  curl_exit=$?
+  echo "  ❌ BASE_URL unreachable (curl exit=$curl_exit): $BASE_URL" >&2
+  echo "  → Verify service up + network (DNS? firewall? port?). Expected HTTP code, got connect fail." >&2
+  preflight_fail=1
+fi
+
+# Step C — Prometheus reachability (only when metrics pull enabled)
+if [[ "$SKIP_METRICS" != "1" ]]; then
+  prom_url="${CANARY_PROM_URL:-http://localhost:9090}"
+  if prom_health="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 --connect-timeout 3 --max-redirs 0 "${prom_url%/}/-/healthy" 2>/dev/null)"; then
+    if [[ "$prom_health" == "200" ]]; then
+      echo "  ✅ Prometheus reachable: ${prom_url}"
+    else
+      echo "  ❌ Prometheus /-/healthy returned ${prom_health}: ${prom_url}" >&2
+      preflight_fail=1
+    fi
+  else
+    curl_exit=$?
+    echo "  ❌ Prometheus unreachable (curl exit=$curl_exit): ${prom_url}" >&2
+    echo "  → Set CANARY_PROM_URL or SKIP_METRICS=1 for local smoke." >&2
+    preflight_fail=1
+  fi
+fi
+
+# Step D — OpenFGA store id (setup expectation; skip when SKIP_SETUP)
+if [[ "$SKIP_SETUP" != "1" ]]; then
+  if [[ -z "${OPENFGA_STORE_ID:-}" ]]; then
+    echo "  ❌ OPENFGA_STORE_ID env missing (required by setup script)" >&2
+    echo "  → Export OPENFGA_STORE_ID before run (staging canonical env has this key)." >&2
+    preflight_fail=1
+  else
+    echo "  ✅ OPENFGA_STORE_ID set: ${OPENFGA_STORE_ID:0:20}..."
+  fi
+fi
+
+# Step E — Canary client credentials (setup script needs these for KC tokens)
+if [[ "$SKIP_SETUP" != "1" ]]; then
+  if [[ -z "${KC_CANARY_CLIENT_SECRET:-}" ]] && [[ -z "${SERVICE_CLIENT_USER_SERVICE_SECRET:-}" ]]; then
+    echo "  ⚠️  Neither KC_CANARY_CLIENT_SECRET nor SERVICE_CLIENT_USER_SERVICE_SECRET set" >&2
+    echo "     → Setup may fall back to direct-grants if KC client allows; check setup.log if setup fails." >&2
+    # WARN only — setup script has its own fallback logic
+  fi
+fi
+
+if (( preflight_fail > 0 )); then
+  echo ""
+  echo "[preflight] FAIL — ${preflight_fail} blocker(s). Aborting before expensive orchestration." >&2
+  exit 1
+fi
+echo "[preflight] PASS"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 1. Setup — idempotent seed + write-path verification
 # ─────────────────────────────────────────────────────────────────────────────
 
