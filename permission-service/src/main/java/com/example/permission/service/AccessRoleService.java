@@ -158,11 +158,18 @@ public class AccessRoleService {
         clone.setUpdatedAt(Instant.now());
         Role saved = roleRepository.save(clone);
 
-        // Permissions copy
+        // Permissions copy (STORY-0318/OI-03: granule-only rows copied verbatim since
+        // apply() resolves type/key/grant only from the legacy Permission entity).
         for (RolePermission rp : source.getRolePermissions()) {
             RolePermission nrp = new RolePermission();
             nrp.setRole(saved);
-            RolePermissionGranuleDefaults.apply(nrp, rp.getPermission());
+            if (rp.getPermission() != null) {
+                RolePermissionGranuleDefaults.apply(nrp, rp.getPermission());
+            } else {
+                nrp.setPermissionType(rp.getPermissionType());
+                nrp.setPermissionKey(rp.getPermissionKey());
+                nrp.setGrantType(rp.getGrantType());
+            }
             rolePermissionRepository.save(nrp);
         }
 
@@ -348,6 +355,7 @@ public class AccessRoleService {
         if (!removePerms.isEmpty()) {
             Set<String> removeSet = removePerms.stream().map(String::toUpperCase).collect(Collectors.toSet());
             List<RolePermission> toRemove = role.getRolePermissions().stream()
+                    .filter(rp -> rp.getPermission() != null)
                     .filter(rp -> removeSet.contains(rp.getPermission().getCode().toUpperCase()))
                     .toList();
             if (!toRemove.isEmpty()) {
@@ -360,6 +368,7 @@ public class AccessRoleService {
             Permission p = byCode.get(code.toUpperCase());
             if (p == null) continue;
             boolean exists = role.getRolePermissions().stream()
+                    .filter(rp -> rp.getPermission() != null)
                     .anyMatch(rp -> rp.getPermission().getCode().equalsIgnoreCase(p.getCode()));
             if (!exists) {
                 RolePermission rp = new RolePermission();
@@ -376,10 +385,23 @@ public class AccessRoleService {
     private AccessRoleDto toDto(Role role) {
         long memberCount = assignmentRepository.countByRoleAndActiveTrue(role);
 
+        // STORY-0318/OI-03: `policies` is a per-MODULE summary. Non-module granules
+        // (ACTION / REPORT) are detail rows exposed via the /granules endpoint and
+        // must not surface as pseudo-module badges here (e.g. DELETE_PO, HR_REPORTS).
+        // For granule-only rows we only admit PermissionType.MODULE; ACTION/REPORT
+        // granules are skipped in the summary.
         Map<String, List<RolePermission>> byModule = new LinkedHashMap<>();
         for (RolePermission rp : role.getRolePermissions()) {
-            String module = rp.getPermission().getModuleName();
-            if (module == null) module = "GENERIC";
+            String module;
+            if (rp.getPermission() != null) {
+                module = rp.getPermission().getModuleName();
+                if (module == null) module = "GENERIC";
+            } else if (rp.getPermissionType() == com.example.permission.model.PermissionType.MODULE
+                    && rp.getPermissionKey() != null && !rp.getPermissionKey().isBlank()) {
+                module = rp.getPermissionKey();
+            } else {
+                continue;
+            }
             byModule.computeIfAbsent(module, k -> new ArrayList<>()).add(rp);
         }
 
@@ -459,10 +481,22 @@ public class AccessRoleService {
     }
 
     private String deriveLevel(List<RolePermission> rps) {
-        Set<String> codes = rps.stream().map(rp -> rp.getPermission().getCode().toUpperCase()).collect(Collectors.toSet());
+        if (rps == null || rps.isEmpty()) return "NONE";
+        // STORY-0318/OI-03: granule-only rows carry grantType as the level signal.
+        Set<String> codes = rps.stream()
+                .filter(rp -> rp.getPermission() != null)
+                .map(rp -> rp.getPermission().getCode().toUpperCase(Locale.ROOT))
+                .collect(Collectors.toSet());
         if (codes.contains("MANAGE_USERS")) return "MANAGE";
         if (codes.contains("VIEW_USERS")) return "VIEW";
-        // Varsayılan: en az bir permission varsa MANAGE sayalım
+        Set<String> grants = rps.stream()
+                .map(RolePermission::getGrantType)
+                .filter(Objects::nonNull)
+                .map(Enum::name)
+                .collect(Collectors.toSet());
+        if (grants.contains("DENY")) return "NONE";
+        if (grants.contains("MANAGE") || grants.contains("ALLOW")) return "MANAGE";
+        if (grants.contains("VIEW")) return "VIEW";
         return codes.isEmpty() ? "NONE" : "MANAGE";
     }
 
@@ -473,6 +507,7 @@ public class AccessRoleService {
         // which is the single source of truth for code→module mapping; label is
         // resolved via PermissionCatalogService (single source for module labels).
         for (RolePermission rp : rps) {
+            if (rp.getPermission() == null) continue;
             Optional<String> canonical = RolePermissionGranuleDefaults.canonicalModuleKey(rp.getPermission());
             if (canonical.isPresent()) {
                 String key = canonical.get();
@@ -481,11 +516,24 @@ public class AccessRoleService {
                 return new String[]{key, label};
             }
         }
+        // STORY-0318/OI-03: granule-only rows carry the canonical module key directly
+        // in permissionKey (MODULE type). Use it without traversing the legacy
+        // Permission entity.
+        for (RolePermission rp : rps) {
+            if (rp.getPermission() != null) continue;
+            if (rp.getPermissionType() == com.example.permission.model.PermissionType.MODULE
+                    && rp.getPermissionKey() != null && !rp.getPermissionKey().isBlank()) {
+                String key = rp.getPermissionKey();
+                String label = permissionCatalogService.getModuleLabel(key).orElseGet(() ->
+                        fallbackLabel != null && !fallbackLabel.isBlank() ? fallbackLabel : key);
+                return new String[]{key, label};
+            }
+        }
         // Legacy fallback: no canonical mapping found. Emit WARN so we can track
         // which permission codes still need RolePermissionGranuleDefaults entries.
         String label = fallbackLabel != null && !fallbackLabel.isBlank() ? fallbackLabel : "Genel Modül";
-        log.warn("deriveModuleIdentity: no canonical module key for permissions={} (falling back to label-derived key from label='{}')",
-                rps.stream().map(rp -> rp.getPermission().getCode()).collect(Collectors.toList()), label);
+        log.warn("deriveModuleIdentity: no canonical module key for rolePermissionCount={} (falling back to label-derived key from label='{}')",
+                rps.size(), label);
         return new String[]{normalizeModuleKey(label), label};
     }
 }

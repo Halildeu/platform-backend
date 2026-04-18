@@ -4,9 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
+import com.example.permission.dto.access.AccessRoleDto;
 import com.example.permission.dto.v1.BulkPermissionsResponseDto;
 import com.example.permission.dto.v1.RoleCloneResponseDto;
+import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
+import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
 import com.example.permission.repository.PermissionRepository;
@@ -240,5 +243,55 @@ public class AccessRoleServiceTest {
         p.setCode(code);
         p.setModuleName(code.contains("WAREHOUSE") ? "Depo" : code.contains("PURCHASE") ? "Satın Alma" : "Kullanıcı Yönetimi");
         return p;
+    }
+
+    // STORY-0318/OI-03: granule-only role (permission=null, type/key/grant populated)
+    // regression suite. Canary roles created via PUT /v1/roles/{id}/granules go
+    // through this path and pre-fix would NPE at deriveModuleIdentity / toDto /
+    // deriveLevel / snapshotRole / toResponse.
+
+    @Test
+    void deriveModuleIdentity_granuleOnlyModuleRow_returnsPermissionKey() {
+        // MODULE granule with permission=null must use permissionKey directly
+        // (canonical module key) instead of dereferencing the legacy Permission.
+        RolePermission rp = new RolePermission();
+        rp.setPermissionType(PermissionType.MODULE);
+        rp.setPermissionKey("ACCESS");
+        rp.setGrantType(GrantType.MANAGE);
+        String[] identity = service.deriveModuleIdentity(List.of(rp), "ACCESS");
+        assertThat(identity[0]).isEqualTo("ACCESS");
+        assertThat(identity[1]).isNotBlank();
+    }
+
+    @Test
+    void getRole_withMixedGranules_skipsActionGranulesFromPolicies() {
+        // Canary-style role: one MODULE granule (ACCESS MANAGE) + one ACTION
+        // granule (DELETE_PO ALLOW). Policies summary must contain only the
+        // module row; ACTION must not leak as a pseudo-module badge.
+        Role role = new Role();
+        role.setId(42L);
+        role.setName("CANARY_RESTRICTED");
+
+        RolePermission modRp = new RolePermission();
+        modRp.setRole(role);
+        modRp.setPermissionType(PermissionType.MODULE);
+        modRp.setPermissionKey("ACCESS");
+        modRp.setGrantType(GrantType.MANAGE);
+        RolePermission actionRp = new RolePermission();
+        actionRp.setRole(role);
+        actionRp.setPermissionType(PermissionType.ACTION);
+        actionRp.setPermissionKey("DELETE_PO");
+        actionRp.setGrantType(GrantType.ALLOW);
+        role.getRolePermissions().add(modRp);
+        role.getRolePermissions().add(actionRp);
+
+        when(roleRepository.findById(42L)).thenReturn(Optional.of(role));
+
+        AccessRoleDto dto = service.getRole(42L);
+
+        assertThat(dto.policies()).hasSize(1);
+        assertThat(dto.policies().get(0).moduleKey()).isEqualTo("ACCESS");
+        assertThat(dto.policies().stream().map(p -> p.moduleKey()))
+                .doesNotContain("DELETE_PO");
     }
 }

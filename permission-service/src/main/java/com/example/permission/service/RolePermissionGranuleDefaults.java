@@ -20,6 +20,12 @@ public final class RolePermissionGranuleDefaults {
 
     public static void apply(RolePermission rolePermission, Permission permission) {
         rolePermission.setPermission(permission);
+        if (permission == null) {
+            // Granule-only source: caller must populate permissionType/permissionKey/grantType
+            // directly (see AccessRoleService.cloneRole granule path). No legacy code → granule
+            // resolution needed, and resolve(null) would NPE.
+            return;
+        }
         Granule granule = resolve(permission);
         rolePermission.setPermissionType(granule.permissionType());
         rolePermission.setPermissionKey(granule.permissionKey());

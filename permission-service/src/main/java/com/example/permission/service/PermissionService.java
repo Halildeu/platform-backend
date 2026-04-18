@@ -411,14 +411,27 @@ public class PermissionService {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("id", role.getId());
         snapshot.put("name", role.getName());
-        Set<String> permissions = role.getRolePermissions() == null
-                ? Set.of()
-                : role.getRolePermissions()
-                .stream()
-                .map(rolePermission -> rolePermission.getPermission().getCode())
+        // STORY-0318/OI-03: granule-only rows carry permission=null. Split legacy
+        // permission codes from granule triples to keep audit snapshot complete
+        // without NPE (PermissionService.java B3 fix covers sync paths; this is
+        // the audit sibling).
+        var rolePermissions = role.getRolePermissions() == null ? java.util.List.<com.example.permission.model.RolePermission>of() : role.getRolePermissions();
+        Set<String> permissions = rolePermissions.stream()
+                .filter(rp -> rp.getPermission() != null)
+                .map(rp -> rp.getPermission().getCode())
                 .sorted()
                 .collect(Collectors.toCollection(LinkedHashSet::new));
         snapshot.put("permissions", permissions);
+        List<Map<String, String>> granules = rolePermissions.stream()
+                .filter(rp -> rp.getPermission() == null)
+                .map(rp -> Map.of(
+                        "type", rp.getPermissionType() != null ? rp.getPermissionType().name() : "",
+                        "key", rp.getPermissionKey() != null ? rp.getPermissionKey() : "",
+                        "grant", rp.getGrantType() != null ? rp.getGrantType().name() : ""))
+                .toList();
+        if (!granules.isEmpty()) {
+            snapshot.put("granules", granules);
+        }
         return snapshot;
     }
 
@@ -514,7 +527,12 @@ public class PermissionService {
     }
 
     private PermissionResponse toResponse(UserRoleAssignment assignment) {
+        // STORY-0318/OI-03: granule-only rows (permission=null) are filtered out
+        // of the legacy permission-code map. Legacy assignRole/updateAssignment
+        // response surface preserved for permission-registry roles; granule-only
+        // roles expose their semantics via /authz/me + RolePolicyDto instead.
         Map<String, String> permissionModules = assignment.getRole().getRolePermissions().stream()
+                .filter(rp -> rp.getPermission() != null)
                 .collect(Collectors.toMap(
                         rolePermission -> rolePermission.getPermission().getCode(),
                         rolePermission -> {

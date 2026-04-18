@@ -2,7 +2,9 @@ package com.example.permission.service;
 
 import com.example.permission.dto.PermissionAssignRequest;
 import com.example.permission.dto.PermissionResponse;
+import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
+import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
 import com.example.permission.model.UserRoleAssignment;
@@ -151,6 +153,70 @@ class PermissionServiceTest {
                 .collect(java.util.stream.Collectors.toSet());
 
         role.setRolePermissions(rolePermissions);
+        return role;
+    }
+
+    // STORY-0318/OI-03: granule-only role assignment regression.
+    // AccessControllerV1.updateRoleGranules-created roles have permission=null on
+    // every row. Pre-fix, assignRole NPE'd in snapshotRole/toResponse dereferencing
+    // rp.getPermission().getCode(). Post-fix: legacy permissions set stays empty,
+    // granules surface via audit snapshot, and no NPE propagates to canary.
+
+    @Test
+    void assignRole_withGranuleOnlyRole_doesNotNpeAndReturnsEmptyLegacyPermissions() {
+        PermissionAssignRequest request = buildRequest();
+        Role role = buildRoleWithGranules(3L, "CANARY_RESTRICTED");
+
+        when(roleRepository.findById(request.getRoleId())).thenReturn(Optional.of(role));
+        when(assignmentRepository.findActiveAssignment(
+                request.getUserId(),
+                request.getCompanyId(),
+                request.getRoleId(),
+                request.getProjectId(),
+                request.getWarehouseId()
+        )).thenReturn(Optional.empty());
+        when(assignmentRepository.save(any(UserRoleAssignment.class))).thenAnswer(invocation -> {
+            UserRoleAssignment assignment = invocation.getArgument(0);
+            assignment.setId(99L);
+            assignment.setAssignedAt(Instant.parse("2024-01-01T00:00:00Z"));
+            return assignment;
+        });
+        when(auditEventService.recordEvent(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PermissionResponse response = permissionService.assignRole(request);
+
+        assertThat(response.getAssignmentId()).isEqualTo(99L);
+        assertThat(response.getRoleId()).isEqualTo(role.getId());
+        // Granule-only role → no legacy permission codes, but still returns successfully.
+        assertThat(response.getPermissions()).isEmpty();
+        // moduleLabel fallback comes from role name (not permissionModules) when legacy map empty.
+        assertThat(response.getModuleLabel()).isNotBlank();
+        assertThat(response.isActive()).isTrue();
+
+        verify(assignmentRepository).save(any(UserRoleAssignment.class));
+        verify(auditEventService).recordEvent(any());
+    }
+
+    private Role buildRoleWithGranules(Long roleId, String name) {
+        Role role = new Role();
+        role.setId(roleId);
+        role.setName(name);
+
+        RolePermission modRp = new RolePermission();
+        modRp.setId(1L);
+        modRp.setRole(role);
+        modRp.setPermissionType(PermissionType.MODULE);
+        modRp.setPermissionKey("ACCESS");
+        modRp.setGrantType(GrantType.MANAGE);
+
+        RolePermission actionRp = new RolePermission();
+        actionRp.setId(2L);
+        actionRp.setRole(role);
+        actionRp.setPermissionType(PermissionType.ACTION);
+        actionRp.setPermissionKey("DELETE_PO");
+        actionRp.setGrantType(GrantType.ALLOW);
+
+        role.setRolePermissions(Set.of(modRp, actionRp));
         return role;
     }
 }
