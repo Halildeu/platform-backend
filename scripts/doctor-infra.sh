@@ -303,7 +303,12 @@ else
 fi
 
 # F5: Keycloak depends_on postgres-db
-if grep -A5 "keycloak:" "$COMPOSE_FILE" | grep -q "postgres-db"; then
+# 2026-04-18: Previous `grep -A5 keycloak: | grep -q postgres-db` was flaky.
+# SIGPIPE from early exit of second grep + `set -o pipefail` caused intermittent
+# false failures (same SHA passed/failed across runs). awk anchors to the
+# actual `keycloak:` service block (not URL references) and scans the whole
+# block in a single process — no pipeline, no SIGPIPE.
+if awk '/^  keycloak:$/{in_block=1; next} in_block && /^  [a-z][a-z0-9-]*:$/{exit} in_block{print}' "$COMPOSE_FILE" | grep -q "postgres-db"; then
   pass "F5: Keycloak depends_on postgres-db"
 else
   fail "F5: Keycloak missing postgres-db dependency"
