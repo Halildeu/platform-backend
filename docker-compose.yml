@@ -128,6 +128,16 @@ services:
       AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-postgres}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # 2026-04-18 OI-03 canary setup drift (P1.8 service token mint contract):
+      # auth-service ServiceTokenController reads security.service-clients.user-service
+      # which maps to SERVICE_CLIENT_USER_SERVICE_SECRET. Canonical env had this key
+      # since PR #447 but compose env chain never wired it → container registered
+      # no clients → /oauth2/token always 401 invalid_client. Blocks canary setup
+      # (zanzibar-canary-setup.mjs uses this path for user-service provisioning).
+      SERVICE_CLIENT_USER_SERVICE_SECRET: ${SERVICE_CLIENT_USER_SERVICE_SECRET:-}
+      # Permission-service internal API key — same wiring class, also required
+      # by mint audience flow.
+      PERMISSION_SERVICE_INTERNAL_API_KEY: ${PERMISSION_SERVICE_INTERNAL_API_KEY:-}
       LOG_SECURITY_LEVEL: ${LOG_SECURITY_LEVEL:-DEBUG}
     depends_on:
       discovery-server:
