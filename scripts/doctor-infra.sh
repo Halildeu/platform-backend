@@ -597,6 +597,36 @@ else
   warn "L2: Token'sız /authz/check → ${AUTHZ_STATUS} (beklenmeyen — 401/403 bekleniyor)"
 fi
 
+# L2b: Issuer/audience drift expansion (Codex Thread 3 drift hunt 2026-04-18).
+# Scope limited per Codex PR #9 review: only services that actually expose
+# /api/v1/authz/check — gateway (8080), user-service (8089), core-data (8092).
+# permission-service already covered by L2 above (8090). auth-service (8088) and
+# variant-service (8091) do NOT expose this endpoint per current repo code; probing
+# them would generate 404 noise, not drift signal.
+L2B_TARGETS=(
+  "gateway:http://localhost:8080/api/v1/authz/check"
+  "user-service:http://localhost:8089/api/v1/authz/check"
+  "core-data-service:http://localhost:8092/api/v1/authz/check"
+)
+for target in "${L2B_TARGETS[@]}"; do
+  svc_name="${target%%:*}"
+  svc_url="${target#*:}"
+  svc_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$svc_url" \
+    -H "Content-Type: application/json" \
+    -d '{"relation":"can_view","objectType":"module","objectId":"TEST"}' 2>/dev/null || echo "000")
+  if [ "$svc_status" = "401" ] || [ "$svc_status" = "403" ]; then
+    pass "L2b-${svc_name}: Token'sız /authz/check → ${svc_status} (JWT zorunlu)"
+  elif [ "$svc_status" = "200" ]; then
+    fail "L2b-${svc_name}: Token'sız /authz/check → 200 (permitAll drift riski — SECURITY_JWT_ISSUER veya compose default düştü)"
+  elif [ "$svc_status" = "000" ]; then
+    warn "L2b-${svc_name}: ${svc_url} ulaşılamadı (servis down?)"
+  elif [ "$svc_status" = "404" ]; then
+    warn "L2b-${svc_name}: 404 — endpoint henüz wire edilmemiş olabilir (skip)"
+  else
+    warn "L2b-${svc_name}: Token'sız /authz/check → ${svc_status} (beklenmeyen)"
+  fi
+done
+
 # L3-L8: report-service Zanzibar env drift guard (PR #424, CNS-20260416-003).
 #
 # When BACKEND_DEPLOY_REMOTE_ENV_FILE (the canonical /home/halil/platform/env/backend.env

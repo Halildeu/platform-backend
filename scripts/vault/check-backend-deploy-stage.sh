@@ -113,6 +113,15 @@ main() {
     CORE_DATA_DB_URL
     CORE_DATA_DB_USERNAME
     CORE_DATA_DB_PASSWORD
+    # Codex Thread 3 drift hunt (2026-04-18): JWT issuer/audience drift class.
+    # Stage compose SECURITY_JWT_ISSUER fallback container-internal URL
+    # (keycloak:8080/realms/serban) — browser tokens public issuer
+    # (https://ai.acik.com/realms/serban) ile gelir, compose default silent
+    # 401/500 üretir. Canonical env'de explicit issuer override + audience
+    # allowlist zorunlu (doğrulandı: #426 PR Codex CNS-20260416-003).
+    SECURITY_JWT_ISSUER
+    SECURITY_JWT_ISSUERS
+    SECURITY_AUTH_ALLOWED_CLIENT_IDS
   )
   local github_base_required=(
     BACKEND_SSH_DEPLOY_ENABLED
