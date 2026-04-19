@@ -282,6 +282,14 @@ services:
       # GATEWAY_CORS_ALLOWED_ORIGINS key'i yoksa preflight 403 /api/auth/cookie
       # ve diğer browser endpoint'leri ai.acik.com origin'inden.
       - GATEWAY_CORS_ALLOWED_ORIGINS=${GATEWAY_CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3004,https://ai.acik.com}
+      # 2026-04-20 QLTY-PROACTIVE-06 (Faz 1 / Option A): audit route feature-flag.
+      # Selects which backend owns GET /api/audit/events (the legacy list).
+      # Values: `lb://USER-SERVICE` (legacy) or `lb://PERMISSION-SERVICE` (consolidation target).
+      # Stage cutover sequence: set AUDIT_BACKEND_URI=lb://PERMISSION-SERVICE in canonical env,
+      # recreate api-gateway container, monitor sweep + compare endpoint (Faz 2). Rollback =
+      # flip env + recreate (no code change). PR #514 already routes /live + /export subsurfaces
+      # explicitly to permission-service via routes[16,17] — this flag governs ONLY the base list.
+      - AUDIT_BACKEND_URI=${AUDIT_BACKEND_URI:-lb://USER-SERVICE}
       - SPRING_CLOUD_VAULT_ENABLED="false"
       - SPRING_CLOUD_VAULT_FAIL_FAST="false"
       - SPRING_CLOUD_VAULT_KV_ENABLED="false"
