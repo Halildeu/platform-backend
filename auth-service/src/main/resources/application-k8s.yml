@@ -96,15 +96,15 @@ jwt:
 
 permission:
   service:
-    base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service.platform-prod.svc.cluster.local:8090}
+    base-url: ${PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}
   audit-mirror:
-    base-url: ${PERMISSION_AUDIT_MIRROR_BASE_URL:${PERMISSION_SERVICE_BASE_URL:http://permission-service.platform-prod.svc.cluster.local:8090}}
+    base-url: ${PERMISSION_AUDIT_MIRROR_BASE_URL:${PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}}
     enabled: ${PERMISSION_AUDIT_MIRROR_ENABLED:true}
     internal-api-key: ${PERMISSION_SERVICE_INTERNAL_API_KEY:}
 
 user:
   service:
-    base-url: ${USER_SERVICE_BASE_URL:http://user-service.platform-prod.svc.cluster.local:8089}
+    base-url: ${USER_SERVICE_BASE_URL:http://user-service:8089}
 
 security:
   # Service-to-service JWT
