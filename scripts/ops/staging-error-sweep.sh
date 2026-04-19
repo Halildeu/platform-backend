@@ -38,9 +38,14 @@ DEFAULT_OUT=".cache/reports/staging-error-sweep-${TS}.json"
 OUTPUT_PATH="${OUTPUT_PATH:-$DEFAULT_OUT}"
 
 # Error patterns we care about (extended regex, case-insensitive).
-# Exclude DEBUG / INFO level lines to reduce noise; include FATAL, ERROR,
-# Exception markers, HTTP 5xx, and security rejections.
-ERROR_REGEX='(^|[[:space:]])(FATAL|ERROR|EXCEPTION|Exception)|(HTTP\/[0-9.]+ 5[0-9]{2})|(rejected|denied|unauthorized|forbidden)'
+# Spring Boot log format: `<TIMESTAMP> <LEVEL> <PID> --- [<SERVICE>] ...`
+# — match lines where LEVEL is FATAL, ERROR, or WARN (WARN included to catch
+# rejected tokens and filter-chain warnings). Secondary patterns catch
+# stack-trace markers and HTTP 5xx tokens that may not have the LEVEL prefix.
+# DEBUG / INFO lines are explicitly excluded to cut ~99% of noise.
+ERROR_REGEX='[[:space:]](FATAL|ERROR|WARN)[[:space:]]+[0-9]+[[:space:]]+---'
+ERROR_REGEX="${ERROR_REGEX}"'|(^|[[:space:]])(Caused by:|at [a-z0-9_.$]+\()'
+ERROR_REGEX="${ERROR_REGEX}"'|(HTTP\/[0-9.]+ 5[0-9]{2})'
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
