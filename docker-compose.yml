@@ -63,9 +63,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       # RS256/JWKS doğrulaması
+      # 2026-04-19: SECURITY_JWT_ISSUER env-aware (KC_HOSTNAME fix sonrası browser
+      # tokens iss=https://ai.acik.com/realms/serban; primary validator canonical env'den
+      # gelen public issuer'a hizalanmalı).
       SECURITY_JWT_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
       SECURITY_JWT_USER_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUER: http://keycloak:8080/realms/serban
+      SECURITY_JWT_ISSUER: ${SECURITY_JWT_ISSUER:-http://keycloak:8080/realms/serban}
       SECURITY_JWT_AUDIENCE: user-service
       # Service token doğrulaması için auth-service JWKS (lokal senaryo)
       SERVICE_AUTH_JWK_SET_URI: ${SERVICE_AUTH_JWK_SET_URI:-http://auth-service:8088/oauth2/jwks}
@@ -165,10 +168,14 @@ services:
       SPRING_CLOUD_VAULT_KV_ENABLED: "false"
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      # RS256/JWKS doğrulaması (user JWT — issuer localhost:8081 for frontend tokens)
+      # RS256/JWKS doğrulaması (user JWT).
+      # 2026-04-19: SECURITY_JWT_ISSUER env-aware. KC_HOSTNAME fix sonrası browser
+      # tokens iss=https://ai.acik.com/realms/serban; primary issuer validator'ı
+      # canonical env'den aldığımız public issuer'a hizalanmalı. Local dev
+      # fallback `http://localhost:8081/...` olarak korunur.
       SECURITY_JWT_JWK_SET_URI: http://keycloak:8080/realms/serban/protocol/openid-connect/certs
-      SECURITY_JWT_ISSUER: http://localhost:8081/realms/serban
-      SECURITY_JWT_ISSUERS: ${SECURITY_JWT_ISSUERS:-http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
+      SECURITY_JWT_ISSUER: ${SECURITY_JWT_ISSUER:-http://localhost:8081/realms/serban}
+      SECURITY_JWT_ISSUERS: ${SECURITY_JWT_ISSUERS:-https://ai.acik.com/realms/serban,http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
       SERVICE_AUTH_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
       SERVICE_AUTH_ISSUER: auth-service
       SECURITY_JWT_AUDIENCE: variant-service
@@ -271,7 +278,10 @@ services:
       # Browser Origin header ile gelen istek fixed localhost allowlist'te olmadığında
       # 403 dönüyordu; stage/prod'da https://ai.acik.com zorunlu. Exact match, wildcard yok
       # (allow-credentials=true ile wildcard güvensiz).
-      - GATEWAY_CORS_ALLOWED_ORIGINS=${GATEWAY_CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3004}
+      # 2026-04-19: Default'a stage public origin eklendi — canonical env
+      # GATEWAY_CORS_ALLOWED_ORIGINS key'i yoksa preflight 403 /api/auth/cookie
+      # ve diğer browser endpoint'leri ai.acik.com origin'inden.
+      - GATEWAY_CORS_ALLOWED_ORIGINS=${GATEWAY_CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3004,https://ai.acik.com}
       - SPRING_CLOUD_VAULT_ENABLED="false"
       - SPRING_CLOUD_VAULT_FAIL_FAST="false"
       - SPRING_CLOUD_VAULT_KV_ENABLED="false"
