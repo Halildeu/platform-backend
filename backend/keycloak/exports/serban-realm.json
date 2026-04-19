@@ -1171,6 +1171,50 @@
         "offline_access",
         "microprofile-jwt"
       ]
+    },
+    {
+      "clientId": "smoke-client",
+      "name": "smoke-client — D29 katman 3 Zanzibar-ready smoke (testai + prod)",
+      "description": "Dev/ops synthetic smoke-test client. Confidential (client_secret). Service account + direct access grant enabled. Real secret rotated via Vault kv/platform/keycloak/smoke-client.",
+      "enabled": true,
+      "alwaysDisplayInConsole": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "DEV_ONLY_ROTATE_VIA_VAULT_SMOKE_CLIENT_SECRET",
+      "redirectUris": [],
+      "webOrigins": [],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "600",
+        "client.secret.creation.time": "0",
+        "post.logout.redirect.uris": "+",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": true,
+      "nodeReRegistrationTimeout": -1,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "address",
+        "phone",
+        "offline_access",
+        "microprofile-jwt"
+      ]
     }
   ],
   "clientScopes": [
