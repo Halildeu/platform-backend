@@ -1,0 +1,43 @@
+# Staging error-sweep allowlist — regex per line, one pattern per line.
+# Lines beginning with # and blank lines are ignored.
+# Matches are OR'd together: a log line matching ANY pattern here is suppressed.
+#
+# 2026-04-19 QLTY-PROACTIVE-04: seed with known-benign patterns observed during
+# JVM startup, Flyway, Hikari, Spring banners, and predictable integration noise.
+# Add new patterns via PR, not runtime — review gives us an audit trail.
+
+# ---- JVM / Spring Boot / Hikari / Eureka / Flyway banner noise ----
+HikariPool-1 - Starting\.\.\.
+HikariPool-1 - Start completed
+HHH000489: No JTA platform available
+o\.s\.boot\.SpringApplication : Started .* in [0-9.]+ seconds
+Tomcat started on port
+Netty started on port
+Tomcat initialized with port
+o\.f\.c\.internal\.database\.base\.BaseDatabaseType : Database:
+o\.h\.t\.schema\.internal\.SchemaMigrator
+o\.s\.w\.s\.handler\.SimpleUrlHandlerMapping : Mapped URL path
+DiscoveryClient_.*/.* - registration status: 204
+EurekaClient: Will refresh local cache with each new retrieved
+com\.netflix\.eureka\.cluster\.ReplicationTaskProcessor
+
+# ---- Keycloak boot banner ----
+keycloak\.common\.util\.Environment : Loading
+quarkus.*Installed features
+
+# ---- Known-benign warnings that will be addressed in separate tickets ----
+# (register with issue link in the comment — don't hide silently)
+# Example:
+# ZAN-123: audit export websocket handshake warning on idle connection
+# deprecated\.event-stream\.websocket-handshake
+
+# ---- Spring Security DEBUG noise (we set security logging DEBUG level) ----
+Securing GET /actuator/health
+Invoking .* filter with chain: \[
+
+# ---- Test-fixture noise when stage-authz-diagnose runs inline ----
+\[diag\]
+
+# ---- Frequently-benign "failed" token in log messages that isn't an error ----
+Task failed over to mock events     # audit mock fallback intentional
+Falling back to mock audit events   # user-side fallback
