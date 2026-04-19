@@ -122,7 +122,7 @@ services:
       PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
       USER_SERVICE_BASE_URL: ${USER_SERVICE_BASE_URL:-http://user-service}
       AUTH_DB_SCHEMA: ${AUTH_DB_SCHEMA:-public}
-      EUREKA_SERVER_URL: ${EUREKA_SERVER_URL}
+      EUREKA_SERVER_URL: ${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
       AUTH_DB_NAME: ${AUTH_DB_NAME:-users}
       AUTH_DB_USERNAME: ${AUTH_DB_USERNAME:-postgres}
       AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-postgres}
@@ -183,7 +183,7 @@ services:
       VARIANT_DB_USERNAME: ${VARIANT_DB_USERNAME:-postgres}
       VARIANT_DB_PASSWORD: ${VARIANT_DB_PASSWORD:-postgres}
       VARIANT_DB_SCHEMA: ${VARIANT_DB_SCHEMA:-variant_service}
-      EUREKA_SERVER_URL: ${EUREKA_SERVER_URL}
+      EUREKA_SERVER_URL: ${EUREKA_SERVER_URL:-http://discovery-server:8761/eureka}
     depends_on:
       discovery-server:
         condition: service_healthy
