@@ -19,6 +19,9 @@
 #   0 = PASS (all services below WARN_THRESHOLD)
 #   1 = WARN (any service in [WARN_THRESHOLD, FAIL_THRESHOLD))
 #   2 = FAIL (any service >= FAIL_THRESHOLD)
+#
+# Design note: JSON is generated entirely in Python (via file-backed inputs)
+# to avoid the shell-concat quoting fragility seen in v1.
 
 set -euo pipefail
 
@@ -34,9 +37,9 @@ TS="$(date -u +%Y-%m-%dT%H-%M-%S)"
 DEFAULT_OUT=".cache/reports/staging-error-sweep-${TS}.json"
 OUTPUT_PATH="${OUTPUT_PATH:-$DEFAULT_OUT}"
 
-# Error patterns we care about. Each pattern is an extended regex.
-# Exclude DEBUG and plain INFO lines to reduce noise; include FATAL, ERROR,
-# Exception names, HTTP 5xx, and security rejections.
+# Error patterns we care about (extended regex, case-insensitive).
+# Exclude DEBUG / INFO level lines to reduce noise; include FATAL, ERROR,
+# Exception markers, HTTP 5xx, and security rejections.
 ERROR_REGEX='(^|[[:space:]])(FATAL|ERROR|EXCEPTION|Exception)|(HTTP\/[0-9.]+ 5[0-9]{2})|(rejected|denied|unauthorized|forbidden)'
 
 require_cmd() {
@@ -49,15 +52,15 @@ require_cmd() {
 require_cmd docker
 require_cmd python3
 
-# Resolve allowlist path relative to repo root if it's relative.
+# Resolve allowlist path relative to script dir if not found at given path.
 if [[ ! -f "${ALLOWLIST_PATH}" ]] && [[ -f "$(dirname "$0")/staging-error-allowlist.txt" ]]; then
   ALLOWLIST_PATH="$(dirname "$0")/staging-error-allowlist.txt"
 fi
 
+# Build combined allow-regex (OR of all non-comment, non-blank patterns).
 if [[ -f "${ALLOWLIST_PATH}" ]]; then
-  # Build a grep -E -v filter string by joining non-comment non-empty lines with |.
   ALLOW_REGEX="$(
-    grep -Ev '^(\s*#|\s*$)' "${ALLOWLIST_PATH}" \
+    grep -Ev '^([[:space:]]*#|[[:space:]]*$)' "${ALLOWLIST_PATH}" \
       | tr '\n' '|' \
       | sed 's/|$//'
   )"
@@ -67,98 +70,131 @@ fi
 
 mkdir -p "$(dirname "${OUTPUT_PATH}")"
 
-# Build a per-service JSON fragment and accumulate overall verdict.
-python_in="$(mktemp)"
-trap 'rm -f "${python_in}"' EXIT
-
-max_count=0
-verdict="pass"
-echo '{"services":[' > "${python_in}"
-first=1
+# Work-directory for per-service filtered-log files.
+work_dir="$(mktemp -d)"
+trap 'rm -rf "${work_dir}"' EXIT
 
 IFS=',' read -r -a svc_array <<< "${SERVICES}"
+
+manifest_file="${work_dir}/manifest.txt"
+: > "${manifest_file}"
+
 for svc in "${svc_array[@]}"; do
   container="platform-${svc}-1"
+  svc_file="${work_dir}/${svc}.log"
+  status="ok"
+
   if ! docker inspect "${container}" >/dev/null 2>&1; then
-    # Missing container — record but don't fail (may be intentionally off).
-    sample_json='[]'
-    count=0
+    : > "${svc_file}"
     status="missing"
   else
-    raw_logs="$(docker logs --since "${WINDOW_MINUTES}m" "${container}" 2>&1 || true)"
-    filtered_logs="$(printf '%s\n' "${raw_logs}" | grep -Ei "${ERROR_REGEX}" || true)"
+    # Capture raw logs for the window; tolerate docker-logs errors.
+    raw_logs_file="${work_dir}/${svc}.raw.log"
+    docker logs --since "${WINDOW_MINUTES}m" "${container}" > "${raw_logs_file}" 2>&1 || true
+
+    # Filter for error patterns.
+    grep -Ei "${ERROR_REGEX}" "${raw_logs_file}" > "${svc_file}" || true
+
+    # Apply allowlist if present.
     if [[ -n "${ALLOW_REGEX}" ]]; then
-      filtered_logs="$(printf '%s\n' "${filtered_logs}" | grep -Ev "${ALLOW_REGEX}" || true)"
+      tmp="${work_dir}/${svc}.allow.log"
+      grep -Ev "${ALLOW_REGEX}" "${svc_file}" > "${tmp}" || true
+      mv "${tmp}" "${svc_file}"
     fi
-    # Trim blanks.
-    filtered_logs="$(printf '%s\n' "${filtered_logs}" | sed '/^$/d')"
-    count="$(printf '%s' "${filtered_logs}" | grep -c . || true)"
-    # Keep last 5 samples as array of single-line strings.
-    sample_json="$(
-      printf '%s\n' "${filtered_logs}" \
-        | tail -n 5 \
-        | python3 -c 'import json, sys; lines = [ln.rstrip() for ln in sys.stdin if ln.strip()]; print(json.dumps(lines[-5:]))'
-    )"
-    status="ok"
+
+    # Drop blank lines.
+    sed -i '/^[[:space:]]*$/d' "${svc_file}"
   fi
 
-  if [[ "${count}" -gt "${max_count}" ]]; then
-    max_count="${count}"
-  fi
-
-  if [[ "${count}" -ge "${FAIL_THRESHOLD}" ]]; then
-    verdict="fail"
-  elif [[ "${count}" -ge "${WARN_THRESHOLD}" && "${verdict}" != "fail" ]]; then
-    verdict="warn"
-  fi
-
-  if [[ "${first}" -eq 0 ]]; then
-    echo "," >> "${python_in}"
-  fi
-  first=0
-
-  python3 -c "
-import json, sys
-print(json.dumps({
-  'name': '${svc}',
-  'container': '${container}',
-  'status': '${status}',
-  'errorCount': int('${count}'),
-  'samples': json.loads('''${sample_json}''') if '''${sample_json}''' else [],
-}, indent=2))
-" >> "${python_in}"
+  # Append to manifest: "svc<TAB>container<TAB>status<TAB>relpath"
+  printf '%s\t%s\t%s\t%s\n' "${svc}" "${container}" "${status}" "${svc_file}" >> "${manifest_file}"
 done
 
-echo "]," >> "${python_in}"
-python3 -c "
+# Let Python build the JSON and decide the verdict.
+verdict="$(
+  python3 - "${manifest_file}" "${OUTPUT_PATH}" "${TS}" "${WINDOW_MINUTES}" "${WARN_THRESHOLD}" "${FAIL_THRESHOLD}" <<'PY'
 import json
-print(json.dumps({
-  'generatedAt': '${TS}Z',
-  'windowMinutes': int('${WINDOW_MINUTES}'),
-  'warnThreshold': int('${WARN_THRESHOLD}'),
-  'failThreshold': int('${FAIL_THRESHOLD}'),
-  'maxServiceErrorCount': int('${max_count}'),
-  'verdict': '${verdict}',
-})[1:-1])
-" >> "${python_in}"
-echo "}" >> "${python_in}"
+import pathlib
+import sys
 
-# Clean up JSON (the concat-by-hand above is brittle — let python validate/reformat).
-python3 -c "
-import json, sys, pathlib
-raw = pathlib.Path('${python_in}').read_text()
-# Reparse to validate and pretty-print.
-obj = json.loads(raw)
-pathlib.Path('${OUTPUT_PATH}').write_text(json.dumps(obj, indent=2, sort_keys=True) + '\n')
-print(f'[sweep] report written: ${OUTPUT_PATH}')
-print(f'[sweep] verdict=${verdict} max={max_count} window=${WINDOW_MINUTES}m')
-for svc in obj['services']:
-  flag = 'OK' if svc['errorCount'] == 0 else ('MISS' if svc['status']=='missing' else ('!!' if svc['errorCount'] >= ${FAIL_THRESHOLD} else '**'))
-  print(f\"[sweep]  {flag:4s} {svc['name']:24s} errors={svc['errorCount']}\")
-"
+manifest_path, output_path, ts, window_m, warn_t, fail_t = sys.argv[1:7]
+window_m = int(window_m)
+warn_t = int(warn_t)
+fail_t = int(fail_t)
+
+services = []
+max_count = 0
+verdict = "pass"
+
+for line in pathlib.Path(manifest_path).read_text().splitlines():
+    if not line.strip():
+        continue
+    parts = line.split("\t")
+    if len(parts) != 4:
+        continue
+    svc, container, status, logf = parts
+    if status == "missing":
+        count = 0
+        samples = []
+    else:
+        content = pathlib.Path(logf).read_text(errors="replace")
+        lines = [ln.rstrip() for ln in content.splitlines() if ln.strip()]
+        count = len(lines)
+        samples = lines[-5:]
+    services.append({
+        "name": svc,
+        "container": container,
+        "status": status,
+        "errorCount": count,
+        "samples": samples,
+    })
+    if count > max_count:
+        max_count = count
+    if count >= fail_t:
+        verdict = "fail"
+    elif count >= warn_t and verdict != "fail":
+        verdict = "warn"
+
+summary = {
+    "generatedAt": ts + "Z",
+    "windowMinutes": window_m,
+    "warnThreshold": warn_t,
+    "failThreshold": fail_t,
+    "maxServiceErrorCount": max_count,
+    "verdict": verdict,
+    "services": services,
+}
+
+out = pathlib.Path(output_path)
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+
+print(f"[sweep] report written: {output_path}", file=sys.stderr)
+print(f"[sweep] verdict={verdict} max={max_count} window={window_m}m", file=sys.stderr)
+for svc in services:
+    if svc["status"] == "missing":
+        flag = "MISS"
+    elif svc["errorCount"] >= fail_t:
+        flag = "!!"
+    elif svc["errorCount"] >= warn_t:
+        flag = "**"
+    elif svc["errorCount"] > 0:
+        flag = "."
+    else:
+        flag = "OK"
+    print(f"[sweep]  {flag:4s} {svc['name']:24s} errors={svc['errorCount']}", file=sys.stderr)
+
+# stdout carries the verdict for the outer shell to consume.
+print(verdict)
+PY
+)"
 
 case "${verdict}" in
   pass) exit 0 ;;
   warn) exit 1 ;;
   fail) exit 2 ;;
+  *)
+    echo "[sweep] FATAL: unknown verdict '${verdict}'" >&2
+    exit 2
+    ;;
 esac
