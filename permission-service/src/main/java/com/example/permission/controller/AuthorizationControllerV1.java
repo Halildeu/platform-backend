@@ -186,17 +186,21 @@ public class AuthorizationControllerV1 {
     }
 
     /**
-     * CNS-20260415-004 (Codex bulgu #2): Permission-service'te ScopeContextFilter
-     * registration eksik/degisken oldugu icin ScopeContextHolder.get() persona
-     * token'larinda null donup userId="0" fallback'ine dusuyordu — tum persona
-     * checklerini ayni user'a yoneltip synthetic canary'yi bozuyordu.
+     * Resolve numeric DB user id from incoming JWT for OpenFGA `user:<id>` refs.
      *
-     * Fix: JWT'den direct userId extraction. Oncelik sirasi:
-     *  1. ScopeContextHolder (legacy, filter registered ise)
-     *  2. JWT 'uid' claim (JwtTokenProvider tarafindan yazildi, PR6b sonrasi
-     *     permissions claim yok ama uid hala var)
-     *  3. JWT 'sub' claim (email; userId degil ama fallback olarak guvenilir)
-     *  4. "0" local profile/permitAll fallback
+     * 2026-04-19 OI-03 canary fix (Codex thread 019da4b5): prior implementation
+     * returned the raw JWT `sub` (Keycloak UUID) when no `uid` claim was present,
+     * but OpenFGA tuples are written with the numeric DB id (e.g. `user:1205`).
+     * Browser tokens (from `frontend` KC client) carry only `sub` + `email`, so
+     * every `/authz/check` for a persona user produced `user:<KC-UUID>` vs stored
+     * `user:<numeric-id>` — 93.66% mismatch in canary k6 matrix.
+     *
+     * Priority order:
+     *  1. ScopeContextHolder (legacy, filter-registered path)
+     *  2. AuthenticatedUserLookupService.resolve(jwt) numericUserId —
+     *     tries JWT `userId`/`uid` claim, then email → DB lookup (same path
+     *     as /authz/me, keeps the two endpoints consistent).
+     *  3. Final fallback: JWT `sub` / `"0"` for local permitAll profile.
      */
     private String resolveUserId(org.springframework.security.oauth2.jwt.Jwt jwt) {
         var scope = com.example.commonauth.scope.ScopeContextHolder.get();
@@ -204,6 +208,14 @@ public class AuthorizationControllerV1 {
             return scope.userId();
         }
         if (jwt != null) {
+            try {
+                var resolved = authenticatedUserLookupService.resolve(jwt);
+                if (resolved.numericUserId() != null) {
+                    return Long.toString(resolved.numericUserId());
+                }
+            } catch (RuntimeException ex) {
+                log.warn("Authz /check numeric userId resolution failed; falling back to JWT claims. cause={}", ex.getMessage());
+            }
             Object uid = jwt.getClaim("uid");
             if (uid != null) {
                 return uid.toString();
