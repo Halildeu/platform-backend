@@ -17,7 +17,15 @@ public interface RolePermissionRepository extends JpaRepository<RolePermission, 
 
     List<RolePermission> findByRoleIdAndPermissionType(Long roleId, PermissionType permissionType);
 
-    @Query("SELECT rp FROM RolePermission rp WHERE rp.role.id IN :roleIds")
+    // 2026-04-18 OI-03 canary: JOIN FETCH rp.role eager-loads the Role entity
+    // to prevent LazyInitializationException when callers (e.g.
+    // AuthorizationControllerV1#/assignments which is not @Transactional and
+    // runs with spring.jpa.open-in-view=false) pass the result to
+    // TupleSyncService#resolveEffectiveGrants, which dereferences
+    // rp.getRole().getName(). Fetch-join is single-query (no N+1), harmless
+    // for the @Transactional(readOnly=true) callers that already had a
+    // session open.
+    @Query("SELECT rp FROM RolePermission rp JOIN FETCH rp.role WHERE rp.role.id IN :roleIds")
     List<RolePermission> findByRoleIdIn(List<Long> roleIds);
 
     @Modifying
