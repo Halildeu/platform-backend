@@ -773,6 +773,16 @@ async function main() {
     // Super-admin raw OpenFGA org-admin tuple (D-008 istisnai relation — role path dışı)
     if (persona.openFgaAdmin) {
       await openFgaWriteTuple(`user:${userId}`, 'admin', 'organization:default');
+      // 2026-04-19 OI-03 canary evidence (Codex thread 019da4b5):
+      // k6 super_admin persona asserts feature-level relations (can_manage/
+      // module:ACCESS, can_view/module:THEME, can_view/module:REPORT) — but
+      // the OpenFGA model does not derive module grants from organization#admin
+      // (no inheritance relation). Without explicit module tuples super_admin
+      // would produce ~22% residual mismatch even after persona user-id fix.
+      // Seed the exact relations k6 expects so the matrix is deterministic.
+      await openFgaWriteTuple(`user:${userId}`, 'can_manage', 'module:ACCESS');
+      await openFgaWriteTuple(`user:${userId}`, 'can_view',   'module:THEME');
+      await openFgaWriteTuple(`user:${userId}`, 'can_view',   'module:REPORT');
     }
   }
 
