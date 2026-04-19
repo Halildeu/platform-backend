@@ -35,6 +35,9 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
+                        // 2026-04-19: theme-registry public CSS-var metadata
+                        // (see gateway SecurityConfig parity comment).
+                        .requestMatchers("/api/v1/theme-registry", "/api/v1/theme-registry/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.decoder(jwtDecoder)));

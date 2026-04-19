@@ -49,6 +49,11 @@ public class SecurityConfig {
                 .pathMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .matchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
                 .pathMatchers("/api/auth/cookie/**").permitAll()
+                // 2026-04-19: theme-registry public CSS-var metadata — frontend
+                // theme-context.provider bootstraps BEFORE auth context, so this
+                // call goes without Authorization header. Registry data is not
+                // sensitive (just CSS variable key→list mappings). Suppress 401.
+                .pathMatchers(HttpMethod.GET, "/api/v1/theme-registry", "/api/v1/theme-registry/**").permitAll()
                 .anyExchange().authenticated()
             )
             .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtDecoder(jwtDecoder)));
