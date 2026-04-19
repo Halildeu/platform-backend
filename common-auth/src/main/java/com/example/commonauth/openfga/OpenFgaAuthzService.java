@@ -491,6 +491,16 @@ public class OpenFgaAuthzService {
      */
     public record CheckResult(boolean allowed, String reason) {}
 
+    /**
+     * 2026-04-18 OI-03 Bug 2 (Codex 019da431 Option A): object types that
+     * define a `blocked` relation in the OpenFGA model. Probing `blocked`
+     * on scope types (company / organization / project / warehouse / branch)
+     * triggers HTTP 400 "relation 'X#blocked' not found" because those types
+     * don't carry a blocked relation — scope denial semantics is NO_SCOPE,
+     * not deny-wins. Scope deny-wins is out of scope for this service.
+     */
+    private static final Set<String> BLOCKED_SUPPORTED_TYPES = Set.of("module", "action", "report");
+
     public CheckResult checkWithReason(String userId, String relation, String objectType, String objectId) {
         if (!enabled) {
             return new CheckResult(true, "granted");
@@ -500,9 +510,16 @@ public class OpenFgaAuthzService {
             String reason;
             if (allowed) {
                 reason = "granted";
-            } else {
+            } else if (BLOCKED_SUPPORTED_TYPES.contains(objectType)) {
+                // Feature-level deny-wins: probe the explicit `blocked` relation
+                // defined on module/action/report types.
                 boolean isBlocked = check(userId, "blocked", objectType, objectId);
                 reason = isBlocked ? "blocked" : "no_relation";
+            } else {
+                // Scope types (company/organization/project/warehouse/branch)
+                // have no `blocked` relation in the model; denied means the
+                // user simply lacks any positive scope relation.
+                reason = "no_relation";
             }
             // SK-5: Per-decision audit log — every authorization decision recorded
             log.info("authz.decision user={} relation={} object={}:{} allowed={} reason={}",
