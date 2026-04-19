@@ -2,6 +2,7 @@ package com.example.permission.service;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.commonauth.scope.ScopeContextCache;
+import dev.openfga.sdk.api.client.model.ClientTupleKeyWithoutCondition;
 import com.example.permission.model.GrantType;
 import com.example.permission.model.PermissionType;
 import com.example.permission.model.RolePermission;
@@ -120,7 +121,13 @@ public class TupleSyncService {
     /**
      * When a role's permissions change, refresh tuples for ALL users assigned to that role.
      */
-    @Transactional(readOnly = true)
+    // 2026-04-18 OI-03 Bug 4 (Codex 019da431): propagateRoleChange must be
+    // writable because authzVersionService.incrementVersion() performs an UPDATE
+    // on authz_sync_version. Previous `readOnly=true` caused Spring/Hibernate to
+    // reject the UPDATE with "cannot execute UPDATE in a read-only transaction"
+    // and the fastpath consistently failed — outbox poller would retry 30 s
+    // later, inflating authzVersion propagation latency and log noise.
+    @Transactional
     public void propagateRoleChange(Long roleId) {
         List<UserRoleAssignment> assignments = assignmentRepository.findByRoleIdAndActiveTrue(roleId);
         Set<Long> userIds = assignments.stream()
@@ -222,28 +229,53 @@ public class TupleSyncService {
         if (roleIds.isEmpty()) return;
 
         List<RolePermission> allPerms = rolePermissionRepository.findByRoleIdIn(roleIds);
-        var deleteTuples = new ArrayList<>(allPerms.stream()
-                .filter(rp -> rp.getPermissionType() != null && rp.getPermissionKey() != null && rp.getGrantType() != null)
-                .flatMap(rp -> {
-                    TupleMapping mapping = toTupleMapping(rp.getPermissionType(), rp.getGrantType());
-                    if (mapping == null) return java.util.stream.Stream.empty();
-                    // CNS-20260415-004 Codex bulgu #3: DENY icin ikinci "blocked" tuple
-                    // delete'i duplicate. toTupleMapping(DENY) zaten "blocked"
-                    // relation donduruyor. Tek delete yeterli.
-                    return java.util.stream.Stream.of(
-                            OpenFgaAuthzService.deleteTupleKey(userId, mapping.relation(), mapping.objectType(), rp.getPermissionKey())
-                    );
-                })
-                .toList());
 
-        if (deleteTuples.isEmpty()) return;
+        // 2026-04-18 OI-03 Bug 5 (Codex 019da431): stale-relation cleanup.
+        // Previous code deleted only the CURRENT grant's mapped relation (e.g.
+        // can_view for VIEW grant). On transitions like VIEW→DENY or MANAGE→VIEW
+        // the old relation tuple (can_view / can_manage) would remain in
+        // OpenFGA and surface as a phantom allow. Fix: for every
+        // (permissionType, permissionKey) pair present in the user's active
+        // roles, delete ALL possible relations for that type so the subsequent
+        // write phase re-applies exactly the current grant's mapping. Uses the
+        // already-defined but previously-unused `getRelationsForType` helper.
+        //
+        // Dedupe key: canonical string "userId|relation|objectType:objectId".
+        // SDK model classes (ClientTupleKey / ClientTupleKeyWithoutCondition)
+        // do NOT override equals/hashCode, so LinkedHashSet<ClientTuple*> would
+        // silently leak duplicates (iter-2 REVISE).
+        java.util.LinkedHashMap<String, ClientTupleKeyWithoutCondition> dedupe = new java.util.LinkedHashMap<>();
+        for (RolePermission rp : allPerms) {
+            if (rp.getPermissionType() == null || rp.getPermissionKey() == null) continue;
+            String objectType = objectTypeForPermissionType(rp.getPermissionType());
+            if (objectType == null) continue;
+            for (String relation : getRelationsForType(rp.getPermissionType())) {
+                String canonical = userId + "|" + relation + "|" + objectType + ":" + rp.getPermissionKey();
+                dedupe.putIfAbsent(canonical, OpenFgaAuthzService.deleteTupleKey(
+                        userId, relation, objectType, rp.getPermissionKey()));
+            }
+        }
+
+        if (dedupe.isEmpty()) return;
+        var deleteTuples = new ArrayList<>(dedupe.values());
         try {
+            // 2026-04-18 OI-03 Bug 3 (Codex 019da431): OpenFgaAuthzService.deleteTuples
+            // is now idempotent — "tuple does not exist" errors are swallowed and
+            // per-tuple fallback retries surviving entries.
             authzService.deleteTuples(deleteTuples);
             log.debug("OpenFGA batch feature delete: {} tuples for user:{}", deleteTuples.size(), userId);
         } catch (Exception e) {
             log.debug("OpenFGA batch feature delete (partial no-op) for user:{} ({} tuples) — {}",
                     userId, deleteTuples.size(), e.getMessage());
         }
+    }
+
+    private String objectTypeForPermissionType(PermissionType type) {
+        return switch (type) {
+            case MODULE -> "module";
+            case ACTION -> "action";
+            case REPORT -> "report";
+        };
     }
 
     private List<String> getRelationsForType(PermissionType type) {
