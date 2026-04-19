@@ -21,6 +21,17 @@ DiscoveryClient_.*/.* - registration status: 204
 EurekaClient: Will refresh local cache with each new retrieved
 com\.netflix\.eureka\.cluster\.ReplicationTaskProcessor
 
+# ---- Observed 2026-04-19 v1.2 sweep: benign startup WARN chatter ----
+# Flyway doesn't yet have explicit PG 18 support but is fully functional.
+# See: https://documentation.red-gate.com/fd/postgresql-184127441.html
+Flyway upgrade recommended: PostgreSQL [0-9.]+ is newer than this version
+# Eureka rate-limiter debounce on initial registration bursts.
+com\.netflix\.discovery\.InstanceInfoReplicator.*Ignoring onDemand update due to rate limiter
+# Hikari: idleTimeout < maxLifetime is intentional on some services.
+HikariConfig\s+: [-a-zA-Z0-9]+ - idleTimeout is close to or more than maxLifetime
+# Hikari: when maxLifetime > idleTimeout, idleTimeout is no-op. Benign config quirk.
+HikariConfig\s+: HikariPool-1 - idleTimeout has been set but has no effect
+
 # ---- Keycloak boot banner ----
 keycloak\.common\.util\.Environment : Loading
 quarkus.*Installed features
