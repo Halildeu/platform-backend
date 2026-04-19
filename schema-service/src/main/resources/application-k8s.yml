@@ -1,4 +1,5 @@
 # application-k8s.yml — schema-service (platform-k8s-gitops uyumlu)
+# CI trigger: ADR-0002 ESO Faz 3 post-merge D30 immutable image — GHCR sha-<short> build zinciri (2026-04-20)
 # D7 Eureka kaldırıldı, D18 management port 8081, D19 host Service+Endpoints
 # NOT: Primary datasource MSSQL (schema discovery), no JPA
 
