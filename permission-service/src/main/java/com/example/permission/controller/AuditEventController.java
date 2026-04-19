@@ -114,7 +114,12 @@ public class AuditEventController {
     }
 
     @GetMapping(value = "/live", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RequireModule(value = "AUDIT", relation = "viewer")
     public SseEmitter liveEvents() {
+        // 2026-04-19 QLTY-PROACTIVE-03: @RequireModule added for parity with the base
+        // listEvents() endpoint. Previously anonymous-but-authenticated access was possible
+        // (class has no @PreAuthorize; no endpoint-level guard). SSE streams are high-value
+        // (real-time audit data) so must be AUDIT.viewer-gated like the list endpoint.
         return auditEventService.openLiveStream();
     }
 
