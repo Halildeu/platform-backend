@@ -74,6 +74,10 @@ public class AuditCompareService {
     }
 
     public AuditCompareResponse compare(int page, int pageSize) {
+        return compare(page, pageSize, null);
+    }
+
+    public AuditCompareResponse compare(int page, int pageSize, String authHeader) {
         int safePage = Math.max(1, page);
         int safeSize = Math.min(Math.max(pageSize, 1), 500);
 
@@ -82,7 +86,7 @@ public class AuditCompareService {
         List<String> userServiceErrors = new ArrayList<>();
         try {
             // user-service is 0-based, permission-service is 1-based — adjust
-            userServiceResponse = fetchUserService(safePage - 1, safeSize);
+            userServiceResponse = fetchUserService(safePage - 1, safeSize, authHeader);
         } catch (Exception ex) {
             log.warn("[audit-compare] user-service fetch failed: {}", ex.toString());
             userServiceErrors.add("user-service fetch failed: " + ex.getClass().getSimpleName() + ": " + ex.getMessage());
@@ -109,13 +113,21 @@ public class AuditCompareService {
     }
 
     Map<String, Object> fetchUserService(int page, int pageSize) throws Exception {
+        return fetchUserService(page, pageSize, null);
+    }
+
+    Map<String, Object> fetchUserService(int page, int pageSize, String authHeader) throws Exception {
         URI uri = URI.create(String.format("%s/api/audit/events?page=%d&size=%d",
                 userServiceUrl, page, pageSize));
-        HttpRequest request = HttpRequest.newBuilder(uri)
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(requestTimeout)
-                .header("Accept", "application/json")
-                .GET()
-                .build();
+                .header("Accept", "application/json");
+        // Forward caller's Authorization so user-service SecurityConfig accepts
+        // the request (no @RequireModule guard, but authenticated() required).
+        if (authHeader != null && !authHeader.isBlank()) {
+            builder.header("Authorization", authHeader);
+        }
+        HttpRequest request = builder.GET().build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() / 100 != 2) {
             throw new RuntimeException("user-service returned HTTP " + response.statusCode());

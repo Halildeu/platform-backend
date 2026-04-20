@@ -3,6 +3,7 @@ package com.example.permission.controller;
 import com.example.commonauth.openfga.RequireModule;
 import com.example.permission.dto.AuditCompareResponse;
 import com.example.permission.service.AuditCompareService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -40,8 +41,15 @@ public class AuditCompareController {
     @RequireModule(value = "AUDIT", relation = "manager")
     public ResponseEntity<AuditCompareResponse> compare(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "50") int pageSize
+            @RequestParam(defaultValue = "50") int pageSize,
+            HttpServletRequest request
     ) {
-        return ResponseEntity.ok(auditCompareService.compare(page, pageSize));
+        // 2026-04-20 Faz 2 post-deploy: user-service's /api/audit/events requires
+        // an authenticated caller even though its controller has no @RequireModule.
+        // Forward the caller's Authorization header so the compare can reach both
+        // upstreams consistently. (Alternative: mint a service-token via auth-
+        // service — heavier; forwarding suffices for stage evidence collection.)
+        String authHeader = request.getHeader("Authorization");
+        return ResponseEntity.ok(auditCompareService.compare(page, pageSize, authHeader));
     }
 }
