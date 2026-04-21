@@ -67,6 +67,52 @@ class VariantAuthorizationServiceImplTest {
         assertThat(ctx.isAdmin()).isTrue();
     }
 
+    @Test
+    void buildsContextFromAuthzRolesWhenJwtRolesMissing() {
+        CountingStubClient client = new CountingStubClient();
+        AuthzMeResponse response = new AuthzMeResponse();
+        response.setUserId("42");
+        response.setRoles(List.of("ADMIN"));
+        client.setResponse(response);
+
+        VariantAuthorizationServiceImpl service = new VariantAuthorizationServiceImpl(client, Duration.ofSeconds(1));
+
+        Jwt jwt = Jwt.withTokenValue("t")
+                .header("alg", "RS256")
+                .subject("42")
+                .claim("email", "u@example.com")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(60))
+                .build();
+
+        AuthorizationContext ctx = service.buildContext(jwt);
+        assertThat(ctx.getRoles()).contains("ADMIN");
+        assertThat(ctx.isAdmin()).isTrue();
+    }
+
+    @Test
+    void buildsContextAsAdminWhenAuthzSuperAdminTrue() {
+        CountingStubClient client = new CountingStubClient();
+        AuthzMeResponse response = new AuthzMeResponse();
+        response.setUserId("42");
+        response.setSuperAdmin(Boolean.TRUE);
+        client.setResponse(response);
+
+        VariantAuthorizationServiceImpl service = new VariantAuthorizationServiceImpl(client, Duration.ofSeconds(1));
+
+        Jwt jwt = Jwt.withTokenValue("t")
+                .header("alg", "RS256")
+                .subject("42")
+                .claim("email", "u@example.com")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(60))
+                .build();
+
+        AuthorizationContext ctx = service.buildContext(jwt);
+        assertThat(ctx.getRoles()).contains("ADMIN");
+        assertThat(ctx.isAdmin()).isTrue();
+    }
+
     private AuthzMeResponse buildAuthzMeResponse() {
         AuthzMeResponse response = new AuthzMeResponse();
         response.setUserId("42");

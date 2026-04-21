@@ -141,6 +141,34 @@ class VariantSecurityIntegrationTest {
     }
 
     @Test
+    void variants_should_200_for_authz_admin_without_scope() throws Exception {
+        AuthzMeResponse adminResponse = new AuthzMeResponse();
+        adminResponse.setUserId("1");
+        adminResponse.setRoles(List.of("ADMIN"));
+        adminResponse.setAllowedScopes(List.of());
+        permissionServiceAuthzClient.setResponse(adminResponse);
+
+        String token = issueToken("variant-service", List.of());
+        mockMvc.perform(get("/api/v1/variants?gridId=101")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void variants_should_200_for_authz_super_admin_without_scope() throws Exception {
+        AuthzMeResponse adminResponse = new AuthzMeResponse();
+        adminResponse.setUserId("1");
+        adminResponse.setSuperAdmin(Boolean.TRUE);
+        adminResponse.setAllowedScopes(List.of());
+        permissionServiceAuthzClient.setResponse(adminResponse);
+
+        String token = issueToken("variant-service", List.of());
+        mockMvc.perform(get("/api/v1/variants?gridId=101")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void variants_should_403_when_permission_missing() throws Exception {
         // Permissions come from authz service (ADR-003: JWT is identity-only)
         // Reset response to have no VARIANTS_READ permission
