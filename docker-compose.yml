@@ -178,13 +178,13 @@ services:
       SECURITY_JWT_ISSUERS: ${SECURITY_JWT_ISSUERS:-https://ai.acik.com/realms/serban,http://keycloak:8080/realms/serban,http://localhost:8081/realms/serban}
       SERVICE_AUTH_JWK_SET_URI: http://auth-service:8088/oauth2/jwks
       SERVICE_AUTH_ISSUER: auth-service
-      SECURITY_JWT_AUDIENCE: variant-service
+      SECURITY_JWT_AUDIENCE: ${VARIANT_SERVICE_SECURITY_JWT_AUDIENCE:-account}
       ERP_OPENFGA_ENABLED: ${ERP_OPENFGA_ENABLED:-true}
       ERP_OPENFGA_API_URL: ${ERP_OPENFGA_API_URL:-http://openfga:8080}
-      ERP_OPENFGA_STORE_ID: ${ERP_OPENFGA_STORE_ID:-}
-      ERP_OPENFGA_MODEL_ID: ${ERP_OPENFGA_MODEL_ID:-}
+      ERP_OPENFGA_STORE_ID: ${OPENFGA_STORE_ID:-}
+      ERP_OPENFGA_MODEL_ID: ${OPENFGA_MODEL_ID:-}
       # B5 (Rev 19): AuthzVersion polling needs permission-service base URL
-      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service}
+      PERMISSION_SERVICE_BASE_URL: ${PERMISSION_SERVICE_BASE_URL:-http://permission-service:8084}
       # Opsiyonel diğer ayarlar
       VARIANT_DB_URL: ${VARIANT_DB_URL:-jdbc:postgresql://postgres-db:5432/users}
       VARIANT_DB_USERNAME: ${VARIANT_DB_USERNAME:-postgres}
