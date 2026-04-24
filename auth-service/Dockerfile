@@ -8,11 +8,12 @@ WORKDIR /app
 
 # Önce sadece pom.xml'i kopyalayıp bağımlılıkları indiriyoruz.
 # Bu, kod değişikliği olmadığında her seferinde bağımlılıkları tekrar indirmemizi önler (Docker cache).
-COPY pom.xml .
+# Faz 19.8 — root context pattern (align with user-service/variant-service/etc.)
+COPY auth-service/pom.xml .
 RUN mvn dependency:go-offline
 
 # Şimdi tüm proje kaynak kodunu kopyalıyoruz.
-COPY src ./src
+COPY auth-service/src ./src
 
 # Maven ile projeyi derleyip çalıştırılabilir JAR dosyasını oluşturuyoruz.
 # Testleri atlayarak süreci hızlandırıyoruz.

@@ -37,16 +37,36 @@ K8s-native (platform-prod + platform-test namespace). Manifest authority [platfo
 
 ## CI
 
-- `ci-mvn-check`: batch scope compile + verify (PR + push main)
-- Faz 19.8+: dual-build → GHCR push pattern
+- `ci-mvn-check`: full reactor 9 modül + schema-service standalone + OpenFGA DSL check
+- `ci-image-push`: 9-service matrix → GHCR `ghcr.io/halildeu/platform-backend-<service>`
+- Dual-build: ssot CI paralel 19.10'a kadar (rollback safety)
+
+## Image registry
+
+- GHCR: `ghcr.io/halildeu/platform-backend-<service>:sha-<7char>`
+- Digest authoritative (D30 immutable)
+- Gitops overlay pin: `@sha256:<digest>` (19.9 cutover)
+
+## Docker Compose — YOK (Faz 18 retired, ADR-0002 + ADR-0004)
+
+Bu repo **compose-free** K8s-native Spring Boot kaynak kodu. Eski geliştirme döngüsündeki
+compose pattern'i geçersiz:
+- `docker-compose.yml` KALDIRILDI (Faz 18.4-18.9 tüm servisler retire edildi)
+- `docker compose up` komutları geçersiz
+- Postgres/Keycloak/Vault artık K8s-native (`platform-k8s-gitops/host-compose` stateful tier compose orta yerinde kalır — bu repo ile kesişmez)
+
+Lokal geliştirme için:
+1. **K8s lokal**: platform-k8s-gitops `kustomize/overlays/local` + k3d-dev (ADR-0003 inner-loop tooling)
+2. **Birim testler**: `./mvnw` (Testcontainers ile izole PG/Keycloak, compose gerek yok)
+3. **Hot-reload dev cycle**: ADR-0003 planlanıyor (Tilt/Skaffold olmadan, K8s-native)
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) — repo sınırı, branch protection, Zanzibar plane koruma.
+[CONTRIBUTING.md](CONTRIBUTING.md) — repo sınırı, branch protection, Zanzibar plane koruma, K8s-native pattern.
 
 ---
 
-## Eski (historical)
+## Historical (compose era, reference-only — artık geçerli değil)
 
 Bu repo, Spring Boot 3.2 ve Java 21 kullanilarak gelistirilmis mikro servis tabanli bir arka uc mimarisini saklar. Her servis kendi Maven projesi olarak ayakta durur ve Eureka ile servis kesfi, Postgres ile kalici katman ve Docker Compose ile orkestrasyon kullanir.
 
