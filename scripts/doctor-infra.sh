@@ -37,14 +37,10 @@ if [ -f "$DEPLOY_SCRIPT" ]; then
     warn "A1: Gateway upstream pattern not found"
   fi
 
-  # A2: Service-manager upstream must use 127.0.0.1
-  if grep -q 'NGINX_SERVICE_MANAGER_UPSTREAM.*http://127.0.0.1' "$DEPLOY_SCRIPT"; then
-    pass "A2: Service-manager upstream default → 127.0.0.1"
-  elif grep -q 'NGINX_SERVICE_MANAGER_UPSTREAM.*service-manager' "$DEPLOY_SCRIPT"; then
-    fail "A2: Service-manager upstream uses Docker hostname — won't resolve in host network"
-  else
-    warn "A2: Service-manager upstream pattern not found"
-  fi
+  # A2: Service-manager check RETIRED (Faz 18.3 PR-B)
+  # Reason: service-manager container decommissioned, /api/services/ 410 Gone (PR #100/101).
+  # Deploy script'te NGINX_SERVICE_MANAGER_UPSTREAM kaldırıldı; drift check gereksiz.
+  pass "A2: Service-manager retired (Faz 18.3 PR-B) — no-op"
 
   # A3: Keycloak upstream must use host port 8081
   if grep -q 'NGINX_KEYCLOAK_UPSTREAM.*127.0.0.1:8081' "$DEPLOY_SCRIPT"; then
@@ -135,12 +131,8 @@ if [ -f "$COMPOSE_FILE" ]; then
     fail "B5: OpenFGA missing depends_on openfga-migrate — race condition"
   fi
 
-  # B6: service-manager has start_period
-  if sed -n "/service-manager/,/^  [a-z]/p" "$COMPOSE_FILE" | grep -q "start_period"; then
-    pass "B6: service-manager has start_period"
-  else
-    warn "B6: service-manager missing start_period — may show unhealthy during boot"
-  fi
+  # B6: service-manager check RETIRED (Faz 18.3 PR-B) — compose blok kaldırıldı
+  pass "B6: Service-manager retired (Faz 18.3 PR-B) — no-op"
 
   # B7: No duplicate compose project names
   compose_names=$(grep "^name:" "$COMPOSE_FILE" | awk '{print $2}')

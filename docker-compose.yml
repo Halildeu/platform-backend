@@ -425,28 +425,12 @@ services:
       - microservice-network
     restart: unless-stopped
 
-  service-manager:
-    image: node:22-alpine
-    profiles: ["extras"]
-    working_dir: /app
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./scripts:/app
-    command: ["sh", "-c", "npm install --production && node service-manager-api.js --port 8795"]
-    ports:
-      - "8795:8795"
-    networks:
-      - microservice-network
-    restart: unless-stopped
-    healthcheck:
-      # IPv4 explicit: /etc/hosts'ta "::1 localhost" once geldiginde wget IPv6'ya
-      # baglanir; app 0.0.0.0 (IPv4 only) dinledigi icin "connection refused" alinir
-      # ve healthcheck false-positive fail olur. 127.0.0.1 ile bu belirsizlik biter.
-      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8795/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 45s
+  # Faz 18.3 PR-B — service-manager service RETIRED
+  # Reason: Docker socket cross-realm control plane riski (start/stop/restart/logs
+  # write-op). /api/services/ edge route HTTP 410 Gone (PR #100/101).
+  # Replacement: MFE admin/services compat page statik Ops Links (platform-ssot PR #550).
+  # History: bu bloğu arşivden geri getirmek gerekmesin — ADR-0002 D6 + D34 Environment
+  # Independence ile uyumsuz (cross-realm trafik üretiyordu).
 
   openfga-migrate:
     image: openfga/openfga:${OPENFGA_VERSION:-v1.11.2}
