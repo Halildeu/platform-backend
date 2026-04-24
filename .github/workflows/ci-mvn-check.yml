@@ -1,0 +1,49 @@
+name: CI - Maven Build Check
+
+# Faz 19.2 — Minimal Maven build sanity (Codex AGREE 019dc0cc)
+# Scope: Batch 1 (auth + user + variant) + dependencies (common-auth)
+# Full reactor build runs on schedule or workflow_dispatch
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Build mode: batch (default) or full-reactor'
+        required: false
+        default: 'batch'
+
+jobs:
+  batch-build:
+    name: Maven compile + verify (batch scope)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Display Maven version
+        run: ./mvnw --version
+
+      - name: Compile batch scope (auth + user + variant + dependencies)
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'batch'
+        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service -am test-compile
+
+      - name: Verify batch scope (auth + user + variant)
+        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'batch'
+        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service -am verify
+
+      - name: Full reactor build (opt-in)
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full-reactor'
+        run: ./mvnw -q -DskipTests verify

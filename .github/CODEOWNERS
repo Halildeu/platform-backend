@@ -1,22 +1,8 @@
-# Documentation ownership
+# CODEOWNERS — platform-backend
+# Faz 19.2 Codex AGREE 019dc0cc: solo developer pattern (admin bypass OK)
+# ADR-0004: split-repo authority transfer
 
-# Architecture & ADR
-/docs/architecture/** @team/platform-arch
-/docs/adr/** @team/platform-arch
+# Global fallback
+* @Halildeu
 
-# Roadmap & strategy
-/docs/roadmap/** @team/product @team/platform-arch
-
-# Operations / Runbooks / Security
-/docs/operations/** @team/sre
-/docs/security/** @team/security
-/docs/ci/** @team/devops
-
-# Guides / Onboarding / Glossary
-/docs/guides/** @team/devrel
-/docs/backlog.md @team/platform-docs
-/docs/templates/** @team/platform-docs
-/docs/README.md @team/platform-docs
-
-# System architecture overview
-/docs/system-architecture.md @team/platform-arch
+# Faz 19.8 sonrası team ownership genişletmesi planlanıyor

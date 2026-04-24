@@ -1,6 +1,54 @@
-# Backend Mikroservislerine Giris
+# platform-backend
 
-Bu depo, Spring Boot 3.2 ve Java 21 kullanilarak gelistirilmis mikro servis tabanli bir arka uc mimarisini saklar. Her servis kendi Maven projesi olarak ayakta durur ve Eureka ile servis kesfi, Postgres ile kalici katman ve Docker Compose ile orkestrasyon kullanir.
+**Status**: Live (Faz 19.1 COMPLETE, 2026-04-24). 338 commits migrated from platform-ssot via `git filter-repo` path-filtered full history.
+
+**Authority**: Java mikroservis + Zanzibar plane kaynak kodu.
+**Canonical manifest**: [platform-k8s-gitops](https://github.com/Halildeu/platform-k8s-gitops)
+**Sibling repo**: [platform-web](https://github.com/Halildeu/platform-web)
+**ADR**: [ADR-0004 split-repo authority transfer](https://github.com/Halildeu/platform-k8s-gitops/blob/main/docs/adr/0004-split-repo-authority-transfer.md)
+
+## Scope
+
+Bu depo, Spring Boot 3.2 ve Java 21 kullanılarak geliştirilmiş mikro servis tabanlı arka uç kaynak kodu. 9 modül (root pom.xml parent):
+
+- **api-gateway** — Spring Cloud Gateway + OAuth2 resource server
+- **auth-service** — Keycloak JWT issuer integration + RS256 signing
+- **user-service** — Kullanıcı yönetimi + profile
+- **variant-service** — Varyant/scoped allow (Zanzibar consumer)
+- **core-data-service** — Reference data + metadata
+- **report-service** — Reporting engine (mfe-reporting consumer)
+- **schema-service** — Schema registry + Flyway
+- **permission-service** — Zanzibar policy engine (OpenFGA client)
+- **common-auth** — Ortak OAuth2/JWT/OpenFGA bağımlılıklar
+- **discovery-server** — Eureka legacy (D7 runtime kaldırıldı ama kod korundu)
+
+## Geliştirme
+
+```bash
+./mvnw -q -DskipTests test-compile
+./mvnw -q -DskipTests -pl auth-service -am verify
+```
+
+Java 21 Temurin + Maven Wrapper (zaten repo'da).
+
+## Runtime
+
+K8s-native (platform-prod + platform-test namespace). Manifest authority [platform-k8s-gitops](https://github.com/Halildeu/platform-k8s-gitops). Bu repo sadece kaynak kod + image build.
+
+## CI
+
+- `ci-mvn-check`: batch scope compile + verify (PR + push main)
+- Faz 19.8+: dual-build → GHCR push pattern
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) — repo sınırı, branch protection, Zanzibar plane koruma.
+
+---
+
+## Eski (historical)
+
+Bu repo, Spring Boot 3.2 ve Java 21 kullanilarak gelistirilmis mikro servis tabanli bir arka uc mimarisini saklar. Her servis kendi Maven projesi olarak ayakta durur ve Eureka ile servis kesfi, Postgres ile kalici katman ve Docker Compose ile orkestrasyon kullanir.
 
 ## Dizinin Yapisi
 
