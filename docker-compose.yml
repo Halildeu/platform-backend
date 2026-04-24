@@ -407,23 +407,13 @@ services:
       retries: 30
       start_period: 5s
 
-  vault-snapshot:
-    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
-    profiles: ["extras"]
-    entrypoint: /bin/sh
-    command: ["-c", "sleep infinity"]
-    networks:
-      - microservice-network
-    restart: unless-stopped
-
-  vault-audit-init:
-    image: hashicorp/vault:${VAULT_VERSION:-1.21.4}
-    profiles: ["extras"]
-    entrypoint: /bin/sh
-    command: ["-c", "sleep infinity"]
-    networks:
-      - microservice-network
-    restart: unless-stopped
+  # Faz 18.4 — vault-snapshot + vault-audit-init RETIRED
+  # Reason: stage/dev compose'da bu bloklar zaten zombie stub idi (sleep infinity); prod compose'da
+  # da aynı zombie davranış gözlemlendi (2026-04-23+ entrypoint /bin/sh sleep infinity). Host cron
+  # authoritative Apr 20'den beri (platform-k8s-gitops/bootstrap/vault-snapshot-cron.sh +
+  # vault-audit-init-cron.sh). 4 gün live evidence Apr 21-24 OK prod/test (prod 80K + test 60K).
+  # Replacement: platform-k8s-gitops bootstrap + crontab (02:00 snapshot + 02:15 audit-init ensure).
+  # Refs: platform-k8s-gitops PR #104+#105 + docs/RB-vault-ops-host-cron.md
 
   # Faz 18.3 PR-B — service-manager service RETIRED
   # Reason: Docker socket cross-realm control plane riski (start/stop/restart/logs
@@ -749,8 +739,8 @@ volumes:
     name: platform_vault_data
   vault_logs:
     name: platform_vault_logs
-  vault_snapshots:
-    name: platform_vault_snapshots
+  # Faz 18.4 — vault_snapshots volume removed with vault-snapshot sidecar retirement
+  # Replacement: host path /home/halil/platform/backup/vault/{prod,test}/
   loki_data:
     name: platform_loki_data
   tempo_data:
