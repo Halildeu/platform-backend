@@ -1,0 +1,79 @@
+name: CI - Image Build + GHCR Push
+
+# Faz 19.8 dual-build — Codex AGREE 019dc0ef Option B
+# Yeni image isimleri: ghcr.io/halildeu/platform-backend-<service>
+# Gitops overlay'leri 19.9'da digest pin ile bu image'lara geçecek.
+# Ssot CI paralel kalır (19.10'a kadar) — dual-build safety net.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: halildeu
+
+jobs:
+  build-and-push:
+    name: Build + Push ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - auth-service
+          - user-service
+          - variant-service
+          - core-data-service
+          - report-service
+          - schema-service
+          - permission-service
+          - api-gateway
+          - discovery-server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Build + Push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          provenance: false
+
+      - name: Summary — digest (19.9 pin için kanıt)
+        run: |
+          echo "### ${{ matrix.service }} image push" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: \`sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Digest**: \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pinnable**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}@${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
