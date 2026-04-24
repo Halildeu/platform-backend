@@ -95,13 +95,8 @@ echo ""
 echo "=== B: Docker Compose Configuration ==="
 
 if [ -f "$COMPOSE_FILE" ]; then
-  # B1: All OpenFGA URLs must be consistent (same port)
-  openfga_ports=$(grep "ERP_OPENFGA_API_URL" "$COMPOSE_FILE" | grep -oE ':[0-9]+' | sort -u)
-  if [ "$(echo "$openfga_ports" | wc -l)" -eq 1 ]; then
-    pass "B1: OpenFGA URLs consistent (all$(echo $openfga_ports))"
-  else
-    fail "B1: OpenFGA URL port mismatch: $(echo $openfga_ports | tr '\n' ' ')"
-  fi
+  # B1: OpenFGA compose retired (Faz 18.5-18.7) — K8s StatefulSet authoritative
+  pass "B1: OpenFGA compose retired (Faz 18.5-18.7) — K8s authoritative no-op"
 
   # B2: Keycloak must have KC_DB=postgres (no H2)
   if grep -q "KC_DB=postgres" "$COMPOSE_FILE"; then
@@ -117,19 +112,15 @@ if [ -f "$COMPOSE_FILE" ]; then
     fail "B3: KC_HEALTH_ENABLED not set — healthcheck will fail"
   fi
 
-  # B4: Keycloak healthcheck must use port 9000 (management) — OpenFGA has no healthcheck (minimal image)
+  # B4: Keycloak healthcheck must use port 9000 (management)
   if grep -A3 "keycloak" "$COMPOSE_FILE" | grep -q "9000"; then
     pass "B4: Keycloak healthcheck targets port 9000"
   else
     warn "B4: Keycloak healthcheck may not target management port 9000"
   fi
 
-  # B5: OpenFGA depends_on openfga-migrate (service_completed_successfully)
-  if grep -B2 'service_completed_successfully' "$COMPOSE_FILE" | grep -q 'openfga-migrate'; then
-    pass "B5: OpenFGA depends_on openfga-migrate"
-  else
-    fail "B5: OpenFGA missing depends_on openfga-migrate — race condition"
-  fi
+  # B5: OpenFGA + openfga-migrate compose retired (Faz 18.5-18.7)
+  pass "B5: OpenFGA + migrate compose retired (Faz 18.5-18.7) — K8s init-container authoritative"
 
   # B6: service-manager check RETIRED (Faz 18.3 PR-B) — compose blok kaldırıldı
   pass "B6: Service-manager retired (Faz 18.3 PR-B) — no-op"
@@ -428,19 +419,11 @@ else
   warn "I2: Prod compose not found"
 fi
 
-# I3: Dev profiles include local
-if grep "SPRING_PROFILES_ACTIVE" "$COMPOSE_FILE" | grep -q "local"; then
-  pass "I3: Dev compose profiles include local"
-else
-  fail "I3: Dev compose profiles missing local"
-fi
+# I3: Dev profiles — backend Java services retired (Faz 18.5-18.7), SPRING_PROFILES_ACTIVE check obsolete
+pass "I3: Backend Java services retired (Faz 18.5-18.7) — SPRING_PROFILES_ACTIVE check K8s ConfigMap'e taşındı"
 
-# I4: Prod profiles = prod
-if [ -f "$PROD_COMPOSE" ] && grep "SPRING_PROFILES_ACTIVE" "$PROD_COMPOSE" | grep -q "prod"; then
-  pass "I4: Prod compose profiles = prod"
-elif [ -f "$PROD_COMPOSE" ]; then
-  fail "I4: Prod compose profiles not prod"
-fi
+# I4: Prod profiles — backend Java services retired (Faz 18.5-18.7), SPRING_PROFILES_ACTIVE check obsolete
+pass "I4: Backend Java services retired (Faz 18.5-18.7) — SPRING_PROFILES_ACTIVE check K8s ConfigMap'e taşındı"
 
 # I5: No accidental prod compose in .env
 if grep -q "COMPOSE_FILE.*prod" "${ROOT_DIR}/.env" 2>/dev/null; then
