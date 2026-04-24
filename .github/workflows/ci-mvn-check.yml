@@ -2,7 +2,8 @@ name: CI - Maven Build Check
 
 # Faz 19.2 — Batch 1 (auth + user + variant)
 # Faz 19.3 — Batch 2 Zanzibar plane genişletildi (permission-service + common-auth)
-# Full reactor build runs on workflow_dispatch mode=full-reactor
+# Faz 19.4+19.5 — Batch 3+4 full reactor (core + report + api-gateway + discovery-server)
+#   + schema-service (standalone, not in parent pom)
 
 on:
   push:
@@ -10,17 +11,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Build mode: batch (default) or full-reactor'
-        required: false
-        default: 'batch'
 
 jobs:
-  batch-build:
-    name: Maven compile + verify (batch scope)
+  full-reactor-build:
+    name: Maven full reactor build (all 9 modules)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -36,17 +32,39 @@ jobs:
       - name: Display Maven version
         run: ./mvnw --version
 
-      - name: Compile batch scope (auth + user + variant + permission + common-auth)
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'batch'
-        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service,permission-service,common-auth -am test-compile
+      - name: Compile full reactor (9 modules)
+        run: ./mvnw -q -DskipTests test-compile
 
-      - name: Verify batch scope (auth + user + variant + permission + common-auth)
-        if: github.event_name != 'workflow_dispatch' || inputs.mode == 'batch'
-        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service,permission-service,common-auth -am verify
-
-      - name: Full reactor build (opt-in)
-        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full-reactor'
+      - name: Verify full reactor (9 modules, no tests)
         run: ./mvnw -q -DskipTests verify
+
+  schema-service-build:
+    name: schema-service standalone build (Faz 19.4+19.5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # schema-service parent pom'unda değil; ayrı lifecycle
+    # Ama common-auth (1.1.0) dependency'i var — önce common-auth local install
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Install common-auth to local Maven repo (schema-service dependency)
+        run: ./mvnw -q -DskipTests -pl common-auth -am install
+
+      - name: Build schema-service (standalone)
+        run: |
+          test -f schema-service/pom.xml || (echo "schema-service/pom.xml missing!" && exit 1)
+          cd schema-service
+          ../mvnw -q -DskipTests test-compile
+          ../mvnw -q -DskipTests verify
 
   openfga-dsl-check:
     name: OpenFGA DSL presence + line check (basic)
