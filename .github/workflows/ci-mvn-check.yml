@@ -1,8 +1,8 @@
 name: CI - Maven Build Check
 
-# Faz 19.2 — Minimal Maven build sanity (Codex AGREE 019dc0cc)
-# Scope: Batch 1 (auth + user + variant) + dependencies (common-auth)
-# Full reactor build runs on schedule or workflow_dispatch
+# Faz 19.2 — Batch 1 (auth + user + variant)
+# Faz 19.3 — Batch 2 Zanzibar plane genişletildi (permission-service + common-auth)
+# Full reactor build runs on workflow_dispatch mode=full-reactor
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
   batch-build:
     name: Maven compile + verify (batch scope)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -36,14 +36,43 @@ jobs:
       - name: Display Maven version
         run: ./mvnw --version
 
-      - name: Compile batch scope (auth + user + variant + dependencies)
+      - name: Compile batch scope (auth + user + variant + permission + common-auth)
         if: github.event_name != 'workflow_dispatch' || inputs.mode == 'batch'
-        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service -am test-compile
+        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service,permission-service,common-auth -am test-compile
 
-      - name: Verify batch scope (auth + user + variant)
+      - name: Verify batch scope (auth + user + variant + permission + common-auth)
         if: github.event_name != 'workflow_dispatch' || inputs.mode == 'batch'
-        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service -am verify
+        run: ./mvnw -q -DskipTests -pl auth-service,user-service,variant-service,permission-service,common-auth -am verify
 
       - name: Full reactor build (opt-in)
         if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full-reactor'
         run: ./mvnw -q -DskipTests verify
+
+  openfga-dsl-check:
+    name: OpenFGA DSL presence + line check (basic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    # Faz 19.3 — fga CLI v0.6 'but not' syntax incompat; full DSL validate
+    # 19.8+'da newer fga CLI ile yeniden eklenecek. Şimdilik basic presence check.
+    # Authoritative validation: K8s OpenFGA StatefulSet runtime (Vault kv/platform/openfga).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check DSL file present + size
+        run: |
+          test -f openfga/model.fga || (echo "openfga/model.fga missing!" && exit 1)
+          wc -l openfga/model.fga
+          echo "--- first 20 lines ---"
+          head -20 openfga/model.fga
+          echo "--- last 10 lines ---"
+          tail -10 openfga/model.fga
+
+      - name: Check DSL schema marker
+        run: |
+          grep -q "^model" openfga/model.fga
+          grep -q "^  schema" openfga/model.fga
+          grep -cE "^type " openfga/model.fga
+          echo "DSL structural check PASS"
