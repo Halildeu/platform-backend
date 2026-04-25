@@ -8,6 +8,20 @@ spring:
   threads:
     virtual:
       enabled: true
+
+# ADR-0005 Dual DataSource Reporting — Workcube MSSQL secondary (read-only live)
+# Activation: REPORT_MSSQL_ENABLED=true → ESO ExternalSecret kv/platform/mssql-external mounted
+# Disabled by default: false → WorkcubeMssqlConfig + Repo + Controller + HealthIndicator hepsi inactive
+report:
+  mssql:
+    enabled: ${REPORT_MSSQL_ENABLED:false}
+    jdbc-url: ${REPORT_MSSQL_JDBC_URL:}
+    username: ${REPORT_MSSQL_USERNAME:}
+    password: ${REPORT_MSSQL_PASSWORD:}
+    pool:
+      max-size: ${REPORT_MSSQL_POOL_MAX:5}
+      connection-timeout-ms: ${REPORT_MSSQL_POOL_CONN_TIMEOUT_MS:10000}
+      max-lifetime-ms: ${REPORT_MSSQL_POOL_MAX_LIFETIME_MS:300000}
   cloud:
     vault:
       enabled: false
@@ -52,6 +66,14 @@ management:
       probes:
         enabled: true
       show-details: never
+      # ADR-0005: Workcube MSSQL custom indicator readiness'a DAHİL DEĞİL
+      # MSSQL down olduğunda pod evict/restart döngüsü olmaması için.
+      group:
+        readiness:
+          include: db,ping
+          exclude: workcubeMssql
+        liveness:
+          include: ping
   tracing:
     enabled: ${MANAGEMENT_TRACING_ENABLED:false}
     sampling:
