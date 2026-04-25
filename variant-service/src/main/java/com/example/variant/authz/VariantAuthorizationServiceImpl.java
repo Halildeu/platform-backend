@@ -84,19 +84,9 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
             }
         }
 
-        Set<String> effectiveRoles = new HashSet<>(roles);
         Set<String> effectivePermissions = new HashSet<>(permissions);
         if (authz != null && authz.getPermissions() != null) {
             effectivePermissions.addAll(authz.getPermissions());
-        }
-        if (authz != null && authz.getRoles() != null) {
-            authz.getRoles().stream()
-                    .filter(Objects::nonNull)
-                    .map(this::normalizeRole)
-                    .forEach(effectiveRoles::add);
-        }
-        if (authz != null && Boolean.TRUE.equals(authz.getSuperAdmin())) {
-            effectiveRoles.add("ADMIN");
         }
 
         String normalizedEmail = email != null ? email.toLowerCase(Locale.ROOT) : "";
