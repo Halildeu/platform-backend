@@ -68,6 +68,21 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
                                               Set<String> permissions,
                                               String bearerToken) {
         AuthzMeResponse authz = permissionServiceAuthzClient.getAuthzMe(bearerToken);
+        Long resolvedUserId = userId;
+        Set<String> effectiveRoles = new HashSet<>(roles);
+        if (authz != null) {
+            resolvedUserId = firstNonNull(resolvedUserId, toLong(authz.getUserId()));
+            if (authz.getRoles() != null) {
+                authz.getRoles().stream()
+                        .filter(Objects::nonNull)
+                        .map(this::normalizeRole)
+                        .filter(Objects::nonNull)
+                        .forEach(effectiveRoles::add);
+            }
+            if (Boolean.TRUE.equals(authz.getSuperAdmin())) {
+                effectiveRoles.add("ADMIN");
+            }
+        }
 
         Set<String> effectiveRoles = new HashSet<>(roles);
         Set<String> effectivePermissions = new HashSet<>(permissions);
@@ -117,7 +132,7 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         // Not: Variant global bir katalogdur.
         // company/project bazlı data-scope uygulanmayacak; yalnızca permissions kullanılacak.
         return AuthorizationContext.of(
-                userId,
+                resolvedUserId,
                 email,
                 effectiveRoles,
                 effectivePermissions,

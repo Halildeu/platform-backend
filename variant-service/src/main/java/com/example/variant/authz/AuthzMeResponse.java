@@ -4,6 +4,7 @@ import java.util.List;
 
 public class AuthzMeResponse {
     private String userId;
+    private List<String> roles;
     private List<String> permissions;
     private List<String> roles;
     private List<ScopeSummaryDto> allowedScopes;
@@ -15,6 +16,14 @@ public class AuthzMeResponse {
 
     public void setUserId(String userId) {
         this.userId = userId;
+    }
+
+    public List<String> getRoles() {
+        return roles;
+    }
+
+    public void setRoles(List<String> roles) {
+        this.roles = roles;
     }
 
     public List<String> getPermissions() {

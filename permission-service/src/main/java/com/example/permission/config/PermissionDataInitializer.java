@@ -39,6 +39,9 @@ public class PermissionDataInitializer implements CommandLineRunner {
             Map.entry("VIEW_WAREHOUSE", new PermissionDefinition("View warehouse module", "Depo")),
             Map.entry("MANAGE_WAREHOUSE", new PermissionDefinition("Manage warehouse inventory", "Depo")),
             Map.entry("THEME_ADMIN", new PermissionDefinition("Manage global themes and critical theme tokens", "Tema Yönetimi")),
+            Map.entry("VARIANTS_READ", new PermissionDefinition("View grid variants and presets", "Variant")),
+            Map.entry("VARIANTS_WRITE", new PermissionDefinition("Create or update personal variants", "Variant")),
+            Map.entry("MANAGE_GLOBAL_VARIANTS", new PermissionDefinition("Manage shared and global variants", "Variant")),
             // --- Access (2 — read + write) ---
             Map.entry("access-read", new PermissionDefinition("Read access management data", "Access")),
             Map.entry("access-write", new PermissionDefinition("Create/update/delete access management records", "Access")),
@@ -74,6 +77,7 @@ public class PermissionDataInitializer implements CommandLineRunner {
     private static final Map<String, Set<String>> DEFAULT_ROLE_PERMISSIONS = Map.ofEntries(
             Map.entry("ADMIN", Set.of(
                     "VIEW_USERS", "MANAGE_USERS", "APPROVE_PURCHASE", "MANAGE_WAREHOUSE",
+                    "VARIANTS_READ", "VARIANTS_WRITE", "MANAGE_GLOBAL_VARIANTS",
                     "access-read", "access-write",
                     "audit-read",
                     "company-read", "company-write",
