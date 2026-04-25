@@ -10,11 +10,15 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -43,6 +47,8 @@ class AuthenticatedUserLookupServiceTest {
     @Test
     void resolve_fallsBackToEmailLookupWhenSubjectIsNotNumeric() {
         AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(jdbcTemplate, "users");
+        when(jdbcTemplate.queryForObject(anyString(), eq(String.class), any()))
+                .thenReturn("users");
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
                 .thenReturn(List.of(Map.of("id", 7L)));
         Jwt jwt = buildJwt(Map.of(
@@ -57,8 +63,35 @@ class AuthenticatedUserLookupServiceTest {
     }
 
     @Test
+    void resolve_fallsBackToUserServiceWhenLocalLookupTableIsMissing() {
+        AtomicReference<String> fallbackEmail = new AtomicReference<>();
+        AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(
+                jdbcTemplate,
+                "users",
+                email -> {
+                    fallbackEmail.set(email);
+                    return 11L;
+                }
+        );
+        when(jdbcTemplate.queryForObject(anyString(), eq(String.class), any()))
+                .thenReturn(null);
+        Jwt jwt = buildJwt(Map.of(
+                "email", "admin@example.com"
+        ), "7d31b1a8-0f4d-43d8-a5df-d7cfbb5304f4");
+
+        var resolved = service.resolve(jwt);
+
+        assertEquals(11L, resolved.numericUserId());
+        assertEquals("11", resolved.responseUserId());
+        assertEquals("admin@example.com", fallbackEmail.get());
+        verify(jdbcTemplate, never()).queryForList(anyString(), any(Object[].class));
+    }
+
+    @Test
     void resolve_returnsSubjectWhenLookupCannotResolveNumericUserId() {
         AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(jdbcTemplate, "users");
+        when(jdbcTemplate.queryForObject(anyString(), eq(String.class), any()))
+                .thenReturn("users");
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
                 .thenReturn(List.of());
         Jwt jwt = buildJwt(Map.of(

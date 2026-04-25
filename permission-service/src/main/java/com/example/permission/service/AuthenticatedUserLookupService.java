@@ -16,6 +16,7 @@ import org.springframework.web.client.RestClientResponseException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 @Service
@@ -28,6 +29,7 @@ public class AuthenticatedUserLookupService {
     private final JdbcTemplate jdbcTemplate;
     private final String userTable;
     private final RestClient userLookupClient;
+    private final Function<String, Long> userLookupFallback;
 
     @Autowired
     public AuthenticatedUserLookupService(
@@ -39,12 +41,18 @@ public class AuthenticatedUserLookupService {
         this.jdbcTemplate = jdbcTemplate;
         this.userTable = normalizeTableName(userTable);
         this.userLookupClient = buildLookupClient(restClientBuilder, userLookupBaseUrl);
+        this.userLookupFallback = this::lookupUserIdByEmailViaUserService;
     }
 
     AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable) {
+        this(jdbcTemplate, userTable, email -> null);
+    }
+
+    AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable, Function<String, Long> userLookupFallback) {
         this.jdbcTemplate = jdbcTemplate;
         this.userTable = normalizeTableName(userTable);
         this.userLookupClient = null;
+        this.userLookupFallback = userLookupFallback == null ? email -> null : userLookupFallback;
     }
 
     public ResolvedAuthenticatedUser resolve(Jwt jwt) {
@@ -78,18 +86,22 @@ public class AuthenticatedUserLookupService {
         }
 
         String normalizedEmail = email.toLowerCase(Locale.ROOT);
-        try {
-            String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, normalizedEmail);
-            if (!rows.isEmpty()) {
-                Object idValue = rows.get(0).get("id");
-                return idValue instanceof Number number ? number.longValue() : null;
+        if (hasQueryableLocalUserTable()) {
+            try {
+                String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
+                List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, normalizedEmail);
+                if (!rows.isEmpty()) {
+                    Object idValue = rows.get(0).get("id");
+                    return idValue instanceof Number number ? number.longValue() : null;
+                }
+            } catch (DataAccessException ex) {
+                log.warn("Authz user lookup SQL ile çözülemedi; user-service fallback denenecek. cause={}", ex.getMessage());
             }
-        } catch (DataAccessException ex) {
-            log.warn("Authz user lookup SQL ile çözülemedi; user-service fallback denenecek. cause={}", ex.getMessage());
+        } else {
+            log.debug("Authz user lookup local tablo mevcut değil; user-service fallback kullanılacak. table={}", userTable);
         }
 
-        return lookupUserIdByEmailViaUserService(normalizedEmail);
+        return userLookupFallback.apply(normalizedEmail);
     }
 
     private Long lookupUserIdByEmailViaUserService(String email) {
@@ -112,6 +124,21 @@ public class AuthenticatedUserLookupService {
         } catch (RestClientException ex) {
             log.warn("Authz user lookup user-service fallback başarısız oldu. cause={}", ex.getMessage());
             return null;
+        }
+    }
+
+    private boolean hasQueryableLocalUserTable() {
+        try {
+            String relationName = jdbcTemplate.queryForObject(
+                    "select to_regclass(?)::text",
+                    String.class,
+                    userTable
+            );
+            return StringUtils.hasText(relationName);
+        } catch (DataAccessException ex) {
+            log.warn("Authz user lookup tablo kontrolü başarısız oldu; user-service fallback kullanılacak. table={} cause={}",
+                    userTable, ex.getMessage());
+            return false;
         }
     }
 

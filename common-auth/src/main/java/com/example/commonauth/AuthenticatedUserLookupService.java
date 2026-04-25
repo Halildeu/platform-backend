@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
 import java.util.Locale;
@@ -54,6 +55,10 @@ public class AuthenticatedUserLookupService {
         if (email == null || email.isBlank()) {
             return null;
         }
+        if (!hasQueryableLocalUserTable()) {
+            log.debug("Authenticated user lookup local tablo mevcut değil; SQL lookup atlanacak. table={}", userTable);
+            return null;
+        }
         String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
         List<Map<String, Object>> rows;
         try {
@@ -67,6 +72,21 @@ public class AuthenticatedUserLookupService {
         }
         Object idValue = rows.get(0).get("id");
         return idValue instanceof Number number ? number.longValue() : null;
+    }
+
+    private boolean hasQueryableLocalUserTable() {
+        try {
+            String relationName = jdbcTemplate.queryForObject(
+                    "select to_regclass(?)::text",
+                    String.class,
+                    userTable
+            );
+            return StringUtils.hasText(relationName);
+        } catch (DataAccessException ex) {
+            log.warn("Authenticated user lookup tablo kontrolü başarısız oldu. table={} cause={}",
+                    userTable, ex.getMessage());
+            return false;
+        }
     }
 
     private static Long extractLongClaim(Jwt jwt, String claimName) {
