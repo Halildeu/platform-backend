@@ -1,0 +1,37 @@
+{
+  "_comment": "CNS-20260415-004 (Codex) kuralı: feature tuples (can_view/can_manage/blocked) raw seed'e YAZILMAZ. Tuple sync path (AccessControllerV1 granule update → TupleSyncService) assignment üzerinden üretir. Bu dosya yalnızca org/scope BOOTSTRAP içindir: organization root, company-org üyeliği, project/warehouse-company bağı. Feature tuple'ları setup script (zanzibar-canary-setup.mjs) rol atamaları üzerinden tetikler.",
+  "writes": {
+    "tuple_keys": [
+      {
+        "user": "company:1",
+        "relation": "org",
+        "object": "organization:default"
+      },
+      {
+        "user": "company:2",
+        "relation": "org",
+        "object": "organization:default"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "project:1"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "project:2"
+      },
+      {
+        "user": "company:1",
+        "relation": "company",
+        "object": "warehouse:1"
+      },
+      {
+        "user": "company:2",
+        "relation": "company",
+        "object": "project:3"
+      }
+    ]
+  }
+}
