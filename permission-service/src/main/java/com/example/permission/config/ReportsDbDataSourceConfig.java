@@ -23,13 +23,18 @@ import org.springframework.transaction.PlatformTransactionManager;
  * {@code com.example.permission.dataaccess}. Hibernate validates these entities
  * against the {@code reports_db} schema, never the primary permission DB.
  *
- * <p>Activation gate: {@code spring.datasource.reports-db.url}. When unset
- * (local dev / unit test), the bean graph is skipped so the application boots
- * without a {@code reports_db} reachable. Production binding happens in
- * {@code application-k8s.yml} via {@code REPORTS_DB_URL/USERNAME/PASSWORD}.
+ * <p>Activation gate: {@code spring.datasource.reports-db.enabled} — an
+ * explicit boolean sentinel (env: {@code REPORTS_DB_ENABLED}). The URL alone
+ * is not enough as a gate, because {@code ${REPORTS_DB_URL:}} resolves to an
+ * empty string when the env var is unset, and
+ * {@code @ConditionalOnProperty(name=...url)} matches "present and non-false"
+ * — which would silently activate the secondary DS in any k8s pod where the
+ * env was forgotten. The explicit {@code enabled=true} requires a deliberate
+ * opt-in. When false (local dev / unit test / un-wired prod), the bean graph
+ * is skipped so the application boots without a {@code reports_db} reachable.
  */
 @Configuration
-@ConditionalOnProperty(name = "spring.datasource.reports-db.url")
+@ConditionalOnProperty(name = "spring.datasource.reports-db.enabled", havingValue = "true")
 @EnableJpaRepositories(
         basePackages = "com.example.permission.dataaccess",
         entityManagerFactoryRef = "reportsDbEntityManagerFactory",

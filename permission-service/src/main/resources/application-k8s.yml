@@ -23,9 +23,15 @@ spring:
       maximum-pool-size: ${DB_POOL_MAX:10}
       connection-timeout: 30000
     # Faz 21.3 PR-C: secondary datasource for data_access.* schema
-    # (V19/V20 in platform-k8s-gitops). Activation gated on the URL
-    # being non-empty — see ReportsDbDataSourceConfig.
+    # (V19/V20 in platform-k8s-gitops). Activation gated on the explicit
+    # `enabled` boolean sentinel — see ReportsDbDataSourceConfig.
+    # The URL alone is not enough: with a default `${REPORTS_DB_URL:}`
+    # Spring Boot resolves an empty string when the env is unset, and
+    # @ConditionalOnProperty(name=...url) treats "present and non-false"
+    # as match — leaking the bean graph in any k8s pod where the env
+    # was not wired. The explicit `enabled` flag avoids that trap.
     reports-db:
+      enabled: ${REPORTS_DB_ENABLED:false}
       url: ${REPORTS_DB_URL:}
       username: ${REPORTS_DB_USERNAME:}
       password: ${REPORTS_DB_PASSWORD:}

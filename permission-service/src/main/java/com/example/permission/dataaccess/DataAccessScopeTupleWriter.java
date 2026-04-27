@@ -20,15 +20,19 @@ import org.springframework.stereotype.Service;
  *
  * <p>Conditional activation:
  * <ul>
- *   <li>{@code spring.datasource.reports-db.url} must be set (without it the
- *       {@link DataAccessScopeRepository} bean does not exist anyway).</li>
+ *   <li>{@code spring.datasource.reports-db.enabled=true} (env:
+ *       {@code REPORTS_DB_ENABLED}) — the explicit boolean sentinel that
+ *       gates the secondary {@code reports_db} datasource graph; without it
+ *       the {@link DataAccessScopeRepository} bean does not exist anyway.
+ *       See {@link com.example.permission.config.ReportsDbDataSourceConfig}
+ *       for why URL-based gating was insufficient.</li>
  *   <li>{@link OpenFgaAuthzService} bean must be present (only registered when
  *       {@code erp.openfga.enabled=true} per
  *       {@link com.example.permission.config.OpenFgaAuthzConfig}).</li>
  * </ul>
  */
 @Service
-@ConditionalOnProperty(name = "spring.datasource.reports-db.url")
+@ConditionalOnProperty(name = "spring.datasource.reports-db.enabled", havingValue = "true")
 @ConditionalOnBean(OpenFgaAuthzService.class)
 public class DataAccessScopeTupleWriter {
 
