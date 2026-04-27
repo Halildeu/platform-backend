@@ -172,6 +172,44 @@ class AccessScopeControllerTest {
                 .andExpect(jsonPath("$[0].active").value(true));
     }
 
+    @Test
+    void postGrant_503_whenServiceUnavailable_returnsServiceUnavailable() {
+        // Codex iter-1 MINOR-1: Optional.empty() short-circuit path.
+        // Bypass the @WebMvcTest slice — direct constructor instantiation
+        // is the cleanest way to assert the 503 contract without standing
+        // up a parallel test context.
+        var controller = new AccessScopeController(java.util.Optional.empty());
+        var request = new com.example.permission.dto.access.ScopeGrantRequest(
+                USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+
+        var response = controller.grant(request);
+
+        org.assertj.core.api.Assertions.assertThat(response.getStatusCode())
+                .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+        org.assertj.core.api.Assertions.assertThat(response.getBody()).isNull();
+    }
+
+    @Test
+    void deleteRevoke_503_whenServiceUnavailable_returnsServiceUnavailable() {
+        var controller = new AccessScopeController(java.util.Optional.empty());
+
+        var response = controller.revoke(7L, null);
+
+        org.assertj.core.api.Assertions.assertThat(response.getStatusCode())
+                .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test
+    void getList_503_whenServiceUnavailable_returnsServiceUnavailable() {
+        var controller = new AccessScopeController(java.util.Optional.empty());
+
+        var response = controller.list(USER, 1L);
+
+        org.assertj.core.api.Assertions.assertThat(response.getStatusCode())
+                .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+        org.assertj.core.api.Assertions.assertThat(response.getBody()).isNull();
+    }
+
     private static DataAccessScope scope(Long id, DataAccessScope.ScopeKind kind, String scopeRef) {
         var s = new DataAccessScope();
         s.setId(id);
