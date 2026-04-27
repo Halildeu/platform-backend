@@ -91,6 +91,49 @@ class DataAccessScopeTupleEncoderTest {
                 .hasMessageContaining("scopeKind");
     }
 
+    @Test
+    void encode_nestedArrayScopeRef_throwsIllegalArgumentException() {
+        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[[\"1001\"]]");
+
+        assertThatThrownBy(() -> DataAccessScopeTupleEncoder.encode(scope))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("scalar");
+    }
+
+    @Test
+    void encode_nestedObjectScopeRef_throwsIllegalArgumentException() {
+        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[{\"id\":\"1001\"}]");
+
+        assertThatThrownBy(() -> DataAccessScopeTupleEncoder.encode(scope))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("scalar");
+    }
+
+    @Test
+    void encode_blankStringScopeRef_throwsIllegalArgumentException() {
+        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[\"\"]");
+
+        assertThatThrownBy(() -> DataAccessScopeTupleEncoder.encode(scope))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-blank");
+    }
+
+    /**
+     * PG scope_ref contract is a string array, but if a JSON producer ever
+     * emits {@code [1001]} (numeric scalar) the encoder must still accept it
+     * — {@link com.fasterxml.jackson.databind.JsonNode#asText()} on a number
+     * returns its decimal representation, which round-trips correctly to
+     * the {@code wc-company-1001} object id.
+     */
+    @Test
+    void encode_numericScopeRef_acceptsNumberAsText() {
+        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[1001]");
+
+        var tuple = DataAccessScopeTupleEncoder.encode(scope);
+
+        assertThat(tuple.objectId()).isEqualTo("wc-company-1001");
+    }
+
     private static DataAccessScope scope(DataAccessScope.ScopeKind kind, String scopeRef) {
         var s = new DataAccessScope();
         s.setUserId(USER);

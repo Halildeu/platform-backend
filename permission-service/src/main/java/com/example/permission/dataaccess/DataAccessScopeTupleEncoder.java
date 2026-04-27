@@ -78,7 +78,23 @@ public final class DataAccessScopeTupleEncoder {
             throw new IllegalArgumentException(
                     "scope.scopeRef first element is null/missing: " + scopeRef);
         }
-        return first.asText();
+        // Faz 21.A contract: scope_ref first element must be a scalar
+        // (string or number). For nested arrays/objects, JsonNode.asText()
+        // silently returns an empty string, which would produce invalid
+        // OpenFGA object ids like "wc-company-" with no PK suffix. Reject
+        // explicitly so the failure surfaces at the encoder layer rather
+        // than as a downstream OpenFGA 400.
+        if (!first.isTextual() && !first.isNumber()) {
+            throw new IllegalArgumentException(
+                    "scope.scopeRef first element must be a scalar (string or number), got: "
+                            + first.getNodeType() + " in " + scopeRef);
+        }
+        String text = first.asText();
+        if (text.isBlank()) {
+            throw new IllegalArgumentException(
+                    "scope.scopeRef first element must be non-blank, got: " + scopeRef);
+        }
+        return text;
     }
 
     private record ObjectMapping(String objectType, String objectId) {}
