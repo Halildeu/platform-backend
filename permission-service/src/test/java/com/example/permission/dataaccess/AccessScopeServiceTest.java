@@ -7,6 +7,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -19,57 +20,112 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * Faz 21.3 PR-G refactor of PR-D's direct-write contract:
+ * grant/revoke now insert {@link DataAccessScopeOutboxEntry} rows in the
+ * same TX as the {@code data_access.scope} write; no direct OpenFGA call.
+ * The poller ({@link OutboxPoller}) consumes the outbox asynchronously.
+ */
 class AccessScopeServiceTest {
 
     private static final UUID USER = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
     private static final UUID GRANTED_BY = UUID.fromString("11111111-2222-3333-4444-555555555555");
 
     private DataAccessScopeRepository repository;
-    private DataAccessScopeTupleWriter tupleWriter;
+    private DataAccessScopeOutboxRepository outboxRepository;
     private AccessScopeService service;
 
     @BeforeEach
     void setUp() {
         repository = mock(DataAccessScopeRepository.class);
-        tupleWriter = mock(DataAccessScopeTupleWriter.class);
-        service = new AccessScopeService(repository, tupleWriter);
+        outboxRepository = mock(DataAccessScopeOutboxRepository.class);
+        when(outboxRepository.save(any(DataAccessScopeOutboxEntry.class)))
+                .thenAnswer(inv -> {
+                    DataAccessScopeOutboxEntry e = inv.getArgument(0);
+                    if (e.getId() == null) e.setId(900L);
+                    return e;
+                });
+        service = new AccessScopeService(repository, outboxRepository);
     }
 
     @Test
-    void grant_happyPath_savesAndWritesTuple() {
+    void grant_happyPath_savesScopeAndEnqueuesGrantOutbox() {
         when(repository.saveAndFlush(any(DataAccessScope.class))).thenAnswer(inv -> {
             DataAccessScope arg = inv.getArgument(0);
             arg.setId(42L);
             return arg;
         });
 
-        DataAccessScope result = service.grant(
+        AccessScopeService.ScopeMutationResult result = service.grant(
                 USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY);
 
-        assertThat(result.getId()).isEqualTo(42L);
-        assertThat(result.getScopeSourceTable()).isEqualTo("COMPANY");
-        assertThat(result.getScopeSourceSchema()).isEqualTo("workcube_mikrolink");
-        assertThat(result.getGrantedBy()).isEqualTo(GRANTED_BY);
-        assertThat(result.getGrantedAt()).isNotNull();
-        verify(tupleWriter, times(1)).writeScopeTuple(result);
+        DataAccessScope scope = result.scope();
+        DataAccessScopeOutboxEntry outbox = result.outboxEntry();
+
+        assertThat(scope.getId()).isEqualTo(42L);
+        assertThat(scope.getScopeSourceTable()).isEqualTo("COMPANY");
+        assertThat(scope.getScopeSourceSchema()).isEqualTo("workcube_mikrolink");
+        assertThat(scope.getGrantedBy()).isEqualTo(GRANTED_BY);
+        assertThat(scope.getGrantedAt()).isNotNull();
+
+        assertThat(outbox.getScopeId()).isEqualTo(42L);
+        assertThat(outbox.getAction()).isEqualTo(DataAccessScopeOutboxEntry.Action.GRANT);
+        assertThat(outbox.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PENDING);
+        assertThat(outbox.getNextAttemptAt()).isNotNull();
+        assertThat(outbox.getCreatedAt()).isNotNull();
+
+        // V23 typed tuple identity columns (Codex 019dd0e0 BLOCKER 2).
+        assertThat(outbox.getTupleUser()).isEqualTo("user:" + USER);
+        assertThat(outbox.getTupleRelation()).isEqualTo("viewer");
+        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-company-1001");
+
+        // JSONB payload keeps the same shape for downstream debug/audit consumers,
+        // with V23 picking up the composite "object" key alongside the
+        // pre-existing objectType/objectId split.
+        @SuppressWarnings("unchecked")
+        Map<String, Object> tuple = (Map<String, Object>) outbox.getPayload().get("tuple");
+        assertThat(tuple.get("user")).isEqualTo("user:" + USER);
+        assertThat(tuple.get("relation")).isEqualTo("viewer");
+        assertThat(tuple.get("object")).isEqualTo("company:wc-company-1001");
+        assertThat(tuple.get("objectType")).isEqualTo("company");
+        assertThat(tuple.get("objectId")).isEqualTo("wc-company-1001");
+        assertThat(outbox.getPayload().get("scopeKind")).isEqualTo("COMPANY");
+        assertThat(outbox.getPayload().get("scopeRef")).isEqualTo("[\"1001\"]");
+
+        verify(outboxRepository, times(1)).save(any(DataAccessScopeOutboxEntry.class));
     }
 
     @Test
-    void grant_depotKind_setsDEPARTMENTSourceTable() {
-        when(repository.saveAndFlush(any(DataAccessScope.class))).thenAnswer(inv -> inv.getArgument(0));
+    void grant_depotKind_setsDEPARTMENTSourceTableAndWarehouseTuple() {
+        when(repository.saveAndFlush(any(DataAccessScope.class))).thenAnswer(inv -> {
+            DataAccessScope arg = inv.getArgument(0);
+            arg.setId(43L);
+            return arg;
+        });
 
-        DataAccessScope result = service.grant(
+        AccessScopeService.ScopeMutationResult result = service.grant(
                 USER, 1L, DataAccessScope.ScopeKind.DEPOT, "[\"3792\"]", GRANTED_BY);
 
-        assertThat(result.getScopeSourceTable())
+        assertThat(result.scope().getScopeSourceTable())
                 .as("DEPOT must map to DEPARTMENT per Faz 21.A decision")
                 .isEqualTo("DEPARTMENT");
+
+        // V23 typed tuple identity columns: depot → warehouse object type +
+        // composite "type:id" tuple_object format.
+        DataAccessScopeOutboxEntry outbox = result.outboxEntry();
+        assertThat(outbox.getTupleObject())
+                .as("DEPOT scope_kind → warehouse:wc-department-* per ADR-0008 § Naming + V23 composite format")
+                .isEqualTo("warehouse:wc-department-3792");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> tuple = (Map<String, Object>) outbox.getPayload().get("tuple");
+        assertThat(tuple.get("objectType")).isEqualTo("warehouse");
+        assertThat(tuple.get("objectId")).isEqualTo("wc-department-3792");
+        assertThat(tuple.get("object")).isEqualTo("warehouse:wc-department-3792");
     }
 
     @Test
-    void grant_uniqueViolation_throwsScopeAlreadyGranted_andSkipsTupleWrite() {
-        // Hibernate wraps PG's unique_violation (SQLState 23505) and exposes
-        // the constraint name; iter-1 routing matches on EITHER signal.
+    void grant_uniqueViolation_throwsScopeAlreadyGranted_andSkipsOutboxInsert() {
         var sqlEx = new java.sql.SQLException(
                 "ERROR: duplicate key value violates unique constraint", "23505");
         var hcve = new org.hibernate.exception.ConstraintViolationException(
@@ -82,15 +138,13 @@ class AccessScopeServiceTest {
                 .isInstanceOf(AccessScopeException.ScopeAlreadyGrantedException.class)
                 .hasMessageContaining("user=" + USER);
 
-        verify(tupleWriter, never()).writeScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
-    void grant_lineageViolation_throwsScopeValidation_andSkipsTupleWrite() {
-        // V19 trigger RAISE EXCEPTION → PG SQLState P0001.
+    void grant_lineageViolation_throwsScopeValidation_andSkipsOutboxInsert() {
         var sqlEx = new java.sql.SQLException(
-                "ERROR: data_access.scope: invalid scope_ref 9999 for kind company "
-                        + "/ source_table COMPANY (no matching row in workcube_mikrolink.* with that source_pk)",
+                "ERROR: data_access.scope: invalid scope_ref 9999 ... validate_scope_ref",
                 "P0001");
         var hcve = new org.hibernate.exception.ConstraintViolationException(
                 "trigger raised", sqlEx, null);
@@ -102,7 +156,7 @@ class AccessScopeServiceTest {
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class)
                 .hasMessageContaining("lineage guard");
 
-        verify(tupleWriter, never()).writeScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
@@ -116,28 +170,34 @@ class AccessScopeServiceTest {
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
                 .isSameAs(original);
 
-        verify(tupleWriter, never()).writeScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
-    void revoke_happyPath_setsRevokedAtAndDeletesTuple() {
+    void revoke_happyPath_setsRevokedAtAndEnqueuesRevokeOutbox() {
         var existing = activeScope(7L);
         when(repository.findById(7L)).thenReturn(Optional.of(existing));
         when(repository.save(any(DataAccessScope.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        DataAccessScope result = service.revoke(7L, GRANTED_BY);
+        AccessScopeService.ScopeMutationResult result = service.revoke(7L, GRANTED_BY);
+        DataAccessScope scope = result.scope();
+        DataAccessScopeOutboxEntry outbox = result.outboxEntry();
 
-        assertThat(result.getRevokedAt()).isNotNull();
-        assertThat(result.getRevokedBy()).isEqualTo(GRANTED_BY);
-        assertThat(result.isActive()).isFalse();
+        assertThat(scope.getRevokedAt()).isNotNull();
+        assertThat(scope.getRevokedBy()).isEqualTo(GRANTED_BY);
+        assertThat(scope.isActive()).isFalse();
 
-        ArgumentCaptor<DataAccessScope> deleted = ArgumentCaptor.forClass(DataAccessScope.class);
-        verify(tupleWriter).deleteScopeTuple(deleted.capture());
-        assertThat(deleted.getValue().getId()).isEqualTo(7L);
+        ArgumentCaptor<DataAccessScopeOutboxEntry> capt = ArgumentCaptor.forClass(DataAccessScopeOutboxEntry.class);
+        verify(outboxRepository).save(capt.capture());
+        DataAccessScopeOutboxEntry persisted = capt.getValue();
+        assertThat(persisted.getScopeId()).isEqualTo(7L);
+        assertThat(persisted.getAction()).isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
+        assertThat(persisted.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PENDING);
+        assertThat(outbox.getAction()).isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
     }
 
     @Test
-    void revoke_alreadyRevoked_throwsScopeAlreadyRevoked_andSkipsTupleDelete() {
+    void revoke_alreadyRevoked_throwsScopeAlreadyRevoked_andSkipsBothWrites() {
         var existing = activeScope(8L);
         existing.setRevokedAt(Instant.parse("2026-04-26T10:00:00Z"));
         when(repository.findById(8L)).thenReturn(Optional.of(existing));
@@ -145,7 +205,7 @@ class AccessScopeServiceTest {
         assertThatThrownBy(() -> service.revoke(8L, GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeAlreadyRevokedException.class);
 
-        verify(tupleWriter, never()).deleteScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
         verify(repository, never()).save(any());
     }
 
@@ -156,13 +216,11 @@ class AccessScopeServiceTest {
         assertThatThrownBy(() -> service.revoke(999L, GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeNotFoundException.class);
 
-        verify(tupleWriter, never()).deleteScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
     void grant_pgUniqueViolationByConstraintName_throwsScopeAlreadyGranted() {
-        // Constraint-name-only path: SQLState absent, but the constraint name
-        // matches uq_scope_active_assignment → routing still fires.
         var sqlEx = new java.sql.SQLException("dup", (String) null);
         var hcve = new org.hibernate.exception.ConstraintViolationException(
                 "constraint", sqlEx, "uq_scope_active_assignment");
@@ -173,12 +231,11 @@ class AccessScopeServiceTest {
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeAlreadyGrantedException.class);
 
-        verify(tupleWriter, never()).writeScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
     void grant_pgCheckViolation_throwsScopeValidation() {
-        // SQLState 23514 = check_violation (e.g. scope_kind_source_table_consistent).
         var sqlEx = new java.sql.SQLException("check failed", "23514");
         var hcve = new org.hibernate.exception.ConstraintViolationException(
                 "check constraint", sqlEx, "scope_kind_source_table_consistent");
@@ -189,15 +246,11 @@ class AccessScopeServiceTest {
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class);
 
-        verify(tupleWriter, never()).writeScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
     void grant_pgTriggerRaiseException_throwsScopeValidation_viaMessageFallback() {
-        // SQLState absent, constraintName absent, but the message contains
-        // validate_scope_ref → message-fallback path catches it. Guards
-        // against a future PG locale change that drops SQLState on raised
-        // exceptions.
         var sqlEx = new java.sql.SQLException(
                 "ERROR: invalid scope_ref called from validate_scope_ref()", (String) null);
         var hcve = new org.hibernate.exception.ConstraintViolationException(
@@ -209,7 +262,7 @@ class AccessScopeServiceTest {
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"9999\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class);
 
-        verify(tupleWriter, never()).writeScopeTuple(any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.example.permission.controller;
 import com.example.commonauth.openfga.RequireModule;
 import com.example.permission.dataaccess.AccessScopeService;
 import com.example.permission.dataaccess.DataAccessScope;
+import com.example.permission.dataaccess.DataAccessScopeOutboxEntry;
 import com.example.permission.dataaccess.DataAccessScopeTupleEncoder;
 import com.example.permission.dto.access.ScopeGrantRequest;
 import com.example.permission.dto.access.ScopeGrantResponse;
@@ -24,42 +25,29 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Faz 21.3 PR-D: REST surface for {@code data_access.scope} per ADR-0008
- * explicit-scope contract.
+ * Faz 21.3 PR-D / PR-G — REST surface for {@code data_access.scope}.
  *
- * <p>Endpoints:
+ * <p>Endpoints (unchanged from PR-D):
  * <ul>
- *   <li>{@code POST /api/v1/access/scope} — grant (201 + ScopeGrantResponse)</li>
+ *   <li>{@code POST /api/v1/access/scope} — grant (201 + ScopeGrantResponse, now with outbox fields)</li>
  *   <li>{@code DELETE /api/v1/access/scope/{id}} — revoke (204)</li>
  *   <li>{@code GET /api/v1/access/scope?userId=&orgId=} — list (200)</li>
  * </ul>
  *
- * <p>Activation: the controller bean is always registered, but the
- * {@link AccessScopeService} dependency is injected as
- * {@code Optional<AccessScopeService>}. When {@code REPORTS_DB_ENABLED=false}
- * the service bean is absent and every endpoint short-circuits to
- * {@link HttpStatus#SERVICE_UNAVAILABLE} (503). This keeps the application
- * bootable in environments where the secondary {@code reports_db} datasource
- * is not provisioned, while still letting clients distinguish "scope service
- * is off" (503) from "no such route" (404) and "no such scope id" (404 from
- * {@link AccessScopeExceptionHandler}).
+ * <p>PR-G outbox: the response body now includes {@code tupleSyncStatus},
+ * {@code outboxId} and {@code processedAt} (additive — old clients ignore
+ * unknown fields). The status starts at {@code "PENDING"} and reflects the
+ * outbox row state at the time the grant TX commits; the UI / caller can
+ * poll the outbox to learn when the FGA tuple is actually written.
  *
- * <p>Authorization: {@link RequireModule} on the {@code ACCESS} module
- * (existing OpenFGA-backed authz pattern). Grant/revoke require
- * {@code can_manage}; list requires {@code can_view}. These are the relations
- * actually defined on the {@code module} type in
- * {@code backend/openfga/model.fga} ({@code can_edit}, {@code can_manage},
- * {@code can_view}, {@code blocked}) — the spec's original
- * {@code admin}/{@code viewer} names do not exist on that type and would
- * cause every check to deny in any environment with OpenFGA enabled.
- *
- * <p>ADR-0008 specifies {@code organization#admin} for scope assignment
- * authority semantically; we map that onto the existing
- * {@code module:ACCESS#can_manage} relation rather than introducing a
- * parallel authz vocabulary, since {@code module} is the established authz
- * boundary in this codebase. Operator must seed
- * {@code module:ACCESS#can_manage@user:&lt;admin-uid&gt;} tuples for users
- * who should grant scope (and {@code can_view} for users who should list).
+ * <p>Activation: the controller bean is always registered, but
+ * {@link AccessScopeService} is injected as
+ * {@code Optional<AccessScopeService>}. When either of
+ * {@code REPORTS_DB_ENABLED} / {@code erp.openfga.enabled} is false (the
+ * service's multi-name {@code @ConditionalOnProperty}), the dependency is
+ * empty and every endpoint returns 503 — keeping the application bootable
+ * in environments where the secondary {@code reports_db} datasource or
+ * OpenFGA itself is not provisioned.
  */
 @RestController
 @RequestMapping("/api/v1/access/scope")
@@ -77,25 +65,14 @@ public class AccessScopeController {
         if (accessScopeService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         }
-        DataAccessScope scope = accessScopeService.grant(
+        AccessScopeService.ScopeMutationResult result = accessScopeService.grant(
                 request.userId(),
                 request.orgId(),
                 request.scopeKind(),
                 request.scopeRef(),
                 request.grantedBy()
         );
-        DataAccessScopeTupleEncoder.FgaTuple tuple = DataAccessScopeTupleEncoder.encode(scope);
-        ScopeGrantResponse response = new ScopeGrantResponse(
-                scope.getId(),
-                scope.getUserId(),
-                scope.getOrgId(),
-                scope.getScopeKind().name(),
-                scope.getScopeRef(),
-                scope.getGrantedAt(),
-                tuple.objectType(),
-                tuple.objectId()
-        );
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        return ResponseEntity.status(HttpStatus.CREATED).body(toResponse(result));
     }
 
     @DeleteMapping("/{id}")
@@ -128,5 +105,24 @@ public class AccessScopeController {
                 ))
                 .toList();
         return ResponseEntity.ok(items);
+    }
+
+    private static ScopeGrantResponse toResponse(AccessScopeService.ScopeMutationResult result) {
+        DataAccessScope scope = result.scope();
+        DataAccessScopeOutboxEntry outbox = result.outboxEntry();
+        DataAccessScopeTupleEncoder.FgaTuple tuple = DataAccessScopeTupleEncoder.encode(scope);
+        return new ScopeGrantResponse(
+                scope.getId(),
+                scope.getUserId(),
+                scope.getOrgId(),
+                scope.getScopeKind().name(),
+                scope.getScopeRef(),
+                scope.getGrantedAt(),
+                tuple.objectType(),
+                tuple.objectId(),
+                outbox.getStatus().name(),
+                outbox.getId(),
+                outbox.getProcessedAt()
+        );
     }
 }

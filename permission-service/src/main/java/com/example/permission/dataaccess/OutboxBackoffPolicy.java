@@ -1,0 +1,59 @@
+package com.example.permission.dataaccess;
+
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.ThreadLocalRandom;
+
+/**
+ * Faz 21.3 PR-G — exponential backoff with jitter for {@link OutboxPoller}
+ * retries (Codex 019dcf5c risk #6 — stuck recovery + retry semantics).
+ *
+ * <p>Schedule (Codex 019dd0e0 iter-2 MAJOR fix order):
+ * {@code initialBackoff * 2^(attempt-1)} as the uncapped exponential value,
+ * multiplied by a random jitter in {@code [0.75, 1.25]}, then hard-capped at
+ * {@code maxBackoff}. The jitter-before-cap order honours the contract that
+ * the wait is never longer than {@code maxBackoff} — the previous
+ * cap-before-jitter order let high {@code attemptCount} produce up to
+ * 1.25 × maxBackoff drift. The jitter range itself avoids thundering-herd
+ * retry storms when many entries fail at the same time (e.g. OpenFGA outage).
+ */
+@Component
+public class OutboxBackoffPolicy {
+
+    /**
+     * Compute the next attempt timestamp.
+     *
+     * @param attemptCount  the just-incremented attempt counter (>= 1 on first retry)
+     * @param initialBackoff base delay
+     * @param maxBackoff    upper cap for the exponential schedule
+     * @return {@code now + jitter * min(initialBackoff * 2^(attempt-1), maxBackoff)}
+     */
+    public Instant nextAttemptAt(int attemptCount, Duration initialBackoff, Duration maxBackoff) {
+        long baseMillis = initialBackoff.toMillis();
+        // Cap the exponent so a long-running pod with attempt_count > 60 cannot
+        // overflow a long when shifting the base; 30 keeps headroom and is well
+        // past any reasonable maxBackoff.
+        int exponent = Math.min(Math.max(attemptCount - 1, 0), 30);
+        long expMillis;
+        try {
+            expMillis = Math.multiplyExact(baseMillis, 1L << exponent);
+        } catch (ArithmeticException overflow) {
+            expMillis = Long.MAX_VALUE;
+        }
+
+        // Jitter [0.75, 1.25] — ±25% variance.
+        double jitter = 0.75d + ThreadLocalRandom.current().nextDouble() * 0.5d;
+        long jittered = Math.max(1L, (long) (expMillis * jitter));
+
+        // Codex 019dd0e0 iter-2 MAJOR fix: hard cap AFTER jitter. The previous
+        // order applied jitter to the already-capped value, which let a high
+        // attemptCount produce 1.25 * maxBackoff (drift) rather than honouring
+        // the contract that the wait is never longer than maxBackoff.
+        long capMillis = maxBackoff.toMillis();
+        long capped = Math.min(jittered, capMillis);
+
+        return Instant.now().plusMillis(Math.max(1L, capped));
+    }
+}

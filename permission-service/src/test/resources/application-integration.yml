@@ -54,6 +54,19 @@ eureka:
   client:
     enabled: false
 
+# Faz 21.3 PR-G outbox poller config — long poll interval keeps scheduled
+# ticks out of the way during integration tests. Test methods invoke
+# OutboxPoller.pollAndProcess() directly; the @Scheduled trigger should
+# never fire during a single test run.
+app:
+  outbox:
+    poll-interval-ms: 3600000
+    batch-size: 25
+    initial-backoff: PT5S
+    max-backoff: PT15M
+    max-attempts: 10
+    processing-lock-ttl: PT2M
+
 erp:
   openfga:
     # Required for the second half of AccessScopeService's gate. The actual

@@ -25,18 +25,22 @@ here is **test-classpath-only** and never reaches a deployed cluster.
 | `V19__data_access.sql` | `sql/migration/V19__data_access.sql` | data_access schema (organization, organization_company, scope) + validate_scope_ref trigger + AÇIK seed |
 | `V20__data_access_depot_alter.sql` | `sql/migration/V20__data_access_depot_alter.sql` | depot scope_kind widening to DEPARTMENT (Faz 21.A) |
 | `V21__validate_scope_ref_json_parse.sql` | `sql/migration/V21__validate_scope_ref_json_parse.sql` | validate_scope_ref() JSON-array `scope_ref` parsing fix (Codex 019dcfb0 BLOCKER #2). Without this, the happy-path integration test would fail: V19's raw comparison `WHERE source_pk = p_ref` never matches the canonical `'["1001"]'` shape against `source_pk='1001'`. |
+| `V22__data_access_scope_outbox.sql` | `sql/migration/V22__data_access_scope_outbox.sql` | `data_access.scope_outbox` transactional outbox table (12 columns) + 5 indexes (claim / scope-ordering / recovery / failed / scope_id) + `recover_stuck_outbox_rows()` plpgsql function. Codex 019dcf5c iter-2 strategic primary recommendation; underpins PR-G's TX-internal outbox INSERT pattern (FGA write deferred to async poller). |
+| `V23__outbox_tuple_typed_columns.sql` | `sql/migration/V23__outbox_tuple_typed_columns.sql` | Adds `tuple_user`, `tuple_relation`, `tuple_object` (TEXT NOT NULL) columns to `scope_outbox`, drops V22 `idx_scope_outbox_scope_ordering`, creates `idx_scope_outbox_tuple_ordering` partial index. Codex 019dd0e0 iter-2 BLOCKER 2 absorb (Yol β) — same-tuple ordering across scope_id boundaries (revoke + re-grant produces different scope.id targeting same FGA tuple, so scope_id-based ordering was correctness-incorrect). |
 | `V90__test_workcube_fixtures.sql` | (NOT mirrored — test-only) | `workcube_mikrolink.*` fixture rows referenced by the integration test |
 
-## Sync state (Codex 019dcfb0 iter-1 MAJOR-2)
+## Sync state
 
 - **Source**: `Halildeu/platform-k8s-gitops:main:sql/migration/`
-- **Last sync**: 2026-04-27 (PR-F revise iter-1, Codex 019dcfb0 absorb)
+- **Last sync**: 2026-04-28 (PR-G iter-2 absorb, Codex 019dd0e0 BLOCKER 2 fix)
 - **Source commits at sync**:
   - V16: `c818dc3` (Faz 16 ETL canonical)
   - V17: `aa6aeb1` (Faz 21.1 manifest enrichment)
   - V19: `aa6aeb1` (Faz 21 data_access seed)
   - V20: `aa6aeb1` (Faz 21.A depot=DEPARTMENT)
   - V21: `924002a` (gitops PR #186 merge — Codex 019dcfb0 BLOCKER #2 fix)
+  - V22: `63e0adb` (gitops PR #187 merge — Codex 019dcf5c iter-2 outbox table)
+  - V23: `06ed15e` (gitops PR #188 merge — Codex 019dd0e0 BLOCKER 2 tuple typed columns)
 
 ## Checksums (verify drift)
 
@@ -47,10 +51,12 @@ here is **test-classpath-only** and never reaches a deployed cluster.
 | `V19__data_access.sql` | `eb2cbdb3cec2aa3301eb9011e5bddf568f1e87672b335413f440bb27ca4fc456` |
 | `V20__data_access_depot_alter.sql` | `f3e09bd6006501670ec446f82c4442b57112d6bffcf42a9a56d63083949c7826` |
 | `V21__validate_scope_ref_json_parse.sql` | `c8de875f2c957f2c6d931d2f5af36a82e3df63570e4e3226ad315da1c99ade15` |
+| `V22__data_access_scope_outbox.sql` | `68c077ee346ab3f9cd243777603cd6d4d7de1877c4b7447ba178447c5b3ed7f6` |
+| `V23__outbox_tuple_typed_columns.sql` | `2e25e1c81a6b08fde3541a06879a1ad9d34b548fbacb06bd711d5485032fc938` |
 | `V90__test_workcube_fixtures.sql` (test-only) | `b24294b6a57350c9cef575008b0ca00710f94545195b09534f5b6dde5dd9e79e` |
 
 To verify drift: clone gitops at `main`, run `sha256sum sql/migration/V*.sql`,
-and compare against the rows above (V16/V17/V19/V20/V21). Mismatches mean
+and compare against the rows above (V16/V17/V19/V20/V21/V22/V23). Mismatches mean
 either (a) gitops moved on without a backend mirror update, or (b) an editor
 accidentally touched a mirrored file. Both are bugs; fix by re-running the
 manual sync protocol below.
