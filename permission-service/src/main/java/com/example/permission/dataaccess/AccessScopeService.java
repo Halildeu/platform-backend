@@ -148,25 +148,38 @@ public class AccessScopeService {
     }
 
     private DataAccessScopeOutboxEntry enqueueOutbox(DataAccessScope scope, Action action) {
+        DataAccessScopeTupleEncoder.FgaTuple tuple = DataAccessScopeTupleEncoder.encode(scope);
+        // V23 Codex 019dd0e0 BLOCKER 2: typed tuple identity columns —
+        // tuple_user/relation/object NOT NULL. Format mirrors the JSONB
+        // payload's nested map for backward-compat with V22 mirror callers
+        // (the columns are derived from the same encoder output, so they
+        // stay in lock-step with the JSON shape downstream consumers see).
         DataAccessScopeOutboxEntry entry = new DataAccessScopeOutboxEntry();
         entry.setScopeId(scope.getId());
         entry.setAction(action);
-        entry.setPayload(buildPayload(scope));
         entry.setStatus(Status.PENDING);
         entry.setNextAttemptAt(Instant.now());
         entry.setCreatedAt(Instant.now());
+        entry.setTupleUser("user:" + tuple.userId());
+        entry.setTupleRelation(tuple.relation());
+        entry.setTupleObject(tuple.objectType() + ":" + tuple.objectId());
+        entry.setPayload(buildPayload(scope, tuple));
         return outboxRepository.save(entry);
     }
 
     /**
      * Snapshot the FGA tuple coordinates at write time so the poller does
      * not have to re-derive them from a possibly-mutated scope row later.
+     * Includes the V23 composite {@code object} field alongside the
+     * objectType/objectId split so future tuple-key consumers can choose
+     * either shape without a payload migration.
      */
-    private static Map<String, Object> buildPayload(DataAccessScope scope) {
-        DataAccessScopeTupleEncoder.FgaTuple tuple = DataAccessScopeTupleEncoder.encode(scope);
+    private static Map<String, Object> buildPayload(DataAccessScope scope,
+                                                    DataAccessScopeTupleEncoder.FgaTuple tuple) {
         Map<String, Object> tupleMap = new LinkedHashMap<>();
-        tupleMap.put("user", tuple.userId());
+        tupleMap.put("user", "user:" + tuple.userId());
         tupleMap.put("relation", tuple.relation());
+        tupleMap.put("object", tuple.objectType() + ":" + tuple.objectId());
         tupleMap.put("objectType", tuple.objectType());
         tupleMap.put("objectId", tuple.objectId());
 
