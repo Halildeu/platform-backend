@@ -1,5 +1,7 @@
 package com.example.permission.dataaccess;
 
+import com.example.permission.dataaccess.DataAccessScopeOutboxEntry.Action;
+import com.example.permission.dataaccess.DataAccessScopeOutboxEntry.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -8,48 +10,40 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * Faz 21.3 PR-D: orchestrates {@code data_access.scope} grants and revokes
- * across PG (V19/V20 schema) and OpenFGA. The service is the only legitimate
- * caller of {@link DataAccessScopeTupleWriter} — controllers go through here.
+ * Faz 21.3 PR-G — orchestrates {@code data_access.scope} grants and revokes.
  *
- * <p>Transaction boundary: class-level
- * {@code @Transactional("reportsDbTransactionManager")} so the PG INSERT (or
- * UPDATE for revoke) and the OpenFGA tuple write happen under the same TX.
- * If the tuple write throws, the PG transaction rolls back and the row is
- * never visible. The reverse (PG fails after FGA write) cannot happen here:
- * we {@code saveAndFlush} first, then call the writer; if {@code saveAndFlush}
- * throws, the writer is never invoked.
+ * <p><strong>Outbox pattern (PR-G refactor of PR-D's direct write):</strong>
+ * the request TX no longer makes the OpenFGA call. Instead it commits
+ * <em>two</em> rows atomically: one in {@code data_access.scope} (the
+ * authoritative business state) and one in {@code data_access.scope_outbox}
+ * (the durable intent that the {@link OutboxPoller} will pick up to do the
+ * actual FGA write asynchronously).
  *
- * <p>Edge case acknowledged in ADR-0008 § Tuple writer flow: the FGA write
- * succeeds but the TX commit fails afterwards (e.g. JDBC connection drop).
- * That produces an orphan FGA tuple. The outbox pattern (V21) eliminates it;
- * out of scope for this PR.
+ * <p>Why: the previous direct-call path (PR-D) had a residual edge ADR-0008
+ * § "Tuple writer flow" called out — the FGA write succeeds, then the TX
+ * commit fails afterwards (e.g. JDBC connection drop) → orphan FGA tuple.
+ * The outbox shape eliminates that: PG row + outbox row commit together,
+ * and the FGA write is retried until {@link Status#PROCESSED} or terminal
+ * {@link Status#FAILED} after {@code maxAttempts} attempts.
  *
- * <p>Activation gate: property-based AND of two flags ({@code @ConditionalOnProperty}
- * with a {@code name} array — Spring requires every listed property to match
- * the {@code havingValue}). The service is registered only when BOTH the
- * secondary {@code reports_db} datasource is enabled
- * ({@code spring.datasource.reports-db.enabled=true} / env
- * {@code REPORTS_DB_ENABLED}) AND OpenFGA is enabled
- * ({@code erp.openfga.enabled=true}). When either is off, the service bean
- * is absent and {@link com.example.permission.controller.AccessScopeController}
- * receives {@code Optional.empty()} and short-circuits to
- * {@link org.springframework.http.HttpStatus#SERVICE_UNAVAILABLE 503}.
+ * <p>Activation gate: multi-name {@code @ConditionalOnProperty}
+ * (reports-db.enabled + erp.openfga.enabled). Codex 019dcee1 iter-2
+ * BLOCKER established this contract; PR-G keeps it intact — the poller is
+ * the new dependent, but its activation gate matches the service's exactly,
+ * so they appear/disappear together.
  *
- * <p>Codex 019dcee1 iter-2 BLOCKER: an earlier iteration used
- * {@code @ConditionalOnBean(DataAccessScopeTupleWriter.class)} for the
- * OpenFGA half of the gate. That ran at component-scan time and depended
- * on the writer bean being already-registered — which is only true when
- * Spring happens to process the writer's configuration class first.
- * Component-scan order is not guaranteed, so {@code @ConditionalOnBean}
- * could deny the service even in a fully-enabled environment. The
- * property-based gate evaluates against the resolved {@code Environment}
- * before any beans are instantiated and is deterministic regardless of
- * scan order.
+ * <p>Note: the {@link DataAccessScopeTupleWriter} bean is no longer
+ * injected here. It survives in the codebase because the poller imports
+ * the encoder side of it implicitly through
+ * {@link DataAccessScopeTupleEncoder#encode(DataAccessScope)}; the
+ * service-layer use site is gone, and the writer's own gates are
+ * unchanged.
  */
 @Service
 @ConditionalOnProperty(
@@ -65,19 +59,29 @@ public class AccessScopeService {
     private static final Logger log = LoggerFactory.getLogger(AccessScopeService.class);
 
     private final DataAccessScopeRepository repository;
-    private final DataAccessScopeTupleWriter tupleWriter;
+    private final DataAccessScopeOutboxRepository outboxRepository;
 
     public AccessScopeService(DataAccessScopeRepository repository,
-                              DataAccessScopeTupleWriter tupleWriter) {
+                              DataAccessScopeOutboxRepository outboxRepository) {
         this.repository = repository;
-        this.tupleWriter = tupleWriter;
+        this.outboxRepository = outboxRepository;
     }
 
-    public DataAccessScope grant(UUID userId,
-                                 Long orgId,
-                                 DataAccessScope.ScopeKind scopeKind,
-                                 String scopeRef,
-                                 UUID grantedBy) {
+    /**
+     * Result tuple — the controller exposes the outbox state in the 201
+     * response so callers can correlate the PG row with the
+     * (eventually-consistent) FGA tuple.
+     */
+    public record ScopeMutationResult(
+            DataAccessScope scope,
+            DataAccessScopeOutboxEntry outboxEntry
+    ) {}
+
+    public ScopeMutationResult grant(UUID userId,
+                                     Long orgId,
+                                     DataAccessScope.ScopeKind scopeKind,
+                                     String scopeRef,
+                                     UUID grantedBy) {
         DataAccessScope scope = new DataAccessScope();
         scope.setUserId(userId);
         scope.setOrgId(orgId);
@@ -89,17 +93,12 @@ public class AccessScopeService {
         scope.setGrantedBy(grantedBy);
 
         try {
-            // saveAndFlush is required so the V19 BEFORE-INSERT trigger fires
-            // inside this try-block (default save() defers the SQL to commit
-            // time, where the exception would escape this handler).
+            // saveAndFlush is required so the V19/V21 BEFORE-INSERT trigger
+            // fires inside this try-block (default save() defers SQL to
+            // commit time, where the exception would escape this handler).
             repository.saveAndFlush(scope);
         } catch (DataIntegrityViolationException ex) {
             DbErrorContext db = extractDbContext(ex);
-
-            // PG SQLState 23505 = unique_violation. Either the SQLState or
-            // the constraint name is enough to route — both come straight
-            // from PG and survive locale changes that would have broken the
-            // previous substring-match path.
             if ("23505".equals(db.sqlState())
                     || "uq_scope_active_assignment".equals(db.constraintName())) {
                 throw new AccessScopeException.ScopeAlreadyGrantedException(
@@ -108,13 +107,6 @@ public class AccessScopeService {
                                 + ", ref=" + scopeRef + ")",
                         ex);
             }
-            // PG SQLState P0001 = trigger RAISE EXCEPTION (V19
-            // validate_scope_ref). PG SQLState 23514 = check_violation
-            // (scope_kind_source_table_consistent). The message-fallback is
-            // a safety net for triggers that omit a constraint name in their
-            // RAISE EXCEPTION; it can be removed once the V19 trigger is
-            // tightened to specify USING ERRCODE/CONSTRAINT in a follow-up
-            // gitops PR.
             if ("P0001".equals(db.sqlState())
                     || "23514".equals(db.sqlState())
                     || "scope_kind_source_table_consistent".equals(db.constraintName())
@@ -126,13 +118,13 @@ public class AccessScopeService {
             throw ex;
         }
 
-        tupleWriter.writeScopeTuple(scope);
-        log.info("data_access scope granted: id={} user={} org={} kind={} ref={}",
-                scope.getId(), userId, orgId, scopeKind, scopeRef);
-        return scope;
+        DataAccessScopeOutboxEntry outbox = enqueueOutbox(scope, Action.GRANT);
+        log.info("data_access scope granted (outbox id={}): scope_id={} user={} org={} kind={} ref={}",
+                outbox.getId(), scope.getId(), userId, orgId, scopeKind, scopeRef);
+        return new ScopeMutationResult(scope, outbox);
     }
 
-    public DataAccessScope revoke(Long scopeId, UUID revokedBy) {
+    public ScopeMutationResult revoke(Long scopeId, UUID revokedBy) {
         DataAccessScope scope = repository.findById(scopeId)
                 .orElseThrow(() -> new AccessScopeException.ScopeNotFoundException(scopeId));
         if (scope.getRevokedAt() != null) {
@@ -142,11 +134,12 @@ public class AccessScopeService {
         scope.setRevokedAt(Instant.now());
         scope.setRevokedBy(revokedBy);
         repository.save(scope);
-        tupleWriter.deleteScopeTuple(scope);
-        log.info("data_access scope revoked: id={} user={} org={} kind={} ref={}",
-                scope.getId(), scope.getUserId(), scope.getOrgId(),
+
+        DataAccessScopeOutboxEntry outbox = enqueueOutbox(scope, Action.REVOKE);
+        log.info("data_access scope revoked (outbox id={}): scope_id={} user={} org={} kind={} ref={}",
+                outbox.getId(), scope.getId(), scope.getUserId(), scope.getOrgId(),
                 scope.getScopeKind(), scope.getScopeRef());
-        return scope;
+        return new ScopeMutationResult(scope, outbox);
     }
 
     @Transactional(value = "reportsDbTransactionManager", readOnly = true)
@@ -154,13 +147,39 @@ public class AccessScopeService {
         return repository.findByUserIdAndOrgIdAndRevokedAtIsNull(userId, orgId);
     }
 
+    private DataAccessScopeOutboxEntry enqueueOutbox(DataAccessScope scope, Action action) {
+        DataAccessScopeOutboxEntry entry = new DataAccessScopeOutboxEntry();
+        entry.setScopeId(scope.getId());
+        entry.setAction(action);
+        entry.setPayload(buildPayload(scope));
+        entry.setStatus(Status.PENDING);
+        entry.setNextAttemptAt(Instant.now());
+        entry.setCreatedAt(Instant.now());
+        return outboxRepository.save(entry);
+    }
+
     /**
-     * Mirrors the V19/V20 {@code scope_kind_source_table_consistent} CHECK
-     * constraint. Centralising the mapping here means the controller never
-     * has to pass {@code source_table} explicitly — eliminating a class of
-     * client mistakes — and the encoder's {@code depot → warehouse} contract
-     * stays internally consistent (see ADR-0008 § Naming).
+     * Snapshot the FGA tuple coordinates at write time so the poller does
+     * not have to re-derive them from a possibly-mutated scope row later.
      */
+    private static Map<String, Object> buildPayload(DataAccessScope scope) {
+        DataAccessScopeTupleEncoder.FgaTuple tuple = DataAccessScopeTupleEncoder.encode(scope);
+        Map<String, Object> tupleMap = new LinkedHashMap<>();
+        tupleMap.put("user", tuple.userId());
+        tupleMap.put("relation", tuple.relation());
+        tupleMap.put("objectType", tuple.objectType());
+        tupleMap.put("objectId", tuple.objectId());
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("scopeId", scope.getId());
+        payload.put("userId", scope.getUserId() == null ? null : scope.getUserId().toString());
+        payload.put("orgId", scope.getOrgId());
+        payload.put("scopeKind", scope.getScopeKind() == null ? null : scope.getScopeKind().name());
+        payload.put("scopeRef", scope.getScopeRef());
+        payload.put("tuple", tupleMap);
+        return payload;
+    }
+
     private static String expectedSourceTable(DataAccessScope.ScopeKind kind) {
         return switch (kind) {
             case COMPANY -> "COMPANY";
@@ -170,54 +189,26 @@ public class AccessScopeService {
         };
     }
 
-    /**
-     * Faz 21.3 PR-D iter-1 MAJOR-2 hardening (Codex 019dcee1): structural
-     * extraction of the DB error context (SQLState + constraint name) instead
-     * of substring matching on the message. PG locale changes, message
-     * reformatting in a future driver upgrade, or constraint renames in a
-     * later migration would all silently break the previous string-match
-     * path and surface as generic 500s. SQLState codes ({@code 23505},
-     * {@code 23514}, {@code P0001}) are stable across locales, and the
-     * constraint name comes from Hibernate's
-     * {@link org.hibernate.exception.ConstraintViolationException} (which
-     * parses it out of the PG error response). The PostgreSQL driver itself
-     * is on {@code <scope>runtime</scope>} in {@code pom.xml}, so we route
-     * through the JDBC {@link java.sql.SQLException} to read SQLState rather
-     * than reaching for {@code org.postgresql.util.PSQLException} directly.
-     * Falls back to the deepest non-null message as a safety net for
-     * triggers that do not specify {@code USING ERRCODE/CONSTRAINT}.
-     */
+    /** Codex 019dcee1 iter-1 MAJOR-2 — structural DB error extractor. */
     private record DbErrorContext(String sqlState, String constraintName, String message) {}
 
     private static DbErrorContext extractDbContext(DataIntegrityViolationException ex) {
         String sqlState = null;
         String constraintName = null;
         String message = ex.getMessage();
-
         Throwable cause = ex.getCause();
         int depth = 0;
         while (cause != null && depth < 10) {
-            if (cause.getMessage() != null) {
-                message = cause.getMessage();
-            }
+            if (cause.getMessage() != null) message = cause.getMessage();
             if (cause instanceof org.hibernate.exception.ConstraintViolationException hcve) {
-                if (hcve.getConstraintName() != null) {
-                    constraintName = hcve.getConstraintName();
-                }
+                if (hcve.getConstraintName() != null) constraintName = hcve.getConstraintName();
                 if (hcve.getSQLException() != null
                         && hcve.getSQLException().getSQLState() != null) {
                     sqlState = hcve.getSQLException().getSQLState();
                 }
             }
-            // Catch the deepest JDBC SQLException's SQLState even if it is
-            // not wrapped by a ConstraintViolationException (e.g. raw JDBC
-            // errors from native queries). Driver-specific subclasses are
-            // intentionally not referenced — postgres' jdbc driver is on
-            // runtime scope in pom.xml.
             if (cause instanceof java.sql.SQLException sqle) {
-                if (sqle.getSQLState() != null) {
-                    sqlState = sqle.getSQLState();
-                }
+                if (sqle.getSQLState() != null) sqlState = sqle.getSQLState();
             }
             cause = cause.getCause();
             depth++;
