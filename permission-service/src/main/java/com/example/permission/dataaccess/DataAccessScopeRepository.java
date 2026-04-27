@@ -9,6 +9,8 @@ public interface DataAccessScopeRepository extends JpaRepository<DataAccessScope
 
     List<DataAccessScope> findByUserIdAndRevokedAtIsNull(UUID userId);
 
+    List<DataAccessScope> findByUserIdAndOrgIdAndRevokedAtIsNull(UUID userId, Long orgId);
+
     List<DataAccessScope> findByOrgIdAndScopeKindAndScopeRefAndRevokedAtIsNull(
             Long orgId, DataAccessScope.ScopeKind scopeKind, String scopeRef);
 
