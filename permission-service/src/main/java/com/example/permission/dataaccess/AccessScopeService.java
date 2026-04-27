@@ -2,7 +2,6 @@ package com.example.permission.dataaccess;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -30,24 +29,36 @@ import java.util.UUID;
  * That produces an orphan FGA tuple. The outbox pattern (V21) eliminates it;
  * out of scope for this PR.
  *
- * <p>Activation gate: this service requires both the secondary
- * {@code reports_db} datasource ({@code spring.datasource.reports-db.enabled=true}
- * / env {@code REPORTS_DB_ENABLED}) AND a live {@link DataAccessScopeTupleWriter}
- * bean (which itself requires {@code erp.openfga.enabled=true} per
- * {@link com.example.permission.config.OpenFgaAuthzConfig}). Without both,
- * the service bean is absent and
- * {@link com.example.permission.controller.AccessScopeController} receives
- * {@code Optional.empty()} and short-circuits to
- * {@link org.springframework.http.HttpStatus#SERVICE_UNAVAILABLE 503}. The
- * explicit {@code @ConditionalOnBean(DataAccessScopeTupleWriter.class)}
- * prevents a boot-time NoSuchBeanDefinition failure in the
- * {@code REPORTS_DB_ENABLED=true + erp.openfga.enabled=false} configuration
- * (Codex 019dcee1 iter-1 MAJOR-1) — the application now boots and degrades
- * to 503 instead of failing to start.
+ * <p>Activation gate: property-based AND of two flags ({@code @ConditionalOnProperty}
+ * with a {@code name} array — Spring requires every listed property to match
+ * the {@code havingValue}). The service is registered only when BOTH the
+ * secondary {@code reports_db} datasource is enabled
+ * ({@code spring.datasource.reports-db.enabled=true} / env
+ * {@code REPORTS_DB_ENABLED}) AND OpenFGA is enabled
+ * ({@code erp.openfga.enabled=true}). When either is off, the service bean
+ * is absent and {@link com.example.permission.controller.AccessScopeController}
+ * receives {@code Optional.empty()} and short-circuits to
+ * {@link org.springframework.http.HttpStatus#SERVICE_UNAVAILABLE 503}.
+ *
+ * <p>Codex 019dcee1 iter-2 BLOCKER: an earlier iteration used
+ * {@code @ConditionalOnBean(DataAccessScopeTupleWriter.class)} for the
+ * OpenFGA half of the gate. That ran at component-scan time and depended
+ * on the writer bean being already-registered — which is only true when
+ * Spring happens to process the writer's configuration class first.
+ * Component-scan order is not guaranteed, so {@code @ConditionalOnBean}
+ * could deny the service even in a fully-enabled environment. The
+ * property-based gate evaluates against the resolved {@code Environment}
+ * before any beans are instantiated and is deterministic regardless of
+ * scan order.
  */
 @Service
-@ConditionalOnProperty(name = "spring.datasource.reports-db.enabled", havingValue = "true")
-@ConditionalOnBean(DataAccessScopeTupleWriter.class)
+@ConditionalOnProperty(
+        name = {
+                "spring.datasource.reports-db.enabled",
+                "erp.openfga.enabled"
+        },
+        havingValue = "true"
+)
 @Transactional("reportsDbTransactionManager")
 public class AccessScopeService {
 
