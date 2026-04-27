@@ -10,10 +10,14 @@ import java.util.concurrent.ThreadLocalRandom;
  * Faz 21.3 PR-G — exponential backoff with jitter for {@link OutboxPoller}
  * retries (Codex 019dcf5c risk #6 — stuck recovery + retry semantics).
  *
- * <p>Schedule: {@code initialBackoff * 2^(attempt-1)} capped at
- * {@code maxBackoff}, multiplied by a random jitter in {@code [0.75, 1.25]}.
- * The jitter range avoids thundering-herd retry storms when many entries
- * fail at the same time (e.g. OpenFGA outage).
+ * <p>Schedule (Codex 019dd0e0 iter-2 MAJOR fix order):
+ * {@code initialBackoff * 2^(attempt-1)} as the uncapped exponential value,
+ * multiplied by a random jitter in {@code [0.75, 1.25]}, then hard-capped at
+ * {@code maxBackoff}. The jitter-before-cap order honours the contract that
+ * the wait is never longer than {@code maxBackoff} — the previous
+ * cap-before-jitter order let high {@code attemptCount} produce up to
+ * 1.25 × maxBackoff drift. The jitter range itself avoids thundering-herd
+ * retry storms when many entries fail at the same time (e.g. OpenFGA outage).
  */
 @Component
 public class OutboxBackoffPolicy {
