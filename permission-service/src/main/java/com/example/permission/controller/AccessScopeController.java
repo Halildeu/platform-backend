@@ -45,11 +45,21 @@ import java.util.UUID;
  * {@link AccessScopeExceptionHandler}).
  *
  * <p>Authorization: {@link RequireModule} on the {@code ACCESS} module
- * (existing OpenFGA-backed authz pattern). Grant/revoke require {@code admin};
- * list requires {@code viewer}. ADR-0008 specifies {@code organization#admin}
- * for scope assignment authority — we map that onto the existing
- * {@code ACCESS} module admin relation rather than introducing a parallel
- * authz vocabulary.
+ * (existing OpenFGA-backed authz pattern). Grant/revoke require
+ * {@code can_manage}; list requires {@code can_view}. These are the relations
+ * actually defined on the {@code module} type in
+ * {@code backend/openfga/model.fga} ({@code can_edit}, {@code can_manage},
+ * {@code can_view}, {@code blocked}) — the spec's original
+ * {@code admin}/{@code viewer} names do not exist on that type and would
+ * cause every check to deny in any environment with OpenFGA enabled.
+ *
+ * <p>ADR-0008 specifies {@code organization#admin} for scope assignment
+ * authority semantically; we map that onto the existing
+ * {@code module:ACCESS#can_manage} relation rather than introducing a
+ * parallel authz vocabulary, since {@code module} is the established authz
+ * boundary in this codebase. Operator must seed
+ * {@code module:ACCESS#can_manage@user:&lt;admin-uid&gt;} tuples for users
+ * who should grant scope (and {@code can_view} for users who should list).
  */
 @RestController
 @RequestMapping("/api/v1/access/scope")
@@ -62,7 +72,7 @@ public class AccessScopeController {
     }
 
     @PostMapping
-    @RequireModule(value = "ACCESS", relation = "admin")
+    @RequireModule(value = "ACCESS", relation = "can_manage")
     public ResponseEntity<ScopeGrantResponse> grant(@Valid @RequestBody ScopeGrantRequest request) {
         if (accessScopeService == null) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
@@ -89,7 +99,7 @@ public class AccessScopeController {
     }
 
     @DeleteMapping("/{id}")
-    @RequireModule(value = "ACCESS", relation = "admin")
+    @RequireModule(value = "ACCESS", relation = "can_manage")
     public ResponseEntity<Void> revoke(@PathVariable Long id,
                                        @RequestParam(value = "revokedBy", required = false) UUID revokedBy) {
         if (accessScopeService == null) {
@@ -100,7 +110,7 @@ public class AccessScopeController {
     }
 
     @GetMapping
-    @RequireModule(value = "ACCESS", relation = "viewer")
+    @RequireModule(value = "ACCESS", relation = "can_view")
     public ResponseEntity<List<ScopeListItem>> list(@RequestParam UUID userId,
                                                     @RequestParam Long orgId) {
         if (accessScopeService == null) {
