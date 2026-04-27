@@ -68,10 +68,14 @@ class AccessScopeServiceTest {
 
     @Test
     void grant_uniqueViolation_throwsScopeAlreadyGranted_andSkipsTupleWrite() {
-        var dbCause = new RuntimeException(
-                "ERROR: duplicate key value violates unique constraint \"uq_scope_active_assignment\"");
+        // Hibernate wraps PG's unique_violation (SQLState 23505) and exposes
+        // the constraint name; iter-1 routing matches on EITHER signal.
+        var sqlEx = new java.sql.SQLException(
+                "ERROR: duplicate key value violates unique constraint", "23505");
+        var hcve = new org.hibernate.exception.ConstraintViolationException(
+                "constraint", sqlEx, "uq_scope_active_assignment");
         when(repository.saveAndFlush(any(DataAccessScope.class)))
-                .thenThrow(new DataIntegrityViolationException("dup", dbCause));
+                .thenThrow(new DataIntegrityViolationException("dup", hcve));
 
         assertThatThrownBy(() -> service.grant(
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
@@ -83,10 +87,15 @@ class AccessScopeServiceTest {
 
     @Test
     void grant_lineageViolation_throwsScopeValidation_andSkipsTupleWrite() {
-        var dbCause = new RuntimeException(
-                "ERROR: data_access.scope: invalid scope_ref 9999 for kind company / source_table COMPANY");
+        // V19 trigger RAISE EXCEPTION → PG SQLState P0001.
+        var sqlEx = new java.sql.SQLException(
+                "ERROR: data_access.scope: invalid scope_ref 9999 for kind company "
+                        + "/ source_table COMPANY (no matching row in workcube_mikrolink.* with that source_pk)",
+                "P0001");
+        var hcve = new org.hibernate.exception.ConstraintViolationException(
+                "trigger raised", sqlEx, null);
         when(repository.saveAndFlush(any(DataAccessScope.class)))
-                .thenThrow(new DataIntegrityViolationException("trigger", dbCause));
+                .thenThrow(new DataIntegrityViolationException("trigger", hcve));
 
         assertThatThrownBy(() -> service.grant(
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"9999\"]", GRANTED_BY))
@@ -148,6 +157,59 @@ class AccessScopeServiceTest {
                 .isInstanceOf(AccessScopeException.ScopeNotFoundException.class);
 
         verify(tupleWriter, never()).deleteScopeTuple(any());
+    }
+
+    @Test
+    void grant_pgUniqueViolationByConstraintName_throwsScopeAlreadyGranted() {
+        // Constraint-name-only path: SQLState absent, but the constraint name
+        // matches uq_scope_active_assignment → routing still fires.
+        var sqlEx = new java.sql.SQLException("dup", (String) null);
+        var hcve = new org.hibernate.exception.ConstraintViolationException(
+                "constraint", sqlEx, "uq_scope_active_assignment");
+        when(repository.saveAndFlush(any(DataAccessScope.class)))
+                .thenThrow(new DataIntegrityViolationException("dup", hcve));
+
+        assertThatThrownBy(() -> service.grant(
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
+                .isInstanceOf(AccessScopeException.ScopeAlreadyGrantedException.class);
+
+        verify(tupleWriter, never()).writeScopeTuple(any());
+    }
+
+    @Test
+    void grant_pgCheckViolation_throwsScopeValidation() {
+        // SQLState 23514 = check_violation (e.g. scope_kind_source_table_consistent).
+        var sqlEx = new java.sql.SQLException("check failed", "23514");
+        var hcve = new org.hibernate.exception.ConstraintViolationException(
+                "check constraint", sqlEx, "scope_kind_source_table_consistent");
+        when(repository.saveAndFlush(any(DataAccessScope.class)))
+                .thenThrow(new DataIntegrityViolationException("check", hcve));
+
+        assertThatThrownBy(() -> service.grant(
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
+                .isInstanceOf(AccessScopeException.ScopeValidationException.class);
+
+        verify(tupleWriter, never()).writeScopeTuple(any());
+    }
+
+    @Test
+    void grant_pgTriggerRaiseException_throwsScopeValidation_viaMessageFallback() {
+        // SQLState absent, constraintName absent, but the message contains
+        // validate_scope_ref → message-fallback path catches it. Guards
+        // against a future PG locale change that drops SQLState on raised
+        // exceptions.
+        var sqlEx = new java.sql.SQLException(
+                "ERROR: invalid scope_ref called from validate_scope_ref()", (String) null);
+        var hcve = new org.hibernate.exception.ConstraintViolationException(
+                "trigger", sqlEx, null);
+        when(repository.saveAndFlush(any(DataAccessScope.class)))
+                .thenThrow(new DataIntegrityViolationException("trigger", hcve));
+
+        assertThatThrownBy(() -> service.grant(
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"9999\"]", GRANTED_BY))
+                .isInstanceOf(AccessScopeException.ScopeValidationException.class);
+
+        verify(tupleWriter, never()).writeScopeTuple(any());
     }
 
     @Test
