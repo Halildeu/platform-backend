@@ -38,13 +38,18 @@ public class OutboxBackoffPolicy {
         } catch (ArithmeticException overflow) {
             expMillis = Long.MAX_VALUE;
         }
-        long capMillis = maxBackoff.toMillis();
-        long durationMillis = Math.min(expMillis, capMillis);
 
         // Jitter [0.75, 1.25] — ±25% variance.
         double jitter = 0.75d + ThreadLocalRandom.current().nextDouble() * 0.5d;
-        long jittered = Math.max(1L, (long) (durationMillis * jitter));
+        long jittered = Math.max(1L, (long) (expMillis * jitter));
 
-        return Instant.now().plusMillis(jittered);
+        // Codex 019dd0e0 iter-2 MAJOR fix: hard cap AFTER jitter. The previous
+        // order applied jitter to the already-capped value, which let a high
+        // attemptCount produce 1.25 * maxBackoff (drift) rather than honouring
+        // the contract that the wait is never longer than maxBackoff.
+        long capMillis = maxBackoff.toMillis();
+        long capped = Math.min(jittered, capMillis);
+
+        return Instant.now().plusMillis(Math.max(1L, capped));
     }
 }
