@@ -22,6 +22,18 @@ spring:
     hikari:
       maximum-pool-size: ${DB_POOL_MAX:10}
       connection-timeout: 30000
+    # Faz 21.3 PR-C: secondary datasource for data_access.* schema
+    # (V19/V20 in platform-k8s-gitops). Activation gated on the URL
+    # being non-empty — see ReportsDbDataSourceConfig.
+    reports-db:
+      url: ${REPORTS_DB_URL:}
+      username: ${REPORTS_DB_USERNAME:}
+      password: ${REPORTS_DB_PASSWORD:}
+      driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: ${REPORTS_DB_POOL_MAX:5}
+        minimum-idle: ${REPORTS_DB_POOL_MIN:1}
+        connection-timeout: 30000
   jpa:
     hibernate:
       ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:validate}
