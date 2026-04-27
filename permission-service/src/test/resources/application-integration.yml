@@ -1,0 +1,89 @@
+# Faz 21.3 PR-F (C3c) — integration profile config for Testcontainers PG +
+# dual-DS. Activated via @ActiveProfiles("integration") on
+# DataAccessIntegrationTest. Inherits primary H2 + Flyway-off setup from
+# application.properties (test profile); overrides only the activation flags
+# + reports-db skeleton (URL/credentials filled at runtime by Testcontainers
+# @DynamicPropertySource).
+spring:
+  # The integration profile is activated by @ActiveProfiles("integration")
+  # on the test class — Spring Boot 2.4+ forbids spring.profiles.active
+  # inside a profile-specific config file.
+  cloud:
+    vault:
+      enabled: false
+    discovery:
+      enabled: false
+    service-registry:
+      auto-registration:
+        enabled: false
+  flyway:
+    # Spring Boot's auto Flyway bean is suppressed; the secondary reports-db
+    # gets its own programmatic Flyway via DataAccessIntegrationTest's
+    # @TestConfiguration, scoped to classpath:db/migration-reportsdb.
+    # Primary H2 is managed by Hibernate ddl-auto below.
+    enabled: false
+  datasource:
+    # Primary H2 — entities (model + outbox) are bound to this via
+    # PrimaryDataSourceConfig.
+    url: jdbc:h2:mem:permtest_integration;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+    # Secondary reports-db — Testcontainers @DynamicPropertySource fills in
+    # url/username/password at runtime; the `enabled` flag must already match
+    # so the multi-name @ConditionalOnProperty in AccessScopeService matches.
+    reports-db:
+      enabled: true
+      driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 5
+        minimum-idle: 1
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    open-in-view: false
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8081/realms/serban
+          jwk-set-uri: http://localhost:8081/realms/serban/protocol/openid-connect/certs
+
+eureka:
+  client:
+    enabled: false
+
+erp:
+  openfga:
+    # Required for the second half of AccessScopeService's gate. The actual
+    # OpenFgaAuthzService bean is replaced by @MockBean inside the integration
+    # test, so api-url/store-id stay placeholders.
+    enabled: true
+    api-url: http://localhost:4000
+    store-id: test-store
+    model-id: test-model
+
+permission:
+  authz:
+    user-table: user_service.users
+    user-lookup-base-url: http://localhost:8089
+
+auth:
+  security:
+    mock: true
+
+management:
+  endpoints:
+    access:
+      default: none
+  prometheus:
+    metrics:
+      export:
+        enabled: false
+
+logging:
+  level:
+    root: WARN
+    org.testcontainers: INFO
+    org.flywaydb: INFO
