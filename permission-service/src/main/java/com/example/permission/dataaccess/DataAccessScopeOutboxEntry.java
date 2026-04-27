@@ -53,6 +53,22 @@ public class DataAccessScopeOutboxEntry {
     @Column(name = "action", nullable = false)
     private Action action;
 
+    /**
+     * Faz 21.3 V23 — Codex 019dd0e0 BLOCKER 2 absorb. Typed tuple identity
+     * columns let the poller's claim-batch ordering guard reason about
+     * "same FGA tuple" across scope_id boundaries (revoke + re-grant
+     * produces different scope.id targeting the same tuple). Format:
+     * {@code tupleUser = "user:<uuid>"}, {@code tupleObject = "objectType:objectId"}.
+     */
+    @Column(name = "tuple_user", nullable = false)
+    private String tupleUser;
+
+    @Column(name = "tuple_relation", nullable = false)
+    private String tupleRelation;
+
+    @Column(name = "tuple_object", nullable = false)
+    private String tupleObject;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "payload", nullable = false, columnDefinition = "jsonb")
     private Map<String, Object> payload = new HashMap<>();
@@ -121,6 +137,15 @@ public class DataAccessScopeOutboxEntry {
 
     public Action getAction() { return action; }
     public void setAction(Action action) { this.action = action; }
+
+    public String getTupleUser() { return tupleUser; }
+    public void setTupleUser(String tupleUser) { this.tupleUser = tupleUser; }
+
+    public String getTupleRelation() { return tupleRelation; }
+    public void setTupleRelation(String tupleRelation) { this.tupleRelation = tupleRelation; }
+
+    public String getTupleObject() { return tupleObject; }
+    public void setTupleObject(String tupleObject) { this.tupleObject = tupleObject; }
 
     public Map<String, Object> getPayload() { return payload; }
     public void setPayload(Map<String, Object> payload) {
