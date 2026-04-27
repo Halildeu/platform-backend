@@ -110,6 +110,37 @@
 			<artifactId>h2</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!--
+		Faz 21.3 PR-F (C3c): Testcontainers integration test deps. Promoted from
+		the previous `testcontainers` profile to the default scope so DataAccessIntegrationTest
+		runs on every `mvn test`. CI runners ship with Docker; local boxes without
+		Docker will see the container fail to start (intentional — integration
+		coverage is mandatory for the data_access surface, see ADR-0008 § Tuple
+		writer flow + V21 outbox follow-up).
+		-->
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers</artifactId>
+			<version>1.20.4</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<version>1.20.4</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>postgresql</artifactId>
+			<version>1.20.4</version>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
 		<dependency>
 			<groupId>com.example</groupId>
 			<artifactId>common-auth</artifactId>
@@ -147,32 +178,6 @@
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
-
-	<profiles>
-		<profile>
-			<id>testcontainers</id>
-			<dependencies>
-				<dependency>
-					<groupId>org.testcontainers</groupId>
-					<artifactId>testcontainers</artifactId>
-					<version>1.20.4</version>
-					<scope>test</scope>
-				</dependency>
-				<dependency>
-					<groupId>org.testcontainers</groupId>
-					<artifactId>junit-jupiter</artifactId>
-					<version>1.20.4</version>
-					<scope>test</scope>
-				</dependency>
-				<dependency>
-					<groupId>org.testcontainers</groupId>
-					<artifactId>postgresql</artifactId>
-					<version>1.20.4</version>
-					<scope>test</scope>
-				</dependency>
-			</dependencies>
-		</profile>
-	</profiles>
 
 	<build>
 		<plugins>
