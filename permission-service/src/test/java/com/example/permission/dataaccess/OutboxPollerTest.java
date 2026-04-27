@@ -3,7 +3,6 @@ package com.example.permission.dataaccess;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
@@ -17,6 +16,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -26,14 +27,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Faz 21.3 PR-G — Mockito unit test for {@link OutboxPoller}.
- *
- * <p>Real {@code TransactionTemplate} is used (constructed inside
- * {@code OutboxPoller}), with a mocked {@link PlatformTransactionManager}
- * that returns a stub {@link TransactionStatus} on
- * {@code getTransaction(...)}; commit/rollback are no-ops by default. This
- * keeps the poller's own TX boundary semantic in scope while letting us
- * mock the OpenFGA + repository sides.
+ * Faz 21.3 PR-G — Mockito unit test for {@link OutboxPoller} after the
+ * Codex 019dd0e0 iter-2 BLOCKER 3 absorb. The poller no longer mutates
+ * entry state in-memory then calls {@code save()}; instead it routes
+ * every finalize through one of the CAS-fenced repository UPDATEs
+ * ({@link DataAccessScopeOutboxRepository#markProcessed},
+ * {@link DataAccessScopeOutboxRepository#markRetry},
+ * {@link DataAccessScopeOutboxRepository#markFailed}). The tests assert
+ * each path invokes the right native method with the lock token from
+ * the claim, and that a CAS miss (rows-affected = 0) is logged but does
+ * not raise.
  */
 class OutboxPollerTest {
 
@@ -64,6 +67,11 @@ class OutboxPollerTest {
         env = mock(Environment.class);
         when(env.getProperty("HOSTNAME")).thenReturn("test-poller");
 
+        // CAS UPDATEs default to 1 row affected (success).
+        when(outboxRepository.markProcessed(anyLong(), any(), anyString(), any())).thenReturn(1);
+        when(outboxRepository.markRetry(anyLong(), any(), any(), anyString(), any())).thenReturn(1);
+        when(outboxRepository.markFailed(anyLong(), any(), anyString(), any())).thenReturn(1);
+
         poller = new OutboxPoller(outboxRepository, authzService, backoffPolicy, config, txManager, env);
     }
 
@@ -80,73 +88,89 @@ class OutboxPollerTest {
     }
 
     @Test
-    void processEntry_grantHappyPath_writesTupleAndMarksProcessed() {
+    void processEntry_grantHappyPath_writesTupleAndCASMarksProcessed() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
         DataAccessScopeOutboxEntry entry = grantEntry(101L, 1, "wc-company-1001", "company");
 
-        poller.processEntry(entry);
+        poller.processEntry(entry, lockToken);
 
         verify(authzService).writeTuple(
                 eq("11111111-1111-1111-1111-111111111111"),
                 eq("viewer"),
                 eq("company"),
                 eq("wc-company-1001"));
-        ArgumentCaptor<DataAccessScopeOutboxEntry> capt = ArgumentCaptor.forClass(DataAccessScopeOutboxEntry.class);
-        verify(outboxRepository).save(capt.capture());
-        DataAccessScopeOutboxEntry saved = capt.getValue();
-        assertThat(saved.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PROCESSED);
-        assertThat(saved.getProcessedAt()).isNotNull();
-        assertThat(saved.getLockedBy()).isNull();
+        verify(outboxRepository).markProcessed(eq(101L), any(Instant.class), eq("test-poller"), eq(lockToken));
+        verify(outboxRepository, never()).markRetry(anyLong(), any(), any(), anyString(), any());
+        verify(outboxRepository, never()).markFailed(anyLong(), any(), anyString(), any());
+        verify(outboxRepository, never()).save(any());
     }
 
     @Test
-    void processEntry_revokeHappyPath_deletesTupleAndMarksProcessed() {
+    void processEntry_revokeHappyPath_deletesTupleAndCASMarksProcessed() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
         DataAccessScopeOutboxEntry entry = revokeEntry(102L, 1, "wc-company-1001", "company");
 
-        poller.processEntry(entry);
+        poller.processEntry(entry, lockToken);
 
         verify(authzService).deleteTuple(
                 eq("11111111-1111-1111-1111-111111111111"),
                 eq("viewer"),
                 eq("company"),
                 eq("wc-company-1001"));
-        ArgumentCaptor<DataAccessScopeOutboxEntry> capt = ArgumentCaptor.forClass(DataAccessScopeOutboxEntry.class);
-        verify(outboxRepository).save(capt.capture());
-        assertThat(capt.getValue().getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PROCESSED);
+        verify(outboxRepository).markProcessed(eq(102L), any(Instant.class), eq("test-poller"), eq(lockToken));
     }
 
     @Test
-    void processEntry_fgaFailure_belowMaxAttempts_schedulesRetry() {
+    void processEntry_fgaFailure_belowMaxAttempts_CASSchedulesRetry() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
         DataAccessScopeOutboxEntry entry = grantEntry(103L, 1, "wc-company-1001", "company");
         doThrow(new RuntimeException("openfga down"))
                 .when(authzService).writeTuple(any(), any(), any(), any());
-        Instant nextAt = Instant.parse("2026-04-28T12:00:00Z");
+        Instant nextAt = Instant.parse("2026-04-28T12:00:30Z");
         when(backoffPolicy.nextAttemptAt(anyInt(), any(), any())).thenReturn(nextAt);
 
-        poller.processEntry(entry);
+        poller.processEntry(entry, lockToken);
 
-        ArgumentCaptor<DataAccessScopeOutboxEntry> capt = ArgumentCaptor.forClass(DataAccessScopeOutboxEntry.class);
-        verify(outboxRepository).save(capt.capture());
-        DataAccessScopeOutboxEntry saved = capt.getValue();
-        assertThat(saved.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PENDING);
-        assertThat(saved.getNextAttemptAt()).isEqualTo(nextAt);
-        assertThat(saved.getLastError()).contains("openfga down");
+        verify(outboxRepository).markRetry(eq(103L), eq(nextAt),
+                org.mockito.ArgumentMatchers.contains("openfga down"),
+                eq("test-poller"), eq(lockToken));
+        verify(outboxRepository, never()).markProcessed(anyLong(), any(), anyString(), any());
+        verify(outboxRepository, never()).markFailed(anyLong(), any(), anyString(), any());
     }
 
     @Test
-    void processEntry_fgaFailure_atMaxAttempts_marksTerminalFailed() {
+    void processEntry_fgaFailure_atMaxAttempts_CASMarksTerminalFailed() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
         DataAccessScopeOutboxEntry entry = grantEntry(104L, 3, "wc-company-1001", "company");
         // attemptCount 3 == maxAttempts 3 — terminal on next failure
         doThrow(new RuntimeException("openfga gone"))
                 .when(authzService).writeTuple(any(), any(), any(), any());
 
-        poller.processEntry(entry);
+        poller.processEntry(entry, lockToken);
 
-        ArgumentCaptor<DataAccessScopeOutboxEntry> capt = ArgumentCaptor.forClass(DataAccessScopeOutboxEntry.class);
-        verify(outboxRepository).save(capt.capture());
-        DataAccessScopeOutboxEntry saved = capt.getValue();
-        assertThat(saved.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.FAILED);
-        assertThat(saved.getProcessedAt()).isNotNull();
+        verify(outboxRepository).markFailed(eq(104L),
+                org.mockito.ArgumentMatchers.contains("openfga gone"),
+                eq("test-poller"), eq(lockToken));
         verify(backoffPolicy, never()).nextAttemptAt(anyInt(), any(), any());
+        verify(outboxRepository, never()).markProcessed(anyLong(), any(), anyString(), any());
+        verify(outboxRepository, never()).markRetry(anyLong(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void processEntry_casMissOnFinalize_logsButDoesNotThrow() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
+        DataAccessScopeOutboxEntry entry = grantEntry(105L, 1, "wc-company-1001", "company");
+        // Simulate stale-worker: another poller already reclaimed and
+        // finalized the row, so our CAS UPDATE matches no rows.
+        when(outboxRepository.markProcessed(anyLong(), any(), anyString(), any()))
+                .thenReturn(0);
+
+        poller.processEntry(entry, lockToken);
+
+        verify(authzService).writeTuple(any(), any(), any(), any());
+        verify(outboxRepository).markProcessed(eq(105L), any(Instant.class), eq("test-poller"), eq(lockToken));
+        // No exception must escape — the test simply reaching this assertion
+        // is the contract.
     }
 
     @Test
@@ -160,9 +184,13 @@ class OutboxPollerTest {
     }
 
     @Test
-    void pollAndProcess_claimedBatch_processesEach() {
+    void pollAndProcess_claimedBatch_processesEachWithItsLockToken() {
+        Instant tokenE1 = Instant.parse("2026-04-28T12:02:00Z");
+        Instant tokenE2 = Instant.parse("2026-04-28T12:02:01Z");
         DataAccessScopeOutboxEntry e1 = grantEntry(201L, 1, "wc-company-1001", "company");
+        e1.setLockedUntil(tokenE1);
         DataAccessScopeOutboxEntry e2 = revokeEntry(202L, 1, "wc-project-1204", "project");
+        e2.setLockedUntil(tokenE2);
         when(outboxRepository.recoverStuckRows()).thenReturn(0);
         when(outboxRepository.claimBatch(any(), any(), anyInt())).thenReturn(List.of(e1, e2));
 
@@ -170,7 +198,10 @@ class OutboxPollerTest {
 
         verify(authzService).writeTuple(any(), any(), eq("company"), eq("wc-company-1001"));
         verify(authzService).deleteTuple(any(), any(), eq("project"), eq("wc-project-1204"));
-        verify(outboxRepository, times(2)).save(any(DataAccessScopeOutboxEntry.class));
+        // Each entry's CAS finalize must use ITS OWN lock token from the claim,
+        // not a pollAndProcess-wide value — Codex 019dd0e0 iter-2 BLOCKER 3.
+        verify(outboxRepository).markProcessed(eq(201L), any(Instant.class), eq("test-poller"), eq(tokenE1));
+        verify(outboxRepository).markProcessed(eq(202L), any(Instant.class), eq("test-poller"), eq(tokenE2));
     }
 
     private static DataAccessScopeOutboxEntry grantEntry(Long id, int attemptCount, String objectId, String objectType) {
@@ -193,10 +224,15 @@ class OutboxPollerTest {
         e.setAttemptCount(attemptCount);
         e.setNextAttemptAt(Instant.now());
         e.setCreatedAt(Instant.now());
+        // V23 typed tuple identity columns + composite tuple_object.
+        e.setTupleUser("user:11111111-1111-1111-1111-111111111111");
+        e.setTupleRelation("viewer");
+        e.setTupleObject(objectType + ":" + objectId);
 
         Map<String, Object> tuple = new LinkedHashMap<>();
-        tuple.put("user", "11111111-1111-1111-1111-111111111111");
+        tuple.put("user", "user:11111111-1111-1111-1111-111111111111");
         tuple.put("relation", "viewer");
+        tuple.put("object", objectType + ":" + objectId);
         tuple.put("objectType", objectType);
         tuple.put("objectId", objectId);
         Map<String, Object> payload = new LinkedHashMap<>();

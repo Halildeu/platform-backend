@@ -74,10 +74,19 @@ class AccessScopeServiceTest {
         assertThat(outbox.getNextAttemptAt()).isNotNull();
         assertThat(outbox.getCreatedAt()).isNotNull();
 
+        // V23 typed tuple identity columns (Codex 019dd0e0 BLOCKER 2).
+        assertThat(outbox.getTupleUser()).isEqualTo("user:" + USER);
+        assertThat(outbox.getTupleRelation()).isEqualTo("viewer");
+        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-company-1001");
+
+        // JSONB payload keeps the same shape for downstream debug/audit consumers,
+        // with V23 picking up the composite "object" key alongside the
+        // pre-existing objectType/objectId split.
         @SuppressWarnings("unchecked")
         Map<String, Object> tuple = (Map<String, Object>) outbox.getPayload().get("tuple");
-        assertThat(tuple.get("user")).isEqualTo(USER.toString());
+        assertThat(tuple.get("user")).isEqualTo("user:" + USER);
         assertThat(tuple.get("relation")).isEqualTo("viewer");
+        assertThat(tuple.get("object")).isEqualTo("company:wc-company-1001");
         assertThat(tuple.get("objectType")).isEqualTo("company");
         assertThat(tuple.get("objectId")).isEqualTo("wc-company-1001");
         assertThat(outbox.getPayload().get("scopeKind")).isEqualTo("COMPANY");
@@ -101,12 +110,18 @@ class AccessScopeServiceTest {
                 .as("DEPOT must map to DEPARTMENT per Faz 21.A decision")
                 .isEqualTo("DEPARTMENT");
 
+        // V23 typed tuple identity columns: depot → warehouse object type +
+        // composite "type:id" tuple_object format.
+        DataAccessScopeOutboxEntry outbox = result.outboxEntry();
+        assertThat(outbox.getTupleObject())
+                .as("DEPOT scope_kind → warehouse:wc-department-* per ADR-0008 § Naming + V23 composite format")
+                .isEqualTo("warehouse:wc-department-3792");
+
         @SuppressWarnings("unchecked")
-        Map<String, Object> tuple = (Map<String, Object>) result.outboxEntry().getPayload().get("tuple");
-        assertThat(tuple.get("objectType"))
-                .as("DEPOT scope_kind → warehouse OpenFGA object type per ADR-0008 § Naming")
-                .isEqualTo("warehouse");
+        Map<String, Object> tuple = (Map<String, Object>) outbox.getPayload().get("tuple");
+        assertThat(tuple.get("objectType")).isEqualTo("warehouse");
         assertThat(tuple.get("objectId")).isEqualTo("wc-department-3792");
+        assertThat(tuple.get("object")).isEqualTo("warehouse:wc-department-3792");
     }
 
     @Test

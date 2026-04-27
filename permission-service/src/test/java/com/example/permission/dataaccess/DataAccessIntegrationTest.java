@@ -21,6 +21,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.sql.DataSource;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -206,22 +207,87 @@ class DataAccessIntegrationTest {
     }
 
     @Test
-    void grant_outboxRowInsertedWithCorrectPayload() {
+    void grant_outboxRowInsertedWithCorrectPayload_andTypedTupleColumns() {
         UUID user = UUID.randomUUID();
 
         AccessScopeService.ScopeMutationResult result = service.grant(
                 user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
 
         DataAccessScopeOutboxEntry outbox = outboxRepository.findById(result.outboxEntry().getId()).orElseThrow();
+
+        // V23 typed columns survive the round-trip through PG.
+        assertThat(outbox.getTupleUser()).isEqualTo("user:" + user);
+        assertThat(outbox.getTupleRelation()).isEqualTo("viewer");
+        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-company-1001");
+
+        // JSONB payload mirrors the typed columns and keeps objectType/Id split
+        // for V22-era clients that index on those keys.
         Map<String, Object> payload = outbox.getPayload();
         assertThat(payload.get("scopeKind")).isEqualTo("COMPANY");
         assertThat(payload.get("scopeRef")).isEqualTo("[\"1001\"]");
         @SuppressWarnings("unchecked")
         Map<String, Object> tuple = (Map<String, Object>) payload.get("tuple");
-        assertThat(tuple.get("user")).isEqualTo(user.toString());
+        assertThat(tuple.get("user")).isEqualTo("user:" + user);
         assertThat(tuple.get("relation")).isEqualTo("viewer");
+        assertThat(tuple.get("object")).isEqualTo("company:wc-company-1001");
         assertThat(tuple.get("objectType")).isEqualTo("company");
         assertThat(tuple.get("objectId")).isEqualTo("wc-company-1001");
+    }
+
+    /**
+     * Codex 019dd0e0 iter-2 MINOR — same-tuple ordering across scope_id
+     * boundaries. V19's {@code uq_scope_active_assignment} is a partial UNIQUE
+     * (active-only), so revoking and re-granting the same tuple produces a
+     * fresh {@code data_access.scope.id}. The V22 ordering guard keyed on
+     * {@code scope_id} would let the GRANT outbox row (different scope_id) be
+     * claimed BEFORE the REVOKE row → final FGA state "tuple deleted" while
+     * the canonical scope row is ACTIVE — invariant break. V23's tuple-typed
+     * ordering index (Codex 019dd0e0 BLOCKER 2) fixes that: claimBatch must
+     * only return the older REVOKE row first.
+     */
+    @Test
+    void revokeThenRegrant_sameTuple_orderingPreservedByTupleKey() {
+        UUID user = UUID.randomUUID();
+
+        // 1. Grant scope A.
+        AccessScopeService.ScopeMutationResult grantA = service.grant(
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+
+        // 2. Process scope A's outbox row to PROCESSED so it does not block
+        //    the new same-tuple ordering check (only PENDING/PROCESSING rows
+        //    participate in the partial index per V23).
+        poller.pollAndProcess();
+        DataAccessScopeOutboxEntry afterFirstPoll = outboxRepository
+                .findById(grantA.outboxEntry().getId()).orElseThrow();
+        assertThat(afterFirstPoll.getStatus())
+                .isEqualTo(DataAccessScopeOutboxEntry.Status.PROCESSED);
+
+        // 3. Revoke scope A → REVOKE PENDING.
+        AccessScopeService.ScopeMutationResult revokeA = service.revoke(
+                grantA.scope().getId(), null);
+        assertThat(revokeA.outboxEntry().getAction())
+                .isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
+
+        // 4. Re-grant — V19 partial UNIQUE allows it; new scope.id, but same
+        //    FGA tuple coordinates.
+        AccessScopeService.ScopeMutationResult grantB = service.grant(
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+        assertThat(grantB.scope().getId()).isNotEqualTo(grantA.scope().getId());
+
+        // 5. Two PENDING rows now exist for the SAME tuple (different scope_id).
+        //    The V23 tuple-key NOT EXISTS guard must serialise them: claim
+        //    only returns the older REVOKE row.
+        Instant lockUntil = Instant.now().plusSeconds(120);
+        List<DataAccessScopeOutboxEntry> claimed = outboxRepository.claimBatch(
+                "ordering-test-poller", lockUntil, 25);
+
+        assertThat(claimed)
+                .as("V23 tuple-key ordering must serialise REVOKE before GRANT for the same tuple")
+                .hasSize(1);
+        DataAccessScopeOutboxEntry first = claimed.get(0);
+        assertThat(first.getAction()).isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
+        assertThat(first.getScopeId()).isEqualTo(grantA.scope().getId());
+        assertThat(first.getTupleObject()).isEqualTo("company:wc-company-1001");
     }
 
     @Test
