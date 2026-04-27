@@ -3,7 +3,6 @@ package com.example.permission.dataaccess;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-import jakarta.persistence.PersistenceUnit;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -22,48 +21,40 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.sql.DataSource;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
- * Faz 21.3 PR-F (C3c) — end-to-end integration test against a real PostgreSQL
- * (Testcontainers) running the gitops V16/V17/V19/V20/V21 schema. Exercises:
+ * Faz 21.3 PR-F (C3c) + PR-G — end-to-end integration test against a real
+ * PostgreSQL (Testcontainers) running the gitops V16/V17/V19/V20/V21/V22
+ * schema. PR-G refactor: AccessScopeService no longer calls OpenFGA directly;
+ * grant/revoke insert outbox rows in the same TX as the scope row, and the
+ * {@link OutboxPoller} consumes them asynchronously.
  *
+ * <p>Test surface covers:
  * <ul>
- *   <li>Hibernate {@code validate} of {@link DataAccessScope} against the live
- *       {@code data_access.scope} table — column types / nullability /
- *       JSONB / enum mapping all checked at boot time.</li>
- *   <li>{@link AccessScopeService#grant} happy path round-tripping through
- *       {@code saveAndFlush}, the V19 trigger, and V21's JSON-array
- *       {@code scope_ref} parsing fix.</li>
- *   <li>The V19 {@code validate_scope_ref} trigger raising {@code P0001} on
- *       a bogus {@code scope_ref}, and PR-D iter-1 MAJOR-2's structural
- *       extractor mapping it to {@link AccessScopeException.ScopeValidationException}.</li>
- *   <li>The {@code uq_scope_active_assignment} partial-UNIQUE
- *       (active-only) — duplicate active grant blocked, but re-grant after
- *       revoke succeeds.</li>
- *   <li>The V20 widening: {@code DEPOT} → {@code DEPARTMENT} source_table.</li>
+ *   <li>Hibernate {@code validate} of {@link DataAccessScope} and
+ *       {@link DataAccessScopeOutboxEntry} against the live schema.</li>
+ *   <li>{@link AccessScopeService#grant} happy path — scope + outbox PENDING
+ *       row commit atomically; {@link OpenFgaAuthzService} NOT invoked
+ *       directly (poller does that).</li>
+ *   <li>V19/V21 trigger raising P0001 → {@link AccessScopeException.ScopeValidationException}
+ *       (cause-chain extraction unchanged from PR-D iter-1).</li>
+ *   <li>{@code uq_scope_active_assignment} partial-UNIQUE.</li>
+ *   <li>V19 partial-UNIQUE "safe re-grant" semantic after revoke.</li>
+ *   <li>V20 widening: {@code DEPOT} → {@code DEPARTMENT} source_table; encoder
+ *       payload {@code warehouse} object type.</li>
+ *   <li>{@link OutboxPoller#pollAndProcess} consumes pending entries, calls
+ *       {@link OpenFgaAuthzService} via mock, and marks them PROCESSED.</li>
  * </ul>
- *
- * <p>The OpenFGA side is mocked ({@link MockitoBean OpenFgaAuthzService});
- * this test focuses on the PG cause-chain and JPA mapping, not OpenFGA's
- * over-the-wire semantics. The dual-DS activation contract gets its own
- * companion class, {@link DataAccessActivationContractTest}.
- *
- * <p>Activation gate (Codex 019dcfb0 iter-1 MAJOR-1): JUnit 5 {@code @Tag} +
- * Maven Surefire {@code excludedGroups}. Default {@code mvn test} excludes
- * the {@code integration} group so the 6 cases here are visibly skipped
- * (not silently filtered). Opt in with:
- * <pre>./mvnw -pl permission-service test -Pintegration-tests</pre>
- * The {@code @Testcontainers(disabledWithoutDocker = true)} layer adds a
- * second-line guard: even with the profile active, an environment without
- * Docker (e.g. a developer who forgot to start Docker Desktop) reports the
- * class as disabled rather than erroring out mid-boot.
  */
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
@@ -88,13 +79,6 @@ class DataAccessIntegrationTest {
         registry.add("spring.datasource.reports-db.password", POSTGRES::getPassword);
     }
 
-    /**
-     * Programmatic Flyway bean for the secondary {@code reports_db} DataSource.
-     * Spring Boot's auto Flyway is suppressed in {@code application-integration.yml}
-     * so it does not try to run the same migrations against the primary H2.
-     * Bean's {@code initMethod = "migrate"} guarantees migrations run before
-     * any test method observes the EntityManager.
-     */
     @TestConfiguration(proxyBeanMethods = false)
     static class IntegrationFlywayConfig {
         @Bean(initMethod = "migrate")
@@ -113,6 +97,12 @@ class DataAccessIntegrationTest {
     @Autowired
     private DataAccessScopeRepository repository;
 
+    @Autowired
+    private DataAccessScopeOutboxRepository outboxRepository;
+
+    @Autowired
+    private OutboxPoller poller;
+
     @MockitoBean
     private OpenFgaAuthzService authzService;
 
@@ -121,51 +111,48 @@ class DataAccessIntegrationTest {
 
     @Test
     void contextLoads_hibernateValidatesAgainstRealSchema() {
-        // Boot-time signal: if Hibernate's @Entity ↔ data_access.scope mapping
-        // disagrees with the live schema (column types, nullability, JSONB,
-        // enum), context startup fails and this test never reaches its body.
         assertThat(repository).isNotNull();
+        assertThat(outboxRepository).isNotNull();
         assertThat(service).isNotNull();
+        assertThat(poller).isNotNull();
         assertThat(reportsDbEm).isNotNull();
     }
 
     @Test
-    void grant_happyPath_persistsToRealPgAndCallsTupleWriter() {
+    void grant_happyPath_persistsScopeAndOutboxButDoesNotCallFgaDirectly() {
         UUID user = UUID.randomUUID();
 
-        DataAccessScope result = service.grant(
+        AccessScopeService.ScopeMutationResult result = service.grant(
                 user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
 
-        assertThat(result.getId()).isNotNull();
-        assertThat(result.getScopeKind()).isEqualTo(DataAccessScope.ScopeKind.COMPANY);
-        assertThat(result.getScopeRef()).isEqualTo("[\"1001\"]");
-        assertThat(result.getScopeSourceTable()).isEqualTo("COMPANY");
-        assertThat(result.getGrantedAt()).isNotNull();
-        assertThat(result.isActive()).isTrue();
-
-        // Round-trip via repository — confirms the row really hit PG (not just
-        // the L1 cache) and Hibernate's converter unmarshals scope_kind back.
-        DataAccessScope persisted = repository.findById(result.getId()).orElseThrow();
+        // PG side: scope row persisted, V21 trigger passed.
+        DataAccessScope persisted = repository.findById(result.scope().getId()).orElseThrow();
         assertThat(persisted.getUserId()).isEqualTo(user);
         assertThat(persisted.getScopeKind()).isEqualTo(DataAccessScope.ScopeKind.COMPANY);
 
-        verify(authzService).writeTuple(
-                eq(user.toString()), eq("viewer"), eq("company"), eq("wc-company-1001"));
+        // PG side: outbox row PENDING in the same TX.
+        DataAccessScopeOutboxEntry outbox = outboxRepository.findById(result.outboxEntry().getId()).orElseThrow();
+        assertThat(outbox.getScopeId()).isEqualTo(persisted.getId());
+        assertThat(outbox.getAction()).isEqualTo(DataAccessScopeOutboxEntry.Action.GRANT);
+        assertThat(outbox.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PENDING);
+        assertThat(outbox.getProcessedAt()).isNull();
+
+        // PR-G contract: NO direct FGA call from the request TX.
+        verifyNoInteractions(authzService);
     }
 
     @Test
-    void grant_invalidScopeRef_throwsScopeValidation_viaPgTriggerCauseChain() {
+    void grant_invalidScopeRef_throwsScopeValidation_andEnqueuesNothing() {
         UUID user = UUID.randomUUID();
+        long outboxBefore = outboxRepository.count();
 
-        // scope_ref '99999' is NOT in workcube_mikrolink.company → V19's
-        // BEFORE-INSERT trigger validate_scope_ref() raises P0001.
-        // PR-D iter-1 MAJOR-2's structural extractor must map that to
-        // ScopeValidationException, not propagate the raw DataIntegrityViolation.
         assertThatThrownBy(() -> service.grant(
                         user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"99999\"]", null))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class);
 
-        // Service must NOT reach the tuple writer when the PG INSERT failed.
+        assertThat(outboxRepository.count())
+                .as("V19/V21 trigger fail must roll back both scope INSERT and outbox INSERT")
+                .isEqualTo(outboxBefore);
         verifyNoInteractions(authzService);
     }
 
@@ -183,37 +170,78 @@ class DataAccessIntegrationTest {
     void revokeAndReGrant_succeeds_partialUniqueAllowsAfterRevoke() {
         UUID user = UUID.randomUUID();
 
-        DataAccessScope first = service.grant(
+        AccessScopeService.ScopeMutationResult first = service.grant(
                 user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
-        service.revoke(first.getId(), null);
+        AccessScopeService.ScopeMutationResult revokeResult = service.revoke(first.scope().getId(), null);
 
-        // V19 defines uq_scope_active_assignment as a partial UNIQUE
-        // (WHERE revoked_at IS NULL). After revoking the first row, the
-        // same triple must be insertable again — that is the whole point
-        // of "safe re-grant" Codex iter-2 absorbed during V19 review.
-        DataAccessScope second = service.grant(
+        assertThat(revokeResult.outboxEntry().getAction())
+                .as("revoke must enqueue a REVOKE outbox row")
+                .isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
+
+        AccessScopeService.ScopeMutationResult second = service.grant(
                 user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
 
-        assertThat(second.getId()).isNotEqualTo(first.getId());
-        assertThat(second.isActive()).isTrue();
+        assertThat(second.scope().getId()).isNotEqualTo(first.scope().getId());
+        assertThat(second.scope().isActive()).isTrue();
     }
 
     @Test
-    void grant_depot_v20DepartmentMappingWorks_endToEnd() {
+    void grant_depot_v20DepartmentMappingWorks_payloadHoldsWarehouseTuple() {
         UUID user = UUID.randomUUID();
 
-        DataAccessScope result = service.grant(
+        AccessScopeService.ScopeMutationResult result = service.grant(
                 user, ACIK_ORG_ID, DataAccessScope.ScopeKind.DEPOT, "[\"3792\"]", null);
 
-        // V20 widens depot → DEPARTMENT in both the CHECK and the trigger;
-        // service.grant maps DEPOT → "DEPARTMENT" source_table; encoder
-        // renames depot → warehouse for OpenFGA. End-to-end this is the
-        // critical naming bridge.
-        assertThat(result.getScopeSourceTable()).isEqualTo("DEPARTMENT");
-        assertThat(result.getScopeKind()).isEqualTo(DataAccessScope.ScopeKind.DEPOT);
+        DataAccessScope scope = result.scope();
+        assertThat(scope.getScopeSourceTable()).isEqualTo("DEPARTMENT");
+        assertThat(scope.getScopeKind()).isEqualTo(DataAccessScope.ScopeKind.DEPOT);
+
+        DataAccessScopeOutboxEntry outbox = outboxRepository.findById(result.outboxEntry().getId()).orElseThrow();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> tuple = (Map<String, Object>) outbox.getPayload().get("tuple");
+        assertThat(tuple.get("objectType"))
+                .as("DEPOT scope must serialise as warehouse tuple per ADR-0008 § Naming")
+                .isEqualTo("warehouse");
+        assertThat(tuple.get("objectId")).isEqualTo("wc-department-3792");
+    }
+
+    @Test
+    void grant_outboxRowInsertedWithCorrectPayload() {
+        UUID user = UUID.randomUUID();
+
+        AccessScopeService.ScopeMutationResult result = service.grant(
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+
+        DataAccessScopeOutboxEntry outbox = outboxRepository.findById(result.outboxEntry().getId()).orElseThrow();
+        Map<String, Object> payload = outbox.getPayload();
+        assertThat(payload.get("scopeKind")).isEqualTo("COMPANY");
+        assertThat(payload.get("scopeRef")).isEqualTo("[\"1001\"]");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> tuple = (Map<String, Object>) payload.get("tuple");
+        assertThat(tuple.get("user")).isEqualTo(user.toString());
+        assertThat(tuple.get("relation")).isEqualTo("viewer");
+        assertThat(tuple.get("objectType")).isEqualTo("company");
+        assertThat(tuple.get("objectId")).isEqualTo("wc-company-1001");
+    }
+
+    @Test
+    void poller_claimsAndProcessesPendingOutboxEntries_marksProcessed() {
+        UUID user = UUID.randomUUID();
+        AccessScopeService.ScopeMutationResult granted = service.grant(
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+        Long outboxId = granted.outboxEntry().getId();
+
+        // Drive the poller manually — production runs it on a fixedDelay
+        // schedule, but the integration profile sets the interval to 1h so
+        // the scheduler does not interfere with the test.
+        poller.pollAndProcess();
 
         verify(authzService).writeTuple(
                 eq(user.toString()), eq("viewer"),
-                eq("warehouse"), eq("wc-department-3792"));
+                eq("company"), eq("wc-company-1001"));
+        DataAccessScopeOutboxEntry processed = outboxRepository.findById(outboxId).orElseThrow();
+        assertThat(processed.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PROCESSED);
+        assertThat(processed.getProcessedAt()).isNotNull();
+        assertThat(processed.getLockedBy()).isNull();
     }
 }

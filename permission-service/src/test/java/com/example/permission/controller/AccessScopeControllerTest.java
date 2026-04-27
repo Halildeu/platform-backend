@@ -3,6 +3,7 @@ package com.example.permission.controller;
 import com.example.permission.dataaccess.AccessScopeException;
 import com.example.permission.dataaccess.AccessScopeService;
 import com.example.permission.dataaccess.DataAccessScope;
+import com.example.permission.dataaccess.DataAccessScopeOutboxEntry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -42,10 +43,11 @@ class AccessScopeControllerTest {
     private AccessScopeService accessScopeService;
 
     @Test
-    void postGrant_201_validRequest_returnsScopeAndOpenFgaCoordinates() throws Exception {
+    void postGrant_201_validRequest_returnsScopeAndOutboxFields() throws Exception {
         when(accessScopeService.grant(eq(USER), eq(1L),
                 eq(DataAccessScope.ScopeKind.COMPANY), eq("[\"1001\"]"), any()))
-                .thenReturn(scope(42L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]"));
+                .thenReturn(mutationResult(42L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]",
+                        500L, DataAccessScopeOutboxEntry.Status.PENDING));
 
         mockMvc.perform(post("/api/v1/access/scope")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -61,7 +63,10 @@ class AccessScopeControllerTest {
                 .andExpect(jsonPath("$.scopeId").value(42))
                 .andExpect(jsonPath("$.scopeKind").value("COMPANY"))
                 .andExpect(jsonPath("$.openFgaObjectType").value("company"))
-                .andExpect(jsonPath("$.openFgaObjectId").value("wc-company-1001"));
+                .andExpect(jsonPath("$.openFgaObjectId").value("wc-company-1001"))
+                .andExpect(jsonPath("$.tupleSyncStatus").value("PENDING"))
+                .andExpect(jsonPath("$.outboxId").value(500))
+                .andExpect(jsonPath("$.processedAt").doesNotExist());
     }
 
     @Test
@@ -123,7 +128,8 @@ class AccessScopeControllerTest {
     @Test
     void deleteRevoke_204_validId() throws Exception {
         when(accessScopeService.revoke(eq(7L), any()))
-                .thenReturn(scope(7L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]"));
+                .thenReturn(mutationResult(7L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]",
+                        501L, DataAccessScopeOutboxEntry.Status.PENDING));
 
         mockMvc.perform(delete("/api/v1/access/scope/{id}", 7L))
                 .andExpect(status().isNoContent());
@@ -174,10 +180,6 @@ class AccessScopeControllerTest {
 
     @Test
     void postGrant_503_whenServiceUnavailable_returnsServiceUnavailable() {
-        // Codex iter-1 MINOR-1: Optional.empty() short-circuit path.
-        // Bypass the @WebMvcTest slice — direct constructor instantiation
-        // is the cleanest way to assert the 503 contract without standing
-        // up a parallel test context.
         var controller = new AccessScopeController(java.util.Optional.empty());
         var request = new com.example.permission.dto.access.ScopeGrantRequest(
                 USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
@@ -208,6 +210,23 @@ class AccessScopeControllerTest {
         org.assertj.core.api.Assertions.assertThat(response.getStatusCode())
                 .isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
         org.assertj.core.api.Assertions.assertThat(response.getBody()).isNull();
+    }
+
+    private static AccessScopeService.ScopeMutationResult mutationResult(
+            Long scopeId,
+            DataAccessScope.ScopeKind kind,
+            String scopeRef,
+            Long outboxId,
+            DataAccessScopeOutboxEntry.Status status) {
+        DataAccessScope scope = scope(scopeId, kind, scopeRef);
+        DataAccessScopeOutboxEntry outbox = new DataAccessScopeOutboxEntry();
+        outbox.setId(outboxId);
+        outbox.setScopeId(scopeId);
+        outbox.setAction(DataAccessScopeOutboxEntry.Action.GRANT);
+        outbox.setStatus(status);
+        outbox.setNextAttemptAt(Instant.parse("2026-04-28T12:00:00Z"));
+        outbox.setCreatedAt(Instant.parse("2026-04-28T12:00:00Z"));
+        return new AccessScopeService.ScopeMutationResult(scope, outbox);
     }
 
     private static DataAccessScope scope(Long id, DataAccessScope.ScopeKind kind, String scopeRef) {
