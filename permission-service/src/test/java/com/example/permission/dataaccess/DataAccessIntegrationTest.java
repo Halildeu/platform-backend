@@ -5,8 +5,8 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.PersistenceUnit;
 import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -32,14 +32,15 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
  * Faz 21.3 PR-F (C3c) — end-to-end integration test against a real PostgreSQL
- * (Testcontainers) running the gitops V16/V17/V19/V20 schema. Exercises:
+ * (Testcontainers) running the gitops V16/V17/V19/V20/V21 schema. Exercises:
  *
  * <ul>
  *   <li>Hibernate {@code validate} of {@link DataAccessScope} against the live
  *       {@code data_access.scope} table — column types / nullability /
  *       JSONB / enum mapping all checked at boot time.</li>
  *   <li>{@link AccessScopeService#grant} happy path round-tripping through
- *       {@code saveAndFlush} and the V19 trigger.</li>
+ *       {@code saveAndFlush}, the V19 trigger, and V21's JSON-array
+ *       {@code scope_ref} parsing fix.</li>
  *   <li>The V19 {@code validate_scope_ref} trigger raising {@code P0001} on
  *       a bogus {@code scope_ref}, and PR-D iter-1 MAJOR-2's structural
  *       extractor mapping it to {@link AccessScopeException.ScopeValidationException}.</li>
@@ -53,17 +54,22 @@ import static org.mockito.Mockito.verifyNoInteractions;
  * this test focuses on the PG cause-chain and JPA mapping, not OpenFGA's
  * over-the-wire semantics. The dual-DS activation contract gets its own
  * companion class, {@link DataAccessActivationContractTest}.
+ *
+ * <p>Activation gate (Codex 019dcfb0 iter-1 MAJOR-1): JUnit 5 {@code @Tag} +
+ * Maven Surefire {@code excludedGroups}. Default {@code mvn test} excludes
+ * the {@code integration} group so the 6 cases here are visibly skipped
+ * (not silently filtered). Opt in with:
+ * <pre>./mvnw -pl permission-service test -Pintegration-tests</pre>
+ * The {@code @Testcontainers(disabledWithoutDocker = true)} layer adds a
+ * second-line guard: even with the profile active, an environment without
+ * Docker (e.g. a developer who forgot to start Docker Desktop) reports the
+ * class as disabled rather than erroring out mid-boot.
  */
-@Testcontainers
+@Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
 @ActiveProfiles("integration")
 @Import(DataAccessIntegrationTest.IntegrationFlywayConfig.class)
-@EnabledIfSystemProperty(
-        named = "run-integration-tests",
-        matches = "true",
-        disabledReason = "Requires Docker (Testcontainers Postgres). "
-                + "Enable with: ./mvnw -pl permission-service test -Drun-integration-tests=true"
-)
+@Tag("integration")
 class DataAccessIntegrationTest {
 
     private static final long ACIK_ORG_ID = 1L;

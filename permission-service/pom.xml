@@ -111,12 +111,14 @@
 			<scope>test</scope>
 		</dependency>
 		<!--
-		Faz 21.3 PR-F (C3c): Testcontainers integration test deps. Promoted from
-		the previous `testcontainers` profile to the default scope so DataAccessIntegrationTest
-		runs on every `mvn test`. CI runners ship with Docker; local boxes without
-		Docker will see the container fail to start (intentional — integration
-		coverage is mandatory for the data_access surface, see ADR-0008 § Tuple
-		writer flow + V21 outbox follow-up).
+		Faz 21.3 PR-F (C3c): Testcontainers integration test deps. Test scope
+		so default `mvn test` compiles the class but the integration cases
+		themselves are gated by JUnit 5 @Tag("integration") + Surefire
+		excludedGroups (see plugin block below). Activate with:
+		    ./mvnw -pl permission-service test -Pintegration-tests
+		The @Testcontainers(disabledWithoutDocker = true) annotation on
+		DataAccessIntegrationTest adds a second-line guard so the class is
+		visibly disabled (not erroring) when Docker is absent.
 		-->
 		<dependency>
 			<groupId>org.testcontainers</groupId>
@@ -194,6 +196,15 @@
 					<systemPropertyVariables>
 						<net.bytebuddy.experimental>true</net.bytebuddy.experimental>
 					</systemPropertyVariables>
+					<!--
+					Faz 21.3 PR-F (C3c) — Codex 019dcfb0 iter-1 MAJOR-1: integration
+					tests are tagged with @Tag("integration") and excluded from the
+					default lifecycle, so `mvn test` runs the fast unit slice and
+					reports the integration cases as visibly skipped rather than
+					silently filtering them out. Activate with the
+					`integration-tests` profile (defined below).
+					-->
+					<excludedGroups>integration</excludedGroups>
 				</configuration>
 			</plugin>
 			<!-- JaCoCo: baseline coverage report (no threshold) — CNS-003 PR2 -->
@@ -214,5 +225,37 @@
 			</plugin>
 		</plugins>
 	</build>
+
+	<profiles>
+		<!--
+		Faz 21.3 PR-F (C3c) — Codex 019dcfb0 iter-1 MAJOR-1: opt-in profile to
+		flip Surefire's group filter from "exclude integration" to "include
+		integration only". Used by the `permission-service-integration-test`
+		CI job and by developers running:
+		    ./mvnw -pl permission-service test -Pintegration-tests
+		-->
+		<profile>
+			<id>integration-tests</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-surefire-plugin</artifactId>
+						<configuration>
+							<!--
+							Clear the default `<excludedGroups>integration</excludedGroups>`
+							so every test runs (tagged + untagged). The CI integration
+							job further narrows the scope with `-Dtest='*IntegrationTest,
+							*ContractTest'` so DataAccessActivationContractTest (no @Tag,
+							runs without Docker) and DataAccessIntegrationTest (tagged,
+							needs Docker) are both exercised.
+							-->
+							<excludedGroups></excludedGroups>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
 
 </project>
