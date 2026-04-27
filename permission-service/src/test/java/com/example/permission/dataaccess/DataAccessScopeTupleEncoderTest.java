@@ -20,7 +20,6 @@ class DataAccessScopeTupleEncoderTest {
         assertThat(tuple.objectType()).isEqualTo("company");
         assertThat(tuple.objectId()).isEqualTo("wc-company-1001");
         assertThat(tuple.relation()).isEqualTo("viewer");
-        assertThat(tuple.userType()).isEqualTo("user");
         assertThat(tuple.userId()).isEqualTo(USER.toString());
     }
 

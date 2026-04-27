@@ -24,7 +24,6 @@ public final class DataAccessScopeTupleEncoder {
             String objectType,
             String objectId,
             String relation,
-            String userType,
             String userId
     ) {}
 
@@ -57,7 +56,6 @@ public final class DataAccessScopeTupleEncoder {
                 mapping.objectType(),
                 mapping.objectId(),
                 "viewer",
-                "user",
                 scope.getUserId().toString()
         );
     }
