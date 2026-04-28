@@ -30,7 +30,9 @@ class DataAccessScopeTupleWriterTest {
 
     @Test
     void writeScopeTuple_happyPath_callsAuthzServiceWithEncodedTuple() {
-        var scope = scope(1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]");
+        // V25: COMPANY scope_ref = OUR_COMPANY.COMP_ID (e.g. "1") →
+        // encoder emits wc-our-company-1. Codex 019dd34e hybrid contract.
+        var scope = scope(1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]");
 
         writer.writeScopeTuple(scope);
 
@@ -44,7 +46,7 @@ class DataAccessScopeTupleWriterTest {
         assertThat(userId.getValue()).isEqualTo(USER.toString());
         assertThat(relation.getValue()).isEqualTo("viewer");
         assertThat(objectType.getValue()).isEqualTo("company");
-        assertThat(objectId.getValue()).isEqualTo("wc-company-1001");
+        assertThat(objectId.getValue()).isEqualTo("wc-our-company-1");
     }
 
     @Test

@@ -56,14 +56,18 @@ class AccessScopeServiceTest {
             return arg;
         });
 
+        // V25 (Codex 019dd34e hybrid contract): COMPANY scope_ref is now the
+        // OUR_COMPANY.COMP_ID (e.g. "1") — the V25 CHECK constraint pairs
+        // scope_kind=company with scope_source_table=OUR_COMPANY (was COMPANY),
+        // and the encoder emits company:wc-our-company-1 (was wc-company-1001).
         AccessScopeService.ScopeMutationResult result = service.grant(
-                USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY);
+                USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", GRANTED_BY);
 
         DataAccessScope scope = result.scope();
         DataAccessScopeOutboxEntry outbox = result.outboxEntry();
 
         assertThat(scope.getId()).isEqualTo(42L);
-        assertThat(scope.getScopeSourceTable()).isEqualTo("COMPANY");
+        assertThat(scope.getScopeSourceTable()).isEqualTo("OUR_COMPANY");
         assertThat(scope.getScopeSourceSchema()).isEqualTo("workcube_mikrolink");
         assertThat(scope.getGrantedBy()).isEqualTo(GRANTED_BY);
         assertThat(scope.getGrantedAt()).isNotNull();
@@ -74,10 +78,11 @@ class AccessScopeServiceTest {
         assertThat(outbox.getNextAttemptAt()).isNotNull();
         assertThat(outbox.getCreatedAt()).isNotNull();
 
-        // V23 typed tuple identity columns (Codex 019dd0e0 BLOCKER 2).
+        // V23 typed tuple identity columns (Codex 019dd0e0 BLOCKER 2);
+        // V25 object-id namespace flip: wc-our-company-<COMP_ID>.
         assertThat(outbox.getTupleUser()).isEqualTo("user:" + USER);
         assertThat(outbox.getTupleRelation()).isEqualTo("viewer");
-        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-company-1001");
+        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-our-company-1");
 
         // JSONB payload keeps the same shape for downstream debug/audit consumers,
         // with V23 picking up the composite "object" key alongside the
@@ -86,11 +91,11 @@ class AccessScopeServiceTest {
         Map<String, Object> tuple = (Map<String, Object>) outbox.getPayload().get("tuple");
         assertThat(tuple.get("user")).isEqualTo("user:" + USER);
         assertThat(tuple.get("relation")).isEqualTo("viewer");
-        assertThat(tuple.get("object")).isEqualTo("company:wc-company-1001");
+        assertThat(tuple.get("object")).isEqualTo("company:wc-our-company-1");
         assertThat(tuple.get("objectType")).isEqualTo("company");
-        assertThat(tuple.get("objectId")).isEqualTo("wc-company-1001");
+        assertThat(tuple.get("objectId")).isEqualTo("wc-our-company-1");
         assertThat(outbox.getPayload().get("scopeKind")).isEqualTo("COMPANY");
-        assertThat(outbox.getPayload().get("scopeRef")).isEqualTo("[\"1001\"]");
+        assertThat(outbox.getPayload().get("scopeRef")).isEqualTo("[\"1\"]");
 
         verify(outboxRepository, times(1)).save(any(DataAccessScopeOutboxEntry.class));
     }
@@ -134,7 +139,7 @@ class AccessScopeServiceTest {
                 .thenThrow(new DataIntegrityViolationException("dup", hcve));
 
         assertThatThrownBy(() -> service.grant(
-                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeAlreadyGrantedException.class)
                 .hasMessageContaining("user=" + USER);
 
@@ -152,7 +157,7 @@ class AccessScopeServiceTest {
                 .thenThrow(new DataIntegrityViolationException("trigger", hcve));
 
         assertThatThrownBy(() -> service.grant(
-                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"9999\"]", GRANTED_BY))
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class)
                 .hasMessageContaining("lineage guard");
 
@@ -167,7 +172,7 @@ class AccessScopeServiceTest {
         when(repository.saveAndFlush(any(DataAccessScope.class))).thenThrow(original);
 
         assertThatThrownBy(() -> service.grant(
-                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", GRANTED_BY))
                 .isSameAs(original);
 
         verify(outboxRepository, never()).save(any());
@@ -228,7 +233,7 @@ class AccessScopeServiceTest {
                 .thenThrow(new DataIntegrityViolationException("dup", hcve));
 
         assertThatThrownBy(() -> service.grant(
-                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeAlreadyGrantedException.class);
 
         verify(outboxRepository, never()).save(any());
@@ -243,7 +248,7 @@ class AccessScopeServiceTest {
                 .thenThrow(new DataIntegrityViolationException("check", hcve));
 
         assertThatThrownBy(() -> service.grant(
-                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", GRANTED_BY))
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class);
 
         verify(outboxRepository, never()).save(any());
@@ -259,7 +264,7 @@ class AccessScopeServiceTest {
                 .thenThrow(new DataIntegrityViolationException("trigger", hcve));
 
         assertThatThrownBy(() -> service.grant(
-                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"9999\"]", GRANTED_BY))
+                        USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", GRANTED_BY))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class);
 
         verify(outboxRepository, never()).save(any());
@@ -284,8 +289,9 @@ class AccessScopeServiceTest {
         s.setOrgId(1L);
         s.setScopeKind(DataAccessScope.ScopeKind.COMPANY);
         s.setScopeSourceSchema("workcube_mikrolink");
-        s.setScopeSourceTable("COMPANY");
-        s.setScopeRef("[\"1001\"]");
+        // V25 contract: company ↔ OUR_COMPANY pairing, scope_ref is COMP_ID.
+        s.setScopeSourceTable("OUR_COMPANY");
+        s.setScopeRef("[\"1\"]");
         s.setGrantedAt(Instant.parse("2026-04-25T10:00:00Z"));
         return s;
     }

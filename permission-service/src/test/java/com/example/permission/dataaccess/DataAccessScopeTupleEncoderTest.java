@@ -12,13 +12,17 @@ class DataAccessScopeTupleEncoderTest {
     private static final UUID USER = UUID.fromString("11111111-2222-3333-4444-555555555555");
 
     @Test
-    void encode_company_returnsWcCompanyPrefixedTuple() {
-        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]");
+    void encode_company_returnsWcOurCompanyPrefixedTuple() {
+        // V25 (Codex 019dd34e hybrid contract): COMPANY scope anchors to
+        // workcube_mikrolink.OUR_COMPANY (tenant), not the COMPANY directory.
+        // scope_ref carries OUR_COMPANY.COMP_ID — encoder emits the
+        // V25-canonical "wc-our-company-<COMP_ID>" object id.
+        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[\"1\"]");
 
         var tuple = DataAccessScopeTupleEncoder.encode(scope);
 
         assertThat(tuple.objectType()).isEqualTo("company");
-        assertThat(tuple.objectId()).isEqualTo("wc-company-1001");
+        assertThat(tuple.objectId()).isEqualTo("wc-our-company-1");
         assertThat(tuple.relation()).isEqualTo("viewer");
         assertThat(tuple.userId()).isEqualTo(USER.toString());
     }
@@ -119,18 +123,18 @@ class DataAccessScopeTupleEncoderTest {
 
     /**
      * PG scope_ref contract is a string array, but if a JSON producer ever
-     * emits {@code [1001]} (numeric scalar) the encoder must still accept it
+     * emits {@code [1]} (numeric scalar) the encoder must still accept it
      * — {@link com.fasterxml.jackson.databind.JsonNode#asText()} on a number
      * returns its decimal representation, which round-trips correctly to
-     * the {@code wc-company-1001} object id.
+     * the V25-canonical {@code wc-our-company-1} object id.
      */
     @Test
     void encode_numericScopeRef_acceptsNumberAsText() {
-        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[1001]");
+        var scope = scope(DataAccessScope.ScopeKind.COMPANY, "[1]");
 
         var tuple = DataAccessScopeTupleEncoder.encode(scope);
 
-        assertThat(tuple.objectId()).isEqualTo("wc-company-1001");
+        assertThat(tuple.objectId()).isEqualTo("wc-our-company-1");
     }
 
     private static DataAccessScope scope(DataAccessScope.ScopeKind kind, String scopeRef) {
@@ -139,7 +143,16 @@ class DataAccessScopeTupleEncoderTest {
         s.setOrgId(1L);
         s.setScopeKind(kind);
         s.setScopeSourceSchema("workcube_mikrolink");
-        s.setScopeSourceTable("COMPANY");
+        // The encoder is pure (it only reads kind + scope_ref); source_table
+        // is irrelevant to its output. Set a per-kind value that matches the
+        // V25 CHECK constraint pairing so the fixture stays self-consistent
+        // if a future test ever flushes through the V25 trigger chain.
+        s.setScopeSourceTable(switch (kind == null ? DataAccessScope.ScopeKind.COMPANY : kind) {
+            case COMPANY -> "OUR_COMPANY";
+            case PROJECT -> "PRO_PROJECTS";
+            case BRANCH -> "BRANCH";
+            case DEPOT -> "DEPARTMENT";
+        });
         s.setScopeRef(scopeRef);
         return s;
     }

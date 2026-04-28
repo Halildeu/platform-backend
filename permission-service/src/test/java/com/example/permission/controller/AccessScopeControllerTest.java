@@ -44,9 +44,11 @@ class AccessScopeControllerTest {
 
     @Test
     void postGrant_201_validRequest_returnsScopeAndOutboxFields() throws Exception {
+        // V25 (Codex 019dd34e hybrid contract): COMPANY scope_ref is the
+        // OUR_COMPANY.COMP_ID; encoder emits company:wc-our-company-<id>.
         when(accessScopeService.grant(eq(USER), eq(1L),
-                eq(DataAccessScope.ScopeKind.COMPANY), eq("[\"1001\"]"), any()))
-                .thenReturn(mutationResult(42L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]",
+                eq(DataAccessScope.ScopeKind.COMPANY), eq("[\"1\"]"), any()))
+                .thenReturn(mutationResult(42L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]",
                         500L, DataAccessScopeOutboxEntry.Status.PENDING));
 
         mockMvc.perform(post("/api/v1/access/scope")
@@ -56,14 +58,14 @@ class AccessScopeControllerTest {
                                   "userId": "%s",
                                   "orgId": 1,
                                   "scopeKind": "COMPANY",
-                                  "scopeRef": "[\\"1001\\"]"
+                                  "scopeRef": "[\\"1\\"]"
                                 }
                                 """.formatted(USER)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.scopeId").value(42))
                 .andExpect(jsonPath("$.scopeKind").value("COMPANY"))
                 .andExpect(jsonPath("$.openFgaObjectType").value("company"))
-                .andExpect(jsonPath("$.openFgaObjectId").value("wc-company-1001"))
+                .andExpect(jsonPath("$.openFgaObjectId").value("wc-our-company-1"))
                 .andExpect(jsonPath("$.tupleSyncStatus").value("PENDING"))
                 .andExpect(jsonPath("$.outboxId").value(500))
                 .andExpect(jsonPath("$.processedAt").doesNotExist());
@@ -97,7 +99,7 @@ class AccessScopeControllerTest {
                                   "userId": "%s",
                                   "orgId": 1,
                                   "scopeKind": "COMPANY",
-                                  "scopeRef": "[\\"1001\\"]"
+                                  "scopeRef": "[\\"1\\"]"
                                 }
                                 """.formatted(USER)))
                 .andExpect(status().isConflict())
@@ -128,7 +130,7 @@ class AccessScopeControllerTest {
     @Test
     void deleteRevoke_204_validId() throws Exception {
         when(accessScopeService.revoke(eq(7L), any()))
-                .thenReturn(mutationResult(7L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]",
+                .thenReturn(mutationResult(7L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]",
                         501L, DataAccessScopeOutboxEntry.Status.PENDING));
 
         mockMvc.perform(delete("/api/v1/access/scope/{id}", 7L))
@@ -164,7 +166,7 @@ class AccessScopeControllerTest {
     void getList_200_returnsActiveScopesAsListItems() throws Exception {
         when(accessScopeService.listActiveScopes(USER, 1L))
                 .thenReturn(List.of(
-                        scope(1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]"),
+                        scope(1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]"),
                         scope(2L, DataAccessScope.ScopeKind.PROJECT, "[\"1204\"]")
                 ));
 
@@ -182,7 +184,7 @@ class AccessScopeControllerTest {
     void postGrant_503_whenServiceUnavailable_returnsServiceUnavailable() {
         var controller = new AccessScopeController(java.util.Optional.empty());
         var request = new com.example.permission.dto.access.ScopeGrantRequest(
-                USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
 
         var response = controller.grant(request);
 
@@ -236,8 +238,11 @@ class AccessScopeControllerTest {
         s.setOrgId(1L);
         s.setScopeKind(kind);
         s.setScopeSourceSchema("workcube_mikrolink");
+        // V25 contract — mirror the source-of-truth mapping inside
+        // AccessScopeService.expectedSourceTable; controller responses must
+        // serialize the same source_table the service writes to PG.
         s.setScopeSourceTable(switch (kind) {
-            case COMPANY -> "COMPANY";
+            case COMPANY -> "OUR_COMPANY";
             case PROJECT -> "PRO_PROJECTS";
             case BRANCH -> "BRANCH";
             case DEPOT -> "DEPARTMENT";
