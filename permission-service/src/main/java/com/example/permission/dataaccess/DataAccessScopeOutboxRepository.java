@@ -6,56 +6,19 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
-import java.util.List;
 
+/**
+ * Faz 21.3 PR-G follow-up — Codex 019dd0e0 iter-1 BLOCKER 1 (MAJOR
+ * tech-debt) resolution: {@link #claimBatch} moved to
+ * {@link DataAccessScopeOutboxRepositoryImpl} via the Spring Data JPA
+ * "custom fragment" pattern. The CAS finalize methods below
+ * ({@link #markProcessed}, {@link #markRetry}, {@link #markFailed}) keep
+ * their {@code @Modifying int} shape because that IS idiomatic for
+ * affected-row-count UPDATEs.
+ */
 public interface DataAccessScopeOutboxRepository
-        extends JpaRepository<DataAccessScopeOutboxEntry, Long> {
-
-    /**
-     * Atomic claim of pending entries for processing. The outer UPDATE
-     * uses an inner SELECT with {@code FOR UPDATE SKIP LOCKED} so multiple
-     * poller instances can claim disjoint batches without blocking each
-     * other. {@code RETURNING *} gives the updated rows back so the
-     * caller does not need a separate SELECT round trip.
-     *
-     * <p>Per-tuple ordering guard (Codex 019dd0e0 iter-2 BLOCKER 2 fix —
-     * Yol β typed columns): the {@code NOT EXISTS} subquery keys on
-     * {@code (tuple_user, tuple_relation, tuple_object)} rather than
-     * {@code scope_id} so revoke + re-grant cycles (which produce
-     * different scope.id values targeting the same FGA tuple) are still
-     * serialised. V22's {@code idx_scope_outbox_scope_ordering} was
-     * dropped in V23 in favour of the correctness-correct
-     * {@code idx_scope_outbox_tuple_ordering}.
-     */
-    @Modifying
-    @Query(value = """
-            UPDATE data_access.scope_outbox
-            SET status = 'PROCESSING',
-                locked_by = :pollerId,
-                locked_until = :lockedUntil,
-                attempt_count = attempt_count + 1
-            WHERE id IN (
-                SELECT id FROM data_access.scope_outbox AS outer_row
-                WHERE outer_row.status = 'PENDING'
-                  AND outer_row.next_attempt_at <= now()
-                  AND NOT EXISTS (
-                      SELECT 1 FROM data_access.scope_outbox AS older
-                      WHERE older.tuple_user = outer_row.tuple_user
-                        AND older.tuple_relation = outer_row.tuple_relation
-                        AND older.tuple_object = outer_row.tuple_object
-                        AND older.id < outer_row.id
-                        AND older.status IN ('PENDING','PROCESSING')
-                  )
-                ORDER BY outer_row.id
-                FOR UPDATE SKIP LOCKED
-                LIMIT :batchSize
-            )
-            RETURNING *
-            """, nativeQuery = true)
-    List<DataAccessScopeOutboxEntry> claimBatch(
-            @Param("pollerId") String pollerId,
-            @Param("lockedUntil") Instant lockedUntil,
-            @Param("batchSize") int batchSize);
+        extends JpaRepository<DataAccessScopeOutboxEntry, Long>,
+                DataAccessScopeOutboxRepositoryCustom {
 
     /**
      * Calls the V22 plpgsql helper {@code data_access.recover_stuck_outbox_rows()}
