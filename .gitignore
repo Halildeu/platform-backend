@@ -7,6 +7,8 @@ docs/deploy/env/.env.*
 !docs/deploy/env/.env.*.example
 docs/deploy/env/*.local
 .DS_Store
+target/
+**/target/
 
 # Dev Vault artifacts (do not commit)
 .vault-dev/

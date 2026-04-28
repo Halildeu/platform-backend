@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, classes = {ApiGatewayApplication.class, GatewaySecurityTest.JwtTestConfig.class})
 @TestPropertySource(properties = {
+        "spring.profiles.active=test",
         "eureka.client.enabled=false",
         "spring.cloud.discovery.enabled=false",
         "spring.cloud.gateway.server.webflux.discovery.locator.enabled=false",
@@ -76,6 +77,21 @@ class GatewaySecurityTest {
                             .addHeader("Content-Type", "application/json")
                             .setBody("[]");
                 }
+                if (path != null && path.equals("/api/v1/agent/heartbeat")) {
+                    return new MockResponse().setResponseCode(202)
+                            .addHeader("Content-Type", "application/json")
+                            .setBody("{\"accepted\":true}");
+                }
+                if (path != null && path.equals("/api/v1/admin/endpoint-devices")) {
+                    return new MockResponse().setResponseCode(200)
+                            .addHeader("Content-Type", "application/json")
+                            .setBody("{\"items\":[]}");
+                }
+                if (path != null && path.equals("/api/v1/endpoint-agents/status")) {
+                    return new MockResponse().setResponseCode(200)
+                            .addHeader("Content-Type", "application/json")
+                            .setBody("{\"service\":\"endpoint-admin-service\"}");
+                }
                 return new MockResponse().setResponseCode(404);
             }
         };
@@ -97,6 +113,20 @@ class GatewaySecurityTest {
         reg.add("spring.cloud.gateway.server.webflux.routes[1].id", () -> "variant-service-route");
         reg.add("spring.cloud.gateway.server.webflux.routes[1].uri", () -> stub.url("/").toString());
         reg.add("spring.cloud.gateway.server.webflux.routes[1].predicates[0]", () -> "Path=/api/variants/**");
+
+        reg.add("spring.cloud.gateway.server.webflux.routes[2].id", () -> "endpoint-admin-agent-route");
+        reg.add("spring.cloud.gateway.server.webflux.routes[2].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[2].predicates[0]", () -> "Path=/api/v1/endpoint-agent/**");
+        reg.add("spring.cloud.gateway.server.webflux.routes[2].filters[0]", () -> "RewritePath=/api/v1/endpoint-agent/(?<segment>.*), /api/v1/agent/${segment}");
+
+        reg.add("spring.cloud.gateway.server.webflux.routes[3].id", () -> "endpoint-admin-admin-route");
+        reg.add("spring.cloud.gateway.server.webflux.routes[3].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[3].predicates[0]", () -> "Path=/api/v1/endpoint-admin/**");
+        reg.add("spring.cloud.gateway.server.webflux.routes[3].filters[0]", () -> "RewritePath=/api/v1/endpoint-admin/(?<segment>.*), /api/v1/admin/${segment}");
+
+        reg.add("spring.cloud.gateway.server.webflux.routes[4].id", () -> "endpoint-admin-status-route");
+        reg.add("spring.cloud.gateway.server.webflux.routes[4].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[4].predicates[0]", () -> "Path=/api/v1/endpoint-agents/**");
 
         reg.add("SECURITY_JWT_ISSUER", () -> "auth-service");
         reg.add("SECURITY_JWT_AUDIENCE", () -> "user-service,frontend");
@@ -147,6 +177,46 @@ class GatewaySecurityTest {
                     .exchange()
                     .expectStatus().isUnauthorized();
         }
+    }
+
+    @Test
+    void endpoint_agent_route_is_permitAll_and_rewrites_to_agent_surface() {
+        webClient.post().uri("http://localhost:" + port + "/api/v1/endpoint-agent/heartbeat")
+                .bodyValue("{}")
+                .exchange()
+                .expectStatus().isAccepted();
+    }
+
+    @Test
+    void endpoint_admin_route_requires_jwt() {
+        webClient.get().uri("http://localhost:" + port + "/api/v1/endpoint-admin/endpoint-devices")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void endpoint_admin_route_with_jwt_rewrites_to_admin_surface() {
+        String t = token();
+        webClient.get().uri("http://localhost:" + port + "/api/v1/endpoint-admin/endpoint-devices")
+                .header("Authorization", "Bearer " + t)
+                .exchange()
+                .expectStatus().isOk();
+    }
+
+    @Test
+    void endpoint_agent_status_requires_jwt_by_default() {
+        webClient.get().uri("http://localhost:" + port + "/api/v1/endpoint-agents/status")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void endpoint_agent_status_with_jwt_forwards() {
+        String t = token();
+        webClient.get().uri("http://localhost:" + port + "/api/v1/endpoint-agents/status")
+                .header("Authorization", "Bearer " + t)
+                .exchange()
+                .expectStatus().isOk();
     }
 
     @Test

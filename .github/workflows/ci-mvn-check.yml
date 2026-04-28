@@ -3,6 +3,7 @@ name: CI - Maven Build Check
 # Faz 19.2 — Batch 1 (auth + user + variant)
 # Faz 19.3 — Batch 2 Zanzibar plane genişletildi (permission-service + common-auth)
 # Faz 19.4+19.5 — Batch 3+4 full reactor (core + report + api-gateway + discovery-server)
+# Faz endpoint-admin — endpoint-admin-service parent reactor'a eklendi
 #   + schema-service (standalone, not in parent pom)
 
 on:
@@ -14,7 +15,7 @@ on:
 
 jobs:
   full-reactor-build:
-    name: Maven full reactor build (all 9 modules)
+    name: Maven full reactor build (all 10 modules)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -32,10 +33,10 @@ jobs:
       - name: Display Maven version
         run: ./mvnw --version
 
-      - name: Compile full reactor (9 modules)
+      - name: Compile full reactor (10 modules)
         run: ./mvnw -q -DskipTests test-compile
 
-      - name: Verify full reactor (9 modules, no tests)
+      - name: Verify full reactor (10 modules, no tests)
         run: ./mvnw -q -DskipTests verify
 
   schema-service-build:
