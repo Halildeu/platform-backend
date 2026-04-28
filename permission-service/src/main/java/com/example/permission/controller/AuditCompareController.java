@@ -38,7 +38,7 @@ public class AuditCompareController {
     }
 
     @GetMapping
-    @RequireModule(value = "AUDIT", relation = "manager")
+    @RequireModule(value = "AUDIT", relation = "can_manage")
     public ResponseEntity<AuditCompareResponse> compare(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "50") int pageSize,
