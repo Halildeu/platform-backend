@@ -10,6 +10,7 @@ import org.springframework.boot.orm.jpa.EntityManagerFactoryBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.jpa.JpaTransactionManager;
 import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -70,5 +71,18 @@ public class ReportsDbDataSourceConfig {
     public PlatformTransactionManager reportsDbTransactionManager(
             @Qualifier("reportsDbEntityManagerFactory") EntityManagerFactory emf) {
         return new JpaTransactionManager(emf);
+    }
+
+    /**
+     * 2026-04-29: Lightweight JdbcTemplate for master data scope picker
+     * read paths (workcube_mikrolink.our_company, pro_projects, branch,
+     * department). Direct SQL avoids JPA entity overhead for read-only
+     * dropdown lists. See {@code MasterDataController} +
+     * {@code MasterDataService}.
+     */
+    @Bean(name = "reportsDbJdbcTemplate")
+    public JdbcTemplate reportsDbJdbcTemplate(
+            @Qualifier("reportsDbDataSource") HikariDataSource dataSource) {
+        return new JdbcTemplate(dataSource);
     }
 }
