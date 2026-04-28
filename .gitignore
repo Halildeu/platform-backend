@@ -11,3 +11,4 @@ docs/deploy/env/*.local
 # Dev Vault artifacts (do not commit)
 .vault-dev/
 .vault-dev/**
+**/__pycache__/
