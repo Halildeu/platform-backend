@@ -34,7 +34,7 @@ public class AuditEventController {
     }
 
     @GetMapping
-    @RequireModule(value = "AUDIT", relation = "viewer")
+    @RequireModule(value = "AUDIT", relation = "can_view")
     public ResponseEntity<AuditEventPageResponse> listEvents(@RequestParam(defaultValue = "1") int page,
                                                              @RequestParam(name = "pageSize", defaultValue = "50") int pageSize,
                                                              @RequestParam(required = false) String sort,
@@ -60,7 +60,7 @@ public class AuditEventController {
     }
 
     @GetMapping("/export")
-    @RequireModule(value = "AUDIT", relation = "manager")
+    @RequireModule(value = "AUDIT", relation = "can_manage")
     public ResponseEntity<byte[]> exportEvents(@RequestParam(defaultValue = "json") String format,
                                                @RequestParam(required = false) Integer limit,
                                                @RequestParam(required = false) String sort,
@@ -81,7 +81,7 @@ public class AuditEventController {
     }
 
     @PostMapping("/export-jobs")
-    @RequireModule(value = "AUDIT", relation = "manager")
+    @RequireModule(value = "AUDIT", relation = "can_manage")
     public ResponseEntity<AuditExportJobResponseDto> createExportJob(@Valid @RequestBody(required = false) AuditExportJobCreateRequestDto request,
                                                                      Authentication authentication) {
         AuditExportJobCreateRequestDto payload = request == null ? new AuditExportJobCreateRequestDto() : request;
@@ -96,14 +96,14 @@ public class AuditEventController {
     }
 
     @GetMapping("/export-jobs/{jobId}")
-    @RequireModule(value = "AUDIT", relation = "manager")
+    @RequireModule(value = "AUDIT", relation = "can_manage")
     public ResponseEntity<AuditExportJobResponseDto> getExportJob(@PathVariable String jobId,
                                                                   Authentication authentication) {
         return ResponseEntity.ok(auditEventService.getExportJob(jobId, resolveRequestedBy(authentication)));
     }
 
     @GetMapping("/export-jobs/{jobId}/download")
-    @RequireModule(value = "AUDIT", relation = "manager")
+    @RequireModule(value = "AUDIT", relation = "can_manage")
     public ResponseEntity<byte[]> downloadExportJob(@PathVariable String jobId,
                                                     Authentication authentication) {
         var job = auditEventService.getCompletedExportJob(jobId, resolveRequestedBy(authentication));
@@ -114,7 +114,7 @@ public class AuditEventController {
     }
 
     @GetMapping(value = "/live", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @RequireModule(value = "AUDIT", relation = "viewer")
+    @RequireModule(value = "AUDIT", relation = "can_view")
     public SseEmitter liveEvents() {
         // 2026-04-19 QLTY-PROACTIVE-03: @RequireModule added for parity with the base
         // listEvents() endpoint. Previously anonymous-but-authenticated access was possible
