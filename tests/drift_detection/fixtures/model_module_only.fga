@@ -1,0 +1,13 @@
+model
+  schema 1.1
+
+# Test fixture — minimal `module` type isolated for DD-5 unit tests.
+
+type user
+
+type module
+  relations
+    define can_edit: [user] but not blocked
+    define can_manage: [user] or can_edit but not blocked
+    define can_view: [user] or can_manage but not blocked
+    define blocked: [user]

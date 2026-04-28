@@ -1,0 +1,70 @@
+# DD-5 — Authz Annotation ↔ OpenFGA Model Relation Alignment Guard
+#
+# Tetikleyici: 2026-04-29 D35-3 closure flow tespit (cross-repo
+# platform-k8s-gitops PR #240/#241/#242). Bu workflow, @RequireModule
+# annotation kullanım yerlerinin OpenFGA model.fga `module` type
+# relations'u ile uyumlu olmasını CI'da hard-gate eder.
+#
+# Authority: ADR-0011 §4 PR sequence extension (D36 + Faz N follow-up).
+# Codex thread: 019dd409.
+#
+# Trigger: Java source veya model.fga değişimi PR'ı.
+
+name: ADR-0011 DD-5 — Authz Relation Alignment
+
+on:
+  pull_request:
+    paths:
+      - "**/*.java"
+      - "backend/openfga/model.fga"
+      - "scripts/drift_detection/check_drift_authz_relation_alignment.py"
+      - "tests/drift_detection/test_check_drift_authz_relation_alignment.py"
+      - "tests/drift_detection/fixtures/**"
+      - ".github/workflows/gate-drift-authz-relation-alignment.yml"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  authz-relation-alignment:
+    name: ADR-0011 DD-5 — annotation ↔ model relation check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: python3 -m pip install pytest
+
+      - name: Run DD-5 alignment check (full backend repo)
+        run: |
+          python3 scripts/drift_detection/check_drift_authz_relation_alignment.py \
+            --verbose
+
+      - name: DD-5 JSON artifact
+        if: always()
+        run: |
+          python3 scripts/drift_detection/check_drift_authz_relation_alignment.py \
+            --json > /tmp/dd-5-report.json || true
+          cat /tmp/dd-5-report.json
+
+      - name: Upload DD-5 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dd-5-authz-relation-alignment-report
+          path: /tmp/dd-5-report.json
+          retention-days: 7
+
+      - name: Run unit tests
+        run: |
+          python3 -m pytest tests/drift_detection/test_check_drift_authz_relation_alignment.py -v
