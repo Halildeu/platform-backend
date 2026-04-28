@@ -90,7 +90,7 @@ class OutboxPollerTest {
     @Test
     void processEntry_grantHappyPath_writesTupleAndCASMarksProcessed() {
         Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
-        DataAccessScopeOutboxEntry entry = grantEntry(101L, 1, "wc-company-1001", "company");
+        DataAccessScopeOutboxEntry entry = grantEntry(101L, 1, "wc-our-company-1", "company");
 
         poller.processEntry(entry, lockToken);
 
@@ -98,7 +98,7 @@ class OutboxPollerTest {
                 eq("11111111-1111-1111-1111-111111111111"),
                 eq("viewer"),
                 eq("company"),
-                eq("wc-company-1001"));
+                eq("wc-our-company-1"));
         verify(outboxRepository).markProcessed(eq(101L), any(Instant.class), eq("test-poller"), eq(lockToken));
         verify(outboxRepository, never()).markRetry(anyLong(), any(), any(), anyString(), any());
         verify(outboxRepository, never()).markFailed(anyLong(), any(), anyString(), any());
@@ -108,7 +108,7 @@ class OutboxPollerTest {
     @Test
     void processEntry_revokeHappyPath_deletesTupleAndCASMarksProcessed() {
         Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
-        DataAccessScopeOutboxEntry entry = revokeEntry(102L, 1, "wc-company-1001", "company");
+        DataAccessScopeOutboxEntry entry = revokeEntry(102L, 1, "wc-our-company-1", "company");
 
         poller.processEntry(entry, lockToken);
 
@@ -116,14 +116,14 @@ class OutboxPollerTest {
                 eq("11111111-1111-1111-1111-111111111111"),
                 eq("viewer"),
                 eq("company"),
-                eq("wc-company-1001"));
+                eq("wc-our-company-1"));
         verify(outboxRepository).markProcessed(eq(102L), any(Instant.class), eq("test-poller"), eq(lockToken));
     }
 
     @Test
     void processEntry_fgaFailure_belowMaxAttempts_CASSchedulesRetry() {
         Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
-        DataAccessScopeOutboxEntry entry = grantEntry(103L, 1, "wc-company-1001", "company");
+        DataAccessScopeOutboxEntry entry = grantEntry(103L, 1, "wc-our-company-1", "company");
         doThrow(new RuntimeException("openfga down"))
                 .when(authzService).writeTuple(any(), any(), any(), any());
         Instant nextAt = Instant.parse("2026-04-28T12:00:30Z");
@@ -141,7 +141,7 @@ class OutboxPollerTest {
     @Test
     void processEntry_fgaFailure_atMaxAttempts_CASMarksTerminalFailed() {
         Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
-        DataAccessScopeOutboxEntry entry = grantEntry(104L, 3, "wc-company-1001", "company");
+        DataAccessScopeOutboxEntry entry = grantEntry(104L, 3, "wc-our-company-1", "company");
         // attemptCount 3 == maxAttempts 3 — terminal on next failure
         doThrow(new RuntimeException("openfga gone"))
                 .when(authzService).writeTuple(any(), any(), any(), any());
@@ -159,7 +159,7 @@ class OutboxPollerTest {
     @Test
     void processEntry_casMissOnFinalize_logsButDoesNotThrow() {
         Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
-        DataAccessScopeOutboxEntry entry = grantEntry(105L, 1, "wc-company-1001", "company");
+        DataAccessScopeOutboxEntry entry = grantEntry(105L, 1, "wc-our-company-1", "company");
         // Simulate stale-worker: another poller already reclaimed and
         // finalized the row, so our CAS UPDATE matches no rows.
         when(outboxRepository.markProcessed(anyLong(), any(), anyString(), any()))
@@ -187,7 +187,7 @@ class OutboxPollerTest {
     void pollAndProcess_claimedBatch_processesEachWithItsLockToken() {
         Instant tokenE1 = Instant.parse("2026-04-28T12:02:00Z");
         Instant tokenE2 = Instant.parse("2026-04-28T12:02:01Z");
-        DataAccessScopeOutboxEntry e1 = grantEntry(201L, 1, "wc-company-1001", "company");
+        DataAccessScopeOutboxEntry e1 = grantEntry(201L, 1, "wc-our-company-1", "company");
         e1.setLockedUntil(tokenE1);
         DataAccessScopeOutboxEntry e2 = revokeEntry(202L, 1, "wc-project-1204", "project");
         e2.setLockedUntil(tokenE2);
@@ -196,7 +196,7 @@ class OutboxPollerTest {
 
         poller.pollAndProcess();
 
-        verify(authzService).writeTuple(any(), any(), eq("company"), eq("wc-company-1001"));
+        verify(authzService).writeTuple(any(), any(), eq("company"), eq("wc-our-company-1"));
         verify(authzService).deleteTuple(any(), any(), eq("project"), eq("wc-project-1204"));
         // Each entry's CAS finalize must use ITS OWN lock token from the claim,
         // not a pollAndProcess-wide value — Codex 019dd0e0 iter-2 BLOCKER 3.

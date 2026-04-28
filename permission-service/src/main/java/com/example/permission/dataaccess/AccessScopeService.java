@@ -194,8 +194,16 @@ public class AccessScopeService {
     }
 
     private static String expectedSourceTable(DataAccessScope.ScopeKind kind) {
+        // V25 (Codex 019dd34e hybrid contract): COMPANY anchor changed from
+        // workcube_mikrolink.COMPANY (80,246-row directory; tenant-blind) to
+        // workcube_mikrolink.OUR_COMPANY (Workcube tenant table, COMP_ID PK).
+        // The V25 CHECK constraint scope_kind_source_table_consistent enforces
+        // this pairing; sending the legacy 'COMPANY' string here causes the
+        // constraint to reject the INSERT before the trigger validate_scope_ref
+        // even runs. See ADR-0008 § "Object id encoding" + V25 migration
+        // (sql/migration/V25__tenant_anchor_fix.sql).
         return switch (kind) {
-            case COMPANY -> "COMPANY";
+            case COMPANY -> "OUR_COMPANY";
             case PROJECT -> "PRO_PROJECTS";
             case BRANCH -> "BRANCH";
             case DEPOT -> "DEPARTMENT";

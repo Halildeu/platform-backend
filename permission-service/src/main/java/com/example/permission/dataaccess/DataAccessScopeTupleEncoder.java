@@ -44,7 +44,14 @@ public final class DataAccessScopeTupleEncoder {
         String firstRef = parseFirstRef(scope.getScopeRef());
 
         ObjectMapping mapping = switch (scope.getScopeKind()) {
-            case COMPANY -> new ObjectMapping("company", "wc-company-" + firstRef);
+            // V25 (ADR-0008 § "Object id encoding" update; Codex 019dd34e
+            // hybrid contract): company tuples now anchor to OUR_COMPANY,
+            // so the FGA object id prefix flips from 'wc-company-' to
+            // 'wc-our-company-'. firstRef is the OUR_COMPANY.COMP_ID
+            // (canonical ETL form: scope_ref='["1"]' → firstRef="1" →
+            // objectId="wc-our-company-1"). The OpenFGA object TYPE
+            // ("company") is stable — only the id namespace moved.
+            case COMPANY -> new ObjectMapping("company", "wc-our-company-" + firstRef);
             case PROJECT -> new ObjectMapping("project", "wc-project-" + firstRef);
             case BRANCH -> new ObjectMapping("branch", "wc-branch-" + firstRef);
             // ADR-0008 § Naming: PG 'depot' → OpenFGA 'warehouse';

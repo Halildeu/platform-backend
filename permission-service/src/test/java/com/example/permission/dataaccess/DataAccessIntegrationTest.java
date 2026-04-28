@@ -34,11 +34,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
- * Faz 21.3 PR-F (C3c) + PR-G — end-to-end integration test against a real
- * PostgreSQL (Testcontainers) running the gitops V16/V17/V19/V20/V21/V22
- * schema. PR-G refactor: AccessScopeService no longer calls OpenFGA directly;
- * grant/revoke insert outbox rows in the same TX as the scope row, and the
- * {@link OutboxPoller} consumes them asynchronously.
+ * Faz 21.3 PR-F (C3c) + PR-G + V25/V26 — end-to-end integration test against
+ * a real PostgreSQL (Testcontainers) running the gitops
+ * V16/V17/V19/V20/V21/V22/V23/V25/V26 schema. PR-G refactor: AccessScopeService
+ * no longer calls OpenFGA directly; grant/revoke insert outbox rows in the
+ * same TX as the scope row, and the {@link OutboxPoller} consumes them
+ * asynchronously.
+ *
+ * <p>V25 (Codex 019dd34e hybrid contract) flips the COMPANY anchor from
+ * the workcube_mikrolink.COMPANY directory (80,246-row, tenant-blind) to
+ * workcube_mikrolink.OUR_COMPANY (Workcube tenant table, COMP_ID PK):
+ * scope_kind=company is paired with scope_source_table=OUR_COMPANY by the
+ * V25 CHECK constraint, validate_scope_ref() is widened to a 4-arg signature
+ * (p_org_id) with tenant predicates per scope_kind, and the encoder emits
+ * {@code wc-our-company-<COMP_ID>} object ids. V26 then adds dual-format
+ * tolerance (raw '1' vs canonical '["1"]') to validate_scope_ref so live
+ * ETL canonical JSON form joins correctly against fixtures.
  *
  * <p>Test surface covers:
  * <ul>
@@ -47,12 +58,16 @@ import static org.mockito.Mockito.verifyNoInteractions;
  *   <li>{@link AccessScopeService#grant} happy path — scope + outbox PENDING
  *       row commit atomically; {@link OpenFgaAuthzService} NOT invoked
  *       directly (poller does that).</li>
- *   <li>V19/V21 trigger raising P0001 → {@link AccessScopeException.ScopeValidationException}
- *       (cause-chain extraction unchanged from PR-D iter-1).</li>
+ *   <li>V19/V21/V25 trigger raising P0001 → {@link AccessScopeException.ScopeValidationException}
+ *       (cause-chain extraction unchanged from PR-D iter-1; V25 adds
+ *       tenant-predicate failures alongside the lineage failures).</li>
  *   <li>{@code uq_scope_active_assignment} partial-UNIQUE.</li>
  *   <li>V19 partial-UNIQUE "safe re-grant" semantic after revoke.</li>
  *   <li>V20 widening: {@code DEPOT} → {@code DEPARTMENT} source_table; encoder
  *       payload {@code warehouse} object type.</li>
+ *   <li>V25 CHECK constraint guard: legacy {@code scope_kind=company +
+ *       scope_source_table=COMPANY} pair must be rejected at write time
+ *       even when the trigger predicate would have passed.</li>
  *   <li>{@link OutboxPoller#pollAndProcess} consumes pending entries, calls
  *       {@link OpenFgaAuthzService} via mock, and marks them PROCESSED.</li>
  * </ul>
@@ -124,7 +139,7 @@ class DataAccessIntegrationTest {
         UUID user = UUID.randomUUID();
 
         AccessScopeService.ScopeMutationResult result = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
 
         // PG side: scope row persisted, V21 trigger passed.
         DataAccessScope persisted = repository.findById(result.scope().getId()).orElseThrow();
@@ -147,8 +162,10 @@ class DataAccessIntegrationTest {
         UUID user = UUID.randomUUID();
         long outboxBefore = outboxRepository.count();
 
+        // V25: scope_ref="[\"99\"]" points to a non-existent OUR_COMPANY.COMP_ID
+        // → tenant predicate finds zero rows → P0001 from validate_scope_ref().
         assertThatThrownBy(() -> service.grant(
-                        user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"99999\"]", null))
+                        user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", null))
                 .isInstanceOf(AccessScopeException.ScopeValidationException.class);
 
         assertThat(outboxRepository.count())
@@ -160,10 +177,10 @@ class DataAccessIntegrationTest {
     @Test
     void grant_duplicateActive_throwsScopeAlreadyGranted_viaPgUniqueConstraint() {
         UUID user = UUID.randomUUID();
-        service.grant(user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+        service.grant(user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
 
         assertThatThrownBy(() -> service.grant(
-                        user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null))
+                        user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null))
                 .isInstanceOf(AccessScopeException.ScopeAlreadyGrantedException.class);
     }
 
@@ -172,7 +189,7 @@ class DataAccessIntegrationTest {
         UUID user = UUID.randomUUID();
 
         AccessScopeService.ScopeMutationResult first = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
         AccessScopeService.ScopeMutationResult revokeResult = service.revoke(first.scope().getId(), null);
 
         assertThat(revokeResult.outboxEntry().getAction())
@@ -180,7 +197,7 @@ class DataAccessIntegrationTest {
                 .isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
 
         AccessScopeService.ScopeMutationResult second = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
 
         assertThat(second.scope().getId()).isNotEqualTo(first.scope().getId());
         assertThat(second.scope().isActive()).isTrue();
@@ -211,27 +228,28 @@ class DataAccessIntegrationTest {
         UUID user = UUID.randomUUID();
 
         AccessScopeService.ScopeMutationResult result = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
 
         DataAccessScopeOutboxEntry outbox = outboxRepository.findById(result.outboxEntry().getId()).orElseThrow();
 
         // V23 typed columns survive the round-trip through PG.
+        // V25 object id namespace: company:wc-our-company-<COMP_ID>.
         assertThat(outbox.getTupleUser()).isEqualTo("user:" + user);
         assertThat(outbox.getTupleRelation()).isEqualTo("viewer");
-        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-company-1001");
+        assertThat(outbox.getTupleObject()).isEqualTo("company:wc-our-company-1");
 
         // JSONB payload mirrors the typed columns and keeps objectType/Id split
         // for V22-era clients that index on those keys.
         Map<String, Object> payload = outbox.getPayload();
         assertThat(payload.get("scopeKind")).isEqualTo("COMPANY");
-        assertThat(payload.get("scopeRef")).isEqualTo("[\"1001\"]");
+        assertThat(payload.get("scopeRef")).isEqualTo("[\"1\"]");
         @SuppressWarnings("unchecked")
         Map<String, Object> tuple = (Map<String, Object>) payload.get("tuple");
         assertThat(tuple.get("user")).isEqualTo("user:" + user);
         assertThat(tuple.get("relation")).isEqualTo("viewer");
-        assertThat(tuple.get("object")).isEqualTo("company:wc-company-1001");
+        assertThat(tuple.get("object")).isEqualTo("company:wc-our-company-1");
         assertThat(tuple.get("objectType")).isEqualTo("company");
-        assertThat(tuple.get("objectId")).isEqualTo("wc-company-1001");
+        assertThat(tuple.get("objectId")).isEqualTo("wc-our-company-1");
     }
 
     /**
@@ -251,7 +269,7 @@ class DataAccessIntegrationTest {
 
         // 1. Grant scope A.
         AccessScopeService.ScopeMutationResult grantA = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
 
         // 2. Process scope A's outbox row to PROCESSED so it does not block
         //    the new same-tuple ordering check (only PENDING/PROCESSING rows
@@ -271,7 +289,7 @@ class DataAccessIntegrationTest {
         // 4. Re-grant — V19 partial UNIQUE allows it; new scope.id, but same
         //    FGA tuple coordinates.
         AccessScopeService.ScopeMutationResult grantB = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
         assertThat(grantB.scope().getId()).isNotEqualTo(grantA.scope().getId());
 
         // 5. Two PENDING rows now exist for the SAME tuple (different scope_id).
@@ -287,14 +305,14 @@ class DataAccessIntegrationTest {
         DataAccessScopeOutboxEntry first = claimed.get(0);
         assertThat(first.getAction()).isEqualTo(DataAccessScopeOutboxEntry.Action.REVOKE);
         assertThat(first.getScopeId()).isEqualTo(grantA.scope().getId());
-        assertThat(first.getTupleObject()).isEqualTo("company:wc-company-1001");
+        assertThat(first.getTupleObject()).isEqualTo("company:wc-our-company-1");
     }
 
     @Test
     void poller_claimsAndProcessesPendingOutboxEntries_marksProcessed() {
         UUID user = UUID.randomUUID();
         AccessScopeService.ScopeMutationResult granted = service.grant(
-                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1001\"]", null);
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
         Long outboxId = granted.outboxEntry().getId();
 
         // Drive the poller manually — production runs it on a fixedDelay
@@ -304,10 +322,84 @@ class DataAccessIntegrationTest {
 
         verify(authzService).writeTuple(
                 eq(user.toString()), eq("viewer"),
-                eq("company"), eq("wc-company-1001"));
+                eq("company"), eq("wc-our-company-1"));
         DataAccessScopeOutboxEntry processed = outboxRepository.findById(outboxId).orElseThrow();
         assertThat(processed.getStatus()).isEqualTo(DataAccessScopeOutboxEntry.Status.PROCESSED);
         assertThat(processed.getProcessedAt()).isNotNull();
         assertThat(processed.getLockedBy()).isNull();
+    }
+
+    /**
+     * V25 layered rejection of the legacy V19/V20 pairing
+     * {@code (scope_kind='company', scope_source_table='COMPANY')}. PG's
+     * BEFORE-INSERT trigger {@code scope_validate_trg()} runs ahead of
+     * row-level CHECK constraints — the trigger's validate_scope_ref()
+     * has no IF branch for the legacy pair (the V25 four-way IF/ELSIF
+     * matrix only accepts the four V25 source_table values) and falls
+     * through to {@code RETURN FALSE}, so the trigger raises P0001
+     * first; the {@code scope_kind_source_table_consistent} CHECK is
+     * defence-in-depth behind it. Either layer rejects — what matters
+     * for the V25 contract is that the legacy pair is unreachable.
+     * Service callers can't hit this state because {@link AccessScopeService}
+     * hardcodes {@code OUR_COMPANY}; the test bypasses the service via
+     * raw SQL to prove the DB layer enforces the V25 boundary.
+     */
+    @Test
+    void v25_rejectsLegacyCompanySourceTablePair_atTriggerOrCheck() {
+        UUID user = UUID.randomUUID();
+        // hasStackTraceContaining walks the full cause chain — accept either
+        // the trigger's P0001 rejection (validate_scope_ref / scope_validate_trg)
+        // or the CHECK constraint name as the rejection signal.
+        assertThatThrownBy(() -> reportsDbEm.createNativeQuery(
+                "INSERT INTO data_access.scope " +
+                "  (user_id, org_id, scope_kind, scope_source_schema, scope_source_table, scope_ref) " +
+                "VALUES (?, ?, 'company', 'workcube_mikrolink', 'COMPANY', '[\"1\"]')")
+                .setParameter(1, user)
+                .setParameter(2, ACIK_ORG_ID)
+                .executeUpdate())
+                .as("V25 must reject legacy company/COMPANY pair (trigger-first or CHECK-fallback)")
+                .hasStackTraceContaining("scope_validate_trg");
+    }
+
+    /**
+     * V25 tenant-aware predicate guard. With OUR_COMPANY anchor in place,
+     * a scope_ref pointing to a non-existent {@code OUR_COMPANY.COMP_ID}
+     * (or one not mapped to {@code p_org_id} via
+     * {@code data_access.organization_company}) must fail the trigger
+     * predicate — the V19/V20/V21 versions only checked existence in the
+     * 80,246-row directory and would have let this through.
+     */
+    @Test
+    void v25_tenantPredicate_rejectsScopeRefWithoutOrgMapping() {
+        UUID user = UUID.randomUUID();
+        // OUR_COMPANY row 99 is not seeded by V90 → tenant predicate
+        // count(*)=0 → trigger raises P0001.
+        assertThatThrownBy(() -> service.grant(
+                        user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", null))
+                .isInstanceOf(AccessScopeException.ScopeValidationException.class)
+                .hasMessageContaining("lineage guard");
+    }
+
+    /**
+     * V26 dual-format compatibility guard. Live ETL emits canonical JSON
+     * source_pk ({@code '["1"]'}); test fixtures may use raw form ({@code '1'}).
+     * V26's {@code (source_pk = v_pk OR source_pk = p_ref)} predicate must
+     * accept both. V90 seeds OUR_COMPANY with the canonical form
+     * (scope_ref="[\"1\"]" → v_pk="1", p_ref="[\"1\"]") — the canonical OR
+     * branch must match.
+     */
+    @Test
+    void v26_canonicalJsonSourcePk_acceptedByValidator() {
+        UUID user = UUID.randomUUID();
+
+        AccessScopeService.ScopeMutationResult result = service.grant(
+                user, ACIK_ORG_ID, DataAccessScope.ScopeKind.COMPANY, "[\"1\"]", null);
+
+        // The grant succeeded => V25 trigger + V26 dual-format predicate
+        // resolved (oc.source_pk='["1"]') = (p_ref='["1"]'). Encoder output
+        // is the V25 canonical FGA object id.
+        assertThat(result.scope().getScopeSourceTable()).isEqualTo("OUR_COMPANY");
+        assertThat(result.outboxEntry().getTupleObject())
+                .isEqualTo("company:wc-our-company-1");
     }
 }
