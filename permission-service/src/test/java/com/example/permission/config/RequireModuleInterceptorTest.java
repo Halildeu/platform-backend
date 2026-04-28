@@ -232,6 +232,77 @@ class RequireModuleInterceptorTest {
     }
 
     // ---------------------------------------------------------------------
+    // superAdmin bypass (2026-04-29 — organization:default#admin tuple holders
+    // bypass module-level guards, mirroring /api/v1/authz/me checkOrganizationAdmin)
+    // ---------------------------------------------------------------------
+
+    @Test
+    @DisplayName("preHandle BYPASSES module check when user is organization:default#admin")
+    void preHandleBypassesOnOrganizationAdmin() throws Exception {
+        Jwt jwt = jwtWithNumericUserId(1204L, "d35-admin@example.com");
+        setSecurityContext(jwt);
+        when(lookupService.resolve(jwt)).thenReturn(new ResolvedAuthenticatedUser(1204L, "1204", "d35-admin@example.com"));
+        // Organization admin tuple matches → bypass
+        when(authzService.check(eq("1204"), eq("admin"), eq("organization"), eq("default"))).thenReturn(true);
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        HandlerMethod handler = handlerFor("withCanonicalCanManage");
+
+        boolean result = interceptor.preHandle(request, response, handler);
+
+        assertThat(result).isTrue();
+        // organization-level check called (bypass path)
+        verify(authzService).check(eq("1204"), eq("admin"), eq("organization"), eq("default"));
+        // module-level check NOT called (bypass)
+        verify(authzService, never()).check(eq("1204"), eq("can_manage"), eq("module"), eq("ACCESS"));
+    }
+
+    @Test
+    @DisplayName("preHandle FALLS THROUGH to module check when user is NOT organization admin")
+    void preHandleFallsThroughWhenNotOrgAdmin() throws Exception {
+        Jwt jwt = jwtWithNumericUserId(1205L, "d35-granted@example.com");
+        setSecurityContext(jwt);
+        when(lookupService.resolve(jwt)).thenReturn(new ResolvedAuthenticatedUser(1205L, "1205", "d35-granted@example.com"));
+        // Not org admin
+        when(authzService.check(eq("1205"), eq("admin"), eq("organization"), eq("default"))).thenReturn(false);
+        // Module-level grants can_view
+        when(authzService.check(eq("1205"), eq("can_view"), eq("module"), eq("ACCESS"))).thenReturn(true);
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        HandlerMethod handler = handlerFor("withCanonicalCanView");
+
+        boolean result = interceptor.preHandle(request, response, handler);
+
+        assertThat(result).isTrue();
+        verify(authzService).check(eq("1205"), eq("admin"), eq("organization"), eq("default"));
+        verify(authzService).check(eq("1205"), eq("can_view"), eq("module"), eq("ACCESS"));
+    }
+
+    @Test
+    @DisplayName("preHandle SAFE FALL-THROUGH when organization admin check throws (no panic, module check evaluated)")
+    void preHandleFallsThroughWhenOrgAdminCheckFails() throws Exception {
+        Jwt jwt = jwtWithNumericUserId(1204L, "d35-admin@example.com");
+        setSecurityContext(jwt);
+        when(lookupService.resolve(jwt)).thenReturn(new ResolvedAuthenticatedUser(1204L, "1204", "d35-admin@example.com"));
+        // Organization-level OpenFGA call throws (network glitch, OpenFGA hiccup)
+        when(authzService.check(eq("1204"), eq("admin"), eq("organization"), eq("default")))
+                .thenThrow(new RuntimeException("simulated openfga outage"));
+        // Module-level still works → grant via direct module tuple
+        when(authzService.check(eq("1204"), eq("can_manage"), eq("module"), eq("ACCESS"))).thenReturn(true);
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        HandlerMethod handler = handlerFor("withCanonicalCanManage");
+
+        boolean result = interceptor.preHandle(request, response, handler);
+
+        assertThat(result).isTrue();
+        verify(authzService).check(eq("1204"), eq("can_manage"), eq("module"), eq("ACCESS"));
+    }
+
+    // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
 

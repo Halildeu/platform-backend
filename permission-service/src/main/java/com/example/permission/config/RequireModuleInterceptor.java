@@ -102,6 +102,18 @@ public class RequireModuleInterceptor implements HandlerInterceptor {
         String declaredRelation = annotation.relation();
         String resolvedRelation = mapToOpenFgaRelation(declaredRelation);
 
+        // 2026-04-29: superAdmin bypass — `organization:default#admin` tuple
+        // sahibi (organization-level admin) tüm modül guard'larından geçer.
+        // Bu, /api/v1/authz/me'nin checkOrganizationAdmin pattern'i ile uyumlu;
+        // iki authz path eşitlenir. D35-3 closure flow'unda iki path arası
+        // tutarsızlık tespit edildi (frontend superAdmin: true gösteriyor ama
+        // RequireModule guard her modül için ayrı tuple arıyordu).
+        if (isOrganizationAdmin(userId)) {
+            log.debug("RequireModule SUPER-ADMIN BYPASS: user={} module={} relation={} (declared={}) — organization:default#admin",
+                    userId, module, resolvedRelation, declaredRelation);
+            return true;
+        }
+
         boolean allowed = authzService.check(userId, resolvedRelation, "module", module);
 
         if (!allowed) {
@@ -115,6 +127,21 @@ public class RequireModuleInterceptor implements HandlerInterceptor {
 
         log.debug("RequireModule PASS: user={} module={} relation={} (declared={})", userId, module, resolvedRelation, declaredRelation);
         return true;
+    }
+
+    /**
+     * Checks if the user is organization-level admin (mirrors AuthorizationControllerV1.checkOrganizationAdmin).
+     * Uses OpenFGA tuple `user:<id>` `admin` `organization:default`. Failures pass
+     * through to module-level check (fail-open by skipping bypass; fail-closed at module level).
+     */
+    boolean isOrganizationAdmin(String userId) {
+        try {
+            return authzService.check(userId, "admin", "organization", "default");
+        } catch (RuntimeException ex) {
+            log.warn("RequireModule organization admin check failed (fall through to module check): user={} cause={}",
+                    userId, ex.getMessage());
+            return false;
+        }
     }
 
     /**
