@@ -1,8 +1,12 @@
 package com.example.permission.config;
 
+import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
+import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
+import java.util.ArrayList;
+import java.util.List;
 import com.example.permission.repository.PermissionRepository;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.RoleRepository;
@@ -72,6 +76,63 @@ public class PermissionDataInitializer implements CommandLineRunner {
             Map.entry("scope.all-companies-hr", new PermissionDefinition("Bypass company filter for HR reports", "scope")),
             Map.entry("scope.all-companies-fin", new PermissionDefinition("Bypass company filter for finance reports", "scope"))
     );
+
+    // Codex 019dda1c iter-27: dashboard-level granule defaults seeded directly
+    // (permission_id IS NULL, type/key/grant explicit). The legacy
+    // DEFAULT_ROLE_PERMISSIONS code path needs entries to exist in the
+    // DEFAULT_PERMISSIONS table; per-dashboard keys (HR_ANALYTICS, ...) are
+    // not Permission entities, so we have to seed them as raw granule rows.
+    //
+    // Mirrors PermissionCatalogService.REPORTS — same upper-snake keys, same
+    // category split (9 İK + 3 Finans).
+    private static final List<String> DEFAULT_HR_DASHBOARD_KEYS = List.of(
+            "HR_ANALYTICS", "HR_FINANSAL", "HR_EQUITY_RISK",
+            "HR_BENEFITS_LITE", "HR_COMPENSATION", "HR_SALARY_ANALYTICS",
+            "HR_PAYROLL_TRENDS", "HR_DEMOGRAFIK", "HR_EXECUTIVE_SUMMARY"
+    );
+    private static final List<String> DEFAULT_FIN_DASHBOARD_KEYS = List.of(
+            "FIN_ANALYTICS", "FIN_RATIOS", "FIN_RECONCILIATION"
+    );
+
+    private record GranuleSeed(
+            PermissionType type,
+            String key,
+            GrantType grant) {}
+
+    private static final Map<String, List<GranuleSeed>> DEFAULT_ROLE_GRANULES = Map.ofEntries(
+            Map.entry("ADMIN",           buildDashboardGranules(
+                    GrantType.MANAGE,
+                    DEFAULT_HR_DASHBOARD_KEYS, DEFAULT_FIN_DASHBOARD_KEYS)),
+            Map.entry("REPORT_MANAGER",  buildDashboardGranules(
+                    GrantType.MANAGE,
+                    DEFAULT_HR_DASHBOARD_KEYS, DEFAULT_FIN_DASHBOARD_KEYS)),
+            // REPORT_VIEWER intentionally gets every dashboard at VIEW level —
+            // a "viewer" who can't open any dashboard would be a surprising
+            // role contract for users assigning it from the drawer.
+            Map.entry("REPORT_VIEWER",   buildDashboardGranules(
+                    GrantType.VIEW,
+                    DEFAULT_HR_DASHBOARD_KEYS, DEFAULT_FIN_DASHBOARD_KEYS)),
+            Map.entry("FINANCE_MANAGER", buildDashboardGranules(
+                    GrantType.MANAGE,
+                    DEFAULT_FIN_DASHBOARD_KEYS)),
+            Map.entry("FINANCE_VIEWER",  buildDashboardGranules(
+                    GrantType.VIEW,
+                    DEFAULT_FIN_DASHBOARD_KEYS))
+    );
+
+    @SafeVarargs
+    private static List<GranuleSeed> buildDashboardGranules(
+            GrantType grant,
+            List<String>... keyLists) {
+        List<GranuleSeed> out = new ArrayList<>();
+        for (List<String> keys : keyLists) {
+            for (String key : keys) {
+                out.add(new GranuleSeed(
+                        PermissionType.REPORT, key, grant));
+            }
+        }
+        return List.copyOf(out);
+    }
 
     // P1-B: Simplified role→permission mapping using groups
     private static final Map<String, Set<String>> DEFAULT_ROLE_PERMISSIONS = Map.ofEntries(
@@ -216,6 +277,44 @@ public class PermissionDataInitializer implements CommandLineRunner {
                         rolePermissionRepository.save(rolePermission);
                         log.info("Linked permission {} to role {}", permission.getCode(), role.getName());
                     });
+        });
+
+        // Codex 019dda1c iter-27: direct granule seed for the per-dashboard
+        // permissions introduced in iter-26. Pre-iter-27 admin/finance/report
+        // roles only carried coarse "REPORT_VIEW / REPORT_MANAGE" Permission
+        // FK rows, so users assigned to those roles couldn't see any of the
+        // 12 individual dashboards. We can't drive this through the legacy
+        // DEFAULT_PERMISSIONS table because the per-dashboard keys are not
+        // Permission entities — they are granule shortcuts owned by the
+        // PermissionCatalogService. Seed them as raw role_permissions rows
+        // (permission_id IS NULL) keyed on (role_id, type, key); idempotent
+        // via the partial unique index uk_role_permissions_role_granule.
+        DEFAULT_ROLE_GRANULES.forEach((roleName, granules) -> {
+            String normalizedRoleName = roleName.toUpperCase();
+            Role role = existingRoles.get(normalizedRoleName);
+            if (role == null) {
+                // Role wasn't created by the legacy seed loop above (e.g. the
+                // role mapping is missing from DEFAULT_ROLE_PERMISSIONS). Skip
+                // silently — granule seeding shouldn't materialize new roles
+                // by itself, that's the legacy pass's job.
+                return;
+            }
+            // Existing granule rows for this role (permission_id IS NULL).
+            Set<String> existingGranuleKeys = role.getRolePermissions().stream()
+                    .filter(rp -> rp.getPermission() == null)
+                    .filter(rp -> rp.getPermissionType() != null && rp.getPermissionKey() != null)
+                    .map(rp -> rp.getPermissionType().name() + ":" + rp.getPermissionKey())
+                    .collect(Collectors.toSet());
+
+            for (GranuleSeed seed : granules) {
+                String dedupKey = seed.type().name() + ":" + seed.key();
+                if (existingGranuleKeys.contains(dedupKey)) continue;
+                RolePermission rolePermission = new RolePermission(
+                        role, seed.type(), seed.key(), seed.grant());
+                rolePermissionRepository.save(rolePermission);
+                log.info("Seeded default granule {}/{}/{} for role {}",
+                        seed.type(), seed.key(), seed.grant(), normalizedRoleName);
+            }
         });
     }
 
