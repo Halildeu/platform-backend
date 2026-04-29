@@ -232,6 +232,64 @@ public class AccessControllerV1 {
      * Update role permissions with 5-granule format + DENY support.
      * Triggers tuple propagation for all assigned users.
      */
+    /**
+     * Codex 019dda05 iter-25: typed read endpoint for role granules.
+     * Companion to {@link #updateRoleGranules}; the role drawer's source-of-
+     * truth query. Returns every granule-shape row (MODULE / ACTION / REPORT)
+     * for the role, deterministically ordered.
+     *
+     * <p>Read-after-write semantics: a successful {@code PUT /granules}
+     * followed by this {@code GET /granules} yields exactly the granules
+     * just saved. This closes the regression where mfe-access drawer's
+     * REPORT/ACTION selects rendered "Yetki Yok" after a save round-trip
+     * because {@code GET /v1/roles/{id}} (RoleDto) only exposed module-
+     * level summaries in {@code policies}.
+     *
+     * <p>Filter: {@code rp.getPermission() == null} (granule rows only).
+     * Legacy FK rows remain exposed via {@code AccessRoleDto.permissions}.
+     *
+     * <p>Sort: MODULE → ACTION → REPORT, then alphabetic by key. Stable
+     * across reloads so drawer UI doesn't flicker.
+     */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    @GetMapping("/{roleId}/granules")
+    @RequireModule(value = "ACCESS", relation = "can_view")
+    public ResponseEntity<com.example.permission.dto.v1.RoleGranulesDto> getRoleGranules(@PathVariable Long roleId) {
+        var role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Role not found: " + roleId));
+
+        java.util.Comparator<com.example.permission.model.RolePermission> typeOrder =
+                java.util.Comparator.comparingInt(rp -> {
+                    var t = rp.getPermissionType();
+                    if (t == null) return Integer.MAX_VALUE;
+                    return switch (t) {
+                        case MODULE -> 0;
+                        case ACTION -> 1;
+                        case REPORT -> 2;
+                    };
+                });
+        java.util.Comparator<com.example.permission.model.RolePermission> keyOrder =
+                java.util.Comparator.comparing(
+                        com.example.permission.model.RolePermission::getPermissionKey,
+                        java.util.Comparator.nullsLast(String::compareTo));
+
+        List<com.example.permission.dto.v1.RolePermissionItemDto> granules =
+                role.getRolePermissions().stream()
+                        .filter(rp -> rp.getPermission() == null)
+                        .filter(rp -> rp.getPermissionType() != null)
+                        .filter(rp -> rp.getPermissionKey() != null && !rp.getPermissionKey().isBlank())
+                        .filter(rp -> rp.getGrantType() != null)
+                        .sorted(typeOrder.thenComparing(keyOrder))
+                        .map(rp -> new com.example.permission.dto.v1.RolePermissionItemDto(
+                                rp.getPermissionType().name(),
+                                rp.getPermissionKey(),
+                                rp.getGrantType().name()
+                        ))
+                        .toList();
+
+        return ResponseEntity.ok(new com.example.permission.dto.v1.RoleGranulesDto(roleId, granules));
+    }
+
     @org.springframework.transaction.annotation.Transactional
     @PutMapping("/{roleId}/granules")
     @RequireModule(value = "ACCESS", relation = "can_manage")
