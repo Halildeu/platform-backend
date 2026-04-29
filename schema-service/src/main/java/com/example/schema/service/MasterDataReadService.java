@@ -41,10 +41,16 @@ public class MasterDataReadService {
     public MasterDataReadService(
             NamedParameterJdbcTemplate jdbc,
             @Value("${schema.master-data.schema:${schema.default-schema:workcube_mikrolink}}") String schemaName,
-            @Value("${schema.master-data.limit:1000}") int rowLimit) {
+            @Value("${schema.master-data.limit:50000}") int rowLimit) {
         this.jdbc = jdbc;
         this.schemaName = schemaName;
-        this.rowLimit = Math.min(Math.max(rowLimit, 1), 5000); // hard cap at 5k regardless of config
+        // Codex 019dda1c iter-30f: cap raised from 5000 → 100000 because the
+        // user reported projects and warehouses are still missing rows. Live
+        // Workcube cardinalities exceed the previous 5k cap (projects sit
+        // around 5k+ in production tenants). The hard cap is a safety net,
+        // not a paging boundary; the public default in @Value above is 50k
+        // which covers every observed table on testai.
+        this.rowLimit = Math.min(Math.max(rowLimit, 1), 100000);
     }
 
     /**
@@ -101,26 +107,29 @@ public class MasterDataReadService {
             // is sparsely populated or DEPARTMENT._DEPARTMENT_NAME_ID is
             // mostly NULL.
             //
-            // iter-30b: 3-level COALESCE — try the lookup name first, then
-            // fall back to DEPARTMENT_DETAIL, then DEPARTMENT_HEAD.
+            // iter-30f: name source priority swapped — DEPARTMENT_HEAD now
+            // comes BEFORE DEPARTMENT_DETAIL. The Workcube screenshot the
+            // user shared shows the "Depolama Alanları" page rendering
+            // values like "Çanakkale Hilton Deposu", "2022_P05_Maslak Veri
+            // Merkezi" — those are DEPARTMENT_HEAD entries (Workcube uses
+            // "head" as "title", not "manager"). DEPARTMENT_DETAIL is the
+            // free-form description column where users sometimes paste
+            // addresses (the "10035 Sokak No:5 ..." rows in iter-30b/30c
+            // smoke). Picking HEAD before DETAIL recovers the human label.
             //
-            // iter-30c: filter to physical-storage departments only via the
-            // IS_STORE flag. Workcube DEPARTMENT is a multi-purpose entity
-            // (HR org units + production zones + warehouses); the drawer's
-            // "Depolar" tab should only surface IS_STORE=1 rows. Without
-            // this filter a 1000-row dump was leaking HR departments into
-            // the warehouse-scope picker. Pre-iter-30c the smoke output
-            // showed entries like "10035 Sokak No:5 Atatürk OSB" — those
-            // are address strings on org-unit rows, not actual stores.
-            // SPECIAL_CODE is still surfaced as the code prefix.
+            // SETUP_DEPARTMENT_NAME lookup stays first (most authoritative
+            // when populated). DEPARTMENT_DETAIL is the last-resort fallback.
+            //
+            // IS_STORE=1 filter preserved (iter-30c) so HR org-units and
+            // production zones don't leak into the warehouse picker.
             "departments", new TableMapping("""
                     SELECT TOP (%1$d)
                         d.[DEPARTMENT_ID] AS id,
                         d.[SPECIAL_CODE]  AS code,
                         COALESCE(
                             NULLIF(LTRIM(RTRIM(dn.[DEPARTMENT_NAME])), ''),
-                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), ''),
-                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), '')
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), ''),
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), '')
                         ) AS name,
                         COALESCE(d.[DEPARTMENT_STATUS], 1) AS status
                     FROM [%2$s].[DEPARTMENT] d
@@ -129,8 +138,8 @@ public class MasterDataReadService {
                     WHERE d.[IS_STORE] = 1
                       AND COALESCE(
                             NULLIF(LTRIM(RTRIM(dn.[DEPARTMENT_NAME])), ''),
-                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), ''),
-                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), '')
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), ''),
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), '')
                           ) IS NOT NULL
                     ORDER BY name, d.[DEPARTMENT_ID]
                     """)
