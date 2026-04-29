@@ -403,6 +403,23 @@ public class AccessControllerV1 {
             String typeUp = item.type().trim().toUpperCase(java.util.Locale.ROOT);
             String key = item.key().trim();
             String grantUp = item.grant().trim().toUpperCase(java.util.Locale.ROOT);
+
+            // Codex 019dda1c iter-28 (E1 follow-up): enum membership check
+            // before the downstream PermissionType.valueOf / GrantType.valueOf
+            // calls. Without this, a payload with an unknown {type:"BANANA"}
+            // or {grant:"YOLO"} reaches valueOf and throws
+            // IllegalArgumentException, which the global handler renders as
+            // a 500 "Beklenmeyen bir hata oluştu". Per-frontend contract this
+            // should be a deterministic 400.
+            if (!isValidPermissionType(typeUp)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Unknown granule type: " + typeUp + " (expected MODULE/ACTION/REPORT)");
+            }
+            if (!isValidGrantType(grantUp)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Unknown granule grant: " + grantUp + " (expected NONE/VIEW/MANAGE/ALLOW/DENY)");
+            }
+
             String dedupKey = typeUp + "::" + key;
             if (!seen.add(dedupKey)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -411,6 +428,32 @@ public class AccessControllerV1 {
             out.add(new com.example.permission.dto.v1.RolePermissionItemDto(typeUp, key, grantUp));
         }
         return out;
+    }
+
+    /**
+     * Codex 019dda1c iter-28 (E1): true iff {@code value} is a valid
+     * {@link com.example.permission.model.PermissionType} enum constant.
+     * Cheaper than catching IllegalArgumentException and lets us produce
+     * a 400 response directly.
+     */
+    private static boolean isValidPermissionType(String value) {
+        for (com.example.permission.model.PermissionType pt :
+                com.example.permission.model.PermissionType.values()) {
+            if (pt.name().equals(value)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Codex 019dda1c iter-28 (E1): true iff {@code value} is a valid
+     * {@link com.example.permission.model.GrantType} enum constant.
+     */
+    private static boolean isValidGrantType(String value) {
+        for (com.example.permission.model.GrantType gt :
+                com.example.permission.model.GrantType.values()) {
+            if (gt.name().equals(value)) return true;
+        }
+        return false;
     }
 
     @GetMapping("/users/{userId}/scopes")
