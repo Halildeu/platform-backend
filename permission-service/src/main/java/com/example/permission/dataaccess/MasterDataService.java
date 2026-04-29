@@ -46,10 +46,12 @@ public class MasterDataService {
     /**
      * Şirket listesi — workcube_mikrolink.our_company.
      * V25 anchor: tenant-scoped company tablosu.
+     * NOT: status column adı `comp_status` (DEPARTMENT/BRANCH/PRO_PROJECTS
+     * pattern'i `<table>_status`'tan farklı).
      */
     public List<MasterDataItem> listCompanies() {
         return safeQuery(
-                "SELECT comp_id, company_name, COALESCE(status, true) AS status "
+                "SELECT comp_id, company_name, COALESCE(comp_status, true) AS status "
                         + "FROM workcube_mikrolink.our_company "
                         + "ORDER BY company_name NULLS LAST, comp_id",
                 "companies"
