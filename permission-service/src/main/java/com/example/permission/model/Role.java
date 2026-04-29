@@ -76,4 +76,28 @@ public class Role {
     public void setRolePermissions(Set<RolePermission> rolePermissions) {
         this.rolePermissions = rolePermissions;
     }
+
+    /**
+     * Codex 019dd818 iter-13 (Plan B): aggregate-native granule replace helper.
+     *
+     * <p>JPA bulk DELETE (e.g. {@code deleteByRoleId}) bypasses the persistence
+     * context. If callers combine bulk delete with managed entity save, the
+     * cascaded collection state can resurrect the deleted rows on
+     * {@code save(role)} flush. {@code clearRolePermissions()} works through
+     * the JPA aggregate so {@code orphanRemoval=true} drops the rows
+     * deterministically.
+     */
+    public void clearRolePermissions() {
+        rolePermissions.clear();
+    }
+
+    /**
+     * Add a {@link RolePermission} to the aggregate, ensuring the back-reference
+     * is set. Pairs with {@link #clearRolePermissions()} for the
+     * "replace all granules" use case.
+     */
+    public void addRolePermission(RolePermission rolePermission) {
+        rolePermission.setRole(this);
+        rolePermissions.add(rolePermission);
+    }
 }
