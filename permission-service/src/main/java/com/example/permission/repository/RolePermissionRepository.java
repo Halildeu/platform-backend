@@ -31,4 +31,31 @@ public interface RolePermissionRepository extends JpaRepository<RolePermission, 
     @Modifying
     @Query("DELETE FROM RolePermission rp WHERE rp.role.id = :roleId")
     void deleteByRoleId(Long roleId);
+
+    /**
+     * Codex 019dd818 iter-17 (Plan C drift guard): row-shape evidence query
+     * for legacy write rejection.
+     *
+     * <p>Used by {@code AccessControllerV1.rejectIfGranuleManaged} to mirror
+     * the OR predicate in {@link
+     * com.example.permission.config.PermissionDataInitializer#usesGranuleModel}.
+     * If a role's {@code permission_model} marker drifted to LEGACY but the
+     * table still carries granule-shape rows, the legacy endpoints must
+     * still reject writes — otherwise we'd recreate the mixed FK + granule
+     * state V15/V16/V17 cleaned up.
+     *
+     * <p>Query is intentionally bounded ({@code count > 0}, no row fetch)
+     * and lookup-only — does not open the role aggregate's lazy collection,
+     * so it works with {@code spring.jpa.open-in-view=false}.
+     */
+    @Query("""
+            SELECT (COUNT(rp) > 0)
+            FROM RolePermission rp
+            WHERE rp.role.id = :roleId
+              AND rp.permission IS NULL
+              AND rp.permissionType IS NOT NULL
+              AND rp.permissionKey IS NOT NULL
+              AND rp.grantType IS NOT NULL
+            """)
+    boolean existsGranuleShapeByRoleId(Long roleId);
 }

@@ -147,7 +147,8 @@ public class AccessControllerV1 {
     }
 
     /**
-     * Codex 019dd818 iter-16 (Plan C): legacy write boundary enforcement.
+     * Codex 019dd818 iter-16 + iter-17 (Plan C): legacy write boundary
+     * enforcement with marker-OR-row-shape drift guard.
      *
      * <p>Granule-managed roles (those flipped to {@link PermissionModel#GRANULE}
      * by {@code PUT /granules}) MUST not be modified through the legacy
@@ -155,12 +156,22 @@ public class AccessControllerV1 {
      * mixed state V15/V16 cleaned up. Returning 409 surfaces the boundary to
      * any caller still pointing at legacy endpoints; the canonical path is
      * {@code PUT /api/v1/roles/{id}/granules}.
+     *
+     * <p>iter-17 mirrors the {@code marker OR row-shape} predicate already
+     * used in
+     * {@link com.example.permission.config.PermissionDataInitializer#usesGranuleModel}.
+     * If a role's {@code permission_model} marker drifted to LEGACY but the
+     * table still has granule-shape rows (e.g. manual SQL, partial backfill,
+     * future schema change), the legacy endpoints must still reject writes
+     * — otherwise the system can re-enter mixed state asymmetrically.
      */
     private void rejectIfGranuleManaged(Long roleId) {
         Role role = roleRepository.findById(roleId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Role not found: " + roleId));
-        if (role.getPermissionModel() == PermissionModel.GRANULE) {
+        boolean granuleManaged = role.getPermissionModel() == PermissionModel.GRANULE
+                || rolePermissionRepository.existsGranuleShapeByRoleId(roleId);
+        if (granuleManaged) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Role " + roleId + " is granule-managed; use PUT /api/v1/roles/"
                             + roleId + "/granules instead of legacy permission endpoints");

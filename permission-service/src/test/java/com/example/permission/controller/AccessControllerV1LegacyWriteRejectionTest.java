@@ -134,6 +134,49 @@ class AccessControllerV1LegacyWriteRejectionTest {
         verify(accessRoleService, times(1)).updateRolePermissions(any(), any(), any());
     }
 
+    /**
+     * iter-17 (Plan C drift guard): marker-OR-row-shape predicate parity.
+     *
+     * <p>If a role's permission_model marker is LEGACY but the table carries
+     * granule-shape rows (out-of-band SQL, partial backfill, etc.), the
+     * legacy endpoints MUST still reject writes. Initializer's predicate
+     * already does this; legacy rejection now mirrors it via
+     * {@code RolePermissionRepository.existsGranuleShapeByRoleId}.
+     */
+    @Test
+    void bulkPermissions_onLegacyMarkerWithGranuleRowDrift_throws409() {
+        Long roleId = 42L;
+        Role driftedRole = roleWithModel(roleId, PermissionModel.LEGACY);
+        when(roleRepository.findById(roleId)).thenReturn(Optional.of(driftedRole));
+        when(rolePermissionRepository.existsGranuleShapeByRoleId(roleId)).thenReturn(true);
+
+        BulkPermissionsRequestDto request = new BulkPermissionsRequestDto();
+        request.setModuleKey("X");
+        request.setLevel("MANAGE");
+
+        assertThatThrownBy(() -> controller.bulkPermissions(roleId, request))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT)
+                .hasMessageContaining("granule-managed");
+
+        verify(accessRoleService, never()).bulkUpdateModuleLevel(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void updateRolePermissions_onLegacyMarkerWithGranuleRowDrift_throws409() {
+        Long roleId = 43L;
+        Role driftedRole = roleWithModel(roleId, PermissionModel.LEGACY);
+        when(roleRepository.findById(roleId)).thenReturn(Optional.of(driftedRole));
+        when(rolePermissionRepository.existsGranuleShapeByRoleId(roleId)).thenReturn(true);
+
+        assertThatThrownBy(() -> controller.updateRolePermissions(roleId,
+                new RolePermissionsUpdateRequestDto()))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT);
+
+        verify(accessRoleService, never()).updateRolePermissions(any(), any(), any());
+    }
+
     @Test
     void bulkPermissions_onMissingRole_throws404() {
         Long roleId = 999L;
