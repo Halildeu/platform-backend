@@ -55,13 +55,23 @@ public class MasterDataReadService {
      * The mapping here is the entire allowlist; unknown {@code kind} →
      * IllegalArgumentException → 400 in the controller.
      */
+    // Codex 019dda1c iter-29c: column identifiers are UPPER_CASE in the live
+    // MSSQL workcube_mikrolink schema (verified via the schema snapshot at
+    // docs/migration/workcube-schema.json — every row in the 1509-table
+    // catalog uses UPPER_CASE columns). Pre-iter-29c the lowercase
+    // identifiers ("comp_id", "company_name") matched the empty Postgres
+    // mirror but failed live MSSQL with "Invalid column name 'comp_id'"
+    // because the source DB collation is case-sensitive.
+    //
+    // PRO_PROJECTS does not expose a public "PROJECT_NAME" column; the row
+    // identity is carried by PROJECT_HEAD (the project's display label in
+    // Workcube). DEPARTMENT prefers DETAIL over HEAD because most rows
+    // carry the human-readable label in DETAIL, with HEAD as fallback.
     private static final Map<String, TableMapping> KIND_MAP = Map.of(
-            "companies",   new TableMapping("our_company",  "comp_id",       "company_name",   "comp_status"),
-            "projects",    new TableMapping("pro_projects", "project_id",    "project_name",   "project_status"),
-            "branches",    new TableMapping("branch",       "branch_id",     "branch_name",    "branch_status"),
-            // Workcube DEPARTMENTS row uses department_detail / department_head as the
-            // "human label"; coalesce so neither blank produces an empty cell.
-            "departments", new TableMapping("department",   "department_id", "COALESCE(department_detail, department_head)", "department_status")
+            "companies",   new TableMapping("OUR_COMPANY",  "COMP_ID",       "COMPANY_NAME",   "COMP_STATUS"),
+            "projects",    new TableMapping("PRO_PROJECTS", "PROJECT_ID",    "PROJECT_HEAD",   "PROJECT_STATUS"),
+            "branches",    new TableMapping("BRANCH",       "BRANCH_ID",     "BRANCH_NAME",    "BRANCH_STATUS"),
+            "departments", new TableMapping("DEPARTMENT",   "DEPARTMENT_ID", "COALESCE(DEPARTMENT_DETAIL, DEPARTMENT_HEAD)", "DEPARTMENT_STATUS")
     );
 
     public List<MasterDataItemDto> list(String kind) {
