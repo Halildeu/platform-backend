@@ -2,6 +2,7 @@ package com.example.permission.config;
 
 import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
+import com.example.permission.model.PermissionModel;
 import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
@@ -71,6 +72,51 @@ class PermissionDataInitializerGranuleAwareTest {
         role.setName("EMPTY_ROLE");
 
         assertThat(PermissionDataInitializer.usesGranuleModel(role)).isFalse();
+    }
+
+    /**
+     * iter-16 (Plan C) regression: empty granule replace persists across boot.
+     *
+     * <p>Senaryo: Kullanıcı USER_MANAGE rolünün tüm modüllerini NONE yaptı
+     * → AccessControllerV1.updateRoleGranules:
+     *   - role.clearRolePermissions() → 0 row
+     *   - role.setPermissionModel(GRANULE) → marker sticky
+     *   - roleRepository.save(role)
+     *
+     * <p>Pod restart oldu → initializer DEFAULT_ROLE_PERMISSIONS seed
+     * flow'una bakıyor. Marker GRANULE olduğu için row-shape predicate
+     * false dönse bile usesGranuleModel true döner ve seed skip edilir.
+     * Bu olmadan: empty role → row-shape false → legacy FK rows re-seed
+     * → kullanıcının "hepsi NONE" save'i bir sonraki boot'ta kayboluyor.
+     */
+    @Test
+    void usesGranuleModel_emptyButMarkedGranule_returnsTrue() {
+        Role role = new Role();
+        role.setName("USER_MANAGE_AFTER_EMPTY_REPLACE");
+        role.setPermissionModel(PermissionModel.GRANULE);
+        // Notice: rolePermissions intentionally empty.
+
+        assertThat(PermissionDataInitializer.usesGranuleModel(role))
+                .as("Marker alone must classify the role as granule-managed even with zero rows")
+                .isTrue();
+    }
+
+    /**
+     * iter-16 defensive predicate: marker LEGACY but row-shape evidences
+     * granule data → marker-then-shape OR predicate still classifies the role
+     * correctly. Bu yapılanma marker drift'inden korur (manuel SQL gibi
+     * out-of-band marker düşürme senaryolarında bile correctness).
+     */
+    @Test
+    void usesGranuleModel_legacyMarkerWithGranuleRow_returnsTrue() {
+        Role role = new Role();
+        role.setName("DRIFT_GUARD_ROLE");
+        role.setPermissionModel(PermissionModel.LEGACY);
+        role.addRolePermission(granule(role, "USER_MANAGEMENT", GrantType.VIEW));
+
+        assertThat(PermissionDataInitializer.usesGranuleModel(role))
+                .as("Row-shape evidence must still classify role as granule even if marker drifted")
+                .isTrue();
     }
 
     @Test

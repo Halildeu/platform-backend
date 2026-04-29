@@ -4,6 +4,8 @@ import com.example.permission.dto.v1.BulkPermissionsResponseDto;
 import com.example.permission.dto.v1.RoleCloneResponseDto;
 import com.example.permission.dto.v1.RoleDto;
 import com.example.permission.dto.v1.RolePolicyDto;
+import com.example.permission.model.PermissionModel;
+import com.example.permission.model.Role;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.RoleRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
@@ -12,6 +14,8 @@ import com.example.permission.service.PermissionService;
 import com.example.permission.service.TupleSyncService;
 import com.example.permission.service.UserScopeService;
 import org.junit.jupiter.api.Test;
+
+import java.util.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -114,6 +118,15 @@ class AccessControllerV1Test {
 
     @Test
     void bulkPermissionsPropagatesAuditId() throws Exception {
+        // iter-16: rejectIfGranuleManaged guard now loads the role first.
+        // Stub a LEGACY-mode role so the bulk endpoint passes the guard and
+        // continues to the service layer (backward compat path).
+        Role legacyRole = new Role();
+        legacyRole.setId(5L);
+        legacyRole.setName("LEGACY_BULK_TEST");
+        legacyRole.setPermissionModel(PermissionModel.LEGACY);
+        when(roleRepository.findById(5L)).thenReturn(Optional.of(legacyRole));
+
         when(accessRoleService.bulkUpdateModuleLevel(
                 eq(List.of(5L)),
                 eq("USER_MANAGEMENT"),

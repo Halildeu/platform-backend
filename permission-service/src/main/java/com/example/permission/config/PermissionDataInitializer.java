@@ -220,15 +220,28 @@ public class PermissionDataInitializer implements CommandLineRunner {
     }
 
     /**
-     * Codex 019dd818 iter-14 (Plan A): role granule shortcut model'inde mi?
+     * Codex 019dd818 iter-14 + iter-16: role granule shortcut model'inde mi?
      *
-     * <p>Granule row pattern: {@code permission_id IS NULL} +
+     * <p>iter-14 (Plan A) row-shape predicate: {@code permission_id IS NULL} +
      * {@code permission_type + permission_key + grant_type} fully populated.
-     * Bu pattern'i taşıyan en az 1 row varsa role artık {@code updateRoleGranules}
-     * endpoint'i tarafından yönetiliyor demektir; legacy FK seed o role için
-     * çalıştırılmamalı.
+     * Bu pattern'i taşıyan en az 1 row varsa role granule-managed sayılır.
+     *
+     * <p>iter-16 (Plan C) marker predicate: row-shape signal **boş replace**
+     * sonrası kayboluyordu. Kullanıcı tüm modülleri NONE seçip kaydederse
+     * (PUT /granules permissions: []) role'da hiç row kalmaz, boot'ta
+     * row-shape predicate false döner ve initializer legacy FK seed flow'una
+     * düşer. {@link com.example.permission.model.PermissionModel#GRANULE}
+     * marker'ı bu durumu kalıcı işaretler — empty replace sonrası bile boot
+     * skip korunur.
+     *
+     * <p>Predicate "marker OR row-shape" şeklinde defansif: V17 backfill
+     * marker'ı row-shape ile senkronize eder; future drift senaryosunda
+     * ikinci kanıt (row-shape) hâlâ mode'u doğrular.
      */
     static boolean usesGranuleModel(Role role) {
+        if (role.getPermissionModel() == com.example.permission.model.PermissionModel.GRANULE) {
+            return true;
+        }
         return role.getRolePermissions().stream()
                 .anyMatch(rp -> rp.getPermission() == null
                         && rp.getPermissionType() != null
