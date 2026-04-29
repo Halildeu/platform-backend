@@ -177,6 +177,24 @@ public class PermissionDataInitializer implements CommandLineRunner {
                 return savedRole;
             });
 
+            // Codex 019dd818 iter-14 (A + V16): granule-aware skip.
+            //
+            // Eğer role granule shortcut model'ine geçmişse (updateRoleGranules
+            // endpoint'i üzerinden), legacy FK seed çalıştırmamalı. Aksi halde
+            // V15/V16 cleanup migration sonrası initializer her startup'ta eski
+            // FK rows'i geri ekler ve mixed state yeniden oluşur.
+            //
+            // Detection: permission_id IS NULL + type/key/grant tamamı set
+            // olan en az 1 row varsa role granule modelinde sayılır. Bu role
+            // için seed flow tamamen skip edilir (bootstrap fresh role'lerde
+            // davranış değişmez — onlar hâlâ FK seed alır).
+            if (usesGranuleModel(role)) {
+                log.debug(
+                        "Role {} uses granule shortcut model — skipping legacy FK seed",
+                        normalizedRoleName);
+                return;
+            }
+
             // 2026-04-29: dual data model — legacy rows have permission_id FK,
             // new (Codex S1-S2) rows have permission_type + permission_key without FK.
             // Initializer'ın görevi legacy code-based permission'ları seedlemek;
@@ -199,5 +217,22 @@ public class PermissionDataInitializer implements CommandLineRunner {
                         log.info("Linked permission {} to role {}", permission.getCode(), role.getName());
                     });
         });
+    }
+
+    /**
+     * Codex 019dd818 iter-14 (Plan A): role granule shortcut model'inde mi?
+     *
+     * <p>Granule row pattern: {@code permission_id IS NULL} +
+     * {@code permission_type + permission_key + grant_type} fully populated.
+     * Bu pattern'i taşıyan en az 1 row varsa role artık {@code updateRoleGranules}
+     * endpoint'i tarafından yönetiliyor demektir; legacy FK seed o role için
+     * çalıştırılmamalı.
+     */
+    static boolean usesGranuleModel(Role role) {
+        return role.getRolePermissions().stream()
+                .anyMatch(rp -> rp.getPermission() == null
+                        && rp.getPermissionType() != null
+                        && rp.getPermissionKey() != null
+                        && rp.getGrantType() != null);
     }
 }
