@@ -36,14 +36,41 @@ public class PermissionCatalogService {
             new ActionCatalogItem("TOGGLE_STATUS", "Durum Değiştir", "USER_MANAGEMENT", true)
     );
 
-    // P1-B: Report groups (CNS-20260410-001 consensus)
+    // Codex 019dda1c iter-26: dashboard catalog sync (Plan C+ — statik manifest
+    // + drift guard). Mirrors report-service/src/main/resources/dashboards/*.json
+    // entries. Each row pairs the upper-snake permission key persisted in DB
+    // (role_permissions.permission_key) with the Turkish display title and
+    // category from the source JSON. Coarse module gate is "REPORT" for every
+    // dashboard — fine-grained access flows through the per-key granule
+    // (e.g. REPORT:HR_ANALYTICS:VIEW).
+    //
+    // Drift guard: PermissionCatalogServiceDashboardSyncTest validates this
+    // list against the dashboard JSON files at build time. Adding a new
+    // dashboard JSON without updating this list will fail CI.
+    //
+    // Legacy report group keys (HR_REPORTS, FINANCE_REPORTS, ANALYTICS_REPORTS,
+    // SALES_REPORTS, PURCHASE_SUMMARY, WAREHOUSE_STOCK) retired here because:
+    //   - the drawer cannot render group keys alongside per-dashboard keys
+    //     without confusing the user (which one wins?);
+    //   - per-dashboard keys are now the canonical contract going forward;
+    //   - existing role grants on group keys remain in role_permissions but
+    //     no longer surface in the catalog. Migration to expand them into
+    //     per-dashboard grants is a separate task.
     private static final List<ReportCatalogItem> REPORTS = List.of(
-            new ReportCatalogItem("HR_REPORTS", "İK Raporları", "USER_MANAGEMENT"),
-            new ReportCatalogItem("FINANCE_REPORTS", "Finans Raporları", "REPORT"),
-            new ReportCatalogItem("SALES_REPORTS", "Satış Raporları", "PURCHASE"),
-            new ReportCatalogItem("ANALYTICS_REPORTS", "Analitik Dashboardlar", "REPORT"),
-            new ReportCatalogItem("PURCHASE_SUMMARY", "Satın Alma Özeti", "PURCHASE"),
-            new ReportCatalogItem("WAREHOUSE_STOCK", "Stok Raporu", "WAREHOUSE")
+            // Category: İnsan Kaynakları (9 dashboards, source: hr-*.json)
+            new ReportCatalogItem("HR_ANALYTICS", "İK Analitik Dashboard", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_FINANSAL", "İK Finansal Dashboard", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_EQUITY_RISK", "İç Denge ve Risk", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_BENEFITS_LITE", "Yan Haklar Analitiği", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_COMPENSATION", "Ücret ve Yan Haklar Analitiği", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_SALARY_ANALYTICS", "Ücret Analitiği", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_PAYROLL_TRENDS", "Bordro Trendleri", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_DEMOGRAFIK", "İK Demografik Yapı", "REPORT", "İnsan Kaynakları"),
+            new ReportCatalogItem("HR_EXECUTIVE_SUMMARY", "Yönetici Özeti", "REPORT", "İnsan Kaynakları"),
+            // Category: Finans (3 dashboards, source: fin-*.json)
+            new ReportCatalogItem("FIN_ANALYTICS", "Finans Analitik Dashboard", "REPORT", "Finans"),
+            new ReportCatalogItem("FIN_RATIOS", "Finansal Oran Analizi", "REPORT", "Finans"),
+            new ReportCatalogItem("FIN_RECONCILIATION", "Tutar Mutabakat Kontrolü", "REPORT", "Finans")
     );
 
     public PermissionCatalogDto getCatalog() {

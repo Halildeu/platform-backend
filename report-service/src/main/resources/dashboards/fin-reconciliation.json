@@ -7,7 +7,7 @@
   "category": "Finans",
   "icon": "check-circle",
   "access": {
-    "permission": "dashboards.fin-analytics.view"
+    "permission": "reports.fin-reconciliation.view"
   },
   "timeRanges": ["30d", "90d", "180d", "1y", "ytd"],
   "defaultTimeRange": "ytd",

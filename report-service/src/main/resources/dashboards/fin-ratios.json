@@ -7,7 +7,7 @@
   "category": "Finans",
   "icon": "calculator",
   "access": {
-    "permission": "dashboards.fin-analytics.view"
+    "permission": "reports.fin-ratios.view"
   },
   "timeRanges": ["30d", "90d", "180d", "1y", "ytd"],
   "defaultTimeRange": "90d",

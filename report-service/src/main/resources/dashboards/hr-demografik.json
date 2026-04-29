@@ -7,7 +7,7 @@
   "category": "İnsan Kaynakları",
   "icon": "pie-chart",
   "access": {
-    "permission": "REPORT_VIEW",
+    "permission": "reports.hr-demografik.view",
     "rowFilter": { "column": "OUR_COMPANY_ID", "scopeType": "COMPANY", "bypassPermission": "reports.hr.all-companies" }
   },
   "timeRanges": ["30d", "90d", "1y", "ytd"],
