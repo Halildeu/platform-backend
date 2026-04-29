@@ -353,6 +353,53 @@ class AccessControllerV1UpdateRoleGranulesTest {
         assertThat(only.getGrantType()).isEqualTo(GrantType.MANAGE);
     }
 
+    /**
+     * Codex 019dda1c iter-28 (E1): unknown PermissionType returns 400 instead
+     * of letting valueOf throw IllegalArgumentException → 500.
+     */
+    @Test
+    void updateRoleGranules_invalidType_returns400() {
+        Long roleId = 17L;
+        Role role = new Role();
+        role.setId(roleId);
+        when(roleRepository.findByIdForUpdate(roleId)).thenReturn(Optional.of(role));
+
+        Map<String, List<RolePermissionItemDto>> body = Map.of("permissions", List.of(
+                new RolePermissionItemDto("BANANA", "WHATEVER", "VIEW")
+        ));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.updateRoleGranules(roleId, body));
+        assertThat(ex.getStatusCode().value()).isEqualTo(400);
+        assertThat(ex.getReason()).contains("Unknown granule type").contains("BANANA");
+        verify(roleRepository, never()).save(any(Role.class));
+    }
+
+    /**
+     * Codex 019dda1c iter-28 (E1): unknown GrantType returns 400.
+     */
+    @Test
+    void updateRoleGranules_invalidGrant_returns400() {
+        Long roleId = 18L;
+        Role role = new Role();
+        role.setId(roleId);
+        when(roleRepository.findByIdForUpdate(roleId)).thenReturn(Optional.of(role));
+
+        Map<String, List<RolePermissionItemDto>> body = Map.of("permissions", List.of(
+                new RolePermissionItemDto("MODULE", "USER_MANAGEMENT", "YOLO")
+        ));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.updateRoleGranules(roleId, body));
+        assertThat(ex.getStatusCode().value()).isEqualTo(400);
+        assertThat(ex.getReason()).contains("Unknown granule grant").contains("YOLO");
+        verify(roleRepository, never()).save(any(Role.class));
+    }
+
     private RolePermission makeFkRow(Role role, String code, GrantType grant) {
         Permission p = new Permission();
         p.setCode(code);
