@@ -102,10 +102,17 @@ public class MasterDataReadService {
             // mostly NULL.
             //
             // iter-30b: 3-level COALESCE — try the lookup name first, then
-            // fall back to DEPARTMENT_DETAIL, then DEPARTMENT_HEAD. Filter
-            // rows where ALL three are blank so the drawer never renders
-            // empty checkboxes (the original symptom that started this
-            // sub-cycle). SPECIAL_CODE is still surfaced as the code prefix.
+            // fall back to DEPARTMENT_DETAIL, then DEPARTMENT_HEAD.
+            //
+            // iter-30c: filter to physical-storage departments only via the
+            // IS_STORE flag. Workcube DEPARTMENT is a multi-purpose entity
+            // (HR org units + production zones + warehouses); the drawer's
+            // "Depolar" tab should only surface IS_STORE=1 rows. Without
+            // this filter a 1000-row dump was leaking HR departments into
+            // the warehouse-scope picker. Pre-iter-30c the smoke output
+            // showed entries like "10035 Sokak No:5 Atatürk OSB" — those
+            // are address strings on org-unit rows, not actual stores.
+            // SPECIAL_CODE is still surfaced as the code prefix.
             "departments", new TableMapping("""
                     SELECT TOP (%1$d)
                         d.[DEPARTMENT_ID] AS id,
@@ -119,7 +126,8 @@ public class MasterDataReadService {
                     FROM [%2$s].[DEPARTMENT] d
                     LEFT JOIN [%2$s].[SETUP_DEPARTMENT_NAME] dn
                         ON dn.[DEPARTMENT_NAME_ID] = d.[_DEPARTMENT_NAME_ID]
-                    WHERE COALESCE(
+                    WHERE d.[IS_STORE] = 1
+                      AND COALESCE(
                             NULLIF(LTRIM(RTRIM(dn.[DEPARTMENT_NAME])), ''),
                             NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), ''),
                             NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), '')
