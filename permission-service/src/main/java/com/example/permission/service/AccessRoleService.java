@@ -390,12 +390,20 @@ public class AccessRoleService {
         // must not surface as pseudo-module badges here (e.g. DELETE_PO, HR_REPORTS).
         // For granule-only rows we only admit PermissionType.MODULE; ACTION/REPORT
         // granules are skipped in the summary.
+        //
+        // Codex 019dd818 iter-11/12 (Plan A+): legacy `permissions.module_name`
+        // values ("Kullanıcı Yönetimi", "reporting", "Sistem Yönetimi" ...) are
+        // canonicalized to the catalog key set (USER_MANAGEMENT, REPORT, ACCESS)
+        // BEFORE grouping. Otherwise byModule keys carry mangled labels that the
+        // frontend catalog cannot match and every role drawer renders modules as
+        // "—". The runtime canonicalizer is paired with a Flyway V27 migration
+        // that normalizes the row data; this guard provides forward-compat
+        // against future drift (test fixtures, manual SQL inserts).
         Map<String, List<RolePermission>> byModule = new LinkedHashMap<>();
         for (RolePermission rp : role.getRolePermissions()) {
             String module;
             if (rp.getPermission() != null) {
-                module = rp.getPermission().getModuleName();
-                if (module == null) module = "GENERIC";
+                module = ModuleNameCanonicalizer.canonicalize(rp.getPermission().getModuleName());
             } else if (rp.getPermissionType() == com.example.permission.model.PermissionType.MODULE
                     && rp.getPermissionKey() != null && !rp.getPermissionKey().isBlank()) {
                 module = rp.getPermissionKey();
