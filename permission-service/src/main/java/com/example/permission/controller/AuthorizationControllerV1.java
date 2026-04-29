@@ -136,11 +136,14 @@ public class AuthorizationControllerV1 {
             boolean permsAdmin = dto.getPermissions().stream()
                             .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
             boolean isSuperAdmin = orgAdmin || permsAdmin;
-            // 2026-04-29 diagnostic: bir kullanıcı feedback'inde "değiştirme yetkim yok"
-            // raporu var; admin@example.com superAdmin: true beklenir. Hangi yolun
-            // pickle ettiğini görmek için JWT-bazlı log (LDAP entry).
-            log.info("authz/me: numericUserId={}, orgAdmin={}, permsAdmin={}, superAdmin={}, email={}",
-                    numericUserId, orgAdmin, permsAdmin, isSuperAdmin, resolvedUser.email());
+            // 2026-04-29: diagnostic detayı (numericUserId + email) DEBUG seviyesinde,
+            // PII/polling-noise minimumde. Codex 019dd818 PARTIAL feedback (REVISE diag-log):
+            // "polling ile sık çalışır; email/numeric ID PII üretir". DEBUG flag-bazlı
+            // observability — incident sırasında aktif edilir, normalde kapalı.
+            if (log.isDebugEnabled()) {
+                log.debug("authz/me: numericUserId={}, orgAdmin={}, permsAdmin={}, superAdmin={}",
+                        numericUserId, orgAdmin, permsAdmin, isSuperAdmin);
+            }
             dto.setSuperAdmin(isSuperAdmin);
 
             // Scopes (existing)
