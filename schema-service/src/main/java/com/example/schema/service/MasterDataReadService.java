@@ -95,21 +95,36 @@ public class MasterDataReadService {
                     WHERE b.[BRANCH_NAME] IS NOT NULL AND LEN(LTRIM(RTRIM(b.[BRANCH_NAME]))) > 0
                     ORDER BY b.[BRANCH_NAME], b.[BRANCH_ID]
                     """),
-            // DEPARTMENT.DEPARTMENT_DETAIL and DEPARTMENT_HEAD are blank for most
-            // rows in the live data. The actual human-readable name lives in
-            // SETUP_DEPARTMENT_NAME, joined via DEPARTMENT._DEPARTMENT_NAME_ID.
-            // SPECIAL_CODE is used as a code field (most departments have one).
+            // DEPARTMENT name resolution is multi-source. iter-30 first cut
+            // assumed SETUP_DEPARTMENT_NAME would always carry the label,
+            // but live smoke returned [] because either SETUP_DEPARTMENT_NAME
+            // is sparsely populated or DEPARTMENT._DEPARTMENT_NAME_ID is
+            // mostly NULL.
+            //
+            // iter-30b: 3-level COALESCE — try the lookup name first, then
+            // fall back to DEPARTMENT_DETAIL, then DEPARTMENT_HEAD. Filter
+            // rows where ALL three are blank so the drawer never renders
+            // empty checkboxes (the original symptom that started this
+            // sub-cycle). SPECIAL_CODE is still surfaced as the code prefix.
             "departments", new TableMapping("""
                     SELECT TOP (%1$d)
-                        d.[DEPARTMENT_ID]      AS id,
-                        d.[SPECIAL_CODE]       AS code,
-                        dn.[DEPARTMENT_NAME]   AS name,
+                        d.[DEPARTMENT_ID] AS id,
+                        d.[SPECIAL_CODE]  AS code,
+                        COALESCE(
+                            NULLIF(LTRIM(RTRIM(dn.[DEPARTMENT_NAME])), ''),
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), ''),
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), '')
+                        ) AS name,
                         COALESCE(d.[DEPARTMENT_STATUS], 1) AS status
                     FROM [%2$s].[DEPARTMENT] d
                     LEFT JOIN [%2$s].[SETUP_DEPARTMENT_NAME] dn
                         ON dn.[DEPARTMENT_NAME_ID] = d.[_DEPARTMENT_NAME_ID]
-                    WHERE dn.[DEPARTMENT_NAME] IS NOT NULL AND LEN(LTRIM(RTRIM(dn.[DEPARTMENT_NAME]))) > 0
-                    ORDER BY dn.[DEPARTMENT_NAME], d.[DEPARTMENT_ID]
+                    WHERE COALESCE(
+                            NULLIF(LTRIM(RTRIM(dn.[DEPARTMENT_NAME])), ''),
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_DETAIL])), ''),
+                            NULLIF(LTRIM(RTRIM(d.[DEPARTMENT_HEAD])), '')
+                          ) IS NOT NULL
+                    ORDER BY name, d.[DEPARTMENT_ID]
                     """)
     );
 
