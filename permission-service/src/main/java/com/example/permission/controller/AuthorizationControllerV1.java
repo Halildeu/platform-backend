@@ -132,9 +132,15 @@ public class AuthorizationControllerV1 {
             // Legacy permissions (backward compat)
             dto.setPermissions(resolvePermissionsSafely(jwt, numericUserId));
             // SuperAdmin: check OpenFGA organization admin first, then fall back to permissions list
-            boolean isSuperAdmin = checkOrganizationAdmin(numericUserId)
-                    || dto.getPermissions().stream()
+            boolean orgAdmin = checkOrganizationAdmin(numericUserId);
+            boolean permsAdmin = dto.getPermissions().stream()
                             .anyMatch(p -> p != null && p.equalsIgnoreCase("admin"));
+            boolean isSuperAdmin = orgAdmin || permsAdmin;
+            // 2026-04-29 diagnostic: bir kullanıcı feedback'inde "değiştirme yetkim yok"
+            // raporu var; admin@example.com superAdmin: true beklenir. Hangi yolun
+            // pickle ettiğini görmek için JWT-bazlı log (LDAP entry).
+            log.info("authz/me: numericUserId={}, orgAdmin={}, permsAdmin={}, superAdmin={}, email={}",
+                    numericUserId, orgAdmin, permsAdmin, isSuperAdmin, resolvedUser.email());
             dto.setSuperAdmin(isSuperAdmin);
 
             // Scopes (existing)
