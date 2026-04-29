@@ -263,6 +263,87 @@ public class AccessRoleServiceTest {
         assertThat(identity[1]).isNotBlank();
     }
 
+    // Codex 019dd818 iter-12 (Plan A+) regression suite: byModule grouping must
+    // canonicalize legacy permissions.module_name ("Kullanıcı Yönetimi",
+    // "Sistem Yönetimi", "reporting", ...) BEFORE the AccessModulePolicyDto is
+    // built. Without this, frontend catalog match fails and role drawer renders
+    // every module slot as "—" (live diagnostic 2026-04-29).
+
+    @Test
+    void getRole_legacyKullaniciYonetimiLabel_returnsUserManagementCanonical() {
+        Role role = new Role();
+        role.setId(101L);
+        role.setName("LEGACY_USER_MGMT");
+        role.getRolePermissions().add(rpWith(permissionWithModule("user-write", "Kullanıcı Yönetimi")));
+        when(roleRepository.findById(101L)).thenReturn(Optional.of(role));
+
+        AccessRoleDto dto = service.getRole(101L);
+
+        assertThat(dto.policies()).hasSize(1);
+        assertThat(dto.policies().get(0).moduleKey()).isEqualTo("USER_MANAGEMENT");
+    }
+
+    @Test
+    void getRole_legacySistemYonetimiLabel_actionOnly_returnsAccessCanonical() {
+        // PERMISSION_MANAGE-style role: only ACTION permissions
+        // (permission-manage, role-manage etc.) under "Sistem Yönetimi" label.
+        // Plan A+: byModule canonicalize → 'ACCESS'; deriveModuleIdentity
+        // fallback uses canonical fallbackLabel='ACCESS', not mangled
+        // 'SISTEM_Y_NETIMI'.
+        Role role = new Role();
+        role.setId(102L);
+        role.setName("LEGACY_SYS_MGMT");
+        role.getRolePermissions().add(rpWith(permissionWithModule("permission-manage", "Sistem Yönetimi")));
+        role.getRolePermissions().add(rpWith(permissionWithModule("role-manage", "Sistem Yönetimi")));
+        when(roleRepository.findById(102L)).thenReturn(Optional.of(role));
+
+        AccessRoleDto dto = service.getRole(102L);
+
+        assertThat(dto.policies()).hasSize(1);
+        assertThat(dto.policies().get(0).moduleKey()).isEqualTo("ACCESS");
+        // Mangled key must NOT appear in the contract.
+        assertThat(dto.policies().get(0).moduleKey())
+                .isNotEqualTo("SISTEM_Y_NETIMI")
+                .isNotEqualTo("KULLANICI_YONETIMI");
+    }
+
+    @Test
+    void getRole_legacyReportingLowercaseLabel_returnsReportCanonical() {
+        Role role = new Role();
+        role.setId(103L);
+        role.setName("LEGACY_REPORTING");
+        role.getRolePermissions().add(rpWith(permissionWithModule("reports.HR_REPORTS", "reporting")));
+        when(roleRepository.findById(103L)).thenReturn(Optional.of(role));
+
+        AccessRoleDto dto = service.getRole(103L);
+
+        assertThat(dto.policies()).hasSize(1);
+        assertThat(dto.policies().get(0).moduleKey()).isEqualTo("REPORT");
+    }
+
+    @Test
+    void getRole_mixedLegacyLabelsAcrossPermissions_groupsByCanonicalKey() {
+        // Real-world role with permissions from multiple legacy labels.
+        // Frontend catalog must see clean canonical groups (USER_MANAGEMENT,
+        // ACCESS, REPORT) — not mangled label-derived keys.
+        Role role = new Role();
+        role.setId(104L);
+        role.setName("MIXED_LEGACY");
+        role.getRolePermissions().add(rpWith(permissionWithModule("user-write", "Kullanıcı Yönetimi")));
+        role.getRolePermissions().add(rpWith(permissionWithModule("access-write", "Access")));
+        role.getRolePermissions().add(rpWith(permissionWithModule("reports.HR_REPORTS", "Raporlama")));
+        role.getRolePermissions().add(rpWith(permissionWithModule("permission-manage", "Sistem Yönetimi")));
+        when(roleRepository.findById(104L)).thenReturn(Optional.of(role));
+
+        AccessRoleDto dto = service.getRole(104L);
+
+        // permission-manage (Sistem Yönetimi → ACCESS) + access-write (Access → ACCESS)
+        // collapse into single ACCESS group via canonicalizer; the rest stay separate.
+        var moduleKeys = dto.policies().stream().map(p -> p.moduleKey()).toList();
+        assertThat(moduleKeys).contains("USER_MANAGEMENT", "ACCESS", "REPORT");
+        assertThat(moduleKeys).doesNotContain("KULLANICI_YONETIMI", "SISTEM_Y_NETIMI", "REPORTING");
+    }
+
     @Test
     void getRole_withMixedGranules_skipsActionGranulesFromPolicies() {
         // Canary-style role: one MODULE granule (ACCESS MANAGE) + one ACTION
