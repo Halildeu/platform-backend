@@ -35,7 +35,14 @@ import java.util.Map;
  * strategy is final.
  */
 @RestController
-@RequestMapping("/api/v1/schema/master-data-diagnostic")
+// Codex 019dda1c iter-32: path moved from /master-data-diagnostic (dashed sibling)
+// to /master-data/diagnostic (slashed child) so the SecurityConfig
+// /master-data/** AntPathMatcher actually covers it. iter-30d/30e/31 all
+// missed that the security glob and controller path didn't agree on the
+// separator — diagnostic kept returning 401 even after iter-31's matcher
+// switch. Living under /master-data/ also reflects the real hierarchy
+// (diagnostic IS a master-data introspection endpoint, not a sibling).
+@RequestMapping("/api/v1/schema/master-data/diagnostic")
 public class MasterDataDiagnosticController {
 
     private static final Logger log = LoggerFactory.getLogger(MasterDataDiagnosticController.class);
