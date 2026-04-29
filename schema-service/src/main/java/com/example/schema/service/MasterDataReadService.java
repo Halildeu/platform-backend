@@ -47,31 +47,70 @@ public class MasterDataReadService {
         this.rowLimit = Math.min(Math.max(rowLimit, 1), 5000); // hard cap at 5k regardless of config
     }
 
-    private record TableMapping(String tableName, String idColumn, String nameColumn, String statusColumn) {}
-
     /**
-     * Codex 019dda1c iter-29 SECURITY: schema/table/column identifiers
-     * are interpolated into SQL — we never accept them from request input.
-     * The mapping here is the entire allowlist; unknown {@code kind} →
-     * IllegalArgumentException → 400 in the controller.
+     * Codex 019dda1c iter-30: full SQL templates per kind. iter-29 pre-image
+     * tried to mechanically compose tableName + idCol + nameCol; that doesn't
+     * fit the real schema once you need a JOIN (DEPARTMENT name lives in
+     * SETUP_DEPARTMENT_NAME) or a code column on top of name. The template
+     * uses {@code %d} for the configurable row limit; placeholders here come
+     * from a static allowlist, never from request input.
+     *
+     * <p>Each query:
+     * <ul>
+     *   <li>aliases columns to {@code id, code, name, status} (matches DTO)</li>
+     *   <li>filters out rows whose name is NULL or empty (no blank checkboxes)</li>
+     *   <li>orders by name then id for stable UI</li>
+     * </ul>
      */
-    // Codex 019dda1c iter-29c: column identifiers are UPPER_CASE in the live
-    // MSSQL workcube_mikrolink schema (verified via the schema snapshot at
-    // docs/migration/workcube-schema.json — every row in the 1509-table
-    // catalog uses UPPER_CASE columns). Pre-iter-29c the lowercase
-    // identifiers ("comp_id", "company_name") matched the empty Postgres
-    // mirror but failed live MSSQL with "Invalid column name 'comp_id'"
-    // because the source DB collation is case-sensitive.
-    //
-    // PRO_PROJECTS does not expose a public "PROJECT_NAME" column; the row
-    // identity is carried by PROJECT_HEAD (the project's display label in
-    // Workcube). DEPARTMENT prefers DETAIL over HEAD because most rows
-    // carry the human-readable label in DETAIL, with HEAD as fallback.
+    private record TableMapping(String sqlTemplate) {}
+
     private static final Map<String, TableMapping> KIND_MAP = Map.of(
-            "companies",   new TableMapping("OUR_COMPANY",  "COMP_ID",       "COMPANY_NAME",   "COMP_STATUS"),
-            "projects",    new TableMapping("PRO_PROJECTS", "PROJECT_ID",    "PROJECT_HEAD",   "PROJECT_STATUS"),
-            "branches",    new TableMapping("BRANCH",       "BRANCH_ID",     "BRANCH_NAME",    "BRANCH_STATUS"),
-            "departments", new TableMapping("DEPARTMENT",   "DEPARTMENT_ID", "COALESCE(DEPARTMENT_DETAIL, DEPARTMENT_HEAD)", "DEPARTMENT_STATUS")
+            "companies",   new TableMapping("""
+                    SELECT TOP (%1$d)
+                        c.[COMP_ID]            AS id,
+                        c.[COMPANY_SHORT_CODE] AS code,
+                        c.[COMPANY_NAME]       AS name,
+                        COALESCE(c.[COMP_STATUS], 1) AS status
+                    FROM [%2$s].[OUR_COMPANY] c
+                    WHERE c.[COMPANY_NAME] IS NOT NULL AND LEN(LTRIM(RTRIM(c.[COMPANY_NAME]))) > 0
+                    ORDER BY c.[COMPANY_NAME], c.[COMP_ID]
+                    """),
+            "projects",    new TableMapping("""
+                    SELECT TOP (%1$d)
+                        p.[PROJECT_ID]        AS id,
+                        p.[PROJECT_NUMBER]    AS code,
+                        p.[PROJECT_HEAD]      AS name,
+                        COALESCE(p.[PROJECT_STATUS], 1) AS status
+                    FROM [%2$s].[PRO_PROJECTS] p
+                    WHERE p.[PROJECT_HEAD] IS NOT NULL AND LEN(LTRIM(RTRIM(p.[PROJECT_HEAD]))) > 0
+                    ORDER BY p.[PROJECT_HEAD], p.[PROJECT_ID]
+                    """),
+            "branches",    new TableMapping("""
+                    SELECT TOP (%1$d)
+                        b.[BRANCH_ID]   AS id,
+                        NULL            AS code,
+                        b.[BRANCH_NAME] AS name,
+                        COALESCE(b.[BRANCH_STATUS], 1) AS status
+                    FROM [%2$s].[BRANCH] b
+                    WHERE b.[BRANCH_NAME] IS NOT NULL AND LEN(LTRIM(RTRIM(b.[BRANCH_NAME]))) > 0
+                    ORDER BY b.[BRANCH_NAME], b.[BRANCH_ID]
+                    """),
+            // DEPARTMENT.DEPARTMENT_DETAIL and DEPARTMENT_HEAD are blank for most
+            // rows in the live data. The actual human-readable name lives in
+            // SETUP_DEPARTMENT_NAME, joined via DEPARTMENT._DEPARTMENT_NAME_ID.
+            // SPECIAL_CODE is used as a code field (most departments have one).
+            "departments", new TableMapping("""
+                    SELECT TOP (%1$d)
+                        d.[DEPARTMENT_ID]      AS id,
+                        d.[SPECIAL_CODE]       AS code,
+                        dn.[DEPARTMENT_NAME]   AS name,
+                        COALESCE(d.[DEPARTMENT_STATUS], 1) AS status
+                    FROM [%2$s].[DEPARTMENT] d
+                    LEFT JOIN [%2$s].[SETUP_DEPARTMENT_NAME] dn
+                        ON dn.[DEPARTMENT_NAME_ID] = d.[_DEPARTMENT_NAME_ID]
+                    WHERE dn.[DEPARTMENT_NAME] IS NOT NULL AND LEN(LTRIM(RTRIM(dn.[DEPARTMENT_NAME]))) > 0
+                    ORDER BY dn.[DEPARTMENT_NAME], d.[DEPARTMENT_ID]
+                    """)
     );
 
     public List<MasterDataItemDto> list(String kind) {
@@ -81,23 +120,15 @@ public class MasterDataReadService {
             throw new IllegalArgumentException("Unknown master-data kind: " + kind);
         }
 
-        // MSSQL syntax: TOP (n), bracketed identifiers, ISNULL/COALESCE-equivalent.
-        // schemaName + table/column names came from the static allowlist above,
-        // not from HTTP input — safe to interpolate.
-        String sql = String.format(Locale.ROOT,
-                "SELECT TOP (%d) [%s] AS id, %s AS name, COALESCE(%s, 1) AS status "
-                        + "FROM [%s].[%s] "
-                        + "ORDER BY name, id",
-                rowLimit,
-                mapping.idColumn(),
-                bracketIfPlain(mapping.nameColumn()),
-                mapping.statusColumn(),
-                schemaName,
-                mapping.tableName());
+        // Schema name + limit interpolated from server-side allowlist/config —
+        // never from request input. SQL injection guard relies on KIND_MAP
+        // being the closed allowlist (no kind → 400 above).
+        String sql = String.format(Locale.ROOT, mapping.sqlTemplate(), rowLimit, schemaName);
 
         try {
             return jdbc.query(sql, Map.of(), (rs, rowNum) -> new MasterDataItemDto(
                     rs.getLong("id"),
+                    rs.getString("code"),
                     rs.getString("name"),
                     rs.getBoolean("status")
             ));
@@ -107,17 +138,5 @@ public class MasterDataReadService {
                     ex.getMostSpecificCause() != null ? ex.getMostSpecificCause().getMessage() : ex.getMessage());
             return Collections.emptyList();
         }
-    }
-
-    /**
-     * If the column expression is a plain identifier, wrap in MSSQL brackets;
-     * if it's a function/expression (already contains parens or commas), pass
-     * through as-is so {@code COALESCE(department_detail, department_head)}
-     * stays unbracketed.
-     */
-    private static String bracketIfPlain(String expr) {
-        if (expr == null) return null;
-        if (expr.contains("(") || expr.contains(",") || expr.contains(" ")) return expr;
-        return "[" + expr + "]";
     }
 }
