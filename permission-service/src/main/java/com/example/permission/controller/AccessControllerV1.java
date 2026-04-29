@@ -205,18 +205,29 @@ public class AccessControllerV1 {
 
         var items = body.getOrDefault("permissions", List.of());
 
-        // Delete old granule-based permissions
-        rolePermissionRepository.deleteByRoleId(roleId);
-
-        // Insert new
+        // Codex 019dd818 iter-13 (Plan B): aggregate-native granule replace.
+        // Önceki implementasyon `rolePermissionRepository.deleteByRoleId` (JPQL
+        // @Modifying bulk DELETE) + ardından `rolePermissionRepository.save(rp)`
+        // + `roleRepository.save(role)` cascade = ALL pattern'i kullanıyordu.
+        // Bulk DELETE persistence context'i bypass ettiği için role.rolePermissions
+        // collection'unda eski entity'ler kalıyor; `roleRepository.save(role)`
+        // cascade-persist ile bu eski rows DB'ye yeniden insert ediyordu.
+        // Sonuç: USER_MANAGE save sonrası 4 row (1 yeni granule + 3 cascade-
+        // resurrected eski FK) — kullanıcı VIEW yazarken drawer MANAGE gösteriyor
+        // (deriveLevel eski FK code'ları üzerinden 'admin' contains).
+        //
+        // Plan B: aggregate üzerinden replace. role.clearRolePermissions() →
+        // orphanRemoval=true ile DB DELETE; role.addRolePermission(rp) →
+        // cascade=ALL ile DB INSERT. Tek transaction, tek persistence context,
+        // bulk DML yok.
+        role.clearRolePermissions();
         for (var item : items) {
-            var rp = new com.example.permission.model.RolePermission(
+            role.addRolePermission(new com.example.permission.model.RolePermission(
                     role,
                     com.example.permission.model.PermissionType.valueOf(item.type().toUpperCase()),
                     item.key(),
                     com.example.permission.model.GrantType.valueOf(item.grant().toUpperCase())
-            );
-            rolePermissionRepository.save(rp);
+            ));
         }
 
         role.setUpdatedAt(java.time.Instant.now());
