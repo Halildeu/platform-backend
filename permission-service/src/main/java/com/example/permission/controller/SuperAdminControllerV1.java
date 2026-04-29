@@ -61,7 +61,12 @@ import java.util.stream.Collectors;
  * also updated.
  */
 @RestController
-@RequestMapping("/api/v1/admin/users")
+// Codex 019dda1c iter-33: lives under /api/v1/permissions/** so the existing
+// gateway route (api-gateway routes[10] Path=/api/v1/permissions/**) carries
+// the request to permission-service without a new gateway predicate. The
+// "/super-admin/users/{id}" suffix keeps the URL hierarchy semantically
+// honest (super-admin is a permission concern, not a user-CRUD one).
+@RequestMapping("/api/v1/permissions/super-admin/users")
 public class SuperAdminControllerV1 {
 
     private static final Logger log = LoggerFactory.getLogger(SuperAdminControllerV1.class);
@@ -98,7 +103,7 @@ public class SuperAdminControllerV1 {
     }
 
     @Transactional
-    @PostMapping("/{userId}/super-admin")
+    @PostMapping("/{userId}")
     public ResponseEntity<Map<String, Object>> grantSuperAdmin(@PathVariable("userId") Long userId) {
         requireCallerSuperAdmin();
         Long callerUserId = parseCallerUserId();
@@ -154,7 +159,7 @@ public class SuperAdminControllerV1 {
     }
 
     @Transactional
-    @DeleteMapping("/{userId}/super-admin")
+    @DeleteMapping("/{userId}")
     public ResponseEntity<Map<String, Object>> revokeSuperAdmin(@PathVariable("userId") Long userId) {
         requireCallerSuperAdmin();
         Long callerUserId = parseCallerUserId();
