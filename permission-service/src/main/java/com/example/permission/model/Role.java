@@ -26,6 +26,20 @@ public class Role {
     @Column(name = "updated_at")
     private Instant updatedAt;
 
+    /**
+     * Codex 019dd818 iter-16 (Plan C): role-level permission model marker.
+     *
+     * <p>Distinguishes legacy FK-seeded roles from granule-managed roles
+     * across boots, so {@link
+     * com.example.permission.config.PermissionDataInitializer} can skip seed
+     * for granule roles even when the role currently has zero rows (empty
+     * replace), and so legacy write endpoints can fail fast with 409.
+     * Persisted as VARCHAR via V17 migration.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "permission_model", nullable = false, length = 20)
+    private PermissionModel permissionModel = PermissionModel.LEGACY;
+
     @OneToMany(mappedBy = "role", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private Set<RolePermission> rolePermissions = new HashSet<>();
 
@@ -75,6 +89,14 @@ public class Role {
 
     public void setRolePermissions(Set<RolePermission> rolePermissions) {
         this.rolePermissions = rolePermissions;
+    }
+
+    public PermissionModel getPermissionModel() {
+        return permissionModel;
+    }
+
+    public void setPermissionModel(PermissionModel permissionModel) {
+        this.permissionModel = permissionModel;
     }
 
     /**

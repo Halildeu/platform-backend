@@ -40,16 +40,27 @@ class FlywayMigrationTest {
 
         // Verify critical migrations exist
         boolean hasV6 = false, hasV7 = false, hasV8 = false, hasV9 = false;
+        boolean hasV14 = false, hasV15 = false, hasV16 = false, hasV17 = false;
         for (MigrationInfo info : pending) {
             String v = info.getVersion().toString();
             if (v.equals("6")) hasV6 = true;
             if (v.equals("7")) hasV7 = true;
             if (v.equals("8")) hasV8 = true;
             if (v.equals("9")) hasV9 = true;
+            if (v.equals("14")) hasV14 = true;
+            if (v.equals("15")) hasV15 = true;
+            if (v.equals("16")) hasV16 = true;
+            if (v.equals("17")) hasV17 = true;
         }
         assertTrue(hasV6, "V6 (authz_sync_version) migration missing");
         assertTrue(hasV7, "V7 (remove page/field) migration missing");
         assertTrue(hasV8, "V8 (permission group matrix) migration missing");
         assertTrue(hasV9, "V9 (cleanup page/field rows) migration missing");
+
+        // Codex 019dd818 iter-12..16 chain — order-locked closure.
+        assertTrue(hasV14, "V14 (permissions.module_name canonicalize) migration missing");
+        assertTrue(hasV15, "V15 (mixed FK/granule cleanup) migration missing");
+        assertTrue(hasV16, "V16 (post-initializer-drift cleanup re-run) migration missing");
+        assertTrue(hasV17, "V17 (roles.permission_model marker) migration missing");
     }
 }

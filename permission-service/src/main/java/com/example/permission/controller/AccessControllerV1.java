@@ -22,8 +22,12 @@ import com.example.permission.service.PermissionService;
 import com.example.permission.service.TupleSyncService;
 import com.example.permission.service.UserScopeService;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+import com.example.permission.model.PermissionModel;
+import com.example.permission.model.Role;
 
 import java.util.List;
 import java.util.Map;
@@ -117,6 +121,7 @@ public class AccessControllerV1 {
     @RequireModule(value = "ACCESS", relation = "can_manage")
     public ResponseEntity<BulkPermissionsResponseDto> bulkPermissions(@PathVariable Long roleId,
                                                                 @RequestBody BulkPermissionsRequestDto request) {
+        rejectIfGranuleManaged(roleId);
         BulkPermissionsResponseDto result = accessRoleService.bulkUpdateModuleLevel(
                 List.of(roleId),
                 request.getModuleKey(),
@@ -131,6 +136,7 @@ public class AccessControllerV1 {
     @RequireModule(value = "ACCESS", relation = "can_manage")
     public ResponseEntity<RolePermissionsUpdateResponseDto> updateRolePermissions(@PathVariable Long roleId,
                                                                                   @RequestBody(required = false) RolePermissionsUpdateRequestDto request) {
+        rejectIfGranuleManaged(roleId);
         RolePermissionsUpdateRequestDto payload = request == null ? new RolePermissionsUpdateRequestDto() : request;
         RolePermissionsUpdateResponseDto result = accessRoleService.updateRolePermissions(
                 roleId,
@@ -138,6 +144,27 @@ public class AccessControllerV1 {
                 payload.getPerformedBy()
         );
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Codex 019dd818 iter-16 (Plan C): legacy write boundary enforcement.
+     *
+     * <p>Granule-managed roles (those flipped to {@link PermissionModel#GRANULE}
+     * by {@code PUT /granules}) MUST not be modified through the legacy
+     * code-based endpoints. Mixing the two writers re-creates the FK + granule
+     * mixed state V15/V16 cleaned up. Returning 409 surfaces the boundary to
+     * any caller still pointing at legacy endpoints; the canonical path is
+     * {@code PUT /api/v1/roles/{id}/granules}.
+     */
+    private void rejectIfGranuleManaged(Long roleId) {
+        Role role = roleRepository.findById(roleId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Role not found: " + roleId));
+        if (role.getPermissionModel() == PermissionModel.GRANULE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Role " + roleId + " is granule-managed; use PUT /api/v1/roles/"
+                            + roleId + "/granules instead of legacy permission endpoints");
+        }
     }
 
     /**
@@ -229,6 +256,14 @@ public class AccessControllerV1 {
                     com.example.permission.model.GrantType.valueOf(item.grant().toUpperCase())
             ));
         }
+
+        // Codex 019dd818 iter-16 (Plan C): explicitly mark the role as granule-
+        // managed on every /granules call, including empty replace. Without
+        // this flip, an empty replace leaves rolePermissions=Ø; on next boot
+        // PermissionDataInitializer's row-shape predicate misclassifies the
+        // role as legacy and re-seeds DEFAULT_ROLE_PERMISSIONS FK rows. The
+        // marker survives the empty state and keeps the seed flow off.
+        role.setPermissionModel(com.example.permission.model.PermissionModel.GRANULE);
 
         role.setUpdatedAt(java.time.Instant.now());
         roleRepository.save(role);

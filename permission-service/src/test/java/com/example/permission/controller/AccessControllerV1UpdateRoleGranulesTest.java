@@ -4,6 +4,7 @@ import com.example.permission.dto.v1.RolePermissionItemDto;
 import com.example.permission.event.RoleChangeEvent;
 import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
+import com.example.permission.model.PermissionModel;
 import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
@@ -136,7 +137,13 @@ class AccessControllerV1UpdateRoleGranulesTest {
         assertThat(only.getGrantType()).isEqualTo(GrantType.VIEW);
         assertThat(only.getRole()).as("Back-reference set by addRolePermission").isSameAs(saved);
 
-        // --- ASSERT 4: change event published (CNS-002 contract)
+        // --- ASSERT 4: iter-16 marker contract — saving granules flips the
+        //     role to GRANULE so initializer skips it across boots.
+        assertThat(saved.getPermissionModel())
+                .as("iter-16: /granules call must mark role as GRANULE")
+                .isEqualTo(PermissionModel.GRANULE);
+
+        // --- ASSERT 5: change event published (CNS-002 contract)
         verify(eventPublisher).publishEvent(any(RoleChangeEvent.class));
     }
 
@@ -159,9 +166,18 @@ class AccessControllerV1UpdateRoleGranulesTest {
         assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
         ArgumentCaptor<Role> roleCaptor = ArgumentCaptor.forClass(Role.class);
         verify(roleRepository).save(roleCaptor.capture());
-        assertThat(roleCaptor.getValue().getRolePermissions())
+        Role saved = roleCaptor.getValue();
+        assertThat(saved.getRolePermissions())
                 .as("Empty replace must remove every existing row")
                 .isEmpty();
+
+        // iter-16 critical assertion: even when the new permission list is
+        // empty, the role must still be marked GRANULE so the initializer
+        // doesn't re-seed FK rows on the next boot. Without this assertion
+        // the empty-replace boot regression is undetectable.
+        assertThat(saved.getPermissionModel())
+                .as("iter-16: empty /granules replace must STILL mark role as GRANULE")
+                .isEqualTo(PermissionModel.GRANULE);
 
         verify(rolePermissionRepository, never()).deleteByRoleId(any());
     }
