@@ -64,20 +64,33 @@ public final class RolePermissionGranuleDefaults {
         String normalizedCode = code == null ? "" : code.trim();
         String upperCode = normalizedCode.toUpperCase(Locale.ROOT);
 
+        // Codex 019dda1c iter-26: legacy permission codes use kebab-case
+        // slugs (e.g. "reports.hr-analytics.view"), but the catalog and DB
+        // permission_key column use upper-snake (HR_ANALYTICS). Strip the
+        // ".view" suffix and convert kebab → upper-snake so the granule key
+        // matches PermissionCatalogService.REPORTS canonical identity.
         if (normalizedCode.startsWith("reports.")) {
+            String tail = normalizedCode.substring("reports.".length());
+            boolean isView = tail.endsWith(".view");
+            String slug = isView ? tail.substring(0, tail.length() - ".view".length()) : tail;
             return new Granule(
                     PermissionType.REPORT,
-                    normalizedCode.substring("reports.".length()),
-                    normalizedCode.endsWith(".view") ? GrantType.VIEW : GrantType.ALLOW
+                    slugToUpperSnake(slug),
+                    isView ? GrantType.VIEW : GrantType.ALLOW
             );
         }
         // P1-A: dashboards.* no longer mapped to PAGE (removed type)
-        // Dashboard access is handled via hasModule('ACCESS'/'PURCHASE') in frontend
+        // Codex 019dda1c iter-26: dashboards.* alias of reports.* — same
+        // canonical upper-snake key. Pre-iter-26 the suffix was passed through
+        // verbatim ("hr-analytics"); now normalized to HR_ANALYTICS.
         if (normalizedCode.startsWith("dashboards.")) {
+            String tail = normalizedCode.substring("dashboards.".length());
+            boolean isView = tail.endsWith(".view");
+            String slug = isView ? tail.substring(0, tail.length() - ".view".length()) : tail;
             return new Granule(
                     PermissionType.REPORT,
-                    normalizedCode.substring("dashboards.".length()),
-                    GrantType.ALLOW
+                    slugToUpperSnake(slug),
+                    isView ? GrantType.VIEW : GrantType.ALLOW
             );
         }
         if (upperCode.equals("VIEW_USERS") || upperCode.equals("MANAGE_USERS") || normalizedCode.startsWith("user-")) {
@@ -152,6 +165,20 @@ public final class RolePermissionGranuleDefaults {
                 .replace('Ç', 'C')
                 .replaceAll("[^A-Z0-9]+", "_")
                 .replaceAll("^_+|_+$", "");
+    }
+
+    /**
+     * Codex 019dda1c iter-26: convert a kebab-case dashboard slug
+     * ({@code "hr-analytics"}, {@code "fin-ratios"}) into the canonical
+     * upper-snake permission key persisted in {@code role_permissions.
+     * permission_key} ({@code "HR_ANALYTICS"}, {@code "FIN_RATIOS"}).
+     *
+     * <p>Used by both the {@code reports.*} and {@code dashboards.*} legacy
+     * permission code branches above. Locale.ROOT prevents the tr_TR
+     * dotted-I issue on JVMs with Turkish locale.
+     */
+    private static String slugToUpperSnake(String slug) {
+        return slug.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
     }
 
     private record Granule(PermissionType permissionType, String permissionKey, GrantType grantType) {

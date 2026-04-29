@@ -7,7 +7,7 @@
   "category": "İnsan Kaynakları",
   "icon": "banknotes",
   "access": {
-    "permission": "REPORT_VIEW",
+    "permission": "reports.hr-finansal.view",
     "rowFilter": {
       "column": "OUR_COMPANY_ID",
       "scopeType": "COMPANY",

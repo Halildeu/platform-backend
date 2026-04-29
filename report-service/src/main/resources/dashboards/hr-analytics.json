@@ -7,7 +7,7 @@
   "category": "İnsan Kaynakları",
   "icon": "users",
   "access": {
-    "permission": "REPORT_VIEW",
+    "permission": "reports.hr-analytics.view",
     "rowFilter": {
       "column": "OUR_COMPANY_ID",
       "scopeType": "COMPANY",
