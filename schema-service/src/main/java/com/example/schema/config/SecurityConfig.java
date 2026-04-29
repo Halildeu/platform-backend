@@ -35,6 +35,15 @@ public class SecurityConfig {
                     // permitAll only applies to in-cluster service-to-
                     // service calls (permission-service → schema-service).
                     .requestMatchers("/api/v1/schema/master-data/**").permitAll()
+                    // Codex 019dda1c iter-30d: explicit diagnostic path. Spring
+                    // Boot 3.x MvcRequestMatcher seems to not extend the
+                    // /master-data/** glob to /master-data/diagnostic/** in
+                    // some startup orderings (smoke returned 401 with the
+                    // single pattern even though the diagnostic controller is
+                    // registered). Adding the explicit pattern as a belt-and-
+                    // braces second match ensures the diagnostic endpoint is
+                    // reachable when the parent glob isn't applied.
+                    .requestMatchers("/api/v1/schema/master-data/diagnostic/**").permitAll()
                     .anyRequest().authenticated()
             )
             .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {}));
