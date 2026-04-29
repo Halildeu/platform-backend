@@ -177,8 +177,13 @@ public class PermissionDataInitializer implements CommandLineRunner {
                 return savedRole;
             });
 
+            // 2026-04-29: dual data model — legacy rows have permission_id FK,
+            // new (Codex S1-S2) rows have permission_type + permission_key without FK.
+            // Initializer'ın görevi legacy code-based permission'ları seedlemek;
+            // null FK rows zaten yeni modeldeki granule shortcut'lar — skip safely.
             Set<String> currentPermissionCodes = role.getRolePermissions()
                     .stream()
+                    .filter(rp -> rp.getPermission() != null)
                     .map(rp -> rp.getPermission().getCode().toLowerCase())
                     .collect(Collectors.toSet());
 
