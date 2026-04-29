@@ -238,10 +238,25 @@ public class AccessControllerV1 {
     public ResponseEntity<Map<String, Object>> updateRoleGranules(
             @PathVariable Long roleId,
             @RequestBody Map<String, List<com.example.permission.dto.v1.RolePermissionItemDto>> body) {
-        var role = roleRepository.findById(roleId)
+        // Codex 019dd9f0 iter-22 (A++ hotfix): SELECT … FOR UPDATE serializes
+        // concurrent /granules calls on the same role at the parent row. Without
+        // this lock two requests can race on the "clear → flush → insert" path
+        // and one will crash on the partial unique index
+        // uk_role_permissions_role_granule.
+        var role = roleRepository.findByIdForUpdate(roleId)
                 .orElseThrow(() -> new IllegalArgumentException("Role not found: " + roleId));
 
         var items = body.getOrDefault("permissions", List.of());
+
+        // Codex 019dd9f0 iter-22: validate + canonicalize input.
+        // RolePermission entity has no business-key equals/hashCode and the
+        // partial unique index treats every (role_id, permission_type,
+        // permission_key) tuple as unique. If the client sends the same
+        // (type, key) twice in one payload, our aggregate accepts both and
+        // the second insert collides on commit. Reject malformed input
+        // explicitly with 400 instead of letting Hibernate translate it
+        // into a 500 from a constraint violation.
+        var normalized = validateAndNormalizeGranules(items);
 
         // Codex 019dd818 iter-13 (Plan B): aggregate-native granule replace.
         // Önceki implementasyon `rolePermissionRepository.deleteByRoleId` (JPQL
@@ -259,12 +274,26 @@ public class AccessControllerV1 {
         // cascade=ALL ile DB INSERT. Tek transaction, tek persistence context,
         // bulk DML yok.
         role.clearRolePermissions();
-        for (var item : items) {
+
+        // Codex 019dd9f0 iter-22 (A++ hotfix): force orphan-removal DELETEs to
+        // be flushed to the database BEFORE we add the new granules. Without
+        // this explicit flush, Hibernate's default action ordering (or the
+        // managed Set semantics) can let the new INSERTs reach Postgres before
+        // the pending DELETEs do, producing a duplicate-key violation on the
+        // partial unique index when the saved key set overlaps with the
+        // existing one (e.g. "USER_MANAGEMENT MANAGE" → "USER_MANAGEMENT VIEW"
+        // is still the same (role_id, permission_type, permission_key) tuple).
+        // Failure is observed in production as HTTP 500 from
+        // "duplicate key value violates unique constraint
+        // uk_role_permissions_role_granule".
+        roleRepository.flush();
+
+        for (var item : normalized) {
             role.addRolePermission(new com.example.permission.model.RolePermission(
                     role,
-                    com.example.permission.model.PermissionType.valueOf(item.type().toUpperCase()),
+                    com.example.permission.model.PermissionType.valueOf(item.type().toUpperCase(java.util.Locale.ROOT)),
                     item.key(),
-                    com.example.permission.model.GrantType.valueOf(item.grant().toUpperCase())
+                    com.example.permission.model.GrantType.valueOf(item.grant().toUpperCase(java.util.Locale.ROOT))
             ));
         }
 
@@ -282,7 +311,48 @@ public class AccessControllerV1 {
         // CNS-002 #2-3: Publish event — handled AFTER_COMMIT to avoid stale state
         eventPublisher.publishEvent(new com.example.permission.event.RoleChangeEvent(roleId));
 
-        return ResponseEntity.ok(Map.of("roleId", roleId, "granuleCount", items.size(), "propagated", true));
+        return ResponseEntity.ok(Map.of("roleId", roleId, "granuleCount", normalized.size(), "propagated", true));
+    }
+
+    /**
+     * Codex 019dd9f0 iter-22 (A++ hotfix): validate that no two payload entries
+     * share the same (type, key) tuple. The partial unique index
+     * uk_role_permissions_role_granule treats this combination as the granule
+     * identity, and the {@link com.example.permission.model.RolePermission}
+     * entity does not implement business-key equals/hashCode — so the
+     * aggregate's {@code Set<RolePermission>} would accept duplicates and the
+     * second INSERT on commit would crash. Reject the request up front with a
+     * meaningful 400 (instead of letting Hibernate translate it into a 500
+     * "Beklenmeyen bir hata oluştu").
+     *
+     * <p>Also normalizes type/key/grant by trimming and uppercasing the type
+     * and grant so callers can be lenient with case (the {@link
+     * com.example.permission.model.PermissionType#valueOf} call later requires
+     * an exact uppercase match).
+     */
+    private List<com.example.permission.dto.v1.RolePermissionItemDto>
+            validateAndNormalizeGranules(List<com.example.permission.dto.v1.RolePermissionItemDto> items) {
+        var seen = new java.util.HashSet<String>();
+        var out = new java.util.ArrayList<com.example.permission.dto.v1.RolePermissionItemDto>(items.size());
+        for (var item : items) {
+            if (item == null
+                    || item.type() == null || item.type().isBlank()
+                    || item.key() == null || item.key().isBlank()
+                    || item.grant() == null || item.grant().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Granule entry missing type/key/grant");
+            }
+            String typeUp = item.type().trim().toUpperCase(java.util.Locale.ROOT);
+            String key = item.key().trim();
+            String grantUp = item.grant().trim().toUpperCase(java.util.Locale.ROOT);
+            String dedupKey = typeUp + "::" + key;
+            if (!seen.add(dedupKey)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Duplicate granule (type=" + typeUp + ", key=" + key + ") in payload");
+            }
+            out.add(new com.example.permission.dto.v1.RolePermissionItemDto(typeUp, key, grantUp));
+        }
+        return out;
     }
 
     @GetMapping("/users/{userId}/scopes")
