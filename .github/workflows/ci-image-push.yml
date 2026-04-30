@@ -78,31 +78,97 @@ jobs:
           echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Pinnable**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}@${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
 
+      # iter-49 B.3 hardening: per-service digest artifact for dispatch
+      # aggregation. Matrix output cross-job toplama karmaşası yerine
+      # actions/upload-artifact ile her servis kendi digest'ini ayrı
+      # artifact'e yazar; dispatch job download-artifact ile toplayıp
+      # JSON map oluşturur ve client_payload[digests]'e gönderir.
+      # gitops deploy-backend-testai.yml digest-pin mode ile @sha256:
+      # direct pin yapar (D30 immutable cutover-ready).
+      - name: Save digest as artifact (B.3 dispatch payload prep)
+        run: |
+          mkdir -p /tmp/digests
+          DIGEST_RAW="${{ steps.build.outputs.digest }}"
+          # docker/build-push-action returns "sha256:<hash>"; strip prefix
+          # so the file content is bare hex hash; dispatch job re-prefixes.
+          DIGEST_HEX="${DIGEST_RAW#sha256:}"
+          if [ -z "${DIGEST_HEX}" ] || [ "${#DIGEST_HEX}" -ne 64 ]; then
+            echo "::error::digest format invalid: ${DIGEST_RAW}"
+            exit 1
+          fi
+          echo "${DIGEST_HEX}" > "/tmp/digests/${{ matrix.service }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: /tmp/digests/${{ matrix.service }}
+          retention-days: 1
+
   # iter-49 backend deploy automation — Codex 019ddf43.
   # Matrix tüm service'ler SUCCESS olduktan sonra TEK dispatch event
-  # gitops repo'ya gönderir. Deploy workflow runtime'da skopeo ile
-  # per-service digest resolve eder (matrix output toplama karmaşası yok).
+  # gitops repo'ya gönderir.
+  #
+  # iter-49 B.3 hardening: dispatch payload artık per-service digest
+  # JSON map içerir. gitops deploy workflow digest-pin mode'da bunu
+  # tüketir (skopeo bypass + tag-based fallback yerine direct
+  # @sha256:<digest> pin, D30 immutable cutover-ready).
   dispatch:
     name: Dispatch backend-testai-deploy to gitops
     needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Dispatch event
+      - name: Download all per-service digest artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - name: Build digest map JSON
+        id: digest-map
+        run: |
+          set -euo pipefail
+          MAP="{}"
+          if [ -d /tmp/digests ]; then
+            for f in /tmp/digests/*; do
+              [ -f "$f" ] || continue
+              svc=$(basename "$f")
+              hex=$(cat "$f" | tr -d '[:space:]')
+              if [ "${#hex}" -ne 64 ]; then
+                echo "::error::digest hex length invalid for ${svc}: ${hex}"
+                exit 1
+              fi
+              MAP=$(echo "$MAP" | jq --arg s "$svc" --arg d "sha256:$hex" '. + {($s): $d}')
+            done
+          fi
+          # Compact one-line JSON for client_payload safe transport
+          COMPACT=$(echo "$MAP" | jq -c .)
+          echo "json=${COMPACT}" >> "$GITHUB_OUTPUT"
+          echo "Digest map ($(echo "$MAP" | jq 'length') services):"
+          echo "$MAP" | jq .
+      - name: Dispatch event (with digest map payload)
         env:
           GH_TOKEN: ${{ secrets.GITOPS_DISPATCH_PAT }}
+          DIGESTS_JSON: ${{ steps.digest-map.outputs.json }}
         run: |
+          set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::warning::GITOPS_DISPATCH_PAT not set; skipping dispatch"
             exit 0
           fi
           SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          # client_payload.digests JSON map; deploy workflow tüketir
+          # (yoksa tag-based fallback). Empty map ({}) gönderilirse
+          # deploy workflow yine tag-based fallback'e düşer (jq object
+          # check '{}' length 0 → digest mode active ama her servis
+          # missing → fail; bu yüzden empty map'i null'a indir).
           gh api repos/Halildeu/platform-k8s-gitops/dispatches \
             -X POST \
             -f event_type=backend-testai-deploy \
             -F "client_payload[sha]=${{ github.sha }}" \
             -F "client_payload[short_sha]=${SHORT_SHA}" \
-            -F "client_payload[ref]=${{ github.ref_name }}"
+            -F "client_payload[ref]=${{ github.ref_name }}" \
+            --raw-field "client_payload[digests]=${DIGESTS_JSON}"
           echo "Dispatched backend-testai-deploy to platform-k8s-gitops"
           echo "  - sha:       ${{ github.sha }}"
           echo "  - short_sha: ${SHORT_SHA}"
+          echo "  - digests:   $(echo "${DIGESTS_JSON}" | jq 'length') service(s)"
