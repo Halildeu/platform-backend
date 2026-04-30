@@ -96,9 +96,22 @@ public class AuthorizationControllerV1 {
         try {
             return doGetMe(jwt);
         } catch (RuntimeException ex) {
-            // B2 (Rev 19): All-paths 503 — covers dev branch + JWT branch
-            log.error("Authz /me beklenmeyen hata; 503 dönülüyor (B2: JWT fallback kaldırıldı). cause={}", ex.getMessage(), ex);
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(null);
+            // Codex 019dddb7 iter-42 — never return 5xx with a null body.
+            // The legacy ResponseEntity.status(503).body(null) produced a
+            // payload that downstream consumers couldn't differentiate
+            // from a successful response with no fields, so the variant
+            // service collapsed both paths to "empty AuthzMeResponse" and
+            // the frontend's iter-34 empty-body retry was needed to mask
+            // the race. By rethrowing as ResponseStatusException the
+            // GlobalExceptionHandler converts the failure to a 503 with a
+            // populated JSON ErrorResponse — contract: "5xx ⇒ non-empty
+            // error JSON, 2xx ⇒ non-empty AuthzMeResponse JSON".
+            log.error("Authz /me beklenmeyen hata; 503 + AUTHZ_DEGRADED rethrow. cause={}",
+                    ex.getMessage(), ex);
+            throw new org.springframework.web.server.ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "AUTHZ_DEGRADED: authz service degraded; retry",
+                    ex);
         }
     }
 

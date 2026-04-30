@@ -153,6 +153,46 @@ class AuthorizationControllerV1Test {
         assertTrue(body.getAllowedModules().contains("AUDIT"));
         assertTrue(body.getAllowedModules().contains("REPORT"));
     }
+    // Codex 019dddb7 iter-42 — /authz/me 5xx contract.
+    // Pre-iter-42 the controller returned ResponseEntity.status(503).body(null)
+    // on any RuntimeException, which the api-gateway / variant-service chain
+    // collapsed to "200 + empty body" on the wire (see live-capture
+    // diagnostic in iter-34). The frontend's iter-34 retry was a workaround
+    // for that contract violation.
+    //
+    // Post-iter-42 the broad catch rethrows as ResponseStatusException so
+    // the GlobalExceptionHandler emits a typed 503 with a non-empty JSON
+    // body. The contract is asserted at the unit layer here AND at the
+    // gateway layer in the new gateway integration test.
+    @Test
+    void getMe_returns503ResponseStatusExceptionWhenDownstreamFails() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("15")
+                .claim("permissions", List.of("VIEW_USERS"))
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        when(authenticatedUserLookupService.resolve(jwt))
+                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "u@example.com"));
+        // doGetMe wraps most downstream calls in *Safely helpers; the
+        // remaining unguarded path is authzVersionService.getCurrentVersion
+        // which fires unconditionally and surfaces RuntimeException to the
+        // broad catch.
+        when(authzVersionService.getCurrentVersion())
+                .thenThrow(new RuntimeException("downstream synthetic failure"));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.getMe(jwt)
+                );
+        assertEquals(503, ex.getStatusCode().value());
+        assertNotNull(ex.getReason());
+        assertTrue(ex.getReason().contains("AUTHZ_DEGRADED"),
+                "503 reason must carry AUTHZ_DEGRADED so frontend can classify the error");
+    }
+
 // ---- B1 (Rev 19): Tests for new /check, /batch-check endpoints ----
 
     @org.junit.jupiter.api.Nested
