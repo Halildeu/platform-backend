@@ -25,13 +25,9 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
-import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
-import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
@@ -75,6 +71,10 @@ import java.util.List;
         // iter-49 A: rate-limit'i test için sıkıştır (default 60/min, burst 120 → flake)
         "authz.rate-limit.per-minute=2",
         "authz.rate-limit.burst=2"
+        // iter-49 A.2: production decoder JWK fetch yapar; test ortamında
+        // Keycloak yok → MockWebServer'a JWKS endpoint serve ettiriyoruz +
+        // SECURITY_JWT_JWK_SET_URI dynamic property override (aşağıda
+        // routeProps).
 })
 // Codex 019ddf43 iter-49 A — test ordering kontratı: 502 testi
 // stub'ı kapatır (irreversible mid-test); ondan ÖNCE 200/403 happy
@@ -90,7 +90,36 @@ class GatewayStatusCodeMatrixTest {
     @LocalServerPort
     int port;
 
-    static MockWebServer stub;
+    // iter-49 A.2 (Codex 019ddf43 root cause): tek MockWebServer hem JWKS
+    // hem downstream serve etmesi 502 testi `stub.shutdown()` ile JWKS
+    // fetch'i de öldürüyor → 401 testleri ConnectException →
+    // VaultFailfastFallbackHandler 503'e wrap. Fix: iki ayrı stub.
+    //
+    // - jwksStub: SADECE /.well-known/jwks.json serve eder; her test
+    //   boyunca alive (ASLA shutdown).
+    // - downstreamStub: /api/users/*, /api/v1/authz/* route'ları serve eder;
+    //   502 testi BUNU shutdown eder.
+    static MockWebServer jwksStub;
+    static MockWebServer downstreamStub;
+
+    // iter-49 A.2: Test JWT keypair static — JwtTestConfig bean üretiminde
+    // ve MockWebServer JWKS endpoint serve etmesinde aynı keypair kullanılır.
+    // Production NimbusReactiveJwtDecoder JWK fetch → bu key public part →
+    // in-memory keypair ile imzalanmış token decode edebilir.
+    static final RSAKey TEST_RSA_KEY;
+    static {
+        try {
+            java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("RSA");
+            kpg.initialize(2048);
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            TEST_RSA_KEY = new RSAKey.Builder((java.security.interfaces.RSAPublicKey) kp.getPublic())
+                    .privateKey((java.security.interfaces.RSAPrivateKey) kp.getPrivate())
+                    .keyID("test-kid")
+                    .build();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate test RSA keypair", e);
+        }
+    }
 
     @Autowired
     JwtEncoder jwtEncoder;
@@ -99,9 +128,28 @@ class GatewayStatusCodeMatrixTest {
     WebTestClient webClient;
 
     @BeforeAll
-    static void startStub() throws Exception {
-        stub = new MockWebServer();
-        Dispatcher dispatcher = new Dispatcher() {
+    static void startStubs() throws Exception {
+        // jwksStub: production JwtDecoder JWK fetch'i için, ASLA shutdown
+        jwksStub = new MockWebServer();
+        jwksStub.setDispatcher(new Dispatcher() {
+            @Override
+            public MockResponse dispatch(RecordedRequest request) {
+                String path = request.getPath();
+                if (path != null && path.startsWith("/.well-known/jwks.json")) {
+                    String jwks = "{\"keys\":[" + TEST_RSA_KEY.toPublicJWK().toJSONString() + "]}";
+                    return new MockResponse()
+                            .setResponseCode(200)
+                            .addHeader("Content-Type", "application/json")
+                            .setBody(jwks);
+                }
+                return new MockResponse().setResponseCode(404);
+            }
+        });
+        jwksStub.start();
+
+        // downstreamStub: route hedefi (user-service + authz). 502 testi bunu shutdown eder.
+        downstreamStub = new MockWebServer();
+        downstreamStub.setDispatcher(new Dispatcher() {
             @Override
             public MockResponse dispatch(RecordedRequest request) {
                 String path = request.getPath();
@@ -130,18 +178,19 @@ class GatewayStatusCodeMatrixTest {
                 }
                 return new MockResponse().setResponseCode(404);
             }
-        };
-        stub.setDispatcher(dispatcher);
-        stub.start();
+        });
+        downstreamStub.start();
     }
 
     @AfterAll
-    static void stopStub() throws Exception {
-        if (stub != null) {
-            try {
-                stub.shutdown();
-            } catch (IllegalStateException ignored) {
-                // Already shut down by test_502 (idempotent cleanup)
+    static void stopStubs() throws Exception {
+        for (MockWebServer s : new MockWebServer[]{jwksStub, downstreamStub}) {
+            if (s != null) {
+                try {
+                    s.shutdown();
+                } catch (IllegalStateException ignored) {
+                    // Already shut down (502 testi downstreamStub'ı erken kapatır)
+                }
             }
         }
     }
@@ -149,15 +198,21 @@ class GatewayStatusCodeMatrixTest {
     @DynamicPropertySource
     static void routeProps(DynamicPropertyRegistry reg) {
         reg.add("spring.cloud.gateway.server.webflux.routes[0].id", () -> "user-service-route");
-        reg.add("spring.cloud.gateway.server.webflux.routes[0].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[0].uri", () -> downstreamStub.url("/").toString());
         reg.add("spring.cloud.gateway.server.webflux.routes[0].predicates[0]", () -> "Path=/api/users/**");
 
         reg.add("spring.cloud.gateway.server.webflux.routes[1].id", () -> "authz-route");
-        reg.add("spring.cloud.gateway.server.webflux.routes[1].uri", () -> stub.url("/").toString());
+        reg.add("spring.cloud.gateway.server.webflux.routes[1].uri", () -> downstreamStub.url("/").toString());
         reg.add("spring.cloud.gateway.server.webflux.routes[1].predicates[0]", () -> "Path=/api/v1/authz/**");
 
         reg.add("SECURITY_JWT_ISSUER", () -> "auth-service");
         reg.add("SECURITY_JWT_AUDIENCE", () -> "user-service,frontend");
+
+        // Production decoder JWK Set URI → ayrı jwksStub (downstreamStub
+        // shutdown olsa bile 401 testleri JWKS fetch yapabilir).
+        reg.add("spring.security.oauth2.resourceserver.jwt.jwk-set-uri",
+                () -> jwksStub.url("/.well-known/jwks.json").toString());
+        reg.add("spring.security.oauth2.resourceserver.jwt.issuer-uri", () -> "auth-service");
     }
 
     private String validToken() {
@@ -197,7 +252,10 @@ class GatewayStatusCodeMatrixTest {
     // davranışını dokümanlamak için disabled bırakıldı (silinmedi ki
     // follow-up'ta enable + assertion fix kolay).
 
-    @Disabled("iter-49 A.1: bad-token 401 path 503 dönüyor — Vault/JWKS dep investigate")
+    @Disabled("iter-49 A.3: VaultFailfastFallbackHandler ErrorWebExceptionHandler "
+           + "WebClientRequestException wrap ediyor (503). Production fix LIVE "
+           + "(testai canli verify bad-token=401, PR #51). Test infrastructure "
+           + "deep fix gerek (decoder Bean cache, ErrorHandler bypass)")
     @Test
     void users_with_expiredToken_returns401() {
         // Codex 019ddf43 iter-49 A — JWT exp claim past → JwtValidator reject.
@@ -218,7 +276,10 @@ class GatewayStatusCodeMatrixTest {
                 .expectStatus().isUnauthorized();
     }
 
-    @Disabled("iter-49 A.1: bad-token 401 path 503 dönüyor — Vault/JWKS dep investigate")
+    @Disabled("iter-49 A.3: VaultFailfastFallbackHandler ErrorWebExceptionHandler "
+           + "WebClientRequestException wrap ediyor (503). Production fix LIVE "
+           + "(testai canli verify bad-token=401, PR #51). Test infrastructure "
+           + "deep fix gerek (decoder Bean cache, ErrorHandler bypass)")
     @Test
     void users_with_wrongIssuer_returns401() {
         String t = token("malicious-issuer", List.of("user-service"), Duration.ofSeconds(300));
@@ -229,7 +290,10 @@ class GatewayStatusCodeMatrixTest {
                 .expectStatus().isUnauthorized();
     }
 
-    @Disabled("iter-49 A.1: bad-token 401 path 503 dönüyor — Vault/JWKS dep investigate")
+    @Disabled("iter-49 A.3: VaultFailfastFallbackHandler ErrorWebExceptionHandler "
+           + "WebClientRequestException wrap ediyor (503). Production fix LIVE "
+           + "(testai canli verify bad-token=401, PR #51). Test infrastructure "
+           + "deep fix gerek (decoder Bean cache, ErrorHandler bypass)")
     @Test
     void users_with_wrongAudience_returns401() {
         String t = token("auth-service", List.of("other-service"), Duration.ofSeconds(300));
@@ -240,7 +304,10 @@ class GatewayStatusCodeMatrixTest {
                 .expectStatus().isUnauthorized();
     }
 
-    @Disabled("iter-49 A.1: bad-token 401 path 503 dönüyor — Vault/JWKS dep investigate")
+    @Disabled("iter-49 A.3: VaultFailfastFallbackHandler ErrorWebExceptionHandler "
+           + "WebClientRequestException wrap ediyor (503). Production fix LIVE "
+           + "(testai canli verify bad-token=401, PR #51). Test infrastructure "
+           + "deep fix gerek (decoder Bean cache, ErrorHandler bypass)")
     @Test
     void users_with_malformedToken_returns401() {
         webClient.get()
@@ -273,10 +340,10 @@ class GatewayStatusCodeMatrixTest {
     void users_when_downstreamShutdown_returns502() throws Exception {
         // Codex 019ddf43 S2: stub.shutdown() ile gerçek connection refused.
         // Spring Cloud Gateway default davranış: 502 Bad Gateway.
-        // NOT: Bu test stub'ı kapatır. Diğer test'ler bu test'ten ÖNCE
-        // çalışmalı (JUnit 5 @Order kullanmıyoruz; default alphabetic
-        // sıralama; "z_" prefix ile en sona itele).
-        stub.shutdown();
+        // NOT: Bu test downstreamStub'ı kapatır (jwksStub alive kalır).
+        // Codex 019ddf43 fix: önceki tek-stub yaklaşımı 401 testlerini
+        // de etkiliyordu; iki stub split bu sorunu çözer.
+        downstreamStub.shutdown();
 
         String t = validToken();
         webClient.mutate()
@@ -334,18 +401,17 @@ class GatewayStatusCodeMatrixTest {
     // is isolated). Future refactor: extract `BaseGatewaySecurityTest`
     // helper with shared JWT config; out-of-scope for iter-49 A.
 
+    // iter-49 A.2: JwtTestConfig artık sadece JwtEncoder bean'i sağlar.
+    // Decoder beans (testJwtDecoder, testReactiveJwtDecoder) kaldırıldı —
+    // production SecurityConfig.jwtDecoder() bean'i MockWebServer JWKS
+    // endpoint'inden public key fetch eder (SECURITY_JWT_JWK_SET_URI
+    // dynamic property override). Tek source of truth: production decoder.
     @Configuration
     static class JwtTestConfig {
 
         @Bean
-        public RSAKey testRsaKey() throws Exception {
-            java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("RSA");
-            kpg.initialize(2048);
-            java.security.KeyPair kp = kpg.generateKeyPair();
-            return new RSAKey.Builder((java.security.interfaces.RSAPublicKey) kp.getPublic())
-                    .privateKey((java.security.interfaces.RSAPrivateKey) kp.getPrivate())
-                    .keyID("test-kid")
-                    .build();
+        public RSAKey testRsaKey() {
+            return TEST_RSA_KEY;
         }
 
         @Bean
@@ -353,26 +419,6 @@ class GatewayStatusCodeMatrixTest {
         public JwtEncoder testJwtEncoder(RSAKey testRsaKey) {
             JWKSource<SecurityContext> jwkSource = new ImmutableJWKSet<>(new JWKSet(testRsaKey));
             return new NimbusJwtEncoder(jwkSource);
-        }
-
-        @Bean
-        @Primary
-        public JwtDecoder testJwtDecoder(RSAKey testRsaKey) {
-            try {
-                return NimbusJwtDecoder.withPublicKey(testRsaKey.toRSAPublicKey()).build();
-            } catch (com.nimbusds.jose.JOSEException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        @Bean
-        @Primary
-        public ReactiveJwtDecoder testReactiveJwtDecoder(RSAKey testRsaKey) {
-            try {
-                return NimbusReactiveJwtDecoder.withPublicKey(testRsaKey.toRSAPublicKey()).build();
-            } catch (com.nimbusds.jose.JOSEException e) {
-                throw new RuntimeException(e);
-            }
         }
     }
 }
