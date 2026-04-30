@@ -71,6 +71,18 @@ class GatewaySecurityTest {
                 if (path != null && path.equals("/api/variants/error")) {
                     return new MockResponse().setResponseCode(500);
                 }
+                // Codex 019dddb7 iter-42 — downstream returns 503 + JSON
+                // error body. Gateway MUST forward both the status AND the
+                // body intact (no transformation to 200 + empty body, no
+                // promotion to 502). Pre-iter-42 behavior occasionally
+                // produced 200 + body="" because the response stream was
+                // detached before the body was buffered.
+                if (path != null && path.equals("/api/variants/degraded")) {
+                    return new MockResponse()
+                            .setResponseCode(503)
+                            .addHeader("Content-Type", "application/json")
+                            .setBody("{\"errorCode\":\"AUTHZ_DEGRADED\",\"message\":\"authz service degraded; retry\"}");
+                }
                 if (path != null && path.startsWith("/api/variants")) {
                     return new MockResponse().setResponseCode(200)
                             .addHeader("Content-Type", "application/json")
@@ -188,6 +200,30 @@ class GatewaySecurityTest {
                 .header("Authorization", "Bearer " + t)
                 .exchange()
                 .expectStatus().is5xxServerError();
+    }
+
+    // Codex 019dddb7 iter-42 — gateway must forward downstream 503 +
+    // JSON error body intact. Pre-iter-42 frontend occasionally saw a
+    // 200/empty-body race where the 503 status was lost in the stream
+    // hand-off. This test asserts byte-for-byte body preservation AND
+    // exact status code 503 (not generalized to 5xx). Combined with
+    // permission-service AuthorizationControllerV1 throwing
+    // ResponseStatusException(503) and variant-service typed
+    // exceptions, the empty-body race is prevented end-to-end.
+    @Test
+    void downstream_503_status_and_body_preserved_byteForByte() {
+        String t = token();
+        webClient.get().uri("http://localhost:" + port + "/api/variants/degraded")
+                .header("Authorization", "Bearer " + t)
+                .exchange()
+                .expectStatus().isEqualTo(503)
+                .expectHeader().contentTypeCompatibleWith("application/json")
+                .expectBody(String.class)
+                .value(body -> {
+                    org.junit.jupiter.api.Assertions.assertNotNull(body, "503 body must not be null/empty");
+                    assertThat(body).contains("AUTHZ_DEGRADED");
+                    assertThat(body).contains("authz service degraded");
+                });
     }
 
     @Test

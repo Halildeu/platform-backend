@@ -125,9 +125,56 @@ class VariantAuthorizationServiceImplTest {
         return response;
     }
 
+    // Codex 019dddb7 iter-42 — upstream failure must NOT be cached.
+    // Pre-iter-42 PermissionServiceAuthzClient returned an empty
+    // AuthzMeResponse on any failure path; the cache.get supplier in
+    // VariantAuthorizationServiceImpl wrapped that empty result through
+    // Optional.ofNullable(...).orElse(...) and stored it. Subsequent
+    // requests within the TTL would replay the empty context, even after
+    // permission-service had recovered. The new client throws typed
+    // exceptions, which propagate out of the supplier and skip the cache
+    // write — proven here by issuing a transient failure followed by a
+    // successful response and asserting the second call was not served
+    // from the empty-cache state.
+    @Test
+    void doesNotCacheUpstreamFailures() {
+        CountingStubClient client = new CountingStubClient();
+        AuthzMeResponse goodResponse = buildAuthzMeResponse();
+        client.queueException(
+                new AuthzDependencyUnavailableException("permission-service down")
+        );
+        client.queueResponse(goodResponse);
+
+        VariantAuthorizationServiceImpl service =
+                new VariantAuthorizationServiceImpl(client, Duration.ofSeconds(60));
+
+        Jwt jwt = Jwt.withTokenValue("t")
+                .header("alg", "RS256")
+                .subject("42")
+                .claim("email", "u@example.com")
+                .claim("permissions", List.of("VARIANTS_READ"))
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(60))
+                .build();
+
+        // First call: upstream fails, exception propagates (no cache write).
+        org.junit.jupiter.api.Assertions.assertThrows(
+                AuthzDependencyUnavailableException.class,
+                () -> service.buildContext(jwt)
+        );
+        assertEquals(1, client.callCount.get());
+
+        // Second call: upstream now healthy. Cache must NOT serve the
+        // earlier failure — the supplier should run again.
+        AuthorizationContext ctx = service.buildContext(jwt);
+        assertEquals(42L, ctx.getUserId());
+        assertEquals(2, client.callCount.get());
+    }
+
     private static class CountingStubClient extends PermissionServiceAuthzClient {
         private final AtomicInteger callCount = new AtomicInteger(0);
         private AuthzMeResponse response = new AuthzMeResponse();
+        private final java.util.Deque<Object> queue = new java.util.ArrayDeque<>();
 
         CountingStubClient() {
             super(org.springframework.web.reactive.function.client.WebClient.builder());
@@ -137,9 +184,22 @@ class VariantAuthorizationServiceImplTest {
             this.response = response;
         }
 
+        void queueResponse(AuthzMeResponse response) {
+            queue.addLast(response);
+        }
+
+        void queueException(RuntimeException ex) {
+            queue.addLast(ex);
+        }
+
         @Override
         public AuthzMeResponse getAuthzMe(String bearerToken) {
             callCount.incrementAndGet();
+            if (!queue.isEmpty()) {
+                Object next = queue.pollFirst();
+                if (next instanceof RuntimeException ex) throw ex;
+                return (AuthzMeResponse) next;
+            }
             return response;
         }
     }

@@ -184,8 +184,18 @@ public class VariantControllerV1 {
                     authz.getRoles(),
                     authz.getPermissions() == null ? 0 : authz.getPermissions().size(),
                     authz.isAdmin());
+            // Codex 019dddb7 iter-42 — was 401 ("Kimlik bilgisi eksik"). The
+            // JWT was already accepted upstream; an empty userId/email here
+            // is a cross-service contract failure (or a permission-service
+            // blip propagated as empty body), not the caller's auth state.
+            // Throwing AuthzIdentityResolutionException routes through the
+            // RestExceptionHandler as HTTP 500 so the frontend's session
+            // expiry path doesn't fire. PermissionServiceAuthzClient
+            // detects this earlier when feasible (502 for empty body), so
+            // reaching this branch implies a code-level invariant break.
             if (authz.getUserId() == null || authz.getEmail() == null) {
-                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik bilgisi eksik");
+                throw new com.example.variant.authz.AuthzIdentityResolutionException(
+                        "JWT geçerli ama variant identity invariant sağlanamadı (userId/email null)");
             }
             if (!authz.isAdmin() && authz.getPermissions().isEmpty()) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "permissions claim eksik veya boş");

@@ -1,5 +1,8 @@
 package com.example.variant.config;
 
+import com.example.variant.authz.AuthzDependencyUnavailableException;
+import com.example.variant.authz.AuthzIdentityResolutionException;
+import com.example.variant.authz.AuthzUpstreamInvalidResponseException;
 import com.example.variant.theme.service.ThemeNotFoundException;
 import com.example.variant.theme.service.ThemeValidationException;
 import org.slf4j.Logger;
@@ -28,6 +31,39 @@ public class RestExceptionHandler {
     public ResponseEntity<Map<String, Object>> handleThemeNotFoundException(ThemeNotFoundException ex) {
         log.warn("Theme not found: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(buildBody("THEME_NOT_FOUND", ex.getMessage()));
+    }
+
+    // Codex 019dddb7 iter-42 — authz upstream classification.
+    // Pre-iter-42 every authz failure path collapsed to HTTP 401 because
+    // the variant controllers inspected an empty AuthzMeResponse and
+    // assumed "no identity = unauthenticated". The frontend's shared-http
+    // listener turned every 401 into a global session expiry, so any
+    // permission-service blip would log users out. We now classify the
+    // failure mode so the frontend can render a transient-error toast
+    // instead of breaking the session.
+
+    @ExceptionHandler(AuthzDependencyUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleAuthzDependencyUnavailable(
+            AuthzDependencyUnavailableException ex) {
+        log.warn("Authz dependency unavailable: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(buildBody("AUTHZ_DEPENDENCY_UNAVAILABLE", ex.getMessage()));
+    }
+
+    @ExceptionHandler(AuthzUpstreamInvalidResponseException.class)
+    public ResponseEntity<Map<String, Object>> handleAuthzUpstreamInvalidResponse(
+            AuthzUpstreamInvalidResponseException ex) {
+        log.warn("Authz upstream returned invalid response: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(buildBody("AUTHZ_UPSTREAM_INVALID", ex.getMessage()));
+    }
+
+    @ExceptionHandler(AuthzIdentityResolutionException.class)
+    public ResponseEntity<Map<String, Object>> handleAuthzIdentityResolution(
+            AuthzIdentityResolutionException ex) {
+        log.warn("Authz identity resolution failed: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(buildBody("AUTHZ_IDENTITY_RESOLUTION", ex.getMessage()));
     }
 
     private Map<String, Object> buildBody(String errorCode, String message) {

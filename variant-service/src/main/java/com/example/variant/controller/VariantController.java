@@ -158,8 +158,12 @@ public class VariantController {
         if (authentication instanceof JwtAuthenticationToken jwtAuth) {
             Jwt jwt = jwtAuth.getToken();
             AuthorizationContext authz = variantAuthorizationService.buildContext(jwt);
+            // Codex 019dddb7 iter-42 — see VariantControllerV1; same fix
+            // applied here for the legacy /api/variants endpoint to keep
+            // status classification consistent.
             if (authz.getUserId() == null || authz.getEmail() == null) {
-                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Kimlik bilgisi eksik");
+                throw new com.example.variant.authz.AuthzIdentityResolutionException(
+                        "JWT geçerli ama variant identity invariant sağlanamadı (userId/email null)");
             }
             if (!authz.isAdmin() && authz.getPermissions().isEmpty()) {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "permissions claim eksik veya boş");
