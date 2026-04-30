@@ -77,3 +77,32 @@ jobs:
           echo "- **Digest**: \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Pinnable**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}@${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # iter-49 backend deploy automation — Codex 019ddf43.
+  # Matrix tüm service'ler SUCCESS olduktan sonra TEK dispatch event
+  # gitops repo'ya gönderir. Deploy workflow runtime'da skopeo ile
+  # per-service digest resolve eder (matrix output toplama karmaşası yok).
+  dispatch:
+    name: Dispatch backend-testai-deploy to gitops
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch event
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_DISPATCH_PAT }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::GITOPS_DISPATCH_PAT not set; skipping dispatch"
+            exit 0
+          fi
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          gh api repos/Halildeu/platform-k8s-gitops/dispatches \
+            -X POST \
+            -f event_type=backend-testai-deploy \
+            -F "client_payload[sha]=${{ github.sha }}" \
+            -F "client_payload[short_sha]=${SHORT_SHA}" \
+            -F "client_payload[ref]=${{ github.ref_name }}"
+          echo "Dispatched backend-testai-deploy to platform-k8s-gitops"
+          echo "  - sha:       ${{ github.sha }}"
+          echo "  - short_sha: ${SHORT_SHA}"
