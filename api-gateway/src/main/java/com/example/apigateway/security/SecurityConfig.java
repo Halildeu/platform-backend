@@ -150,7 +150,19 @@ public class SecurityConfig {
 
     private Mono<Jwt> tryDecode(List<NimbusReactiveJwtDecoder> decoders, String token, int index) {
         if (index >= decoders.size()) {
-            return Mono.error(new org.springframework.security.oauth2.jwt.JwtException("No suitable decoder accepted the token"));
+            // iter-49 A.1 fix: `JwtException` (raw) — Spring Security
+            // `JwtReactiveAuthenticationManager.onError` bunu
+            // `AuthenticationServiceException` ("system problem") olarak
+            // wrap edip 500 döner. Doğru kontrat: `BadJwtException`
+            // (subclass of JwtException) — `JwtReactiveAuthenticationManager`
+            // bunu `BadCredentialsException` olarak yeniden fırlatır →
+            // 401 Unauthorized.
+            //
+            // Canlı kanıt 2026-04-30: testai bad-token → 500 Internal
+            // Server Error, no-token → 401. Tutarsız + client retry
+            // semantiği kırık (500 = "server problem" client bekleme +
+            // alarm; 401 = "client should refresh token + retry").
+            return Mono.error(new org.springframework.security.oauth2.jwt.BadJwtException("No suitable decoder accepted the token"));
         }
         return decoders.get(index).decode(token)
                 .onErrorResume(ex -> tryDecode(decoders, token, index + 1));
