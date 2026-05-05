@@ -205,17 +205,28 @@ public class DeliveryDispatchService {
                 "exception: " + e.getClass().getSimpleName(), null);
         }
 
+        boolean rowModified;
         try {
-            upsertDelivery(intent, target, result);
+            rowModified = upsertDelivery(intent, target, result);
         } catch (org.springframework.dao.DataIntegrityViolationException e) {
             // Concurrent multi-pod dispatch — another transaction inserted the
-            // row between our SELECT and INSERT. Return RETRY semantics so PR4
-            // worker re-attempts based on next_retry_at; we do NOT claim
-            // DELIVERED (provider call result is what it is — actual delivery
-            // status reflects in the row already inserted by the other pod).
+            // row between our SELECT and INSERT. saveAndFlush forces this
+            // exception to surface within this method (not at outer commit).
+            // Return RETRY semantics so PR4 worker re-attempts based on
+            // next_retry_at; we do NOT claim DELIVERED (provider call result
+            // is what it is — actual delivery status reflects in the row
+            // already inserted by the other pod).
             log.warn("dispatch concurrent insert race: intentId={} channel={} hash={} — returning RETRY",
                 intent.getIntentId(), target.channel(), target.recipientHash());
             return new DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        }
+
+        // iter-3 absorb: DELIVERED-regress guard fired (existing row was
+        // already DELIVERED) — treat as idempotent success. No audit row
+        // emitted (already done in earlier dispatch); outcome=DELIVERED so
+        // intent COMPLETED computation is correct.
+        if (!rowModified) {
+            return new DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
         }
 
         switch (result.status()) {
@@ -234,20 +245,33 @@ public class DeliveryDispatchService {
     public record DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status status) {}
 
     /**
-     * UPSERT delivery row — Codex 019df9ef P2 absorb iter-2.
+     * UPSERT delivery row — Codex 019df9ef P2 absorb iter-3.
      *
      * <p>Existing row (RETRY/FAILED/BOUNCED on prior attempt) → UPDATE
      * aggregate fields ({@code attempt_count++}, {@code last_attempt_at},
      * {@code status}, {@code failure_reason}, {@code provider_msg_id},
      * {@code delivered_at}). No existing row → INSERT new row.
      *
+     * <p><b>DELIVERED-regress guard (iter-3):</b> If existing row is already
+     * {@code DELIVERED}, this method returns {@code true} without modification
+     * (concurrent stale dispatch must not regress success state). Caller
+     * interprets this as idempotent skip.
+     *
+     * <p><b>Commit-time unique violation (iter-3):</b> {@code saveAndFlush()}
+     * forces immediate constraint check; concurrent INSERT race surfaces as
+     * {@code DataIntegrityViolationException} inside this method, not at
+     * outer transaction commit.
+     *
      * <p>Unique constraint {@code uq_delivery_intent_channel_recipient}
      * preserved: each (intent_id, channel, recipient_hash) tuple has at most
      * 1 row; row is the aggregate state of all attempts (attempt_count,
      * last_attempt_at, current_status), audit_event rows hold full attempt
      * history (DELIVERY_ATTEMPTED/SUCCEEDED/FAILED).
+     *
+     * @return {@code true} if row was modified; {@code false} if existing row
+     *         was DELIVERED (regress guard fired — idempotent skip)
      */
-    private void upsertDelivery(
+    private boolean upsertDelivery(
         NotificationIntent intent, DeliveryTarget target, ChannelAdapter.DeliveryAttemptResult result
     ) {
         OffsetDateTime now = OffsetDateTime.now();
@@ -261,8 +285,15 @@ public class DeliveryDispatchService {
 
         NotificationDelivery delivery;
         if (existing.isPresent()) {
-            // UPDATE existing aggregate row
             delivery = existing.get();
+            // iter-3 absorb: DELIVERED-regress guard — concurrent stale
+            // dispatch must NOT overwrite a committed DELIVERED row with
+            // RETRY/FAILED/BOUNCED. Status terminal once DELIVERED.
+            if (delivery.getStatus() == NotificationDelivery.Status.DELIVERED) {
+                log.info("upsert skip (DELIVERED-regress guard): intentId={} channel={} hash={}",
+                    intent.getIntentId(), target.channel(), target.recipientHash());
+                return false;
+            }
             delivery.setAttemptCount(delivery.getAttemptCount() + 1);
         } else {
             // INSERT new row
@@ -284,13 +315,15 @@ public class DeliveryDispatchService {
             delivery.setDeliveredAt(now);
             delivery.setFailureReason(null);  // clear previous failure (recovered)
         } else {
-            // RETRY / FAILED / BOUNCED — clear delivered_at if previously set
-            // (state regress should not happen, but defensive); record failure_reason
             delivery.setFailureReason(result.failureReason());
             // PR4 worker schedules nextRetryAt for RETRY status (deferred to PR4)
         }
 
-        deliveryRepo.save(delivery);
+        // iter-3 absorb: saveAndFlush — surface unique constraint violations
+        // within this method, not at outer commit. Concurrent INSERT race
+        // catchable by caller's DataIntegrityViolationException handler.
+        deliveryRepo.saveAndFlush(delivery);
+        return true;
     }
 
     /**

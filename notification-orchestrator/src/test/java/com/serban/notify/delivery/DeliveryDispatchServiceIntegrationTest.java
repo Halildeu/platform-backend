@@ -187,6 +187,43 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
+    void deliveredRegressGuardConcurrentStaleDispatch() {
+        // Codex 019df9ef iter-3 absorb: simulate concurrent stale dispatch —
+        // first dispatch DELIVERED (commits), then a stale concurrent worker
+        // re-runs with same target but adapter returns RETRY/FAILED. Existing
+        // DELIVERED row MUST NOT regress.
+        NotificationIntent intent = saveIntent("email");
+        DeliveryTarget target = new DeliveryTarget(
+            "email", "subscriber", "1", "rh-regress", "u@x.com", "smtp-default"
+        );
+
+        // Worker A: DELIVERED — commits
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.delivered("<msg-A>")
+        );
+        dispatcher.dispatchPlanned(intent, List.of(target));
+
+        // Worker B (stale): adapter returns RETRY (provider was already done)
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.retry("503 stale", 503)
+        );
+        // Re-fetch intent (status COMPLETED already)
+        NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
+        // Force PROCESSING so dispatchPlanned doesn't bypass; in real PR4, worker
+        // selects PROCESSING intents. Simulate stale state by clearing.
+        reloaded.setStatus(NotificationIntent.Status.PROCESSING);
+        intentRepo.save(reloaded);
+        dispatcher.dispatchPlanned(reloaded, List.of(target));
+
+        // Row still DELIVERED — regress guard fired (skip path); attempt_count
+        // not incremented (no spurious update).
+        List<NotificationDelivery> rows = deliveryRepo.findByIntentId(intent.getIntentId());
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getStatus()).isEqualTo(NotificationDelivery.Status.DELIVERED);
+        assertThat(rows.get(0).getProviderMsgId()).isEqualTo("<msg-A>");
+    }
+
+    @Test
     void dispatchRetryThenDeliverUpsertsAggregate() {
         // Codex 019df9ef P2 absorb iter-2: existing RETRY row → re-dispatch
         // UPDATEs same row (not INSERT new), attempt_count++, status=DELIVERED,
