@@ -224,10 +224,17 @@ public class OutboxPoller {
         reloaded.setProcessingLeaseUntil(null);
         reloaded.setProcessingOwner(null);
         reloaded.setClaimToken(null);
-        if (terminal != null && reloaded.getStatus() != terminal) {
-            reloaded.setStatus(terminal);
-            reloaded.setTerminatedAt(now);
-            metrics.intentTerminated(terminal.name());
+        if (terminal != null) {
+            // PR4 iter-4 absorb: cover case where DispatchService already set
+            // status terminal but terminated_at not yet present (defensive
+            // double-write race-free since save is last write wins).
+            if (reloaded.getStatus() != terminal) {
+                reloaded.setStatus(terminal);
+                metrics.intentTerminated(terminal.name());
+            }
+            if (reloaded.getTerminatedAt() == null) {
+                reloaded.setTerminatedAt(now);
+            }
         }
         intentRepo.save(reloaded);
 

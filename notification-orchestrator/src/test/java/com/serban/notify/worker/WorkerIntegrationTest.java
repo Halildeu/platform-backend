@@ -271,12 +271,16 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         assertThat(reloaded.getStatus()).isEqualTo(NotificationDelivery.Status.FAILED);
         assertThat(reloaded.getPermanentFailureAt()).isNotNull();
 
-        // DLQ row created
-        List<DeadLetter> dlq = dlqRepo.findUnreplayed(
-            org.springframework.data.domain.PageRequest.of(0, 10));
-        assertThat(dlq).hasSize(1);
-        assertThat(dlq.get(0).getDeliveryId()).isEqualTo(delivery.getId());
-        assertThat(dlq.get(0).getAttemptCount()).isEqualTo(2);
+        // DLQ row created — filter by THIS delivery's id (other tests may
+        // populate DLQ; @DirtiesContext recreates Spring context but PG
+        // container is shared and persists rows across test methods).
+        List<DeadLetter> allDlq = dlqRepo.findUnreplayed(
+            org.springframework.data.domain.PageRequest.of(0, 50));
+        List<DeadLetter> thisDlq = allDlq.stream()
+            .filter(dl -> dl.getDeliveryId().equals(delivery.getId()))
+            .toList();
+        assertThat(thisDlq).hasSize(1);
+        assertThat(thisDlq.get(0).getAttemptCount()).isEqualTo(2);
 
         // Intent transitioned to FAILED (only 1 delivery, all FAILED)
         NotificationIntent reloadedIntent = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();

@@ -171,8 +171,12 @@ public class DeliveryDispatchService {
         }
 
         // Update intent status: COMPLETED iff all delivered
+        // PR4 iter-4: terminated_at set together with terminal status (otherwise
+        // OutboxPoller's later check sees status already terminal → skips
+        // terminated_at set → assertion fails)
         if (allDelivered && !targets.isEmpty()) {
             intent.setStatus(NotificationIntent.Status.COMPLETED);
+            intent.setTerminatedAt(OffsetDateTime.now());
             intentRepo.save(intent);
         } else if (anyFailedPermanent) {
             // PR3: keep PROCESSING; PR4 worker decides COMPLETED vs partial-fail terminal state
