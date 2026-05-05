@@ -61,12 +61,20 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
     @Autowired NotificationDeliveryRepository deliveryRepo;
     @Autowired AuditEventRepository auditRepo;
 
+    // ChannelAdapterRegistry indexes lazily on first access (Codex 019df9ef CI
+    // fix), so @MockBean returning null channelKey() at context startup no
+    // longer crashes the registry constructor — channelKey() stub in
+    // @BeforeEach happens before the first dispatch call.
     @MockBean SmtpAdapter smtpAdapter;
     @MockBean SlackWebhookAdapter slackAdapter;
     @MockBean WebhookEgressAdapter webhookAdapter;
 
     @BeforeEach
     void seedTemplate() {
+        when(smtpAdapter.channelKey()).thenReturn("email");
+        when(slackAdapter.channelKey()).thenReturn("slack");
+        when(webhookAdapter.channelKey()).thenReturn("webhook");
+
         if (templateRepo.findByTemplateIdAndVersionAndLocale("dispatch-test", 1, "tr-TR").isPresent()) {
             return;
         }
@@ -79,10 +87,6 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
         t.setActive(true);
         t.setCreatedBy("test");
         templateRepo.save(t);
-
-        when(smtpAdapter.channelKey()).thenReturn("email");
-        when(slackAdapter.channelKey()).thenReturn("slack");
-        when(webhookAdapter.channelKey()).thenReturn("webhook");
     }
 
     @Test
