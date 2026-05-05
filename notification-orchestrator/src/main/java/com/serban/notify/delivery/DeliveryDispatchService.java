@@ -11,6 +11,7 @@ import com.serban.notify.repository.NotificationIntentRepository;
 import com.serban.notify.repository.NotificationTemplateRepository;
 import com.serban.notify.template.RenderedMessage;
 import com.serban.notify.template.TemplateRenderer;
+import com.serban.notify.worker.BackoffCalculator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -57,6 +58,7 @@ public class DeliveryDispatchService {
     private final NotificationDeliveryRepository deliveryRepo;
     private final ChannelAdapterRegistry adapterRegistry;
     private final AuditEventPublisher audit;
+    private final BackoffCalculator backoffCalculator;
     private DeliveryDispatchService self;  // Self-injection for REQUIRES_NEW boundary
 
     public DeliveryDispatchService(
@@ -65,7 +67,8 @@ public class DeliveryDispatchService {
         NotificationIntentRepository intentRepo,
         NotificationDeliveryRepository deliveryRepo,
         ChannelAdapterRegistry adapterRegistry,
-        AuditEventPublisher audit
+        AuditEventPublisher audit,
+        BackoffCalculator backoffCalculator
     ) {
         this.renderer = renderer;
         this.templateRepo = templateRepo;
@@ -73,6 +76,7 @@ public class DeliveryDispatchService {
         this.deliveryRepo = deliveryRepo;
         this.adapterRegistry = adapterRegistry;
         this.audit = audit;
+        this.backoffCalculator = backoffCalculator;
     }
 
     /**
@@ -330,9 +334,20 @@ public class DeliveryDispatchService {
             delivery.setProviderMsgId(result.providerMessageId());
             delivery.setDeliveredAt(now);
             delivery.setFailureReason(null);  // clear previous failure (recovered)
+            delivery.setNextRetryAt(null);
+            delivery.setProcessingLeaseUntil(null);
         } else {
             delivery.setFailureReason(result.failureReason());
-            // PR4 worker schedules nextRetryAt for RETRY status (deferred to PR4)
+            // PR4 absorb: BackoffCalculator schedules next_retry_at for RETRY
+            if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.RETRY) {
+                java.time.Duration delay = backoffCalculator.computeDelay(delivery.getAttemptCount());
+                delivery.setNextRetryAt(now.plus(delay));
+            } else {
+                // FAILED / BOUNCED — terminal failure
+                delivery.setPermanentFailureAt(now);
+                delivery.setNextRetryAt(null);
+            }
+            delivery.setProcessingLeaseUntil(null);
         }
 
         // iter-3 absorb: saveAndFlush — surface unique constraint violations

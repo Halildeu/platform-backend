@@ -3,6 +3,7 @@ package com.serban.notify.repository;
 import com.serban.notify.domain.NotificationIntent;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -35,4 +36,87 @@ public interface NotificationIntentRepository extends JpaRepository<Notification
     );
 
     long countByStatus(NotificationIntent.Status status);
+
+    /**
+     * Atomic native claim for OutboxPoller (Codex 019dfa47 Q1 REVISE absorb).
+     *
+     * <p>{@code SELECT ... FOR UPDATE SKIP LOCKED} ile multi-pod paralel claim
+     * safe; CTE içinde claim'lenen intent'lerin id'leri UPDATE'in WHERE
+     * clause'una geçer; status PROCESSING'e atomik geçer ve lease setlenir.
+     *
+     * <p>Returns count of claimed rows. Caller follows with
+     * {@link #findClaimedByOwner} to fetch full entity rows.
+     *
+     * @param now zaman referansı (scheduled_at/expire_at karşılaştırma)
+     * @param leaseUntil bu pod'un lease deadline'ı
+     * @param owner pod identifier (hostname-pid veya pod IP)
+     * @param batchSize tek cycle'da claim edilecek max intent sayısı
+     */
+    @Modifying
+    @Query(value = """
+        WITH claimed AS (
+            SELECT id
+            FROM notify.notification_intent
+            WHERE status = 'PENDING'
+              AND (scheduled_at IS NULL OR scheduled_at <= :now)
+              AND (expire_at IS NULL OR expire_at > :now)
+            ORDER BY COALESCE(scheduled_at, created_at), id
+            LIMIT :batchSize
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE notify.notification_intent i
+        SET status = 'PROCESSING',
+            processing_started_at = :now,
+            processing_lease_until = :leaseUntil,
+            processing_owner = :owner,
+            updated_at = :now
+        FROM claimed
+        WHERE i.id = claimed.id
+        """, nativeQuery = true)
+    int claimDueForProcessing(
+        @Param("now") OffsetDateTime now,
+        @Param("leaseUntil") OffsetDateTime leaseUntil,
+        @Param("owner") String owner,
+        @Param("batchSize") int batchSize
+    );
+
+    /**
+     * Find intents currently claimed by this pod owner (post-claim fetch).
+     */
+    List<NotificationIntent> findByStatusAndProcessingOwner(
+        NotificationIntent.Status status, String processingOwner
+    );
+
+    /**
+     * Lease recovery: revert stale-lease PROCESSING intents to PENDING
+     * (Codex 019dfa47 Q6 absorb — pod crash recovery).
+     *
+     * <p>Called by OutboxPoller every cycle BEFORE claim. Stale lease =
+     * processing_lease_until &lt;= now. Returns count of recovered rows.
+     */
+    @Modifying
+    @Query(value = """
+        UPDATE notify.notification_intent
+        SET status = 'PENDING',
+            processing_started_at = NULL,
+            processing_lease_until = NULL,
+            processing_owner = NULL,
+            updated_at = :now
+        WHERE status = 'PROCESSING'
+          AND processing_lease_until IS NOT NULL
+          AND processing_lease_until <= :now
+        """, nativeQuery = true)
+    int recoverStaleLeases(@Param("now") OffsetDateTime now);
+
+    /**
+     * Find intents whose expire_at passed (poller terminalize to EXPIRED).
+     */
+    @Query("""
+        SELECT i FROM NotificationIntent i
+         WHERE i.status IN (com.serban.notify.domain.NotificationIntent.Status.PENDING,
+                            com.serban.notify.domain.NotificationIntent.Status.PROCESSING)
+           AND i.expireAt IS NOT NULL
+           AND i.expireAt <= :now
+        """)
+    List<NotificationIntent> findExpired(@Param("now") OffsetDateTime now, Pageable pageable);
 }

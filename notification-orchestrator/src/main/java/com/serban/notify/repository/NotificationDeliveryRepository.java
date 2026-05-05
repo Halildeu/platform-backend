@@ -3,6 +3,7 @@ package com.serban.notify.repository;
 import com.serban.notify.domain.NotificationDelivery;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -35,4 +36,60 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
     );
 
     long countByStatus(NotificationDelivery.Status status);
+
+    /**
+     * Atomic native claim for RetryWorker (Codex 019dfa47 Q1 absorb).
+     *
+     * <p>Selects RETRY deliveries whose {@code next_retry_at} ≤ now AND lease
+     * expired (or null), locks them via {@code SKIP LOCKED}, sets new lease
+     * deadline, returns count of claimed rows. Caller fetches with
+     * {@link #findByStatusAndProcessingLeaseUntilGreaterThan}.
+     */
+    @Modifying
+    @Query(value = """
+        WITH claimed AS (
+            SELECT id
+            FROM notify.notification_delivery
+            WHERE status = 'RETRY'
+              AND next_retry_at IS NOT NULL
+              AND next_retry_at <= :now
+              AND (processing_lease_until IS NULL OR processing_lease_until <= :now)
+            ORDER BY next_retry_at, id
+            LIMIT :batchSize
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE notify.notification_delivery d
+        SET processing_lease_until = :leaseUntil,
+            updated_at = :now
+        FROM claimed
+        WHERE d.id = claimed.id
+        """, nativeQuery = true)
+    int claimDueForRetry(
+        @Param("now") OffsetDateTime now,
+        @Param("leaseUntil") OffsetDateTime leaseUntil,
+        @Param("batchSize") int batchSize
+    );
+
+    /**
+     * Find deliveries currently claimed (lease in future) — RetryWorker post-claim fetch.
+     */
+    @Query("""
+        SELECT d FROM NotificationDelivery d
+         WHERE d.status = com.serban.notify.domain.NotificationDelivery.Status.RETRY
+           AND d.processingLeaseUntil IS NOT NULL
+           AND d.processingLeaseUntil > :now
+        """)
+    List<NotificationDelivery> findClaimedRetries(@Param("now") OffsetDateTime now, Pageable pageable);
+
+    /**
+     * Find RETRY deliveries that exceeded max attempts (DLQ candidates).
+     */
+    @Query("""
+        SELECT d FROM NotificationDelivery d
+         WHERE d.status = com.serban.notify.domain.NotificationDelivery.Status.RETRY
+           AND d.attemptCount >= :maxAttempts
+        """)
+    List<NotificationDelivery> findExhaustedRetries(
+        @Param("maxAttempts") int maxAttempts, Pageable pageable
+    );
 }

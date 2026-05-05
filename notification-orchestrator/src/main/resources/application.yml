@@ -65,6 +65,7 @@ management:
 
 notify:
   # PR2 dispatch.enabled=false default — worker yok, intake-only mode (Codex 019df9ae Q3)
+  # PR4: dispatch.enabled=true → OutboxPoller + RetryWorker + DLQ aktive (Codex 019dfa47 absorb)
   dispatch:
     enabled: ${NOTIFY_DISPATCH_ENABLED:false}
   # PR2 bounded intake — max-pending threshold (admin --reset-queue YASAK)
@@ -74,6 +75,18 @@ notify:
     max-attempts: ${NOTIFY_RETRY_MAX_ATTEMPTS:5}
     backoff-initial-ms: ${NOTIFY_RETRY_BACKOFF_INITIAL_MS:30000}
     backoff-multiplier: ${NOTIFY_RETRY_BACKOFF_MULTIPLIER:2.5}
+    # PR4 absorb: max backoff cap (prevent excessive tail in misconfig)
+    max-backoff-ms: ${NOTIFY_RETRY_MAX_BACKOFF_MS:3600000}
+    # PR4 absorb: ±25% jitter — thundering herd avoidance
+    jitter-ratio: ${NOTIFY_RETRY_JITTER_RATIO:0.25}
+  # PR4 worker config (Codex 019dfa47 Q2 PARTIAL absorb — config-driven cadence)
+  worker:
+    poll-delay-ms: ${NOTIFY_WORKER_POLL_DELAY_MS:5000}
+    intent-batch-size: ${NOTIFY_WORKER_INTENT_BATCH_SIZE:25}
+    retry-batch-size: ${NOTIFY_WORKER_RETRY_BATCH_SIZE:50}
+    lease-duration-ms: ${NOTIFY_WORKER_LEASE_DURATION_MS:60000}
+    # Pod identifier — production: env HOSTNAME; default: hostname-pid
+    owner: ${NOTIFY_WORKER_OWNER:}
   audit:
     retention-days: ${NOTIFY_AUDIT_RETENTION_DAYS:90}
   idempotency:

@@ -2,6 +2,7 @@ package com.serban.notify;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Notification Orchestrator — Faz 23 (ADR-0013-notification-orchestration).
@@ -15,6 +16,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * Channel adapters + workers + authz + REST API sub-PR sequence (D47).
  */
 @SpringBootApplication
+@EnableScheduling
 public class NotificationOrchestratorApplication {
 
     public static void main(String[] args) {

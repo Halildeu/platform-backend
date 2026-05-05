@@ -76,6 +76,20 @@ public class NotificationDelivery {
     @Column(name = "next_retry_at")
     private OffsetDateTime nextRetryAt;
 
+    /**
+     * RetryWorker lease deadline (Codex 019dfa47 PR4 absorb).
+     *
+     * <p>Worker claim sonrası kısa süreli lease; pod crash sonrasında stale
+     * lease delivery'leri yeniden claim-eligible olur (next_retry_at <= now
+     * + lease expired).
+     */
+    @Column(name = "processing_lease_until")
+    private OffsetDateTime processingLeaseUntil;
+
+    /** Permanent failure transition timestamp (FAILED/BOUNCED). */
+    @Column(name = "permanent_failure_at")
+    private OffsetDateTime permanentFailureAt;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
@@ -122,6 +136,14 @@ public class NotificationDelivery {
     public void setFailureReason(String failureReason) { this.failureReason = failureReason; }
     public OffsetDateTime getNextRetryAt() { return nextRetryAt; }
     public void setNextRetryAt(OffsetDateTime nextRetryAt) { this.nextRetryAt = nextRetryAt; }
+    public OffsetDateTime getProcessingLeaseUntil() { return processingLeaseUntil; }
+    public void setProcessingLeaseUntil(OffsetDateTime processingLeaseUntil) {
+        this.processingLeaseUntil = processingLeaseUntil;
+    }
+    public OffsetDateTime getPermanentFailureAt() { return permanentFailureAt; }
+    public void setPermanentFailureAt(OffsetDateTime permanentFailureAt) {
+        this.permanentFailureAt = permanentFailureAt;
+    }
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public OffsetDateTime getUpdatedAt() { return updatedAt; }
 
