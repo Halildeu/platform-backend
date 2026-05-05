@@ -56,4 +56,37 @@ class SubscriberPreferenceRepositoryTest extends AbstractPostgresTest {
             .orElseThrow();
         assertThat(updatePref.isEnabled()).isFalse();
     }
+
+    /**
+     * Codex 019df86f post-impl bulgu #3 absorb: cross-tenant collision testi.
+     * Aynı subscriber_id farklı org'larda aynı topic+channel preference yazınca
+     * UNIQUE constraint çakışmamalı (D41 multi-tenant boundary).
+     */
+    @Test
+    void crossOrgSameSubscriberSameTopicChannelAllowed() {
+        SubscriberPreference orgA = new SubscriberPreference();
+        orgA.setSubscriberId("1204");
+        orgA.setOrgId("org-a");
+        orgA.setTopicKey("auth.password-reset");
+        orgA.setChannel("email");
+        orgA.setEnabled(true);
+        repo.save(orgA);
+
+        SubscriberPreference orgB = new SubscriberPreference();
+        orgB.setSubscriberId("1204");
+        orgB.setOrgId("org-b");
+        orgB.setTopicKey("auth.password-reset");
+        orgB.setChannel("email");
+        orgB.setEnabled(false);
+
+        // Should NOT throw — UNIQUE index includes org_id (Codex fix)
+        assertThat(repo.save(orgB).getId()).isNotNull();
+
+        List<SubscriberPreference> orgAList = repo.findBySubscriberIdAndOrgId("1204", "org-a");
+        List<SubscriberPreference> orgBList = repo.findBySubscriberIdAndOrgId("1204", "org-b");
+        assertThat(orgAList).hasSize(1);
+        assertThat(orgBList).hasSize(1);
+        assertThat(orgAList.get(0).isEnabled()).isTrue();
+        assertThat(orgBList.get(0).isEnabled()).isFalse();
+    }
 }

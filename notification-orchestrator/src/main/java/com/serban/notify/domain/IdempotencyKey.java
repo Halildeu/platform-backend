@@ -65,6 +65,6 @@ public class IdempotencyKey {
 
     @Override
     public int hashCode() {
-        return Objects.hash(id);
+        return getClass().hashCode(); // Codex post-impl bulgu fix: id-null collision avoid; entity uniqueness via id equals
     }
 }

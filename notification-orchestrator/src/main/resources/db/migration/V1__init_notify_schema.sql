@@ -49,10 +49,12 @@ CREATE TABLE notify.idempotency_key (
 );
 
 CREATE INDEX idx_idem_expires ON notify.idempotency_key (expires_at);
--- Active key UNIQUE: a given (org_id, key) can only have one row whose
--- expires_at is in the future. Enforced via partial unique index.
-CREATE UNIQUE INDEX idx_idem_active ON notify.idempotency_key (org_id, idempotency_key)
-    WHERE expires_at > NOW();
+-- Lookup index for active key check at service layer (Codex 019df86f post-impl
+-- bulgu #2 absorb): partial unique index `WHERE expires_at > NOW()` PG'de
+-- allowed değil — `now()` immutable function değil, partial index predicate'inde
+-- kullanılamaz. Service layer advisory lock + transactional check ile aktif
+-- key uniqueness garanti edilir (PR2 IdempotencyService implementation).
+CREATE INDEX idx_idem_lookup ON notify.idempotency_key (org_id, idempotency_key, expires_at);
 
 -- ============================================================================
 -- notification_delivery
@@ -122,8 +124,12 @@ CREATE TABLE notify.subscriber_preference (
 );
 
 CREATE INDEX idx_pref_lookup ON notify.subscriber_preference (subscriber_id, org_id);
-CREATE UNIQUE INDEX uq_pref_subscriber_topic_channel ON notify.subscriber_preference
-    (subscriber_id, COALESCE(topic_key, ''), COALESCE(channel, ''));
+-- Codex 019df86f post-impl bulgu #3 absorb: cross-tenant collision riski —
+-- `org_id` UNIQUE index'e dahil değildi → aynı subscriber_id farklı org'larda
+-- aynı topic/channel preference yazınca çakışma. D41 multi-tenant boundary
+-- ihlali. Fix: `org_id` UNIQUE expression'a eklendi.
+CREATE UNIQUE INDEX uq_pref_subscriber_org_topic_channel ON notify.subscriber_preference
+    (subscriber_id, org_id, COALESCE(topic_key, ''), COALESCE(channel, ''));
 
 -- ============================================================================
 -- provider_config
