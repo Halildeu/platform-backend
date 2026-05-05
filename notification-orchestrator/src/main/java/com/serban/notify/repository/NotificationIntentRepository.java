@@ -69,6 +69,7 @@ public interface NotificationIntentRepository extends JpaRepository<Notification
             processing_started_at = :now,
             processing_lease_until = :leaseUntil,
             processing_owner = :owner,
+            claim_token = :claimToken,
             updated_at = :now
         FROM claimed
         WHERE i.id = claimed.id
@@ -77,15 +78,16 @@ public interface NotificationIntentRepository extends JpaRepository<Notification
         @Param("now") OffsetDateTime now,
         @Param("leaseUntil") OffsetDateTime leaseUntil,
         @Param("owner") String owner,
+        @Param("claimToken") String claimToken,
         @Param("batchSize") int batchSize
     );
 
     /**
-     * Find intents currently claimed by this pod owner (post-claim fetch).
+     * Find intents claimed in this exact cycle by claim_token (Codex 019dfa47
+     * iter-1 P0 absorb). Multi-pod isolation: returns ONLY rows this cycle's
+     * claim updated.
      */
-    List<NotificationIntent> findByStatusAndProcessingOwner(
-        NotificationIntent.Status status, String processingOwner
-    );
+    List<NotificationIntent> findByClaimToken(String claimToken);
 
     /**
      * Lease recovery: revert stale-lease PROCESSING intents to PENDING

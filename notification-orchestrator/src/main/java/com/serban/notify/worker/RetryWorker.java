@@ -66,6 +66,7 @@ public class RetryWorker {
     private final WorkerMetrics metrics;
     private final NotifyConfig.WorkerConfig workerCfg;
     private final NotifyConfig.RetryConfig retryCfg;
+    private final boolean schedulingEnabled;
     private RetryWorker self;  // self-injection for REQUIRES_NEW
 
     public RetryWorker(
@@ -79,7 +80,9 @@ public class RetryWorker {
         DeliveryPlanService planService,
         AuditEventPublisher audit,
         WorkerMetrics metrics,
-        NotifyConfig notifyConfig
+        NotifyConfig notifyConfig,
+        @org.springframework.beans.factory.annotation.Value("${notify.worker.scheduling-enabled:true}")
+            boolean schedulingEnabled
     ) {
         this.deliveryRepo = deliveryRepo;
         this.intentRepo = intentRepo;
@@ -93,8 +96,10 @@ public class RetryWorker {
         this.metrics = metrics;
         this.workerCfg = notifyConfig.worker();
         this.retryCfg = notifyConfig.retry();
-        log.info("RetryWorker activated: batchSize={} maxAttempts={} pollDelay={}ms",
-            workerCfg.retryBatchSize(), retryCfg.maxAttempts(), workerCfg.pollDelayMs());
+        this.schedulingEnabled = schedulingEnabled;
+        log.info("RetryWorker activated: batchSize={} maxAttempts={} pollDelay={}ms scheduling={}",
+            workerCfg.retryBatchSize(), retryCfg.maxAttempts(),
+            workerCfg.pollDelayMs(), schedulingEnabled);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -104,6 +109,12 @@ public class RetryWorker {
 
     @Scheduled(fixedDelayString = "${notify.worker.poll-delay-ms:5000}")
     public void tick() {
+        if (!schedulingEnabled) return;
+        runCycle();
+    }
+
+    /** Public cycle entry — called by @Scheduled tick() OR directly by tests. */
+    public void runCycle() {
         try {
             int claimed = claimAndProcess();
             metrics.cycle("retry", claimed > 0 ? "active" : "empty");
@@ -120,12 +131,13 @@ public class RetryWorker {
     private int claimAndProcess() {
         OffsetDateTime now = OffsetDateTime.now();
         OffsetDateTime leaseUntil = now.plus(Duration.ofMillis(workerCfg.leaseDurationMs()));
-        int claimed = claimAtomic(now, leaseUntil);
+        String claimToken = java.util.UUID.randomUUID().toString();
+        int claimed = self.claimAtomic(now, leaseUntil, claimToken);
         if (claimed == 0) return 0;
         metrics.claimed("retry", claimed);
 
-        List<NotificationDelivery> claimedDeliveries = deliveryRepo.findClaimedRetries(
-            now, PageRequest.of(0, workerCfg.retryBatchSize()));
+        // Codex iter-1 P0 #2 absorb: fetch ONLY this cycle's claims via claim_token
+        List<NotificationDelivery> claimedDeliveries = deliveryRepo.findByClaimToken(claimToken);
         for (NotificationDelivery delivery : claimedDeliveries) {
             try {
                 self.processDelivery(delivery);
@@ -139,8 +151,8 @@ public class RetryWorker {
     }
 
     @Transactional
-    public int claimAtomic(OffsetDateTime now, OffsetDateTime leaseUntil) {
-        return deliveryRepo.claimDueForRetry(now, leaseUntil, workerCfg.retryBatchSize());
+    public int claimAtomic(OffsetDateTime now, OffsetDateTime leaseUntil, String claimToken) {
+        return deliveryRepo.claimDueForRetry(now, leaseUntil, claimToken, workerCfg.retryBatchSize());
     }
 
     /**

@@ -10,7 +10,9 @@ import com.serban.notify.repository.NotificationDeliveryRepository;
 import com.serban.notify.repository.NotificationIntentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -22,6 +24,7 @@ import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * OutboxPoller — claim PENDING intents + dispatch (Codex 019dfa47 Q1+Q6 absorb).
@@ -52,6 +55,11 @@ public class OutboxPoller {
     private final WorkerMetrics metrics;
     private final NotifyConfig.WorkerConfig workerCfg;
     private final String podOwner;
+    private final boolean schedulingEnabled;
+    private OutboxPoller self;  // Self-injection for @Transactional proxy boundary
+
+    @Autowired
+    void setSelf(@Lazy OutboxPoller self) { this.self = self; }
 
     public OutboxPoller(
         NotificationIntentRepository intentRepo,
@@ -61,7 +69,9 @@ public class OutboxPoller {
         AuditEventPublisher audit,
         IntentStatusResolver statusResolver,
         WorkerMetrics metrics,
-        NotifyConfig notifyConfig
+        NotifyConfig notifyConfig,
+        @org.springframework.beans.factory.annotation.Value("${notify.worker.scheduling-enabled:true}")
+            boolean schedulingEnabled
     ) {
         this.intentRepo = intentRepo;
         this.deliveryRepo = deliveryRepo;
@@ -71,24 +81,37 @@ public class OutboxPoller {
         this.statusResolver = statusResolver;
         this.metrics = metrics;
         this.workerCfg = notifyConfig.worker();
+        this.schedulingEnabled = schedulingEnabled;
         String configured = workerCfg.owner();
         this.podOwner = (configured == null || configured.isBlank())
             ? deriveOwner() : configured;
-        log.info("OutboxPoller activated: owner={} batchSize={} pollDelay={}ms leaseDuration={}ms",
+        log.info("OutboxPoller activated: owner={} batchSize={} pollDelay={}ms leaseDuration={}ms scheduling={}",
             podOwner, workerCfg.intentBatchSize(),
-            workerCfg.pollDelayMs(), workerCfg.leaseDurationMs());
+            workerCfg.pollDelayMs(), workerCfg.leaseDurationMs(), schedulingEnabled);
     }
 
     /**
      * Scheduled poll cycle. Default fixedDelay=5s; configurable via
      * {@code notify.worker.poll-delay-ms}. Each invocation is a separate
      * thread; @Transactional on individual inner methods.
+     *
+     * <p>Codex iter-1 absorb: scheduling guarded by {@code notify.worker.scheduling-enabled}
+     * (default true) — tests can disable auto-tick via property.
      */
     @Scheduled(fixedDelayString = "${notify.worker.poll-delay-ms:5000}")
     public void tick() {
+        if (!schedulingEnabled) return;
+        runCycle();
+    }
+
+    /**
+     * Public cycle entry point — called by @Scheduled tick() OR directly by
+     * tests. No scheduling guard.
+     */
+    public void runCycle() {
         try {
-            int recovered = recoverStaleLeases();
-            int expired = expireTimedOut();
+            int recovered = self.recoverStaleLeases();
+            int expired = self.expireTimedOut();
             int claimed = claimAndDispatch();
             metrics.cycle("intent",
                 (claimed > 0 || recovered > 0 || expired > 0) ? "active" : "empty");
@@ -103,7 +126,7 @@ public class OutboxPoller {
         }
     }
 
-    /** Lease recovery: stale PROCESSING → PENDING. */
+    /** Lease recovery: stale PROCESSING → PENDING. Self-invoked. */
     @Transactional
     public int recoverStaleLeases() {
         int n = intentRepo.recoverStaleLeases(OffsetDateTime.now());
@@ -122,6 +145,7 @@ public class OutboxPoller {
             intent.setTerminatedAt(now);
             intent.setProcessingLeaseUntil(null);
             intent.setProcessingOwner(null);
+            intent.setClaimToken(null);
             intentRepo.save(intent);
             audit.publish("INTENT_EXPIRED", intent, null, null,
                 Map.of("expire_at", String.valueOf(intent.getExpireAt())));
@@ -133,19 +157,19 @@ public class OutboxPoller {
     /**
      * Atomic claim + dispatch loop.
      *
-     * <p>Native claim updates status PENDING → PROCESSING in a single SQL
-     * statement (SKIP LOCKED + UPDATE) — multi-pod safe. Then load claimed
-     * intents by owner and dispatch each in a fresh REQUIRES_NEW transaction.
+     * <p>Codex iter-1 absorb: claim_token UUID per cycle replaces
+     * findByStatusAndProcessingOwner — multi-pod isolation guaranteed.
      */
     private int claimAndDispatch() {
         OffsetDateTime now = OffsetDateTime.now();
         OffsetDateTime leaseUntil = now.plus(Duration.ofMillis(workerCfg.leaseDurationMs()));
-        int claimed = claimAtomic(now, leaseUntil);
+        String claimToken = UUID.randomUUID().toString();
+        int claimed = self.claimAtomic(now, leaseUntil, claimToken);
         if (claimed == 0) return 0;
         metrics.claimed("intent", claimed);
 
-        List<NotificationIntent> claimedIntents = intentRepo.findByStatusAndProcessingOwner(
-            NotificationIntent.Status.PROCESSING, podOwner);
+        // Fetch ONLY this cycle's claims (Codex iter-1 P0 #2 absorb)
+        List<NotificationIntent> claimedIntents = intentRepo.findByClaimToken(claimToken);
         for (NotificationIntent intent : claimedIntents) {
             try {
                 dispatchClaimedIntent(intent);
@@ -160,12 +184,27 @@ public class OutboxPoller {
 
     /** Atomic native claim — fresh transaction (own commit boundary). */
     @Transactional
-    public int claimAtomic(OffsetDateTime now, OffsetDateTime leaseUntil) {
+    public int claimAtomic(OffsetDateTime now, OffsetDateTime leaseUntil, String claimToken) {
         return intentRepo.claimDueForProcessing(
-            now, leaseUntil, podOwner, workerCfg.intentBatchSize());
+            now, leaseUntil, podOwner, claimToken, workerCfg.intentBatchSize());
     }
 
-    /** Dispatch single claimed intent — REQUIRES_NEW. */
+    /**
+     * Dispatch single claimed intent.
+     *
+     * <p>Codex iter-1 P0 #1 absorb: post-dispatch lease/owner/claim_token MUST
+     * be cleared regardless of terminal vs RETRY-outstanding outcome:
+     * <ul>
+     *   <li>Terminal (COMPLETED/FAILED/PARTIALLY_FAILED) → status terminal,
+     *       lease cleared, terminated_at set.</li>
+     *   <li>RETRY outstanding (resolver returns null) → status STAYS PROCESSING
+     *       but lease/owner/token cleared. recoverStaleLeases'in PROCESSING
+     *       intent'i tekrar PENDING'e çevirip backoff'u delmesini engeller
+     *       (lease IS NULL → not recovery-eligible). RetryWorker delivery'leri
+     *       işler; tüm retry tükendiğinde DLQ → DeadLetterService intent
+     *       terminal'e çevirir.</li>
+     * </ul>
+     */
     private void dispatchClaimedIntent(NotificationIntent intent) {
         OffsetDateTime start = OffsetDateTime.now();
         // Plan from snapshot (PR3 fallback path: recipients=null → use intent.snapshot)
@@ -175,15 +214,22 @@ public class OutboxPoller {
         // Recompute terminal status
         var deliveries = deliveryRepo.findByIntentId(intent.getIntentId());
         NotificationIntent.Status terminal = statusResolver.resolve(deliveries);
-        if (terminal != null && intent.getStatus() != terminal) {
-            NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElse(intent);
+        OffsetDateTime now = OffsetDateTime.now();
+
+        // Codex iter-1 P0 #1 absorb: ALWAYS clear lease/owner/token after
+        // dispatch attempt — RETRY outstanding case stays PROCESSING but with
+        // NULL lease so recoverStaleLeases doesn't revert it (retry backoff
+        // honored by RetryWorker).
+        NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElse(intent);
+        reloaded.setProcessingLeaseUntil(null);
+        reloaded.setProcessingOwner(null);
+        reloaded.setClaimToken(null);
+        if (terminal != null && reloaded.getStatus() != terminal) {
             reloaded.setStatus(terminal);
-            reloaded.setTerminatedAt(OffsetDateTime.now());
-            reloaded.setProcessingLeaseUntil(null);
-            reloaded.setProcessingOwner(null);
-            intentRepo.save(reloaded);
+            reloaded.setTerminatedAt(now);
             metrics.intentTerminated(terminal.name());
         }
+        intentRepo.save(reloaded);
 
         Duration duration = Duration.between(start, OffsetDateTime.now());
         metrics.recordIntentDuration(duration);

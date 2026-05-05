@@ -9,7 +9,6 @@ import com.serban.notify.repository.NotificationDeliveryRepository;
 import com.serban.notify.repository.NotificationIntentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,28 +64,38 @@ public class DeadLetterService {
     /**
      * Move exhausted delivery to DLQ + terminate delivery + recompute intent.
      *
+     * <p>Codex iter-1 P0 #3 + P1 #5 absorb:
+     * <ul>
+     *   <li>{@code REQUIRED} (not REQUIRES_NEW) — inline within caller's
+     *       (RetryWorker.processDelivery) transaction. No nested REQUIRES_NEW
+     *       row-lock self-deadlock.</li>
+     *   <li>Native {@code INSERT ... ON CONFLICT DO NOTHING} on partial unique
+     *       index — concurrent multi-pod safe; no DataIntegrityViolation
+     *       catch-in-transaction (transaction not aborted).</li>
+     * </ul>
+     *
      * @param delivery RETRY delivery whose attempt_count >= max-attempts
      * @param reason DLQ reason ({@code "max_attempts"}, {@code "expired"})
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.REQUIRED)
     public void moveToDlq(NotificationDelivery delivery, String reason) {
         OffsetDateTime now = OffsetDateTime.now();
 
-        // 1) DLQ row insert (idempotent via unique active index)
-        DeadLetter dl = new DeadLetter();
-        dl.setIntentId(delivery.getIntentId());
-        dl.setDeliveryId(delivery.getId());
-        dl.setChannel(delivery.getChannel());
-        dl.setRecipientHash(delivery.getRecipientHash());
-        dl.setProvider(delivery.getProvider());
-        dl.setAttemptCount(delivery.getAttemptCount());
-        dl.setLastFailureReason(delivery.getFailureReason());
-        dl.setLastFailureAt(delivery.getLastAttemptAt() != null ? delivery.getLastAttemptAt() : now);
-        try {
-            dlqRepo.saveAndFlush(dl);
-        } catch (DataIntegrityViolationException e) {
-            // Duplicate active DLQ for this delivery — already moved by another
-            // worker pod cycle; idempotent OK.
+        // 1) DLQ row insert via native ON CONFLICT DO NOTHING (idempotent)
+        OffsetDateTime lastFailAt = delivery.getLastAttemptAt() != null
+            ? delivery.getLastAttemptAt() : now;
+        int inserted = dlqRepo.insertIfAbsent(
+            delivery.getIntentId(),
+            delivery.getId(),
+            delivery.getChannel(),
+            delivery.getRecipientHash(),
+            delivery.getProvider(),
+            delivery.getAttemptCount(),
+            delivery.getFailureReason(),
+            lastFailAt,
+            now
+        );
+        if (inserted == 0) {
             log.info("DLQ already exists (idempotent skip): deliveryId={} reason={}",
                 delivery.getId(), reason);
             return;
@@ -96,6 +105,7 @@ public class DeadLetterService {
         delivery.setStatus(NotificationDelivery.Status.FAILED);
         delivery.setPermanentFailureAt(now);
         delivery.setProcessingLeaseUntil(null);
+        delivery.setClaimToken(null);
         deliveryRepo.save(delivery);
 
         // 3) Resolve intent terminal status
@@ -108,6 +118,7 @@ public class DeadLetterService {
                 intent.setTerminatedAt(now);
                 intent.setProcessingLeaseUntil(null);
                 intent.setProcessingOwner(null);
+                intent.setClaimToken(null);
                 intentRepo.save(intent);
                 metrics.intentTerminated(terminal.name());
             }

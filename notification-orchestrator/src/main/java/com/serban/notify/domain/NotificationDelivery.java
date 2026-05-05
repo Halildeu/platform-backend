@@ -90,6 +90,13 @@ public class NotificationDelivery {
     @Column(name = "permanent_failure_at")
     private OffsetDateTime permanentFailureAt;
 
+    /**
+     * Worker cycle UUID (Codex 019dfa47 iter-1 P0 absorb — multi-pod claim
+     * isolation). Set on RetryWorker claim, cleared post-attempt.
+     */
+    @Column(name = "claim_token", length = 64)
+    private String claimToken;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
@@ -144,6 +151,8 @@ public class NotificationDelivery {
     public void setPermanentFailureAt(OffsetDateTime permanentFailureAt) {
         this.permanentFailureAt = permanentFailureAt;
     }
+    public String getClaimToken() { return claimToken; }
+    public void setClaimToken(String claimToken) { this.claimToken = claimToken; }
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public OffsetDateTime getUpdatedAt() { return updatedAt; }
 

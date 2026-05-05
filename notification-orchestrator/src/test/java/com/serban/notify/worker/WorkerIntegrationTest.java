@@ -56,7 +56,10 @@ import static org.mockito.Mockito.when;
 @ContextConfiguration(initializers = AbstractPostgresTest.Initializer.class)
 @TestPropertySource(properties = {
     "notify.dispatch.enabled=true",
-    "notify.worker.poll-delay-ms=3600000",  // disable auto-tick (1h); manual tick only
+    // Codex iter-1 P2 absorb: scheduling-enabled=false disables @Scheduled tick;
+    // tests call runCycle() manually for deterministic isolation.
+    "notify.worker.scheduling-enabled=false",
+    "notify.worker.poll-delay-ms=3600000",
     "notify.worker.lease-duration-ms=10000",
     "notify.retry.max-attempts=2",
     "notify.retry.backoff-initial-ms=1000",
@@ -104,7 +107,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
             ChannelAdapter.DeliveryAttemptResult.delivered("<msg-1>")
         );
 
-        outboxPoller.tick();
+        outboxPoller.runCycle();
 
         NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(NotificationIntent.Status.COMPLETED);
@@ -121,7 +124,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         intent.setExpireAt(OffsetDateTime.now().minus(Duration.ofMinutes(10)));
         intentRepo.save(intent);
 
-        outboxPoller.tick();
+        outboxPoller.runCycle();
 
         NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(NotificationIntent.Status.EXPIRED);
@@ -142,7 +145,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
             ChannelAdapter.DeliveryAttemptResult.delivered("<msg-recover>")
         );
 
-        outboxPoller.tick();
+        outboxPoller.runCycle();
 
         NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
         // recovered to PENDING then re-claimed and dispatched to COMPLETED
@@ -174,7 +177,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         delivery.setFailureReason("503");
         deliveryRepo.save(delivery);
 
-        retryWorker.tick();
+        retryWorker.runCycle();
 
         NotificationDelivery reloaded = deliveryRepo.findById(delivery.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(NotificationDelivery.Status.FAILED);
@@ -203,8 +206,8 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         OffsetDateTime now = OffsetDateTime.now();
         OffsetDateTime leaseUntil = now.plus(Duration.ofMinutes(1));
 
-        int firstClaim = outboxPoller.claimAtomic(now, leaseUntil);
-        int secondClaim = outboxPoller.claimAtomic(now, leaseUntil);
+        int firstClaim = outboxPoller.claimAtomic(now, leaseUntil, UUID.randomUUID().toString());
+        int secondClaim = outboxPoller.claimAtomic(now, leaseUntil, UUID.randomUUID().toString());
 
         // First claim grabs all 3; second cycle finds 0 (all PROCESSING)
         assertThat(firstClaim).isEqualTo(3);

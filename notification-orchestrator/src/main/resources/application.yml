@@ -87,6 +87,8 @@ notify:
     lease-duration-ms: ${NOTIFY_WORKER_LEASE_DURATION_MS:60000}
     # Pod identifier — production: env HOSTNAME; default: hostname-pid
     owner: ${NOTIFY_WORKER_OWNER:}
+    # PR4 iter-1 absorb — test isolation: scheduling-enabled=false → manual runCycle()
+    scheduling-enabled: ${NOTIFY_WORKER_SCHEDULING_ENABLED:true}
   audit:
     retention-days: ${NOTIFY_AUDIT_RETENTION_DAYS:90}
   idempotency:

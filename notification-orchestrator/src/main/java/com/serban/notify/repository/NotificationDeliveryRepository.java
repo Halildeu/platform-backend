@@ -60,6 +60,7 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
         )
         UPDATE notify.notification_delivery d
         SET processing_lease_until = :leaseUntil,
+            claim_token = :claimToken,
             updated_at = :now
         FROM claimed
         WHERE d.id = claimed.id
@@ -67,19 +68,15 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
     int claimDueForRetry(
         @Param("now") OffsetDateTime now,
         @Param("leaseUntil") OffsetDateTime leaseUntil,
+        @Param("claimToken") String claimToken,
         @Param("batchSize") int batchSize
     );
 
     /**
-     * Find deliveries currently claimed (lease in future) — RetryWorker post-claim fetch.
+     * Find deliveries claimed in this exact cycle (Codex 019dfa47 iter-1 P0 absorb).
+     * Multi-pod isolation: only this cycle's claims.
      */
-    @Query("""
-        SELECT d FROM NotificationDelivery d
-         WHERE d.status = com.serban.notify.domain.NotificationDelivery.Status.RETRY
-           AND d.processingLeaseUntil IS NOT NULL
-           AND d.processingLeaseUntil > :now
-        """)
-    List<NotificationDelivery> findClaimedRetries(@Param("now") OffsetDateTime now, Pageable pageable);
+    List<NotificationDelivery> findByClaimToken(String claimToken);
 
     /**
      * Find RETRY deliveries that exceeded max attempts (DLQ candidates).

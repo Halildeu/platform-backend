@@ -136,6 +136,13 @@ public class NotificationIntent {
     @Column(name = "processing_owner", length = 64)
     private String processingOwner;
 
+    /**
+     * Worker cycle UUID (Codex 019dfa47 iter-1 P0 absorb).
+     * Set on claim, cleared on terminal / retry-outstanding / lease-recovery.
+     */
+    @Column(name = "claim_token", length = 64)
+    private String claimToken;
+
     /** Terminal state transition timestamp (COMPLETED/FAILED/PARTIALLY_FAILED/EXPIRED). */
     @Column(name = "terminated_at")
     private OffsetDateTime terminatedAt;
@@ -236,6 +243,9 @@ public class NotificationIntent {
 
     public String getProcessingOwner() { return processingOwner; }
     public void setProcessingOwner(String processingOwner) { this.processingOwner = processingOwner; }
+
+    public String getClaimToken() { return claimToken; }
+    public void setClaimToken(String claimToken) { this.claimToken = claimToken; }
 
     public OffsetDateTime getTerminatedAt() { return terminatedAt; }
     public void setTerminatedAt(OffsetDateTime terminatedAt) { this.terminatedAt = terminatedAt; }
