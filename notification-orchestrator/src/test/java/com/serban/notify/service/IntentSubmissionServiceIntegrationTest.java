@@ -40,6 +40,12 @@ class IntentSubmissionServiceIntegrationTest extends AbstractPostgresTest {
 
     @BeforeEach
     void seedTemplate() {
+        // Idempotent seed — Testcontainers reuse + DirtiesContext combo:
+        // container persistent, context restart per test method. Skip if exists.
+        if (templateRepo.findByTemplateIdAndVersionAndLocale("auth-password-reset", 1, "tr-TR")
+                .isPresent()) {
+            return;
+        }
         NotificationTemplate t = new NotificationTemplate();
         t.setTemplateId("auth-password-reset");
         t.setVersion(1);

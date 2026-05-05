@@ -40,6 +40,11 @@ class NotificationIntentControllerTest extends AbstractPostgresTest {
 
     @BeforeEach
     void seedTemplate() {
+        // Idempotent (Testcontainers reuse + DirtiesContext combo)
+        if (templateRepo.findByTemplateIdAndVersionAndLocale("auth-password-reset", 1, "tr-TR")
+                .isPresent()) {
+            return;
+        }
         NotificationTemplate t = new NotificationTemplate();
         t.setTemplateId("auth-password-reset");
         t.setVersion(1);
