@@ -8,9 +8,21 @@ name: CI - Maven Build Check
 
 on:
   push:
-    branches: [main]
+    # `codex/be-001-...` is added explicitly so push-time runs against that
+    # integration branch also exercise the new endpoint-admin-service-test
+    # lane (the codex BE-001 work merges into this branch first; main is
+    # a downstream cutover decision).
+    branches:
+      - main
+      - codex/be-001-endpoint-admin-service-platform-backend
   pull_request:
-    branches: [main]
+    # Same explicit allow-list for PR-target branches: any PR whose base is
+    # main OR the codex BE-001 integration branch triggers the full Maven
+    # gate. Ad-hoc feature branches keep the previous default of not running
+    # this expensive lane.
+    branches:
+      - main
+      - codex/be-001-endpoint-admin-service-platform-backend
   workflow_dispatch:
 
 jobs:
