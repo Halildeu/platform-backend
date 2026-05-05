@@ -136,7 +136,27 @@ public class DeliveryDispatchService {
             // boundary — provider call + delivery row + audit are atomic per
             // target; one target failure does NOT roll back earlier successful
             // sends. Provider-side dedup remains receiver responsibility.
-            DispatchOutcome outcome = self.dispatchSingleTarget(intent, target, message);
+            //
+            // iter-4 absorb: catch unique-violation boundary OUTSIDE the inner
+            // REQUIRES_NEW transaction. Inside the inner txn, PG marks txn
+            // rollback-only on constraint violation; catch within is unsafe
+            // because commit phase still throws UnexpectedRollbackException.
+            // Outer catch (here) sees the rollback exception and maps to RETRY
+            // (PR4 worker re-attempts; row already inserted by concurrent pod
+            // is the source-of-truth).
+            DispatchOutcome outcome;
+            try {
+                outcome = self.dispatchSingleTarget(intent, target, message);
+            } catch (org.springframework.dao.DataIntegrityViolationException
+                   | org.springframework.transaction.UnexpectedRollbackException
+                   | org.springframework.transaction.TransactionSystemException e) {
+                log.warn("dispatch concurrent insert race (outer catch): "
+                    + "intentId={} channel={} hash={} cls={} — returning RETRY",
+                    intent.getIntentId(), target.channel(), target.recipientHash(),
+                    e.getClass().getSimpleName());
+                outcome = new DispatchOutcome(
+                    ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+            }
             attempted++;
 
             switch (outcome.status) {
@@ -179,8 +199,12 @@ public class DeliveryDispatchService {
      * <p>Concurrency: PG unique constraint
      * {@code uq_delivery_intent_channel_recipient (intent_id, channel,
      * recipient_hash)} (V2 migration) makes parallel dispatch safe — concurrent
-     * INSERT race raises {@code DataIntegrityViolationException}; caller logs
-     * and returns RETRY (PR4 worker re-tries based on next_retry_at).
+     * INSERT race raises {@code DataIntegrityViolationException} which PG
+     * propagates as transaction-abort. Iter-4 absorb: this exception is NOT
+     * caught here (REQUIRES_NEW txn marked rollback-only by PG; inner catch
+     * unsafe). Outer {@link #dispatchPlanned} catches the rollback at the
+     * transaction-boundary and maps to RETRY (PR4 worker re-tries based on
+     * next_retry_at; row inserted by concurrent pod is source-of-truth).
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public DispatchOutcome dispatchSingleTarget(
@@ -205,21 +229,13 @@ public class DeliveryDispatchService {
                 "exception: " + e.getClass().getSimpleName(), null);
         }
 
-        boolean rowModified;
-        try {
-            rowModified = upsertDelivery(intent, target, result);
-        } catch (org.springframework.dao.DataIntegrityViolationException e) {
-            // Concurrent multi-pod dispatch — another transaction inserted the
-            // row between our SELECT and INSERT. saveAndFlush forces this
-            // exception to surface within this method (not at outer commit).
-            // Return RETRY semantics so PR4 worker re-attempts based on
-            // next_retry_at; we do NOT claim DELIVERED (provider call result
-            // is what it is — actual delivery status reflects in the row
-            // already inserted by the other pod).
-            log.warn("dispatch concurrent insert race: intentId={} channel={} hash={} — returning RETRY",
-                intent.getIntentId(), target.channel(), target.recipientHash());
-            return new DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
-        }
+        // iter-4 absorb: do NOT catch DataIntegrityViolationException here —
+        // catching inside REQUIRES_NEW transaction is unsafe because PG marks
+        // the txn rollback-only on constraint violation; even with a try/catch
+        // the commit phase still throws UnexpectedRollbackException. Let any
+        // unique-violation propagate; outer dispatchPlanned() catches it and
+        // maps to RETRY (PR4 worker re-attempts).
+        boolean rowModified = upsertDelivery(intent, target, result);
 
         // iter-3 absorb: DELIVERED-regress guard fired (existing row was
         // already DELIVERED) — treat as idempotent success. No audit row
