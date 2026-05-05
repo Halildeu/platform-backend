@@ -10,6 +10,8 @@ import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.domain.NotificationTemplate;
 import com.serban.notify.repository.DeadLetterRepository;
+import com.serban.notify.delivery.DeliveryPlanService;
+import com.serban.notify.delivery.DeliveryTarget;
 import com.serban.notify.repository.NotificationDeliveryRepository;
 import com.serban.notify.repository.NotificationIntentRepository;
 import com.serban.notify.repository.NotificationTemplateRepository;
@@ -71,6 +73,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
 
     @Autowired OutboxPoller outboxPoller;
     @Autowired RetryWorker retryWorker;
+    @Autowired DeliveryPlanService planService;
     @Autowired NotificationTemplateRepository templateRepo;
     @Autowired NotificationIntentRepository intentRepo;
     @Autowired NotificationDeliveryRepository deliveryRepo;
@@ -157,23 +160,16 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
     void retryWorkerSucceedsTransitionsIntentToCompleted() {
         // Codex iter-2 P0 absorb: RETRY → DELIVERED → intent COMPLETED
         // Setup: intent PROCESSING+lease=NULL, delivery RETRY due (next_retry_at past)
+        // Codex iter-3 fix: use plan-derived recipient_hash (PiiRedactor),
+        // not hardcoded — RetryWorker re-plans + matches by (channel, hash).
         NotificationIntent intent = saveIntent("email", "user@x.com");
         intent.setStatus(NotificationIntent.Status.PROCESSING);
         intentRepo.save(intent);
 
-        NotificationDelivery delivery = new NotificationDelivery();
-        delivery.setIntentId(intent.getIntentId());
-        delivery.setChannel("email");
-        delivery.setRecipientType(NotificationDelivery.RecipientType.EXTERNAL);
-        delivery.setRecipientHash("rh-success-retry");
-        delivery.setRecipientId(null);
-        delivery.setProvider("smtp-default");
-        delivery.setStatus(NotificationDelivery.Status.RETRY);
-        delivery.setAttemptCount(1);
-        delivery.setLastAttemptAt(OffsetDateTime.now().minus(Duration.ofMinutes(2)));
-        delivery.setNextRetryAt(OffsetDateTime.now().minus(Duration.ofSeconds(10)));
-        delivery.setFailureReason("503");
-        deliveryRepo.save(delivery);
+        DeliveryTarget plannedTarget = planService.plan(intent, null).get(0);
+
+        NotificationDelivery delivery = createRetryDelivery(intent, plannedTarget,
+            1, "503", OffsetDateTime.now().minus(Duration.ofSeconds(10)));
 
         when(smtpAdapter.send(any(), any())).thenReturn(
             ChannelAdapter.DeliveryAttemptResult.delivered("<msg-recovered>")
@@ -198,17 +194,10 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         intent.setStatus(NotificationIntent.Status.PROCESSING);
         intentRepo.save(intent);
 
-        NotificationDelivery delivery = new NotificationDelivery();
-        delivery.setIntentId(intent.getIntentId());
-        delivery.setChannel("email");
-        delivery.setRecipientType(NotificationDelivery.RecipientType.EXTERNAL);
-        delivery.setRecipientHash("rh-perm-fail-retry");
-        delivery.setRecipientId(null);
-        delivery.setProvider("smtp-default");
-        delivery.setStatus(NotificationDelivery.Status.RETRY);
-        delivery.setAttemptCount(1);
-        delivery.setNextRetryAt(OffsetDateTime.now().minus(Duration.ofSeconds(10)));
-        deliveryRepo.save(delivery);
+        DeliveryTarget plannedTarget = planService.plan(intent, null).get(0);
+
+        NotificationDelivery delivery = createRetryDelivery(intent, plannedTarget,
+            1, "503-prev", OffsetDateTime.now().minus(Duration.ofSeconds(10)));
 
         when(smtpAdapter.send(any(), any())).thenReturn(
             ChannelAdapter.DeliveryAttemptResult.failed("550 hard bounce", 500)
@@ -222,6 +211,34 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
 
         NotificationIntent reloadedIntent = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
         assertThat(reloadedIntent.getStatus()).isEqualTo(NotificationIntent.Status.FAILED);
+    }
+
+    /**
+     * Helper: build a RETRY delivery whose recipient_hash matches the planned
+     * target's hash (Codex iter-3 fix — PiiRedactor pepper makes hashes
+     * non-trivial; using hardcoded values caused DLQ target_reconstruction
+     * mismatch).
+     */
+    private NotificationDelivery createRetryDelivery(
+        NotificationIntent intent, DeliveryTarget target,
+        int attemptCount, String failureReason, OffsetDateTime nextRetryAt
+    ) {
+        NotificationDelivery delivery = new NotificationDelivery();
+        delivery.setIntentId(intent.getIntentId());
+        delivery.setChannel(target.channel());
+        delivery.setRecipientType(NotificationDelivery.RecipientType.valueOf(
+            target.recipientType().equals("subscriber") ? "SUBSCRIBER"
+                : target.recipientType().equals("external") ? "EXTERNAL" : "CHANNEL"
+        ));
+        delivery.setRecipientId(target.recipientId());
+        delivery.setRecipientHash(target.recipientHash());
+        delivery.setProvider(target.providerKey());
+        delivery.setStatus(NotificationDelivery.Status.RETRY);
+        delivery.setAttemptCount(attemptCount);
+        delivery.setLastAttemptAt(OffsetDateTime.now().minus(Duration.ofMinutes(1)));
+        delivery.setNextRetryAt(nextRetryAt);
+        delivery.setFailureReason(failureReason);
+        return deliveryRepo.save(delivery);
     }
 
     @Test
