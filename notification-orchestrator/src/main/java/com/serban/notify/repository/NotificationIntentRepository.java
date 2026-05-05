@@ -103,6 +103,7 @@ public interface NotificationIntentRepository extends JpaRepository<Notification
             processing_started_at = NULL,
             processing_lease_until = NULL,
             processing_owner = NULL,
+            claim_token = NULL,
             updated_at = :now
         WHERE status = 'PROCESSING'
           AND processing_lease_until IS NOT NULL

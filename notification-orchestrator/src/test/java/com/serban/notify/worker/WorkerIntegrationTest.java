@@ -154,6 +154,77 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
+    void retryWorkerSucceedsTransitionsIntentToCompleted() {
+        // Codex iter-2 P0 absorb: RETRY → DELIVERED → intent COMPLETED
+        // Setup: intent PROCESSING+lease=NULL, delivery RETRY due (next_retry_at past)
+        NotificationIntent intent = saveIntent("email", "user@x.com");
+        intent.setStatus(NotificationIntent.Status.PROCESSING);
+        intentRepo.save(intent);
+
+        NotificationDelivery delivery = new NotificationDelivery();
+        delivery.setIntentId(intent.getIntentId());
+        delivery.setChannel("email");
+        delivery.setRecipientType(NotificationDelivery.RecipientType.EXTERNAL);
+        delivery.setRecipientHash("rh-success-retry");
+        delivery.setRecipientId(null);
+        delivery.setProvider("smtp-default");
+        delivery.setStatus(NotificationDelivery.Status.RETRY);
+        delivery.setAttemptCount(1);
+        delivery.setLastAttemptAt(OffsetDateTime.now().minus(Duration.ofMinutes(2)));
+        delivery.setNextRetryAt(OffsetDateTime.now().minus(Duration.ofSeconds(10)));
+        delivery.setFailureReason("503");
+        deliveryRepo.save(delivery);
+
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.delivered("<msg-recovered>")
+        );
+
+        retryWorker.runCycle();
+
+        NotificationDelivery reloadedDelivery = deliveryRepo.findById(delivery.getId()).orElseThrow();
+        assertThat(reloadedDelivery.getStatus()).isEqualTo(NotificationDelivery.Status.DELIVERED);
+        assertThat(reloadedDelivery.getDeliveredAt()).isNotNull();
+        assertThat(reloadedDelivery.getAttemptCount()).isEqualTo(2);
+
+        NotificationIntent reloadedIntent = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
+        assertThat(reloadedIntent.getStatus()).isEqualTo(NotificationIntent.Status.COMPLETED);
+        assertThat(reloadedIntent.getTerminatedAt()).isNotNull();
+    }
+
+    @Test
+    void retryWorkerPermanentFailureTransitionsIntentToFailed() {
+        // Codex iter-2 P0 absorb: RETRY → FAILED (permanent on retry) → intent FAILED
+        NotificationIntent intent = saveIntent("email", "user@x.com");
+        intent.setStatus(NotificationIntent.Status.PROCESSING);
+        intentRepo.save(intent);
+
+        NotificationDelivery delivery = new NotificationDelivery();
+        delivery.setIntentId(intent.getIntentId());
+        delivery.setChannel("email");
+        delivery.setRecipientType(NotificationDelivery.RecipientType.EXTERNAL);
+        delivery.setRecipientHash("rh-perm-fail-retry");
+        delivery.setRecipientId(null);
+        delivery.setProvider("smtp-default");
+        delivery.setStatus(NotificationDelivery.Status.RETRY);
+        delivery.setAttemptCount(1);
+        delivery.setNextRetryAt(OffsetDateTime.now().minus(Duration.ofSeconds(10)));
+        deliveryRepo.save(delivery);
+
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.failed("550 hard bounce", 500)
+        );
+
+        retryWorker.runCycle();
+
+        NotificationDelivery reloadedDelivery = deliveryRepo.findById(delivery.getId()).orElseThrow();
+        assertThat(reloadedDelivery.getStatus()).isEqualTo(NotificationDelivery.Status.FAILED);
+        assertThat(reloadedDelivery.getPermanentFailureAt()).isNotNull();
+
+        NotificationIntent reloadedIntent = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
+        assertThat(reloadedIntent.getStatus()).isEqualTo(NotificationIntent.Status.FAILED);
+    }
+
+    @Test
     void retryWorkerExhaustsAfterMaxAttemptsAndMovesToDlq() {
         // Setup: intent in PROCESSING with one RETRY delivery already at attempt_count=2
         // (max-attempts=2 in this test). RetryWorker should pre-check and DLQ immediately.

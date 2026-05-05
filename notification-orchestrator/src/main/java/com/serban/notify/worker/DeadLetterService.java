@@ -95,15 +95,19 @@ public class DeadLetterService {
             lastFailAt,
             now
         );
-        if (inserted == 0) {
-            log.info("DLQ already exists (idempotent skip): deliveryId={} reason={}",
+        boolean isFreshInsert = inserted > 0;
+        if (!isFreshInsert) {
+            log.info("DLQ already exists (idempotent convergence): deliveryId={} reason={}",
                 delivery.getId(), reason);
-            return;
         }
 
-        // 2) Terminate delivery FAILED
+        // Codex iter-2 P2 absorb: even when DLQ row already exists, converge
+        // delivery + intent terminal state (another worker may have inserted
+        // DLQ row but crashed before delivery FAILED + intent terminal updates).
+        // 2) Terminate delivery FAILED (idempotent: same state if already done)
         delivery.setStatus(NotificationDelivery.Status.FAILED);
-        delivery.setPermanentFailureAt(now);
+        delivery.setPermanentFailureAt(delivery.getPermanentFailureAt() != null
+            ? delivery.getPermanentFailureAt() : now);
         delivery.setProcessingLeaseUntil(null);
         delivery.setClaimToken(null);
         deliveryRepo.save(delivery);
@@ -124,21 +128,23 @@ public class DeadLetterService {
             }
         }
 
-        // 4) Audit
-        Map<String, Object> details = new HashMap<>();
-        details.put("dlq_reason", reason);
-        details.put("attempt_count", delivery.getAttemptCount());
-        details.put("delivery_id", delivery.getId());
-        if (delivery.getFailureReason() != null) {
-            details.put("last_failure_reason", delivery.getFailureReason());
-        }
-        if (intent != null) {
+        // 4) Audit (only on fresh insert — duplicate convergence skips audit row
+        //    to keep append-only semantics clean)
+        if (isFreshInsert && intent != null) {
+            Map<String, Object> details = new HashMap<>();
+            details.put("dlq_reason", reason);
+            details.put("attempt_count", delivery.getAttemptCount());
+            details.put("delivery_id", delivery.getId());
+            if (delivery.getFailureReason() != null) {
+                details.put("last_failure_reason", delivery.getFailureReason());
+            }
             audit.publish("DLQ_TERMINATED", intent, delivery.getRecipientHash(),
                 delivery.getChannel(), details);
+            metrics.dlqTerminated(reason);
         }
 
-        metrics.dlqTerminated(reason);
-        log.info("DLQ moved: intentId={} deliveryId={} channel={} reason={} attempts={}",
+        log.info("DLQ {}: intentId={} deliveryId={} channel={} reason={} attempts={}",
+            isFreshInsert ? "moved" : "convergence",
             delivery.getIntentId(), delivery.getId(), delivery.getChannel(),
             reason, delivery.getAttemptCount());
     }

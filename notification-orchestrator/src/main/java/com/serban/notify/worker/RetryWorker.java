@@ -14,6 +14,7 @@ import com.serban.notify.repository.NotificationIntentRepository;
 import com.serban.notify.repository.NotificationTemplateRepository;
 import com.serban.notify.template.RenderedMessage;
 import com.serban.notify.template.TemplateRenderer;
+import com.serban.notify.worker.IntentStatusResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -62,6 +63,7 @@ public class RetryWorker {
     private final BackoffCalculator backoffCalculator;
     private final DeadLetterService dlqService;
     private final DeliveryPlanService planService;
+    private final IntentStatusResolver statusResolver;
     private final AuditEventPublisher audit;
     private final WorkerMetrics metrics;
     private final NotifyConfig.WorkerConfig workerCfg;
@@ -78,6 +80,7 @@ public class RetryWorker {
         BackoffCalculator backoffCalculator,
         DeadLetterService dlqService,
         DeliveryPlanService planService,
+        IntentStatusResolver statusResolver,
         AuditEventPublisher audit,
         WorkerMetrics metrics,
         NotifyConfig notifyConfig,
@@ -92,6 +95,7 @@ public class RetryWorker {
         this.backoffCalculator = backoffCalculator;
         this.dlqService = dlqService;
         this.planService = planService;
+        this.statusResolver = statusResolver;
         this.audit = audit;
         this.metrics = metrics;
         this.workerCfg = notifyConfig.worker();
@@ -297,11 +301,49 @@ public class RetryWorker {
 
         metrics.dispatchOutcome(delivery.getChannel(), result.status().name());
 
-        // Post-attempt: if exhausted on this attempt → DLQ
+        // Post-attempt: if exhausted on this attempt → DLQ (DLQ resolves intent terminal)
         if (delivery.getStatus() == NotificationDelivery.Status.RETRY
             && delivery.getAttemptCount() >= retryCfg.maxAttempts()) {
             dlqService.moveToDlq(delivery, "max_attempts");
+            return;
         }
+
+        // Codex iter-2 P0 absorb: For non-DLQ outcomes (DELIVERED, FAILED, BOUNCED,
+        // continued RETRY), resolve intent terminal status. Without this single-
+        // delivery intent stays PROCESSING+lease=NULL forever after successful retry.
+        resolveIntentTerminal(intent, delivery);
+    }
+
+    /**
+     * Resolve intent terminal status after non-DLQ delivery state change.
+     *
+     * <p>Reads ALL deliveries for the intent, runs IntentStatusResolver, and
+     * if a terminal state is computed (COMPLETED / PARTIALLY_FAILED / FAILED),
+     * updates the intent and records metrics.
+     *
+     * <p>Called from {@link #processDelivery} after delivery aggregate update
+     * but before return. DLQ path is exclusive (DeadLetterService does its own
+     * resolve + terminal transition).
+     */
+    private void resolveIntentTerminal(NotificationIntent intent, NotificationDelivery currentDelivery) {
+        List<NotificationDelivery> all = deliveryRepo.findByIntentId(intent.getIntentId());
+        NotificationIntent.Status terminal = statusResolver.resolve(all);
+        if (terminal == null) {
+            // RETRY or PENDING outstanding — keep intent in PROCESSING; backoff/RetryWorker continues
+            return;
+        }
+        // Reload intent to avoid stale entity overwrites
+        NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElse(intent);
+        if (reloaded.getStatus() == terminal) return;  // already terminal (concurrent worker)
+        reloaded.setStatus(terminal);
+        reloaded.setTerminatedAt(OffsetDateTime.now());
+        reloaded.setProcessingLeaseUntil(null);
+        reloaded.setProcessingOwner(null);
+        reloaded.setClaimToken(null);
+        intentRepo.save(reloaded);
+        metrics.intentTerminated(terminal.name());
+        log.info("RetryWorker resolved intent terminal: intentId={} terminal={}",
+            intent.getIntentId(), terminal);
     }
 
     /**
