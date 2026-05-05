@@ -8,6 +8,8 @@ import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.exception.CrossOrgAccessException;
 import com.serban.notify.repository.NotificationIntentRepository;
 import com.serban.notify.service.IntentSubmissionService;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.HttpStatus;
@@ -63,6 +65,13 @@ public class NotificationIntentController {
      * </ul>
      */
     @PostMapping
+    @ApiResponses({
+        @ApiResponse(responseCode = "202", description = "Intent accepted (new or REPLAYED)"),
+        @ApiResponse(responseCode = "400", description = "Validation error"),
+        @ApiResponse(responseCode = "403", description = "Cross-org access denied"),
+        @ApiResponse(responseCode = "404", description = "Template not found"),
+        @ApiResponse(responseCode = "503", description = "Intake capacity exceeded")
+    })
     public ResponseEntity<SubmitIntentResponse> submit(
         @Valid @RequestBody SubmitIntentRequest request,
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId
