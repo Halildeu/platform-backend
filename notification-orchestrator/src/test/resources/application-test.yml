@@ -1,0 +1,20 @@
+# Test profile — Testcontainers Postgres injection via @DynamicPropertySource
+# in test base classes. ddl-auto=validate ensures Flyway-managed schema
+# is consistent with JPA entity mapping (Faz 23.1 Foundation kabul kriteri).
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: notify
+  flyway:
+    enabled: true
+    default-schema: notify
+    schemas: notify
+
+logging:
+  level:
+    root: WARN
+    com.serban.notify: DEBUG
+    org.hibernate.SQL: DEBUG
