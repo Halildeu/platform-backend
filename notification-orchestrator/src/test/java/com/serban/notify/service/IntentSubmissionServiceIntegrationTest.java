@@ -128,6 +128,57 @@ class IntentSubmissionServiceIntegrationTest extends AbstractPostgresTest {
             .hasMessageContaining("nonexistent-template");
     }
 
+    @Test
+    void unsupportedChannelRejected() {
+        // Codex post-impl bulgu #4 absorb: PR2 channels = email/slack/webhook only
+        SubmitIntentRequest req = new SubmitIntentRequest(
+            UUID.randomUUID().toString(),
+            "ch-key",
+            "trace-ch",
+            "default",
+            "auth.password-reset",
+            NotificationIntent.Severity.info,
+            NotificationIntent.DataClassification.security,
+            List.of(new SubmitIntentRequest.RecipientRef(
+                SubmitIntentRequest.RecipientRef.Type.subscriber,
+                "1204", null, null, "Halil", "tr-TR"
+            )),
+            new SubmitIntentRequest.TemplateRef("auth-password-reset", null, "tr-TR"),
+            List.of("sms"),  // SMS not in PR2 kernel
+            Map.of("k", "v"),
+            null, null, null, null, null
+        );
+        assertThatThrownBy(() -> service.submit(req))
+            .isInstanceOf(com.serban.notify.exception.InvalidRequestException.class)
+            .hasMessageContaining("sms");
+    }
+
+    @Test
+    void externalRecipientWithoutContactRejected() {
+        // Codex post-impl bulgu #3 absorb: external requires email or phone
+        SubmitIntentRequest req = new SubmitIntentRequest(
+            UUID.randomUUID().toString(),
+            "ext-key",
+            "trace-ext",
+            "default",
+            "auth.password-reset",
+            NotificationIntent.Severity.info,
+            NotificationIntent.DataClassification.security,
+            List.of(new SubmitIntentRequest.RecipientRef(
+                SubmitIntentRequest.RecipientRef.Type.external,
+                null, null, null, "External User", "tr-TR"
+                // email + phone both null
+            )),
+            new SubmitIntentRequest.TemplateRef("auth-password-reset", null, "tr-TR"),
+            List.of("email"),
+            Map.of("k", "v"),
+            null, null, null, null, null
+        );
+        assertThatThrownBy(() -> service.submit(req))
+            .isInstanceOf(com.serban.notify.exception.InvalidRequestException.class)
+            .hasMessageContaining("email or recipient.phone");
+    }
+
     private SubmitIntentRequest newRequest(String intentId, String idemKey) {
         return new SubmitIntentRequest(
             intentId,

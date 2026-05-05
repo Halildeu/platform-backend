@@ -71,24 +71,39 @@ public class IntentSubmissionService {
      * @param request validated DTO from controller
      * @return ACCEPTED if new, REPLAYED if duplicate idempotency_key
      */
+    /**
+     * PR2 Kernel allowed channels (Codex post-impl bulgu #4 absorb).
+     * PR3+'da SMTP/Slack/Webhook adapter'lar geldikçe set genişletilir.
+     * sms, push-fcm, push-apns, in-app, web-push, teams, whatsapp, voice
+     * PR3-23.X tier'larında.
+     */
+    private static final java.util.Set<String> PR2_ALLOWED_CHANNELS =
+        java.util.Set.of("email", "slack", "webhook");
+
     @Transactional
     public SubmitIntentResponse submit(SubmitIntentRequest request) {
-        // Step 1: Bounded intake check (Codex Q3 PARTIAL)
-        long pendingCount = intentRepository.countByStatus(NotificationIntent.Status.PENDING);
-        if (pendingCount >= config.intake().maxPending()) {
-            throw new IntakeCapacityExceededException(
-                "intake.maxPending exceeded: " + pendingCount + " / " + config.intake().maxPending()
-                    + " (dispatch.enabled=" + config.dispatch().enabled() + ")"
-            );
-        }
+        // Step 0: Recipient + channel validation (Codex post-impl bulgu #3, #4)
+        validateRecipientsAndChannels(request);
 
-        // Step 2: Idempotency advisory lock + lookup (Codex Q1)
+        // Step 1: Idempotency advisory lock + lookup ÖNCE (Codex post-impl bulgu #2).
+        // Eski sıra (capacity check ÖNCE) duplicate key'i 503 ile bloklayabilirdi —
+        // idempotent client retry/backpressure kontratını bozar. Idempotent replay
+        // kapasiteden bağımsız REPLAYED dönmeli.
         Optional<String> existingIntentId =
             idempotencyService.findActiveOriginal(request.orgId(), request.idempotencyKey());
         if (existingIntentId.isPresent()) {
             log.info("idempotency replay: orgId={} key={} originalIntentId={}",
                 request.orgId(), request.idempotencyKey(), existingIntentId.get());
             return SubmitIntentResponse.replayed(existingIntentId.get());
+        }
+
+        // Step 2: Bounded intake check sadece YENİ intent için (Codex Q3 PARTIAL)
+        long pendingCount = intentRepository.countByStatus(NotificationIntent.Status.PENDING);
+        if (pendingCount >= config.intake().maxPending()) {
+            throw new IntakeCapacityExceededException(
+                "intake.maxPending exceeded: " + pendingCount + " / " + config.intake().maxPending()
+                    + " (dispatch.enabled=" + config.dispatch().enabled() + ")"
+            );
         }
 
         // Step 3: Template resolve only (Codex Q2)
@@ -148,14 +163,57 @@ public class IntentSubmissionService {
         String type = ref.type().name();
         String value;
         if (ref.type() == SubmitIntentRequest.RecipientRef.Type.subscriber) {
-            value = ref.subscriberId();
+            value = ref.subscriberId();  // validated non-null upstream
         } else if (ref.email() != null && !ref.email().isBlank()) {
             value = ref.email();
-        } else if (ref.phone() != null && !ref.phone().isBlank()) {
-            value = ref.phone();
         } else {
-            value = ref.subscriberId() != null ? ref.subscriberId() : "<unknown>";
+            value = ref.phone();  // validated non-null upstream
         }
         return piiRedactor.hashRecipient(orgId, type, value);
+    }
+
+    /**
+     * Recipient + channel validation (Codex post-impl bulgu #3, #4 absorb).
+     *
+     * <p>Bulgu #3: Bean Validation DTO seviyesinde type-specific zorunluluk
+     * yetmiyordu — subscriber için subscriberId, external için email/phone
+     * birinin zorunlu. Service-layer cross-field check.
+     *
+     * <p>Bulgu #4: Channel set kilitlenmiş — PR2'de email/slack/webhook only;
+     * PR3+'da adapter'lar geldikçe set genişler. Bilinmeyen channel reject
+     * (silent persist sonra delivery time fail önler).
+     *
+     * <p>External recipient + template.externalAllowed=false → reject (PR5'e
+     * kadar source-service authority yok).
+     */
+    private void validateRecipientsAndChannels(SubmitIntentRequest request) {
+        // Channel allow-set check (PR2 kernel)
+        for (String channel : request.channels()) {
+            if (!PR2_ALLOWED_CHANNELS.contains(channel)) {
+                throw new com.serban.notify.exception.InvalidRequestException(
+                    "channel '" + channel + "' not supported in PR2 kernel; allowed: "
+                        + PR2_ALLOWED_CHANNELS
+                );
+            }
+        }
+
+        // Recipient type-specific zorunluluk
+        for (SubmitIntentRequest.RecipientRef ref : request.recipients()) {
+            if (ref.type() == SubmitIntentRequest.RecipientRef.Type.subscriber) {
+                if (ref.subscriberId() == null || ref.subscriberId().isBlank()) {
+                    throw new com.serban.notify.exception.InvalidRequestException(
+                        "recipient.subscriberId required when type=subscriber"
+                    );
+                }
+            } else if (ref.type() == SubmitIntentRequest.RecipientRef.Type.external) {
+                boolean hasEmail = ref.email() != null && !ref.email().isBlank();
+                boolean hasPhone = ref.phone() != null && !ref.phone().isBlank();
+                if (!hasEmail && !hasPhone) {
+                    throw new com.serban.notify.exception.InvalidRequestException(
+                        "recipient.email or recipient.phone required when type=external"
+                    );
+                }
+            }
+        }
     }
 }

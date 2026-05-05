@@ -48,6 +48,7 @@ public class PiiRedactor {
         "recipient_hash",
         "recipient_type",
         "channel",
+        "channels",                  // Codex post-impl bulgu #1: intent-level channels list
         "delivery_status",
         "provider_msg_id",
         "failure_reason",

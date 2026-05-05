@@ -32,17 +32,26 @@ public class AuditEventPublisher {
     /**
      * Publish INTENT_CREATED audit event (PR2 submit pipeline).
      *
+     * <p>Codex post-impl bulgu #1 absorb: intent-level event channel column
+     * NULL kalır (gerçek delivery channel adapter PR3'te); recipient_type ayrı
+     * detail field; channels (string list) intent contract snapshot olarak
+     * details'e girer.
+     *
      * <p>MUST be called inside parent {@code @Transactional}. Audit row INSERT
      * appends; audit_event_no_update + no_delete DB rules prevent mutation.
+     *
+     * @param recipientType "subscriber" or "external" (NOT delivery channel)
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void publishIntentCreated(NotificationIntent intent, String recipientHash, String channel) {
+    public void publishIntentCreated(NotificationIntent intent, String recipientHash, String recipientType) {
         Map<String, Object> rawDetails = new HashMap<>();
         rawDetails.put("template_id", intent.getTemplateId());
         rawDetails.put("template_version", intent.getTemplateVersion());
         rawDetails.put("template_locale", intent.getLocale());
         rawDetails.put("recipient_hash", recipientHash);
-        rawDetails.put("channel", channel);
+        rawDetails.put("recipient_type", recipientType);
+        rawDetails.put("channels", intent.getChannels() == null ? null
+            : java.util.Arrays.asList(intent.getChannels()));
         rawDetails.put("severity", intent.getSeverity().name());
         rawDetails.put("data_classification", intent.getDataClassification().name());
         rawDetails.put("topic_key", intent.getTopicKey());
@@ -57,7 +66,9 @@ public class AuditEventPublisher {
         event.setOrgId(intent.getOrgId());
         event.setTopicKey(intent.getTopicKey());
         event.setRecipientHash(recipientHash);
-        event.setChannel(channel);
+        // channel column NULL — intent-level event, gerçek delivery channel
+        // PR3 adapter call'da DELIVERY_ATTEMPTED event'le set edilir
+        event.setChannel(null);
         event.setTemplateId(intent.getTemplateId());
         event.setTemplateVersion(intent.getTemplateVersion());
         event.setCorrelationId(intent.getCorrelationId());
