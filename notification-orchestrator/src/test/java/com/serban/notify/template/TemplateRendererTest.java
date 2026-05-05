@@ -102,6 +102,46 @@ class TemplateRendererTest {
             .hasMessageContaining("rejected pattern");
     }
 
+    // Codex 019df9ef P1 absorb: lint hardening tests.
+
+    @Test
+    void rejectsThymeleafPreprocessing() {
+        // __${...}__ — preprocessing dynamic expression generation gateway
+        NotificationTemplate t = template(null, "Pre: __${vars.user_name}__", "Sub");
+        assertThatThrownBy(() -> renderer.render(t, Map.of("user_name", "x")))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("rejected pattern");
+    }
+
+    @Test
+    void rejectsTypeReferenceLowercasePackage() {
+        // Codex hardening: T(java.*) only previously caught; org/com/javax now caught
+        NotificationTemplate t = template(
+            null, "X=[[${T(org.apache.commons.lang3.StringUtils).reverse('a')}]]", "S"
+        );
+        assertThatThrownBy(() -> renderer.render(t, Map.of()))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("rejected pattern");
+    }
+
+    @Test
+    void rejectsBeanReferenceInsideExpression() {
+        // Codex hardening: ${...@... is rejected even without method call form
+        NotificationTemplate t = template(null, "X=[[${@templateRepo}]]", "S");
+        assertThatThrownBy(() -> renderer.render(t, Map.of()))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("rejected pattern");
+    }
+
+    @Test
+    void rejectsNewWithLowercasePackage() {
+        // Codex hardening: new java.util.Date() (lowercase package) now caught
+        NotificationTemplate t = template(null, "D=[[${new java.util.Date()}]]", "S");
+        assertThatThrownBy(() -> renderer.render(t, Map.of()))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("rejected pattern");
+    }
+
     @Test
     void rejectsGetClassReflection() {
         NotificationTemplate t = template(

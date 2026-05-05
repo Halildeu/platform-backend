@@ -198,6 +198,54 @@ class DeliveryPlanServiceTest {
         assertThat(targets.get(0).targetRef()).isEqualTo("https://hooks.slack/default");
     }
 
+    @Test
+    void planFallsBackToIntentRecipientsSnapshotWhenParamEmpty() {
+        // Codex 019df9ef P2 absorb: PR4 worker path — recipients param empty,
+        // DeliveryPlanService reads from intent.recipients_snapshot.
+        NotificationIntent intent = intent(new String[] { "email" }, null);
+        intent.setRecipientsSnapshot(java.util.List.of(
+            new java.util.LinkedHashMap<>(Map.of(
+                "type", "subscriber", "subscriberId", "1", "email", "snap@x.com",
+                "locale", "tr-TR"
+            )),
+            new java.util.LinkedHashMap<>(Map.of(
+                "type", "external", "email", "ext@x.com", "locale", "en-US"
+            ))
+        ));
+
+        // Pass null/empty recipients → fall back to snapshot
+        List<DeliveryTarget> targets = service.plan(intent, List.of());
+
+        assertThat(targets).hasSize(2);
+        assertThat(targets).extracting(DeliveryTarget::targetRef)
+            .containsExactly("snap@x.com", "ext@x.com");
+        assertThat(targets).extracting(DeliveryTarget::recipientType)
+            .containsExactly("subscriber", "external");
+    }
+
+    @Test
+    void planUsesParamRecipientsWhenProvidedNotSnapshot() {
+        // PR3 submit-time path: caller passes recipients explicitly; snapshot
+        // is ignored when param non-empty (avoids double-counting).
+        NotificationIntent intent = intent(new String[] { "email" }, null);
+        intent.setRecipientsSnapshot(java.util.List.of(
+            new java.util.LinkedHashMap<>(Map.of(
+                "type", "external", "email", "snap@x.com", "locale", "en-US"
+            ))
+        ));
+        List<SubmitIntentRequest.RecipientRef> recipients = List.of(
+            new SubmitIntentRequest.RecipientRef(
+                SubmitIntentRequest.RecipientRef.Type.external,
+                null, "param@x.com", null, null, "en-US"
+            )
+        );
+
+        List<DeliveryTarget> targets = service.plan(intent, recipients);
+
+        assertThat(targets).hasSize(1);
+        assertThat(targets.get(0).targetRef()).isEqualTo("param@x.com");
+    }
+
     private NotificationIntent intent(String[] channels, Map<String, Object> routing) {
         NotificationIntent i = new NotificationIntent();
         i.setIntentId("intent-1");

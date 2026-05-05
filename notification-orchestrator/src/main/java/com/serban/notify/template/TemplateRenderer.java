@@ -42,29 +42,38 @@ public class TemplateRenderer {
     /**
      * Reject patterns — template body lint, SSTI/XSS prevention.
      *
+     * <p>Codex 019df9ef P1 absorb (review): patterns hardened to catch bypass
+     * vectors (preprocessing, lowercase package types, generic instantiation,
+     * any bean reference inside expressions).
+     *
      * <p>Pattern listesi:
      * <ul>
-     *   <li>th:utext / data-th-utext — raw HTML output</li>
-     *   <li>[(...)] — inline raw output (escaped is [[...]])</li>
-     *   <li>T(java...) — Thymeleaf SpEL type expression</li>
-     *   <li>@bean — Spring bean reference</li>
-     *   <li>#ctx, #request, #session — context exposure</li>
-     *   <li>.getClass(), .class — reflection</li>
-     *   <li>new\s+ — instantiation</li>
+     *   <li>{@code th:utext} / {@code data-th-utext} — raw HTML output</li>
+     *   <li>{@code [(...)] } — inline raw output (escaped form is {@code [[...]]})</li>
+     *   <li>{@code __${...}__} — Thymeleaf preprocessing (dynamic expression
+     *       generation gateway; SSTI bypass)</li>
+     *   <li>{@code T(...)} — any SpEL type reference (java/javax/org/com/...)</li>
+     *   <li>{@code @bean} — any Spring bean reference inside {@code ${...}}</li>
+     *   <li>{@code #ctx}, {@code #request}, {@code #session} — context exposure</li>
+     *   <li>{@code .getClass(...)}, {@code .class} — reflection</li>
+     *   <li>{@code new <anything>} — generic instantiation (case-insensitive,
+     *       lowercase package qualified types covered)</li>
      * </ul>
      */
     private static final Pattern[] REJECT_PATTERNS = new Pattern[] {
         Pattern.compile("th:utext\\b", Pattern.CASE_INSENSITIVE),
         Pattern.compile("data-th-utext\\b", Pattern.CASE_INSENSITIVE),
-        Pattern.compile("\\[\\([^\\]]*\\)\\]"),  // inline raw [(expr)]
-        Pattern.compile("T\\s*\\(\\s*java"),     // T(java.*) type ref
-        Pattern.compile("@\\w+(?:\\.\\w+)*\\s*\\("),  // @bean.method(
+        Pattern.compile("\\[\\([^\\]]*\\)\\]"),         // inline raw [(expr)]
+        Pattern.compile("__\\$\\{"),                       // preprocessing __${expr}__
+        Pattern.compile("\\bT\\s*\\(\\s*[a-zA-Z]"),    // ANY type ref T(...) (Codex hardening)
+        Pattern.compile("\\$\\{[^}]*@\\w"),              // bean ref inside ${...} (Codex hardening)
+        Pattern.compile("@\\w+(?:\\.\\w+)*\\s*\\("),    // @bean.method( (legacy form)
         Pattern.compile("#ctx\\b"),
         Pattern.compile("#request\\b"),
         Pattern.compile("#session\\b"),
         Pattern.compile("\\.getClass\\s*\\("),
         Pattern.compile("\\.class\\b"),
-        Pattern.compile("\\bnew\\s+[A-Z]")
+        Pattern.compile("\\bnew\\s+\\w")                  // generic new <anything> (Codex hardening)
     };
 
     private final SpringTemplateEngine htmlEngine;

@@ -187,6 +187,35 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
+    void dispatchIdempotentSkipsAlreadyDelivered() {
+        // Codex 019df9ef P2 absorb: re-dispatch should NOT re-send DELIVERED targets
+        NotificationIntent intent = saveIntent("email");
+        DeliveryTarget target = new DeliveryTarget(
+            "email", "subscriber", "1", "rh-idem", "user@example.com", "smtp-default"
+        );
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.delivered("<msg-1@host>")
+        );
+
+        // First dispatch
+        dispatcher.dispatchPlanned(intent, List.of(target));
+        verify(smtpAdapter, times(1)).send(any(), any(RenderedMessage.class));
+
+        // Reload intent (status = COMPLETED)
+        NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(NotificationIntent.Status.COMPLETED);
+
+        // Second dispatch (idempotent) — should NOT call adapter.send again
+        dispatcher.dispatchPlanned(reloaded, List.of(target));
+        verify(smtpAdapter, times(1)).send(any(), any(RenderedMessage.class));  // still 1
+
+        // Single delivery row remains
+        List<NotificationDelivery> deliveries = deliveryRepo.findByIntentId(intent.getIntentId());
+        assertThat(deliveries).hasSize(1);
+        assertThat(deliveries.get(0).getStatus()).isEqualTo(NotificationDelivery.Status.DELIVERED);
+    }
+
+    @Test
     void dispatchMultiTargetMixedResults() {
         NotificationIntent intent = saveIntent("email");
         DeliveryTarget t1 = new DeliveryTarget(

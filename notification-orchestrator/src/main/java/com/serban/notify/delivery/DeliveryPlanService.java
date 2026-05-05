@@ -61,14 +61,22 @@ public class DeliveryPlanService {
     /**
      * Build delivery plan for an intent.
      *
+     * <p>Codex 019df9ef P2 absorb: if {@code recipients} param empty/null, fall
+     * back to {@link NotificationIntent#getRecipientsSnapshot()} (PR4 worker
+     * path: poller sees only intent row, recipients reconstructed from snapshot).
+     *
      * @param intent persisted notification_intent (status=PENDING)
-     * @param recipients original recipients list (from intent submit DTO)
+     * @param recipients original recipients list (PR3 submit-time direct call;
+     *                   PR4 worker passes null — uses intent.recipients_snapshot)
      * @return planned delivery targets per channel
      */
     public List<DeliveryTarget> plan(
         NotificationIntent intent,
         List<SubmitIntentRequest.RecipientRef> recipients
     ) {
+        if (recipients == null || recipients.isEmpty()) {
+            recipients = deserializeSnapshot(intent.getRecipientsSnapshot());
+        }
         List<DeliveryTarget> targets = new ArrayList<>();
         for (String channel : intent.getChannels()) {
             if (!adapterRegistry.supports(channel)) {
@@ -154,6 +162,31 @@ public class DeliveryPlanService {
         }
         String hash = piiRedactor.hashRecipient(intent.getOrgId(), "channel", "webhook");
         return new DeliveryTarget("webhook", "channel", null, hash, url, "webhook-default");
+    }
+
+    /**
+     * Deserialize recipients snapshot (List of maps) → List of RecipientRef
+     * (Codex 019df9ef P2 absorb — PR4 worker reconstruction path).
+     */
+    private static List<SubmitIntentRequest.RecipientRef> deserializeSnapshot(
+        List<Map<String, Object>> snapshot
+    ) {
+        if (snapshot == null || snapshot.isEmpty()) return List.of();
+        List<SubmitIntentRequest.RecipientRef> out = new ArrayList<>(snapshot.size());
+        for (Map<String, Object> entry : snapshot) {
+            String typeStr = (String) entry.get("type");
+            SubmitIntentRequest.RecipientRef.Type type =
+                SubmitIntentRequest.RecipientRef.Type.valueOf(typeStr);
+            out.add(new SubmitIntentRequest.RecipientRef(
+                type,
+                (String) entry.get("subscriberId"),
+                (String) entry.get("email"),
+                (String) entry.get("phone"),
+                (String) entry.get("name"),
+                (String) entry.get("locale")
+            ));
+        }
+        return out;
     }
 
     /** Best-effort lookup of nested key (e.g., "slack.webhookUrl") in JSON. */

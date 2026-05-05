@@ -13,13 +13,17 @@ import com.serban.notify.template.RenderedMessage;
 import com.serban.notify.template.TemplateRenderer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * DeliveryDispatchService — internal, direct-invoke (Codex 019df9ae Q1 REVISE absorb).
@@ -53,6 +57,7 @@ public class DeliveryDispatchService {
     private final NotificationDeliveryRepository deliveryRepo;
     private final ChannelAdapterRegistry adapterRegistry;
     private final AuditEventPublisher audit;
+    private DeliveryDispatchService self;  // Self-injection for REQUIRES_NEW boundary
 
     public DeliveryDispatchService(
         TemplateRenderer renderer,
@@ -68,6 +73,17 @@ public class DeliveryDispatchService {
         this.deliveryRepo = deliveryRepo;
         this.adapterRegistry = adapterRegistry;
         this.audit = audit;
+    }
+
+    /**
+     * Self-injection for {@code REQUIRES_NEW} per-target boundary (Codex
+     * 019df9ef P2 absorb). Spring proxy {@code this.dispatchTarget(...)} direct
+     * call bypasses transactional advice; via {@code self} bean reference the
+     * proxy is invoked → REQUIRES_NEW takes effect per target.
+     */
+    @Autowired
+    void setSelf(@Lazy DeliveryDispatchService self) {
+        this.self = self;
     }
 
     /**
@@ -100,50 +116,37 @@ public class DeliveryDispatchService {
         boolean anyFailedPermanent = false;
         boolean allDelivered = true;
         for (DeliveryTarget target : targets) {
-            ChannelAdapter adapter = adapterRegistry.get(target.channel())
-                .orElseThrow(() -> new IllegalStateException(
-                    "adapter missing for channel '" + target.channel() + "'"
-                ));
-
-            // Pre-attempt audit
-            audit.publish("DELIVERY_ATTEMPTED", intent, target.recipientHash(), target.channel(),
-                Map.of("provider", target.providerKey()));
-
-            ChannelAdapter.DeliveryAttemptResult result;
-            try {
-                result = adapter.send(target, message);
-            } catch (RuntimeException e) {
-                log.warn("adapter exception (treating as RETRY): channel={} provider={} err={}",
-                    target.channel(), target.providerKey(), e.getMessage());
-                result = ChannelAdapter.DeliveryAttemptResult.retry(
-                    "exception: " + e.getClass().getSimpleName(), null);
+            // Codex 019df9ef P2 absorb: per-target idempotent skip — if a
+            // delivery row already DELIVERED for this (intent_id, channel,
+            // recipient_hash) tuple, skip re-send. Replays/retries safe.
+            Optional<NotificationDelivery> existing = deliveryRepo
+                .findByIntentIdAndChannelAndRecipientHash(
+                    intent.getIntentId(), target.channel(), target.recipientHash()
+                );
+            if (existing.isPresent() &&
+                existing.get().getStatus() == NotificationDelivery.Status.DELIVERED) {
+                log.info("dispatch skip (already delivered): intentId={} channel={} hash={}",
+                    intent.getIntentId(), target.channel(), target.recipientHash());
+                attempted++;
+                continue;
             }
 
-            persistDelivery(intent, target, result);
+            // Codex 019df9ef P2 absorb: per-target REQUIRES_NEW transaction
+            // boundary — provider call + delivery row + audit are atomic per
+            // target; one target failure does NOT roll back earlier successful
+            // sends. Provider-side dedup remains receiver responsibility.
+            DispatchOutcome outcome = self.dispatchSingleTarget(intent, target, message);
             attempted++;
 
-            switch (result.status()) {
-                case DELIVERED -> audit.publish("DELIVERY_SUCCEEDED", intent,
-                    target.recipientHash(), target.channel(),
-                    additionalDetails(result));
-                case FAILED, BOUNCED -> {
-                    audit.publish("DELIVERY_FAILED", intent,
-                        target.recipientHash(), target.channel(),
-                        additionalDetails(result));
-                    anyFailedPermanent = true;
-                    allDelivered = false;
-                }
-                case RETRY -> {
-                    audit.publish("DELIVERY_ATTEMPTED", intent,
-                        target.recipientHash(), target.channel(),
-                        additionalDetails(result));
-                    allDelivered = false;
-                }
+            switch (outcome.status) {
+                case DELIVERED -> { /* ok */ }
+                case FAILED, BOUNCED -> { anyFailedPermanent = true; allDelivered = false; }
+                case RETRY -> allDelivered = false;
             }
         }
 
         // Update intent status: COMPLETED iff all delivered
-        if (allDelivered) {
+        if (allDelivered && !targets.isEmpty()) {
             intent.setStatus(NotificationIntent.Status.COMPLETED);
             intentRepo.save(intent);
         } else if (anyFailedPermanent) {
@@ -157,15 +160,74 @@ public class DeliveryDispatchService {
         return attempted;
     }
 
+    /**
+     * Per-target dispatch — REQUIRES_NEW boundary (Codex 019df9ef P2 absorb).
+     *
+     * <p>Each target: adapter.send → persist delivery row → audit, all in a
+     * fresh transaction. Provider call exception (or downstream persist/audit
+     * fail) rolls back THIS target only; previously successful sends remain
+     * committed.
+     *
+     * <p>Concurrency: PG unique constraint
+     * {@code uq_delivery_intent_channel_recipient (intent_id, channel,
+     * recipient_hash)} (V2 migration) makes parallel dispatch safe — duplicate
+     * insert raises {@code DataIntegrityViolation}; caller treats as already
+     * delivered (idempotent).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public DispatchOutcome dispatchSingleTarget(
+        NotificationIntent intent, DeliveryTarget target, RenderedMessage message
+    ) {
+        ChannelAdapter adapter = adapterRegistry.get(target.channel())
+            .orElseThrow(() -> new IllegalStateException(
+                "adapter missing for channel '" + target.channel() + "'"
+            ));
+
+        // Pre-attempt audit
+        audit.publish("DELIVERY_ATTEMPTED", intent, target.recipientHash(), target.channel(),
+            Map.of("provider", target.providerKey()));
+
+        ChannelAdapter.DeliveryAttemptResult result;
+        try {
+            result = adapter.send(target, message);
+        } catch (RuntimeException e) {
+            log.warn("adapter exception (treating as RETRY): channel={} provider={} err={}",
+                target.channel(), target.providerKey(), e.getMessage());
+            result = ChannelAdapter.DeliveryAttemptResult.retry(
+                "exception: " + e.getClass().getSimpleName(), null);
+        }
+
+        try {
+            persistDelivery(intent, target, result);
+        } catch (org.springframework.dao.DataIntegrityViolationException e) {
+            // Concurrent dispatch (multi-pod) created the row first → idempotent OK
+            log.info("dispatch concurrent insert (already exists): intentId={} channel={} hash={}",
+                intent.getIntentId(), target.channel(), target.recipientHash());
+            return new DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
+        }
+
+        switch (result.status()) {
+            case DELIVERED -> audit.publish("DELIVERY_SUCCEEDED", intent,
+                target.recipientHash(), target.channel(), additionalDetails(result));
+            case FAILED, BOUNCED -> audit.publish("DELIVERY_FAILED", intent,
+                target.recipientHash(), target.channel(), additionalDetails(result));
+            case RETRY -> audit.publish("DELIVERY_ATTEMPTED", intent,
+                target.recipientHash(), target.channel(), additionalDetails(result));
+        }
+
+        return new DispatchOutcome(result.status());
+    }
+
+    /** Internal per-target outcome record (status only — full result stored in delivery row). */
+    public record DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status status) {}
+
     private void persistDelivery(
         NotificationIntent intent, DeliveryTarget target, ChannelAdapter.DeliveryAttemptResult result
     ) {
         NotificationDelivery delivery = new NotificationDelivery();
         delivery.setIntentId(intent.getIntentId());
         delivery.setChannel(target.channel());
-        delivery.setRecipientType(NotificationDelivery.RecipientType.valueOf(
-            target.recipientType().equals("subscriber") ? "SUBSCRIBER" : "EXTERNAL"
-        ));
+        delivery.setRecipientType(mapRecipientType(target.recipientType()));
         delivery.setRecipientId(target.recipientId());
         delivery.setRecipientHash(target.recipientHash());
         delivery.setProvider(target.providerKey());
@@ -179,6 +241,23 @@ public class DeliveryDispatchService {
             delivery.setFailureReason(result.failureReason());
         }
         deliveryRepo.save(delivery);
+    }
+
+    /**
+     * Map DeliveryTarget recipient type string to NotificationDelivery enum
+     * (Codex 019df9ef P2 absorb: CHANNEL value introduced for slack/webhook
+     * target-addressed channels — previously fell through to EXTERNAL which
+     * polluted audit/analytics semantics).
+     */
+    private static NotificationDelivery.RecipientType mapRecipientType(String s) {
+        return switch (s) {
+            case "subscriber" -> NotificationDelivery.RecipientType.SUBSCRIBER;
+            case "external" -> NotificationDelivery.RecipientType.EXTERNAL;
+            case "channel" -> NotificationDelivery.RecipientType.CHANNEL;
+            default -> throw new IllegalStateException(
+                "unknown DeliveryTarget recipientType: " + s
+            );
+        };
     }
 
     private static Map<String, Object> additionalDetails(ChannelAdapter.DeliveryAttemptResult result) {
