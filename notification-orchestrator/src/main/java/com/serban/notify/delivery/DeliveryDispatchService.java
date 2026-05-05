@@ -116,9 +116,10 @@ public class DeliveryDispatchService {
         boolean anyFailedPermanent = false;
         boolean allDelivered = true;
         for (DeliveryTarget target : targets) {
-            // Codex 019df9ef P2 absorb: per-target idempotent skip — if a
-            // delivery row already DELIVERED for this (intent_id, channel,
-            // recipient_hash) tuple, skip re-send. Replays/retries safe.
+            // Codex 019df9ef P2 absorb (iter-2): per-target idempotent skip —
+            // ONLY if existing row is DELIVERED. RETRY / FAILED / BOUNCED rows
+            // re-attempt path goes via UPSERT in dispatchSingleTarget (UPDATE
+            // existing row, not INSERT — unique constraint preserved).
             Optional<NotificationDelivery> existing = deliveryRepo
                 .findByIntentIdAndChannelAndRecipientHash(
                     intent.getIntentId(), target.channel(), target.recipientHash()
@@ -161,18 +162,25 @@ public class DeliveryDispatchService {
     }
 
     /**
-     * Per-target dispatch — REQUIRES_NEW boundary (Codex 019df9ef P2 absorb).
+     * Per-target dispatch — REQUIRES_NEW boundary + UPSERT (Codex 019df9ef
+     * P2 absorb iter-2).
      *
-     * <p>Each target: adapter.send → persist delivery row → audit, all in a
-     * fresh transaction. Provider call exception (or downstream persist/audit
-     * fail) rolls back THIS target only; previously successful sends remain
-     * committed.
+     * <p>Pipeline:
+     * <ol>
+     *   <li>Resolve adapter</li>
+     *   <li>Pre-attempt audit (DELIVERY_ATTEMPTED)</li>
+     *   <li>Provider call (adapter.send)</li>
+     *   <li>UPSERT delivery row: existing row → UPDATE (state aggregate:
+     *       attempt_count++, last_attempt_at, status, failure_reason,
+     *       delivered_at); no existing row → INSERT</li>
+     *   <li>Post-attempt audit (DELIVERY_SUCCEEDED / FAILED / ATTEMPTED)</li>
+     * </ol>
      *
      * <p>Concurrency: PG unique constraint
      * {@code uq_delivery_intent_channel_recipient (intent_id, channel,
-     * recipient_hash)} (V2 migration) makes parallel dispatch safe — duplicate
-     * insert raises {@code DataIntegrityViolation}; caller treats as already
-     * delivered (idempotent).
+     * recipient_hash)} (V2 migration) makes parallel dispatch safe — concurrent
+     * INSERT race raises {@code DataIntegrityViolationException}; caller logs
+     * and returns RETRY (PR4 worker re-tries based on next_retry_at).
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public DispatchOutcome dispatchSingleTarget(
@@ -198,12 +206,16 @@ public class DeliveryDispatchService {
         }
 
         try {
-            persistDelivery(intent, target, result);
+            upsertDelivery(intent, target, result);
         } catch (org.springframework.dao.DataIntegrityViolationException e) {
-            // Concurrent dispatch (multi-pod) created the row first → idempotent OK
-            log.info("dispatch concurrent insert (already exists): intentId={} channel={} hash={}",
+            // Concurrent multi-pod dispatch — another transaction inserted the
+            // row between our SELECT and INSERT. Return RETRY semantics so PR4
+            // worker re-attempts based on next_retry_at; we do NOT claim
+            // DELIVERED (provider call result is what it is — actual delivery
+            // status reflects in the row already inserted by the other pod).
+            log.warn("dispatch concurrent insert race: intentId={} channel={} hash={} — returning RETRY",
                 intent.getIntentId(), target.channel(), target.recipientHash());
-            return new DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
+            return new DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
         }
 
         switch (result.status()) {
@@ -221,25 +233,63 @@ public class DeliveryDispatchService {
     /** Internal per-target outcome record (status only — full result stored in delivery row). */
     public record DispatchOutcome(ChannelAdapter.DeliveryAttemptResult.Status status) {}
 
-    private void persistDelivery(
+    /**
+     * UPSERT delivery row — Codex 019df9ef P2 absorb iter-2.
+     *
+     * <p>Existing row (RETRY/FAILED/BOUNCED on prior attempt) → UPDATE
+     * aggregate fields ({@code attempt_count++}, {@code last_attempt_at},
+     * {@code status}, {@code failure_reason}, {@code provider_msg_id},
+     * {@code delivered_at}). No existing row → INSERT new row.
+     *
+     * <p>Unique constraint {@code uq_delivery_intent_channel_recipient}
+     * preserved: each (intent_id, channel, recipient_hash) tuple has at most
+     * 1 row; row is the aggregate state of all attempts (attempt_count,
+     * last_attempt_at, current_status), audit_event rows hold full attempt
+     * history (DELIVERY_ATTEMPTED/SUCCEEDED/FAILED).
+     */
+    private void upsertDelivery(
         NotificationIntent intent, DeliveryTarget target, ChannelAdapter.DeliveryAttemptResult result
     ) {
-        NotificationDelivery delivery = new NotificationDelivery();
-        delivery.setIntentId(intent.getIntentId());
-        delivery.setChannel(target.channel());
-        delivery.setRecipientType(mapRecipientType(target.recipientType()));
-        delivery.setRecipientId(target.recipientId());
-        delivery.setRecipientHash(target.recipientHash());
-        delivery.setProvider(target.providerKey());
-        delivery.setProviderMsgId(result.providerMessageId());
-        delivery.setStatus(NotificationDelivery.Status.valueOf(result.status().name()));
-        delivery.setAttemptCount(1);
-        delivery.setLastAttemptAt(OffsetDateTime.now());
-        if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED) {
-            delivery.setDeliveredAt(OffsetDateTime.now());
+        OffsetDateTime now = OffsetDateTime.now();
+        NotificationDelivery.Status newStatus =
+            NotificationDelivery.Status.valueOf(result.status().name());
+
+        Optional<NotificationDelivery> existing = deliveryRepo
+            .findByIntentIdAndChannelAndRecipientHash(
+                intent.getIntentId(), target.channel(), target.recipientHash()
+            );
+
+        NotificationDelivery delivery;
+        if (existing.isPresent()) {
+            // UPDATE existing aggregate row
+            delivery = existing.get();
+            delivery.setAttemptCount(delivery.getAttemptCount() + 1);
         } else {
-            delivery.setFailureReason(result.failureReason());
+            // INSERT new row
+            delivery = new NotificationDelivery();
+            delivery.setIntentId(intent.getIntentId());
+            delivery.setChannel(target.channel());
+            delivery.setRecipientType(mapRecipientType(target.recipientType()));
+            delivery.setRecipientId(target.recipientId());
+            delivery.setRecipientHash(target.recipientHash());
+            delivery.setProvider(target.providerKey());
+            delivery.setAttemptCount(1);
         }
+
+        delivery.setStatus(newStatus);
+        delivery.setLastAttemptAt(now);
+
+        if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED) {
+            delivery.setProviderMsgId(result.providerMessageId());
+            delivery.setDeliveredAt(now);
+            delivery.setFailureReason(null);  // clear previous failure (recovered)
+        } else {
+            // RETRY / FAILED / BOUNCED — clear delivered_at if previously set
+            // (state regress should not happen, but defensive); record failure_reason
+            delivery.setFailureReason(result.failureReason());
+            // PR4 worker schedules nextRetryAt for RETRY status (deferred to PR4)
+        }
+
         deliveryRepo.save(delivery);
     }
 

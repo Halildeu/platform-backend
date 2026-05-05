@@ -187,6 +187,71 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
+    void dispatchRetryThenDeliverUpsertsAggregate() {
+        // Codex 019df9ef P2 absorb iter-2: existing RETRY row → re-dispatch
+        // UPDATEs same row (not INSERT new), attempt_count++, status=DELIVERED,
+        // delivered_at set, no unique constraint violation.
+        NotificationIntent intent = saveIntent("email");
+        DeliveryTarget target = new DeliveryTarget(
+            "email", "subscriber", "1", "rh-up", "user@example.com", "smtp-default"
+        );
+
+        // First attempt: RETRY (5xx)
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.retry("503", 503)
+        );
+        dispatcher.dispatchPlanned(intent, List.of(target));
+
+        List<NotificationDelivery> after1 = deliveryRepo.findByIntentId(intent.getIntentId());
+        assertThat(after1).hasSize(1);
+        assertThat(after1.get(0).getStatus()).isEqualTo(NotificationDelivery.Status.RETRY);
+        assertThat(after1.get(0).getAttemptCount()).isEqualTo(1);
+        assertThat(after1.get(0).getDeliveredAt()).isNull();
+
+        // Second attempt: DELIVERED — should UPDATE the same row, not insert
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.delivered("<msg-recovered>")
+        );
+        NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
+        dispatcher.dispatchPlanned(reloaded, List.of(target));
+
+        List<NotificationDelivery> after2 = deliveryRepo.findByIntentId(intent.getIntentId());
+        assertThat(after2).hasSize(1);  // STILL 1 row — unique constraint preserved
+        NotificationDelivery aggregate = after2.get(0);
+        assertThat(aggregate.getStatus()).isEqualTo(NotificationDelivery.Status.DELIVERED);
+        assertThat(aggregate.getAttemptCount()).isEqualTo(2);  // incremented
+        assertThat(aggregate.getDeliveredAt()).isNotNull();
+        assertThat(aggregate.getFailureReason()).isNull();  // cleared on recover
+        assertThat(aggregate.getProviderMsgId()).isEqualTo("<msg-recovered>");
+    }
+
+    @Test
+    void dispatchRetryThenFailedUpsertsAggregate() {
+        // RETRY → FAILED transition (e.g., transient 5xx → permanent 4xx after re-try)
+        NotificationIntent intent = saveIntent("email");
+        DeliveryTarget target = new DeliveryTarget(
+            "email", "external", null, "rh-rf", "u@x.com", "smtp-default"
+        );
+
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.retry("503", 503)
+        );
+        dispatcher.dispatchPlanned(intent, List.of(target));
+
+        when(smtpAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.failed("permanent denial", 500)
+        );
+        NotificationIntent reloaded = intentRepo.findByIntentId(intent.getIntentId()).orElseThrow();
+        dispatcher.dispatchPlanned(reloaded, List.of(target));
+
+        List<NotificationDelivery> rows = deliveryRepo.findByIntentId(intent.getIntentId());
+        assertThat(rows).hasSize(1);  // still single aggregate row
+        assertThat(rows.get(0).getStatus()).isEqualTo(NotificationDelivery.Status.FAILED);
+        assertThat(rows.get(0).getAttemptCount()).isEqualTo(2);
+        assertThat(rows.get(0).getFailureReason()).isEqualTo("permanent denial");
+    }
+
+    @Test
     void dispatchIdempotentSkipsAlreadyDelivered() {
         // Codex 019df9ef P2 absorb: re-dispatch should NOT re-send DELIVERED targets
         NotificationIntent intent = saveIntent("email");
