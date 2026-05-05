@@ -20,7 +20,24 @@ import java.util.Objects;
 @Table(name = "notification_intent", schema = "notify")
 public class NotificationIntent {
 
-    public enum Status { PENDING, PROCESSING, COMPLETED, EXPIRED }
+    /**
+     * Intent lifecycle (Codex 019dfa47 PR4 Q4 REVISE absorb).
+     *
+     * <p>Terminal states semantik:
+     * <ul>
+     *   <li>{@code COMPLETED} — tum delivery DELIVERED</li>
+     *   <li>{@code PARTIALLY_FAILED} — en az 1 DELIVERED + en az 1 terminal failure/DLQ</li>
+     *   <li>{@code FAILED} — hic DELIVERED yok, tumu terminal non-delivered (FAILED/BOUNCED/DLQ)</li>
+     *   <li>{@code EXPIRED} — expire_at gecti (zaman politikasi; provider failure DEGIL)</li>
+     * </ul>
+     *
+     * <p>Workflow:
+     * <pre>
+     *   PENDING -> PROCESSING -> COMPLETED|PARTIALLY_FAILED|FAILED|EXPIRED
+     *   PROCESSING -> EXPIRED (lease expired + expire_at gecti)
+     * </pre>
+     */
+    public enum Status { PENDING, PROCESSING, COMPLETED, PARTIALLY_FAILED, FAILED, EXPIRED }
 
     public enum Severity { info, warning, critical }
 
@@ -103,6 +120,32 @@ public class NotificationIntent {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private Status status = Status.PENDING;
+
+    /**
+     * Worker lease columns (Codex 019dfa47 Q6 absorb — crash recovery).
+     *
+     * <p>{@code processing_lease_until} geçmiş olan PROCESSING intent'leri
+     * OutboxPoller lease-recovery cycle'ında PENDING'e geri çevirir.
+     */
+    @Column(name = "processing_started_at")
+    private OffsetDateTime processingStartedAt;
+
+    @Column(name = "processing_lease_until")
+    private OffsetDateTime processingLeaseUntil;
+
+    @Column(name = "processing_owner", length = 64)
+    private String processingOwner;
+
+    /**
+     * Worker cycle UUID (Codex 019dfa47 iter-1 P0 absorb).
+     * Set on claim, cleared on terminal / retry-outstanding / lease-recovery.
+     */
+    @Column(name = "claim_token", length = 64)
+    private String claimToken;
+
+    /** Terminal state transition timestamp (COMPLETED/FAILED/PARTIALLY_FAILED/EXPIRED). */
+    @Column(name = "terminated_at")
+    private OffsetDateTime terminatedAt;
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
@@ -187,6 +230,25 @@ public class NotificationIntent {
 
     public Status getStatus() { return status; }
     public void setStatus(Status status) { this.status = status; }
+
+    public OffsetDateTime getProcessingStartedAt() { return processingStartedAt; }
+    public void setProcessingStartedAt(OffsetDateTime processingStartedAt) {
+        this.processingStartedAt = processingStartedAt;
+    }
+
+    public OffsetDateTime getProcessingLeaseUntil() { return processingLeaseUntil; }
+    public void setProcessingLeaseUntil(OffsetDateTime processingLeaseUntil) {
+        this.processingLeaseUntil = processingLeaseUntil;
+    }
+
+    public String getProcessingOwner() { return processingOwner; }
+    public void setProcessingOwner(String processingOwner) { this.processingOwner = processingOwner; }
+
+    public String getClaimToken() { return claimToken; }
+    public void setClaimToken(String claimToken) { this.claimToken = claimToken; }
+
+    public OffsetDateTime getTerminatedAt() { return terminatedAt; }
+    public void setTerminatedAt(OffsetDateTime terminatedAt) { this.terminatedAt = terminatedAt; }
 
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public OffsetDateTime getUpdatedAt() { return updatedAt; }

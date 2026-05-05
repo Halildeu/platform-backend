@@ -1,0 +1,91 @@
+package com.serban.notify.worker;
+
+import com.serban.notify.domain.NotificationDelivery;
+import com.serban.notify.domain.NotificationIntent;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * IntentStatusResolver unit test (Codex 019dfa47 Q4 REVISE absorb).
+ */
+class IntentStatusResolverTest {
+
+    private final IntentStatusResolver resolver = new IntentStatusResolver();
+
+    @Test
+    void emptyDeliveriesReturnsNull() {
+        assertThat(resolver.resolve(List.of())).isNull();
+        assertThat(resolver.resolve(null)).isNull();
+    }
+
+    @Test
+    void allDeliveredCompleted() {
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.DELIVERED);
+        assertThat(resolver.resolve(List.of(d1, d2)))
+            .isEqualTo(NotificationIntent.Status.COMPLETED);
+    }
+
+    @Test
+    void mixedDeliveredAndFailedPartiallyFailed() {
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.FAILED);
+        assertThat(resolver.resolve(List.of(d1, d2)))
+            .isEqualTo(NotificationIntent.Status.PARTIALLY_FAILED);
+    }
+
+    @Test
+    void mixedDeliveredAndBouncedPartiallyFailed() {
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.BOUNCED);
+        assertThat(resolver.resolve(List.of(d1, d2)))
+            .isEqualTo(NotificationIntent.Status.PARTIALLY_FAILED);
+    }
+
+    @Test
+    void allFailedReturnsFailed() {
+        var d1 = delivery(NotificationDelivery.Status.FAILED);
+        var d2 = delivery(NotificationDelivery.Status.BOUNCED);
+        assertThat(resolver.resolve(List.of(d1, d2)))
+            .isEqualTo(NotificationIntent.Status.FAILED);
+    }
+
+    @Test
+    void anyRetryReturnsNull() {
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.RETRY);
+        assertThat(resolver.resolve(List.of(d1, d2))).isNull();
+    }
+
+    @Test
+    void anyPendingReturnsNull() {
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.PENDING);
+        assertThat(resolver.resolve(List.of(d1, d2))).isNull();
+    }
+
+    @Test
+    void blockedTreatedAsTerminalFailureWithDelivered() {
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.BLOCKED_BY_PREFERENCE);
+        assertThat(resolver.resolve(List.of(d1, d2)))
+            .isEqualTo(NotificationIntent.Status.PARTIALLY_FAILED);
+    }
+
+    @Test
+    void allBlockedReturnsFailed() {
+        var d1 = delivery(NotificationDelivery.Status.BLOCKED_BY_PREFERENCE);
+        var d2 = delivery(NotificationDelivery.Status.BLOCKED_BY_AUTHZ);
+        assertThat(resolver.resolve(List.of(d1, d2)))
+            .isEqualTo(NotificationIntent.Status.FAILED);
+    }
+
+    private NotificationDelivery delivery(NotificationDelivery.Status status) {
+        NotificationDelivery d = new NotificationDelivery();
+        d.setStatus(status);
+        return d;
+    }
+}

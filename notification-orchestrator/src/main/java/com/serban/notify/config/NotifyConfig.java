@@ -26,7 +26,8 @@ public record NotifyConfig(
     @NotNull DedupeConfig dedupe,
     @NotNull RetryConfig retry,
     @NotNull AuditConfig audit,
-    @NotNull RedactionConfig redaction
+    @NotNull RedactionConfig redaction,
+    @NotNull WorkerConfig worker
 ) {
 
     public record DispatchConfig(
@@ -48,7 +49,9 @@ public record NotifyConfig(
     public record RetryConfig(
         @Min(1) @DefaultValue("5") int maxAttempts,
         @Min(1000) @DefaultValue("30000") long backoffInitialMs,
-        @DefaultValue("2.5") double backoffMultiplier
+        @DefaultValue("2.5") double backoffMultiplier,
+        @Min(1000) @DefaultValue("3600000") long maxBackoffMs,
+        @DefaultValue("0.25") double jitterRatio
     ) {}
 
     public record AuditConfig(
@@ -62,5 +65,22 @@ public record NotifyConfig(
          * Empty pepper allowed in dev profile — deterministic test reproducibility.
          */
         @DefaultValue("dev-only-pepper-not-for-production") String pepper
+    ) {}
+
+    /**
+     * PR4 worker config (Codex 019dfa47 Q2 PARTIAL absorb — config-driven cadence).
+     *
+     * @param pollDelayMs OutboxPoller and RetryWorker fixedDelay between cycles
+     * @param intentBatchSize max intents claimed per OutboxPoller cycle
+     * @param retryBatchSize max deliveries claimed per RetryWorker cycle
+     * @param leaseDurationMs lease deadline = now + leaseDurationMs at claim time
+     * @param owner pod identifier (default: derived from hostname-pid at startup)
+     */
+    public record WorkerConfig(
+        @Min(100) @DefaultValue("5000") long pollDelayMs,
+        @Min(1) @DefaultValue("25") int intentBatchSize,
+        @Min(1) @DefaultValue("50") int retryBatchSize,
+        @Min(1000) @DefaultValue("60000") long leaseDurationMs,
+        @DefaultValue("") String owner
     ) {}
 }
