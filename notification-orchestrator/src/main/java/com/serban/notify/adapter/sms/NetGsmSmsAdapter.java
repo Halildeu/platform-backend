@@ -134,8 +134,7 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
             return client.execute(post, response -> {
                 int httpCode = response.getCode();
                 // PII safety: provider may echo phone in error body — never log
-                // raw body. Capture length only for telemetry; bounded snippet
-                // is also sanitized via abbrev().
+                // raw body. Capture length only for telemetry.
                 String respBody = readEntityBody(response);
 
                 // 5. HTTP-level dispatch
@@ -177,13 +176,17 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
                     return DeliveryAttemptResult.delivered(
                         netgsmJobid.isEmpty() ? providerMsgId : "netgsm-" + netgsmJobid);
                 }
-                // Permanent provider errors (no point retrying)
+                // Provider error paths: never log raw desc text — provider may
+                // echo phone in description. Code + length only (Codex iter-2
+                // P2 absorb).
+                int descLen = desc == null ? 0 : desc.length();
                 if (isPermanentError(code)) {
-                    log.warn("netgsm permanent provider FAIL: code={} desc={}", code, abbrev(desc));
+                    log.warn("netgsm permanent provider FAIL: code={} desc_len={}", code, descLen);
                     return DeliveryAttemptResult.failed("provider " + code, httpCode);
                 }
                 // Unknown / missing / "60" provider code → conservative RETRY
-                log.warn("netgsm provider code RETRY: code={} desc={}", code, abbrev(desc));
+                log.warn("netgsm provider code RETRY: code={} desc_len={}",
+                    code.isEmpty() ? "missing" : code, descLen);
                 return DeliveryAttemptResult.retry("provider " + (code.isEmpty() ? "missing" : code), httpCode);
             });
         } catch (IOException e) {
@@ -230,8 +233,4 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
         return HttpClients.custom().setDefaultRequestConfig(config).build();
     }
 
-    private static String abbrev(String s) {
-        if (s == null) return "";
-        return s.length() > 100 ? s.substring(0, 97) + "..." : s;
-    }
 }
