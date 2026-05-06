@@ -53,8 +53,8 @@ class CompanyOptionsRepositoryTest {
         List<CompanyOptionsRepository.CompanyOption> result = repo.findAll();
 
         assertTrue(result.isEmpty());
-        verify(jdbc, never()).queryForList(any(), eq(String.class));
-        verify(jdbc, never()).query(any(), any(RowMapper.class));
+        verify(jdbc, never()).queryForList(any(String.class), eq(String.class));
+        verify(jdbc, never()).query(any(String.class), any(RowMapper.class));
     }
 
     @Test
