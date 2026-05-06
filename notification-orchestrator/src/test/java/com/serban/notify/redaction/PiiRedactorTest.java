@@ -20,7 +20,7 @@ class PiiRedactorTest {
             new NotifyConfig.IdempotencyConfig(24),
             new NotifyConfig.DedupeConfig(5),
             new NotifyConfig.RetryConfig(5, 30000L, 2.5, 3600000L, 0.25),
-            new NotifyConfig.AuditConfig(90),
+            new NotifyConfig.AuditConfig(90, false, "0 0 2 * * *", 24, false, 3, true),
             new NotifyConfig.RedactionConfig("test-pepper-fixed"),
             new NotifyConfig.WorkerConfig(5000L, 25, 50, 60000L, "")
         );

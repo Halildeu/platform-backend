@@ -54,8 +54,26 @@ public record NotifyConfig(
         @DefaultValue("0.25") double jitterRatio
     ) {}
 
+    /**
+     * PR-D.1 audit config (Codex 019dfdec Q5 absorb — retention scheduled task).
+     *
+     * @param retentionDays how many days back to keep partitions (default 90)
+     * @param retentionEnabled @ConditionalOnProperty gate for AuditPartitionRetentionService
+     * @param retentionCron cron expression (default daily 02:00 UTC)
+     * @param retentionGraceHours detach → drop grace window (default 24h)
+     * @param retentionDryRun log only, no DETACH/DROP (default false; ops verification)
+     * @param retentionFutureMonths idempotent ensure: current + N future month partitions
+     * @param retentionSchedulingEnabled @Scheduled tick guard (test isolation pattern;
+     *                                    matches WorkerConfig.scheduling-enabled)
+     */
     public record AuditConfig(
-        @Min(1) @DefaultValue("90") int retentionDays
+        @Min(1) @DefaultValue("90") int retentionDays,
+        @DefaultValue("false") boolean retentionEnabled,
+        @DefaultValue("0 0 2 * * *") String retentionCron,
+        @Min(1) @DefaultValue("24") int retentionGraceHours,
+        @DefaultValue("false") boolean retentionDryRun,
+        @Min(1) @DefaultValue("3") int retentionFutureMonths,
+        @DefaultValue("true") boolean retentionSchedulingEnabled
     ) {}
 
     public record RedactionConfig(

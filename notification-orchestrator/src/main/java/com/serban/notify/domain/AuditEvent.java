@@ -12,16 +12,32 @@ import java.util.Objects;
 /**
  * Audit event — PII-redacted append-only (ADR-0013 D46 #7 must-have).
  *
- * <p>DB rule {@code audit_event_no_update/delete} enforces append-only at
- * Postgres level. JPA {@code @Immutable} mirrors at ORM level.
+ * <p>Faz 23.2 PR-D.1 (Codex 019dfdec absorb): partitioned table cutover.
+ * Canonical table {@code audit_event_v2 PARTITION BY RANGE (occurred_at)};
+ * compatibility view {@code audit_event} forwards INSERTs to v2 (V8 migration).
+ *
+ * <p>JPA composite PK ({@code id, occurred_at}) — partitioned table requires
+ * partition key in PK. {@code @IdClass(AuditEventId.class)} pattern preferred
+ * over {@code @EmbeddedId} for cleaner field-based queries.
+ *
+ * <p>Append-only: TRIGGER on parent {@code audit_event_v2} raises EXCEPTION
+ * for UPDATE/DELETE (V8 — Codex Q3 PARTIAL absorb; was RULE DO INSTEAD NOTHING
+ * silent in V1, now visible failure for testability). JPA {@code @Immutable}
+ * mirrors at ORM level.
  */
 @Entity
-@Table(name = "audit_event", schema = "notify")
+@Table(name = "audit_event_v2", schema = "notify")
+@IdClass(AuditEventId.class)
 @Immutable
 public class AuditEvent {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "audit_event_v2_id_seq")
+    @SequenceGenerator(
+        name = "audit_event_v2_id_seq",
+        sequenceName = "notify.audit_event_v2_id_seq",
+        allocationSize = 1
+    )
     private Long id;
 
     @Column(name = "intent_id", nullable = false, length = 64)
@@ -58,7 +74,8 @@ public class AuditEvent {
     @Column(name = "correlation_id", length = 128)
     private String correlationId;
 
-    @Column(name = "occurred_at", nullable = false)
+    @Id
+    @Column(name = "occurred_at", nullable = false, updatable = false)
     private OffsetDateTime occurredAt;
 
     @PrePersist
@@ -97,7 +114,9 @@ public class AuditEvent {
     public boolean equals(Object o) {
         if (this == o) return true;
         if (!(o instanceof AuditEvent that)) return false;
-        return id != null && id.equals(that.id);
+        // Composite PK equality (id + occurred_at) — Codex 019dfdec Q2 absorb
+        return id != null && id.equals(that.id)
+            && occurredAt != null && occurredAt.equals(that.occurredAt);
     }
 
     @Override
