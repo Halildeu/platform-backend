@@ -47,9 +47,12 @@ import static org.mockito.Mockito.when;
  *   <li>Adapter exception → RETRY result (no propagation)</li>
  * </ul>
  *
- * <p>Strategy: real Spring context + Testcontainers PG; channel adapter
- * implementations replaced with {@link MockBean} so we control adapter return
- * values without real SMTP/HTTP.
+ * <p>Strategy: real Spring context + Testcontainers PG. SMTP/Slack/Webhook
+ * adapter implementations replaced with {@link MockBean} so we control return
+ * values without real SMTP/HTTP. {@code InAppInboxAdapter} is intentionally
+ * NOT mocked (Faz 23.3 PR-E.2 Codex iter-1 P2 absorb) — in-app dispatch tests
+ * exercise the real adapter against real {@code NotificationInboxRepository}
+ * to verify end-to-end inbox row insertion and provider_msg_id correlation.
  */
 @SpringBootTest
 @ActiveProfiles("test")
