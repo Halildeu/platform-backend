@@ -63,7 +63,7 @@ import org.springframework.web.server.ResponseStatusException;
  *       {@link ReportController#computePaging(Integer, Integer)} including
  *       fail-closed guards on misaligned windows.</li>
  *   <li>{@code ErrorBody} — verifies the structured
- *       {@link ReportQueryErrorDto} is returned (Codex iter-1 absorb).</li>
+ *       {@link ReportQueryErrorDto} is returned (PR-0.1 hardening).</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -140,7 +140,7 @@ class ReportControllerQueryTest {
 
         @Test
         void valueColsPresent_returns400StructuredError() {
-            // Codex iter-1 absorb: aggregation requests fail closed too —
+            // PR-0.1 hardening: aggregation requests fail closed too —
             // silently ignoring valueCols would return raw rows under a
             // "I want sums" payload, which is worse than a clean 400.
             stubAuthz(true, List.of());
@@ -233,7 +233,7 @@ class ReportControllerQueryTest {
 
         @Test
         void misalignedWindow_returns400NonAlignedCode() {
-            // Codex iter-1 absorb: 75/125 produces pageSize=50, but 75 is
+            // PR-0.1 hardening: 75/125 produces pageSize=50, but 75 is
             // not a multiple of 50 → SQL OFFSET would be 50, mismatching
             // the requested startRow. Fail closed.
             stubAuthz(true, List.of());
@@ -328,7 +328,7 @@ class ReportControllerQueryTest {
 
         @Test
         void zeroWindowThrowsInvalidRowWindow() {
-            // Codex iter-1: zero / negative window is malformed; QueryEngine
+            // PR-0.1 hardening: zero / negative window is malformed; QueryEngine
             // would return undefined rows, so fail closed.
             ReportController.PagingException ex = assertThrows(
                     ReportController.PagingException.class,
@@ -347,7 +347,7 @@ class ReportControllerQueryTest {
 
         @Test
         void misalignedAfterClampThrowsNonAligned() {
-            // Codex iter-1 example: 100/10000 → clamp pageSize to 500;
+            // 100/10000 → clamp pageSize to 500;
             // 100 is not a multiple of 500 → fail closed instead of
             // silently shifting OFFSET to 0.
             ReportController.PagingException ex = assertThrows(

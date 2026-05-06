@@ -20,10 +20,10 @@ import java.util.Map;
  * </ul>
  *
  * <p><b>PR-0.1 contract — rejected fields</b> (capability flag is false
- * for every report until PR-0.2). Codex thread {@code 019dfeb2-eb40-7a92-…}
- * iter-1 absorb: {@code valueCols} is fail-closed too — silently ignoring
- * an aggregation request would return flat rows under a "I want sums"
- * payload, which is worse than a clean 400.
+ * for every report until PR-0.2). PR-0.1 hardening: {@code valueCols} is
+ * fail-closed too — silently ignoring an aggregation request would
+ * return flat rows under a "I want sums" payload, which is worse than
+ * a clean 400.
  * <ul>
  *   <li>{@code rowGroupCols} non-empty</li>
  *   <li>{@code valueCols} non-empty</li>
@@ -43,7 +43,8 @@ import java.util.Map;
  * @param rowGroupCols  Columns chosen for row-grouping (PR-0.1: must be
  *                      empty when capability false).
  * @param valueCols     Aggregation columns (only relevant when grouping;
- *                      PR-0.1: ignored).
+ *                      PR-0.1: rejected when non-empty — see the
+ *                      "rejected fields" list above).
  * @param pivotCols     Pivot columns (PR-0.1: must be empty).
  * @param pivotMode     Pivot toggle (PR-0.1: must be false).
  * @param groupKeys     Current expansion path; one entry per opened group

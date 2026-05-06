@@ -240,7 +240,7 @@ public class ReportController {
      * asks for grouping or pivoting is rejected with HTTP 400 because every
      * report currently advertises {@code capabilities.serverSideGrouping=false}.
      *
-     * <p>Codex thread {@code 019dfeb2-eb40-7a92-…} iter-1 absorb:
+     * <p>PR-0.1 hardening notes:
      * <ul>
      *   <li>The 400 response carries a structured {@link ReportQueryErrorDto}
      *       body so the frontend can branch on {@code body.code} rather
@@ -315,8 +315,8 @@ public class ReportController {
      * still get a deterministic response. PageSize is clamped to the same
      * {@code [1, 500]} window enforced by GET {@code /data}.
      *
-     * <p>Codex iter-1 absorb: the helper now fails closed when the window
-     * is malformed or misaligned so {@link com.example.report.query.SqlBuilder}
+     * <p>PR-0.1 hardening: the helper fails closed when the window is
+     * malformed or misaligned so {@link com.example.report.query.SqlBuilder}
      * never receives a page number whose {@code (page - 1) * pageSize}
      * differs from the {@code startRow} the client requested. AG Grid SSRM
      * cache windows are guaranteed-aligned in practice; a misaligned
