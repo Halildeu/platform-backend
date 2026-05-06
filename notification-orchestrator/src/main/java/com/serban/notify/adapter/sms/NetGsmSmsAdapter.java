@@ -34,10 +34,11 @@ import java.util.regex.Pattern;
  *
  * <p>Status semantics:
  * <ul>
- *   <li>HTTP 2xx + provider success code → DELIVERED</li>
- *   <li>HTTP 4xx OR provider permanent error code → FAILED (invalid number,
- *       insufficient credit, sender ID rejected)</li>
- *   <li>HTTP 5xx / timeout / IOException → RETRY (PR4 worker)</li>
+ *   <li>HTTP 2xx + provider code "00" → DELIVERED</li>
+ *   <li>HTTP 4xx OR provider permanent error code (20/30/40/50/70) → FAILED
+ *       (invalid number, sender ID rejected, IYS opt-out)</li>
+ *   <li>HTTP 5xx / timeout / IOException / provider code 60 (insufficient
+ *       credit) / unknown provider code → RETRY (PR4 worker)</li>
  * </ul>
  *
  * <p>Provider response codes (NetGSM common):
