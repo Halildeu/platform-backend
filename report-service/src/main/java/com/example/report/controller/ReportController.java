@@ -7,6 +7,7 @@ import com.example.report.authz.AuthzMeResponse;
 import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.CategoryDto;
+import com.example.report.dto.ColumnVO;
 import com.example.report.dto.PagedResultDto;
 import com.example.report.dto.ReportCapabilitiesDto;
 import com.example.report.dto.ReportListItemDto;
@@ -14,6 +15,7 @@ import com.example.report.dto.ReportMetadataDto;
 import com.example.report.dto.ReportQueryErrorDto;
 import com.example.report.dto.ReportQueryRequestDto;
 import com.example.report.query.QueryEngine;
+import com.example.report.query.SqlBuilder;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
 import com.example.report.registry.ReportRegistry;
@@ -24,6 +26,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -188,11 +191,22 @@ public class ReportController {
 
         List<ColumnDefinition> visibleCols = columnFilter.getVisibleColumnDefinitions(def, authz);
 
-        // PR-0.1 (reporting hardening plan, 2026-05): expose capability flags so
-        // the frontend can decide whether to surface grouping/pivot UI.
-        // serverSideGrouping is hard-coded false until PR-0.2 lands the SQL
-        // GROUP BY builder + per-report opt-in on the report registry.
-        ReportCapabilitiesDto capabilities = new ReportCapabilitiesDto(false);
+        // PR-0.1 introduced the capabilities envelope; PR-0.2 derives the
+        // grouping flag from per-column flags on the registry. Reports with
+        // at least one groupable column light up serverSideGrouping=true,
+        // and the field lists tell the frontend which columns are valid
+        // drop-targets for the row-group panel and the value-aggregation
+        // picker without re-deriving from the column metadata.
+        List<String> groupable = visibleCols.stream()
+                .filter(ColumnDefinition::groupable)
+                .map(ColumnDefinition::field)
+                .toList();
+        List<String> aggregatable = visibleCols.stream()
+                .filter(ColumnDefinition::aggregatable)
+                .map(ColumnDefinition::field)
+                .toList();
+        ReportCapabilitiesDto capabilities = new ReportCapabilitiesDto(
+                !groupable.isEmpty(), groupable, aggregatable);
 
         return ResponseEntity.ok(new ReportMetadataDto(
                 def.key(), def.title(), def.description(), def.category(),
@@ -271,19 +285,33 @@ public class ReportController {
                 ? request
                 : new ReportQueryRequestDto(null, null, null, null, null, null, null, null, null);
 
-        // Capability gate: server-side grouping is not yet implemented.
-        // Return a structured error body so the frontend can branch on
-        // body.code instead of relying on Spring's default error envelope.
-        if (safeRequest.requestsGrouping()) {
+        // PR-0.2 capability dispatcher. Three buckets:
+        // 1. Single-level GROUP BY → run the new grouped query path.
+        // 2. Anything else with grouping intent (multi-level, pivot,
+        //    aggregation without groupBy, expansion past root) → still
+        //    a structured 400 because PR-0.3+ haven't shipped yet.
+        // 3. Flat request → delegate to the legacy executeQuery path.
+        List<ColumnDefinition> visibleCols = columnFilter.getVisibleColumnDefinitions(def, scopedAuthz);
+        Set<String> groupableFields = visibleCols.stream()
+                .filter(ColumnDefinition::groupable)
+                .map(ColumnDefinition::field)
+                .collect(java.util.stream.Collectors.toSet());
+        Set<String> aggregatableFields = visibleCols.stream()
+                .filter(ColumnDefinition::aggregatable)
+                .map(ColumnDefinition::field)
+                .collect(java.util.stream.Collectors.toSet());
+
+        boolean wantsSingleLevelGroup = singleLevelGroupRequest(safeRequest, groupableFields);
+        if (safeRequest.requestsGrouping() && !wantsSingleLevelGroup) {
             return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
                     "GROUPING_NOT_SUPPORTED",
-                    "Server-side grouping/pivot not yet enabled for this report "
-                            + "(capabilities.serverSideGrouping=false)"));
+                    "Server-side multi-level grouping / pivot not yet enabled "
+                            + "for this report (capabilities only support single-level GROUP BY)"));
         }
 
-        // Translate AG Grid startRow/endRow → page/pageSize for QueryEngine.
-        // computePaging is fail-closed: zero / negative window or non-aligned
-        // startRow → 400 with a structured code (see ReportQueryErrorDto).
+        // Pagination: same fail-closed translation as the flat path. The
+        // grouped path also paginates over GROUP-BY buckets (not source
+        // rows), so the same alignment guard applies.
         int[] paging;
         try {
             paging = computePaging(safeRequest.startRow(), safeRequest.endRow());
@@ -294,16 +322,89 @@ public class ReportController {
         int page = paging[0];
         int pageSize = paging[1];
 
-        QueryEngine.PagedData result = queryEngine.executeQuery(
-                def, scopedAuthz,
-                safeRequest.filterModel(),
-                safeRequest.sortModel(),
-                page, pageSize);
+        QueryEngine.PagedData result;
+        if (wantsSingleLevelGroup) {
+            String groupColumn = safeRequest.rowGroupCols().get(0).field();
+            List<SqlBuilder.GroupedAggregation> aggregations = sanitizeAggregations(
+                    safeRequest.valueCols(), aggregatableFields, visibleCols);
+
+            try {
+                result = queryEngine.executeGroupedQuery(
+                        def, scopedAuthz,
+                        groupColumn, aggregations,
+                        safeRequest.filterModel(),
+                        safeRequest.sortModel(),
+                        page, pageSize);
+            } catch (IllegalArgumentException iae) {
+                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                        "INVALID_GROUPING_REQUEST", iae.getMessage()));
+            }
+        } else {
+            result = queryEngine.executeQuery(
+                    def, scopedAuthz,
+                    safeRequest.filterModel(),
+                    safeRequest.sortModel(),
+                    page, pageSize);
+        }
 
         auditClient.logReportAccess(key, authz.getUserId(), extractEmail(jwt));
 
         return ResponseEntity.ok(new PagedResultDto<>(
                 result.items(), result.total(), result.page(), result.pageSize()));
+    }
+
+    /**
+     * PR-0.2 grouping classifier: returns true iff the request expresses a
+     * supported single-level GROUP BY shape — exactly one
+     * {@code rowGroupCols} entry against a column registered as
+     * {@code groupable}, no pivot, no expansion ({@code groupKeys} empty).
+     * Anything else (multi-level, pivot, expansion under a root group)
+     * stays in the rejected bucket until PR-0.3+.
+     */
+    private static boolean singleLevelGroupRequest(ReportQueryRequestDto req,
+                                                    Set<String> groupableFields) {
+        if (req == null) return false;
+        if (req.rowGroupCols() == null || req.rowGroupCols().size() != 1) return false;
+        if (req.pivotCols() != null && !req.pivotCols().isEmpty()) return false;
+        if (Boolean.TRUE.equals(req.pivotMode())) return false;
+        if (req.groupKeys() != null && !req.groupKeys().isEmpty()) return false;
+        String field = req.rowGroupCols().get(0).field();
+        return field != null && groupableFields.contains(field);
+    }
+
+    /**
+     * Project AG Grid's {@code valueCols} payload onto the registry's
+     * {@code aggregatable} allow-list and the column registry's default
+     * aggregation function. Skips columns that aren't aggregatable so a
+     * malicious payload can't request {@code SUM([sensitive])}.
+     */
+    private static List<SqlBuilder.GroupedAggregation> sanitizeAggregations(
+            List<ColumnVO> valueCols,
+            Set<String> aggregatableFields,
+            List<ColumnDefinition> visibleCols) {
+        if (valueCols == null || valueCols.isEmpty()) return List.of();
+        Map<String, ColumnDefinition> byField = visibleCols.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        ColumnDefinition::field, c -> c, (a, b) -> a));
+        List<SqlBuilder.GroupedAggregation> out = new java.util.ArrayList<>();
+        for (ColumnVO vc : valueCols) {
+            if (vc == null || vc.field() == null) continue;
+            if (!aggregatableFields.contains(vc.field())) continue;
+            String func = vc.aggFunc();
+            if (func == null || func.isBlank()) {
+                ColumnDefinition cd = byField.get(vc.field());
+                func = cd != null && cd.defaultAggFunc() != null
+                        ? cd.defaultAggFunc()
+                        : "sum";
+            }
+            try {
+                out.add(new SqlBuilder.GroupedAggregation(vc.field(), func));
+            } catch (IllegalArgumentException ignored) {
+                // Unknown aggFunc → drop silently; controller-level check
+                // would have caught this already in a stricter mode.
+            }
+        }
+        return out;
     }
 
     /**
