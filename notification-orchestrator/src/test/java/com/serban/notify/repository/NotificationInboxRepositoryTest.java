@@ -11,6 +11,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.util.Optional;
@@ -36,6 +37,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 @ContextConfiguration(initializers = AbstractPostgresTest.Initializer.class)
+@Transactional  // CI iter-1 fix: @Modifying(flushAutomatically=true) requires
+                // active transaction; class-level @Transactional gives each test
+                // its own auto-rollback transaction (no cross-test pollution).
 class NotificationInboxRepositoryTest extends AbstractPostgresTest {
 
     @Autowired NotificationInboxRepository repo;
