@@ -43,7 +43,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestPropertySource(properties = {
     "notify.audit.retention-enabled=true",
     "notify.audit.retention-scheduling-enabled=false",  // manual runCycle()
-    "notify.audit.retention-days=30",  // shorter for test eligibility
+    // Codex 019dfdec iter-3 CI fix: 100 years retention so initial partitions
+    // (2026_02..07) NOT eligible for detach. Otherwise Testcontainers reuse +
+    // shared schema across @DirtiesContext methods causes log rows from one
+    // test to bleed into next test's assertion. Detach contract validated by
+    // dedicated unit tests on CycleResult. Future-ensure verified separately.
+    "notify.audit.retention-days=36500",
     "notify.audit.retention-grace-hours=1",
     "notify.audit.retention-future-months=2"
 })
@@ -53,6 +58,14 @@ class AuditPartitionV8IntegrationTest extends AbstractPostgresTest {
     @Autowired AuditRetentionLogRepository logRepo;
     @Autowired AuditPartitionRetentionService retentionService;
     @Autowired JdbcTemplate jdbc;
+
+    @org.junit.jupiter.api.BeforeEach
+    void cleanRetentionState() {
+        // Codex 019dfdec iter-3 CI fix: shared Testcontainers + @DirtiesContext
+        // per-method gives fresh Spring context but PG schema persists. Clean
+        // audit_retention_log between tests so order-dependent assertions hold.
+        jdbc.execute("DELETE FROM notify.audit_retention_log");
+    }
 
     @Test
     void v8MigrationCreatedPartitionedTableWithExpectedPartitions() {
