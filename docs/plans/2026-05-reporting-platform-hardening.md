@@ -1,18 +1,30 @@
-# Reporting Platform Hardening — Project Plan v2
+# Reporting Platform Hardening — Project Plan v2.1
 
 | Field | Value |
 |---|---|
-| **Status** | DRAFT v2 — Claude self-review applied (8 corrections) |
+| **Status** | DRAFT v2.1 — Codex PR-0 plan-time iter absorbed |
 | **Owner** | Platform Reporting (Halil Koçoğlu) |
-| **Plan-time consensus** | Codex iter 11–15 + Claude self-review iter-16 |
+| **Plan-time consensus** | Codex iter 11–15 + Claude self-review iter-16 + Codex PR-0 iter |
 | **Initiated** | 2026-05-06 |
-| **Target completion** | 2026-05-20 (~3 phases, 8 PRs) |
+| **Target completion** | 2026-05-25 (~3 phases, 8 PRs, revised after PR-0 plan-time review) |
 | **Tracking doc** | this file |
 | **Related repos** | `Halildeu/platform-backend`, `Halildeu/platform-web` |
 
-## Changelog (v1 → v2)
+## Changelog
 
-Claude self-review (iter-16) applied 8 corrections to the original v1 plan:
+### v2.1 — Codex PR-0 plan-time review
+
+PR-0 implementation plan-time review surfaced 5 design-level corrections. Estimate revised from 2–3 days to **4–6 focused days** (5–8 days with live cluster proof + GitOps digest promotion):
+
+1. **API contract: `POST` canonical** (was: query params CSV). Türkçe column names, comma/colon escaping, null transport, and future pivot make GET CSV brittle. New endpoint: `POST /api/v1/reports/{key}/data/query` with JSON body. Existing GET endpoint kept as a compatibility shim only for non-grouped queries.
+2. **Cap enforcement inline** (was: separate `COUNT(DISTINCT)` preflight). Use `TOP (@cap + 1)` or `COUNT_BIG(*) OVER()` in the same grouped CTE — avoids a second expensive query.
+3. **Weighted AVG across multi-schema** (was: naive AVG). When UNION ALL crosses year schemas, `AVG(AVG(x))` is wrong. Backend carries hidden `SUM(x)` + `COUNT(x)` and computes outer `SUM(sum) / SUM(count)`. SUM/MIN/MAX/COUNT compose naturally.
+4. **Pivot deferred to a follow-up PR.** DTO carries `pivotMode`/`pivotCols` fields for forward-compat, but the server returns `501 pivot_not_supported` and the frontend disables pivot UI. Aggregate filter (HAVING) similarly deferred — `400 aggregate_filter_not_supported`.
+5. **Rollback semantics clarified.** Flag off does NOT silently fall back to flat rows — it returns `501 report_grouping_disabled` so the frontend can disable the grouping panel via a capability check. Silent flat fallback would re-create the user-reported bug under a different mechanism.
+
+PR-0 sub-PRs reordered: backend ships first (contract + capability), frontend follows after the backend image is published in GHCR.
+
+### v2 — Claude self-review (iter-16)
 
 1. **PR-0 promoted** — server-side grouping is the user's P0 bug, no longer buried inside PR-4b
 2. **Phased delivery** — Phase 1 (user-visible) before Phase 2/3 (deep hardening)
