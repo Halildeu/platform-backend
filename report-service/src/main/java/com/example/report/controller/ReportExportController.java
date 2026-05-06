@@ -3,6 +3,7 @@ package com.example.report.controller;
 import com.example.report.access.ReportAccessEvaluator;
 import com.example.report.audit.ReportAuditClient;
 import com.example.report.authz.AuthzMeResponse;
+import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.export.CsvStreamingExporter;
 import com.example.report.export.ExcelStreamingExporter;
@@ -23,6 +24,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,6 +44,7 @@ public class ReportExportController {
     private final NamedParameterJdbcTemplate jdbc;
     private final ReportAuditClient auditClient;
     private final ObjectMapper objectMapper;
+    private final CompanyHeaderScopeNarrower companyHeaderNarrower;
 
     public ReportExportController(ReportRegistry registry,
                                    PermissionResolver permissionClient,
@@ -49,7 +52,8 @@ public class ReportExportController {
                                    QueryEngine queryEngine,
                                    NamedParameterJdbcTemplate jdbc,
                                    ReportAuditClient auditClient,
-                                   ObjectMapper objectMapper) {
+                                   ObjectMapper objectMapper,
+                                   CompanyHeaderScopeNarrower companyHeaderNarrower) {
         this.registry = registry;
         this.permissionClient = permissionClient;
         this.accessEvaluator = accessEvaluator;
@@ -57,6 +61,7 @@ public class ReportExportController {
         this.jdbc = jdbc;
         this.auditClient = auditClient;
         this.objectMapper = objectMapper;
+        this.companyHeaderNarrower = companyHeaderNarrower;
     }
 
     @GetMapping("/{key}/export")
@@ -65,6 +70,7 @@ public class ReportExportController {
             @RequestParam(defaultValue = "csv") String format,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String advancedFilter,
+            @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
             @AuthenticationPrincipal Jwt jwt) {
 
         ReportDefinition def = registry.get(key)
@@ -78,12 +84,16 @@ public class ReportExportController {
         if (!accessEvaluator.canExport(authz)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "REPORT_EXPORT permission required");
         }
+        // Narrow to the picker selection so exported data matches what
+        // the user sees on screen (mirrors getData; without it the export
+        // would silently include data from every allowed company).
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
 
         Map<String, Object> agGridFilter = parseJson(advancedFilter, new TypeReference<>() {});
         List<Map<String, String>> sortModel = parseJson(sort, new TypeReference<>() {});
 
-        SqlBuilder.BuiltQuery exportQuery = queryEngine.buildExportQuery(def, authz, agGridFilter, sortModel);
-        List<String> visibleColumns = queryEngine.getVisibleColumns(def, authz);
+        SqlBuilder.BuiltQuery exportQuery = queryEngine.buildExportQuery(def, scopedAuthz, agGridFilter, sortModel);
+        List<String> visibleColumns = queryEngine.getVisibleColumns(def, scopedAuthz);
 
         String email = jwt != null ? jwt.getClaimAsString("email") : null;
         String userId = jwt != null ? (email != null ? email : jwt.getSubject()) : authz.getUserId();

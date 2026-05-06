@@ -44,7 +44,8 @@ class ReportControllerAuthzTest {
                 null, // columnFilter
                 null, // queryEngine
                 mock(com.example.report.audit.ReportAuditClient.class),
-                new com.fasterxml.jackson.databind.ObjectMapper()
+                new com.fasterxml.jackson.databind.ObjectMapper(),
+                new com.example.report.authz.CompanyHeaderScopeNarrower()
         );
     }
 

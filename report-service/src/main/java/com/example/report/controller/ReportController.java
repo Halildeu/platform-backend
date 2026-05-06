@@ -4,6 +4,7 @@ import com.example.report.access.ColumnFilter;
 import com.example.report.access.ReportAccessEvaluator;
 import com.example.report.audit.ReportAuditClient;
 import com.example.report.authz.AuthzMeResponse;
+import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.CategoryDto;
 import com.example.report.dto.PagedResultDto;
@@ -43,6 +44,7 @@ public class ReportController {
     private final QueryEngine queryEngine;
     private final ReportAuditClient auditClient;
     private final ObjectMapper objectMapper;
+    private final CompanyHeaderScopeNarrower companyHeaderNarrower;
 
     public ReportController(ReportRegistry registry,
                             CustomReportRepository customReportRepository,
@@ -51,7 +53,8 @@ public class ReportController {
                             ColumnFilter columnFilter,
                             QueryEngine queryEngine,
                             ReportAuditClient auditClient,
-                            ObjectMapper objectMapper) {
+                            ObjectMapper objectMapper,
+                            CompanyHeaderScopeNarrower companyHeaderNarrower) {
         this.registry = registry;
         this.customReportRepository = customReportRepository;
         this.permissionClient = permissionClient;
@@ -60,6 +63,7 @@ public class ReportController {
         this.queryEngine = queryEngine;
         this.auditClient = auditClient;
         this.objectMapper = objectMapper;
+        this.companyHeaderNarrower = companyHeaderNarrower;
     }
 
     @GetMapping
@@ -193,17 +197,23 @@ public class ReportController {
             @RequestParam(defaultValue = "50") int pageSize,
             @RequestParam(required = false) String sort,
             @RequestParam(required = false) String advancedFilter,
+            @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
             @AuthenticationPrincipal Jwt jwt) {
 
         ReportDefinition def = findReportOrThrow(key);
         AuthzMeResponse authz = resolveAndCheckAccess(def, jwt);
+        // Narrow to the company the user picked in the CompanyPicker so
+        // YearlySchemaResolver / RowFilterInjector see only that tenant.
+        // Without this, multi-company users get a UNION of every allowed
+        // schema and the dropdown does nothing visible.
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
 
         Map<String, Object> agGridFilter = parseJson(advancedFilter, new TypeReference<>() {});
         List<Map<String, String>> sortModel = parseJson(sort, new TypeReference<>() {});
 
         pageSize = Math.min(Math.max(pageSize, 1), 500);
 
-        QueryEngine.PagedData result = queryEngine.executeQuery(def, authz, agGridFilter, sortModel, page, pageSize);
+        QueryEngine.PagedData result = queryEngine.executeQuery(def, scopedAuthz, agGridFilter, sortModel, page, pageSize);
 
         auditClient.logReportAccess(key, authz.getUserId(), extractEmail(jwt));
 
