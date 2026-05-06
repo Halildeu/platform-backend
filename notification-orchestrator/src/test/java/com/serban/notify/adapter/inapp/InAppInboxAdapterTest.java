@@ -197,6 +197,38 @@ class InAppInboxAdapterTest {
     }
 
     @Test
+    void nonSubscriberRecipientTypeRejectedAtAdapterLevel() {
+        // Codex iter-1 P3 absorb: defense-in-depth. Even if planner is bypassed,
+        // adapter enforces its own subscriber-only contract.
+        DeliveryTarget target = new DeliveryTarget(
+            "in-app", "external", "ext-id-1", "hash",
+            "intent-1|default", "inapp-default"
+        );
+        RenderedMessage msg = new RenderedMessage("S", null, "body", "tr-TR");
+
+        ChannelAdapter.DeliveryAttemptResult r = adapter.send(target, msg);
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
+        assertThat(r.failureReason()).contains("subscriber");
+        verifyNoInteractions(inboxRepository);
+    }
+
+    @Test
+    void channelRecipientTypeRejectedAtAdapterLevel() {
+        // "channel" recipient type (used by slack/webhook) is also invalid for in-app.
+        DeliveryTarget target = new DeliveryTarget(
+            "in-app", "channel", null, "hash",
+            "intent-1|default", "inapp-default"
+        );
+        RenderedMessage msg = new RenderedMessage("S", null, "body", "tr-TR");
+
+        ChannelAdapter.DeliveryAttemptResult r = adapter.send(target, msg);
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
+        assertThat(r.failureReason()).contains("subscriber");
+    }
+
+    @Test
     void parentIntentNotFoundFails() {
         when(inboxRepository.findByOrgIdAndIntentIdAndSubscriberId(anyString(), anyString(), anyString()))
             .thenReturn(Optional.empty());

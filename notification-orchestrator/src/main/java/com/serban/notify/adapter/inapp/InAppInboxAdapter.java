@@ -30,10 +30,17 @@ import java.util.Optional;
  * write; success status is {@code DELIVERED} when the row persists.
  *
  * <p>Idempotency: UNIQUE (org_id, intent_id, subscriber_id) at DB layer
- * (V9 migration). If the worker dispatches the same intent×subscriber
- * twice (retry / lease recovery), the second insert returns the existing
- * row's content rather than failing — adapter treats this as DELIVERED
- * (subscriber already sees the inbox row).
+ * (V9 migration) is the authoritative guarantee. The pre-check
+ * {@code findByOrgIdAndIntentIdAndSubscriberId} short-circuits the common
+ * sequential retry path (worker re-dispatches same intent×subscriber after
+ * lease recovery → adapter returns DELIVERED no-op without second insert).
+ *
+ * <p>Race window: two concurrent workers seeing empty pre-check + both
+ * inserting → loser sees unique-violation; the dispatch service rolls
+ * back the per-target transaction and retries (Codex iter-1 P2 absorb —
+ * documented honestly). Net effect: still no duplicate row in DB; "second
+ * insert immediate DELIVERED" claim weakened to "DB UNIQUE backstop +
+ * retry closure".
  *
  * <p>Provider message id: {@code "inbox-{rowId}"} so worker / audit can
  * correlate the inbox row across the delivery and inbox tables.
@@ -71,6 +78,17 @@ public class InAppInboxAdapter implements ChannelAdapter {
     @Transactional(propagation = Propagation.MANDATORY)
     public DeliveryAttemptResult send(DeliveryTarget target, RenderedMessage message) {
         // Pre-flight validation
+        // Codex iter-1 P3 absorb: defense-in-depth — even if planning rejects
+        // external recipients, adapter enforces its own subscriber-only contract
+        // (future caller cannot bypass via direct invocation).
+        if (!"subscriber".equals(target.recipientType())) {
+            log.warn("inapp send: non-subscriber recipientType={} hash={}",
+                target.recipientType(), target.recipientHash());
+            return DeliveryAttemptResult.failed(
+                "in-app channel requires recipientType=subscriber (got "
+                    + target.recipientType() + ")", null
+            );
+        }
         String subscriberId = target.recipientId();
         if (subscriberId == null || subscriberId.isBlank()) {
             log.warn("inapp send: subscriberId missing on target hash={}", target.recipientHash());
