@@ -359,6 +359,134 @@ class ReportControllerQueryTest {
         }
 
         @Test
+        void valueColsNonAggregatableField_returns400Structured() {
+            // PR-0.2 Codex iter-1 absorb: invalid valueCols (field not
+            // marked aggregatable) fail closed with a structured 400
+            // instead of silently dropping the aggregation and returning
+            // 200 with a misleading flat sum.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            // amount is NOT aggregatable
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, false, null)));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    List.of(new ColumnVO("amount", "Amount", "amount", "sum")),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            ReportQueryErrorDto error =
+                    assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
+            // SQL must NOT be touched — capability gate short-circuits.
+            verify(queryEngine, never()).executeGroupedQuery(
+                    any(), any(), any(), any(), any(), any(), anyInt(), anyInt());
+        }
+
+        @Test
+        void valueColsInvalidAggFunc_returns400Structured() {
+            // "median" is not in ALLOWED_AGG_FUNCS → fail closed.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, true, "sum")));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    List.of(new ColumnVO("amount", "Amount", "amount", "median")),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            ReportQueryErrorDto error =
+                    assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
+        }
+
+        @Test
+        void aggFuncFallback_textColumnDefaultsToCount() {
+            // PR-0.2 Codex iter-1 absorb: documentation says "numeric →
+            // sum, others → count". The controller now respects type
+            // when defaultAggFunc is not set on the registry.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("note", "Note", "text",
+                                    150, false, false, true, null)));
+            // The mock's argument captor isn't necessary — we only care
+            // that executeGroupedQuery is reached. The SqlBuilder unit
+            // tests already verify the actual aggregation function in SQL.
+            when(queryEngine.executeGroupedQuery(any(), any(), eq("category"),
+                    org.mockito.ArgumentMatchers.argThat(aggs ->
+                            aggs.size() == 1
+                                    && aggs.get(0).field().equals("note")
+                                    && aggs.get(0).func().equals("count")),
+                    any(), any(), eq(1), eq(50)))
+                    .thenReturn(new QueryEngine.PagedData(
+                            List.of(), 0L, 1, 50));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    // aggFunc null → fallback. note is type=text →
+                    // count (not sum) per documented behaviour.
+                    List.of(new ColumnVO("note", "Note", "note", null)),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(200, response.getStatusCode().value());
+        }
+
+        @Test
+        void aggFuncFallback_numericColumnDefaultsToSum() {
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, true, null)));
+            when(queryEngine.executeGroupedQuery(any(), any(), eq("category"),
+                    org.mockito.ArgumentMatchers.argThat(aggs ->
+                            aggs.size() == 1
+                                    && aggs.get(0).field().equals("amount")
+                                    && aggs.get(0).func().equals("sum")),
+                    any(), any(), eq(1), eq(50)))
+                    .thenReturn(new QueryEngine.PagedData(
+                            List.of(), 0L, 1, 50));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    // aggFunc null + defaultAggFunc null + type=number → sum.
+                    List.of(new ColumnVO("amount", "Amount", "amount", null)),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(200, response.getStatusCode().value());
+        }
+
+        @Test
         void groupByNonGroupableColumn_rejectedAsNotSupported() {
             // Defence-in-depth: a malicious payload requesting GROUP BY
             // on a non-groupable column must not slip into the grouped

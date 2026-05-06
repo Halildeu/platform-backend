@@ -325,8 +325,18 @@ public class ReportController {
         QueryEngine.PagedData result;
         if (wantsSingleLevelGroup) {
             String groupColumn = safeRequest.rowGroupCols().get(0).field();
-            List<SqlBuilder.GroupedAggregation> aggregations = sanitizeAggregations(
-                    safeRequest.valueCols(), aggregatableFields, visibleCols);
+            List<SqlBuilder.GroupedAggregation> aggregations;
+            try {
+                aggregations = sanitizeAggregations(
+                        safeRequest.valueCols(), aggregatableFields, visibleCols);
+            } catch (IllegalArgumentException iae) {
+                // PR-0.2 hardening: invalid valueCols entries (non-aggregatable
+                // field or unknown aggFunc) fail closed with a structured 400
+                // instead of silently producing a misleading 200 with the
+                // user's requested aggregation absent.
+                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                        "INVALID_AGGREGATION_REQUEST", iae.getMessage()));
+            }
 
             try {
                 result = queryEngine.executeGroupedQuery(
@@ -375,8 +385,18 @@ public class ReportController {
     /**
      * Project AG Grid's {@code valueCols} payload onto the registry's
      * {@code aggregatable} allow-list and the column registry's default
-     * aggregation function. Skips columns that aren't aggregatable so a
-     * malicious payload can't request {@code SUM([sensitive])}.
+     * aggregation function. Throws {@link IllegalArgumentException} when
+     * any entry references a non-aggregatable field or an unknown
+     * aggregation function so the controller can surface a structured
+     * {@code 400 INVALID_AGGREGATION_REQUEST} (PR-0.2 hardening — Codex
+     * iter-1 absorb: invalid entries no longer silently drop).
+     *
+     * <p>{@code aggFunc} fallback when the request omits it:
+     * <ul>
+     *   <li>Column registry's {@code defaultAggFunc} when set.</li>
+     *   <li>Otherwise {@code sum} when {@code type=number}.</li>
+     *   <li>Otherwise {@code count}.</li>
+     * </ul>
      */
     private static List<SqlBuilder.GroupedAggregation> sanitizeAggregations(
             List<ColumnVO> valueCols,
@@ -388,21 +408,29 @@ public class ReportController {
                         ColumnDefinition::field, c -> c, (a, b) -> a));
         List<SqlBuilder.GroupedAggregation> out = new java.util.ArrayList<>();
         for (ColumnVO vc : valueCols) {
-            if (vc == null || vc.field() == null) continue;
-            if (!aggregatableFields.contains(vc.field())) continue;
+            if (vc == null || vc.field() == null) {
+                throw new IllegalArgumentException(
+                        "valueCols entry must have a field");
+            }
+            if (!aggregatableFields.contains(vc.field())) {
+                throw new IllegalArgumentException(
+                        "valueCols field is not aggregatable: " + vc.field());
+            }
             String func = vc.aggFunc();
             if (func == null || func.isBlank()) {
                 ColumnDefinition cd = byField.get(vc.field());
-                func = cd != null && cd.defaultAggFunc() != null
-                        ? cd.defaultAggFunc()
-                        : "sum";
+                if (cd != null && cd.defaultAggFunc() != null) {
+                    func = cd.defaultAggFunc();
+                } else if (cd != null && "number".equalsIgnoreCase(cd.type())) {
+                    func = "sum";
+                } else {
+                    func = "count";
+                }
             }
-            try {
-                out.add(new SqlBuilder.GroupedAggregation(vc.field(), func));
-            } catch (IllegalArgumentException ignored) {
-                // Unknown aggFunc → drop silently; controller-level check
-                // would have caught this already in a stricter mode.
-            }
+            // GroupedAggregation constructor validates against
+            // ALLOWED_AGG_FUNCS and throws IllegalArgumentException
+            // — propagated unchanged so the caller turns it into a 400.
+            out.add(new SqlBuilder.GroupedAggregation(vc.field(), func));
         }
         return out;
     }
