@@ -108,4 +108,58 @@ public class AuditEventPublisher {
         event.setDetails(piiRedactor.filterAuditDetails(rawDetails));
         repository.save(event);
     }
+
+    /**
+     * Standalone (org-scoped) audit event publish (Faz 23.3 PR-E.1 — Codex
+     * iter-2 P1 absorb).
+     *
+     * <p>For audit events that have NO source intent — e.g.,
+     * {@code SUBSCRIBER_INBOX_ERASURE} (KVKK Art 17 right-to-erasure
+     * inbox-only path). The audit_event_v2 schema requires non-null
+     * {@code intent_id} and {@code topic_key}: this method synthesizes
+     * compliance-context placeholder values that are valid SQL but identify
+     * the event as standalone (no intent linkage).
+     *
+     * <p>Synthesized fields:
+     * <ul>
+     *   <li>{@code intent_id}: {@code "standalone-{eventType}-{uuid}"} —
+     *       satisfies NOT NULL, unique per event for idempotent traceability</li>
+     *   <li>{@code topic_key}: {@code "audit.standalone.{eventType-lowercased}"}
+     *       — operator filter convention</li>
+     *   <li>{@code template_id} / {@code template_version} / {@code channel} /
+     *       {@code correlation_id}: NULL (no intent context)</li>
+     * </ul>
+     *
+     * @param eventType audit event type (e.g. SUBSCRIBER_INBOX_ERASURE)
+     * @param orgId tenant boundary (NOT NULL)
+     * @param recipientHash optional recipient HMAC (NOT NULL — caller passes
+     *                      hashed subscriber for compliance audit linkage)
+     * @param additionalDetails arbitrary details (filtered via PiiRedactor whitelist)
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void publishStandalone(String eventType, String orgId, String recipientHash,
+                                   Map<String, Object> additionalDetails) {
+        Map<String, Object> rawDetails = new HashMap<>();
+        rawDetails.put("recipient_hash", recipientHash);
+        rawDetails.put("org_id", orgId);
+        if (additionalDetails != null) {
+            rawDetails.putAll(additionalDetails);
+        }
+
+        String synthesizedIntentId = "standalone-" + eventType + "-" + java.util.UUID.randomUUID();
+        String synthesizedTopicKey = "audit.standalone." + eventType.toLowerCase();
+
+        AuditEvent event = new AuditEvent();
+        event.setIntentId(synthesizedIntentId);
+        event.setEventType(eventType);
+        event.setOrgId(orgId);
+        event.setTopicKey(synthesizedTopicKey);
+        event.setRecipientHash(recipientHash);
+        event.setChannel(null);
+        event.setTemplateId(null);
+        event.setTemplateVersion(null);
+        event.setCorrelationId(null);
+        event.setDetails(piiRedactor.filterAuditDetails(rawDetails));
+        repository.save(event);
+    }
 }

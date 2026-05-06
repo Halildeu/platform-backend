@@ -182,10 +182,10 @@ class ErasureServiceTest {
             "acme", "1204", "subject_request", "ticket"
         ));
 
-        verify(audit).publish(
+        // Codex iter-2 P1 absorb: standalone publish (no intent dep)
+        verify(audit).publishStandalone(
             org.mockito.ArgumentMatchers.eq("SUBSCRIBER_INBOX_ERASURE"),
-            org.mockito.ArgumentMatchers.isNull(),
-            org.mockito.ArgumentMatchers.isNull(),
+            org.mockito.ArgumentMatchers.eq("acme"),
             org.mockito.ArgumentMatchers.isNull(),
             any()
         );
@@ -201,9 +201,9 @@ class ErasureServiceTest {
         ));
 
         // No SUBSCRIBER_INBOX_ERASURE audit event when 0 rows deleted (idempotent silence)
-        verify(audit, never()).publish(
+        verify(audit, never()).publishStandalone(
             org.mockito.ArgumentMatchers.eq("SUBSCRIBER_INBOX_ERASURE"),
-            any(), any(), any(), any()
+            any(), any(), any()
         );
     }
 

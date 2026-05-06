@@ -154,15 +154,22 @@ public class ErasureService {
             request.orgId(), request.subscriberId()
         );
 
-        // Append inbox erasure audit event if rows actually deleted (avoid
-        // empty-noise audit on idempotent second call).
+        // Codex iter-2 P1 absorb: standalone audit (no source intent) — avoids
+        // NPE on intent.getTemplateId() / .getTopicKey() in publish() and
+        // satisfies audit_event_v2 NOT NULL constraints (intent_id, topic_key)
+        // via synthesized standalone values.
         if (inboxRowsDeleted > 0) {
             Map<String, Object> inboxDetails = new HashMap<>();
             inboxDetails.put("erasure_reason", request.reason());
             inboxDetails.put("evidence_ref", request.evidenceRef());
             inboxDetails.put("subscriber_id", request.subscriberId());
             inboxDetails.put("inbox_rows_deleted", inboxRowsDeleted);
-            audit.publish("SUBSCRIBER_INBOX_ERASURE", null, null, null, inboxDetails);
+            audit.publishStandalone(
+                "SUBSCRIBER_INBOX_ERASURE",
+                request.orgId(),
+                null,  // recipient_hash null acceptable (audit_event_v2 nullable)
+                inboxDetails
+            );
         }
 
         log.info("KVKK erasure complete: orgId={} subscriberId={} intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
