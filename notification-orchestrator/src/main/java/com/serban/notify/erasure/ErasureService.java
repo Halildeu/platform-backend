@@ -1,6 +1,7 @@
 package com.serban.notify.erasure;
 
 import com.serban.notify.audit.AuditEventPublisher;
+import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.repository.NotificationDeliveryRepository;
 import com.serban.notify.repository.NotificationIntentRepository;
@@ -83,22 +84,44 @@ public class ErasureService {
         int deliveriesAnonymized = 0;
 
         for (NotificationIntent intent : intents) {
-            if (intent.getPayload() == null && intent.getRecipientsSnapshot() == null) {
-                // Already erased — idempotent skip
+            // Codex iter-1 P1 absorb: idempotent check expanded — only skip
+            // if BOTH intent PII and target deliveries already anonymized.
+            // Earlier check (payload+snapshot null) skipped delivery cleanup
+            // when first call partial-failed.
+            boolean intentNeedsErase = intent.getPayload() != null
+                || intent.getRecipientsSnapshot() != null
+                || intent.getMetadata() != null
+                || intent.getPreferenceOverride() != null
+                || intent.getChannelRouting() != null;
+
+            // Find ONLY the target subscriber's deliveries (Codex iter-1 P1 absorb:
+            // multi-recipient intent → other subscribers' deliveries preserved)
+            var allDeliveries = deliveryRepo.findByIntentId(intent.getIntentId());
+            var targetDeliveries = allDeliveries.stream()
+                .filter(d -> d.getRecipientType() == NotificationDelivery.RecipientType.SUBSCRIBER)
+                .filter(d -> request.subscriberId().equals(d.getRecipientId()))
+                .toList();
+
+            boolean deliveriesNeedAnonymize = targetDeliveries.stream()
+                .anyMatch(d -> d.getRecipientId() != null);
+
+            if (!intentNeedsErase && !deliveriesNeedAnonymize) {
+                // Fully idempotent skip
                 continue;
             }
 
-            // Purge PII
-            intent.setPayload(null);
-            intent.setRecipientsSnapshot(null);
-            intent.setMetadata(null);
-            intent.setPreferenceOverride(null);
-            intentRepo.save(intent);
-            intentsErased++;
+            if (intentNeedsErase) {
+                intent.setPayload(null);
+                intent.setRecipientsSnapshot(null);
+                intent.setMetadata(null);
+                intent.setPreferenceOverride(null);
+                intent.setChannelRouting(null);  // Codex iter-1 absorb: channelRouting may contain PII (slack URL etc.)
+                intentRepo.save(intent);
+                intentsErased++;
+            }
 
-            // Anonymize deliveries (recipient_id null; recipient_hash KORUNUR)
-            var deliveries = deliveryRepo.findByIntentId(intent.getIntentId());
-            for (var delivery : deliveries) {
+            // Anonymize ONLY target subscriber's deliveries (recipient_hash KORUNUR)
+            for (var delivery : targetDeliveries) {
                 if (delivery.getRecipientId() != null) {
                     delivery.setRecipientId(null);
                     deliveryRepo.save(delivery);
@@ -106,13 +129,15 @@ public class ErasureService {
                 }
             }
 
-            // Audit append (append-only — silinmez)
-            Map<String, Object> details = new HashMap<>();
-            details.put("erasure_reason", request.reason());
-            details.put("evidence_ref", request.evidenceRef());
-            details.put("subscriber_id", request.subscriberId());  // NOT email/phone
-            details.put("deliveries_anonymized", deliveriesAnonymized);
-            audit.publish("SUBSCRIBER_ERASURE_REQUEST", intent, null, null, details);
+            // Audit append (only when actual change happened — append-only RULE)
+            if (intentNeedsErase || deliveriesNeedAnonymize) {
+                Map<String, Object> details = new HashMap<>();
+                details.put("erasure_reason", request.reason());
+                details.put("evidence_ref", request.evidenceRef());
+                details.put("subscriber_id", request.subscriberId());  // NOT email/phone
+                details.put("deliveries_anonymized", deliveriesAnonymized);
+                audit.publish("SUBSCRIBER_ERASURE_REQUEST", intent, null, null, details);
+            }
         }
 
         log.info("KVKK erasure complete: orgId={} subscriberId={} intents_erased={} deliveries_anonymized={}",

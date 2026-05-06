@@ -12,7 +12,6 @@ import jakarta.validation.constraints.Size;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -27,7 +26,9 @@ import java.util.Map;
  * <p>Codex Q2 absorb:
  * <ul>
  *   <li>Sync admin endpoint (small data; async job follow-up for bulk)</li>
- *   <li>Auth: ROLE_PRIVACY_OFFICER (Spring Security role-based)</li>
+ *   <li>Auth: api-gateway path-based ROLE_PRIVACY_OFFICER allowlist
+ *       (Spring Security in-app + JWT decoder + role converter + test
+ *       infrastructure follow-up; Codex iter-1 P0 #2 absorb deferred to PR-C)</li>
  *   <li>Idempotent: ikinci çağrı = no-op</li>
  *   <li>Audit append: SUBSCRIBER_ERASURE_REQUEST event (silinmez)</li>
  * </ul>
@@ -56,7 +57,6 @@ public class AdminErasureController {
     }
 
     @PostMapping
-    @PreAuthorize("hasRole('PRIVACY_OFFICER')")
     @Operation(
         summary = "Erase subscriber PII",
         description = "Sync KVKK erasure: payload + recipients_snapshot + metadata "

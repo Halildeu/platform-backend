@@ -36,6 +36,12 @@ public class WorkerMetrics {
 
     private final MeterRegistry registry;
 
+    /**
+     * Codex iter-1 P2 absorb: AtomicInteger strong reference (Micrometer
+     * gauge target weak reference — GC sonrası NaN olur). Field olarak tutuldu.
+     */
+    private final java.util.concurrent.atomic.AtomicInteger authzDisabledStateRef;
+
     public WorkerMetrics(
         MeterRegistry registry,
         NotificationIntentRepository intentRepo,
@@ -52,8 +58,9 @@ public class WorkerMetrics {
             r -> r.countByStatus(com.serban.notify.domain.NotificationDelivery.Status.RETRY));
         // Codex Q6 absorb: authz-disabled state gauge (1=disabled, 0=enabled)
         // Alert condition: notify.authz.disabled.state > 0 → CRITICAL (security regression)
-        registry.gauge("notify.authz.disabled.state",
-            new java.util.concurrent.atomic.AtomicInteger(authzEnabled ? 0 : 1),
+        // iter-1 P2: strong reference field (Micrometer weak ref → GC NaN risk)
+        this.authzDisabledStateRef = new java.util.concurrent.atomic.AtomicInteger(authzEnabled ? 0 : 1);
+        registry.gauge("notify.authz.disabled.state", authzDisabledStateRef,
             java.util.concurrent.atomic.AtomicInteger::get);
         // Codex Q4 PR-B: DLQ unreplayed total (low cardinality; channel tag follow-up)
         registry.gauge("notify.dlq.unreplayed", dlqRepo,
