@@ -95,8 +95,12 @@ public class DeliveryEligibilityService {
             }
         }
 
-        // Guard 3: authz
-        if (authzEnabled) {
+        // Guard 3: authz — Codex 019dfaaa P1 #4 absorb:
+        // channel-addressed targets (slack/webhook) have no meaningful per-recipient
+        // principal — skip authz. Subscriber/external have authz tuples.
+        // PR5 D29 scope: subscriber + external authorization. Channel-level authz
+        // (slack workspace, webhook endpoint) → Faz 23.2 v2.
+        if (authzEnabled && !isChannelRecipient(target)) {
             String principalType = isSubscriberRecipient(target) ? "subscriber" : "external";
             String principalId = isSubscriberRecipient(target)
                 ? target.recipientId()
@@ -115,6 +119,10 @@ public class DeliveryEligibilityService {
         }
 
         return EligibilityDecision.allow();
+    }
+
+    private static boolean isChannelRecipient(DeliveryTarget target) {
+        return "channel".equals(target.recipientType());
     }
 
     private static boolean isExternalRecipient(DeliveryTarget target) {

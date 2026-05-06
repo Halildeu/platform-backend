@@ -158,5 +158,24 @@ class DeliveryEligibilityServiceTest {
         return new DeliveryTarget("email", "external", null, "rh-ext", "ext@x.com", "smtp-default");
     }
 
+    private DeliveryTarget channelTarget() {
+        return new DeliveryTarget("slack", "channel", null, "rh-ch", "https://hooks.slack/x", "slack-default");
+    }
+
+    @Test
+    void channelTargetSkipsAuthzGuard() {
+        // Codex iter-1 P1 #4 absorb: slack/webhook channel-addressed targets
+        // have no per-recipient principal — authz skipped.
+        DeliveryEligibilityService svc = service(true, true);
+
+        var decision = svc.evaluate(intent(), externalAllowedTemplate(true), channelTarget());
+
+        assertThat(decision.blocked()).isFalse();
+        // Authz NOT called (channel target skip)
+        verify(authzClient, never()).check(anyString(), anyString(), anyString(), anyString(), anyString());
+        // Preference also not called (no subscriber recipient)
+        verify(prefService, never()).evaluate(any(), anyString(), anyString());
+    }
+
     private static <T> T any() { return ArgumentMatchers.any(); }
 }

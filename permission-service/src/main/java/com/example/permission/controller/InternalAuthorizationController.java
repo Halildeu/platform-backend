@@ -1,12 +1,14 @@
 package com.example.permission.controller;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -59,15 +61,32 @@ public class InternalAuthorizationController {
 
     private static final Logger log = LoggerFactory.getLogger(InternalAuthorizationController.class);
 
-    private final OpenFgaAuthzService authzService;
+    /**
+     * OpenFgaAuthzService bean is conditional ({@code erp.openfga.enabled=true}).
+     * When disabled (default in non-prod), bean is absent — controller still
+     * starts (Codex 019dfaaa post-impl P0 #1 absorb) and returns fail-closed
+     * deny with reason "authz_disabled". This prevents context startup failure
+     * in environments where OpenFGA is intentionally off.
+     */
+    private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
 
-    public InternalAuthorizationController(OpenFgaAuthzService authzService) {
-        this.authzService = authzService;
+    public InternalAuthorizationController(ObjectProvider<OpenFgaAuthzService> authzServiceProvider) {
+        this.authzServiceProvider = authzServiceProvider;
     }
 
     @PostMapping("/check")
     @PreAuthorize("hasRole('INTERNAL')")
     public ResponseEntity<Map<String, Object>> check(@Valid @RequestBody InternalAuthzCheckRequest request) {
+        OpenFgaAuthzService authzService = authzServiceProvider.getIfAvailable();
+        if (authzService == null) {
+            log.warn("OpenFGA disabled — fail-closed DENY: principal={}:{} obj={}:{}",
+                request.principalType(), request.principalId(),
+                request.objectType(), request.objectId());
+            return ResponseEntity.ok(Map.of(
+                "allowed", false,
+                "reason", "authz_disabled"
+            ));
+        }
         String principalRef = request.principalType() + ":" + request.principalId();
         boolean allowed = authzService.checkPrincipal(
             principalRef, request.relation(), request.objectType(), request.objectId()
@@ -92,30 +111,41 @@ public class InternalAuthorizationController {
      *   <li>relation, object_type, object_id: non-blank, length-bounded</li>
      * </ul>
      */
+    /**
+     * Codex 019dfaaa P0 #2 absorb: explicit {@code @JsonProperty} snake_case
+     * mapping. Repo'da global Jackson PROPERTY_NAMING_STRATEGY=SNAKE_CASE yok;
+     * AuthzClient (notification-orchestrator) snake_case body gönderiyor.
+     * @JsonProperty olmadan record components camelCase ile bind etmiyor → 400.
+     */
     public record InternalAuthzCheckRequest(
+        @JsonProperty("principal_type")
         @NotBlank
         @Pattern(regexp = "^(subscriber|external)$",
                  message = "principal_type must be 'subscriber' or 'external'")
         String principalType,
 
+        @JsonProperty("principal_id")
         @NotBlank
         @Size(max = 128)
         @Pattern(regexp = "^[a-zA-Z0-9_-]+$",
                  message = "principal_id must be alphanumeric (no colons or special chars)")
         String principalId,
 
+        @JsonProperty("relation")
         @NotBlank
         @Size(max = 64)
         @Pattern(regexp = "^[a-z][a-z0-9_]*$",
                  message = "relation must be lowercase identifier")
         String relation,
 
+        @JsonProperty("object_type")
         @NotBlank
         @Size(max = 64)
         @Pattern(regexp = "^[a-z][a-z0-9_]*$",
                  message = "object_type must be lowercase identifier")
         String objectType,
 
+        @JsonProperty("object_id")
         @NotBlank
         @Size(max = 128)
         @Pattern(regexp = "^[a-zA-Z0-9_.-]+$",
