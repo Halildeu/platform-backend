@@ -122,8 +122,9 @@ public class AuditEventPublisher {
      *
      * <p>Synthesized fields:
      * <ul>
-     *   <li>{@code intent_id}: {@code "standalone-{eventType}-{uuid}"} —
-     *       satisfies NOT NULL, unique per event for idempotent traceability</li>
+     *   <li>{@code intent_id}: {@code "standalone-{uuid}"} (47 chars; fits
+     *       VARCHAR(64) limit). Event type identity already lives in
+     *       {@code event_type} column — no need to embed in intent_id.</li>
      *   <li>{@code topic_key}: {@code "audit.standalone.{eventType-lowercased}"}
      *       — operator filter convention</li>
      *   <li>{@code template_id} / {@code template_version} / {@code channel} /
@@ -146,7 +147,9 @@ public class AuditEventPublisher {
             rawDetails.putAll(additionalDetails);
         }
 
-        String synthesizedIntentId = "standalone-" + eventType + "-" + java.util.UUID.randomUUID();
+        // Codex iter-3 P1 absorb: VARCHAR(64) limit. "standalone-" + UUID = 47 chars.
+        // Event type identity lives in event_type column already; no need to embed.
+        String synthesizedIntentId = "standalone-" + java.util.UUID.randomUUID();
         String synthesizedTopicKey = "audit.standalone." + eventType.toLowerCase();
 
         AuditEvent event = new AuditEvent();

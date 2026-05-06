@@ -61,8 +61,11 @@ class AuditEventPublisherStandaloneTest extends AbstractPostgresTest {
         AuditEvent saved = rows.get(0);
         assertThat(saved.getEventType()).isEqualTo("SUBSCRIBER_INBOX_ERASURE");
         assertThat(saved.getOrgId()).isEqualTo("acme");
+        // Codex iter-3 P1 absorb: intent_id bounded by VARCHAR(64); event type
+        // lives in event_type column, not intent_id.
         assertThat(saved.getIntentId())
-            .startsWith("standalone-SUBSCRIBER_INBOX_ERASURE-");
+            .startsWith("standalone-")
+            .hasSizeLessThanOrEqualTo(64);
         assertThat(saved.getTopicKey())
             .isEqualTo("audit.standalone.subscriber_inbox_erasure");
         assertThat(saved.getRecipientHash()).isNull();
