@@ -144,6 +144,13 @@ notify:
     scheduling-enabled: ${NOTIFY_WORKER_SCHEDULING_ENABLED:true}
   audit:
     retention-days: ${NOTIFY_AUDIT_RETENTION_DAYS:90}
+    # Faz 23.2 PR-D.1 audit partition retention (Codex 019dfdec Q5 absorb)
+    retention-enabled: ${NOTIFY_AUDIT_RETENTION_ENABLED:false}
+    retention-cron: ${NOTIFY_AUDIT_RETENTION_CRON:0 0 2 * * *}
+    retention-grace-hours: ${NOTIFY_AUDIT_RETENTION_GRACE_HOURS:24}
+    retention-dry-run: ${NOTIFY_AUDIT_RETENTION_DRY_RUN:false}
+    retention-future-months: ${NOTIFY_AUDIT_RETENTION_FUTURE_MONTHS:3}
+    retention-scheduling-enabled: ${NOTIFY_AUDIT_RETENTION_SCHEDULING_ENABLED:true}
   idempotency:
     window-hours: ${NOTIFY_IDEMPOTENCY_WINDOW_HOURS:24}
   dedupe:
