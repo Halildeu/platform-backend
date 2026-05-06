@@ -46,7 +46,8 @@
       "headerName": "B/A",
       "type": "number",
       "width": 50,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "AMOUNT",
@@ -69,9 +70,7 @@
       "headerName": "Döviz Tutar",
       "type": "number",
       "width": 130,
-      "sensitive": false,
-      "aggregatable": true,
-      "defaultAggFunc": "sum"
+      "sensitive": false
     },
     {
       "field": "OTHER_CURRENCY",
@@ -134,8 +133,7 @@
       "headerName": "Cari Adı",
       "type": "text",
       "width": 230,
-      "sensitive": false,
-      "groupable": true
+      "sensitive": false
     },
     {
       "field": "CONSUMER_CODE",
