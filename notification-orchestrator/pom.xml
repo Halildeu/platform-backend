@@ -91,6 +91,13 @@
             <version>2.6.0</version>
         </dependency>
 
+        <!-- Faz 23.2 PR-A: BouncyCastle for DKIM signer + PEM parsing -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
