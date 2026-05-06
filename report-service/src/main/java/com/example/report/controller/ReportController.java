@@ -285,11 +285,12 @@ public class ReportController {
                 ? request
                 : new ReportQueryRequestDto(null, null, null, null, null, null, null, null, null);
 
-        // PR-0.2 capability dispatcher. Three buckets:
-        // 1. Single-level GROUP BY → run the new grouped query path.
-        // 2. Anything else with grouping intent (multi-level, pivot,
-        //    aggregation without groupBy, expansion past root) → still
-        //    a structured 400 because PR-0.3+ haven't shipped yet.
+        // PR-0.3 capability dispatcher. Three buckets:
+        // 1. Multi-level GROUP BY (1..N rowGroupCols + 0..N groupKeys
+        //    where groupKeys.size ≤ rowGroupCols.size) → grouped path
+        //    when level < N, leaf-flat path when level == N.
+        // 2. Pivot / pivotMode → still a structured 400 because PR-0.4
+        //    hasn't shipped yet.
         // 3. Flat request → delegate to the legacy executeQuery path.
         List<ColumnDefinition> visibleCols = columnFilter.getVisibleColumnDefinitions(def, scopedAuthz);
         Set<String> groupableFields = visibleCols.stream()
@@ -301,12 +302,14 @@ public class ReportController {
                 .map(ColumnDefinition::field)
                 .collect(java.util.stream.Collectors.toSet());
 
-        boolean wantsSingleLevelGroup = singleLevelGroupRequest(safeRequest, groupableFields);
-        if (safeRequest.requestsGrouping() && !wantsSingleLevelGroup) {
+        boolean wantsMultiLevelGroup = multiLevelGroupRequest(safeRequest, groupableFields);
+        if (safeRequest.requestsGrouping() && !wantsMultiLevelGroup) {
             return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
                     "GROUPING_NOT_SUPPORTED",
-                    "Server-side multi-level grouping / pivot not yet enabled "
-                            + "for this report (capabilities only support single-level GROUP BY)"));
+                    "Server-side pivot / pivotMode not yet enabled for this "
+                            + "report; row-grouping requires every rowGroupCols "
+                            + "field to be marked groupable=true and groupKeys "
+                            + "depth must not exceed the rowGroupCols path."));
         }
 
         // Pagination: same fail-closed translation as the flat path. The
@@ -323,31 +326,52 @@ public class ReportController {
         int pageSize = paging[1];
 
         QueryEngine.PagedData result;
-        if (wantsSingleLevelGroup) {
-            String groupColumn = safeRequest.rowGroupCols().get(0).field();
-            List<SqlBuilder.GroupedAggregation> aggregations;
-            try {
-                aggregations = sanitizeAggregations(
-                        safeRequest.valueCols(), aggregatableFields, visibleCols);
-            } catch (IllegalArgumentException iae) {
-                // PR-0.2 hardening: invalid valueCols entries (non-aggregatable
-                // field or unknown aggFunc) fail closed with a structured 400
-                // instead of silently producing a misleading 200 with the
-                // user's requested aggregation absent.
-                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
-                        "INVALID_AGGREGATION_REQUEST", iae.getMessage()));
-            }
+        if (wantsMultiLevelGroup) {
+            // PR-0.3 multi-level dispatch. Merge ancestor groupKeys as
+            // equality filters on top of the user's filterModel so the
+            // GROUP BY (or leaf flat) query only sees rows under the
+            // expanded ancestor path.
+            List<ColumnVO> rowGroupCols = safeRequest.rowGroupCols();
+            List<String> groupKeys = safeRequest.groupKeys() != null
+                    ? safeRequest.groupKeys()
+                    : List.of();
+            int currentLevel = groupKeys.size();
 
-            try {
-                result = queryEngine.executeGroupedQuery(
+            Map<String, Object> mergedFilter = mergeAncestorFilters(
+                    safeRequest.filterModel(), rowGroupCols, groupKeys);
+
+            if (currentLevel < rowGroupCols.size()) {
+                // GROUP BY the current level's column.
+                String groupColumn = rowGroupCols.get(currentLevel).field();
+                List<SqlBuilder.GroupedAggregation> aggregations;
+                try {
+                    aggregations = sanitizeAggregations(
+                            safeRequest.valueCols(), aggregatableFields, visibleCols);
+                } catch (IllegalArgumentException iae) {
+                    return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                            "INVALID_AGGREGATION_REQUEST", iae.getMessage()));
+                }
+
+                try {
+                    result = queryEngine.executeGroupedQuery(
+                            def, scopedAuthz,
+                            groupColumn, aggregations,
+                            mergedFilter,
+                            safeRequest.sortModel(),
+                            page, pageSize);
+                } catch (IllegalArgumentException iae) {
+                    return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                            "INVALID_GROUPING_REQUEST", iae.getMessage()));
+                }
+            } else {
+                // Leaf rows: groupKeys depth == rowGroupCols depth →
+                // emit raw rows filtered by every ancestor key. Reuses
+                // executeQuery so sort/filter/RLS handling stays unified.
+                result = queryEngine.executeQuery(
                         def, scopedAuthz,
-                        groupColumn, aggregations,
-                        safeRequest.filterModel(),
+                        mergedFilter,
                         safeRequest.sortModel(),
                         page, pageSize);
-            } catch (IllegalArgumentException iae) {
-                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
-                        "INVALID_GROUPING_REQUEST", iae.getMessage()));
             }
         } else {
             result = queryEngine.executeQuery(
@@ -364,22 +388,62 @@ public class ReportController {
     }
 
     /**
-     * PR-0.2 grouping classifier: returns true iff the request expresses a
-     * supported single-level GROUP BY shape — exactly one
-     * {@code rowGroupCols} entry against a column registered as
-     * {@code groupable}, no pivot, no expansion ({@code groupKeys} empty).
-     * Anything else (multi-level, pivot, expansion under a root group)
-     * stays in the rejected bucket until PR-0.3+.
+     * PR-0.3 grouping classifier: returns true iff the request expresses
+     * a supported multi-level GROUP BY shape — every {@code rowGroupCols}
+     * entry references a column registered as {@code groupable}, no
+     * pivot, and {@code groupKeys.size <= rowGroupCols.size}. Pivot stays
+     * in the rejected bucket until PR-0.4.
+     *
+     * <p>{@code groupKeys.size == rowGroupCols.size} is supported (it's
+     * the leaf-row expansion: the user has drilled all the way down and
+     * wants the flat rows under the deepest bucket).
      */
-    private static boolean singleLevelGroupRequest(ReportQueryRequestDto req,
-                                                    Set<String> groupableFields) {
+    private static boolean multiLevelGroupRequest(ReportQueryRequestDto req,
+                                                   Set<String> groupableFields) {
         if (req == null) return false;
-        if (req.rowGroupCols() == null || req.rowGroupCols().size() != 1) return false;
+        if (req.rowGroupCols() == null || req.rowGroupCols().isEmpty()) return false;
         if (req.pivotCols() != null && !req.pivotCols().isEmpty()) return false;
         if (Boolean.TRUE.equals(req.pivotMode())) return false;
-        if (req.groupKeys() != null && !req.groupKeys().isEmpty()) return false;
-        String field = req.rowGroupCols().get(0).field();
-        return field != null && groupableFields.contains(field);
+        // groupKeys.size > rowGroupCols.size is malformed — the client
+        // claims to have expanded deeper than the path defines.
+        int gkSize = req.groupKeys() != null ? req.groupKeys().size() : 0;
+        if (gkSize > req.rowGroupCols().size()) return false;
+        for (var rgc : req.rowGroupCols()) {
+            if (rgc == null || rgc.field() == null) return false;
+            if (!groupableFields.contains(rgc.field())) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Merge AG Grid's expansion {@code groupKeys} into the user's
+     * {@code filterModel} as equality filters so the SQL builder
+     * narrows to the expanded ancestor path without needing a
+     * separate WHERE pathway.
+     *
+     * <p>{@code rowGroupCols[i].field == groupKeys[i]} is the AG Grid
+     * SSRM contract — entry {@code i} of the keys array is the value
+     * the user expanded at depth {@code i}. The merged filter shape
+     * mirrors {@link com.example.report.query.FilterTranslator}'s
+     * existing {@code equals} branch.
+     */
+    private static Map<String, Object> mergeAncestorFilters(
+            Map<String, Object> userFilter,
+            List<ColumnVO> rowGroupCols,
+            List<String> groupKeys) {
+        Map<String, Object> merged = userFilter != null
+                ? new java.util.HashMap<>(userFilter)
+                : new java.util.HashMap<>();
+        for (int i = 0; i < groupKeys.size(); i++) {
+            ColumnVO col = rowGroupCols.get(i);
+            String field = col != null ? col.field() : null;
+            String value = groupKeys.get(i);
+            if (field == null || value == null) continue;
+            merged.put(field, Map.of(
+                    "type", "equals",
+                    "filter", value));
+        }
+        return merged;
     }
 
     /**

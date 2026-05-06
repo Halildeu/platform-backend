@@ -310,9 +310,9 @@ class ReportControllerQueryTest {
         }
 
         @Test
-        void multiLevelGroupBy_stillRejectedAsNotSupported() {
-            // PR-0.2 supports single-level only; rowGroupCols.size() > 1
-            // continues to fail closed.
+        void multiLevelGroupBy_dispatchesToFirstLevel() {
+            // PR-0.3: multi-level rowGroupCols. With no groupKeys, the
+            // controller groups on rowGroupCols[0] (root level).
             stubAuthz(true, List.of());
             when(registry.get("any")).thenReturn(Optional.of(report("any")));
             when(columnFilter.getVisibleColumnDefinitions(any(), any()))
@@ -321,6 +321,11 @@ class ReportControllerQueryTest {
                                     150, false, true, false, null),
                             new ColumnDefinition("region", "Region", "text",
                                     150, false, true, false, null)));
+            when(queryEngine.executeGroupedQuery(any(), any(), eq("category"),
+                    any(), any(), any(), eq(1), eq(50)))
+                    .thenReturn(new QueryEngine.PagedData(
+                            List.of(Map.of("category", "FIN", "_rowCount", 12L)),
+                            5L, 1, 50));
 
             var dto = new ReportQueryRequestDto(
                     0, 50,
@@ -331,15 +336,96 @@ class ReportControllerQueryTest {
 
             var response = controller.queryReport("any", dto, null, testJwt("admin"));
 
-            assertEquals(400, response.getStatusCode().value());
-            assertEquals("GROUPING_NOT_SUPPORTED",
-                    assertInstanceOf(ReportQueryErrorDto.class, response.getBody()).code());
+            assertEquals(200, response.getStatusCode().value());
+            verify(queryEngine).executeGroupedQuery(any(), any(), eq("category"),
+                    any(), any(), any(), eq(1), eq(50));
         }
 
         @Test
-        void groupKeysExpansion_stillRejectedAsNotSupported() {
-            // groupKeys means the user expanded a node — multi-level
-            // expansion is PR-0.3 territory.
+        void groupKeysExpansion_dispatchesToNextLevel() {
+            // PR-0.3 expansion: groupKeys=["FIN"] means the user clicked
+            // open the FIN bucket; we group by rowGroupCols[1] now and
+            // filter rowGroupCols[0] = "FIN".
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("region", "Region", "text",
+                                    150, false, true, false, null)));
+
+            // Capture the merged filter so we can prove the ancestor
+            // equality entry was injected.
+            org.mockito.ArgumentCaptor<Map<String, Object>> filterCaptor =
+                    org.mockito.ArgumentCaptor.forClass(Map.class);
+            when(queryEngine.executeGroupedQuery(any(), any(), eq("region"),
+                    any(), filterCaptor.capture(), any(), eq(1), eq(50)))
+                    .thenReturn(new QueryEngine.PagedData(List.of(), 0L, 1, 50));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(
+                            new ColumnVO("category", "Category", "category", null),
+                            new ColumnVO("region", "Region", "region", null)),
+                    null, null, false,
+                    List.of("FIN"), null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(200, response.getStatusCode().value());
+            // The merged filter must contain category=FIN as an equality
+            // entry so the SQL WHERE narrows under that ancestor bucket.
+            Map<String, Object> merged = filterCaptor.getValue();
+            assertNotNull(merged);
+            assertTrue(merged.containsKey("category"));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> categoryFilter = (Map<String, Object>) merged.get("category");
+            assertEquals("equals", categoryFilter.get("type"));
+            assertEquals("FIN", categoryFilter.get("filter"));
+        }
+
+        @Test
+        void leafExpansion_returnsFlatRowsViaExecuteQuery() {
+            // PR-0.3 leaf case: groupKeys.size == rowGroupCols.size →
+            // user has drilled all the way down; emit flat rows for that
+            // bucket via executeQuery (not executeGroupedQuery).
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("region", "Region", "text",
+                                    150, false, true, false, null)));
+            when(queryEngine.executeQuery(any(), any(), any(), any(),
+                    eq(1), eq(50)))
+                    .thenReturn(new QueryEngine.PagedData(
+                            List.of(Map.of("amount", 1234), Map.of("amount", 5678)),
+                            2L, 1, 50));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(
+                            new ColumnVO("category", "Category", "category", null),
+                            new ColumnVO("region", "Region", "region", null)),
+                    null, null, false,
+                    List.of("FIN", "EU"), null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(200, response.getStatusCode().value());
+            // Leaf path uses executeQuery (flat) — never executeGroupedQuery.
+            verify(queryEngine).executeQuery(any(), any(), any(), any(),
+                    eq(1), eq(50));
+            verify(queryEngine, never()).executeGroupedQuery(
+                    any(), any(), any(), any(), any(), any(), anyInt(), anyInt());
+        }
+
+        @Test
+        void groupKeysDeeperThanPath_returns400() {
+            // Malformed: groupKeys.size > rowGroupCols.size means the
+            // client claims to have expanded deeper than the path defines.
             stubAuthz(true, List.of());
             when(registry.get("any")).thenReturn(Optional.of(report("any")));
             when(columnFilter.getVisibleColumnDefinitions(any(), any()))
@@ -351,11 +437,37 @@ class ReportControllerQueryTest {
                     0, 50,
                     List.of(new ColumnVO("category", "Category", "category", null)),
                     null, null, false,
-                    List.of("FIN"), null, null);
+                    List.of("FIN", "EU"), null, null);
 
             var response = controller.queryReport("any", dto, null, testJwt("admin"));
 
             assertEquals(400, response.getStatusCode().value());
+            assertEquals("GROUPING_NOT_SUPPORTED",
+                    assertInstanceOf(ReportQueryErrorDto.class, response.getBody()).code());
+        }
+
+        @Test
+        void pivotMode_stillRejectedAsNotSupported() {
+            // PR-0.4 territory: pivotMode=true → still 400 in PR-0.3.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null)));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    null,
+                    List.of(new ColumnVO("region", "Region", "region", null)),
+                    true, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            assertEquals("GROUPING_NOT_SUPPORTED",
+                    assertInstanceOf(ReportQueryErrorDto.class, response.getBody()).code());
         }
 
         @Test
