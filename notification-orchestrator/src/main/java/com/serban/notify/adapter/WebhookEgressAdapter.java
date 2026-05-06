@@ -52,25 +52,28 @@ public class WebhookEgressAdapter implements ChannelAdapter {
     private final ObjectMapper objectMapper;
     private final WebhookHmacKeyRegistry hmacRegistry;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public WebhookEgressAdapter(
         ObjectMapper objectMapper,
         WebhookHmacKeyRegistry hmacRegistry
     ) {
         this.objectMapper = objectMapper;
         this.hmacRegistry = hmacRegistry;
+        this.legacySecretForTest = null;
     }
 
     /**
      * Test-only constructor — direct legacy secret without registry (Faz 23.2 PR-A
      * absorb iter-1: tests still construct adapter directly without Spring context).
+     * NOT Spring-autowired (production constructor has @Autowired explicitly).
      */
     public WebhookEgressAdapter(ObjectMapper objectMapper, String legacySecret) {
         this.objectMapper = objectMapper;
-        this.hmacRegistry = null;  // legacy direct-construct path; resolveActive() falls back
+        this.hmacRegistry = null;
         this.legacySecretForTest = legacySecret;
     }
 
-    private String legacySecretForTest;
+    private final String legacySecretForTest;
 
     @Override
     public String channelKey() {
