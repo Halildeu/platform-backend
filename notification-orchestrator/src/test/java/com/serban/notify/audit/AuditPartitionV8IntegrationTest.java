@@ -178,6 +178,87 @@ class AuditPartitionV8IntegrationTest extends AbstractPostgresTest {
         assertThat(count).isEqualTo(0L);
     }
 
+    @Test
+    void appendOnlyTriggerInheritsToChildPartition() {
+        // Codex 019dfdec iter-1 P1 absorb: parent-attached trigger child partition
+        // DML için de fire eder. PG 11+ inheritance kontratı.
+        AuditEvent e = saveAuditEvent("child-dml-test");
+
+        // Find which child partition holds this row
+        String partitionName = jdbc.queryForObject(
+            "SELECT child.relname FROM pg_inherits inh "
+                + "JOIN pg_class child ON child.oid = inh.inhrelid "
+                + "JOIN pg_class parent ON parent.oid = inh.inhparent "
+                + "JOIN pg_namespace n ON n.oid = parent.relnamespace "
+                + "JOIN " + "(SELECT tableoid FROM notify.audit_event_v2 WHERE id = ?) row "
+                + "ON row.tableoid = child.oid "
+                + "WHERE n.nspname = 'notify' AND parent.relname = 'audit_event_v2'",
+            String.class, e.getId()
+        );
+        assertThat(partitionName).isNotNull();
+
+        // Direct child UPDATE should also be blocked
+        assertThatThrownBy(() ->
+            jdbc.update(
+                "UPDATE notify." + partitionName + " SET event_type = 'CHILD_MUTATED' WHERE id = ?",
+                e.getId()
+            )
+        ).isInstanceOf(DataIntegrityViolationException.class)
+         .hasMessageContaining("append-only");
+
+        // Direct child DELETE should also be blocked
+        assertThatThrownBy(() ->
+            jdbc.update("DELETE FROM notify." + partitionName + " WHERE id = ?", e.getId())
+        ).isInstanceOf(DataIntegrityViolationException.class)
+         .hasMessageContaining("append-only");
+    }
+
+    @Test
+    void retentionAdvisoryLockSkipsConcurrentRunner() throws Exception {
+        // Codex 019dfdec iter-1 P1 absorb: 2 concurrent runners — 1 success + 1 skip.
+        // pg_try_advisory_xact_lock contention test.
+        // Hold the advisory lock in another connection, then runCycle should skip.
+        long lockKey = stableLockKeyForRetention();
+
+        try (java.sql.Connection holder = jdbc.getDataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            try (java.sql.PreparedStatement ps = holder.prepareStatement(
+                "SELECT pg_try_advisory_xact_lock(?)")) {
+                ps.setLong(1, lockKey);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    assertThat(rs.next()).isTrue();
+                    assertThat(rs.getBoolean(1)).isTrue();  // we got the lock
+                }
+            }
+
+            // Now retentionService cycle should skip due to lock contention
+            // (lockSkippedCounter increments via metrics; here we just verify
+            // it returns without throwing — successful path would create future
+            // partitions but lock-skip won't).
+            long droppedBefore = countAuditRetentionLog();
+            retentionService.runCycle();
+            long droppedAfter = countAuditRetentionLog();
+            assertThat(droppedAfter).isEqualTo(droppedBefore);  // no work done
+
+            holder.rollback();  // release advisory lock
+        }
+    }
+
+    /** FNV-1a 64-bit (matches AuditPartitionRetentionService.stableLockKey). */
+    private static long stableLockKeyForRetention() {
+        long h = 1469598103934665603L;
+        for (byte b : "notify.audit.retention".getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+            h ^= (b & 0xff);
+            h *= 1099511628211L;
+        }
+        return h;
+    }
+
+    private long countAuditRetentionLog() {
+        Long c = jdbc.queryForObject("SELECT COUNT(*) FROM notify.audit_retention_log", Long.class);
+        return c == null ? 0L : c;
+    }
+
     private AuditEvent saveAuditEvent(String intentId) {
         return saveAuditEvent(intentId, null);
     }

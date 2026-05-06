@@ -101,9 +101,13 @@ FOR EACH ROW EXECUTE FUNCTION notify.audit_event_append_only_guard();
 -- ============================================================================
 -- 6) Data copy: V1 audit_event → audit_event_v2 (preservation guarantee)
 -- ============================================================================
--- ACCESS EXCLUSIVE lock alır; mevcut V1 row count <1000 (test cluster) için
--- kabul edilebilir downtime (~ms-saniye). Prod row count yüksekse PR-D.1
--- öncesi pg_dump backup zorunlu.
+-- Codex 019dfdec iter-1 P0 #2 absorb: explicit ACCESS EXCLUSIVE LOCK önce.
+-- Concurrent INSERT'lerin copy bittikten sonra eski tabloda kalmasını engeller
+-- (Flyway tek transaction Spring DataSource lock semantik garantilemez —
+-- ALTER TABLE RENAME başına kadar copy'ye INSERT eklenebilir).
+-- Tek transaction (Flyway default) içinde lock alır; rename'a kadar tutar.
+LOCK TABLE notify.audit_event IN ACCESS EXCLUSIVE MODE;
+
 INSERT INTO notify.audit_event_v2 (
     id, intent_id, delivery_id, event_type, org_id, topic_key,
     recipient_hash, channel, template_id, template_version,
@@ -115,12 +119,21 @@ SELECT
     details, correlation_id, occurred_at
 FROM notify.audit_event;
 
--- Sequence setval: copy sonrası max(id) + 1'den devam etsin
-SELECT setval(
-    'notify.audit_event_v2_id_seq',
-    COALESCE((SELECT MAX(id) FROM notify.audit_event_v2), 0),
-    true
-);
+-- Codex 019dfdec iter-1 P0 #1 absorb: setval empty-table guard.
+-- PG sequence min value=1; setval(seq, 0, true) raises "value 0 is out of bounds".
+-- Empty audit table case: setval(seq, 1, false) → next nextval()=1.
+-- Non-empty: setval(seq, max_id, true) → next nextval()=max_id+1.
+DO $$
+DECLARE
+    max_id BIGINT;
+BEGIN
+    SELECT MAX(id) INTO max_id FROM notify.audit_event_v2;
+    IF max_id IS NULL THEN
+        PERFORM setval('notify.audit_event_v2_id_seq', 1, false);
+    ELSE
+        PERFORM setval('notify.audit_event_v2_id_seq', max_id, true);
+    END IF;
+END $$;
 
 -- ============================================================================
 -- 7) V1 audit_event RULE'larını drop et (eski tabloyu legacy'ye çevirebilmek için)

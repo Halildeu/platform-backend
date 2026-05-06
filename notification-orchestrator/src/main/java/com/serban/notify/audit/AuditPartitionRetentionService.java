@@ -119,8 +119,13 @@ public class AuditPartitionRetentionService {
     /** Public entry — called by @Scheduled tick OR directly by tests. */
     public void runCycle() {
         try {
-            self.cycle();
-            lastSuccessTimestamp.set(OffsetDateTime.now().toEpochSecond());
+            CycleResult result = self.cycle();
+            // Codex 019dfdec iter-1 P2 absorb: last_success only on real success
+            // (lock skip / error don't update gauge). Alarm rule "now() - gauge > 26h"
+            // sinyalize eder cycle gerçekten failing/skipped olursa.
+            if (result.successful()) {
+                lastSuccessTimestamp.set(OffsetDateTime.now().toEpochSecond());
+            }
         } catch (RuntimeException e) {
             log.warn("AuditPartitionRetentionService cycle error: {}", e.getMessage(), e);
             errorsCounter.increment();
@@ -129,28 +134,44 @@ public class AuditPartitionRetentionService {
 
     /** Single cycle within a transaction (advisory_xact_lock semantics). */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void cycle() {
+    public CycleResult cycle() {
         Boolean acquired = jdbc.queryForObject(
             "SELECT pg_try_advisory_xact_lock(?)", Boolean.class, ADVISORY_LOCK_KEY);
         if (acquired == null || !acquired) {
             log.info("AuditPartitionRetentionService cycle skipped — advisory lock contention");
             lockSkippedCounter.increment();
-            return;
+            return CycleResult.lockSkipped();
         }
 
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        int futureCreated;
+        int detached;
+        int dropped;
+        try {
+            futureCreated = ensureFuturePartitions(now);
+            if (futureCreated > 0) {
+                futurePartitionsCreatedCounter.increment(futureCreated);
+                log.info("AuditPartitionRetentionService: created {} future partitions", futureCreated);
+            }
 
-        int futureCreated = ensureFuturePartitions(now);
-        if (futureCreated > 0) {
-            futurePartitionsCreatedCounter.increment(futureCreated);
-            log.info("AuditPartitionRetentionService: created {} future partitions", futureCreated);
+            detached = detachOldPartitions(now);
+            dropped = dropEligiblePartitions(now);
+        } catch (RuntimeException e) {
+            log.warn("AuditPartitionRetentionService cycle inner error: {}", e.getMessage(), e);
+            errorsCounter.increment();
+            return CycleResult.error();
         }
-
-        int detached = detachOldPartitions(now);
-        int dropped = dropEligiblePartitions(now);
 
         log.info("AuditPartitionRetentionService cycle: future_created={} detached={} dropped={} dry_run={}",
             futureCreated, detached, dropped, cfg.retentionDryRun());
+        return CycleResult.success(futureCreated, detached, dropped);
+    }
+
+    /** Cycle outcome — caller (runCycle) uses successful flag for last_success gauge. */
+    public record CycleResult(boolean successful, int futureCreated, int detached, int dropped) {
+        public static CycleResult success(int fc, int d, int dr) { return new CycleResult(true, fc, d, dr); }
+        public static CycleResult lockSkipped() { return new CycleResult(false, 0, 0, 0); }
+        public static CycleResult error() { return new CycleResult(false, 0, 0, 0); }
     }
 
     /**
