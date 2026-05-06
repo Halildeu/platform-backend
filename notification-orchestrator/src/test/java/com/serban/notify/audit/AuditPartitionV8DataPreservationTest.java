@@ -45,6 +45,19 @@ class AuditPartitionV8DataPreservationTest {
         .withUsername("notify_test")
         .withPassword("notify_test");
 
+    @org.junit.jupiter.api.BeforeEach
+    void cleanSchema() throws Exception {
+        // Codex 019dfdec iter-2 P1 absorb: V1 hardcodes CREATE SCHEMA notify;
+        // Flyway schemas() override doesn't propagate to migration SQL. So we
+        // share the single PG container but drop+recreate notify schema +
+        // Flyway history before each test (true isolation).
+        try (Connection conn = newConnection();
+             Statement s = conn.createStatement()) {
+            s.execute("DROP SCHEMA IF EXISTS notify CASCADE");
+            s.execute("DROP TABLE IF EXISTS public.flyway_schema_history");
+        }
+    }
+
     @Test
     void v7ToV8MigrationPreservesData() throws Exception {
         try (Connection conn = newConnection()) {
@@ -117,35 +130,37 @@ class AuditPartitionV8DataPreservationTest {
     void v7ToV8MigrationEmptyTableNoSetvalError() throws Exception {
         // Codex 019dfdec iter-1 P0 #1 absorb: empty audit table should NOT trigger
         // setval(seq, 0, true) "value 0 is out of bounds" error.
+        // Codex iter-2 P1 absorb: same `notify` schema (V1 hardcoded);
+        // BeforeEach cleanSchema() ensures isolation.
         try (Connection conn = newConnection()) {
             org.flywaydb.core.Flyway flyway = org.flywaydb.core.Flyway.configure()
                 .dataSource(PG.getJdbcUrl(), PG.getUsername(), PG.getPassword())
-                .schemas("notify_empty")
+                .schemas("notify")
                 .target("7")
                 .load();
             flyway.migrate();
 
             // 0 rows pre-migration
-            int preCount = jdbcTableCount(conn, "notify_empty.audit_event");
+            int preCount = jdbcTableCount(conn, "notify.audit_event");
             assertThat(preCount).isEqualTo(0);
 
-            // V8 should succeed with empty table
+            // V8 should succeed with empty table (no setval out-of-bounds)
             org.flywaydb.core.Flyway flywayV8 = org.flywaydb.core.Flyway.configure()
                 .dataSource(PG.getJdbcUrl(), PG.getUsername(), PG.getPassword())
-                .schemas("notify_empty")
+                .schemas("notify")
                 .load();
             flywayV8.migrate();
 
             // First insert via view should get id=1 (sequence reset to 1)
             try (Statement s = conn.createStatement()) {
                 s.execute(
-                    "INSERT INTO notify_empty.audit_event "
+                    "INSERT INTO notify.audit_event "
                         + "(intent_id, event_type, org_id, topic_key, occurred_at) "
                         + "VALUES ('first-insert', 'TEST', 'default', 'test', NOW())");
             }
             try (Statement s = conn.createStatement();
                  ResultSet rs = s.executeQuery(
-                     "SELECT id FROM notify_empty.audit_event_v2 WHERE intent_id='first-insert'")) {
+                     "SELECT id FROM notify.audit_event_v2 WHERE intent_id='first-insert'")) {
                 assertThat(rs.next()).isTrue();
                 long id = rs.getLong(1);
                 assertThat(id).isPositive();  // got an id, no setval error

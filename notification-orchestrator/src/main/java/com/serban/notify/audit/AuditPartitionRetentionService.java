@@ -144,6 +144,7 @@ public class AuditPartitionRetentionService {
         }
 
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        cycleInnerErrors.set(0);  // reset per-cycle accumulator
         int futureCreated;
         int detached;
         int dropped;
@@ -159,6 +160,18 @@ public class AuditPartitionRetentionService {
         } catch (RuntimeException e) {
             log.warn("AuditPartitionRetentionService cycle inner error: {}", e.getMessage(), e);
             errorsCounter.increment();
+            return CycleResult.error();
+        } finally {
+            cycleInnerErrors.remove();  // ThreadLocal cleanup
+        }
+
+        // Codex 019dfdec iter-2 P2 absorb: per-partition swallowed errors
+        // (detach/drop loops catch + log + counter) → CycleResult.error so
+        // last_success gauge stays stale until next clean cycle.
+        int innerErrors = cycleInnerErrors.get() != null ? cycleInnerErrors.get() : 0;
+        if (innerErrors > 0) {
+            log.warn("AuditPartitionRetentionService cycle: future_created={} detached={} dropped={} "
+                + "inner_errors={} → CycleResult.error", futureCreated, detached, dropped, innerErrors);
             return CycleResult.error();
         }
 
@@ -204,6 +217,14 @@ public class AuditPartitionRetentionService {
         }
         return created;
     }
+
+    /**
+     * Per-cycle error accumulator (Codex 019dfdec iter-2 P2 absorb).
+     * detach/drop loops increment on per-partition swallowed RuntimeException;
+     * cycle() reads at end and returns CycleResult.error() if any → runCycle()
+     * skips lastSuccessTimestamp update.
+     */
+    private final ThreadLocal<Integer> cycleInnerErrors = ThreadLocal.withInitial(() -> 0);
 
     /**
      * Detach partitions whose range_end ≤ now - retentionDays. Insert audit_retention_log row.
@@ -255,6 +276,7 @@ public class AuditPartitionRetentionService {
             } catch (RuntimeException e) {
                 log.warn("Detach failed for partition {}: {}", name, e.getMessage());
                 errorsCounter.increment();
+                cycleInnerErrors.set(cycleInnerErrors.get() + 1);
             }
         }
         return detached;
@@ -291,6 +313,7 @@ public class AuditPartitionRetentionService {
                 row.setErrorMessage(e.getMessage());
                 logRepo.save(row);
                 errorsCounter.increment();
+                cycleInnerErrors.set(cycleInnerErrors.get() + 1);
             }
         }
         return dropped;
