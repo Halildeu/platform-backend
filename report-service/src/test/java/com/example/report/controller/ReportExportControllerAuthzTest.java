@@ -59,7 +59,8 @@ class ReportExportControllerAuthzTest {
                 queryEngine,
                 jdbc,
                 auditClient,
-                new ObjectMapper());
+                new ObjectMapper(),
+                new com.example.report.authz.CompanyHeaderScopeNarrower());
     }
 
     @Test
@@ -68,7 +69,7 @@ class ReportExportControllerAuthzTest {
         when(registry.get("ghost")).thenReturn(Optional.empty());
 
         assertThrows(ResponseStatusException.class, () ->
-                controller.exportReport("ghost", "csv", null, null, testJwt("admin")));
+                controller.exportReport("ghost", "csv", null, null, null, testJwt("admin")));
     }
 
     @Test
@@ -79,7 +80,7 @@ class ReportExportControllerAuthzTest {
         when(registry.get("any")).thenReturn(Optional.of(report("any", null)));
 
         assertThrows(ResponseStatusException.class, () ->
-                controller.exportReport("any", "csv", null, null, testJwt("user1")));
+                controller.exportReport("any", "csv", null, null, null, testJwt("user1")));
     }
 
     @Test
@@ -90,7 +91,7 @@ class ReportExportControllerAuthzTest {
         when(registry.get("any")).thenReturn(Optional.of(report("any", null)));
 
         var ex = assertThrows(ResponseStatusException.class, () ->
-                controller.exportReport("any", "csv", null, null, testJwt("user1")));
+                controller.exportReport("any", "csv", null, null, null, testJwt("user1")));
         // Reason preserves the legacy error message so smoke tests can assert on it.
         assertEquals(403, ex.getStatusCode().value());
     }
@@ -104,7 +105,7 @@ class ReportExportControllerAuthzTest {
                 .thenReturn(mock(SqlBuilder.BuiltQuery.class));
         when(queryEngine.getVisibleColumns(any(), any())).thenReturn(List.of("col1"));
 
-        var response = controller.exportReport("any", "csv", null, null, testJwt("user1"));
+        var response = controller.exportReport("any", "csv", null, null, null, testJwt("user1"));
 
         assertEquals(200, response.getStatusCode().value());
     }
@@ -118,7 +119,7 @@ class ReportExportControllerAuthzTest {
                 .thenReturn(mock(SqlBuilder.BuiltQuery.class));
         when(queryEngine.getVisibleColumns(any(), any())).thenReturn(List.of("col1"));
 
-        var response = controller.exportReport("any", "csv", null, null, testJwt("admin"));
+        var response = controller.exportReport("any", "csv", null, null, null, testJwt("admin"));
 
         assertEquals(200, response.getStatusCode().value());
     }
@@ -132,7 +133,7 @@ class ReportExportControllerAuthzTest {
                 .thenReturn(mock(SqlBuilder.BuiltQuery.class));
         when(queryEngine.getVisibleColumns(any(), any())).thenReturn(List.of("col1"));
 
-        var response = controller.exportReport("any", "excel", null, null, testJwt("admin"));
+        var response = controller.exportReport("any", "excel", null, null, null, testJwt("admin"));
 
         assertEquals(200, response.getStatusCode().value());
         var contentType = response.getHeaders().getFirst("Content-Type");

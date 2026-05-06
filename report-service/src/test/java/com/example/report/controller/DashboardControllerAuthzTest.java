@@ -43,7 +43,8 @@ class DashboardControllerAuthzTest {
 
     @BeforeEach
     void setUp() {
-        controller = new DashboardController(registry, permissionResolver, queryEngine);
+        controller = new DashboardController(registry, permissionResolver, queryEngine,
+                new com.example.report.authz.CompanyHeaderScopeNarrower());
     }
 
     // ---- list ------------------------------------------------------------
@@ -146,7 +147,7 @@ class DashboardControllerAuthzTest {
                 dashboard("hr-analytics", null)));
 
         assertThrows(ResponseStatusException.class, () ->
-                controller.getKpis("hr-analytics", "30d", null, null, null, null, testJwt("user1")));
+                controller.getKpis("hr-analytics", "30d", null, null, null, null, null, testJwt("user1")));
     }
 
     // ---- helpers ---------------------------------------------------------

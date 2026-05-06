@@ -1,6 +1,7 @@
 package com.example.report.controller;
 
 import com.example.report.authz.AuthzMeResponse;
+import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.*;
 import com.example.report.query.DashboardQueryEngine;
@@ -30,13 +31,16 @@ public class DashboardController {
     private final DashboardRegistry registry;
     private final PermissionResolver permissionResolver;
     private final DashboardQueryEngine queryEngine;
+    private final CompanyHeaderScopeNarrower companyHeaderNarrower;
 
     public DashboardController(DashboardRegistry registry,
                                 PermissionResolver permissionResolver,
-                                DashboardQueryEngine queryEngine) {
+                                DashboardQueryEngine queryEngine,
+                                CompanyHeaderScopeNarrower companyHeaderNarrower) {
         this.registry = registry;
         this.permissionResolver = permissionResolver;
         this.queryEngine = queryEngine;
+        this.companyHeaderNarrower = companyHeaderNarrower;
     }
 
     @GetMapping
@@ -81,13 +85,15 @@ public class DashboardController {
                                                         @RequestParam(required = false) String gender,
                                                         @RequestParam(required = false) String collarType,
                                                         @RequestParam(required = false) String education,
+                                                        @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
                                                         @AuthenticationPrincipal Jwt jwt) {
         DashboardDefinition def = findOrThrow(key);
         AuthzMeResponse authz = checkAccess(def, jwt);
         validateTimeRange(timeRange, def);
 
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
         Map<String, String> filterValues = buildFilterValues(department, gender, collarType, education);
-        List<KpiResultDto> kpis = queryEngine.executeKpis(def, authz, timeRange, filterValues);
+        List<KpiResultDto> kpis = queryEngine.executeKpis(def, scopedAuthz, timeRange, filterValues);
         return ResponseEntity.ok(kpis);
     }
 
@@ -98,19 +104,22 @@ public class DashboardController {
                                                             @RequestParam(required = false) String gender,
                                                             @RequestParam(required = false) String collarType,
                                                             @RequestParam(required = false) String education,
+                                                            @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
                                                             @AuthenticationPrincipal Jwt jwt) {
         DashboardDefinition def = findOrThrow(key);
         AuthzMeResponse authz = checkAccess(def, jwt);
         validateTimeRange(timeRange, def);
 
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
         Map<String, String> filterValues = buildFilterValues(department, gender, collarType, education);
-        List<ChartResultDto> charts = queryEngine.executeCharts(def, authz, timeRange, filterValues);
+        List<ChartResultDto> charts = queryEngine.executeCharts(def, scopedAuthz, timeRange, filterValues);
         return ResponseEntity.ok(charts);
     }
 
     @GetMapping("/{key}/filter-options/{filterKey}")
     public ResponseEntity<List<String>> getFilterOptions(@PathVariable String key,
                                                           @PathVariable String filterKey,
+                                                          @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
                                                           @AuthenticationPrincipal Jwt jwt) {
         DashboardDefinition def = findOrThrow(key);
         AuthzMeResponse authz = checkAccess(def, jwt);
@@ -120,7 +129,8 @@ public class DashboardController {
                     "Unknown filter key: " + filterKey + ". Available: " + (def.filterColumns() != null ? def.filterColumns().keySet() : "none"));
         }
 
-        List<String> options = queryEngine.executeFilterOptions(def, authz, filterKey);
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
+        List<String> options = queryEngine.executeFilterOptions(def, scopedAuthz, filterKey);
         return ResponseEntity.ok(options);
     }
 

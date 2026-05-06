@@ -145,6 +145,51 @@ class RowFilterInjectorRlsTest {
             assertNull(result.whereClause());
             assertNull(result.params());
         }
+
+        @Test
+        @DisplayName("superAdmin with explicit COMPANY scope (picker-narrowed) APPLIES RLS")
+        void superAdmin_withExplicitScope_appliesRls() {
+            // Codex 019dfc41 iter-4 absorb: when CompanyHeaderScopeNarrower
+            // populates COMPANY={5} on a super-admin authz (X-Company-Id
+            // picker selection), RLS must filter the dataset to company 5.
+            // Otherwise the picker is a no-op for super-admin.
+            ReportDefinition def = defWithRowFilter("company_id", "COMPANY", null);
+            AuthzMeResponse authz = new AuthzMeResponse();
+            authz.setUserId("admin-001");
+            authz.setSuperAdmin(true);
+            authz.setPermissions(List.of());
+            authz.setAllowedScopes(List.of(new ScopeSummaryDto("COMPANY", "5")));
+
+            RowFilterInjector.RlsResult result = injector.buildRlsClause(def, authz);
+
+            assertNotNull(result.whereClause(),
+                    "super-admin + explicit picker scope must produce RLS clause");
+            assertTrue(result.whereClause().contains("[company_id] IN (:_rlsIds)"),
+                    "must use IN clause, got: " + result.whereClause());
+            @SuppressWarnings("unchecked")
+            Set<String> rlsIds = (Set<String>) result.params().getValue("_rlsIds");
+            assertEquals(Set.of("5"), rlsIds,
+                    "super-admin's RLS scope must be exactly the picker-selected company");
+        }
+
+        @Test
+        @DisplayName("superAdmin with PROJECT scope but COMPANY filter still bypasses (different axis)")
+        void superAdmin_explicitScopeOnDifferentAxis_bypassesRls() {
+            // The narrower only narrows COMPANY. If a report's rowFilter is
+            // on PROJECT and super-admin has no PROJECT scope, legacy
+            // unrestricted-admin behaviour still applies on that axis.
+            ReportDefinition def = defWithRowFilter("project_id", "PROJECT", null);
+            AuthzMeResponse authz = new AuthzMeResponse();
+            authz.setUserId("admin-001");
+            authz.setSuperAdmin(true);
+            authz.setPermissions(List.of());
+            authz.setAllowedScopes(List.of(new ScopeSummaryDto("COMPANY", "5")));
+
+            RowFilterInjector.RlsResult result = injector.buildRlsClause(def, authz);
+
+            assertNull(result.whereClause(),
+                    "super-admin must still bypass RLS on scope axes they don't have explicit scope on");
+        }
     }
 
     @Nested
