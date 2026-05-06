@@ -82,11 +82,16 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
 
     /**
      * Atomic mark-as-read (idempotent; no-op if already READ/ARCHIVED).
-     * Trigger sets read_at on state transition.
+     *
+     * <p>Codex iter-1 P1.1 absorb: {@code clearAutomatically=true} +
+     * {@code flushAutomatically=true} ensures persistence context stays in
+     * sync with bulk JPQL update — caller's subsequent {@code findById}
+     * within the same transaction reflects the post-mutation state (avoids
+     * stale state response from controller).
      *
      * @return rows affected (1 if state mutated UNREAD→READ, 0 otherwise)
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
         UPDATE NotificationInbox i
         SET i.state = com.serban.notify.domain.NotificationInbox.State.READ,
@@ -105,11 +110,13 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
 
     /**
      * Archive transition (idempotent; no-op if already ARCHIVED).
-     * Trigger sets archived_at on state transition.
+     *
+     * <p>Codex iter-1 P1.1 absorb: persistence context flushed/cleared so
+     * post-mutation re-fetch returns ARCHIVED state.
      *
      * @return rows affected (1 if state mutated *→ARCHIVED, 0 otherwise)
      */
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
         UPDATE NotificationInbox i
         SET i.state = com.serban.notify.domain.NotificationInbox.State.ARCHIVED,
@@ -124,5 +131,27 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
         @Param("id") Long id,
         @Param("subscriberId") String subscriberId,
         @Param("now") OffsetDateTime now
+    );
+
+    /**
+     * KVKK erasure — bulk delete inbox rows by (org, subscriber).
+     *
+     * <p>Codex iter-1 P1.2 absorb: existing {@link com.serban.notify.erasure.ErasureService}
+     * pipeline only touched intent + delivery + audit; this PR extends it
+     * to inbox rows. Hard delete (NOT anonymize) — inbox rows contain
+     * subject/body content snapshots which are subscriber-coupled PII;
+     * KVKK Art 17 right to erasure requires complete removal.
+     *
+     * @return rows deleted
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        DELETE FROM NotificationInbox i
+        WHERE i.orgId = :orgId
+          AND i.subscriberId = :subscriberId
+        """)
+    int deleteByOrgIdAndSubscriberId(
+        @Param("orgId") String orgId,
+        @Param("subscriberId") String subscriberId
     );
 }

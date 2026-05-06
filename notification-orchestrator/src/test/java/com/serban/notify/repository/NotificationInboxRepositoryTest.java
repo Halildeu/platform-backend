@@ -228,6 +228,103 @@ class NotificationInboxRepositoryTest extends AbstractPostgresTest {
     }
 
     @Test
+    void dbTriggerBlocksReadToUnreadBackwardTransition() {
+        // Codex iter-1 P2 absorb: forward-only state machine; READ → UNREAD must
+        // raise exception at DB level (defense-in-depth beyond app-level).
+        NotificationInbox saved = repo.save(stub("default", "intent-1", "sub-1"));
+        repo.markAsRead("default", saved.getId(), "sub-1", OffsetDateTime.now());
+        // Force-clear persistence cache so re-fetch hits DB
+        NotificationInbox refetched = repo.findById(saved.getId()).orElseThrow();
+        assertThat(refetched.getState()).isEqualTo(NotificationInbox.State.READ);
+
+        refetched.setState(NotificationInbox.State.UNREAD);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+            org.springframework.dao.DataIntegrityViolationException.class,
+            () -> {
+                repo.save(refetched);
+                repo.flush();
+            }
+        );
+    }
+
+    @Test
+    void dbTriggerBlocksArchivedToUnreadBackwardTransition() {
+        // ARCHIVED is terminal; cannot transition to any other state
+        NotificationInbox saved = repo.save(stub("default", "intent-1", "sub-1"));
+        repo.archive("default", saved.getId(), "sub-1", OffsetDateTime.now());
+        NotificationInbox refetched = repo.findById(saved.getId()).orElseThrow();
+
+        refetched.setState(NotificationInbox.State.UNREAD);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+            org.springframework.dao.DataIntegrityViolationException.class,
+            () -> {
+                repo.save(refetched);
+                repo.flush();
+            }
+        );
+    }
+
+    @Test
+    void dbTriggerBlocksArchivedToReadBackwardTransition() {
+        NotificationInbox saved = repo.save(stub("default", "intent-1", "sub-1"));
+        repo.archive("default", saved.getId(), "sub-1", OffsetDateTime.now());
+        NotificationInbox refetched = repo.findById(saved.getId()).orElseThrow();
+
+        refetched.setState(NotificationInbox.State.READ);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+            org.springframework.dao.DataIntegrityViolationException.class,
+            () -> {
+                repo.save(refetched);
+                repo.flush();
+            }
+        );
+    }
+
+    @Test
+    void dbTriggerAllowsForwardTransitionUnreadToArchived() {
+        // UNREAD → ARCHIVED (skipping READ) is forward-only valid
+        NotificationInbox saved = repo.save(stub("default", "intent-1", "sub-1"));
+
+        int affected = repo.archive("default", saved.getId(), "sub-1", OffsetDateTime.now());
+
+        assertThat(affected).isEqualTo(1);
+        NotificationInbox refetched = repo.findById(saved.getId()).orElseThrow();
+        assertThat(refetched.getState()).isEqualTo(NotificationInbox.State.ARCHIVED);
+        assertThat(refetched.getArchivedAt()).isNotNull();
+    }
+
+    // ─── KVKK erasure (Faz 23.3 PR-E.1 Codex iter-1 P1.2 absorb) ────────
+
+    @Test
+    void deleteByOrgIdAndSubscriberIdHardDeletesAllSubscriberRows() {
+        repo.save(stub("default", "intent-1", "sub-1"));
+        repo.save(stub("default", "intent-2", "sub-1"));
+        repo.save(stub("default", "intent-3", "sub-2"));  // different sub
+        repo.save(stub("other-org", "intent-4", "sub-1"));  // different org
+
+        int deleted = repo.deleteByOrgIdAndSubscriberId("default", "sub-1");
+
+        assertThat(deleted).isEqualTo(2);
+        // Cross-tenant rows preserved
+        assertThat(repo.findByOrgIdAndIntentIdAndSubscriberId("default", "intent-3", "sub-2"))
+            .isPresent();
+        assertThat(repo.findByOrgIdAndIntentIdAndSubscriberId("other-org", "intent-4", "sub-1"))
+            .isPresent();
+    }
+
+    @Test
+    void deleteByOrgIdAndSubscriberIdReturnsZeroWhenNoMatch() {
+        repo.save(stub("default", "intent-1", "sub-1"));
+
+        int deleted = repo.deleteByOrgIdAndSubscriberId("default", "nonexistent-sub");
+
+        assertThat(deleted).isEqualTo(0);
+    }
+
+    @Test
     void paginationRespectsPageSize() {
         for (int i = 0; i < 25; i++) {
             repo.save(stub("default", "intent-page-" + i, "sub-1"));

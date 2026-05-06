@@ -73,16 +73,52 @@ CREATE INDEX idx_inbox_unread_badge
 CREATE INDEX idx_inbox_intent
     ON notify.notification_inbox (org_id, intent_id);
 
--- State consistency triggers: auto-set read_at/archived_at on state transition
+-- State machine guard + timestamp safety net.
+--
+-- Codex iter-1 P2/P3 absorb:
+-- - Forward-only state machine enforced at DB level (UNREAD → READ → ARCHIVED).
+--   Backward transitions (READ→UNREAD, ARCHIVED→*) raise exception.
+-- - INSERT path uses TG_OP guard (cleaner than OLD.state IS NULL).
+-- - Timestamps: app sets read_at/archived_at via JPQL UPDATE (authoritative);
+--   trigger only acts as safety net when NEW.read_at/archived_at is NULL.
+--   This avoids "trigger overrides app timestamp" surprise.
 CREATE OR REPLACE FUNCTION notify.notification_inbox_state_audit()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF NEW.state = 'READ' AND (OLD.state IS NULL OR OLD.state != 'READ') THEN
-        NEW.read_at = COALESCE(NEW.read_at, NOW());
+    IF TG_OP = 'INSERT' THEN
+        -- Insert: any valid state allowed (CHECK constraint enforces enum).
+        -- Set timestamps if state already non-UNREAD (test fixture / fan-out).
+        IF NEW.state = 'READ' AND NEW.read_at IS NULL THEN
+            NEW.read_at = NOW();
+        END IF;
+        IF NEW.state = 'ARCHIVED' AND NEW.archived_at IS NULL THEN
+            NEW.archived_at = NOW();
+        END IF;
+        RETURN NEW;
     END IF;
-    IF NEW.state = 'ARCHIVED' AND (OLD.state IS NULL OR OLD.state != 'ARCHIVED') THEN
-        NEW.archived_at = COALESCE(NEW.archived_at, NOW());
+
+    -- UPDATE path: enforce forward-only state machine.
+    IF OLD.state = 'ARCHIVED' AND NEW.state <> 'ARCHIVED' THEN
+        RAISE EXCEPTION
+            'notification_inbox: ARCHIVED is terminal; cannot transition to %',
+            NEW.state
+            USING ERRCODE = 'check_violation';
     END IF;
+    IF OLD.state = 'READ' AND NEW.state = 'UNREAD' THEN
+        RAISE EXCEPTION
+            'notification_inbox: cannot transition READ → UNREAD (forward-only)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    -- Timestamp safety net: if app forgot to set read_at/archived_at on
+    -- transition, populate it (idempotent — preserves existing value).
+    IF NEW.state = 'READ' AND OLD.state <> 'READ' AND NEW.read_at IS NULL THEN
+        NEW.read_at = NOW();
+    END IF;
+    IF NEW.state = 'ARCHIVED' AND OLD.state <> 'ARCHIVED' AND NEW.archived_at IS NULL THEN
+        NEW.archived_at = NOW();
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -93,9 +129,11 @@ FOR EACH ROW EXECUTE FUNCTION notify.notification_inbox_state_audit();
 
 COMMENT ON TABLE notify.notification_inbox IS
     'Faz 23.3 PR-E.1: subscriber-addressed in-app inbox; independent state '
-    'machine over delivery (UNREAD/READ/ARCHIVED).';
+    'machine over delivery. UNREAD → READ → ARCHIVED, forward-only enforced '
+    'by trigger.';
 COMMENT ON COLUMN notify.notification_inbox.state IS
     'UNREAD (initial) → READ (subscriber opens) → ARCHIVED (soft-delete). '
-    'Terminal: ARCHIVED. read_at/archived_at auto-set via trigger.';
+    'Terminal: ARCHIVED. Forward-only — backward transitions raise exception. '
+    'Timestamps set by app (JPQL UPDATE); trigger acts as safety net.';
 COMMENT ON COLUMN notify.notification_inbox.expires_at IS
     'Optional TTL for auto-archive worker (deferred to retention policy review).';

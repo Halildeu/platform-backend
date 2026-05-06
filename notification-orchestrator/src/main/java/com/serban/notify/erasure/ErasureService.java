@@ -4,6 +4,7 @@ import com.serban.notify.audit.AuditEventPublisher;
 import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.repository.NotificationDeliveryRepository;
+import com.serban.notify.repository.NotificationInboxRepository;
 import com.serban.notify.repository.NotificationIntentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,15 +43,18 @@ public class ErasureService {
 
     private final NotificationIntentRepository intentRepo;
     private final NotificationDeliveryRepository deliveryRepo;
+    private final NotificationInboxRepository inboxRepo;
     private final AuditEventPublisher audit;
 
     public ErasureService(
         NotificationIntentRepository intentRepo,
         NotificationDeliveryRepository deliveryRepo,
+        NotificationInboxRepository inboxRepo,
         AuditEventPublisher audit
     ) {
         this.intentRepo = intentRepo;
         this.deliveryRepo = deliveryRepo;
+        this.inboxRepo = inboxRepo;
         this.audit = audit;
     }
 
@@ -142,10 +146,29 @@ public class ErasureService {
             }
         }
 
-        log.info("KVKK erasure complete: orgId={} subscriberId={} intents_erased={} deliveries_anonymized={}",
-            request.orgId(), request.subscriberId(), intentsErased, deliveriesAnonymized);
+        // Faz 23.3 PR-E.1 (Codex iter-1 P1.2 absorb): inbox rows are
+        // subscriber-coupled PII (subject + body content snapshots) — KVKK
+        // Art 17 right-to-erasure requires complete removal. Hard delete
+        // (NOT anonymize) since content cannot be retained pseudonymously.
+        int inboxRowsDeleted = inboxRepo.deleteByOrgIdAndSubscriberId(
+            request.orgId(), request.subscriberId()
+        );
 
-        return new EraseResult(intentsErased, deliveriesAnonymized);
+        // Append inbox erasure audit event if rows actually deleted (avoid
+        // empty-noise audit on idempotent second call).
+        if (inboxRowsDeleted > 0) {
+            Map<String, Object> inboxDetails = new HashMap<>();
+            inboxDetails.put("erasure_reason", request.reason());
+            inboxDetails.put("evidence_ref", request.evidenceRef());
+            inboxDetails.put("subscriber_id", request.subscriberId());
+            inboxDetails.put("inbox_rows_deleted", inboxRowsDeleted);
+            audit.publish("SUBSCRIBER_INBOX_ERASURE", null, null, null, inboxDetails);
+        }
+
+        log.info("KVKK erasure complete: orgId={} subscriberId={} intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
+            request.orgId(), request.subscriberId(), intentsErased, deliveriesAnonymized, inboxRowsDeleted);
+
+        return new EraseResult(intentsErased, deliveriesAnonymized, inboxRowsDeleted);
     }
 
     /**
@@ -168,9 +191,11 @@ public class ErasureService {
      *
      * @param intentsErased intents whose PII (payload, snapshot, metadata, preference) cleared
      * @param deliveriesAnonymized delivery rows where recipient_id null'lanan
+     * @param inboxRowsDeleted in-app inbox rows hard-deleted (Faz 23.3 PR-E.1)
      */
     public record EraseResult(
         int intentsErased,
-        int deliveriesAnonymized
+        int deliveriesAnonymized,
+        int inboxRowsDeleted
     ) {}
 }
