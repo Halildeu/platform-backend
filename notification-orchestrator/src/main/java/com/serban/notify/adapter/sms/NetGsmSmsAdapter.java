@@ -40,15 +40,16 @@ import java.util.regex.Pattern;
  *   <li>HTTP 5xx / timeout / IOException → RETRY (PR4 worker)</li>
  * </ul>
  *
- * <p>Provider error codes (NetGSM common):
+ * <p>Provider response codes (NetGSM common):
  * <ul>
- *   <li>00 — success</li>
- *   <li>20 — message too long (segment limit)</li>
- *   <li>30 — invalid username/password</li>
- *   <li>40 — invalid msgheader (sender ID)</li>
- *   <li>50 — invalid phone number format</li>
- *   <li>60 — insufficient credit</li>
- *   <li>70 — IYS opt-out (recipient blocked)</li>
+ *   <li>00 — success → DELIVERED</li>
+ *   <li>20 — message too long (segment limit) → FAILED</li>
+ *   <li>30 — invalid username/password → FAILED</li>
+ *   <li>40 — invalid msgheader (sender ID) → FAILED</li>
+ *   <li>50 — invalid phone number format → FAILED</li>
+ *   <li>60 — insufficient credit → RETRY (admin tops up later)</li>
+ *   <li>70 — IYS opt-out (recipient blocked) → FAILED (KVKK consent)</li>
+ *   <li>missing/empty/unknown → RETRY (conservative, schema drift safety)</li>
  * </ul>
  *
  * <p>Encoding: SmsSegmentEncoder detects GSM-7 vs UCS-2; provider param
@@ -87,15 +88,17 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
 
     @Override
     public DeliveryAttemptResult send(DeliveryTarget target, RenderedMessage message) {
-        // 1. Validation
+        // 1. Validation (PII discipline: never log raw phone — use recipientHash;
+        // never copy raw phone into failureReason — flows into delivery row +
+        // audit details via DeliveryDispatchService).
         if (username == null || username.isBlank()) {
             log.warn("netgsm config missing: username empty");
             return DeliveryAttemptResult.failed("netgsm credentials missing", null);
         }
         String phone = target.targetRef();
         if (phone == null || !E164.matcher(phone).matches()) {
-            log.warn("netgsm invalid phone format: {}", phone);
-            return DeliveryAttemptResult.failed("phone not E.164: " + phone, null);
+            log.warn("netgsm invalid phone format: hash={}", target.recipientHash());
+            return DeliveryAttemptResult.failed("phone not E.164", null);
         }
         String text = message.bodyText() != null && !message.bodyText().isBlank()
             ? message.bodyText()
@@ -130,45 +133,72 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
             String providerMsgId = "netgsm-" + UUID.randomUUID();
             return client.execute(post, response -> {
                 int httpCode = response.getCode();
-                String respBody = new String(
-                    response.getEntity().getContent().readAllBytes(),
-                    StandardCharsets.UTF_8
-                );
+                // PII safety: provider may echo phone in error body — never log
+                // raw body. Capture length only for telemetry; bounded snippet
+                // is also sanitized via abbrev().
+                String respBody = readEntityBody(response);
 
                 // 5. HTTP-level dispatch
                 if (httpCode >= 500) {
-                    log.warn("netgsm transient HTTP RETRY: code={}", httpCode);
+                    log.warn("netgsm transient HTTP RETRY: code={} body_len={}",
+                        httpCode, respBody.length());
                     return DeliveryAttemptResult.retry("HTTP " + httpCode, httpCode);
                 }
                 if (httpCode >= 400) {
-                    log.warn("netgsm permanent HTTP FAIL: code={} body={}",
-                        httpCode, abbrev(respBody));
+                    log.warn("netgsm permanent HTTP FAIL: code={} body_len={}",
+                        httpCode, respBody.length());
                     return DeliveryAttemptResult.failed("HTTP " + httpCode, httpCode);
                 }
 
                 // 6. Provider response code parse (NetGSM REST v2 returns code in JSON)
-                JsonNode node = objectMapper.readTree(respBody);
-                String code = node.path("code").asText("");
-                String desc = node.path("description").asText("unknown");
-                String netgsmJobid = node.path("jobid").asText("");
+                // Schema drift safety: malformed/empty body or missing code →
+                // conservative RETRY (NOT silent DELIVERED). Aligns with status
+                // contract: only explicit "00" is success.
+                String code;
+                String desc;
+                String netgsmJobid;
+                try {
+                    if (respBody.isEmpty()) {
+                        log.warn("netgsm 2xx empty body (RETRY): code={}", httpCode);
+                        return DeliveryAttemptResult.retry("empty response body", httpCode);
+                    }
+                    JsonNode node = objectMapper.readTree(respBody);
+                    code = node.path("code").asText("");
+                    desc = node.path("description").asText("unknown");
+                    netgsmJobid = node.path("jobid").asText("");
+                } catch (com.fasterxml.jackson.core.JsonProcessingException jpe) {
+                    log.warn("netgsm 2xx malformed JSON (RETRY): http={} body_len={}",
+                        httpCode, respBody.length());
+                    return DeliveryAttemptResult.retry("malformed response body", httpCode);
+                }
 
-                if ("00".equals(code) || code.isEmpty() && httpCode == 200) {
+                if ("00".equals(code)) {
                     log.info("netgsm DELIVERED: jobid={} msg_id={}", netgsmJobid, providerMsgId);
                     return DeliveryAttemptResult.delivered(
                         netgsmJobid.isEmpty() ? providerMsgId : "netgsm-" + netgsmJobid);
                 }
                 // Permanent provider errors (no point retrying)
                 if (isPermanentError(code)) {
-                    log.warn("netgsm permanent provider FAIL: code={} desc={}", code, desc);
-                    return DeliveryAttemptResult.failed("provider " + code + ": " + desc, httpCode);
+                    log.warn("netgsm permanent provider FAIL: code={} desc={}", code, abbrev(desc));
+                    return DeliveryAttemptResult.failed("provider " + code, httpCode);
                 }
-                // Unknown provider code → conservative RETRY
-                log.warn("netgsm unknown provider code (RETRY): code={} desc={}", code, desc);
-                return DeliveryAttemptResult.retry("provider " + code + ": " + desc, httpCode);
+                // Unknown / missing / "60" provider code → conservative RETRY
+                log.warn("netgsm provider code RETRY: code={} desc={}", code, abbrev(desc));
+                return DeliveryAttemptResult.retry("provider " + (code.isEmpty() ? "missing" : code), httpCode);
             });
         } catch (IOException e) {
             log.warn("netgsm IOException (treating as RETRY): {}", e.getMessage());
             return DeliveryAttemptResult.retry("io: " + e.getClass().getSimpleName(), null);
+        }
+    }
+
+    /** Read response entity to UTF-8 string; null/empty entity → empty string. */
+    private static String readEntityBody(org.apache.hc.core5.http.ClassicHttpResponse response)
+            throws IOException {
+        if (response.getEntity() == null) return "";
+        try (var stream = response.getEntity().getContent()) {
+            if (stream == null) return "";
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
         }
     }
 

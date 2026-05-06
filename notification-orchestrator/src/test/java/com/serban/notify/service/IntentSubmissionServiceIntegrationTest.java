@@ -130,7 +130,8 @@ class IntentSubmissionServiceIntegrationTest extends AbstractPostgresTest {
 
     @Test
     void unsupportedChannelRejected() {
-        // Codex post-impl bulgu #4 absorb: PR2 channels = email/slack/webhook only
+        // Faz 23.3.1: SMS now first-class (PR2 kernel = email/sms/slack/webhook).
+        // Use "push-fcm" as canonical not-yet-implemented channel for this gate.
         SubmitIntentRequest req = new SubmitIntentRequest(
             UUID.randomUUID().toString(),
             "ch-key",
@@ -144,13 +145,13 @@ class IntentSubmissionServiceIntegrationTest extends AbstractPostgresTest {
                 "1204", null, null, "Halil", "tr-TR"
             )),
             new SubmitIntentRequest.TemplateRef("auth-password-reset", null, "tr-TR"),
-            List.of("sms"),  // SMS not in PR2 kernel
+            List.of("push-fcm"),  // not in PR2/Faz23.3.1 kernel
             Map.of("k", "v"),
             null, null, null, null, null
         );
         assertThatThrownBy(() -> service.submit(req))
             .isInstanceOf(com.serban.notify.exception.InvalidRequestException.class)
-            .hasMessageContaining("sms");
+            .hasMessageContaining("push-fcm");
     }
 
     @Test

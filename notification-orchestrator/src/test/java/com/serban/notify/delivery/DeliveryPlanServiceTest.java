@@ -348,6 +348,32 @@ class DeliveryPlanServiceTest {
     }
 
     @Test
+    void planSmsRejectsNonE164PhoneFromContactProjection() {
+        // Codex iter-1 P2 absorb: subscriber contact may carry legacy/non-E.164
+        // phone (Workcube ETL); plan-time fail-fast prevents PII leak via
+        // adapter error path.
+        NotificationIntent intent = intent(new String[] { "sms" }, null);
+        com.serban.notify.domain.SubscriberContact contact =
+            new com.serban.notify.domain.SubscriberContact();
+        contact.setOrgId("default");
+        contact.setSubscriberId("legacy-fmt");
+        contact.setPhone("05321234567");  // legacy local format, no "+"
+        when(prefService.findContact("default", "legacy-fmt"))
+            .thenReturn(java.util.Optional.of(contact));
+
+        List<SubmitIntentRequest.RecipientRef> recipients = List.of(
+            new SubmitIntentRequest.RecipientRef(
+                SubmitIntentRequest.RecipientRef.Type.subscriber,
+                "legacy-fmt", null, null, null, "tr-TR"
+            )
+        );
+
+        assertThatThrownBy(() -> service.plan(intent, recipients))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("E.164");
+    }
+
+    @Test
     void planMixedEmailPlusSmsFanoutBothChannels() {
         // Same recipients, both channels selected → 2 email + 2 sms = 4 targets.
         NotificationIntent intent = intent(new String[] { "email", "sms" }, null);

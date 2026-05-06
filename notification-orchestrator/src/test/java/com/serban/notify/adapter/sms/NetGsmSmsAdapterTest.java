@@ -94,6 +94,71 @@ class NetGsmSmsAdapterTest {
     }
 
     @Test
+    void http200MissingProviderCodeRetries() {
+        // Codex iter-1 P1 absorb: schema drift safety — only explicit "00"
+        // is DELIVERED. Missing/empty code → conservative RETRY (NOT silent
+        // success).
+        netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
+            .willReturn(aResponse().withStatus(200)
+                .withBody("{\"description\":\"unknown response shape\"}")));
+
+        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+            target("+905321111111"),
+            new RenderedMessage("S", null, "x", "en-US")
+        );
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        assertThat(r.failureReason()).contains("missing");
+    }
+
+    @Test
+    void http200EmptyBodyRetries() {
+        // Codex iter-1 P2 absorb: 2xx empty body → RETRY (provider may have
+        // returned malformed response; never silent DELIVERED).
+        netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
+            .willReturn(aResponse().withStatus(200).withBody("")));
+
+        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+            target("+905321111111"),
+            new RenderedMessage("S", null, "x", "en-US")
+        );
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        assertThat(r.failureReason()).contains("empty");
+    }
+
+    @Test
+    void http200MalformedJsonRetries() {
+        // Codex iter-1 P2 absorb: malformed JSON → RETRY, not silent
+        // DELIVERED. Phone never logged in this path.
+        netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
+            .willReturn(aResponse().withStatus(200).withBody("not-a-json{")));
+
+        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+            target("+905321111111"),
+            new RenderedMessage("S", null, "x", "en-US")
+        );
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        assertThat(r.failureReason()).contains("malformed");
+    }
+
+    @Test
+    void http500EmptyBodyRetries() {
+        // 5xx empty body → RETRY (no NPE on null entity).
+        netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
+            .willReturn(aResponse().withStatus(502).withBody("")));
+
+        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+            target("+905321111111"),
+            new RenderedMessage("S", null, "x", "en-US")
+        );
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        assertThat(r.providerResponseCode()).isEqualTo(502);
+    }
+
+    @Test
     void deliveredTurkishTextSetsEncodingTr() {
         netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
             .willReturn(aResponse().withStatus(200)
@@ -204,6 +269,7 @@ class NetGsmSmsAdapterTest {
 
     @Test
     void invalidPhoneFormatFailsBeforeSend() {
+        // Codex iter-1 P1/P2 absorb: failureReason MUST NOT contain raw phone.
         ChannelAdapter.DeliveryAttemptResult r = adapter.send(
             target("905321234567"),  // missing leading "+"
             new RenderedMessage("S", null, "x", "en-US")
@@ -211,6 +277,9 @@ class NetGsmSmsAdapterTest {
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
         assertThat(r.failureReason()).contains("E.164");
+        // PII discipline: raw phone must not surface in failureReason
+        // (flows into delivery row + audit details).
+        assertThat(r.failureReason()).doesNotContain("905321234567");
     }
 
     @Test

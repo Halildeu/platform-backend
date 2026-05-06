@@ -106,6 +106,10 @@ public class DeliveryPlanService {
         return targets;
     }
 
+    /** E.164 phone format (matches DTO bean validation pattern). */
+    private static final java.util.regex.Pattern E164 =
+        java.util.regex.Pattern.compile("^\\+[1-9][0-9]{7,14}$");
+
     /**
      * SMS: recipient-addressed; one target per eligible recipient
      * (Faz 23.3.1 — Production MVP geniş scope).
@@ -119,6 +123,11 @@ public class DeliveryPlanService {
      *
      * <p>External type: {@code ref.phone()} required; DTO bean validation
      * already enforces E.164 pattern.
+     *
+     * <p>Plan-time E.164 validation (Codex iter-1 P2 absorb): subscriber
+     * contact projection may carry legacy/non-E.164 phone (Workcube ETL
+     * source). Fail-fast at planning time so PII never leaks into adapter
+     * error path.
      */
     private List<DeliveryTarget> planSmsTargets(
         NotificationIntent intent, List<SubmitIntentRequest.RecipientRef> recipients
@@ -154,6 +163,17 @@ public class DeliveryPlanService {
                 }
                 phone = ref.phone();
                 hashInput = ref.phone();
+            }
+            // Codex iter-1 P2 absorb: plan-time E.164 validation (fail-fast,
+            // no raw phone in adapter error path even when contact is bad).
+            if (!E164.matcher(phone).matches()) {
+                String safeRef = ref.type() == SubmitIntentRequest.RecipientRef.Type.subscriber
+                    ? "subscriber " + ref.subscriberId()
+                    : "external recipient";
+                throw new InvalidRequestException(
+                    safeRef + " has invalid phone format (must be E.164: + + 8-15 digits) "
+                        + "for SMS channel"
+                );
             }
             String hash = piiRedactor.hashRecipient(intent.getOrgId(), type, hashInput);
             result.add(new DeliveryTarget(
