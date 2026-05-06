@@ -8,8 +8,10 @@ import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.CategoryDto;
 import com.example.report.dto.PagedResultDto;
+import com.example.report.dto.ReportCapabilitiesDto;
 import com.example.report.dto.ReportListItemDto;
 import com.example.report.dto.ReportMetadataDto;
+import com.example.report.dto.ReportQueryRequestDto;
 import com.example.report.query.QueryEngine;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
@@ -185,9 +187,16 @@ public class ReportController {
 
         List<ColumnDefinition> visibleCols = columnFilter.getVisibleColumnDefinitions(def, authz);
 
+        // PR-0.1 (reporting hardening plan, 2026-05): expose capability flags so
+        // the frontend can decide whether to surface grouping/pivot UI.
+        // serverSideGrouping is hard-coded false until PR-0.2 lands the SQL
+        // GROUP BY builder + per-report opt-in on the report registry.
+        ReportCapabilitiesDto capabilities = new ReportCapabilitiesDto(false);
+
         return ResponseEntity.ok(new ReportMetadataDto(
                 def.key(), def.title(), def.description(), def.category(),
-                visibleCols, def.defaultSort(), def.defaultSortDirection()));
+                visibleCols, def.defaultSort(), def.defaultSortDirection(),
+                capabilities));
     }
 
     @GetMapping("/{key}/data")
@@ -218,6 +227,78 @@ public class ReportController {
         auditClient.logReportAccess(key, authz.getUserId(), extractEmail(jwt));
 
         return ResponseEntity.ok(new PagedResultDto<>(result.items(), result.total(), result.page(), result.pageSize()));
+    }
+
+    /**
+     * AG Grid SSRM-compatible query endpoint introduced by PR-0.1 of the
+     * reporting platform hardening plan (2026-05).
+     *
+     * <p>For PR-0.1 the contract is intentionally minimal: pagination,
+     * sorting and filtering delegate to the same {@link QueryEngine#executeQuery}
+     * path used by the legacy GET {@code /data} handler. Any request that
+     * asks for grouping or pivoting is rejected with HTTP 400 because every
+     * report currently advertises {@code capabilities.serverSideGrouping=false}.
+     *
+     * <p>PR-0.2 will graduate {@code rowGroupCols + groupKeys + valueCols}
+     * from rejected to handled (single-level GROUP BY), then PR-0.3+ adds
+     * multi-level expansion, weighted AVG and pivot.
+     */
+    @PostMapping("/{key}/query")
+    public ResponseEntity<PagedResultDto<Map<String, Object>>> queryReport(
+            @PathVariable String key,
+            @RequestBody(required = false) ReportQueryRequestDto request,
+            @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
+            @AuthenticationPrincipal Jwt jwt) {
+
+        ReportDefinition def = findReportOrThrow(key);
+        AuthzMeResponse authz = resolveAndCheckAccess(def, jwt);
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
+
+        ReportQueryRequestDto safeRequest = request != null
+                ? request
+                : new ReportQueryRequestDto(null, null, null, null, null, null, null, null, null);
+
+        // Capability gate: server-side grouping is not yet implemented. Reject
+        // any payload that asks for grouping/pivot rather than silently
+        // returning flat rows (which would confuse AG Grid SSRM cache).
+        if (safeRequest.requestsGrouping()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "GROUPING_NOT_SUPPORTED: server-side grouping/pivot not yet enabled "
+                            + "for this report (capabilities.serverSideGrouping=false)");
+        }
+
+        // Translate AG Grid startRow/endRow → page/pageSize for QueryEngine.
+        int[] paging = computePaging(safeRequest.startRow(), safeRequest.endRow());
+        int page = paging[0];
+        int pageSize = paging[1];
+
+        QueryEngine.PagedData result = queryEngine.executeQuery(
+                def, scopedAuthz,
+                safeRequest.filterModel(),
+                safeRequest.sortModel(),
+                page, pageSize);
+
+        auditClient.logReportAccess(key, authz.getUserId(), extractEmail(jwt));
+
+        return ResponseEntity.ok(new PagedResultDto<>(
+                result.items(), result.total(), result.page(), result.pageSize()));
+    }
+
+    /**
+     * Translate AG Grid SSRM {@code startRow / endRow} indices into the
+     * 1-based {@code page / pageSize} pair used by {@link QueryEngine}.
+     *
+     * <p>Defaults to page=1 / pageSize=50 when the indices are absent so
+     * SSRM clients that omit the cache window (e.g. tests, ad-hoc curl)
+     * still get a deterministic response. PageSize is clamped to the same
+     * [1, 500] window enforced by GET {@code /data}.
+     */
+    static int[] computePaging(Integer startRow, Integer endRow) {
+        int s = startRow != null ? Math.max(startRow, 0) : 0;
+        int e = endRow != null ? Math.max(endRow, s) : s + 50;
+        int size = Math.min(Math.max(e - s, 1), 500);
+        int page = (s / size) + 1;
+        return new int[]{page, size};
     }
 
     private ReportDefinition findReportOrThrow(String key) {
