@@ -22,8 +22,9 @@ import java.util.concurrent.ThreadPoolExecutor;
  * <ul>
  *   <li>core-pool-size: 2 — handles steady-state SSE event broadcast</li>
  *   <li>max-pool-size: 8 — burst up to ~8 concurrent listener threads</li>
- *   <li>queue-capacity: 100 — small buffer; events older than queue depth
- *       are discarded oldest-first to keep badge fresh</li>
+ *   <li>queue-capacity: 100 — small buffer; on overflow {@code CallerRunsPolicy}
+ *       runs the task synchronously on the caller (publisher) thread, applying
+ *       backpressure rather than dropping events</li>
  *   <li>thread name prefix: {@code inbox-sse-} for log/metrics correlation</li>
  * </ul>
  *
