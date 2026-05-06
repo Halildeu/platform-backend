@@ -327,31 +327,43 @@ public class ReportController {
 
         QueryEngine.PagedData result;
         if (wantsMultiLevelGroup) {
-            // PR-0.3 multi-level dispatch. Merge ancestor groupKeys as
-            // equality filters on top of the user's filterModel so the
-            // GROUP BY (or leaf flat) query only sees rows under the
-            // expanded ancestor path.
+            // PR-0.3 multi-level dispatch. Validate valueCols upfront so
+            // a leaf-path request with malformed aggregation metadata
+            // also fails closed (Codex iter-1 absorb — invalid valueCols
+            // would otherwise slip through executeQuery silently).
+            List<SqlBuilder.GroupedAggregation> aggregations;
+            try {
+                aggregations = sanitizeAggregations(
+                        safeRequest.valueCols(), aggregatableFields, visibleCols);
+            } catch (IllegalArgumentException iae) {
+                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                        "INVALID_AGGREGATION_REQUEST", iae.getMessage()));
+            }
+
+            // Merge ancestor groupKeys as equality filters on top of the
+            // user's filterModel. Collisions and type-coercion failures
+            // become structured 400s.
             List<ColumnVO> rowGroupCols = safeRequest.rowGroupCols();
             List<String> groupKeys = safeRequest.groupKeys() != null
                     ? safeRequest.groupKeys()
                     : List.of();
             int currentLevel = groupKeys.size();
 
-            Map<String, Object> mergedFilter = mergeAncestorFilters(
-                    safeRequest.filterModel(), rowGroupCols, groupKeys);
+            Map<String, Object> mergedFilter;
+            try {
+                mergedFilter = mergeAncestorFilters(
+                        safeRequest.filterModel(), rowGroupCols, groupKeys, visibleCols);
+            } catch (AncestorFilterCollisionException afce) {
+                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                        "ANCESTOR_FILTER_COLLISION", afce.getMessage()));
+            } catch (IllegalArgumentException iae) {
+                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                        "INVALID_GROUP_KEY", iae.getMessage()));
+            }
 
             if (currentLevel < rowGroupCols.size()) {
                 // GROUP BY the current level's column.
                 String groupColumn = rowGroupCols.get(currentLevel).field();
-                List<SqlBuilder.GroupedAggregation> aggregations;
-                try {
-                    aggregations = sanitizeAggregations(
-                            safeRequest.valueCols(), aggregatableFields, visibleCols);
-                } catch (IllegalArgumentException iae) {
-                    return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
-                            "INVALID_AGGREGATION_REQUEST", iae.getMessage()));
-                }
-
                 try {
                     result = queryEngine.executeGroupedQuery(
                             def, scopedAuthz,
@@ -387,6 +399,11 @@ public class ReportController {
                 result.items(), result.total(), result.page(), result.pageSize()));
     }
 
+    /** PR-0.3 hardening: cap recursion depth so a malicious payload
+     *  can't request a 100-deep grouping pipeline. AG Grid SSRM in
+     *  practice uses ≤ 4-deep so the cap leaves comfortable headroom. */
+    static final int MAX_ROW_GROUP_DEPTH = 8;
+
     /**
      * PR-0.3 grouping classifier: returns true iff the request expresses
      * a supported multi-level GROUP BY shape — every {@code rowGroupCols}
@@ -397,20 +414,41 @@ public class ReportController {
      * <p>{@code groupKeys.size == rowGroupCols.size} is supported (it's
      * the leaf-row expansion: the user has drilled all the way down and
      * wants the flat rows under the deepest bucket).
+     *
+     * <p>PR-0.3 hardening (Codex iter-1 absorb):
+     * <ul>
+     *   <li>{@code rowGroupCols.size} is capped at {@link #MAX_ROW_GROUP_DEPTH}.</li>
+     *   <li>Duplicate {@code rowGroupCols.field} entries are rejected
+     *       (a path with two of the same column would either silently
+     *       collapse a level or break the ancestor-filter merge).</li>
+     *   <li>{@code groupKeys[i] == null} is rejected — IS NULL bucket
+     *       support would need a separate filter contract, out of
+     *       scope for PR-0.3.</li>
+     * </ul>
      */
     private static boolean multiLevelGroupRequest(ReportQueryRequestDto req,
                                                    Set<String> groupableFields) {
         if (req == null) return false;
         if (req.rowGroupCols() == null || req.rowGroupCols().isEmpty()) return false;
+        if (req.rowGroupCols().size() > MAX_ROW_GROUP_DEPTH) return false;
         if (req.pivotCols() != null && !req.pivotCols().isEmpty()) return false;
         if (Boolean.TRUE.equals(req.pivotMode())) return false;
         // groupKeys.size > rowGroupCols.size is malformed — the client
         // claims to have expanded deeper than the path defines.
         int gkSize = req.groupKeys() != null ? req.groupKeys().size() : 0;
         if (gkSize > req.rowGroupCols().size()) return false;
+        // Null groupKey is malformed; IS NULL bucket support is a
+        // separate contract.
+        if (req.groupKeys() != null) {
+            for (String key : req.groupKeys()) {
+                if (key == null) return false;
+            }
+        }
+        Set<String> seenFields = new java.util.HashSet<>();
         for (var rgc : req.rowGroupCols()) {
             if (rgc == null || rgc.field() == null) return false;
             if (!groupableFields.contains(rgc.field())) return false;
+            if (!seenFields.add(rgc.field())) return false; // duplicate path entry
         }
         return true;
     }
@@ -426,24 +464,93 @@ public class ReportController {
      * the user expanded at depth {@code i}. The merged filter shape
      * mirrors {@link com.example.report.query.FilterTranslator}'s
      * existing {@code equals} branch.
+     *
+     * <p>PR-0.3 hardening (Codex iter-1 absorb):
+     * <ul>
+     *   <li>If the user's {@code filterModel} already constrains a
+     *       group-key column, the merge throws
+     *       {@link AncestorFilterCollisionException} and the controller
+     *       turns it into a structured 400. Compound AND between user
+     *       and route filters belongs to a follow-up PR that extends
+     *       {@code FilterTranslator}.</li>
+     *   <li>{@code groupKeys[i]} is type-coerced via
+     *       {@link ColumnDefinition#type()}: {@code "number"} →
+     *       parse double; {@code "date"} → leave as ISO string (the
+     *       SQL Server driver accepts ISO-8601). Parse failures become
+     *       a structured 400 so a client never sees a silent SQL
+     *       implicit-conversion result.</li>
+     * </ul>
      */
     private static Map<String, Object> mergeAncestorFilters(
             Map<String, Object> userFilter,
             List<ColumnVO> rowGroupCols,
-            List<String> groupKeys) {
+            List<String> groupKeys,
+            List<ColumnDefinition> visibleCols) {
         Map<String, Object> merged = userFilter != null
                 ? new java.util.HashMap<>(userFilter)
                 : new java.util.HashMap<>();
+        Map<String, ColumnDefinition> byField = visibleCols.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        ColumnDefinition::field, c -> c, (a, b) -> a));
         for (int i = 0; i < groupKeys.size(); i++) {
             ColumnVO col = rowGroupCols.get(i);
             String field = col != null ? col.field() : null;
             String value = groupKeys.get(i);
-            if (field == null || value == null) continue;
+            if (field == null) continue;
+            if (merged.containsKey(field)) {
+                throw new AncestorFilterCollisionException(
+                        "Ancestor groupKey for '" + field + "' collides with "
+                                + "user filterModel entry for the same column. "
+                                + "Compound AND is not yet supported; remove the "
+                                + "user filter on this column or wait until the "
+                                + "follow-up PR extends FilterTranslator.");
+            }
+            Object coercedValue = coerceGroupKey(field, value, byField.get(field));
             merged.put(field, Map.of(
                     "type", "equals",
-                    "filter", value));
+                    "filter", coercedValue));
         }
         return merged;
+    }
+
+    /**
+     * Type-coerce a single AG Grid SSRM {@code groupKeys} entry based on
+     * the registry's column type. Failures throw
+     * {@link IllegalArgumentException} so the controller can emit a
+     * structured 400 rather than letting SQL Server's implicit
+     * conversion silently swallow the error.
+     */
+    private static Object coerceGroupKey(String field, String rawValue, ColumnDefinition cd) {
+        if (cd == null || cd.type() == null) return rawValue;
+        String t = cd.type().toLowerCase();
+        try {
+            return switch (t) {
+                case "number" -> {
+                    // Some columns store integral, others decimal — Double
+                    // accepts both and FilterTranslator binds it as Object,
+                    // so SQL Server picks the right comparison path.
+                    yield Double.valueOf(rawValue);
+                }
+                case "date", "datetime" -> rawValue; // ISO-8601 string left as-is
+                default -> rawValue;
+            };
+        } catch (NumberFormatException nfe) {
+            throw new IllegalArgumentException(
+                    "groupKey value for column '" + field + "' (type=" + t
+                            + ") could not be parsed: '" + rawValue + "'");
+        }
+    }
+
+    /**
+     * Sentinel raised by {@link #mergeAncestorFilters} when an ancestor
+     * route key collides with a user-supplied filter on the same column.
+     * The controller catches this and emits
+     * {@code 400 ANCESTOR_FILTER_COLLISION}.
+     */
+    static final class AncestorFilterCollisionException extends RuntimeException {
+        AncestorFilterCollisionException(String message) {
+            super(message);
+        }
     }
 
     /**
