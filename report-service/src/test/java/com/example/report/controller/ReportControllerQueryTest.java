@@ -3,13 +3,12 @@ package com.example.report.controller;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,8 +20,10 @@ import com.example.report.authz.AuthzMeResponse;
 import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.ColumnVO;
+import com.example.report.dto.PagedResultDto;
 import com.example.report.dto.ReportCapabilitiesDto;
 import com.example.report.dto.ReportMetadataDto;
+import com.example.report.dto.ReportQueryErrorDto;
 import com.example.report.dto.ReportQueryRequestDto;
 import com.example.report.query.QueryEngine;
 import com.example.report.registry.AccessConfig;
@@ -32,7 +33,6 @@ import com.example.report.registry.ReportRegistry;
 import com.example.report.repository.CustomReportRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,15 +53,17 @@ import org.springframework.web.server.ResponseStatusException;
  * AG Grid SSRM-compatible {@code POST /api/v1/reports/{key}/query} endpoint
  * and the capability flag exposed on {@code GET /metadata}.
  *
- * <p>Three blocks:
+ * <p>Five blocks:
  * <ul>
  *   <li>{@code QueryEndpoint} — happy path, capability gate (rejected
  *       grouping payloads), 403 / 404 paths and pagination translation.</li>
  *   <li>{@code MetadataCapabilities} — verifies the new
  *       {@code capabilities.serverSideGrouping=false} field is populated.</li>
  *   <li>{@code Paging} — unit tests on
- *       {@link ReportController#computePaging(Integer, Integer)} which is
- *       the only piece of pure logic introduced in this PR.</li>
+ *       {@link ReportController#computePaging(Integer, Integer)} including
+ *       fail-closed guards on misaligned windows.</li>
+ *   <li>{@code ErrorBody} — verifies the structured
+ *       {@link ReportQueryErrorDto} is returned (Codex iter-1 absorb).</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -106,12 +108,15 @@ class ReportControllerQueryTest {
             var response = controller.queryReport("any", null, null, testJwt("admin"));
 
             assertEquals(200, response.getStatusCode().value());
-            assertEquals(1, response.getBody().items().size());
+            // 200 path returns PagedResultDto; assertInstanceOf carries
+            // the pattern-typed body so we can read items().size().
+            PagedResultDto<?> body = assertInstanceOf(PagedResultDto.class, response.getBody());
+            assertEquals(1, body.items().size());
             verify(queryEngine).executeQuery(any(), any(), any(), any(), eq(1), eq(50));
         }
 
         @Test
-        void rowGroupColsPresent_rejectedWithBadRequest() {
+        void rowGroupColsPresent_returns400StructuredError() {
             stubAuthz(true, List.of());
             when(registry.get("any")).thenReturn(Optional.of(report("any")));
 
@@ -120,20 +125,41 @@ class ReportControllerQueryTest {
                     List.of(new ColumnVO("col1", "Col 1", "col1", null)),
                     null, null, false, null, null, null);
 
-            ResponseStatusException ex = assertThrows(ResponseStatusException.class,
-                    () -> controller.queryReport("any", grouping, null, testJwt("admin")));
+            var response = controller.queryReport("any", grouping, null, testJwt("admin"));
 
-            assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
-            assertNotNull(ex.getReason());
-            assertTrue(ex.getReason().startsWith("GROUPING_NOT_SUPPORTED"),
-                    "Reason must surface GROUPING_NOT_SUPPORTED so frontend can branch on it");
+            assertEquals(HttpStatus.BAD_REQUEST.value(), response.getStatusCode().value());
+            ReportQueryErrorDto error = assertInstanceOf(
+                    ReportQueryErrorDto.class, response.getBody());
+            assertEquals("GROUPING_NOT_SUPPORTED", error.code(),
+                    "Frontend branches on body.code; must be the documented constant");
+            assertNotNull(error.message());
             // Capability gate must short-circuit before the DB call to
             // avoid wasting a query that would silently return flat rows.
             verify(queryEngine, never()).executeQuery(any(), any(), any(), any(), anyInt(), anyInt());
         }
 
         @Test
-        void pivotModeTrue_rejected() {
+        void valueColsPresent_returns400StructuredError() {
+            // Codex iter-1 absorb: aggregation requests fail closed too —
+            // silently ignoring valueCols would return raw rows under a
+            // "I want sums" payload, which is worse than a clean 400.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+
+            var aggregation = new ReportQueryRequestDto(
+                    0, 50, null,
+                    List.of(new ColumnVO("amount", "Amount", "amount", "sum")),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", aggregation, null, testJwt("admin"));
+
+            assertEquals(HttpStatus.BAD_REQUEST.value(), response.getStatusCode().value());
+            assertEquals("GROUPING_NOT_SUPPORTED",
+                    assertInstanceOf(ReportQueryErrorDto.class, response.getBody()).code());
+        }
+
+        @Test
+        void pivotModeTrue_returns400StructuredError() {
             stubAuthz(true, List.of());
             when(registry.get("any")).thenReturn(Optional.of(report("any")));
 
@@ -142,13 +168,13 @@ class ReportControllerQueryTest {
                     List.of(new ColumnVO("col1", "Col 1", "col1", null)),
                     true, null, null, null);
 
-            ResponseStatusException ex = assertThrows(ResponseStatusException.class,
-                    () -> controller.queryReport("any", pivot, null, testJwt("admin")));
-            assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
+            var response = controller.queryReport("any", pivot, null, testJwt("admin"));
+            assertEquals(HttpStatus.BAD_REQUEST.value(), response.getStatusCode().value());
+            assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
         }
 
         @Test
-        void groupKeysPresent_rejected() {
+        void groupKeysPresent_returns400StructuredError() {
             // groupKeys non-empty implies the client expanded a node — only
             // makes sense when grouping is on. Reject for parity with
             // rowGroupCols guard.
@@ -159,8 +185,9 @@ class ReportControllerQueryTest {
                     0, 50, null, null, null, false,
                     List.of("Finance"), null, null);
 
-            assertThrows(ResponseStatusException.class,
-                    () -> controller.queryReport("any", expansion, null, testJwt("admin")));
+            var response = controller.queryReport("any", expansion, null, testJwt("admin"));
+            assertEquals(HttpStatus.BAD_REQUEST.value(), response.getStatusCode().value());
+            assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
         }
 
         @Test
@@ -188,7 +215,8 @@ class ReportControllerQueryTest {
         @Test
         void startRowEndRow_translateToPageAndPageSize() {
             // startRow=100, endRow=200 → pageSize=100, page=2
-            // (this is the path AG Grid SSRM uses by default).
+            // (this is the path AG Grid SSRM uses by default; 100 is a
+            // multiple of 100 so the alignment guard passes).
             stubAuthz(true, List.of());
             when(registry.get("any")).thenReturn(Optional.of(report("any")));
             when(queryEngine.executeQuery(any(), any(), any(), any(), eq(2), eq(100)))
@@ -201,6 +229,42 @@ class ReportControllerQueryTest {
 
             assertEquals(200, response.getStatusCode().value());
             verify(queryEngine).executeQuery(any(), any(), any(), any(), eq(2), eq(100));
+        }
+
+        @Test
+        void misalignedWindow_returns400NonAlignedCode() {
+            // Codex iter-1 absorb: 75/125 produces pageSize=50, but 75 is
+            // not a multiple of 50 → SQL OFFSET would be 50, mismatching
+            // the requested startRow. Fail closed.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+
+            var dto = new ReportQueryRequestDto(
+                    75, 125, null, null, null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(HttpStatus.BAD_REQUEST.value(), response.getStatusCode().value());
+            ReportQueryErrorDto error = assertInstanceOf(
+                    ReportQueryErrorDto.class, response.getBody());
+            assertEquals("NON_ALIGNED_ROW_WINDOW", error.code());
+            verify(queryEngine, never()).executeQuery(any(), any(), any(), any(), anyInt(), anyInt());
+        }
+
+        @Test
+        void zeroWindow_returns400InvalidWindowCode() {
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+
+            var dto = new ReportQueryRequestDto(
+                    50, 50, null, null, null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(HttpStatus.BAD_REQUEST.value(), response.getStatusCode().value());
+            ReportQueryErrorDto error = assertInstanceOf(
+                    ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_ROW_WINDOW", error.code());
         }
     }
 
@@ -255,24 +319,47 @@ class ReportControllerQueryTest {
         @Test
         void clampsOversizedWindowToMax500() {
             // AG Grid could request a 10k window; the GET /data path caps at
-            // 500 and the POST /query path must agree.
+            // 500 and the POST /query path must agree. 0 % 500 == 0 so the
+            // alignment guard still passes.
             int[] paging = ReportController.computePaging(0, 10_000);
             assertEquals(1, paging[0]);
             assertEquals(500, paging[1]);
         }
 
         @Test
-        void clampsZeroOrNegativeWindowToMin1() {
-            // endRow < startRow is malformed but should not crash; the
-            // computed pageSize of 1 keeps QueryEngine happy.
-            int[] paging = ReportController.computePaging(50, 50);
-            assertEquals(51, paging[0]); // (50/1)+1
-            assertEquals(1, paging[1]);
+        void zeroWindowThrowsInvalidRowWindow() {
+            // Codex iter-1: zero / negative window is malformed; QueryEngine
+            // would return undefined rows, so fail closed.
+            ReportController.PagingException ex = assertThrows(
+                    ReportController.PagingException.class,
+                    () -> ReportController.computePaging(50, 50));
+            assertEquals("INVALID_ROW_WINDOW", ex.code);
         }
 
         @Test
-        void negativeStartRowClampsToZero() {
+        void misalignedWindowThrowsNonAligned() {
+            // 75/125 → pageSize=50, but 75 is not a multiple of 50.
+            ReportController.PagingException ex = assertThrows(
+                    ReportController.PagingException.class,
+                    () -> ReportController.computePaging(75, 125));
+            assertEquals("NON_ALIGNED_ROW_WINDOW", ex.code);
+        }
+
+        @Test
+        void misalignedAfterClampThrowsNonAligned() {
+            // Codex iter-1 example: 100/10000 → clamp pageSize to 500;
+            // 100 is not a multiple of 500 → fail closed instead of
+            // silently shifting OFFSET to 0.
+            ReportController.PagingException ex = assertThrows(
+                    ReportController.PagingException.class,
+                    () -> ReportController.computePaging(100, 10_000));
+            assertEquals("NON_ALIGNED_ROW_WINDOW", ex.code);
+        }
+
+        @Test
+        void negativeStartRowClampsToZeroAndPasses() {
             // Defensive: should not propagate a negative offset to QueryEngine.
+            // 0 % 40 == 0 so alignment guard still passes.
             int[] paging = ReportController.computePaging(-10, 40);
             assertEquals(1, paging[0]);
             assertEquals(40, paging[1]);

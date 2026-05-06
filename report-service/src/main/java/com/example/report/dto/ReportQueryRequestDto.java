@@ -20,11 +20,16 @@ import java.util.Map;
  * </ul>
  *
  * <p><b>PR-0.1 contract — rejected fields</b> (capability flag is false
- * for every report until PR-0.2):
+ * for every report until PR-0.2). Codex thread {@code 019dfeb2-eb40-7a92-…}
+ * iter-1 absorb: {@code valueCols} is fail-closed too — silently ignoring
+ * an aggregation request would return flat rows under a "I want sums"
+ * payload, which is worse than a clean 400.
  * <ul>
  *   <li>{@code rowGroupCols} non-empty</li>
+ *   <li>{@code valueCols} non-empty</li>
  *   <li>{@code pivotMode == true}</li>
  *   <li>{@code pivotCols} non-empty</li>
+ *   <li>{@code groupKeys} non-empty</li>
  * </ul>
  * Sending any of the rejected fields with a non-default value yields
  * HTTP 400 with body {@code {"code":"GROUPING_NOT_SUPPORTED",...}}.
@@ -59,9 +64,14 @@ public record ReportQueryRequestDto(
         Map<String, Object> filterModel,
         List<Map<String, String>> sortModel) {
 
-    /** True if the request asks for any grouping / pivot behavior. */
+    /**
+     * True if the request asks for any grouping / pivot / aggregation
+     * behavior. PR-0.1 fails closed on every flavor of grouping intent
+     * because the SQL builder doesn't yet emit GROUP BY.
+     */
     public boolean requestsGrouping() {
         return (rowGroupCols != null && !rowGroupCols.isEmpty())
+                || (valueCols != null && !valueCols.isEmpty())
                 || (pivotCols != null && !pivotCols.isEmpty())
                 || Boolean.TRUE.equals(pivotMode)
                 || (groupKeys != null && !groupKeys.isEmpty());
