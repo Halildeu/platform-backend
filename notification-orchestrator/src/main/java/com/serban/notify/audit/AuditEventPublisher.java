@@ -150,7 +150,9 @@ public class AuditEventPublisher {
         // Codex iter-3 P1 absorb: VARCHAR(64) limit. "standalone-" + UUID = 47 chars.
         // Event type identity lives in event_type column already; no need to embed.
         String synthesizedIntentId = "standalone-" + java.util.UUID.randomUUID();
-        String synthesizedTopicKey = "audit.standalone." + eventType.toLowerCase();
+        // Codex iter-4 nit: Locale.ROOT — Türkçe locale "I → ı" surprise engeli.
+        String synthesizedTopicKey = "audit.standalone."
+            + eventType.toLowerCase(java.util.Locale.ROOT);
 
         AuditEvent event = new AuditEvent();
         event.setIntentId(synthesizedIntentId);
