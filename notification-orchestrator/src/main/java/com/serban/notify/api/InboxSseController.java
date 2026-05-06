@@ -2,17 +2,22 @@ package com.serban.notify.api;
 
 import com.serban.notify.inbox.InboxService;
 import com.serban.notify.inbox.InboxUpdatedEvent;
+import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -33,7 +38,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * deferred to PR-F if client→server push (e.g. typing indicators) becomes
  * required.
  *
- * <p>Endpoint: {@code GET /api/v1/notify/inbox/me/stream}
+ * <p>Endpoint: {@code GET /api/v1/notify/inbox/me/stream?orgId=<X>&subscriberId=<Y>}
  * <ul>
  *   <li>Initial event: current unread count</li>
  *   <li>Subsequent events: pushed when {@link InboxUpdatedEvent} fires for
@@ -41,12 +46,20 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *   <li>Heartbeat: every 25s — prevents intermediary proxies from idle-closing</li>
  * </ul>
  *
- * <p>Identity: {@code X-Org-Id} + {@code X-Subscriber-Id} headers (PR2 baseline
- * parity; JWT subject claim extraction PR-D-future).
+ * <p>Identity (Codex iter-1 P0 absorb): native browser {@code EventSource}
+ * API cannot send custom headers; identity is passed via query params.
+ * Spring Security on the route still authenticates the request (gateway
+ * cookie→JWT chain); query params identify the subscriber scope. Production
+ * lockdown: PR-D-future replaces query params with JWT subject/org claim
+ * extraction so a caller cannot subscribe to another subscriber's stream.
  *
- * <p>Single-pod scope (intentional limitation): emitter map is per-JVM.
- * Cross-pod broadcast (Redis pub/sub or STOMP+broker) deferred to PR-E.4 /
- * 23.4. Current HPA min=1 in test, single replica → no observable issue.
+ * <p>Multi-pod posture (Codex iter-1 P1.4 absorb): emitter map and
+ * ApplicationEventPublisher are JVM-local. Current HPA can scale to
+ * {@code maxReplicas=3} in test/prod overlays; while running with multiple
+ * replicas a subscriber connected to pod A misses events emitted in pod B.
+ * Acceptable for current MVP testing only — production rollout REQUIRES
+ * either (a) HPA min=max=1 for in-app SSE pods, or (b) cross-pod broadcast
+ * via Redis pub/sub / STOMP+broker (PR-E.4 / 23.4).
  *
  * <p>Lifecycle:
  * <ul>
@@ -79,13 +92,16 @@ public class InboxSseController {
 
     /**
      * Subscribe to inbox events for the authenticated subscriber.
+     *
+     * <p>Codex iter-1 P0 absorb: identity via query params (browser EventSource
+     * does not support custom headers). PR-D-future replaces with JWT claim.
      */
     @GetMapping(path = "/me/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter subscribe(
-        @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
-        @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
+        @RequestParam(name = "orgId", required = true) @NotBlank String orgId,
+        @RequestParam(name = "subscriberId", required = true) @NotBlank String subscriberId
     ) {
-        String key = key(callerOrgId, subscriberId);
+        String key = key(orgId, subscriberId);
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
 
         emitters.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(emitter);
@@ -100,20 +116,23 @@ public class InboxSseController {
             removeEmitter(key, emitter);
         });
 
-        // Initial event: current unread count
+        // Initial event: current unread count.
+        // Codex iter-1 P2.5 absorb: catch RuntimeException (e.g. emitter
+        // already completed by timeout race) in addition to IOException so
+        // emitter is always removed on failure.
         try {
-            long unreadCount = inboxService.unreadCount(callerOrgId, subscriberId);
+            long unreadCount = inboxService.unreadCount(orgId, subscriberId);
             emitter.send(SseEmitter.event()
                 .name("unread-count")
                 .data(Map.of("unreadCount", unreadCount)));
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             log.warn("inbox SSE initial send failed: key={} err={}", key, e.getMessage());
-            emitter.completeWithError(e);
+            try { emitter.completeWithError(e); } catch (Exception ignore) { /* already completed */ }
             removeEmitter(key, emitter);
         }
 
         log.info("inbox SSE subscribed: orgId={} subscriberId={} totalEmitters={}",
-            callerOrgId, subscriberId, totalEmitters());
+            orgId, subscriberId, totalEmitters());
 
         return emitter;
     }
@@ -122,11 +141,21 @@ public class InboxSseController {
      * Listen for inbox state changes; broadcast to subscriber's connected SSE
      * clients on this pod.
      *
-     * <p>{@link Async} so the event-publishing transaction doesn't block on
-     * SSE network IO.
+     * <p>Codex iter-1 P1.2 absorb: {@link TransactionalEventListener
+     * AFTER_COMMIT} — only deliver events whose emitting transaction
+     * actually committed. Rolled-back inserts/updates produce no SSE push,
+     * preventing client from seeing stale/non-existent count.
+     *
+     * <p>Codex iter-1 P1.3 absorb: {@code @Async("inboxSseExecutor")}
+     * — bounded {@code ThreadPoolTaskExecutor} (see {@code AsyncConfig});
+     * SSE network IO does not block transaction-completion thread.
+     *
+     * <p>Codex iter-1 P2.5 absorb: catch {@link RuntimeException} alongside
+     * {@link IOException} so a failed/completed emitter doesn't leak into
+     * the map and consume future heartbeat slots.
      */
-    @EventListener
-    @Async
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async("inboxSseExecutor")
     public void onInboxUpdated(InboxUpdatedEvent event) {
         String key = key(event.orgId(), event.subscriberId());
         List<SseEmitter> targets = emitters.get(key);
@@ -138,10 +167,10 @@ public class InboxSseController {
                 emitter.send(SseEmitter.event()
                     .name("unread-count")
                     .data(payload));
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
                 log.debug("inbox SSE event send failed (emitter dropping): key={} err={}",
                     key, e.getMessage());
-                emitter.completeWithError(e);
+                try { emitter.completeWithError(e); } catch (Exception ignore) {}
                 removeEmitter(key, emitter);
             }
         }
@@ -153,12 +182,15 @@ public class InboxSseController {
      */
     @Scheduled(fixedDelay = HEARTBEAT_INTERVAL_MS)
     public void heartbeat() {
+        // Codex iter-1 P2.5 absorb: catch RuntimeException (e.g.
+        // IllegalStateException from completed emitter) so heartbeat doesn't
+        // re-fire on dead emitter every 25s.
         emitters.forEach((key, list) -> {
             for (SseEmitter emitter : list) {
                 try {
                     emitter.send(SseEmitter.event().comment("hb"));
-                } catch (IOException e) {
-                    emitter.completeWithError(e);
+                } catch (IOException | RuntimeException e) {
+                    try { emitter.completeWithError(e); } catch (Exception ignore) {}
                     removeEmitter(key, emitter);
                 }
             }
@@ -193,5 +225,15 @@ public class InboxSseController {
     /** Test-only: clear all emitters (used in @AfterEach to isolate tests). */
     void clearAllForTest() {
         emitters.clear();
+    }
+
+    /**
+     * @ConstraintViolationException (e.g. blank orgId/subscriberId query param)
+     * → 400 (Codex iter-1 P2.6 absorb — matches InboxController pattern).
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleConstraintViolation(ConstraintViolationException ex) {
+        return Map.of("error", "validation", "message", ex.getMessage());
     }
 }

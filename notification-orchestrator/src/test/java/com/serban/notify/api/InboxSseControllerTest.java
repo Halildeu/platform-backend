@@ -47,10 +47,22 @@ class InboxSseControllerTest {
     void subscribeRegistersEmitterAndSendsInitialUnreadCount() {
         when(inboxService.unreadCount("default", "sub-1")).thenReturn(7L);
 
+        // Codex iter-1 P0 absorb: query-param signature
         controller.subscribe("default", "sub-1");
 
         // 1 emitter registered for the (org, subscriber) key
         assertThat(controller.totalEmitters()).isEqualTo(1);
+    }
+
+    @Test
+    void initialSendRuntimeExceptionStillRemovesEmitter() {
+        // Codex iter-1 P2.5 absorb: RuntimeException path drops the emitter
+        when(inboxService.unreadCount("default", "sub-1"))
+            .thenThrow(new RuntimeException("downstream failure"));
+
+        controller.subscribe("default", "sub-1");
+
+        assertThat(controller.totalEmitters()).isEqualTo(0);
     }
 
     @Test
