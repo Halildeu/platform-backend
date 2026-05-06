@@ -29,9 +29,11 @@ import java.util.Map;
  *   <li>Idempotent: ikinci çağrı = no-op (already erased)</li>
  * </ul>
  *
- * <p>Authorization (caller responsibility): {@code ROLE_PRIVACY_OFFICER} OR
- * permission-service {@code can_erasure} relation. AdminErasureController
- * enforces via {@code @PreAuthorize}.
+ * <p>Authorization (caller responsibility): api-gateway path-based
+ * {@code ROLE_PRIVACY_OFFICER} allowlist (Codex iter-1 P0 #2 absorb:
+ * in-app Spring Security + JWT decoder + role converter +
+ * spring-security-test infrastructure follow-up scope; PR-C ile gateway
+ * manifest/runbook gate aktif edilir).
  */
 @Service
 public class ErasureService {
