@@ -145,39 +145,38 @@ public class AuditPartitionRetentionService {
 
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         cycleInnerErrors.set(0);  // reset per-cycle accumulator
-        int futureCreated;
-        int detached;
-        int dropped;
         try {
-            futureCreated = ensureFuturePartitions(now);
+            int futureCreated = ensureFuturePartitions(now);
             if (futureCreated > 0) {
                 futurePartitionsCreatedCounter.increment(futureCreated);
                 log.info("AuditPartitionRetentionService: created {} future partitions", futureCreated);
             }
 
-            detached = detachOldPartitions(now);
-            dropped = dropEligiblePartitions(now);
+            int detached = detachOldPartitions(now);
+            int dropped = dropEligiblePartitions(now);
+
+            // Codex 019dfdec iter-2 P2 absorb (iter-3 fix): read inner-error
+            // counter BEFORE finally → cycleInnerErrors.remove() (otherwise
+            // remove triggers ThreadLocal.withInitial reset to 0 and signal
+            // is lost). Per-partition swallowed errors → CycleResult.error so
+            // last_success gauge stays stale until next clean cycle.
+            int innerErrors = cycleInnerErrors.get();
+            if (innerErrors > 0) {
+                log.warn("AuditPartitionRetentionService cycle: future_created={} detached={} dropped={} "
+                    + "inner_errors={} → CycleResult.error", futureCreated, detached, dropped, innerErrors);
+                return CycleResult.error();
+            }
+
+            log.info("AuditPartitionRetentionService cycle: future_created={} detached={} dropped={} dry_run={}",
+                futureCreated, detached, dropped, cfg.retentionDryRun());
+            return CycleResult.success(futureCreated, detached, dropped);
         } catch (RuntimeException e) {
             log.warn("AuditPartitionRetentionService cycle inner error: {}", e.getMessage(), e);
             errorsCounter.increment();
             return CycleResult.error();
         } finally {
-            cycleInnerErrors.remove();  // ThreadLocal cleanup
+            cycleInnerErrors.remove();  // ThreadLocal cleanup AFTER read
         }
-
-        // Codex 019dfdec iter-2 P2 absorb: per-partition swallowed errors
-        // (detach/drop loops catch + log + counter) → CycleResult.error so
-        // last_success gauge stays stale until next clean cycle.
-        int innerErrors = cycleInnerErrors.get() != null ? cycleInnerErrors.get() : 0;
-        if (innerErrors > 0) {
-            log.warn("AuditPartitionRetentionService cycle: future_created={} detached={} dropped={} "
-                + "inner_errors={} → CycleResult.error", futureCreated, detached, dropped, innerErrors);
-            return CycleResult.error();
-        }
-
-        log.info("AuditPartitionRetentionService cycle: future_created={} detached={} dropped={} dry_run={}",
-            futureCreated, detached, dropped, cfg.retentionDryRun());
-        return CycleResult.success(futureCreated, detached, dropped);
     }
 
     /** Cycle outcome — caller (runCycle) uses successful flag for last_success gauge. */

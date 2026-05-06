@@ -54,4 +54,29 @@ class AuditPartitionRetentionServiceUnitTest {
         assertThat(AuditPartitionRetentionService.parseBoundExpression("DEFAULT")).isNull();
         assertThat(AuditPartitionRetentionService.parseBoundExpression("garbage text")).isNull();
     }
+
+    @Test
+    void cycleResultSuccessReportsSuccessful() {
+        var r = AuditPartitionRetentionService.CycleResult.success(2, 1, 1);
+        assertThat(r.successful()).isTrue();
+        assertThat(r.futureCreated()).isEqualTo(2);
+        assertThat(r.detached()).isEqualTo(1);
+        assertThat(r.dropped()).isEqualTo(1);
+    }
+
+    @Test
+    void cycleResultLockSkippedReportsNotSuccessful() {
+        // Codex 019dfdec iter-3 P2 absorb: lock skip → successful=false →
+        // runCycle() lastSuccessTimestamp güncellemez → alarm "stale > 26h" fires.
+        var r = AuditPartitionRetentionService.CycleResult.lockSkipped();
+        assertThat(r.successful()).isFalse();
+    }
+
+    @Test
+    void cycleResultErrorReportsNotSuccessful() {
+        // Inner per-partition error contract: CycleResult.error() →
+        // successful=false → lastSuccess gauge stays stale.
+        var r = AuditPartitionRetentionService.CycleResult.error();
+        assertThat(r.successful()).isFalse();
+    }
 }
