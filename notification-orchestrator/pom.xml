@@ -91,12 +91,10 @@
             <version>2.6.0</version>
         </dependency>
 
-        <!-- Faz 23.2 PR-A: BouncyCastle for DKIM signer + PEM parsing -->
-        <dependency>
-            <groupId>org.bouncycastle</groupId>
-            <artifactId>bcprov-jdk18on</artifactId>
-            <version>1.78.1</version>
-        </dependency>
+        <!-- Faz 23.2 PR-A iter-1 absorb: BouncyCastle removed (DKIM full RFC 6376
+             signing follow-up). DkimSigner foundation stub uses JDK PKCS#8 only;
+             prod gate disabled via ProductionConfigValidator scope honesty. -->
+
 
         <dependency>
             <groupId>org.springframework.boot</groupId>

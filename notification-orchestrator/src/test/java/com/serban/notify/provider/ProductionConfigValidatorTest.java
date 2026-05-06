@@ -3,15 +3,24 @@ package com.serban.notify.provider;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * ProductionConfigValidator unit test (Faz 23.2 PR-A — Codex 019dfae5).
+ * ProductionConfigValidator unit test (Faz 23.2 PR-A — Codex 019dfae5 + iter-1 absorb).
+ *
+ * <p>Constructor: (env, redactionPepper, webhookSecret, authzKey,
+ *   smtpTlsEnforce, smtpTlsCheckServerIdentity, preferencesEnabled, authzEnabled).
+ *
+ * <p>Codex iter-1 absorb: DKIM removed from validator (scope honesty until full
+ * RFC 6376 wiring). Min secret length 32 char + non-whitespace check added.
  */
 class ProductionConfigValidatorTest {
+
+    private static final String OK_PEPPER = "rotated-pepper-from-vault-32-char-xxx";
+    private static final String OK_WEBHOOK = "rotated-webhook-secret-32-char-vault-x";
+    private static final String OK_AUTHZ = "rotated-authz-key-32-char-from-vault-xx";
 
     @Test
     void nonProdProfileSkipsValidation() {
@@ -20,7 +29,7 @@ class ProductionConfigValidatorTest {
 
         ProductionConfigValidator v = new ProductionConfigValidator(
             env,
-            "dev-only-pepper-not-for-production",  // intentionally bad
+            "dev-only-pepper-not-for-production",
             "dev-only-secret-not-for-production",
             "dev-only-key-not-for-production",
             false, false, false, false  // all production guards off
@@ -32,16 +41,9 @@ class ProductionConfigValidatorTest {
 
     @Test
     void prodProfileWithDefaultPepperFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "dev-only-pepper-not-for-production",  // ← problem
-            "rotated-webhook-secret",
-            "rotated-authz-key",
-            true, true, true, true
-        );
+        ProductionConfigValidator v = prodValidator(
+            "dev-only-pepper-not-for-production", OK_WEBHOOK, OK_AUTHZ,
+            true, true, true, true);
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -49,38 +51,32 @@ class ProductionConfigValidatorTest {
     }
 
     @Test
-    void prodProfileWithDkimDisabledFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper",
-            "rotated-webhook-secret",
-            "rotated-authz-key",
-            false,  // ← DKIM off
-            true, true, true
-        );
+    void prodProfileWithShortPepperFails() {
+        ProductionConfigValidator v = prodValidator(
+            "short-pepper", OK_WEBHOOK, OK_AUTHZ, true, true, true, true);
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
-            .hasMessageContaining("notify.dkim.enabled=false");
+            .hasMessageContaining("notify.redaction.pepper length=12 < 32");
+    }
+
+    @Test
+    void prodProfileWithWhitespacePepperFails() {
+        ProductionConfigValidator v = prodValidator(
+            "   pepper-with-whitespace-32-char-xxxx   ", OK_WEBHOOK, OK_AUTHZ,
+            true, true, true, true);
+
+        assertThatThrownBy(v::validate)
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("contains leading/trailing whitespace");
     }
 
     @Test
     void prodProfileWithSmtpTlsDisabledFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "production" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper",
-            "rotated-webhook-secret",
-            "rotated-authz-key",
-            true,
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, OK_WEBHOOK, OK_AUTHZ,
             false,  // ← TLS enforce off
-            true, true
-        );
+            true, true, true);
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -88,17 +84,23 @@ class ProductionConfigValidatorTest {
     }
 
     @Test
-    void prodProfileWithDefaultAuthzKeyFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
+    void prodProfileWithCheckServerIdentityFalseFails() {
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, OK_WEBHOOK, OK_AUTHZ,
+            true,
+            false,  // ← check-server-identity off
+            true, true);
 
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper",
-            "rotated-webhook-secret",
-            "dev-only-key-not-for-production",  // ← default authz key
-            true, true, true, true
-        );
+        assertThatThrownBy(v::validate)
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("notify.smtp.tls.check-server-identity=false");
+    }
+
+    @Test
+    void prodProfileWithDefaultAuthzKeyFails() {
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, OK_WEBHOOK, "dev-only-key-not-for-production",
+            true, true, true, true);
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -107,17 +109,10 @@ class ProductionConfigValidatorTest {
 
     @Test
     void prodProfileWithAuthzDisabledFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper",
-            "rotated-webhook-secret",
-            "rotated-authz-key",
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, OK_WEBHOOK, OK_AUTHZ,
             true, true, true,
-            false  // ← authz off
-        );
+            false);  // ← authz off
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -126,18 +121,11 @@ class ProductionConfigValidatorTest {
 
     @Test
     void prodProfileWithPreferencesDisabledFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper",
-            "rotated-webhook-secret",
-            "rotated-authz-key",
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, OK_WEBHOOK, OK_AUTHZ,
             true, true,
             false,  // ← preferences off
-            true
-        );
+            true);
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -146,16 +134,9 @@ class ProductionConfigValidatorTest {
 
     @Test
     void prodProfileWithDefaultWebhookSecretFails() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper",
-            "dev-only-secret-not-for-production",  // ← default webhook secret
-            "rotated-authz-key",
-            true, true, true, true
-        );
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, "dev-only-secret-not-for-production", OK_AUTHZ,
+            true, true, true, true);
 
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
@@ -164,16 +145,8 @@ class ProductionConfigValidatorTest {
 
     @Test
     void prodProfileWithAllRotatedPasses() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
-            "rotated-pepper-from-vault",
-            "rotated-webhook-secret",
-            "rotated-authz-key",
-            true, true, true, true
-        );
+        ProductionConfigValidator v = prodValidator(
+            OK_PEPPER, OK_WEBHOOK, OK_AUTHZ, true, true, true, true);
 
         // No throw — all guards passed
         v.validate();
@@ -181,19 +154,30 @@ class ProductionConfigValidatorTest {
 
     @Test
     void prodProfileMultipleErrorsAggregated() {
-        Environment env = mock(Environment.class);
-        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
-
-        ProductionConfigValidator v = new ProductionConfigValidator(
-            env,
+        ProductionConfigValidator v = prodValidator(
             "dev-only-pepper-not-for-production",
             "dev-only-secret-not-for-production",
             "dev-only-key-not-for-production",
-            false, false, false, false
-        );
+            false, false, false, false);
 
+        // Errors: tls.enforce + check-server-identity + pepper DEFAULT
+        // + webhook DEFAULT + authz disabled + authz key DEFAULT + preferences disabled
+        // = 7 errors
         assertThatThrownBy(v::validate)
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("(7 error(s))");
+    }
+
+    private ProductionConfigValidator prodValidator(
+        String pepper, String webhookSecret, String authzKey,
+        boolean tlsEnforce, boolean tlsCheckIdentity,
+        boolean preferences, boolean authz
+    ) {
+        Environment env = mock(Environment.class);
+        when(env.getActiveProfiles()).thenReturn(new String[] { "prod" });
+        return new ProductionConfigValidator(
+            env, pepper, webhookSecret, authzKey,
+            tlsEnforce, tlsCheckIdentity, preferences, authz
+        );
     }
 }

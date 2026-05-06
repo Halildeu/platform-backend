@@ -12,18 +12,21 @@ import java.util.List;
 
 /**
  * ProductionConfigValidator — startup fail-closed gate (Faz 23.2 PR-A —
- * Codex 019dfae5 cumulative absorb).
+ * Codex 019dfae5 cumulative absorb + iter-1 P1 absorb).
  *
  * <p>Validates that production profile has critical security configuration set:
  * <ul>
- *   <li>DKIM enabled + selector + domain + private-key-pem (or corporate
- *       relay opt-out flag)</li>
- *   <li>SMTP TLS enforce + STARTTLS required + check-server-identity</li>
- *   <li>Webhook HMAC: registry enabled OR legacy secret rotated from default</li>
- *   <li>PII redaction pepper: NOT default ('dev-only-pepper-not-for-production')</li>
- *   <li>Authz: enabled + permission-service URL + internal-api-key</li>
+ *   <li>SMTP TLS enforce + STARTTLS required + check-server-identity hard-true</li>
+ *   <li>Webhook HMAC: registry enabled OR legacy secret rotated + entropy check</li>
+ *   <li>PII redaction pepper: rotated + min length 32 + non-whitespace</li>
+ *   <li>Authz: enabled + internal-api-key rotated + entropy check</li>
  *   <li>Preferences: enabled (production opt-out only with explicit flag)</li>
  * </ul>
+ *
+ * <p>Codex iter-1 absorb (DKIM scope honesty): DKIM signing path foundation
+ * stub'tır (full RFC 6376 follow-up). Bu PR-A'da DKIM'i ProductionConfigValidator'dan
+ * çıkardık — false-positive security gate yaratmıyor. DKIM gerçek imzalama
+ * tamamlandığında (Faz 23.2 PR-A.iter-2 veya PR-B) validator'a yeniden eklenir.
  *
  * <p>If any check fails, application context fails to start with explicit
  * error message — production deploy operator sees the gap before pod ready.
@@ -38,11 +41,14 @@ public class ProductionConfigValidator {
     private static final Logger log = LoggerFactory.getLogger(ProductionConfigValidator.class);
 
     private final Environment springEnv;
+    /** Codex iter-1 P2 absorb: minimum entropy length for production secrets. */
+    private static final int MIN_SECRET_LENGTH = 32;
+
     private final String redactionPepper;
     private final String webhookLegacySecret;
     private final String authzInternalApiKey;
-    private final boolean dkimEnabled;
     private final boolean smtpTlsEnforce;
+    private final boolean smtpTlsCheckServerIdentity;
     private final boolean preferencesEnabled;
     private final boolean authzEnabled;
 
@@ -54,8 +60,8 @@ public class ProductionConfigValidator {
             String webhookLegacySecret,
         @Value("${notify.authz.internal-api-key:dev-only-key-not-for-production}")
             String authzInternalApiKey,
-        @Value("${notify.dkim.enabled:false}") boolean dkimEnabled,
         @Value("${notify.smtp.tls.enforce:false}") boolean smtpTlsEnforce,
+        @Value("${notify.smtp.tls.check-server-identity:true}") boolean smtpTlsCheckServerIdentity,
         @Value("${notify.preferences.enabled:true}") boolean preferencesEnabled,
         @Value("${notify.authz.enabled:true}") boolean authzEnabled
     ) {
@@ -63,8 +69,8 @@ public class ProductionConfigValidator {
         this.redactionPepper = redactionPepper;
         this.webhookLegacySecret = webhookLegacySecret;
         this.authzInternalApiKey = authzInternalApiKey;
-        this.dkimEnabled = dkimEnabled;
         this.smtpTlsEnforce = smtpTlsEnforce;
+        this.smtpTlsCheckServerIdentity = smtpTlsCheckServerIdentity;
         this.preferencesEnabled = preferencesEnabled;
         this.authzEnabled = authzEnabled;
     }
@@ -79,42 +85,33 @@ public class ProductionConfigValidator {
 
         List<String> errors = new ArrayList<>();
 
-        // DKIM (Codex Q1)
-        if (!dkimEnabled) {
-            errors.add("notify.dkim.enabled=false — production must enable DKIM "
-                + "(Codex Q1: app-side DKIM default; corporate relay alternative "
-                + "requires explicit opt-out flag)");
-        }
-
-        // SMTP TLS (Codex Q2)
+        // SMTP TLS (Codex Q2 + iter-1 P2: check-server-identity hard-true in prod)
         if (!smtpTlsEnforce) {
             errors.add("notify.smtp.tls.enforce=false — production must enable "
                 + "STARTTLS required (Codex Q2: plaintext fallback YASAK)");
         }
-
-        // Redaction pepper (Codex Q5: HMAC-SHA256 + Vault pepper)
-        if ("dev-only-pepper-not-for-production".equals(redactionPepper)) {
-            errors.add("notify.redaction.pepper=DEFAULT — production must rotate "
-                + "from dev-only value (Vault inject; Codex Q5 absorb)");
+        if (!smtpTlsCheckServerIdentity) {
+            errors.add("notify.smtp.tls.check-server-identity=false — production "
+                + "must validate server identity (MITM defense; private relay "
+                + "pinning ayrı runbook + audit boundary ile alternatif)");
         }
 
-        // Webhook HMAC (Codex Q3)
-        if ("dev-only-secret-not-for-production".equals(webhookLegacySecret)) {
-            errors.add("notify.adapters.webhook.signing-secret=DEFAULT — production "
-                + "must rotate from dev-only value (kid-aware registry preferred; "
-                + "legacy compat fallback only)");
-        }
+        // Redaction pepper (Codex Q5 + iter-1 P2 entropy)
+        validateSecret(errors, "notify.redaction.pepper",
+            redactionPepper, "dev-only-pepper-not-for-production");
 
-        // Authz (Codex Q3 PR5)
+        // Webhook HMAC (Codex Q3 + iter-1 P2 entropy)
+        validateSecret(errors, "notify.adapters.webhook.signing-secret",
+            webhookLegacySecret, "dev-only-secret-not-for-production");
+
+        // Authz (Codex Q3 PR5 + iter-1 P2 entropy)
         if (!authzEnabled) {
             errors.add("notify.authz.enabled=false — production must enforce authz "
                 + "(security regression risk; explicit opt-out only via "
                 + "audit-tracked break-glass procedure)");
         }
-        if ("dev-only-key-not-for-production".equals(authzInternalApiKey)) {
-            errors.add("notify.authz.internal-api-key=DEFAULT — production must "
-                + "rotate from dev-only value (Vault inject)");
-        }
+        validateSecret(errors, "notify.authz.internal-api-key",
+            authzInternalApiKey, "dev-only-key-not-for-production");
 
         // Preferences (Codex PR5 Q1)
         if (!preferencesEnabled) {
@@ -140,5 +137,36 @@ public class ProductionConfigValidator {
             }
         }
         return false;
+    }
+
+    /**
+     * Validate a production secret (Codex iter-1 P2 absorb).
+     *
+     * Rejects:
+     * <ul>
+     *   <li>Equal to known default value</li>
+     *   <li>Length &lt; {@link #MIN_SECRET_LENGTH} (32) — too short to be HMAC pepper</li>
+     *   <li>Whitespace-only or null/blank</li>
+     * </ul>
+     */
+    private static void validateSecret(List<String> errors, String key, String value, String knownDefault) {
+        if (value == null || value.isBlank()) {
+            errors.add(key + "=blank — production must set non-blank value");
+            return;
+        }
+        if (knownDefault.equals(value)) {
+            errors.add(key + "=DEFAULT — production must rotate from dev-only value "
+                + "(Vault inject; min " + MIN_SECRET_LENGTH + " char entropy required)");
+            return;
+        }
+        if (value.length() < MIN_SECRET_LENGTH) {
+            errors.add(key + " length=" + value.length() + " < " + MIN_SECRET_LENGTH
+                + " — production secret must be at least " + MIN_SECRET_LENGTH
+                + " char (entropy guard; Codex iter-1 P2 absorb)");
+        }
+        if (value.trim().length() != value.length()) {
+            errors.add(key + " contains leading/trailing whitespace — likely config "
+                + "injection error (Vault value should be raw secret without surrounding spaces)");
+        }
     }
 }

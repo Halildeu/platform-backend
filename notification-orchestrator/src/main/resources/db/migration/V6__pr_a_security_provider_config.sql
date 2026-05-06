@@ -46,23 +46,23 @@ CREATE TABLE notify.webhook_hmac_key (
     id BIGSERIAL PRIMARY KEY,
     kid VARCHAR(32) NOT NULL,           -- key id (UUID veya datestamp; receiver header'da görür)
     secret_ref VARCHAR(255) NOT NULL,   -- Vault path: kv/platform/notify/webhook/<kid>
-    status VARCHAR(16) NOT NULL,        -- 'active' | 'next' | 'retired'
+    status VARCHAR(16) NOT NULL,        -- 'ACTIVE' | 'NEXT' | 'RETIRED' (Codex iter-1 P0: uppercase, JPA @Enumerated(STRING) compatible)
     activated_at TIMESTAMPTZ,
     retired_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_webhook_hmac_kid UNIQUE (kid),
-    CONSTRAINT chk_webhook_hmac_status CHECK (status IN ('active', 'next', 'retired'))
+    CONSTRAINT chk_webhook_hmac_status CHECK (status IN ('ACTIVE', 'NEXT', 'RETIRED'))
 );
 
 -- Sadece BIR active key olabilir
 CREATE UNIQUE INDEX idx_webhook_hmac_active
     ON notify.webhook_hmac_key ((1))
-    WHERE status = 'active';
+    WHERE status = 'ACTIVE';
 
 -- Sadece BIR next key olabilir (rotation hazırlık)
 CREATE UNIQUE INDEX idx_webhook_hmac_next
     ON notify.webhook_hmac_key ((1))
-    WHERE status = 'next';
+    WHERE status = 'NEXT';
 
 COMMENT ON TABLE notify.webhook_hmac_key IS
     'Webhook HMAC signing key registry (Codex 019dfae5 PR-A Q3 absorb). '

@@ -2,22 +2,14 @@ package com.serban.notify.provider;
 
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.io.StringWriter;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
-import java.security.Security;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 
@@ -60,13 +52,6 @@ import java.util.Base64;
 public class DkimSigner {
 
     private static final Logger log = LoggerFactory.getLogger(DkimSigner.class);
-
-    static {
-        // Codex Q1 absorb: BouncyCastle for PEM parsing + RSA-SHA256
-        if (Security.getProvider("BC") == null) {
-            Security.addProvider(new BouncyCastleProvider());
-        }
-    }
 
     private final String selector;
     private final String domain;
@@ -111,19 +96,40 @@ public class DkimSigner {
             && domain != null && !domain.isBlank();
     }
 
+    /**
+     * PEM private key parse — PKCS#8 only.
+     *
+     * <p>Codex iter-1 P1 absorb: PKCS#1 ({@code -----BEGIN RSA PRIVATE KEY-----})
+     * format'i bu stub'da DESTEKLENMEZ. Operator key generation:
+     * <pre>
+     *   openssl genrsa -out dkim-private.pem 2048
+     *   openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt \
+     *     -in dkim-private.pem -out dkim-pkcs8.pem
+     * </pre>
+     * Sadece PKCS#8 ({@code -----BEGIN PRIVATE KEY-----}) kabul edilir.
+     * Full RFC 6376 (canonicalization, body hash, signature) follow-up commit'te
+     * tam DKIM library entegrasyonu ile gelir.
+     */
     private static PrivateKey parsePrivateKey(String pem) {
         try {
+            if (pem.contains("-----BEGIN RSA PRIVATE KEY-----")) {
+                throw new IllegalStateException(
+                    "DKIM PKCS#1 private key not supported in foundation stub; "
+                        + "convert to PKCS#8: openssl pkcs8 -topk8 -inform PEM -outform PEM "
+                        + "-nocrypt -in <pkcs1> -out <pkcs8>"
+                );
+            }
             String pemContent = pem
                 .replace("-----BEGIN PRIVATE KEY-----", "")
                 .replace("-----END PRIVATE KEY-----", "")
-                .replace("-----BEGIN RSA PRIVATE KEY-----", "")
-                .replace("-----END RSA PRIVATE KEY-----", "")
                 .replaceAll("\\s+", "");
             byte[] decoded = Base64.getDecoder().decode(pemContent);
             PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(decoded);
             return KeyFactory.getInstance("RSA").generatePrivate(spec);
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
-            throw new IllegalStateException("DKIM private key parse failed", e);
+            throw new IllegalStateException("DKIM PKCS#8 private key parse failed", e);
         }
     }
 }
