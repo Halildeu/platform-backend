@@ -10,10 +10,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
-import javax.sql.DataSource;
 
 /**
  * Read-only catalog of Workcube companies for the muavin / dynamic-report
@@ -32,9 +31,21 @@ import javax.sql.DataSource;
  *
  * <p>Single round-trip {@code UNION ALL} across all enabled schemas, filtered
  * server-side by {@code sys.schemas} so missing schemas don't crash the
- * query. Caller is expected to layer Spring's {@link
- * org.springframework.cache.annotation.Cacheable} on top — see
- * {@link CompanyOptionsService}.
+ * query.
+ *
+ * <p><b>Caching</b> (Codex 019dfb15 iter-2 absorb #1): {@link #findAll()} is
+ * annotated with {@link Cacheable}({@code companyOptions}) so external callers
+ * (the service layer) benefit from Spring's proxy-based caching. Self-invocation
+ * inside the same bean wouldn't bypass the proxy here because the cached method
+ * lives on a different bean than the caller. Cache name {@code companyOptions}
+ * is registered in {@code CacheConfig} with a 5-minute TTL.
+ *
+ * <p><b>Degraded mode</b> (Codex 019dfb15 iter-2 absorb #3): when MSSQL is
+ * unreachable we let the {@code DataAccessResourceFailureException} propagate
+ * to the controller — it surfaces as 503, mirroring
+ * {@link WorkcubeReportController}'s {@code degraded()} helper. Critically,
+ * we do NOT catch and swallow it into an empty list, because that would
+ * <em>poison the cache</em> for the entire 5-minute TTL.
  *
  * <p>Activation: same conditional as the rest of the workcube package —
  * feature flag {@code report.mssql.enabled=true} → {@code
@@ -50,11 +61,21 @@ public class CompanyOptionsRepository {
     private final int companyIdMin;
     private final int companyIdMax;
 
+    /**
+     * Constructor injection.
+     *
+     * @param jdbc the configured Workcube MSSQL plain JdbcTemplate (qualifier
+     *             {@code workcubeMssqlPlainJdbc}). Bringing this in instead of
+     *             constructing {@code new JdbcTemplate(dataSource)} preserves
+     *             the 30s query timeout and 10000-row guard set up in
+     *             {@link com.example.report.config.WorkcubeMssqlConfig}
+     *             (Codex 019dfb15 iter-2 absorb #4).
+     */
     public CompanyOptionsRepository(
-            @Qualifier("workcubeMssqlDataSource") DataSource dataSource,
+            @Qualifier("workcubeMssqlPlainJdbc") JdbcTemplate jdbc,
             @Value("${report.workcube.company-id-min:1}") int companyIdMin,
             @Value("${report.workcube.company-id-max:43}") int companyIdMax) {
-        this.jdbc = new JdbcTemplate(dataSource);
+        this.jdbc = jdbc;
         this.companyIdMin = companyIdMin;
         this.companyIdMax = companyIdMax;
     }
@@ -64,7 +85,12 @@ public class CompanyOptionsRepository {
      * caller authorization (super-admin vs. company-scoped user) is the
      * service layer's responsibility — this method intentionally returns the
      * full catalog so the cache stays per-cluster and cheap.
+     *
+     * <p>Cache: {@code companyOptions} (5 min TTL via {@code CacheConfig}).
+     * Cache misses propagate {@link org.springframework.dao.DataAccessResourceFailureException}
+     * upward so the controller can surface 503 — see class javadoc on degraded mode.
      */
+    @Cacheable(cacheNames = "companyOptions", sync = true)
     public List<CompanyOption> findAll() {
         // Build the schema id allowlist from server-side config (never from
         // request input). Each id maps to schema name workcube_mikrolink_<id>.
@@ -76,7 +102,8 @@ public class CompanyOptionsRepository {
         }
 
         // Filter to schemas that actually exist on this server so the UNION
-        // doesn't hit a missing schema and 500 the whole query.
+        // doesn't hit a missing schema and 500 the whole query. sys.schemas
+        // failures propagate too (degraded MSSQL).
         List<Integer> existing = filterExistingSchemas(ids);
         if (existing.isEmpty()) {
             log.warn("CompanyOptionsRepository: no workcube_mikrolink_* schemas exist (range {}..{})",
@@ -91,24 +118,24 @@ public class CompanyOptionsRepository {
                         id, id))
                 .collect(Collectors.joining(" UNION ALL "));
 
-        try {
-            return jdbc.query(unionSql, (rs, rowNum) -> new CompanyOption(
-                    rs.getInt("id"),
-                    rs.getString("nickname"),
-                    rs.getString("name")));
-        } catch (DataAccessResourceFailureException ex) {
-            // ADR-0005 degraded mode — MSSQL unreachable surfaces as 503 at
-            // controller boundary; here we return empty list rather than
-            // poison the catalog cache for the whole TTL.
-            log.warn("CompanyOptionsRepository: MSSQL degraded — {}", ex.getMessage());
-            return Collections.emptyList();
-        }
+        // ADR-0005 degraded mode: do NOT catch DataAccessResourceFailureException
+        // here. Letting it bubble up means (a) the controller surfaces 503 like
+        // every other Workcube endpoint and (b) the @Cacheable proxy refuses
+        // to cache the failure, so the next request retries instead of being
+        // stuck on stale empty data for the full TTL.
+        return jdbc.query(unionSql, (rs, rowNum) -> new CompanyOption(
+                rs.getInt("id"),
+                rs.getString("nickname"),
+                rs.getString("name")));
     }
 
     /**
      * Returns the subset of {@code candidateIds} whose schema actually exists
      * in {@code sys.schemas}. {@code sys.schemas} is a system catalog, not
      * tenant data — read-only and safe to query without per-tenant guards.
+     *
+     * <p>{@link org.springframework.dao.DataAccessResourceFailureException}
+     * propagates upward (degraded mode) — see class javadoc.
      */
     private List<Integer> filterExistingSchemas(List<Integer> candidateIds) {
         if (candidateIds.isEmpty()) {
@@ -117,21 +144,16 @@ public class CompanyOptionsRepository {
         String inClause = candidateIds.stream()
                 .map(id -> String.format("'workcube_mikrolink_%d'", id))
                 .collect(Collectors.joining(","));
-        try {
-            List<String> rows = jdbc.queryForList(
-                    "SELECT name FROM sys.schemas WHERE name IN (" + inClause + ")",
-                    String.class);
-            List<Integer> kept = new ArrayList<>();
-            for (Integer id : candidateIds) {
-                if (rows.contains("workcube_mikrolink_" + id)) {
-                    kept.add(id);
-                }
+        List<String> rows = jdbc.queryForList(
+                "SELECT name FROM sys.schemas WHERE name IN (" + inClause + ")",
+                String.class);
+        List<Integer> kept = new ArrayList<>();
+        for (Integer id : candidateIds) {
+            if (rows.contains("workcube_mikrolink_" + id)) {
+                kept.add(id);
             }
-            return kept;
-        } catch (DataAccessResourceFailureException ex) {
-            log.warn("CompanyOptionsRepository: sys.schemas probe failed — {}", ex.getMessage());
-            return Collections.emptyList();
         }
+        return kept;
     }
 
     /** Plain DTO — id (numeric), nickname (short code), name (legal). */

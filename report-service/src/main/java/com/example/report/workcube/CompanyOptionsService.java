@@ -6,7 +6,6 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
 import com.example.commonauth.scope.ScopeContext;
@@ -14,15 +13,13 @@ import com.example.commonauth.scope.ScopeContext;
 /**
  * Authorization-aware wrapper around {@link CompanyOptionsRepository}.
  *
- * <p>Caching strategy (per Codex 019dfb0b iter-1 review):
- * <ul>
- *   <li>The raw catalog from MSSQL ({@link CompanyOptionsRepository#findAll()})
- *       is cached <b>globally</b> for {@code report.workcube.company-options.cache-ttl}
- *       (default 5 minutes via the {@code companyOptions} cache name).</li>
- *   <li>The per-request authorization filter runs on top of the cached list —
- *       cheap (43 items) and avoids the per-user cache invalidation problem
- *       that would otherwise tie staleness to {@code authzVersion}.</li>
- * </ul>
+ * <p>Caching: handled inside the repository (Codex 019dfb15 iter-2 absorb #1).
+ * The {@code @Cacheable} annotation lives on
+ * {@link CompanyOptionsRepository#findAll()} so Spring's proxy actually
+ * intercepts the call (proxy-based caching skips self-invocation, so a
+ * service-method-calling-its-own-cached-method would silently bypass the
+ * cache). This service simply applies the per-request authorization filter
+ * on top of the cached catalog.
  *
  * <p>Authorization model:
  * <ul>
@@ -31,9 +28,15 @@ import com.example.commonauth.scope.ScopeContext;
  *   <li>Anonymous / no scope context: returns empty list (controller surfaces
  *       this as 401 if it slipped past Spring Security).</li>
  * </ul>
+ *
+ * <p>Activation: tied to the {@code workcubeMssqlDataSource} bean directly
+ * (Codex 019dfb15 iter-2 absorb #2 — chained {@code @ConditionalOnBean} on
+ * a sibling component-scanned bean is brittle because condition evaluation
+ * order isn't guaranteed; the existing Workcube pattern in the codebase
+ * pins each layer directly to the datasource bean instead).
  */
 @Service
-@ConditionalOnBean(CompanyOptionsRepository.class)
+@ConditionalOnBean(name = "workcubeMssqlDataSource")
 public class CompanyOptionsService {
 
     private static final Logger log = LoggerFactory.getLogger(CompanyOptionsService.class);
@@ -44,14 +47,13 @@ public class CompanyOptionsService {
         this.repository = repository;
     }
 
-    /** Cached raw catalog. Cache name {@code companyOptions}. */
-    @Cacheable(cacheNames = "companyOptions", sync = true)
-    public List<CompanyOptionsRepository.CompanyOption> findAllCached() {
-        return repository.findAll();
-    }
-
     /**
      * Returns the catalog filtered by the caller's scope.
+     *
+     * <p>The repository call is cached ({@code companyOptions}, 5 min TTL).
+     * If MSSQL is unreachable the underlying
+     * {@link org.springframework.dao.DataAccessResourceFailureException}
+     * propagates so the controller can return 503 (ADR-0005 degraded mode).
      *
      * @param scope authorization context — must not be null in production
      *              (Spring Security guarantees this on /api/* paths via
@@ -62,7 +64,7 @@ public class CompanyOptionsService {
             log.warn("CompanyOptionsService: ScopeContext null — returning empty");
             return Collections.emptyList();
         }
-        List<CompanyOptionsRepository.CompanyOption> all = findAllCached();
+        List<CompanyOptionsRepository.CompanyOption> all = repository.findAll();
         if (scope.superAdmin()) {
             return all;
         }
