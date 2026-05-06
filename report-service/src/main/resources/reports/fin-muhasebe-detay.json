@@ -15,7 +15,8 @@
       "headerName": "Hesap Kodu",
       "type": "text",
       "width": 140,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "ACCOUNT_NAME",
@@ -29,28 +30,33 @@
       "headerName": "İşlem Kategorisi",
       "type": "text",
       "width": 150,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "DOCUMENT_TYPE_NAME",
       "headerName": "Belge Tipi",
       "type": "text",
       "width": 120,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "BA",
       "headerName": "B/A",
       "type": "number",
       "width": 50,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "AMOUNT",
       "headerName": "Tutar (TL)",
       "type": "number",
       "width": 140,
-      "sensitive": false
+      "sensitive": false,
+      "aggregatable": true,
+      "defaultAggFunc": "sum"
     },
     {
       "field": "AMOUNT_CURRENCY",
