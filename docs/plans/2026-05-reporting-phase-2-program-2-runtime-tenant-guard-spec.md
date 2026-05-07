@@ -26,7 +26,7 @@
 | 4 | Schema existence check: cache miss + schema-service unreachable → behavior? | **503 `schema_resolver_miss` + `report_resolved_schema_miss` metric** (runtime fail-closed; stale snapshot fallback **runtime'da YOK**, build-time validator için kalır — Codex iter-1 §4 absorb) | Stale snapshot'a düş + WARN (graceful degrade — Plan §1 v3 silent fallback yasak prensibiyle çelişir) |
 | 5 | TenantBoundaryGuard preflight ordering: filter chain'in neresinde? | Spring Security filter chain'inden sonra, controller invocation'dan önce (`HandlerInterceptor`) — RBAC/scope check'i sonra | Controller advice (`@ControllerAdvice`) — slower but more localized |
 | 6 | `report_resolved_schema_miss` metric label cardinality: per-tenant + per-report? | `{report_key, schema_mode}` only — tenant_id label cardinality patlamasını önler | `{report_key, tenant_id, schema_mode}` (granular debug) |
-| 7 | Acceptance: integration test sayısı? | 4 yeni Spring `@WebMvcTest` IT (current spec'te tanımlı senaryolar) | Sadece unit + 1 e2e Testcontainers IT |
+| 7 | Acceptance: integration test sayısı? | **9 `@WebMvcTest` IT** (4 base + 3 iter-1 + 2 iter-2 absorb) | Sadece unit + 1 e2e Testcontainers IT |
 
 ---
 
@@ -85,6 +85,8 @@ report-service/src/main/java/com/example/report/runtime/
 
 **`AuthzMeResponse` source** (Codex iter-2 §1 absorb): `TenantBoundaryGuard` `PermissionResolver` inject eder ve preHandle'da bir kez çağırır. Çözülen `AuthzMeResponse` request attribute olarak controller'a forward edilir (`request.setAttribute("authzMe", resolved)`); controller (`ReportController.java:281`) attribute'tan okur, ikinci `permissionClient.getAuthzMe(jwt)` çağrısı YOK. Aynı request'te tek permission-service round-trip.
 
+**Route scope** (Codex iter-3 §4 absorb): `TenantBoundaryGuard` HandlerInterceptor sadece **execution path endpoints**'inde çalışır — `/api/v1/reports/{key}/data`, `/api/v1/reports/{key}/query`, `/api/v1/reports/{key}/export`. Catalog/metadata endpoints (`/api/v1/reports`, `/api/v1/reports/{key}/capabilities`, `/api/v1/reports/{key}/columns`) interceptor'dan **muaf** — header eksik diye 400 verirse UX cascade (kullanıcı henüz şirket seçimi yapmadan rapor listesi göremez). Spring `WebMvcConfigurer.addInterceptors().addPathPatterns(...)` ile path-pattern restriction.
+
 ```
 Spring Security filter chain
   ↓
@@ -99,10 +101,10 @@ JwtAuthenticationFilter (existing) — sets SecurityContext.userId, scope
     - companyId = TenantHeaderExtractor.extract(request)
     - allowedCompanies = TenantScopeResolver.resolveAllowed(authzMe)
       // authzMe.getScopeRefIds("COMPANY") — Set<Long>
-    - isSuperAdmin = authzMe.scope().equals("ALL")
+    - isSuperAdmin = authzMe.isSuperAdmin()                  // mevcut DTO accessor (AuthzMeResponse.java:56) — Codex iter-3 §1 absorb
     - if companyId == null:
       - if isSuperAdmin: throw 400 tenant_selection_required (super-admin must select)
-      - if allowedCompanies.size() == 1: auto-pick (single-company user)
+      - if allowedCompanies.size() == 1: companyId = allowedCompanies.iterator().next() (auto-pick single-company)
       - if allowedCompanies.size() > 1: throw 400 tenant_selection_required
       - if allowedCompanies.empty: throw 403 tenant_scope_violation
     - if companyId != null AND !isSuperAdmin AND !allowedCompanies.contains(companyId):
@@ -340,7 +342,7 @@ Bu spec'i okumak için 5 dakika ayırıp şu 7 soruya cevap verirseniz implement
 4. **Schema existence check fail**: 503 (default) mi, stale snapshot fallback + WARN mi?
 5. **Filter chain ordering**: HandlerInterceptor (default) mı, `@ControllerAdvice` mi?
 6. **`report_resolved_schema_miss` cardinality**: `{report_key, schema_mode}` (default) mu, tenant_id label da dahil mi?
-7. **Acceptance**: 7 `@WebMvcTest` IT (default; 4 base + 3 iter-1 absorb yeni: ThreadLocal exception path + TenantScopeResolver auto-pick + scope violation 403) mi, sadece unit + 1 e2e mi?
+7. **Acceptance**: 9 `@WebMvcTest` IT (default; 4 base + 3 iter-1 + 2 iter-2 absorb: ThreadLocal exception path + TenantScopeResolver auto-pick + scope violation 403 + super-admin header bypass + authzMe forward) mi, sadece unit + 1 e2e mi?
 
 Default önerileri seçerseniz "AGREE → impl başla" cevabı yeterlidir.
 
@@ -351,7 +353,7 @@ Default önerileri seçerseniz "AGREE → impl başla" cevabı yeterlidir.
 1. **Phase-2-Program-2a**: TenantBoundaryGuard + TenantContext + TenantHeaderExtractor + 8 unit test
 2. **Phase-2-Program-2b**: CurrentTenantSchemaResolver (NEW) + SchemaResolverFactory + 3 unit test
 3. **Phase-2-Program-2c**: YearlySchemaResolver hardening (`mode=schema` fallback YOK) + 3 unit test
-4. **Phase-2-Program-2d**: 7 `@WebMvcTest` IT (4 base + 3 iter-1 absorb yeni) + Spring config wiring
+4. **Phase-2-Program-2d**: 9 `@WebMvcTest` IT (4 base + 3 iter-1 + 2 iter-2 absorb yeni) + Spring config wiring + interceptor route-scope (sadece query/data/export endpoints; report catalog/metadata/capabilities endpoints muaf — Codex iter-3 §4 absorb)
 5. **Phase-2-Program-2e**: ReportRuntimeMetrics + TenantGuardLogContext MDC + ADR-0007 + feature flag
 
 5 sub-PR, her biri bağımsız Codex iter cycle, normal merge (admin merge YASAK), sırasıyla.
