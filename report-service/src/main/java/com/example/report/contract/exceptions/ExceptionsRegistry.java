@@ -49,6 +49,13 @@ public final class ExceptionsRegistry {
     private final String exceptionsPath;
     private final Clock clock;
     private final Map<String, List<ContractExceptionEntry>> entriesByReport = new ConcurrentHashMap<>();
+    /**
+     * Codex iter-1 BLOCKING absorb: load/parse error fail-closed.
+     * Malformed exceptions.json silently empty registry yapma — governance
+     * artifact integrity violation, build-time gate'in yeşil kalmaması için
+     * meta-FAIL surface.
+     */
+    private final List<ContractViolation> loadViolations = new ArrayList<>();
 
     /**
      * Constructor with injectable Clock for deterministic tests.
@@ -77,6 +84,7 @@ public final class ExceptionsRegistry {
      */
     @PostConstruct
     public void load() {
+        loadViolations.clear();
         try {
             Resource resource = resourceLoader.getResource(exceptionsPath);
             if (!resource.exists()) {
@@ -97,8 +105,18 @@ public final class ExceptionsRegistry {
                 entriesByReport.putAll(grouped);
                 log.info("Loaded {} contract exceptions from {}", entries.length, exceptionsPath);
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
+            // Codex iter-1 BLOCKING absorb: load/parse error fail-closed.
+            // Missing resource → silent empty (seed []), but parse error →
+            // surface as FAIL meta-violation (governance artifact integrity).
             log.error("Failed to load exceptions.json from {}", exceptionsPath, e);
+            entriesByReport.clear();
+            loadViolations.add(ContractViolation.fail(
+                    "EXCEPTION_REGISTRY_LOAD_ERROR",
+                    "_exceptions",
+                    "exceptions.json",
+                    "Failed to load exceptions registry from " + exceptionsPath
+                            + ": " + e.getClass().getSimpleName() + ": " + e.getMessage()));
         }
     }
 
@@ -112,7 +130,12 @@ public final class ExceptionsRegistry {
      */
     public List<ContractViolation> apply(List<ContractViolation> violations) {
         if (violations == null || violations.isEmpty()) {
-            return surfaceMetaViolations(Collections.emptyList());
+            // Codex iter-1 BLOCKING absorb: empty input path da meta + load
+            // violations'ı surface etmeli (governance gate fail-closed).
+            List<ContractViolation> emptyPath = new ArrayList<>(
+                    surfaceMetaViolations(Collections.emptyList()));
+            emptyPath.addAll(loadViolations);
+            return emptyPath;
         }
 
         Instant now = clock.instant();
@@ -132,6 +155,8 @@ public final class ExceptionsRegistry {
         }
         // Append meta-violations for invalid exception entries
         result.addAll(surfaceMetaViolations(violations));
+        // Codex iter-1 BLOCKING absorb: surface load/parse errors fail-closed
+        result.addAll(loadViolations);
         return result;
     }
 

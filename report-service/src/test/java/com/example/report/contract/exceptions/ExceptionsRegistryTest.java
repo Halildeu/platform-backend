@@ -95,6 +95,21 @@ class ExceptionsRegistryTest {
     }
 
     @Test
+    void malformedExceptionsJson_surfacesLoadErrorFail() throws Exception {
+        // Codex iter-1 BLOCKING absorb: malformed JSON → governance artifact
+        // integrity violation surfaces as FAIL (build-time gate fail-closed).
+        // Truly invalid JSON content — Jackson can't parse "not even json".
+        ExceptionsRegistry registry = loadFromInline("this is not valid json", FIXED_CLOCK);
+
+        List<ContractViolation> filtered = registry.apply(List.of());
+
+        assertThat(filtered).anyMatch(v ->
+                "EXCEPTION_REGISTRY_LOAD_ERROR".equals(v.ruleId())
+                        && v.severity() == ContractViolation.Severity.FAIL
+                        && v.message().contains("Failed to load"));
+    }
+
+    @Test
     void noEntries_emptyInput_returnsEmpty() throws Exception {
         ExceptionsRegistry registry = loadFromInline("[]", FIXED_CLOCK);
 
