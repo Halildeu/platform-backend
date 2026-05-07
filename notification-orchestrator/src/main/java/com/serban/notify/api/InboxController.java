@@ -4,6 +4,8 @@ import com.serban.notify.api.dto.InboxItemResponse;
 import com.serban.notify.api.dto.InboxListResponse;
 import com.serban.notify.domain.NotificationInbox;
 import com.serban.notify.inbox.InboxService;
+
+import java.time.OffsetDateTime;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.ConstraintViolationException;
@@ -154,8 +156,62 @@ public class InboxController {
             ));
     }
 
+    /**
+     * POST /api/v1/notify/inbox/mark-all-read — Faz 23.5 PR1.
+     *
+     * <p>Replaces the v1 UI's N+1 mark-read loop with a single SQL UPDATE.
+     * The handler captures the server-side request-start timestamp before
+     * any work and passes it to the service as the {@code cutoff} so
+     * notifications arriving after the request landed are not collateral-
+     * marked-as-read. Idempotent: a re-call with no UNREAD rows returns
+     * {@code updatedCount: 0}.
+     *
+     * <p>Identity: same {@link SubscriberIdentityGuard} contract as the
+     * other "me" endpoints — caller-supplied {@code X-Subscriber-Id}
+     * must match a trusted JWT identity claim.
+     *
+     * @return {@link BulkMarkAllReadResponse} echoing the affected row
+     *         count and the cutoff that was applied (audit affordance)
+     */
+    @PostMapping("/mark-all-read")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Bulk mark-all-read result"),
+        @ApiResponse(responseCode = "400", description = "Validation error"),
+        @ApiResponse(responseCode = "403", description = "Subscriber identity mismatch")
+    })
+    public ResponseEntity<BulkMarkAllReadResponse> markAllAsRead(
+        @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
+        @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
+    ) {
+        subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
+        // Capture the cutoff as early as possible — the more time spent
+        // between this assignment and the UPDATE, the wider the window
+        // in which a fresh notification might "miss" the bulk sweep.
+        // OffsetDateTime.now() uses the JVM monotonic clock for the
+        // moment-of-call so the cutoff is server-authoritative and free
+        // of client clock skew.
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        InboxService.BulkMarkAllReadResult result =
+            inboxService.markAllAsRead(callerOrgId, subscriberId, cutoff);
+        return ResponseEntity.ok(BulkMarkAllReadResponse.from(result));
+    }
+
     /** Lightweight DTO for unread count endpoint. */
     public record UnreadCountResponse(long unreadCount) {}
+
+    /**
+     * Response DTO for the bulk mark-all-read endpoint.
+     *
+     * <p>{@code updatedCount} is the number of rows that flipped
+     * UNREAD → READ; {@code cutoff} is the server-side timestamp the
+     * service applied to the WHERE clause so the caller can audit /
+     * display "marked X notifications as read up to {time}".
+     */
+    public record BulkMarkAllReadResponse(int updatedCount, OffsetDateTime cutoff) {
+        static BulkMarkAllReadResponse from(InboxService.BulkMarkAllReadResult result) {
+            return new BulkMarkAllReadResponse(result.updatedCount(), result.cutoff());
+        }
+    }
 
     /**
      * Local exception handler — controller-level @Validated constraint

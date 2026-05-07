@@ -256,6 +256,58 @@ class InboxServiceUnitTest {
         verify(repository, never()).archive(any(), any(), any(), any());
     }
 
+    // ─── Faz 23.5 PR1: bulk mark-all-read ────────────────────────────────
+
+    @Test
+    void markAllAsReadHappyPathReturnsAffectedCountAndCutoff() {
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        when(repository.markAllAsRead(eq("default"), eq("sub-1"), any(), eq(cutoff)))
+            .thenReturn(13);
+
+        InboxService.BulkMarkAllReadResult result =
+            service.markAllAsRead("default", "sub-1", cutoff);
+
+        assertThat(result.updatedCount()).isEqualTo(13);
+        assertThat(result.cutoff()).isEqualTo(cutoff);
+        verify(repository).markAllAsRead(eq("default"), eq("sub-1"), any(), eq(cutoff));
+        // Single SSE event after the bulk transition (not per row).
+        verify(eventPublisher).publishInboxUpdated("default", "sub-1");
+    }
+
+    @Test
+    void markAllAsReadEmitsNoEventWhenNoRowsMatched() {
+        // Idempotent re-call when no UNREAD rows exist; affected = 0 →
+        // no badge change → don't fire SSE event.
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        when(repository.markAllAsRead(eq("default"), eq("sub-1"), any(), eq(cutoff)))
+            .thenReturn(0);
+
+        InboxService.BulkMarkAllReadResult result =
+            service.markAllAsRead("default", "sub-1", cutoff);
+
+        assertThat(result.updatedCount()).isZero();
+        verify(eventPublisher, never()).publishInboxUpdated(anyString(), anyString());
+    }
+
+    @Test
+    void markAllAsReadRejectsBlankOrgIdSubscriberIdOrCutoff() {
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        org.junit.jupiter.api.Assertions.assertThrows(
+            com.serban.notify.exception.InvalidRequestException.class,
+            () -> service.markAllAsRead("", "sub-1", cutoff)
+        );
+        org.junit.jupiter.api.Assertions.assertThrows(
+            com.serban.notify.exception.InvalidRequestException.class,
+            () -> service.markAllAsRead("default", "", cutoff)
+        );
+        org.junit.jupiter.api.Assertions.assertThrows(
+            com.serban.notify.exception.InvalidRequestException.class,
+            () -> service.markAllAsRead("default", "sub-1", null)
+        );
+        // Repository never called for any of those.
+        verify(repository, never()).markAllAsRead(any(), any(), any(), any());
+    }
+
     private static NotificationInbox stubRow() {
         NotificationInbox row = new NotificationInbox();
         row.setId(42L);

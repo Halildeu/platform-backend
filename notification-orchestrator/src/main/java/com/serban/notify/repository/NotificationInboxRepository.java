@@ -134,6 +134,45 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
     );
 
     /**
+     * Bulk mark-all-read (Faz 23.5 PR1).
+     *
+     * <p>Flips every UNREAD row owned by the subscriber to READ in one
+     * SQL statement, returning the affected row count for the response
+     * body. Idempotent: a follow-up call with no UNREAD rows returns 0.
+     *
+     * <p><b>Race protection</b> (Codex thread {@code 019e021f} plan absorb):
+     * the {@code cutoff} parameter prevents a notification that arrives
+     * between the request reaching the server and the UPDATE running
+     * from being collateral-marked-as-read. Only rows whose
+     * {@code created_at <= :cutoff} are considered. The caller passes the
+     * server-side request-start timestamp (NOT a client clock) so the
+     * cutoff is monotonic and free of clock skew; the controller derives
+     * it from {@link OffsetDateTime#now()} at the start of the handler.
+     *
+     * <p>The cutoff lives in the WHERE clause so the database itself
+     * enforces the boundary atomically. Newer rows simply don't match
+     * and remain UNREAD; the next mark-all-read call sweeps them.
+     *
+     * @return number of rows that transitioned UNREAD → READ
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE NotificationInbox i
+        SET i.state = com.serban.notify.domain.NotificationInbox.State.READ,
+            i.readAt = :now
+        WHERE i.orgId = :orgId
+          AND i.subscriberId = :subscriberId
+          AND i.state = com.serban.notify.domain.NotificationInbox.State.UNREAD
+          AND i.createdAt <= :cutoff
+        """)
+    int markAllAsRead(
+        @Param("orgId") String orgId,
+        @Param("subscriberId") String subscriberId,
+        @Param("now") OffsetDateTime now,
+        @Param("cutoff") OffsetDateTime cutoff
+    );
+
+    /**
      * KVKK erasure — bulk delete inbox rows by (org, subscriber).
      *
      * <p>Codex iter-1 P1.2 absorb: existing {@link com.serban.notify.erasure.ErasureService}

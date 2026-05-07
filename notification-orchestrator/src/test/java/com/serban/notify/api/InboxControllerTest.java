@@ -214,6 +214,53 @@ class InboxControllerTest {
             .andExpect(status().isBadRequest());
     }
 
+    // ─── Faz 23.5 PR1: bulk mark-all-read ────────────────────────────────
+
+    @Test
+    void markAllAsReadReturns200WithUpdatedCount() throws Exception {
+        when(inboxService.markAllAsRead(anyString(), anyString(), any()))
+            .thenAnswer(inv -> new InboxService.BulkMarkAllReadResult(
+                7,
+                inv.getArgument(2)
+            ));
+
+        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+                .header("X-Org-Id", "default")
+                .header("X-Subscriber-Id", "sub-1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.updatedCount").value(7))
+            .andExpect(jsonPath("$.cutoff").exists());
+    }
+
+    @Test
+    void markAllAsReadIdempotentReturnsZeroCount() throws Exception {
+        when(inboxService.markAllAsRead(anyString(), anyString(), any()))
+            .thenAnswer(inv -> new InboxService.BulkMarkAllReadResult(
+                0,
+                inv.getArgument(2)
+            ));
+
+        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+                .header("X-Org-Id", "default")
+                .header("X-Subscriber-Id", "sub-1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.updatedCount").value(0));
+    }
+
+    @Test
+    void markAllAsReadWithoutOrgIdReturns400() throws Exception {
+        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+                .header("X-Subscriber-Id", "sub-1"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void markAllAsReadWithoutSubscriberIdReturns400() throws Exception {
+        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+                .header("X-Org-Id", "default"))
+            .andExpect(status().isBadRequest());
+    }
+
     /**
      * Stub JwtDecoder bean — bypass real KC JWKS network fetch.
      * Test profile uses permissive SecurityConfigTest, so JwtDecoder
