@@ -70,71 +70,84 @@ public class InboxEventPublisher {
     }
 
     /**
-     * Recompute unread count + emit event. Caller passes (orgId, subscriberId)
-     * for the affected subscriber.
+     * Emit dirty-flag event for {@code (orgId, subscriberId)} so SSE
+     * subscribers can be notified to refresh.
      *
-     * <p>Cross-pod path (default): {@code NOTIFY inbox_updated, '<json>'} —
-     * picked up by all pods' {@link InboxNotifyListener}, which re-emits the
-     * Spring event locally for SSE broadcast.
+     * <p>Codex iter-1 P2.1 absorb: payload no longer carries pre-computed
+     * {@code unreadCount}. Stale-count race: two concurrent {@code markAsRead}
+     * transactions each see "1 unread" in their own snapshot, both NOTIFY
+     * "unreadCount=1", but real post-commit value is 0. Fix: payload =
+     * (orgId, subscriberId) only; {@link InboxNotifyListener} recomputes
+     * count via {@link NotificationInboxRepository#countUnreadBySubscriber}
+     * AFTER NOTIFY arrives (post-commit guaranteed by PG transactional
+     * NOTIFY semantics). Result: clients always receive fresh count.
+     *
+     * <p>Cross-pod path (default): {@code pg_notify('inbox_updated',
+     * '<json>')} via JdbcTemplate in caller's transaction. PG transactional
+     * NOTIFY: rolls back if caller transaction rolls back ⇒ phantom-event-safe.
      *
      * <p>Single-pod fallback ({@code notify.inbox.cross-pod-enabled=false}):
      * direct {@link org.springframework.context.ApplicationEventPublisher#publishEvent}
-     * — only this JVM's SSE clients see the event. Used for local dev / unit
-     * tests where PG LISTEN/NOTIFY infrastructure is overkill.
+     * with pre-computed count — only this JVM's SSE clients see the event.
+     * SseController uses {@code @TransactionalEventListener(AFTER_COMMIT,
+     * fallbackExecution=true)} so the local event also waits for commit
+     * (Codex iter-1 P1.3 absorb). Used for local dev / unit tests where
+     * PG LISTEN/NOTIFY infrastructure is overkill.
+     *
+     * <p>Codex iter-1 P1.2 absorb: {@code DataAccessException} from NOTIFY
+     * propagates to caller — caller transaction MUST rollback together with
+     * the failed notification (PG marks it rollback-only anyway). Earlier
+     * "best-effort + state already committed" semantics was misleading
+     * because NOTIFY runs in the caller's transaction.
      */
     public void publishInboxUpdated(String orgId, String subscriberId) {
         if (orgId == null || orgId.isBlank()) return;
         if (subscriberId == null || subscriberId.isBlank()) return;
 
-        long unreadCount = inboxRepository.countUnreadBySubscriber(orgId, subscriberId);
-        InboxUpdatedEvent event = new InboxUpdatedEvent(orgId, subscriberId, unreadCount);
-
         if (crossPodEnabled) {
-            publishViaPgNotify(event);
+            publishViaPgNotify(orgId, subscriberId);
         } else {
+            // Local fallback path: include count for legacy single-pod
+            // listener; SseController @TransactionalEventListener AFTER_COMMIT
+            // gates phantom delivery.
+            long unreadCount = inboxRepository.countUnreadBySubscriber(orgId, subscriberId);
             log.debug("inbox event (local-only): orgId={} subscriberId={} unreadCount={}",
                 orgId, subscriberId, unreadCount);
-            applicationEventPublisher.publishEvent(event);
+            applicationEventPublisher.publishEvent(
+                new InboxUpdatedEvent(orgId, subscriberId, unreadCount)
+            );
         }
     }
 
     /**
-     * Emit {@code NOTIFY inbox_updated, '<json>'} so all pods (including this
-     * one) deliver via their {@link InboxNotifyListener} → Spring event chain.
+     * Emit {@code pg_notify('inbox_updated', '<json>')} via parameterized
+     * SQL (Codex iter-1 P1.4-related: {@code SELECT pg_notify(?, ?)}
+     * preferred over hand-built {@code NOTIFY ch, 'literal'} to avoid
+     * SQL-literal escaping pitfalls).
      *
-     * <p>Transactional semantics: {@code pg_notify} via JdbcTemplate runs in
-     * the current transaction (if any). Caller transaction rollback ⇒
-     * NOTIFY also rolled back (PG built-in behavior). No phantom events.
-     *
-     * <p>Failure isolation: NOTIFY failure (e.g. DB connection lost) is
-     * logged but does NOT propagate — inbox state mutation succeeded; SSE
-     * push best-effort, client can poll {@code /inbox/me/unread-count}
-     * fallback. Returning to caller without exception preserves application
-     * semantic (state changed; just notification path lost).
+     * <p>Payload = {@code {"orgId": ..., "subscriberId": ...}} — count
+     * recomputed by listener post-commit (Codex iter-1 P2.1 absorb).
      */
-    private void publishViaPgNotify(InboxUpdatedEvent event) {
+    private void publishViaPgNotify(String orgId, String subscriberId) {
         try {
             String payload = objectMapper.writeValueAsString(Map.of(
-                "orgId", event.orgId(),
-                "subscriberId", event.subscriberId(),
-                "unreadCount", event.unreadCount()
+                "orgId", orgId,
+                "subscriberId", subscriberId
             ));
-            // Single-quote escape for SQL literal; payload is JSON without
-            // single-quotes typically, but defensive replace for safety.
-            String escaped = payload.replace("'", "''");
-            jdbcTemplate.execute("NOTIFY " + NOTIFY_CHANNEL + ", '" + escaped + "'");
-            log.debug("inbox NOTIFY: orgId={} subscriberId={} unreadCount={} bytes={}",
-                event.orgId(), event.subscriberId(), event.unreadCount(), payload.length());
+            // Parameterized pg_notify avoids manual SQL literal escaping
+            jdbcTemplate.update("SELECT pg_notify(?, ?)", NOTIFY_CHANNEL, payload);
+            log.debug("inbox NOTIFY: orgId={} subscriberId={} bytes={}",
+                orgId, subscriberId, payload.length());
         } catch (JsonProcessingException jpe) {
-            log.warn("inbox NOTIFY skip (json marshal): {} — falling back to local event",
-                jpe.getMessage());
-            // Fall back to local-only event
-            applicationEventPublisher.publishEvent(event);
-        } catch (org.springframework.dao.DataAccessException dae) {
-            log.warn("inbox NOTIFY skip (db error): {} — SSE push lost (clients can poll)",
-                dae.getMessage());
-            // Defensive: do NOT propagate. State mutation already committed
-            // (separate transaction); SSE push best-effort.
+            // Jackson failure on a 2-string Map is essentially impossible;
+            // surface as runtime exception so caller transaction rolls back
+            // (consistent with DB-error propagation below).
+            throw new IllegalStateException(
+                "inbox NOTIFY payload marshal failed (impossible 2-string map)", jpe);
         }
+        // Codex iter-1 P1.2 absorb: DataAccessException propagates. NOTIFY
+        // runs in caller's transaction; PG marks transaction rollback-only
+        // on error. Catching and "best-effort" continuing would leave caller
+        // believing state committed when it actually rolled back.
     }
 }

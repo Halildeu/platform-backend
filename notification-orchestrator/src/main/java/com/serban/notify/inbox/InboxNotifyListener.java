@@ -2,17 +2,18 @@ package com.serban.notify.inbox;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.serban.notify.repository.NotificationInboxRepository;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
+import org.postgresql.ds.PGSimpleDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
-import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -22,25 +23,31 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Background PostgreSQL {@code LISTEN inbox_updated} worker for cross-pod
  * SSE event broadcast (Faz 23.4 PR-E.4).
  *
- * <p>One dedicated long-lived JDBC connection per pod (NOT from HikariCP
- * pool — the connection blocks indefinitely). On startup, executes
- * {@code LISTEN inbox_updated}; a daemon thread polls
- * {@link PGConnection#getNotifications(int)} every {@link #POLL_INTERVAL_MS}.
- * On NOTIFY arrival, parses JSON payload and re-emits Spring
- * {@link InboxUpdatedEvent}, which {@link com.serban.notify.api.InboxSseController}
- * forwards to its locally-connected SSE clients.
+ * <p>One DEDICATED long-lived JDBC connection per pod, allocated via
+ * {@link PGSimpleDataSource} (NOT shared with main HikariCP pool — Codex
+ * iter-1 P1.1 absorb). LISTEN blocks indefinitely on
+ * {@link PGConnection#getNotifications(int)}; if drawn from the main pool
+ * it would starve the pool of one connection forever per pod. Dedicated
+ * unpooled connection isolates this lifecycle.
+ *
+ * <p>On startup, executes {@code LISTEN inbox_updated}; a daemon thread
+ * polls every {@link #POLL_INTERVAL_MS}. On NOTIFY arrival, parses
+ * {@code {"orgId":...,"subscriberId":...}} payload, recomputes fresh
+ * unread count via {@link NotificationInboxRepository#countUnreadBySubscriber}
+ * (Codex iter-1 P2.1 absorb — payload no longer carries pre-computed count
+ * to avoid stale-snapshot race in concurrent mutations), and re-emits
+ * Spring {@link InboxUpdatedEvent}.
  *
  * <p>Lifecycle:
  * <ul>
- *   <li>{@link PostConstruct}: connect + LISTEN + start poll thread</li>
- *   <li>{@link PreDestroy}: stop poll thread + UNLISTEN + close connection</li>
+ *   <li>{@link PostConstruct}: build PGSimpleDataSource from spring.datasource
+ *       config + connect + LISTEN + start poll thread</li>
+ *   <li>{@link PreDestroy}: stop poll thread + UNLISTEN explicit + close connection</li>
  *   <li>Connection drop / SQLException: log + reconnect with exponential backoff</li>
  * </ul>
  *
  * <p>Disabled when {@code notify.inbox.cross-pod-enabled=false} (single-pod
- * test / local dev) — {@link #initialize()} short-circuits and listener
- * thread is never started. {@link InboxEventPublisher} falls back to direct
- * Spring {@code ApplicationEventPublisher} path.
+ * test / local dev).
  *
  * <p>Origin-pod duplicate: NOTIFY is delivered to ALL listeners including
  * the originating session. Pod A publishes → Pod A's listener also receives.
@@ -63,25 +70,40 @@ public class InboxNotifyListener {
     private static final long INITIAL_BACKOFF_MS = 1_000;
     private static final long MAX_BACKOFF_MS = 30_000;
 
-    private final DataSource dataSource;
     private final ApplicationEventPublisher applicationEventPublisher;
     private final ObjectMapper objectMapper;
+    private final NotificationInboxRepository inboxRepository;
 
     @Value("${notify.inbox.cross-pod-enabled:true}")
     private boolean enabled;
 
+    /**
+     * Spring DataSource JDBC URL — used to build dedicated PGSimpleDataSource
+     * (NOT the autoconfigured HikariDataSource, which would lend a pool
+     * connection to LISTEN forever).
+     */
+    @Value("${spring.datasource.url}")
+    private String jdbcUrl;
+
+    @Value("${spring.datasource.username}")
+    private String dbUsername;
+
+    @Value("${spring.datasource.password}")
+    private String dbPassword;
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread listenThread;
     private Connection currentConnection;
+    private PGSimpleDataSource dedicatedDataSource;
 
     public InboxNotifyListener(
-        DataSource dataSource,
         ApplicationEventPublisher applicationEventPublisher,
-        ObjectMapper objectMapper
+        ObjectMapper objectMapper,
+        NotificationInboxRepository inboxRepository
     ) {
-        this.dataSource = dataSource;
         this.applicationEventPublisher = applicationEventPublisher;
         this.objectMapper = objectMapper;
+        this.inboxRepository = inboxRepository;
     }
 
     @PostConstruct
@@ -90,11 +112,17 @@ public class InboxNotifyListener {
             log.info("inbox LISTEN disabled (cross-pod-enabled=false) — single-pod fallback");
             return;
         }
+        // Dedicated unpooled DataSource — does NOT share HikariCP pool.
+        dedicatedDataSource = new PGSimpleDataSource();
+        dedicatedDataSource.setUrl(jdbcUrl);
+        dedicatedDataSource.setUser(dbUsername);
+        dedicatedDataSource.setPassword(dbPassword);
+
         running.set(true);
         listenThread = new Thread(this::listenLoop, "inbox-pg-listen");
         listenThread.setDaemon(true);
         listenThread.start();
-        log.info("inbox LISTEN started: channel={}", CHANNEL);
+        log.info("inbox LISTEN started: channel={} (dedicated PGSimpleDataSource)", CHANNEL);
     }
 
     @PreDestroy
@@ -108,7 +136,7 @@ public class InboxNotifyListener {
                 Thread.currentThread().interrupt();
             }
         }
-        closeConnectionQuietly();
+        unlistenAndCloseConnection();
         log.info("inbox LISTEN stopped");
     }
 
@@ -150,7 +178,8 @@ public class InboxNotifyListener {
     }
 
     private void openConnectionAndListen() throws SQLException {
-        currentConnection = dataSource.getConnection();
+        currentConnection = dedicatedDataSource.getConnection();
+        currentConnection.setAutoCommit(true);
         // Execute LISTEN; channel name is constant, no SQL injection risk
         try (Statement stmt = currentConnection.createStatement()) {
             stmt.execute("LISTEN " + CHANNEL);
@@ -174,7 +203,14 @@ public class InboxNotifyListener {
         }
     }
 
-    /** Parse JSON payload + emit Spring event. JSON parse error logged + dropped. */
+    /**
+     * Parse JSON payload + recompute fresh unread count + emit Spring event.
+     *
+     * <p>Codex iter-1 P2.1 absorb: payload is dirty-flag only ({@code orgId},
+     * {@code subscriberId}); count recomputed POST-COMMIT here (PG NOTIFY
+     * delivers only after publisher's transaction committed → repository
+     * sees the latest committed state). Avoids stale-snapshot race.
+     */
     private void handleNotification(PGNotification notif) {
         if (!CHANNEL.equals(notif.getName())) return;
         String payload = notif.getParameter();
@@ -186,20 +222,31 @@ public class InboxNotifyListener {
             JsonNode node = objectMapper.readTree(payload);
             String orgId = node.path("orgId").asText(null);
             String subscriberId = node.path("subscriberId").asText(null);
-            long unreadCount = node.path("unreadCount").asLong(0);
             if (orgId == null || subscriberId == null) {
                 log.warn("inbox NOTIFY skip (missing fields): payload={}", payload);
                 return;
             }
+            long unreadCount = inboxRepository.countUnreadBySubscriber(orgId, subscriberId);
             applicationEventPublisher.publishEvent(
                 new InboxUpdatedEvent(orgId, subscriberId, unreadCount)
             );
-            log.debug("inbox NOTIFY received: orgId={} subscriberId={} unreadCount={}",
+            log.debug("inbox NOTIFY received: orgId={} subscriberId={} unreadCount={} (recomputed)",
                 orgId, subscriberId, unreadCount);
         } catch (Exception ex) {
-            log.warn("inbox NOTIFY parse error (drop): payload={} err={}",
+            log.warn("inbox NOTIFY parse/recompute error (drop): payload={} err={}",
                 payload, ex.getMessage());
         }
+    }
+
+    private void unlistenAndCloseConnection() {
+        if (currentConnection != null) {
+            try (Statement stmt = currentConnection.createStatement()) {
+                stmt.execute("UNLISTEN " + CHANNEL);
+            } catch (SQLException ignore) {
+                // best-effort; close will implicitly unlisten anyway
+            }
+        }
+        closeConnectionQuietly();
     }
 
     private void closeConnectionQuietly() {

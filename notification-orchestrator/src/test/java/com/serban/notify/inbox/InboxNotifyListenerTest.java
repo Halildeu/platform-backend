@@ -1,14 +1,13 @@
 package com.serban.notify.inbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.serban.notify.repository.NotificationInboxRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import javax.sql.DataSource;
 import java.lang.reflect.Method;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -38,34 +37,39 @@ import static org.mockito.Mockito.when;
  */
 class InboxNotifyListenerTest {
 
-    private DataSource dataSource;
     private ApplicationEventPublisher applicationEventPublisher;
     private ObjectMapper objectMapper;
+    private NotificationInboxRepository inboxRepository;
     private InboxNotifyListener listener;
 
     @BeforeEach
     void setUp() {
-        dataSource = mock(DataSource.class);
         applicationEventPublisher = mock(ApplicationEventPublisher.class);
         objectMapper = new ObjectMapper();
-        listener = new InboxNotifyListener(dataSource, applicationEventPublisher, objectMapper);
+        inboxRepository = mock(NotificationInboxRepository.class);
+        listener = new InboxNotifyListener(applicationEventPublisher, objectMapper, inboxRepository);
         ReflectionTestUtils.setField(listener, "enabled", true);
     }
 
     @Test
-    void handlerParsesValidPayloadAndEmitsSpringEvent() throws Exception {
+    void handlerParsesDirtyFlagPayloadRecomputesCountAndEmitsSpringEvent() throws Exception {
+        // Codex iter-1 P2.1 absorb: payload is dirty-flag (orgId+subscriberId);
+        // listener recomputes count POST-COMMIT via repository (avoids stale
+        // snapshot race in concurrent mutations).
         PGNotification notif = mock(PGNotification.class);
         when(notif.getName()).thenReturn(InboxNotifyListener.CHANNEL);
         when(notif.getParameter()).thenReturn(
-            "{\"orgId\":\"default\",\"subscriberId\":\"sub-1\",\"unreadCount\":5}"
+            "{\"orgId\":\"default\",\"subscriberId\":\"sub-1\"}"
         );
+        when(inboxRepository.countUnreadBySubscriber("default", "sub-1")).thenReturn(7L);
 
         invokeHandle(notif);
 
+        verify(inboxRepository).countUnreadBySubscriber("default", "sub-1");
         verify(applicationEventPublisher).publishEvent(argThat((InboxUpdatedEvent ev) ->
             "default".equals(ev.orgId())
                 && "sub-1".equals(ev.subscriberId())
-                && ev.unreadCount() == 5L
+                && ev.unreadCount() == 7L  // fresh from repo, not from payload
         ));
     }
 
@@ -145,10 +149,9 @@ class InboxNotifyListenerTest {
 
         listener.initialize();
 
-        // No exception, no thread; running flag should remain false
-        // (verify by checking no DataSource interaction since openConnection
-        // is never called)
-        verifyNoInteractions(dataSource);
+        // Disabled path: no thread, no repository interaction either
+        verifyNoInteractions(inboxRepository);
+        verifyNoInteractions(applicationEventPublisher);
     }
 
     private void invokeHandle(PGNotification notif) throws Exception {

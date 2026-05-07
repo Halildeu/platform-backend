@@ -46,51 +46,49 @@ class InboxEventPublisherTest {
     // ─── Cross-pod path (default) ────────────────────────────────────────
 
     @Test
-    void crossPodEnabledEmitsPgNotify() {
-        when(inboxRepository.countUnreadBySubscriber("default", "sub-1")).thenReturn(5L);
-
+    void crossPodEnabledEmitsPgNotifyWithDirtyFlagPayloadOnly() {
+        // Codex iter-1 P2.1 absorb: payload is dirty-flag (orgId + subscriberId)
+        // ONLY. unreadCount intentionally omitted — listener recomputes
+        // post-commit to avoid stale-snapshot race.
         publisher.publishInboxUpdated("default", "sub-1");
 
-        // Verify NOTIFY was issued via JdbcTemplate.execute with channel name +
-        // JSON payload containing all fields
-        verify(jdbcTemplate).execute(argThat((String sql) ->
-            sql.startsWith("NOTIFY inbox_updated, '")
-                && sql.contains("\"orgId\":\"default\"")
-                && sql.contains("\"subscriberId\":\"sub-1\"")
-                && sql.contains("\"unreadCount\":5")
-        ));
+        // Verify pg_notify was issued via parameterized SQL with channel name +
+        // JSON payload containing only orgId and subscriberId (no count)
+        verify(jdbcTemplate).update(
+            eq("SELECT pg_notify(?, ?)"),
+            eq("inbox_updated"),
+            argThat((String json) ->
+                json.contains("\"orgId\":\"default\"")
+                    && json.contains("\"subscriberId\":\"sub-1\"")
+                    && !json.contains("unreadCount")
+            )
+        );
         // Cross-pod: do NOT directly call applicationEventPublisher;
         // listener will deliver via LISTEN path
         verify(applicationEventPublisher, never()).publishEvent(any());
+        // Cross-pod: do NOT pre-compute count (listener does it post-commit)
+        verifyNoInteractions(inboxRepository);
     }
 
     @Test
-    void crossPodEnabledZeroUnreadCountStillNotifies() {
-        when(inboxRepository.countUnreadBySubscriber("default", "sub-1")).thenReturn(0L);
-
-        publisher.publishInboxUpdated("default", "sub-1");
-
-        verify(jdbcTemplate).execute(contains("\"unreadCount\":0"));
-    }
-
-    @Test
-    void crossPodNotifyDbErrorLogsAndReturnsCleanly() {
-        when(inboxRepository.countUnreadBySubscriber("default", "sub-1")).thenReturn(3L);
+    void crossPodNotifyDbErrorPropagates() {
+        // Codex iter-1 P1.2 absorb: DataAccessException from NOTIFY MUST
+        // propagate (NOTIFY runs in caller's transaction; PG marks
+        // rollback-only on error). Earlier "best-effort" semantics misled
+        // caller into believing state was committed.
         doThrow(new org.springframework.dao.DataAccessResourceFailureException("conn lost"))
-            .when(jdbcTemplate).execute(anyString());
+            .when(jdbcTemplate).update(anyString(), anyString(), anyString());
 
-        // Defensive: should NOT propagate (state mutation already committed)
-        publisher.publishInboxUpdated("default", "sub-1");
-
-        verify(jdbcTemplate).execute(anyString());
-        // No fallback to local event for DB error path (different from JSON error)
-        verify(applicationEventPublisher, never()).publishEvent(any());
+        org.junit.jupiter.api.Assertions.assertThrows(
+            org.springframework.dao.DataAccessException.class,
+            () -> publisher.publishInboxUpdated("default", "sub-1")
+        );
     }
 
     // ─── Single-pod fallback ─────────────────────────────────────────────
 
     @Test
-    void crossPodDisabledFallsBackToLocalEventPublisher() {
+    void crossPodDisabledFallsBackToLocalEventPublisherWithCount() {
         ReflectionTestUtils.setField(publisher, "crossPodEnabled", false);
         when(inboxRepository.countUnreadBySubscriber("default", "sub-1")).thenReturn(7L);
 
@@ -103,6 +101,16 @@ class InboxEventPublisherTest {
         ));
         // Single-pod: NO PG NOTIFY (uses local Spring event bus)
         verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
+    void crossPodDisabledZeroCountStillEmits() {
+        ReflectionTestUtils.setField(publisher, "crossPodEnabled", false);
+        when(inboxRepository.countUnreadBySubscriber("default", "sub-1")).thenReturn(0L);
+
+        publisher.publishInboxUpdated("default", "sub-1");
+
+        verify(applicationEventPublisher).publishEvent(any(InboxUpdatedEvent.class));
     }
 
     // ─── Validation guards ───────────────────────────────────────────────
