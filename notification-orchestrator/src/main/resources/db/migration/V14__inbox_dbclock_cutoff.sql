@@ -21,15 +21,19 @@ ALTER TABLE notify.notification_inbox
     ALTER COLUMN created_at SET DEFAULT NOW();
 
 COMMENT ON COLUMN notify.notification_inbox.created_at IS
-    'DB-authoritative creation timestamp (Faz 23.5 hardening). NEVER ' ||
-    'set by the application — DEFAULT NOW() owns the value so multi-pod ' ||
-    'mark-all-read cutoff (Faz 23.5 PR1) is race-safe under clock drift.';
+    'DB-authoritative creation timestamp (Faz 23.5 hardening). NEVER set by the application — DEFAULT NOW() owns the value so multi-pod mark-all-read cutoff (Faz 23.5 PR1) is race-safe under clock drift.';
 
 COMMENT ON COLUMN notify.notification_inbox.read_at IS
-    'DB-authoritative read transition timestamp. mark-as-read / ' ||
-    'mark-all-read SQL writes NOW() (or CURRENT_TIMESTAMP) directly so ' ||
-    'the read marker uses the same DB clock as the cutoff predicate.';
+    'DB-authoritative read transition timestamp. mark-as-read / mark-all-read SQL writes NOW() (or CURRENT_TIMESTAMP) directly so the read marker uses the same DB clock as the cutoff predicate.';
 
 COMMENT ON COLUMN notify.notification_inbox.archived_at IS
-    'DB-authoritative archive timestamp. archive endpoint SQL writes ' ||
-    'NOW() so archive timeline is consistent with the inbox read clock.';
+    'DB-authoritative archive timestamp. archive endpoint SQL writes NOW() so archive timeline is consistent with the inbox read clock.';
+
+-- Codex REVISE iter-2 absorb (thread `019e03c9`): the V9 `state` column
+-- comment claimed "Timestamps set by app (JPQL UPDATE); trigger acts as
+-- safety net". After Faz 23.5 hardening that narrative is wrong on two
+-- counts — (1) the timestamps come from the DB clock, not the app, and
+-- (2) writes are native SQL `NOW()` rather than JPQL UPDATE. Override
+-- the comment so the schema docs match the new authority model.
+COMMENT ON COLUMN notify.notification_inbox.state IS
+    'Inbox row state machine: UNREAD → READ → ARCHIVED. Faz 23.5: state transitions are written by native SQL alongside the DB clock (NOW()/CURRENT_TIMESTAMP) for read_at / archived_at; the V9 trigger remains as a backward-transition safety net.';

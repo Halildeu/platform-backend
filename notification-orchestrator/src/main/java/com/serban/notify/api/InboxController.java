@@ -157,21 +157,29 @@ public class InboxController {
     }
 
     /**
-     * POST /api/v1/notify/inbox/me/mark-all-read — Faz 23.5 PR1.
+     * POST /api/v1/notify/inbox/me/mark-all-read — Faz 23.5 PR1
+     * + Faz 23.5 hardening (Codex thread {@code 019e03b5} AGREE
+     * iter-1; Codex thread {@code 019e03c9} REVISE iter-2 doc absorb).
      *
-     * <p>Replaces the v1 UI's N+1 mark-read loop with a single SQL UPDATE.
-     * The handler captures the server-side request-start timestamp before
-     * any work and passes it to the service as the {@code cutoff} so
-     * notifications arriving after the request landed are not collateral-
-     * marked-as-read. Idempotent: a re-call with no UNREAD rows returns
-     * {@code updatedCount: 0}.
+     * <p>Replaces the v1 UI's N+1 mark-read loop with a single SQL
+     * UPDATE. The cutoff is fully owned by the database — the
+     * service issues a native UPDATE with {@code created_at <= NOW()}
+     * in the WHERE clause and the {@link InboxService} reads back
+     * the same DB clock via {@link NotificationInboxRepository#currentDatabaseTimestamp()}
+     * (transaction-start timestamp). The controller therefore does
+     * not capture {@link OffsetDateTime#now()} or any other JVM
+     * timestamp; the JVM clock has zero authority over either side
+     * of the cutoff comparison, which keeps the action race-safe
+     * across pods regardless of NTP drift. Idempotent: a re-call
+     * with no UNREAD rows returns {@code updatedCount: 0}.
      *
-     * <p>Identity: same {@link SubscriberIdentityGuard} contract as the
-     * other "me" endpoints — caller-supplied {@code X-Subscriber-Id}
+     * <p>Identity: same {@link SubscriberIdentityGuard} contract as
+     * the other "me" endpoints — caller-supplied {@code X-Subscriber-Id}
      * must match a trusted JWT identity claim.
      *
-     * @return {@link BulkMarkAllReadResponse} echoing the affected row
-     *         count and the cutoff that was applied (audit affordance)
+     * @return {@link BulkMarkAllReadResponse} echoing the affected
+     *         row count and the DB-sourced cutoff that was applied
+     *         (audit affordance; wire shape unchanged from PR1)
      */
     @PostMapping("/me/mark-all-read")
     @ApiResponses({

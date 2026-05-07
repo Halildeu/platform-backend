@@ -13,8 +13,13 @@ import java.time.OffsetDateTime;
  * A delivery may be {@code DELIVERED} while the inbox row stays
  * {@code UNREAD} until the subscriber opens the notification.
  *
- * <p>read_at / archived_at columns are auto-set via PostgreSQL trigger
- * (V9 migration) on state transition — entity does not enforce them.
+ * <p>created_at, read_at and archived_at are DB-authoritative (Faz 23.5
+ * hardening — Codex thread {@code 019e03b5}). The native UPDATE
+ * statements that flip {@code state} also write {@code NOW()} into the
+ * timeline columns inside the same statement, so the inbox clock is
+ * sourced exclusively from PostgreSQL — never from a JVM. The V9
+ * trigger remains as a safety net that drops the timeline markers on
+ * backward state transitions.
  *
  * <p>One row per (org_id, intent_id, subscriber_id) — UNIQUE index in DB
  * ensures idempotent insert from intent fan-out / dispatch retries.
