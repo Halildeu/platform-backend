@@ -47,8 +47,11 @@ public final class ContractValidator {
     }
 
     /**
-     * Default rule set with empty allowlist (1a backward compat — RC-004 no-op
-     * for fixtures that pre-date 1d allowlist injection).
+     * Default rule set with empty allowlist (1a backward compat). RC-004 with
+     * an empty allowlist behaves as deny-all for COMPANY rowFilter columns —
+     * production gate uses {@link #withDefaultRules(TenantColumnAllowlist)}
+     * with the real allowlist; this overload exists for 1a unit fixtures that
+     * pre-date allowlist injection and don't trip RC-004.
      */
     public static ContractValidator withDefaultRules() {
         return withDefaultRules(new TenantColumnAllowlist(java.util.Map.of()));

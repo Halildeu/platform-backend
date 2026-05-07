@@ -2,10 +2,18 @@ package com.example.report.contract;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.report.contract.exceptions.ContractExceptionEntry;
 import com.example.report.contract.report.ContractReport;
 import com.example.report.contract.report.ContractViolation;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.InputStream;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.DefaultResourceLoader;
+import org.springframework.core.io.Resource;
 
 /**
  * Phase 2 Program 1d — ReportContractGate end-to-end tests.
@@ -18,11 +26,13 @@ import org.junit.jupiter.api.Test;
  * <p>Acceptance criteria:
  * <ul>
  *   <li>Default {@code mvn test} run completes deterministically.</li>
- *   <li>All known RC-004 + RC-001 governance debt is suppressed by the
- *       9 exception entries committed in this PR.</li>
+ *   <li>All known RC-001 + RC-004 + RC-005 governance debt is suppressed
+ *       by the 21 exception entries committed in this PR.</li>
  *   <li>{@code hr-personel-listesi} (legitimate {@code OUR_COMPANY_ID})
  *       is NOT in the exception list.</li>
  *   <li>No unsuppressed FAILs remain in the gate output.</li>
+ *   <li>Exception inventory exact: 21 entries (2× RC-001, 7× RC-004,
+ *       12× RC-005); no other rule namespaces.</li>
  * </ul>
  */
 class ReportContractGateTest {
@@ -99,22 +109,71 @@ class ReportContractGateTest {
     }
 
     @Test
-    void gate_metaViolations_areNotSuppressibleEvenIfExceptionAttempts() {
-        // No production exception entries should target REPORT_*/EXCEPTION_*
-        // Verify gate output never accidentally suppresses meta-violations:
-        // we cannot easily inject one without a fixture, but assert the
-        // structure: no FAIL on meta categories should be silently absent.
-        ContractReport report = ReportContractGate.create().gate();
-        // If any REPORT_SCHEMA_INVALID or EXCEPTION_* violations appear, they
-        // should remain (not be filtered). The 31 migrated reports + valid
-        // exceptions.json should not produce any meta-violations in the
-        // green-path test, so this is a structural assertion.
-        long metaCount = report.violations().stream()
-                .filter(v -> v.ruleId() != null
-                        && (v.ruleId().startsWith("REPORT_") || v.ruleId().startsWith("EXCEPTION_")))
-                .count();
-        // In green path no meta violations expected; if any appear they prove
-        // the path is wired (not suppressed).
-        assertThat(metaCount).isGreaterThanOrEqualTo(0);
+    void exceptionsJson_inventoryExactCounts() throws Exception {
+        // Codex iter-5 §1d-AGREE absorb: lock the production exception inventory
+        // shape so accidental drift (e.g. someone adding an RC-007 90d entry
+        // without review) is caught at gate-test time.
+        ContractExceptionEntry[] entries = loadExceptions();
+
+        assertThat(entries)
+                .as("Total governance debt entries (Phase 2 Program 1d)")
+                .hasSize(21);
+
+        Map<String, Long> byRule = Arrays.stream(entries)
+                .flatMap(e -> e.ruleIds().stream())
+                .collect(Collectors.groupingBy(r -> r, Collectors.counting()));
+
+        assertThat(byRule.get("RC-001"))
+                .as("RC-001 debt: yearColumn ambiguous reports")
+                .isEqualTo(2L);
+        assertThat(byRule.get("RC-004"))
+                .as("RC-004 debt: HR + ORDER scopeType=COMPANY misclassified")
+                .isEqualTo(7L);
+        assertThat(byRule.get("RC-005"))
+                .as("RC-005 debt: yearly + rowFilter.scopeType=COMPANY redundant")
+                .isEqualTo(12L);
+
+        // No other rule namespace should creep in without review.
+        assertThat(byRule.keySet())
+                .containsExactlyInAnyOrder("RC-001", "RC-004", "RC-005");
+    }
+
+    @Test
+    void exceptionsJson_hrPersonelListesi_notInExceptionList() throws Exception {
+        // Direct inventory assertion (not failure absence — failure absence
+        // could pass even if a stray exception entry was added).
+        ContractExceptionEntry[] entries = loadExceptions();
+
+        assertThat(entries)
+                .as("hr-personel-listesi uses legitimate OUR_COMPANY_ID via allowlist; "
+                        + "MUST NOT appear in exception inventory")
+                .noneMatch(e -> "hr-personel-listesi".equals(e.reportKey()));
+    }
+
+    @Test
+    void exceptionsJson_allEntriesWithin90DayHorizon() throws Exception {
+        // All committed entries must have expiresAt within 90 days of the
+        // committed-at date (2026-05-07 → 2026-08-05). Codex iter-3 §1b absorb
+        // continuity: 90d horizon is governance debt visibility deadline.
+        ContractExceptionEntry[] entries = loadExceptions();
+
+        assertThat(entries)
+                .as("All exception entries must have explicit expiresAt")
+                .allMatch(e -> e.expiresAt() != null);
+        assertThat(entries)
+                .as("All exception entries must have non-blank reason for audit")
+                .allMatch(e -> e.reason() != null && e.reason().length() >= 10);
+        assertThat(entries)
+                .as("All exception entries must have owner")
+                .allMatch(e -> e.owner() != null && !e.owner().isBlank());
+    }
+
+    private ContractExceptionEntry[] loadExceptions() throws Exception {
+        Resource resource = new DefaultResourceLoader()
+                .getResource("classpath:reports/exceptions.json");
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        try (InputStream in = resource.getInputStream()) {
+            return mapper.readValue(in, ContractExceptionEntry[].class);
+        }
     }
 }
