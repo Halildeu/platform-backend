@@ -8,8 +8,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.event.EventListener;
-import org.springframework.stereotype.Component;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
@@ -46,6 +48,7 @@ import static org.awaitility.Awaitility.await;
 @TestPropertySource(properties = "notify.inbox.cross-pod-enabled=true")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 @ContextConfiguration(initializers = AbstractPostgresTest.Initializer.class)
+@Import(InboxNotifyListenerIntegrationTest.TestConfig.class)
 class InboxNotifyListenerIntegrationTest extends AbstractPostgresTest {
 
     @Autowired InboxEventPublisher publisher;
@@ -141,8 +144,24 @@ class InboxNotifyListenerIntegrationTest extends AbstractPostgresTest {
             .noneMatch(ev -> "sub-rollback".equals(ev.subscriberId()));
     }
 
+    /**
+     * Test config — registers RecordingEventListener as a Spring bean.
+     *
+     * <p>Codex iter-3 absorb: Static inner class with {@code @Component}
+     * is NOT picked up by component scan (Spring's nested-class scan is
+     * disabled by default). {@code @TestConfiguration} + explicit
+     * {@code @Bean} + {@code @Import} on the test class is the canonical
+     * Spring Boot pattern for test-scope beans (see {@code AdminErasureControllerSecurityTest.SecurityTestConfig}).
+     */
+    @TestConfiguration
+    static class TestConfig {
+        @Bean
+        RecordingEventListener recordingEventListener() {
+            return new RecordingEventListener();
+        }
+    }
+
     /** Test bean — captures InboxUpdatedEvents emitted by the LISTEN worker. */
-    @Component
     static class RecordingEventListener {
         final java.util.List<InboxUpdatedEvent> events = new CopyOnWriteArrayList<>();
 
