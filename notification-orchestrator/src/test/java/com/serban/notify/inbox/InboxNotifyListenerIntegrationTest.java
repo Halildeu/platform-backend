@@ -14,7 +14,8 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.OffsetDateTime;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -50,6 +51,7 @@ class InboxNotifyListenerIntegrationTest extends AbstractPostgresTest {
     @Autowired InboxEventPublisher publisher;
     @Autowired NotificationInboxRepository inboxRepository;
     @Autowired RecordingEventListener recorder;
+    @Autowired PlatformTransactionManager txManager;
 
     @BeforeEach
     void cleanInbox() {
@@ -63,25 +65,29 @@ class InboxNotifyListenerIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
-    @Transactional
     void publishViaPgNotifyDeliversToListenerAndRecomputesFreshCount() {
-        // Seed 3 UNREAD inbox rows for sub-x in default org
-        for (int i = 0; i < 3; i++) {
-            NotificationInbox row = new NotificationInbox();
-            row.setOrgId("default");
-            row.setIntentId("intent-" + i);
-            row.setSubscriberId("sub-x");
-            row.setLocale("tr-TR");
-            row.setTopicKey("test.topic");
-            row.setSeverity("info");
-            row.setState(NotificationInbox.State.UNREAD);
-            row.setCreatedAt(OffsetDateTime.now());
-            inboxRepository.save(row);
-        }
-        inboxRepository.flush();
-
-        // Trigger NOTIFY (cross-pod path); listener should receive + recompute → 3
-        publisher.publishInboxUpdated("default", "sub-x");
+        // Codex iter-2 P1 absorb: NO @Transactional. PG NOTIFY only delivers
+        // post-COMMIT; @Transactional with default rollback would suppress
+        // delivery → listener never receives → await timeout.
+        // Use programmatic TransactionTemplate for explicit COMMIT.
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        tx.execute(status -> {
+            for (int i = 0; i < 3; i++) {
+                NotificationInbox row = new NotificationInbox();
+                row.setOrgId("default");
+                row.setIntentId("intent-" + i);
+                row.setSubscriberId("sub-x");
+                row.setLocale("tr-TR");
+                row.setTopicKey("test.topic");
+                row.setSeverity("info");
+                row.setState(NotificationInbox.State.UNREAD);
+                row.setCreatedAt(OffsetDateTime.now());
+                inboxRepository.save(row);
+            }
+            // publish in same tx — NOTIFY queued until COMMIT
+            publisher.publishInboxUpdated("default", "sub-x");
+            return null;  // COMMIT
+        });
 
         await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(recorder.events).anyMatch(ev ->
@@ -93,10 +99,12 @@ class InboxNotifyListenerIntegrationTest extends AbstractPostgresTest {
     }
 
     @Test
-    @Transactional
     void zeroUnreadDeliveredEvenIfNoMatchingRows() {
-        // No inbox rows for sub-y; publisher still NOTIFYs, listener recomputes 0
-        publisher.publishInboxUpdated("default", "sub-y");
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        tx.execute(status -> {
+            publisher.publishInboxUpdated("default", "sub-y");
+            return null;  // COMMIT
+        });
 
         await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(recorder.events).anyMatch(ev ->
@@ -105,6 +113,32 @@ class InboxNotifyListenerIntegrationTest extends AbstractPostgresTest {
                     && ev.unreadCount() == 0L
             );
         });
+    }
+
+    @Test
+    void rollbackSuppressesNotifyDelivery() {
+        // Codex iter-2 önerisi: rollback semantik kanıtla.
+        // publisher in-tx publish; rollback → NOTIFY iptal → listener event almaz.
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        try {
+            tx.execute(status -> {
+                publisher.publishInboxUpdated("default", "sub-rollback");
+                status.setRollbackOnly();
+                return null;
+            });
+        } catch (Exception ignored) {
+            // expected if rollback raises
+        }
+
+        // Wait briefly to ensure no event sneaks in (PG poll cadence ~1s; allow 3s)
+        try {
+            Thread.sleep(3_000);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+
+        assertThat(recorder.events)
+            .noneMatch(ev -> "sub-rollback".equals(ev.subscriberId()));
     }
 
     /** Test bean — captures InboxUpdatedEvents emitted by the LISTEN worker. */
