@@ -11,10 +11,12 @@
 > noktaları açık. Spec onayı = owner; implementation kararları =
 > Codex post-impl review.
 >
-> **Status flag (capability envelope)**: Bu PR landed olduğunda
-> `serverSidePivoting` capability flag fliplenecek. Şu an
-> `false` (PR-0.1 envelope: `serverSideGrouping=true`,
-> `serverSidePivoting=false`, `serverSideAggregation=true`).
+> **Status flag (capability envelope)**: Bu spec PR'ı **runtime
+> capability flip etmez**. `serverSidePivoting` flag'i **PR-0.4d**
+> (controller + capability flip + frontend integration) merge'i
+> sırasında flip'lenecek. Şu an `false` (PR-0.1 envelope:
+> `serverSideGrouping=true`, `serverSidePivoting=false`,
+> `serverSideAggregation=true`).
 
 ---
 
@@ -47,7 +49,7 @@
 
 - `POST /api/v1/reports/{key}/query` (PR #78) — DTO `pivotMode` + `pivotCols` field'ları forward-compat şeklinde mevcut.
 - `SqlBuilder.buildGroupedQuery(...)` (PR #79/#81) — single-level + multi-level GROUP BY, value column allowlist, `_rowCount` column emission.
-- `YearlySchemaResolver` (Plan v2.1 §7) — UNION ALL across `workcube_mikrolink_<year>_<companyId>` schemas; cross-schema aggregation 'a hazır olmasına rağmen şu an AVG `AVG(AVG(x))` üretebilir (bug — PR-0.4 tarafından kapanır).
+- `YearlySchemaResolver` (Plan v2.1 §7) — UNION ALL across `workcube_mikrolink_<year>_<companyId>` schemas. Mevcut SqlBuilder raw `UNION ALL` + tek dış aggregate pattern'i `AVG(AMOUNT)` gibi simetrik aggregator'lar için doğru sonuç verir. PR-0.4 yeni `weightedAvg` aggregator'ı eklerken numerator/denominator kontratını **branch-level pre-aggregation'a kaymadan** raw stream üzerinden taşıması gerekir (§3.4'e bak).
 - `ReportCapabilities` envelope — `serverSidePivoting=false` flag PR-0.1'de basıldı.
 - MSSQL Testcontainers IT (PR #88) — yeni capability'ler için aynı pattern üzerinden test eklenebilir.
 
@@ -84,14 +86,14 @@
 - `aggFunc` PR-0.4 öncesi: `sum` (PR #79/#81). Bu PR ekler: `avg`, `min`, `max`, `count`.
 - Default `sum` korunur (geri uyumlu).
 
-### 2.4 Request body (pivot path)
+### 2.4 Request body (pivot path — single-level row group, single pivot dim)
 
 ```json
 POST /api/v1/reports/fin-muhasebe-detay/query
 {
   "pivotMode": true,
-  "rowGroupCols": [{"id": "ACCOUNT_CODE"}],
-  "groupKeys": ["100.01.001"],
+  "rowGroupCols": [{"id": "BRANCH_NAME"}],
+  "groupKeys": [],
   "pivotCols": [{"id": "ACTION_TYPE"}],
   "valueCols": [{"id": "AMOUNT", "aggFunc": "sum"}],
   "filterModel": {},
@@ -101,6 +103,8 @@ POST /api/v1/reports/fin-muhasebe-detay/query
 }
 ```
 
+> Single-level (PR-0.4 scope): `groupKeys=[]` ilk seviye expansion. Multi-level (rowGroupCols çok-eleman + groupKeys ancestor path) **PR-0.4e**'de.
+
 ### 2.5 Response shape (pivot row)
 
 ```json
@@ -108,16 +112,20 @@ POST /api/v1/reports/fin-muhasebe-detay/query
   "rows": [
     {
       "BRANCH_NAME": "İstanbul",
-      "BORÇ_AMOUNT_sum": 12345.67,
-      "ALACAK_AMOUNT_sum": 9876.54,
+      "p0_AMOUNT_sum": 12345.67,
+      "p1_AMOUNT_sum": 9876.54,
       "_rowCount": 42
     }
   ],
-  "pivotResultFields": ["BORÇ_AMOUNT_sum", "ALACAK_AMOUNT_sum"]
+  "pivotResultFields": [
+    {"colId": "p0_AMOUNT_sum", "field": "p0_AMOUNT_sum", "headerName": "BORÇ / Tutar"},
+    {"colId": "p1_AMOUNT_sum", "field": "p1_AMOUNT_sum", "headerName": "ALACAK / Tutar"}
+  ]
 }
 ```
 
-- Pivot column kombinasyonu: `<pivotValue>_<valueColId>_<aggFunc>`.
+- Pivot column **safe alias** ($§3.1.1): `p<index>_<valueColField>_<aggFunc>` (regex `[A-Za-z][A-Za-z0-9_]*`).
+- `headerName` UX label: `<pivotDisplayValue> / <valueColDisplayName>` (Türkçe karakter, boşluk, `/` desteklenir — sadece UX-side label).
 - `pivotResultFields` AG Grid'in pivot result column entegrasyonu için gerekli. Implementation API'si AG Grid versiyonuna göre: v32 `gridApi.setPivotResultColumns(...)`, v30 `gridApi.setSecondaryColumns(...)`. Frontend impl PR-0.4d sırasında package.json'daki AG Grid version'a göre net seçilir; spec API ismini kilitlemez.
 
 ---
@@ -188,15 +196,17 @@ Frontend secondary column metadata (`pivotResultFields`):
 ]
 ```
 
-### 3.2.1 `_rowCount`, `COUNT(*)`, `COUNT(value)` semantiği (Codex iter-4 §3 absorb)
+### 3.2.1 `_rowCount`, `COUNT(*)`, `COUNT(value)` semantiği (Codex iter-4 §3 + iter-5 Q1 absorb)
 
 | Metric | Definition | Use |
 |---|---|---|
 | `_rowCount` | Row group bucket içindeki kaynak satır sayısı, **filters/RLS/groupKeys uygulandıktan sonra**, pivot cell'lerden bağımsız | Pagination total = `COUNT_BIG(*)`; bucket cardinality summary |
-| `COUNT(*)` agg func | Row group bucket × pivot cell'e düşen satır sayısı (NULL value satırları dahil) | Aggregator opt-in (Q2 Codex önerisi: `aggFunc=count` sayma anlamlı) |
-| `COUNT(value)` agg func | Row group bucket × pivot cell'e düşen satır sayısı (NULL value satırları **dahil değil**) | `aggFunc=countDistinct` veya `count` + null-skip flag (PR-0.4 scope: `count` only NULL-aware default = COUNT(*)) |
+| `COUNT(value)` agg func **(default for `aggFunc=count`)** | Row group bucket × pivot cell'e düşen satır sayısı, NULL value satırları **dahil değil** | Mevcut SqlBuilder grouped builder davranışıyla uyumlu — value column null-skip count |
+| `COUNT(*)` agg func | Row group bucket × pivot cell'e düşen satır sayısı, NULL value satırları dahil | İleride `aggFunc=countRows` opt-in (PR-0.4 scope **dışı** — geri uyum disiplini) |
 
-`_rowCount` always emitted, value column lifecycle'ından bağımsız. `COUNT(*)` ve `COUNT(value)` **ayrı** opt-in, eğer aggFunc=count seçilirse explicit olarak hangisinin kastedildiği frontend'de UI default olarak NULL-aware (= COUNT(*)) verilir.
+> Codex iter-5 Q1 absorb: `aggFunc=count` default'u `COUNT([valueCol])` (null-skip) olur — mevcut grouped builder davranışını korur, value column seçiminin anlamı kaybolmaz, SQL-native NULL handling. `COUNT(*)` istenirse PR-0.4 sonrası ayrı `aggFunc=countRows` ile yeni opt-in. Bu kararla davranış değişikliği çıkmıyor; pivot cell'lerinin SUM/MIN/MAX/AVG/COUNT ailesine eşit hizalı kalır.
+
+`_rowCount` always emitted, value column lifecycle'ından bağımsız.
 
 ### 3.2.2 ORDER BY pivot result allowlist (Codex iter-4 §4 absorb)
 
@@ -280,22 +290,30 @@ FROM (
 GROUP BY [BRANCH_NAME];
 ```
 
-**Yasak pattern** (branch-level pre-aggregation, AVG(AVG(x)) bias riski yaratır):
+**Yasak pattern** (denominator'ı kaybeden branch-level average — AVG(branch_avg) hatası):
 
 ```sql
--- YANLIŞ: branch-level SUM(value*weight)+SUM(weight) carry → tasarım hatası
+-- YANLIŞ: per-branch weighted average dış AVG ile eşit ağırlıklı toplanıyor
+-- → cross-schema cardinality farkı bias yaratır
 SELECT BRANCH_NAME,
-       SUM(_sum_rxw) / NULLIF(SUM(_sum_w), 0) AS RATE_weightedAvg
+       AVG(_branch_weighted_avg) AS RATE_weightedAvg
 FROM (
-  SELECT BRANCH_NAME, SUM(RATE*WORKING_DAYS) AS _sum_rxw, SUM(WORKING_DAYS) AS _sum_w
-  FROM [...2025_35] GROUP BY BRANCH_NAME
+  SELECT BRANCH_NAME,
+         SUM(RATE * WORKING_DAYS) / NULLIF(SUM(WORKING_DAYS), 0) AS _branch_weighted_avg
+  FROM [workcube_mikrolink_2025_35].[PROJECT_RATES] WITH (NOLOCK)
+  GROUP BY BRANCH_NAME
   UNION ALL
-  SELECT BRANCH_NAME, SUM(RATE*WORKING_DAYS), SUM(WORKING_DAYS)
-  FROM [...2026_35] GROUP BY BRANCH_NAME
-) _u GROUP BY BRANCH_NAME;
+  SELECT BRANCH_NAME,
+         SUM(RATE * WORKING_DAYS) / NULLIF(SUM(WORKING_DAYS), 0)
+  FROM [workcube_mikrolink_2026_35].[PROJECT_RATES] WITH (NOLOCK)
+  GROUP BY BRANCH_NAME
+) _u
+GROUP BY BRANCH_NAME;
 ```
 
-(Her branch'te aynı BRANCH_NAME bucket farklı schema'lara dağılırsa hesap doğru kalır — ama bu pattern groupKey expansion + filter pushdown ile kombine edildiğinde subtle bug üretebilir; raw UNION + dış aggregate **tek katmanlı** + lineer akış sağlar.)
+Bu pattern her branch'in weighted average'ını hesaplar, sonra outer `AVG()` ile **eşit ağırlıklı** toplar. 2025'te 1 satır + 2026'da 99 satır olan bir bucket'ta bu pattern outer AVG = `(avg_2025 + avg_2026) / 2`; oysa doğru weighted average tüm 100 satırı tek havuzda işler. Cross-schema cardinality farkı bias üretir.
+
+> Cebirsel olarak doğru olan branch-level pre-aggregation `SUM(numerator) / SUM(denominator)` carry (yani her branch'ten `SUM(RATE * WORKING_DAYS)` + `SUM(WORKING_DAYS)` taşıyıp dış katmanda `SUM(_n) / NULLIF(SUM(_d), 0)`) sonuç olarak **doğru** hesaplar. Yine de PR-0.4 implementation'ı **raw UNION + tek dış aggregate** kararında kalsın çünkü filter/RLS/groupKey scope hizalaması ve aggregator semantic compose'u (sum/avg/min/max/count/weightedAvg) tek katmanlı kalır; iki katmanlı carry pattern'i yeni aggregator eklendiğinde inconsistent davranabilir. (Codex iter-5 §4 absorb: "raw UNION + outer aggregate" disiplini ifade tercihi, denominator'ı kaybeden AVG-of-AVG patterni tek somut yasaklı pattern.)
 
 `SUM`, `MIN`, `MAX`, `COUNT` doğal compose: raw UNION ALL üzerine dış aggregate yeterli. `weightedAvg` da numerator/denominator'ı raw stream'den taşıyarak aynı pattern.
 
@@ -315,13 +333,22 @@ FROM (
 }
 ```
 
-Generated SQL:
+Generated SQL (raw UNION + tek dış aggregate):
 
 ```sql
-SUM(_sum_rate_x_weight) / NULLIF(SUM(_sum_weight), 0) AS RATE_weightedAvg
--- her UNION branch'ı:
-SUM(RATE * WORKING_DAYS) AS _sum_rate_x_weight,
-SUM(WORKING_DAYS) AS _sum_weight
+SELECT [BRANCH_NAME],
+       SUM([RATE] * [WORKING_DAYS]) / NULLIF(SUM([WORKING_DAYS]), 0) AS [RATE_weightedAvg],
+       COUNT_BIG(*) AS _rowCount
+FROM (
+  SELECT [BRANCH_NAME], [RATE], [WORKING_DAYS]
+  FROM [workcube_mikrolink_2025_35].[PROJECT_RATES] WITH (NOLOCK)
+  WHERE 1=1 -- filters/RLS/groupKeys
+  UNION ALL
+  SELECT [BRANCH_NAME], [RATE], [WORKING_DAYS]
+  FROM [workcube_mikrolink_2026_35].[PROJECT_RATES] WITH (NOLOCK)
+  WHERE 1=1
+) _src
+GROUP BY [BRANCH_NAME];
 ```
 
 Null/zero weight (`Q3` kararı):
@@ -370,7 +397,7 @@ const supportsWeightedAvg = caps.supportedAggFuncs.includes("weightedAvg");
 
 | Test | Beklenen SQL pattern |
 |---|---|
-| `buildPivotedGroupedQuery_singleLevelStaticPivotValues` | `SUM(CASE WHEN pivotCol = N'<value>' THEN val END)` × N |
+| `buildPivotedGroupedQuery_singleLevelStaticPivotValues` | `SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] ELSE 0 END) AS [p<idx>_<valueColField>_<aggFunc>]` × N (bind-param + safe alias contract) |
 | `buildPivotedGroupedQuery_dynamicPivotValuesAfterPreFlight` | İlk SELECT `DISTINCT pivotCol`, ikinci SELECT pivot |
 | `buildPivotedGroupedQuery_rejectsMultiPivotDim` | `IllegalArgumentException` |
 | `buildWeightedAvgGroupedQuery_carriesWeightSumAndProductSum` | `SUM(val * weight)` + `SUM(weight)` her UNION branch |
@@ -429,7 +456,7 @@ Silent flat fallback **yok** (Plan v2.1 §1 v3 revize iter-15 prensibi: "Flag of
 | Pivot cardinality patlama (1000+ kolon) | M | UX broken (grid hung) | `pivotDimMaxCardinality=50` cap; aşımda `400`. Custom rapor cap'i opt-in'le yükseltilebilir. |
 | Weighted AVG `0/0` corner case | H | NULL döner, frontend NaN render risk | `NULLIF(...,0)` + frontend null-safe formatter (existing) |
 | Discovery mode 2 query latency | M | P95 +200ms | Opt-in only; raporcular `static` default |
-| Cross-schema weighted AVG yanlış SUM(SUM)+SUM(COUNT) carry | H | Audit-grade incorrectness | IT test (`buildWeightedAvgGroupedQuery_crossSchemaCorrectsBias`) bias > %5 fail |
+| Cross-schema weighted AVG denominator-losing pattern (e.g. `AVG(_branch_weighted_avg)`) | H | Audit-grade incorrectness | Positive IT (`buildWeightedAvgGroupedQuery_crossSchemaReturnsWeightedAverage`) + oracle-sanity IT (`crossSchemaWeightedAvg_fixtureWouldExposeAverageOfAveragesBias`) — fixture sensitivity ≥%5 |
 | Frontend pivot UI toggle visible ama backend `501` | L | UX confusing | `serverSidePivoting=false` capability → toggle disabled (already handled) |
 
 ---
