@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Optional;
 
 /**
@@ -176,7 +177,15 @@ public class InboxService {
     @Transactional
     public BulkMarkAllReadResult markAllAsRead(String orgId, String subscriberId) {
         validateTenancy(orgId, subscriberId);
-        OffsetDateTime cutoff = inboxRepository.currentDatabaseTimestamp();
+        // Hibernate's native query type mapper resolves PostgreSQL
+        // `timestamptz` to `Instant` (the zoneless point-in-time view);
+        // adapt to OffsetDateTime at UTC for the wire shape — the
+        // BulkMarkAllReadResponse.cutoff field is the same TZ regardless
+        // of caller locale because the cutoff is a server-side audit
+        // marker, not a display-localised timestamp.
+        OffsetDateTime cutoff = inboxRepository
+            .currentDatabaseTimestamp()
+            .atOffset(ZoneOffset.UTC);
         int affected = inboxRepository.markAllAsRead(orgId, subscriberId);
         log.info(
             "inbox.mark_all_read: orgId={} subscriberId={} cutoff={} affected={}",

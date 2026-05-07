@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 
@@ -200,9 +201,14 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
      * {@code BulkMarkAllReadResponse}. The two queries run in the same
      * transaction; PostgreSQL's {@code CURRENT_TIMESTAMP} returns the
      * transaction start time, which is identical for both reads.
+     *
+     * <p>Return type is {@link Instant} because Hibernate's native query
+     * type mapper resolves {@code timestamptz} to {@code Instant} (the
+     * "zoneless point in time" view); the service layer adapts to
+     * {@link OffsetDateTime} for the response wire shape.
      */
     @Query(value = "SELECT CURRENT_TIMESTAMP", nativeQuery = true)
-    OffsetDateTime currentDatabaseTimestamp();
+    Instant currentDatabaseTimestamp();
 
     /**
      * KVKK erasure — bulk delete inbox rows by (org, subscriber).

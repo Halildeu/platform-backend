@@ -481,11 +481,14 @@ class NotificationInboxRepositoryTest extends AbstractPostgresTest {
     @Test
     void currentDatabaseTimestamp_returnsRecentTimestamp() {
         // Faz 23.5 hardening: the bulk endpoint reads cutoff from the
-        // DB clock; the helper must return a non-null TIMESTAMPTZ that
-        // is close to "now" (within a generous skew window).
-        OffsetDateTime dbNow = repo.currentDatabaseTimestamp();
+        // DB clock; the helper must return a non-null timestamp that is
+        // close to "now" (within a generous skew window). Hibernate's
+        // native query mapper resolves PG `timestamptz` to Instant;
+        // the service adapts to OffsetDateTime for the wire shape, but
+        // here we assert at the Instant level the helper returns.
+        java.time.Instant dbNow = repo.currentDatabaseTimestamp();
         assertThat(dbNow).isNotNull();
-        OffsetDateTime jvmNow = OffsetDateTime.now();
+        java.time.Instant jvmNow = java.time.Instant.now();
         // Allow ±5 minutes for container clock skew; we only care that
         // the value is real, not a millisecond match.
         assertThat(java.time.Duration.between(dbNow, jvmNow).abs())

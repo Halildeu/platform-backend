@@ -263,24 +263,27 @@ class InboxServiceUnitTest {
         // Faz 23.5 hardening (Codex thread `019e03b5`): cutoff is now
         // sourced from the DB clock; service mocks
         // currentDatabaseTimestamp() to assert the response carries the
-        // DB-returned value.
-        OffsetDateTime dbCutoff = OffsetDateTime.parse("2026-05-07T20:00:00Z");
-        when(repository.currentDatabaseTimestamp()).thenReturn(dbCutoff);
+        // DB-returned value. The repo helper returns Instant (Hibernate
+        // native query timestamptz mapper); service adapts to UTC
+        // OffsetDateTime for the wire shape.
+        java.time.Instant dbCutoffInstant = java.time.Instant.parse("2026-05-07T20:00:00Z");
+        OffsetDateTime dbCutoffExpected = dbCutoffInstant.atOffset(java.time.ZoneOffset.UTC);
+        when(repository.currentDatabaseTimestamp()).thenReturn(dbCutoffInstant);
         when(repository.markAllAsRead(eq("default"), eq("sub-1"))).thenReturn(13);
 
         InboxService.BulkMarkAllReadResult result =
             service.markAllAsRead("default", "sub-1");
 
         assertThat(result.updatedCount()).isEqualTo(13);
-        assertThat(result.cutoff()).isEqualTo(dbCutoff);
+        assertThat(result.cutoff()).isEqualTo(dbCutoffExpected);
         verify(repository).markAllAsRead(eq("default"), eq("sub-1"));
         verify(eventPublisher).publishInboxUpdated("default", "sub-1");
     }
 
     @Test
     void markAllAsReadEmitsNoEventWhenNoRowsMatched() {
-        OffsetDateTime dbCutoff = OffsetDateTime.parse("2026-05-07T20:00:00Z");
-        when(repository.currentDatabaseTimestamp()).thenReturn(dbCutoff);
+        java.time.Instant dbCutoffInstant = java.time.Instant.parse("2026-05-07T20:00:00Z");
+        when(repository.currentDatabaseTimestamp()).thenReturn(dbCutoffInstant);
         when(repository.markAllAsRead(eq("default"), eq("sub-1"))).thenReturn(0);
 
         InboxService.BulkMarkAllReadResult result =
