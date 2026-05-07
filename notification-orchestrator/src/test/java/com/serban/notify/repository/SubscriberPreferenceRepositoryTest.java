@@ -89,4 +89,54 @@ class SubscriberPreferenceRepositoryTest extends AbstractPostgresTest {
         assertThat(orgAList.get(0).isEnabled()).isTrue();
         assertThat(orgBList.get(0).isEnabled()).isFalse();
     }
+
+    // ── Faz 23.6 PR-A1 — restore-defaults ─────────────────────────────────
+
+    @Test
+    void deleteAllByOrgIdAndSubscriberId_clearsCallerRows() {
+        SubscriberPreference row1 = newPref("default", "1204", "auth.password-reset", "email", true);
+        SubscriberPreference row2 = newPref("default", "1204", "report.export.ready", "email", false);
+        SubscriberPreference row3 = newPref("default", "1204", null, "sms", false);
+        repo.save(row1);
+        repo.save(row2);
+        repo.save(row3);
+        assertThat(repo.findBySubscriberIdAndOrgId("1204", "default")).hasSize(3);
+
+        int deleted = repo.deleteAllByOrgIdAndSubscriberId("default", "1204");
+
+        assertThat(deleted).isEqualTo(3);
+        assertThat(repo.findBySubscriberIdAndOrgId("1204", "default")).isEmpty();
+    }
+
+    @Test
+    void deleteAllByOrgIdAndSubscriberId_isIdempotent_returnsZeroOnEmpty() {
+        int deleted = repo.deleteAllByOrgIdAndSubscriberId("default", "ghost-subscriber");
+        assertThat(deleted).isEqualTo(0);
+    }
+
+    @Test
+    void deleteAllByOrgIdAndSubscriberId_onlyTouchesCallerRows() {
+        SubscriberPreference orgA = newPref("org-a", "1204", "auth.password-reset", "email", true);
+        SubscriberPreference orgB = newPref("org-b", "1204", "auth.password-reset", "email", true);
+        repo.save(orgA);
+        repo.save(orgB);
+
+        int deleted = repo.deleteAllByOrgIdAndSubscriberId("org-a", "1204");
+
+        assertThat(deleted).isEqualTo(1);
+        assertThat(repo.findBySubscriberIdAndOrgId("1204", "org-a")).isEmpty();
+        assertThat(repo.findBySubscriberIdAndOrgId("1204", "org-b")).hasSize(1);
+    }
+
+    private SubscriberPreference newPref(
+        String orgId, String subscriberId, String topicKey, String channel, boolean enabled
+    ) {
+        SubscriberPreference p = new SubscriberPreference();
+        p.setOrgId(orgId);
+        p.setSubscriberId(subscriberId);
+        p.setTopicKey(topicKey);
+        p.setChannel(channel);
+        p.setEnabled(enabled);
+        return p;
+    }
 }
