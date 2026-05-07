@@ -2,6 +2,8 @@ package com.example.report.schema.observability;
 
 import com.example.report.schema.SchemaTruthLookupContext;
 import com.example.report.schema.tier.CommittedSnapshotLoader;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
@@ -14,6 +16,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.caffeine.CaffeineCache;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -49,16 +53,20 @@ public class SchemaTruthMetrics {
     public static final String SNAPSHOT_AGE_DAYS = "schema_truth_snapshot_age_days";
     public static final String SNAPSHOT_AGE_WARN = "schema_truth_snapshot_age_warn";
     public static final String CACHE_MISS_BURST = "schema_truth_cache_miss_burst";
+    public static final String SCHEMA_TRUTH_CACHE_NAME = "schemaTruthSnapshot";
 
     private static final long SNAPSHOT_AGE_THRESHOLD_DAYS = 30L; // Q4 default
 
     private final ObjectProvider<MeterRegistry> meterRegistryProvider;
     private final CommittedSnapshotLoader committedSnapshotLoader;
+    private final ObjectProvider<CacheManager> cacheManagerProvider;
     private final Clock clock;
 
-    // Lookup/cache counter accumulators for cache-miss-burst detection.
-    private final AtomicLong lookupCount5min = new AtomicLong();
-    private final AtomicLong cacheHitCount5min = new AtomicLong();
+    // Caffeine native stats deltas — Codex iter-1 §1 absorb (cache_hit_total
+    // ve cache_miss_burst gerçek Caffeine stats'tan beslenir, facade'da
+    // recordCacheHit YOK — Tier 1 success ≠ Caffeine hit ayrımı).
+    private final AtomicLong lastSnapshotHitCount = new AtomicLong(0L);
+    private final AtomicLong lastSnapshotRequestCount = new AtomicLong(0L);
 
     // Per-tag-tuple Counter cache to avoid registry lookup on hot path.
     private final ConcurrentHashMap<String, Counter> counterCache = new ConcurrentHashMap<>();
@@ -70,9 +78,11 @@ public class SchemaTruthMetrics {
 
     public SchemaTruthMetrics(ObjectProvider<MeterRegistry> meterRegistryProvider,
                                 CommittedSnapshotLoader committedSnapshotLoader,
+                                ObjectProvider<CacheManager> cacheManagerProvider,
                                 Clock clock) {
         this.meterRegistryProvider = meterRegistryProvider;
         this.committedSnapshotLoader = committedSnapshotLoader;
+        this.cacheManagerProvider = cacheManagerProvider;
         this.clock = clock;
     }
 
@@ -94,7 +104,6 @@ public class SchemaTruthMetrics {
      * Record a {@code schema_truth_lookup_total{schema_mode}} increment.
      */
     public void recordLookup(SchemaTruthLookupContext ctx) {
-        lookupCount5min.incrementAndGet();
         incrementCounter(LOOKUP_TOTAL,
                 Tags.of("schema_mode", schemaModeTag(ctx)));
     }
@@ -107,15 +116,6 @@ public class SchemaTruthMetrics {
     public void recordFallback(SchemaTruthLookupContext ctx, String tier) {
         incrementCounter(FALLBACK_TOTAL,
                 Tags.of("tier", tier, "schema_mode", schemaModeTag(ctx)));
-    }
-
-    /**
-     * Record a {@code schema_truth_cache_hit_total} increment — Tier 1 Caffeine hit.
-     */
-    public void recordCacheHit(SchemaTruthLookupContext ctx) {
-        cacheHitCount5min.incrementAndGet();
-        incrementCounter(CACHE_HIT_TOTAL,
-                Tags.of("schema_mode", schemaModeTag(ctx)));
     }
 
     /**
@@ -137,19 +137,48 @@ public class SchemaTruthMetrics {
 
     /**
      * Refresh cache-miss-burst gauge — 1 if 5-min cache miss rate > 50%.
-     * Called periodically.
+     * Codex iter-1 §1 absorb: gerçek Caffeine native stats delta'sından
+     * beslenir; facade'daki Tier 1 success ≠ Caffeine hit ayrımı korunur.
      */
     @Scheduled(fixedDelay = 300000L) // 5-minute window
     public void refreshCacheMissBurstGauge() {
-        long lookups = lookupCount5min.getAndSet(0L);
-        long hits = cacheHitCount5min.getAndSet(0L);
-        if (lookups < 10) {
-            // Insufficient samples; reset.
+        Optional<CacheStats> statsOpt = readNativeCaffeineStats();
+        if (statsOpt.isEmpty()) {
             cacheMissBurstGauge.set(0L);
             return;
         }
-        double missRate = 1.0 - ((double) hits / lookups);
+        CacheStats current = statsOpt.get();
+        long previousHits = lastSnapshotHitCount.getAndSet(current.hitCount());
+        long previousReqs = lastSnapshotRequestCount.getAndSet(current.requestCount());
+        long deltaHits = current.hitCount() - previousHits;
+        long deltaReqs = current.requestCount() - previousReqs;
+
+        if (deltaReqs < 10L) {
+            // Insufficient samples in 5-min window; flapping önle.
+            cacheMissBurstGauge.set(0L);
+            return;
+        }
+        double missRate = 1.0 - ((double) deltaHits / deltaReqs);
         cacheMissBurstGauge.set(missRate > 0.5 ? 1L : 0L);
+    }
+
+    /**
+     * Read native Caffeine stats from the {@code schemaTruthSnapshot} cache.
+     *
+     * <p>{@link CacheConfig} {@code recordStats()} açık;
+     * {@link Cache#stats()} O(1) snapshot döner.
+     */
+    private Optional<CacheStats> readNativeCaffeineStats() {
+        CacheManager mgr = cacheManagerProvider.getIfAvailable();
+        if (mgr == null) {
+            return Optional.empty();
+        }
+        org.springframework.cache.Cache springCache = mgr.getCache(SCHEMA_TRUTH_CACHE_NAME);
+        if (!(springCache instanceof CaffeineCache caffeineCache)) {
+            return Optional.empty();
+        }
+        Cache<Object, Object> nativeCache = caffeineCache.getNativeCache();
+        return Optional.of(nativeCache.stats());
     }
 
     /**

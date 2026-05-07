@@ -101,14 +101,12 @@ public class SchemaTruthService {
 
             case RUNTIME_STRICT_EXISTENCE:
                 // Tier 1 only; fail-soft → exception propagates (caller 503).
+                // Codex iter-1 §1 absorb: cache_hit_total Tier 1 success'tan
+                // değil Caffeine native stats'tan ölçülür (SchemaTruthMetrics).
                 try (var mdc = SchemaTruthLogContext.enter(ctx, "tier_1")) {
                     log.debug("schema-truth RUNTIME_STRICT_EXISTENCE Tier 1 lookup: schema={} consumer={}",
                             schemaName, ctx.consumer());
-                    Optional<SchemaSnapshot> result = schemaServiceClient.fetchSnapshot(ctx, schemaName);
-                    if (result.isPresent() && metrics != null) {
-                        metrics.recordCacheHit(ctx);
-                    }
-                    return result;
+                    return schemaServiceClient.fetchSnapshot(ctx, schemaName);
                 }
 
             case RUNTIME_DEGRADED_TYPE:
@@ -120,9 +118,6 @@ public class SchemaTruthService {
                     try {
                         Optional<SchemaSnapshot> tier1 = schemaServiceClient.fetchSnapshot(ctx, schemaName);
                         if (tier1.isPresent()) {
-                            if (metrics != null) {
-                                metrics.recordCacheHit(ctx);
-                            }
                             return tier1;
                         }
                     } catch (RuntimeException e) {
