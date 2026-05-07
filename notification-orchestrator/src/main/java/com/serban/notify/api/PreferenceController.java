@@ -130,6 +130,8 @@ public class PreferenceController {
                 subscriberId,
                 request.topicKey(),
                 request.channel(),
+                // @NotNull on the DTO field guarantees a value reached
+                // here; unboxing is safe.
                 request.enabled(),
                 request.quietHours(),
                 request.frequencyLimitPerDay(),

@@ -110,11 +110,10 @@ class PreferenceControllerTest {
     }
 
     @Test
-    void upsertMineWithBlankBodyAcceptsAllNullsAndDefaults() throws Exception {
-        // Empty payload (no topic/channel) → wildcard "all topics, all
-        // channels" rule. enabled defaults to false because the JSON
-        // boolean is required-with-default — caller can omit explicit
-        // bypassForCritical to inherit existing value.
+    void upsertMineWithMinimalBodyAcceptsAllNullsAndDefaults() throws Exception {
+        // Codex iter P1/P2 absorb: enabled is now @NotNull on the DTO,
+        // so the caller MUST send it explicitly. With just "enabled":false
+        // the upsert creates a both-null wildcard "mute all" row.
         when(preferenceService.upsert(
             eq("default"), eq("sub-1"),
             eq(null), eq(null),
@@ -130,6 +129,19 @@ class PreferenceControllerTest {
             .andExpect(jsonPath("$.id").value(101))
             .andExpect(jsonPath("$.topicKey").doesNotExist())
             .andExpect(jsonPath("$.channel").doesNotExist());
+    }
+
+    @Test
+    void upsertMineWithMissingEnabledReturns400() throws Exception {
+        // Codex iter P1/P2 absorb: the DTO @NotNull on `enabled`
+        // surfaces a frontend payload bug as a 400 instead of a silent
+        // unintended mute (primitive default would have been false).
+        mockMvc.perform(put("/api/v1/notify/preferences/me")
+                .header("X-Org-Id", "default")
+                .header("X-Subscriber-Id", "sub-1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"topicKey\":\"system.maintenance\"}"))
+            .andExpect(status().isBadRequest());
     }
 
     @Test

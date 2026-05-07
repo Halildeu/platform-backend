@@ -91,7 +91,17 @@ public class SubscriberPreferenceService {
                 intent.getOrgId(), subscriberId, channel
             );
         }
-        // 4) no preference set → default ALLOW
+        // 4) both-null wildcard ("mute all topics & channels") — Faz 23.5
+        // PR2 absorb: the subscriber-facing upsert can write this row, so
+        // the dispatch path must also honor it. Without this fallback a
+        // UI "mute everything" toggle would silently leak through as
+        // no_preference_set → ALLOW.
+        if (pref.isEmpty()) {
+            pref = preferenceRepo.findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannelIsNull(
+                intent.getOrgId(), subscriberId
+            );
+        }
+        // 5) no preference set → default ALLOW
         if (pref.isEmpty()) {
             return PreferenceDecision.allow("no_preference_set");
         }
@@ -151,10 +161,17 @@ public class SubscriberPreferenceService {
      * {@code channel=null}) are honored: a {@code null} input is
      * treated as "wildcard" and matches the corresponding NULL row.
      *
-     * <p>Concurrent upserts: two clients can race here; the loser's
-     * INSERT will fail with a unique-constraint violation, which we
-     * map to a retry-by-update path. Callers see a consistent
-     * post-state either way.
+     * <p>Concurrent upserts: the V5 unique index
+     * {@code (org_id, subscriber_id, topic_key, channel)} guarantees
+     * at most one row per tuple. Two clients racing on the same
+     * tuple: the loser's INSERT raises
+     * {@link org.springframework.dao.DataIntegrityViolationException}
+     * which propagates to the caller as a 500 — the next PUT for that
+     * tuple will see the existing row via the UPDATE branch. Explicit
+     * retry-by-update is intentionally NOT implemented in v1; in
+     * practice the overlap window is sub-second and the caller can
+     * retry the same payload safely. Tracked as a Faz 23.5 hardening
+     * follow-up if observed in production traffic.
      */
     @org.springframework.transaction.annotation.Transactional
     public SubscriberPreference upsert(

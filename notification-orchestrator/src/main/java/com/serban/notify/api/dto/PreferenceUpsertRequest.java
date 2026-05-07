@@ -1,6 +1,7 @@
 package com.serban.notify.api.dto;
 
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.util.Map;
@@ -38,7 +39,16 @@ public record PreferenceUpsertRequest(
     String topicKey,
     @Size(max = 32)
     String channel,
-    boolean enabled,
+    /**
+     * Codex iter P1/P2 absorb: {@code Boolean} + {@code @NotNull}, not
+     * primitive {@code boolean}. With a primitive, JSON omitting the
+     * field would silently default to {@code false} and the upsert
+     * would un-mute (or mute, depending on intent). Forcing the caller
+     * to send the field explicitly removes that footgun — a frontend
+     * payload bug surfaces as a 400 instead of an unexpected mute.
+     */
+    @NotNull(message = "enabled is required")
+    Boolean enabled,
     Map<String, Object> quietHours,
     @Min(value = 0, message = "frequencyLimitPerDay must be >= 0 (0 disables limit)")
     Integer frequencyLimitPerDay,
