@@ -41,6 +41,7 @@ class SubscriberIdentityGuardTest {
 
     @Test
     void passesWhenJwtSubjectMatchesSubscriberId() {
+        // sub claim is in the trusted set (priority 3). Match wins.
         Jwt jwt = newJwt("alice");
         SecurityContextHolder.getContext().setAuthentication(
             new JwtAuthenticationToken(jwt, List.of(new SimpleGrantedAuthority("ROLE_USER")), "alice")
@@ -50,20 +51,70 @@ class SubscriberIdentityGuardTest {
     }
 
     @Test
-    void throwsAccessDeniedWhenJwtSubjectMismatchesSubscriberId() {
-        Jwt jwt = newJwt("alice");
+    void passesWhenJwtUserIdClaimMatchesSubscriberId() {
+        // userId claim is the canonical "today" identifier — permission-service
+        // JWT enrichment emits it (numeric DB user id). When sub is a UUID
+        // and user.id is "1204", subscriberId should be matched against
+        // userId, not sub.
+        Jwt jwt = Jwt.withTokenValue("token")
+            .header("alg", "RS256")
+            .subject("3520324b-3035-4510-8fca-a8a18dbd1da2")  // KC UUID
+            .claim("userId", 1204)  // numeric — guard accepts via String.valueOf
+            .claim("realm_access", Map.of("roles", List.of("offline_access")))
+            .issuedAt(Instant.now())
+            .expiresAt(Instant.now().plusSeconds(60))
+            .build();
         SecurityContextHolder.getContext().setAuthentication(
-            new JwtAuthenticationToken(jwt, List.of(new SimpleGrantedAuthority("ROLE_USER")), "alice")
+            new JwtAuthenticationToken(jwt, List.of(new SimpleGrantedAuthority("ROLE_USER")))
         );
 
-        assertThatThrownBy(() -> guard.requireMatchOrThrow("bob"))
-            .isInstanceOf(AccessDeniedException.class)
-            .hasMessageContaining("subscriber identity mismatch");
+        assertThatCode(() -> guard.requireMatchOrThrow("1204")).doesNotThrowAnyException();
     }
 
     @Test
-    void throwsWhenJwtSubjectIsNull() {
-        // Defensive: malformed JWT without sub claim.
+    void passesWhenJwtSubscriberIdClaimMatchesSubscriberId() {
+        // subscriberId claim is the canonical FUTURE identifier (Faz 23.5 /
+        // 24 hardening target). It takes priority over userId and sub so
+        // future tokens automatically tighten the match without code change.
+        Jwt jwt = Jwt.withTokenValue("token")
+            .header("alg", "RS256")
+            .subject("3520324b-3035-4510-8fca-a8a18dbd1da2")
+            .claim("userId", 1204)
+            .claim("subscriberId", "canon-77")  // canonical claim
+            .issuedAt(Instant.now())
+            .expiresAt(Instant.now().plusSeconds(60))
+            .build();
+        SecurityContextHolder.getContext().setAuthentication(
+            new JwtAuthenticationToken(jwt, List.of())
+        );
+
+        // Match against canonical subscriberId claim, not userId.
+        assertThatCode(() -> guard.requireMatchOrThrow("canon-77")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void throwsAccessDeniedWhenAllTrustedClaimsMismatch() {
+        // None of subscriberId / userId / sub matches the input → 403.
+        Jwt jwt = Jwt.withTokenValue("token")
+            .header("alg", "RS256")
+            .subject("alice-uuid")
+            .claim("userId", "1204")
+            .claim("subscriberId", "canon-77")
+            .issuedAt(Instant.now())
+            .expiresAt(Instant.now().plusSeconds(60))
+            .build();
+        SecurityContextHolder.getContext().setAuthentication(
+            new JwtAuthenticationToken(jwt, List.of())
+        );
+
+        assertThatThrownBy(() -> guard.requireMatchOrThrow("eve"))
+            .isInstanceOf(AccessDeniedException.class)
+            .hasMessageContaining("no trusted JWT claim matches");
+    }
+
+    @Test
+    void throwsWhenAllTrustedClaimsAreNull() {
+        // No subscriberId / userId / sub → no match possible.
         Jwt jwt = Jwt.withTokenValue("token")
             .header("alg", "RS256")
             .claim("permissions", List.of("PERM_FOO"))
@@ -76,7 +127,7 @@ class SubscriberIdentityGuardTest {
 
         assertThatThrownBy(() -> guard.requireMatchOrThrow("alice"))
             .isInstanceOf(AccessDeniedException.class)
-            .hasMessageContaining("subscriber identity unresolved");
+            .hasMessageContaining("no trusted JWT claim matches");
     }
 
     @Test
@@ -87,6 +138,18 @@ class SubscriberIdentityGuardTest {
         );
 
         assertThatThrownBy(() -> guard.requireMatchOrThrow(null))
+            .isInstanceOf(AccessDeniedException.class)
+            .hasMessageContaining("subscriber identity unresolved");
+    }
+
+    @Test
+    void throwsWhenSubscriberIdIsBlank() {
+        Jwt jwt = newJwt("alice");
+        SecurityContextHolder.getContext().setAuthentication(
+            new JwtAuthenticationToken(jwt, List.of())
+        );
+
+        assertThatThrownBy(() -> guard.requireMatchOrThrow("   "))
             .isInstanceOf(AccessDeniedException.class)
             .hasMessageContaining("subscriber identity unresolved");
     }

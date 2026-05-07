@@ -6,10 +6,12 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
  * Validates that the {@code X-Subscriber-Id} request header (or
  * {@code subscriberId} query param for SSE) matches the authenticated
- * principal's JWT {@code sub} claim (Faz 23.4 PR-E.5).
+ * principal's JWT identity (Faz 23.4 PR-E.5).
  *
  * <p><b>Why</b> (Codex thread {@code 019e01ba} iter-2 absorb): the original
  * Faz 23.3 PR-E.1/PR-E.3 implementations accepted the subscriber identity
@@ -20,12 +22,28 @@ import org.springframework.stereotype.Component;
  * That is an authorization boundary bug — an authenticated user must not
  * be able to impersonate another subscriber by editing a request header.
  *
- * <p><b>What this guard does</b>: pulls {@link Authentication} from the
- * Spring Security context, extracts the JWT principal claim
- * (configured as {@code sub} in {@code SecurityConfig.notifyJwtAuthenticationConverter}),
- * and compares it to the supplied {@code subscriberId}. On mismatch it
- * throws {@link AccessDeniedException} (mapped to HTTP 403 by Spring's
- * default {@code AccessDeniedHandler}).
+ * <p><b>Trusted claim set</b> (Codex iter-3 absorb): the platform does not
+ * yet have a single canonical {@code subscriberId} JWT claim. Notification
+ * producers historically populate {@code recipient.subscriberId} with the
+ * platform's DB user id (numeric), while the Keycloak {@code sub} claim is
+ * a UUID. Forcing {@code sub} would break legitimate access; forcing the
+ * custom {@code userId} claim breaks tokens that lack it. The guard
+ * therefore accepts a match against any of the following claims, in
+ * priority order:
+ * <ol>
+ *   <li>{@code subscriberId} — canonical claim once it lands (Faz 23.5 /
+ *       Faz 24 hardening). Already preferred so future tokens flip
+ *       behavior automatically.</li>
+ *   <li>{@code userId} — custom claim emitted by today's permission-service
+ *       JWT enrichment chain (numeric DB user id). Matches frontend
+ *       {@code state.auth.user.id}.</li>
+ *   <li>{@code sub} — Keycloak realm UUID. Matches if the producer
+ *       happens to use it.</li>
+ * </ol>
+ *
+ * <p>If none of these claim values equal the caller-supplied
+ * {@code subscriberId}, the guard throws {@link AccessDeniedException}
+ * (mapped to HTTP 403 by Spring's default {@code AccessDeniedHandler}).
  *
  * <p><b>What this guard does NOT do</b>: it doesn't validate {@code orgId}.
  * The platform is single-tenant for now ({@code default} org); when a
@@ -34,18 +52,40 @@ import org.springframework.stereotype.Component;
  * {@code org_id}. Until then, accepting any caller-supplied org is
  * acceptable because all subscribers live in the same tenant scope.
  *
- * <p><b>Long-term direction</b> (Codex iter-2 note): backend should stop
- * taking subscriber identity from caller input entirely and resolve it
- * exclusively from the JWT principal. The header/query input becomes
- * vestigial. Until that refactor lands, this guard prevents cross-account
- * leakage in the existing contract.
+ * <p><b>Long-term direction</b> (Codex iter-3 canonical target C):
+ * Keycloak / permission-service should emit a single {@code subscriberId}
+ * claim, both producers and consumers should pin to it, and this guard
+ * should tighten to match exclusively that claim. The trusted-claim-set
+ * shape is a transitional pragmatic measure.
  */
 @Component
 public class SubscriberIdentityGuard {
 
     /**
-     * Validates that the supplied {@code subscriberId} matches the JWT
-     * principal's {@code sub} claim on the current security context.
+     * Trusted JWT claim names that may carry the subscriber identifier,
+     * in priority order. The first claim whose string value equals the
+     * caller-supplied {@code subscriberId} satisfies the match.
+     *
+     * <p>Order rationale:
+     * <ul>
+     *   <li>{@code subscriberId} first → forward-compatible. When the
+     *       canonical claim lands, no guard change is required for the
+     *       new tokens to take effect.</li>
+     *   <li>{@code userId} second → today's reality (permission-service
+     *       JWT enrichment).</li>
+     *   <li>{@code sub} last → Keycloak default; only matches if a
+     *       producer explicitly used it.</li>
+     * </ul>
+     */
+    private static final List<String> TRUSTED_IDENTITY_CLAIMS = List.of(
+        "subscriberId",
+        "userId",
+        "sub"
+    );
+
+    /**
+     * Validates that the supplied {@code subscriberId} matches one of the
+     * authenticated principal's trusted identity claims.
      *
      * <p>If no authentication is present (e.g. {@code SecurityContextHolder}
      * is empty under a profile that disables filters), the guard returns
@@ -58,7 +98,7 @@ public class SubscriberIdentityGuard {
      *     ({@code X-Subscriber-Id} header for REST, {@code subscriberId}
      *     query param for SSE)
      * @throws AccessDeniedException when an authenticated principal is
-     *     present and the JWT {@code sub} claim does not equal
+     *     present and none of {@link #TRUSTED_IDENTITY_CLAIMS} equals
      *     {@code subscriberId}
      */
     public void requireMatchOrThrow(String subscriberId) {
@@ -69,26 +109,37 @@ public class SubscriberIdentityGuard {
             return;
         }
         Object principal = authentication.getPrincipal();
-        String jwtSubject;
-        if (principal instanceof Jwt jwt) {
-            jwtSubject = jwt.getSubject();
-        } else {
+        if (!(principal instanceof Jwt jwt)) {
             // Anonymous / non-JWT principal under a permissive profile.
             // Same rationale as the unauthenticated branch above.
             return;
         }
-        if (jwtSubject == null || subscriberId == null) {
-            // Defensive: a malformed JWT or null header should already have
-            // failed earlier validation; treat as a mismatch.
+        if (subscriberId == null || subscriberId.isBlank()) {
+            // Defensive: @NotBlank on the controller arg should already
+            // have produced a 400; if we somehow get here treat as a
+            // boundary violation.
             throw new AccessDeniedException(
-                "subscriber identity unresolved (jwtSub=" + jwtSubject
-                    + ", subscriberId=" + subscriberId + ")");
+                "subscriber identity unresolved (subscriberId blank)");
         }
-        if (!jwtSubject.equals(subscriberId)) {
-            // Don't echo the JWT subject back — only state the mismatch.
-            // Avoids assisting attackers who probe by varying the header.
-            throw new AccessDeniedException(
-                "subscriber identity mismatch: JWT principal does not match supplied subscriberId");
+
+        for (String claim : TRUSTED_IDENTITY_CLAIMS) {
+            // Claim values may be String, Number, or Boolean; we accept
+            // any whose toString() equals the input. Keep it permissive
+            // because the platform stores subscriberId as a string but
+            // the JWT enrichment may emit a numeric type.
+            Object claimValue = jwt.getClaim(claim);
+            if (claimValue == null) {
+                continue;
+            }
+            if (subscriberId.equals(String.valueOf(claimValue))) {
+                return;
+            }
         }
+
+        // None of the trusted claims matched. Don't echo the claim values
+        // back — only state the mismatch. Avoids assisting attackers who
+        // probe by varying the header.
+        throw new AccessDeniedException(
+            "subscriber identity mismatch: no trusted JWT claim matches the supplied subscriberId");
     }
 }
