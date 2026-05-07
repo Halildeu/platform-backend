@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.report.registry.ReportRegistry;
 import com.example.report.schema.SchemaSnapshot;
 import com.example.report.schema.SchemaTruthLookupContext;
 import com.example.report.schema.SchemaTruthLookupPolicy;
@@ -23,12 +24,14 @@ import org.junit.jupiter.api.Test;
 class TableColumnsListServiceTest {
 
     private SchemaTruthService mockFacade;
+    private ReportRegistry mockRegistry;
     private TableColumnsListService service;
 
     @BeforeEach
     void setUp() {
         mockFacade = mock(SchemaTruthService.class);
-        service = new TableColumnsListService(mockFacade);
+        mockRegistry = mock(ReportRegistry.class);
+        service = new TableColumnsListService(mockFacade, mockRegistry);
     }
 
     @Test

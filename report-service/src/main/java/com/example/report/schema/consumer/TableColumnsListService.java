@@ -1,5 +1,8 @@
 package com.example.report.schema.consumer;
 
+import com.example.report.registry.ColumnDefinition;
+import com.example.report.registry.ReportDefinition;
+import com.example.report.registry.ReportRegistry;
 import com.example.report.schema.SchemaSnapshot;
 import com.example.report.schema.SchemaTruthLookupContext;
 import com.example.report.schema.SchemaTruthService;
@@ -30,9 +33,12 @@ public class TableColumnsListService {
     private static final Logger log = LoggerFactory.getLogger(TableColumnsListService.class);
 
     private final SchemaTruthService schemaTruthService;
+    private final ReportRegistry reportRegistry;
 
-    public TableColumnsListService(SchemaTruthService schemaTruthService) {
+    public TableColumnsListService(SchemaTruthService schemaTruthService,
+                                     ReportRegistry reportRegistry) {
         this.schemaTruthService = schemaTruthService;
+        this.reportRegistry = reportRegistry;
     }
 
     /**
@@ -52,24 +58,65 @@ public class TableColumnsListService {
         if (ctx == null || schema == null || tableName == null) {
             return Collections.emptyList();
         }
+        // Tier 1+2: schema-service / committed snapshot
         try {
             Optional<SchemaSnapshot> snapshot = schemaTruthService.fetchSnapshot(ctx, schema);
-            if (snapshot.isEmpty()) {
-                log.debug("TableColumnsListService snapshot miss: schema={} table={}",
+            if (snapshot.isPresent()) {
+                SchemaSnapshot.TableInfo table = snapshot.get().tables().get(tableName);
+                if (table != null && !table.columns().isEmpty()) {
+                    return table.columns();
+                }
+                log.debug("TableColumnsListService Tier 1/2 miss: schema={} table={}",
                         schema, tableName);
-                return Collections.emptyList();
-            }
-            SchemaSnapshot.TableInfo table = snapshot.get().tables().get(tableName);
-            if (table == null) {
-                log.debug("TableColumnsListService table not in snapshot: schema={} table={}",
+            } else {
+                log.debug("TableColumnsListService snapshot empty: schema={} table={}",
                         schema, tableName);
-                return Collections.emptyList();
             }
-            return table.columns();
         } catch (RuntimeException e) {
-            log.debug("TableColumnsListService fail-soft: schema={} table={} error={}",
+            log.debug("TableColumnsListService Tier 1/2 fail-soft: schema={} table={} error={}",
                     schema, tableName, e.getMessage());
+        }
+
+        // Tier 3 partial fallback (Codex iter-1 §3 absorb): report registry's
+        // exposed columns (NOT DB truth — only the columns the report config
+        // declares). WARN at usage time so caller knows degraded source.
+        return tier3PartialFallback(ctx);
+    }
+
+    /**
+     * Tier 3 partial fallback — report registry columns mapped to ColumnInfo.
+     *
+     * <p>Capability matrix §2.1.2: registry kolonları DB truth değil; raporun
+     * expose ettiği subset. dataType registry'deki {@code number/text/date}
+     * (precision yok); caller bunu degraded sinyal olarak kabul etmeli.
+     *
+     * <p>WARN log her başvuruda — caller {@code ctx.reportKey()} blank ise
+     * Tier 3 fallback de empty list döner (capability matrix violation).
+     */
+    private List<SchemaSnapshot.ColumnInfo> tier3PartialFallback(SchemaTruthLookupContext ctx) {
+        if (ctx.reportKey() == null || ctx.reportKey().isBlank()) {
+            log.warn("TableColumnsListService Tier 3 unavailable: reportKey blank (consumer={})",
+                    ctx.consumer());
             return Collections.emptyList();
         }
+        try {
+            Optional<ReportDefinition> defOpt = reportRegistry.get(ctx.reportKey());
+            if (defOpt.isEmpty() || defOpt.get().columns() == null) {
+                return Collections.emptyList();
+            }
+            log.warn("TableColumnsListService Tier 3 partial fallback: report={} consumer={} (registry types, NOT DB truth)",
+                    ctx.reportKey(), ctx.consumer());
+            return defOpt.get().columns().stream()
+                    .map(this::mapRegistryColumnToColumnInfo)
+                    .toList();
+        } catch (Exception e) {
+            log.warn("TableColumnsListService Tier 3 lookup failed: report={} error={}",
+                    ctx.reportKey(), e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private SchemaSnapshot.ColumnInfo mapRegistryColumnToColumnInfo(ColumnDefinition col) {
+        return new SchemaSnapshot.ColumnInfo(col.field(), col.type(), null);
     }
 }

@@ -54,6 +54,14 @@ public class SchemaExistsService {
         log.debug("SchemaExistsService.exists strict: schema={} consumer={}",
                 schemaName, ctx.consumer());
         Optional<SchemaSnapshot> snapshot = schemaTruthService.fetchSnapshot(ctx, schemaName);
-        return snapshot.isPresent();
+        // Codex iter-1 §1 absorb: schema-service `/snapshot` bilinmeyen schema
+        // için 404 üretmez; SchemaSnapshotService 0 row → boş `tables` ile 200
+        // döner. `snapshot.isPresent()` tek başına false-positive; tables'ın
+        // schema match'iyle dolu olması ZORUNLU.
+        if (snapshot.isEmpty()) {
+            return false;
+        }
+        return snapshot.get().tables().values().stream()
+                .anyMatch(t -> schemaName.equals(t.schema()));
     }
 }
