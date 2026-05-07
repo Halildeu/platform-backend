@@ -8,10 +8,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /**
@@ -43,12 +45,19 @@ public record ContractGateSummary(
         exceptionInventory = exceptionInventory == null ? List.of() : List.copyOf(exceptionInventory);
     }
 
-    /** Filtered violations with FAIL severity. */
+    /** Filtered violations with FAIL severity, sorted deterministically. */
     public List<ContractViolation> unsuppressedFailures() {
         return filteredViolations.stream()
                 .filter(v -> v.severity() == ContractViolation.Severity.FAIL)
+                .sorted(VIOLATION_ORDER)
                 .toList();
     }
+
+    /** Deterministic violation ordering: ruleId, then reportKey, then field. */
+    private static final Comparator<ContractViolation> VIOLATION_ORDER =
+            Comparator.comparing((ContractViolation v) -> v.ruleId() == null ? "" : v.ruleId())
+                    .thenComparing(v -> v.reportKey() == null ? "" : v.reportKey())
+                    .thenComparing(v -> v.field() == null ? "" : v.field());
 
     /** Filtered FAIL violations with meta-rule namespace (REPORT_* / EXCEPTION_* / RULE_EXECUTION_ERROR). */
     public List<ContractViolation> metaFailures() {
@@ -64,13 +73,24 @@ public record ContractGateSummary(
                 .toList();
     }
 
-    /** Suppression count grouped by ruleId (e.g. {RC-001=2, RC-004=7, RC-005=12}). */
+    /** Suppression count grouped by ruleId, sorted by ruleId for deterministic Markdown order. */
     public Map<String, Long> suppressedByRule() {
         return suppressionEvents.stream()
                 .collect(Collectors.groupingBy(
                         e -> e.violation().ruleId(),
-                        LinkedHashMap::new,
+                        TreeMap::new,
                         Collectors.counting()));
+    }
+
+    /**
+     * Sorted exception inventory by entry id for deterministic Markdown
+     * rendering (Codex iter-8 §1e-AGREE absorb: ConcurrentHashMap.values()
+     * order is non-stable; sticky comment churn guard).
+     */
+    public List<ContractExceptionEntry> exceptionInventorySorted() {
+        return exceptionInventory.stream()
+                .sorted(Comparator.comparing(e -> e.id() == null ? "" : e.id()))
+                .toList();
     }
 
     /** Per-entry expiry countdown in days (positive = future, negative = past). */
@@ -161,7 +181,7 @@ public record ContractGateSummary(
             sb.append("## :warning: Active Exception Inventory (90-day horizon)\n\n");
             sb.append("| Entry | Rule(s) | Report | Days to expiry | Reason |\n");
             sb.append("|---|---|---|---|---|\n");
-            for (ContractExceptionEntry entry : exceptionInventory) {
+            for (ContractExceptionEntry entry : exceptionInventorySorted()) {
                 Long days = expiryDays.get(entry.id());
                 String dayCell = days == null
                         ? "—"

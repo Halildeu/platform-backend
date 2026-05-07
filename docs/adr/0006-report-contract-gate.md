@@ -3,7 +3,7 @@
 **Status**: Accepted (2026-05-07)
 **Driver**: Halil Kocoğlu (gladyatore@hotmail.com)
 **Reviewers**: Codex MCP thread `019e0119-7c9d-7541-8059-f9553c3303ce`
-**PRs**: #102 (1a), #103 (1b), #105 (1c), #106 (1d), #107 (1e — pending)
+**PRs**: #102 (1a), #103 (1b), #105 (1c), #106 (1d), #108 (1e)
 
 ## Context
 
@@ -93,6 +93,6 @@ ReportContractGate (orchestrator)
 - PR #103: `feat(report-service): Phase 2 Program 1b — ExceptionsRegistry + 90d horizon`
 - PR #105: `feat(report-service): Phase 2 Program 1c — report-definition.schema.json + 31 report migration`
 - PR #106: `feat(report-service): Phase 2 Program 1d — ReportContractGate + RC-004 allowlist + 90d governance debt`
-- PR #107 (pending): `feat(report-service): Phase 2 Program 1e — Marocchino sticky comment + ADR-0006`
+- PR #108 (1e): `feat(report-service): Phase 2 Program 1e — Marocchino sticky comment + ADR-0006` (this ADR lands here)
 - ADR-0008: Schema Truth Integration (Phase 2 Program 8)
 - Codex thread: `019e0119-7c9d-7541-8059-f9553c3303ce` (plan + post-impl review for all 5 sub-PRs)
