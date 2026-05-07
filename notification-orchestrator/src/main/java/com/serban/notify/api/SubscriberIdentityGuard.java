@@ -3,6 +3,7 @@ package com.serban.notify.api;
 import com.serban.notify.config.NotifyConfig;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -74,7 +75,13 @@ public class SubscriberIdentityGuard {
      * bean via {@code @EnableConfigurationProperties}; nested record types
      * are not standalone beans, so we inject the parent and unwrap to the
      * security section here.
+     *
+     * <p>The {@code @Autowired} annotation disambiguates which constructor
+     * Spring should use during component scanning — without it the two
+     * public constructors leave Spring searching for a no-arg default
+     * (Codex thread {@code 019e0316} post-impl P1 absorb).
      */
+    @Autowired
     public SubscriberIdentityGuard(NotifyConfig notifyConfig, MeterRegistry meterRegistry) {
         this(notifyConfig.security(), meterRegistry);
     }
@@ -84,8 +91,12 @@ public class SubscriberIdentityGuard {
      * {@link #SubscriberIdentityGuard(NotifyConfig, MeterRegistry)}
      * overload above; tests pass a {@link
      * com.serban.notify.config.NotifyConfig.SecurityConfig} directly.
+     *
+     * <p>Package-private intentionally — Spring will not pick this up as
+     * a candidate during component scan, eliminating the
+     * "BeanInstantiationException: No default constructor" path.
      */
-    public SubscriberIdentityGuard(
+    SubscriberIdentityGuard(
         NotifyConfig.SecurityConfig securityConfig,
         MeterRegistry meterRegistry
     ) {
