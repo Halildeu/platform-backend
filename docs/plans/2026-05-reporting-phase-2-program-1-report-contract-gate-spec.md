@@ -21,7 +21,7 @@
 | 1 | Validator nerede çalışacak (build-time only mu, runtime de mi)? | Build-time only (`mvn -pl report-service test`'in parçası); runtime'da loaded definitions zaten geçti varsayımı | Hem build-time hem runtime startup gate (zorlu, double safety) |
 | 2 | `RC-003` "hardcoded `workcube_mikrolink_YYYY_ID`" Tier 0 (current period) için FAIL mı, yoksa hep WARN'a çekip migration grace period mı? | Tier 0 FAIL + Tier 1+ WARN (Plan v2.1 §3.1 default) | Hep WARN (legacy migration süreci uzun) |
 | 3 | `exceptions.json` schema: ne kadar liberal? | `id`, `ruleIds`, `reason`, `owner`, `expiresAt` — `expiresAt` zorunlu (auto-expire 90 gün max) | `expiresAt` opsiyonel (kalıcı exception YASAK ama bypass için elastic) |
-| 4 | Schema-service unreachable durumunda RC-004 (column existence check)? | 30-day-old committed snapshot'a fall-back + WARN + `schema_truth_fallback_total` metric (Plan §3.8 fallback chain) | FAIL (CI block — strict) |
+| 4 | Schema-service unreachable durumunda RC-004 (column existence check)? | **Committed snapshot primary** (`docs/migration/workcube-schema.json`); schema-service optional fresh refresh (CI step). Snapshot age >30 gün: validator WARN + summary counter. Schema-service unreachable: silent — committed snapshot zaten primary kaynak (Codex iter-1 §5 absorb). | FAIL (CI block — strict; build-time validator deterministic snapshot prensibi bozulur) |
 | 5 | TypeScript `RC-011` (`action.handler` async check) hangi katmanda enforce? | `mfe-reporting/.../EntityGridTemplate.tsx` types + ESLint plugin custom rule | sadece runtime check (TS type yetersiz olabilir) |
 | 6 | Acceptance: validator suite test çıktısı PR'a nasıl rapor edilir? | `target/report-contract-summary.md` PR sticky comment olarak (CI step) | sadece CI log + Surefire XML (manual check) |
 
@@ -51,12 +51,22 @@
 
 ## 2. Validator Architecture
 
-### 2.1 Java package layout
+### 2.1 Java package layout (Codex iter-1 §1 absorb — build-time vs runtime ayrımı net)
+
+Build-time only kararı (Q1 default) ile package layout test ve main source ayrımı:
+
+**Test source** (`src/test/java`) — sadece `mvn test` lifecycle'ında çalışır:
+
+```
+report-service/src/test/java/com/example/report/contract/
+  └── ReportDefinitionContractTest.java     // JUnit @ParameterizedTest, classpath rapor sweep
+```
+
+**Main source** (`src/main/java`) — runtime classpath'te yer alır ama **runtime component scan / startup gate YOK**; sadece test classpath'in erişebildiği POJO/parser/registry yardımcıları:
 
 ```
 report-service/src/main/java/com/example/report/contract/
-  ├── ReportDefinitionContractTest.java     // JUnit @ParameterizedTest, classpath rapor sweep
-  ├── ContractValidator.java                  // Orchestrator
+  ├── ContractValidator.java                  // Orchestrator (no @Component / no @SpringBootApplication scan)
   ├── rules/
   │   ├── RC001YearlyRequiresYearColumn.java
   │   ├── RC002YearlySourceQueryRequiresPlaceholder.java
@@ -70,15 +80,20 @@ report-service/src/main/java/com/example/report/contract/
   │   ├── RC010DestructiveActionRequiresPermissionAndConfirm.java
   │   └── ContractRule.java                  // Interface
   ├── schema/
-  │   ├── SchemaSnapshotLoader.java           // workcube-schema.json + schema-service fallback
-  │   ├── ColumnTypeRegistry.java             // Schema-service-fed runtime side (Program 8)
+  │   ├── SchemaSnapshotLoader.java           // workcube-schema.json (committed primary)
+  │   ├── ColumnTypeRegistry.java             // Schema-service-fed runtime side (Program 8 cross-cutting)
   │   └── TenantColumnAllowlist.java          // tenant-column-allowlist.json
   ├── exceptions/
   │   └── ExceptionsRegistry.java             // exceptions.json — id+ruleIds+reason+owner+expiresAt
   └── report/
       ├── ContractViolation.java              // record(ruleId, severity, reportKey, field, message)
-      └── ContractReport.java                 // summary + violations grouped by severity
+      ├── ContractReport.java                 // summary + violations grouped by severity
+      └── SummaryGenerator.java               // CLI tool — `target/report-contract-summary.md` artifact
 ```
+
+> **Runtime gate sınırlaması**: `ContractValidator` ne `@Component` ne de `@Configuration` annotation'ı taşımaz; Spring Boot startup component scan'inde aktive edilmez. Production runtime'da loaded report definitions zaten build-time gate'inden geçtikleri varsayımıyla hareket eder. CI'da `mvn -pl report-service test` çalıştığında `ReportDefinitionContractTest` `@ParameterizedTest` registry sweep'ini yapar; production JVM'inde bu kod path inactive.
+>
+> **`SummaryGenerator` execution scope**: Marocchino sticky comment için CI step `./mvnw -pl report-service exec:java -Dexec.mainClass=com.example.report.contract.report.SummaryGenerator -Dexec.classpathScope=test` çağırır (`classpathScope=test` artifact production runtime'a sızmamasını sağlar). Alternatif olarak Surefire'ın kendi XML output'undan bir post-process step üretilebilir; spec implementation tarafına bırakır.
 
 ### 2.2 Schema additions (every report JSON)
 
@@ -97,13 +112,16 @@ report-service/src/main/java/com/example/report/contract/
 }
 ```
 
-`schemaMode` enum:
+`schemaMode` enum (Codex iter-1 §2 absorb):
+
 | Value | Pattern | Use |
 |---|---|---|
-| `yearly` | `workcube_mikrolink_{year}_{companyId}` | Yearly fact tables (ACCOUNT_CARD_ROWS) |
+| `yearly` | `workcube_mikrolink_{year}_{companyId}` | Yearly fact tables (ACCOUNT_CARD_ROWS) — **mevcut 19 rapor** |
 | `current` | `workcube_mikrolink_{companyId}` | Per-tenant current state — **NEW** |
 | `canonical` | `workcube_mikrolink` | Master/lookup tables (PROJECTS, COMPANIES) |
 | `static` | exception only | Legacy hardcoded — RC-003 Tier 0 FAIL |
+
+> **Migration: mevcut `schemaMode=standard` raporlar** (Codex iter-1 §2 absorb): Registry sweep'inde 1 rapor `schemaMode=standard` kullanıyor (`fin-butce-gerceklesen.json:9`). Plan v2.1 §3.1 enum'u `standard` içermiyor → **Phase-2-Program-1c sub-PR'ında migration**: bu rapor için doğru semantic değer atanır (data-shape'ine göre `canonical` master/lookup veya `current` per-tenant). Validator dry-run sırasında `schemaMode=standard` görürse `RC-001 ENUM_VIOLATION` üretir → exceptions.json'a geçici exception eklenmez (migration zorunlu); Phase-2-Program-1c PR'ında `standard` → uygun değer rename'i tek commit'te yapılır.
 
 `tenantBoundary.mode`:
 | Value | Semantics | RC ihlali |
@@ -124,7 +142,7 @@ Plan v2.1 §3.1'in matrix'ini implementation-detail seviyesinde detaylandırır.
 | **RC-004** | `rowFilter.scopeType=COMPANY` column must be in `tenant-column-allowlist.json` per-table; column existence verified via schema-service snapshot | FAIL | TenantColumnAllowlist lookup + ColumnTypeRegistry existence check |
 | **RC-005** | `tenantBoundary.mode=schema` + non-empty `rowFilter` is forbidden (boundary clarity — schema-level isolation already covers tenant scope) | FAIL | `if (mode == "schema" && rowFilter != null)` |
 | **RC-006** | `tenantBoundary.mode=none` reports cannot reference tenant fact tables | FAIL | sourceQuery scan: tenant fact table'ları (`ACCOUNT_CARD_ROWS`, `INVOICES`, `PURCHASE_ORDERS`, ...) içeriyorsa fail |
-| **RC-007** | `columns[].field` projections must exist in `sourceQuery` SELECT (heuristic) | WARN | Regex parse `SELECT ...` — column presence heuristic |
+| **RC-007** | `columns[].field` projections must exist in `sourceQuery` SELECT (heuristic, best-effort) | WARN | Regex parse — bounded heuristic (Codex iter-1 §4 absorb): `AS [alias]` + `AS alias` + raw column token (`SELECT [TBL].[COL]`, `SELECT col`); `SELECT *` veya CTE/nested subquery parse edilemiyorsa `WARN(rc007_unparsed_query)` üretir CI fail etmez. False positive sources documented: alias expressions, generated pivot fields, dynamic SQL. **Severity hep WARN** — FAIL'e yükseltme YASAK. |
 | **RC-008** | `tenantBoundary.schemaResolver` value must be in registered list (`workcube-year-company`, `workcube-current-company`, `none`) | FAIL | enum check |
 | **RC-009** | `actions[].scope` must be `grid \| row \| selection` | FAIL | enum check |
 | **RC-010** | Destructive actions (`destructive: true`) require non-null `permission` AND non-null `confirmation` | FAIL | `if (a.destructive && (isBlank(a.permission) \|\| isBlank(a.confirmation)))` |
@@ -158,7 +176,15 @@ Uniform interface: `{tableName: string -> tenantColumnIds: string[]}`. RC-004 bu
 ]
 ```
 
-CI gate `expiresAt` past'ı validator'da FAIL (auto-expire 90 gün max). `expiresAt` zorunlu Q3 default'u — sürekli bypass YASAK.
+`ExceptionsRegistry` 3 enforcement rule (Codex iter-1 §3 absorb — 90-gün max bypass YASAK):
+
+| Rule | Trigger | Action |
+|---|---|---|
+| `expiresAt` zorunlu | field absent | Validator FAIL: `EXCEPTION_MISSING_EXPIRY` |
+| `expiresAt <= now` (past) | exception expired | Validator IGNORES exception → underlying violation surfaces (existing test: `ExceptionsRegistry_rejectsExpired`) |
+| **`expiresAt > now + 90d`** | **`Clock` injectable, max 90-gün horizon** | **Validator FAIL: `EXCEPTION_BEYOND_90D_HORIZON`** (yeni — Codex §3 absorb) |
+
+`Clock` injection PR-time test'lerin deterministic kalmasını sağlar (yeni: `ExceptionsRegistry_rejectsExpiresAtBeyond90Days`).
 
 ---
 
@@ -248,6 +274,9 @@ CI step (post-test):
 | `RC010DestructiveActionRequiresPermAndConfirm_fails` | `destructive=true` + `permission=null` → FAIL |
 | `ExceptionsRegistry_filtersByReportKeyAndRuleIds` | EXCEPTION-001 covers (legacy-stok-rapor, RC-003) → suppressed |
 | `ExceptionsRegistry_rejectsExpired` | `expiresAt=2024-01-01` → exception ignored, original FAIL surfaces |
+| `ExceptionsRegistry_rejectsExpiresAtBeyond90Days` | `Clock` fixed to 2026-05-07 + `expiresAt=2028-01-01` → `EXCEPTION_BEYOND_90D_HORIZON` FAIL (Codex iter-1 §3 absorb) |
+| `ExceptionsRegistry_rejectsMissingExpiresAt` | exception entry without `expiresAt` field → `EXCEPTION_MISSING_EXPIRY` FAIL |
+| `RC003HardcodedSchemaForbidden_existingStandardSchemaMode_reportsEnumViolation` | `fin-butce-gerceklesen.json` mevcut `schemaMode=standard` → `RC-001 ENUM_VIOLATION` (mig path: Phase-2-Program-1c) |
 
 ### 5.2 Integration (existing report registry sweep)
 
@@ -297,17 +326,18 @@ Validator implementation'ının kendisi rollback edilirse: yeni rapor merge'leri
 
 ## 9. Definition of Done
 
-- [ ] `report-definition.schema.json` (Draft 2020-12) yazılı + 8+ mevcut rapor schema'ya uygun
+- [ ] `report-definition.schema.json` (Draft 2020-12) yazılı + 19+ mevcut rapor schema'ya uygun (`fin-butce-gerceklesen` `standard` → uygun değer migration commit'i Phase-2-Program-1c'de)
 - [ ] `tenant-column-allowlist.json` mevcut tenant fact tabloları için doldurulmuş
 - [ ] `exceptions.json` (boş başlangıç, sadece EXCEPTION-001 örneği)
 - [ ] `ContractValidator` + 10 RC rule (RC-011 frontend separate)
-- [ ] `SchemaSnapshotLoader` + Plan §3.8 fallback chain (committed → service → registry types)
-- [ ] `ExceptionsRegistry` + auto-expire (`expiresAt` < now → ignored)
+- [ ] **Build-time vs runtime gate ayrımı net**: `ContractValidator` no `@Component`/`@Configuration` (Codex iter-1 §1 absorb); test'te `@ParameterizedTest` registry sweep
+- [ ] `SchemaSnapshotLoader` — committed snapshot primary; schema-service optional fresh refresh CI step; snapshot age >30 gün WARN summary counter (Codex iter-1 §5 absorb)
+- [ ] `ExceptionsRegistry` 3 enforcement rule: `expiresAt` zorunlu + past → ignored + **>90-gün horizon FAIL** (Codex iter-1 §3 absorb, injectable `Clock`)
 - [ ] `ReportDefinitionContractTest` `@ParameterizedTest` over registry sweep
-- [ ] `target/report-contract-summary.md` artifact + Marocchino sticky comment CI step
+- [ ] `target/report-contract-summary.md` artifact + Marocchino sticky comment CI step (`exec.classpathScope=test`)
 - [ ] ADR `docs/adr/0006-report-definition-contract.md` (Plan v2.1 §3.1 mandate)
-- [ ] 12 unit test PASS + 1 IT (registry sweep) PASS
-- [ ] Mevcut 8+ rapor sweep'te 0 FAIL (gerekirse exceptions.json mounting)
+- [ ] **15 unit test PASS** (12 + Codex iter-1 §3 + §2 yeni tests) + 1 IT (registry sweep) PASS
+- [ ] Mevcut 19+ rapor sweep'te 0 FAIL (gerekirse exceptions.json mounting; `fin-butce-gerceklesen` migration Phase-2-Program-1c'de)
 - [ ] Codex post-impl peer review AGREE (HARD RULE Cross-AI)
 - [ ] CI 9/9 green + admin merge YASAK
 
