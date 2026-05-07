@@ -277,7 +277,7 @@ CI step (post-test):
 | `ExceptionsRegistry_rejectsExpired` | `expiresAt=2024-01-01` → exception ignored, original FAIL surfaces |
 | `ExceptionsRegistry_rejectsExpiresAtBeyond90Days` | `Clock` fixed to 2026-05-07 + `expiresAt=2028-01-01` → `EXCEPTION_BEYOND_90D_HORIZON` FAIL (Codex iter-1 §3 absorb) |
 | `ExceptionsRegistry_rejectsMissingExpiresAt` | exception entry without `expiresAt` field → `EXCEPTION_MISSING_EXPIRY` FAIL |
-| `RC003HardcodedSchemaForbidden_existingStandardSchemaMode_reportsEnumViolation` | `fin-butce-gerceklesen.json` mevcut `schemaMode=standard` → `RC-000 ENUM_VIOLATION` (mig path: Phase-2-Program-1c) |
+| `RC000SchemaModeEnumValid_existingStandardSchemaMode_reportsEnumViolation` | `fin-butce-gerceklesen.json` mevcut `schemaMode=standard` → `RC-000 ENUM_VIOLATION` (mig path: Phase-2-Program-1c) |
 
 ### 5.2 Integration (existing report registry sweep)
 
@@ -330,7 +330,7 @@ Validator implementation'ının kendisi rollback edilirse: yeni rapor merge'leri
 - [ ] `report-definition.schema.json` (Draft 2020-12) yazılı + 19+ mevcut rapor schema'ya uygun (`fin-butce-gerceklesen` `standard` → uygun değer migration commit'i Phase-2-Program-1c'de)
 - [ ] `tenant-column-allowlist.json` mevcut tenant fact tabloları için doldurulmuş
 - [ ] `exceptions.json` (boş başlangıç, sadece EXCEPTION-001 örneği)
-- [ ] `ContractValidator` + 10 RC rule (RC-011 frontend separate)
+- [ ] `ContractValidator` + 11 backend RC rule (RC-000..RC-010) (RC-011 frontend separate)
 - [ ] **Build-time vs runtime gate ayrımı net**: `ContractValidator` no `@Component`/`@Configuration` (Codex iter-1 §1 absorb); test'te `@ParameterizedTest` registry sweep
 - [ ] `SchemaSnapshotLoader` — committed snapshot primary; schema-service optional fresh refresh CI step; snapshot age >30 gün WARN summary counter (Codex iter-1 §5 absorb)
 - [ ] `ExceptionsRegistry` 3 enforcement rule: `expiresAt` zorunlu + past → ignored + **>90-gün horizon FAIL** (Codex iter-1 §3 absorb, injectable `Clock`)
@@ -351,7 +351,7 @@ Bu spec'i okumak için 5 dakika ayırıp şu 6 soruya cevap verirseniz implement
 1. **Validator scope**: build-time only mu, runtime de mi?
 2. **RC-003 Tier 0 davranış**: FAIL (önerilen) mı, WARN mı?
 3. **`exceptions.json` `expiresAt` zorunluluğu**: zorunlu (önerilen) mu, opsiyonel mi?
-4. **Schema-service unreachable**: 30-day-old snapshot fallback (önerilen) mi, FAIL mi?
+4. **Schema-service unreachable**: Committed snapshot primary; schema-service optional refresh; unreachable silent; snapshot age >30d WARN summary counter (önerilen) mi, strict FAIL mi?
 5. **`RC-011` async handler enforcement**: TS types + ESLint (önerilen) mi, sadece runtime mi?
 6. **PR feedback artifact**: `report-contract-summary.md` sticky comment (önerilen) mi, sadece CI log mu?
 
@@ -361,9 +361,9 @@ Default önerileri seçerseniz "AGREE → impl başla" cevabı yeterlidir.
 
 ## 11. Sub-PR breakdown
 
-1. **Phase-2-Program-1a**: ContractValidator + 10 RC rule + ContractRule interface + ContractViolation/ContractReport records
+1. **Phase-2-Program-1a**: ContractValidator + 11 backend RC rule (RC-000..RC-010) + ContractRule interface + ContractViolation/ContractReport records
 2. **Phase-2-Program-1b**: `tenant-column-allowlist.json` + `exceptions.json` + `ExceptionsRegistry` + auto-expire
-3. **Phase-2-Program-1c**: `report-definition.schema.json` (Draft 2020-12) + 8+ mevcut rapor `contractVersion=1` + `tenantBoundary` field
+3. **Phase-2-Program-1c**: `report-definition.schema.json` (Draft 2020-12) + 19+ mevcut rapor `contractVersion=1` + `tenantBoundary` field + `schemaMode=standard` → `canonical`/`current` migration commit
 4. **Phase-2-Program-1d**: `SchemaSnapshotLoader` (committed primary, optional schema-service fresh refresh CI step, snapshot age WARN) + `ColumnTypeRegistry`
 5. **Phase-2-Program-1e**: `ReportDefinitionContractTest` + Marocchino sticky comment CI integration + ADR-0006
 
