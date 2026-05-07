@@ -1,5 +1,6 @@
 package com.example.report.schema;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -50,7 +51,11 @@ public record SchemaSnapshot(
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ColumnInfo(
             @JsonProperty("name") String name,
-            @JsonProperty("type") String type,
+            // Schema-service ColumnInfo uses field name `dataType`. We keep
+            // `@JsonAlias({"type"})` for backward compat with Tier 2 committed
+            // snapshot variants that may have used `type` historically;
+            // production Tier 1 fetches return `dataType`. Codex iter-1 §2 absorb.
+            @JsonProperty("dataType") @JsonAlias({"type"}) String dataType,
             @JsonProperty("nullable") Boolean nullable
     ) {}
 }

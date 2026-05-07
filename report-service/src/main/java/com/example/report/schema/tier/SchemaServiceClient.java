@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
@@ -33,15 +34,24 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 public class SchemaServiceClient {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaServiceClient.class);
+    private static final String INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key";
 
     private final WebClient webClient;
+    private final String internalApiKey;
 
     public SchemaServiceClient(@Qualifier("plainWebClientBuilder") WebClient.Builder plainWebClientBuilder,
-                                @Value("${schema.service.base-url:http://schema-service}") String baseUrl) {
-        // D7: K8s native DNS — plain builder, @LoadBalanced gerek yok
+                                @Value("${schema.service.base-url:http://schema-service:8096}") String baseUrl,
+                                @Value("${schema.service.internal-api-key:}") String internalApiKey) {
+        // D7: K8s native DNS — plain builder, @LoadBalanced gerek yok.
+        // Codex iter-1 §1 absorb: default port 8096 (mevcut SchemaMasterDataClient
+        // pattern'iyle aligned; service.yaml port: 8096; application.yml default 8096).
+        // Codex iter-1 §3 absorb: X-Internal-Api-Key header (mevcut MasterDataReadController
+        // gate pattern'iyle simetrik; empty key dev/test'te open access, production
+        // ESO/Vault üzerinden set edilir).
         this.webClient = plainWebClientBuilder
                 .baseUrl(baseUrl)
                 .build();
+        this.internalApiKey = internalApiKey;
     }
 
     /**
@@ -67,11 +77,16 @@ public class SchemaServiceClient {
         log.debug("schema-service snapshot fetch: schema={} consumer={}",
                 schemaName, ctx != null ? ctx.consumer() : "unknown");
         try {
-            SchemaSnapshot snapshot = webClient.get()
+            WebClient.RequestHeadersSpec<?> spec = webClient.get()
                     .uri(uriBuilder -> uriBuilder
                             .path("/api/v1/schema/snapshot")
                             .queryParam("schema", schemaName)
-                            .build())
+                            .build());
+            // Codex iter-1 §3 absorb: internal API key (empty key dev/test passthrough)
+            if (StringUtils.hasText(internalApiKey)) {
+                spec = spec.header(INTERNAL_API_KEY_HEADER, internalApiKey);
+            }
+            SchemaSnapshot snapshot = spec
                     .retrieve()
                     .bodyToMono(SchemaSnapshot.class)
                     .timeout(Duration.ofSeconds(5))

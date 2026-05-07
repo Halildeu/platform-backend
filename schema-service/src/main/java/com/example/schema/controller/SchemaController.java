@@ -23,6 +23,8 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/v1/schema")
 public class SchemaController {
 
+    private static final String INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key";
+
     private final SchemaExtractService extractService;
     private final SchemaSnapshotService snapshotService;
     private final SchemaLookupService lookupService;
@@ -36,6 +38,9 @@ public class SchemaController {
 
     @Value("${schema.cache-ttl-minutes:60}")
     private int cacheTtlMinutes;
+
+    @Value("${schema.snapshot.internal-api-key:}")
+    private String snapshotInternalApiKey;
 
     public SchemaController(SchemaExtractService extractService,
                             SchemaSnapshotService snapshotService,
@@ -55,11 +60,28 @@ public class SchemaController {
 
     /**
      * Full schema snapshot — tables, relationships, domains, analysis.
-     * Used by the frontend to load the entire schema graph.
+     * Used by the frontend to load the entire schema graph + report-service
+     * SchemaTruthService Tier 1 (Phase 2 Program 8).
+     *
+     * <p>Auth model (Phase 2 Program 8a, Codex iter-1 §3 absorb): same
+     * X-Internal-Api-Key gate pattern as MasterDataReadController. Empty
+     * configured key (test/dev profile) means open access; production
+     * deployments MUST set the key via Vault / ESO. Frontend currently
+     * accesses through JWT-authenticated SecurityFilterChain path; this
+     * gate is additive (controller-level), preserving the JWT path when
+     * key is empty.
      */
     @GetMapping("/snapshot")
     public ResponseEntity<SchemaSnapshot> getSnapshot(
-            @RequestParam(required = false) String schema) {
+            @RequestParam(required = false) String schema,
+            @RequestHeader(value = INTERNAL_API_KEY_HEADER, required = false) String providedKey) {
+
+        // Internal API key guard (empty configured key = open access for backward compat).
+        if (snapshotInternalApiKey != null && !snapshotInternalApiKey.isBlank()
+                && (providedKey == null || !snapshotInternalApiKey.equals(providedKey))) {
+            return ResponseEntity.status(401).build();
+        }
+
         String target = schema != null ? schema : defaultSchema;
         SchemaSnapshot snapshot = snapshotService.buildSnapshot(target);
         return ResponseEntity.ok()

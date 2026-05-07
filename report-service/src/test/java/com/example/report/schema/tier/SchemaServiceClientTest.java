@@ -83,7 +83,8 @@ class SchemaServiceClientTest {
                 .setHeader("Content-Type", "application/json")
                 .setBody("{\"tables\":{\"ACCOUNT_CARD_ROWS\":{\"name\":\"ACCOUNT_CARD_ROWS\","
                         + "\"schema\":\"workcube_mikrolink_2026_35\","
-                        + "\"columns\":[{\"name\":\"AMOUNT\",\"type\":\"DECIMAL(18,2)\"}]}}}"));
+                        // Codex iter-1 §2 absorb: production-shaped `dataType` field
+                        + "\"columns\":[{\"name\":\"AMOUNT\",\"dataType\":\"DECIMAL(18,2)\"}]}}}"));
 
         SchemaTruthLookupContext ctx = new SchemaTruthLookupContext(
                 "fin-muhasebe-detay", "yearly",
@@ -95,6 +96,11 @@ class SchemaServiceClientTest {
 
         assertThat(first).isPresent();
         assertThat(first.get().tables()).containsKey("ACCOUNT_CARD_ROWS");
+        // Codex iter-1 §2 absorb: dataType deserializes correctly (production shape).
+        assertThat(first.get().tables().get("ACCOUNT_CARD_ROWS").columns())
+                .hasSize(1);
+        assertThat(first.get().tables().get("ACCOUNT_CARD_ROWS").columns().get(0).dataType())
+                .isEqualTo("DECIMAL(18,2)");
         assertThat(second).isPresent();
         // Cache hit: ikinci çağrı HTTP'ye gitmemeli — request count artışı = 1
         assertThat(MOCK_SERVER.getRequestCount() - requestCountBefore).isEqualTo(1);
