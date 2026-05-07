@@ -455,7 +455,7 @@ const supportsWeightedAvg = caps.supportedAggFuncs.includes("weightedAvg");
 |---|---|
 | `buildPivotedGroupedQuery_overRealMssql_caseSumsCorrectly` | 2 pivot value × 3 row group bucket = 6 hücre matrix; safe alias map BigDecimal precision |
 | `buildPivotedGroupedQuery_dynamicDiscoveryMatchesStaticOutput` | Discovery mode == static mode equivalence (cardinality < cap); aynı `_src` + filterModel + RLS + groupKeys parity |
-| `buildWeightedAvgGroupedQuery_crossSchemaReturnsWeightedAverage` | **Positive correctness**: eşitsiz schema cardinality + weight dağılımında beklenen `SUM(v*w)/SUM(w)` BigDecimal precision ile doğrula |
+| `buildWeightedAvgGroupedQuery_crossSchemaReturnsWeightedAverage` | **Positive correctness**: eşitsiz schema cardinality + weight dağılımında beklenen null-skip weighted AVG (`SUM(v*w where v and w non-null) / SUM(w where v and w non-null)`) BigDecimal precision ile doğrula. Fixture'da `value=NULL, weight>0` satırı dahil — expected oracle null-skip denominator hesaplaması ile (Codex iter-7 absorb). |
 | `crossSchemaWeightedAvg_fixtureWouldExposeAverageOfAveragesBias` | **Oracle sanity / regression sensitivity**: aynı fixture üzerinde naive `AVG(per_year_avg)` hesabının doğru sonuçtan ≥%5 saptığını göster (production SQL davranışı **DEĞİL**, fixture kalitesi kanıtı; Codex iter-4 §9 absorb) |
 | `buildWeightedAvgGroupedQuery_zeroWeightProducesNull` | `NULLIF(SUM(weight),0)` denominator 0 → NULL döndür (Q3 default) |
 
@@ -510,7 +510,7 @@ Silent flat fallback **yok** (Plan v2.1 §1 v3 revize iter-15 prensibi: "Flag of
 ## 9. Definition of Done
 
 - [ ] `SqlBuilder.buildPivotedGroupedQuery(...)` API yazılı + 5 unit test PASS
-- [ ] `SqlBuilder` weighted-avg path 2 unit test PASS
+- [ ] `SqlBuilder` weighted-avg path 3 unit test PASS (raw-stream projection + outer formula + null-skip denominator)
 - [ ] `SqlBuilderMssqlIntegrationTest` 5 yeni IT PASS (CI lane: `report-service-mssql-integration-test`)
 - [ ] `POST /api/v1/reports/{key}/query` controller `pivotMode=true` + `valueCols[].aggFunc=weightedAvg` path entegre (501 → 200)
 - [ ] `ReportCapabilities` envelope `serverSidePivoting=true` + `supportedAggFuncs=["sum","avg","min","max","count","weightedAvg"]`
@@ -529,7 +529,7 @@ Silent flat fallback **yok** (Plan v2.1 §1 v3 revize iter-15 prensibi: "Flag of
 Bu spec'i okumak için 5 dakika ayırıp şu 7 soruya cevap verirseniz implementation başlayabilir:
 
 1. **İlk pivot canary**: `fin-muhasebe-detay` only mu, capability-driven mı?
-2. **Weighted AVG semantiği**: ANSI standart `SUM(v*w)/NULLIF(SUM(w),0)` mı, domain-specific denominator mu?
+2. **Weighted AVG semantiği**: NULL-skip ANSI weighted AVG mi (`SUM(CASE WHEN v IS NOT NULL AND w IS NOT NULL THEN v*w END) / NULLIF(SUM(CASE WHEN v IS NOT NULL AND w IS NOT NULL THEN w END), 0)` — `weightedAvg(v, 1) = AVG(v)` parity), yoksa domain-specific denominator mu (örn. `RECORD_COUNT` ya da `WORKING_DAYS`)?
 3. **Null/zero weight**: NULL döndür mü, sentinel bucket mı, drop mı?
 4. **Multi-level + pivot beraber mi**: Hayır (PR-0.4: single-level + single pivot dim — Codex iter-4 önerisi), evet (PR-0.4'te zorunlu — kapsam genişler)?
 5. **Export semantiği**: Pivot-applied flatten (önerilen), pivot-off only mı?
