@@ -59,28 +59,77 @@
 
 ## 2. Architecture
 
-### 2.1 Java package layout (backend)
+### 2.1 Java package layout (backend, Codex iter-1 §1+§3 absorb — `SchemaTruthLookupPolicy` enum)
 
 ```
 report-service/src/main/java/com/example/report/schema/
-  ├── SchemaTruthService.java              // Facade: 3-tier fallback orchestrator
+  ├── SchemaTruthService.java              // Facade: 3-tier fallback orchestrator (policy-driven)
+  ├── SchemaTruthLookupPolicy.java         // NEW enum (Codex iter-1 §1 absorb):
+  │                                         //   BUILD_DETERMINISTIC, RUNTIME_STRICT_EXISTENCE, RUNTIME_DEGRADED_TYPE
+  ├── SchemaTruthLookupContext.java        // NEW record (Codex iter-1 §3 absorb):
+  │                                         //   { reportKey, schemaMode, policy, consumer }
   ├── SchemaSnapshot.java                   // POJO: { domain, tables: [{schema, name, columns: [{name, type}], fks }]}
   ├── tier/
   │   ├── SchemaServiceClient.java          // Tier 1: WebClient → /api/v1/schema/snapshot, 5-min Caffeine
   │   ├── CommittedSnapshotLoader.java       // Tier 2: docs/migration/workcube-schema.json mmap
-  │   └── RegistryTypeFallback.java          // Tier 3: report registry columns[].type
+  │   └── RegistryTypeFallback.java          // Tier 3: report registry columns[].type (report-scoped only)
   ├── observability/
-  │   ├── SchemaTruthMetrics.java            // schema_truth_fallback_total + schema_truth_cache_hit_total + snapshot_age_days
-  │   └── SchemaTruthLogContext.java         // MDC enrichment (tier, schema_mode, age_days)
+  │   ├── SchemaTruthMetrics.java            // schema_truth_fallback_total{tier,schema_mode} +
+  │   │                                      // schema_truth_lookup_total{schema_mode} +
+  │   │                                      // schema_truth_cache_hit_total + snapshot_age_days
+  │   └── SchemaTruthLogContext.java         // MDC enrichment (tier, schema_mode, report_key, age_days, consumer)
   └── consumer/
-      ├── ColumnTypeRegistry.java            // public API: lookupColumnType(schema, table, column)
-      ├── SchemaExistsService.java           // public API: exists(schemaName)
-      └── TableColumnsListService.java       // public API: listColumns(schema, table)
+      ├── ColumnTypeRegistry.java            // public API: lookupColumnType(ctx, schema, table, column)
+      ├── SchemaExistsService.java           // public API: exists(ctx, schemaName) — RUNTIME_STRICT_EXISTENCE only
+      ├── TableColumnsListService.java       // public API: listColumns(ctx, schema, table)
+      └── RequestColumnTypeCache.java        // @RequestScope (Codex iter-1 §5 absorb) — request-scope cache,
+                                             //   no ThreadLocal Caffeine; ObjectProvider for non-web context
 ```
 
-> **Build-time integration** (Phase 2 Program 1 PR #91 consumer): `ContractValidator` (test classpath) `SchemaTruthService` deger consume eder; CI'da `mvn test` çalışırken `SchemaServiceClient` çağrı yapmaz (Q1 default: on-demand only) → Tier 2 committed snapshot primary.
->
-> **Runtime integration** (Phase 2 Program 2 PR #92 consumer): `TenantBoundaryGuard` `SchemaExistsService.exists(schema)` çağırır → Tier 1 cache hit veya Tier 1 miss + service unreachable → 503 (Codex iter-2 absorb: runtime'da silent fallback YOK).
+### 2.1.1 `SchemaTruthLookupPolicy` (Codex iter-1 §1 absorb)
+
+```java
+public enum SchemaTruthLookupPolicy {
+    /**
+     * Build-time deterministic mode (CI mvn test).
+     * Tier order: 2 (committed snapshot) → 3 (registry types).
+     * Tier 1 (schema-service) DISABLED — network-independent CI.
+     * Used by: Phase 2 Program 1 ContractValidator (PR #91).
+     */
+    BUILD_DETERMINISTIC,
+
+    /**
+     * Runtime strict existence check (production).
+     * Tier order: 1 (schema-service Caffeine) ONLY.
+     * Tier 1 miss / unreachable → 503 schema_resolver_miss (NO fallback).
+     * Used by: Phase 2 Program 2 TenantBoundaryGuard.exists(schema) (PR #92).
+     */
+    RUNTIME_STRICT_EXISTENCE,
+
+    /**
+     * Runtime degraded type lookup (production fast path).
+     * Tier order: 1 (Caffeine) → 2 (committed snapshot) → 3 (registry types).
+     * All 3 tiers allowed; Tier 3 = WARN + X-Schema-Truth-Tier header.
+     * Used by: FilterTranslator + SqlBuilder + frontend useReportSchemaContext.
+     */
+    RUNTIME_DEGRADED_TYPE
+}
+```
+
+Bu enum runtime'daki **iki farklı semantik**i (PR #92 absorb strict vs Plan §3.8 degraded) policy-level ayırır → aynı `SchemaTruthService` çağrısının iki güvenlik semantiği üretmesi önlenir.
+
+### 2.1.2 Capability Matrix (Codex iter-1 §2 absorb)
+
+Tier 3 registry types kaynağı yalnızca **report-scoped column type fallback** verebilir; full DB-level capability'leri karşılayamaz:
+
+| Consumer API | Tier 1 | Tier 2 | Tier 3 | Policy |
+|---|---|---|---|---|
+| `lookupColumnType(reportKey, field)` (report-scoped) | ✓ | ✓ | ✓ (report-scoped column types) | RUNTIME_DEGRADED_TYPE / BUILD_DETERMINISTIC |
+| `lookupColumnType(schema, table, column)` (DB-level) | ✓ | ✓ | ✗ (registry'de schema-table-column mapping yok) | RUNTIME_DEGRADED_TYPE / BUILD_DETERMINISTIC |
+| `exists(schemaName)` | ✓ | ✗ (build-time deterministic OK; runtime fail-closed strict) | ✗ | RUNTIME_STRICT_EXISTENCE only |
+| `listColumns(schema, table)` (full table scan) | ✓ | ✓ | report-scoped visible columns only (NOT DB truth — partial result + WARN) | RUNTIME_DEGRADED_TYPE / BUILD_DETERMINISTIC |
+
+Tier 3 capability'si "DB-level absolute truth" değil → consumer'lar bu sınırı bilerek Tier 3 sonucunu kullanır (örn. PR-0.4 discovery mode pivot value list partial olabilir + WARN).
 
 ### 2.2 3-Tier Fallback Chain (Plan §3.8 default)
 
@@ -107,16 +156,21 @@ Tier 3: RegistryTypeFallback.lookup(...)
   └─ Not found → throw `SchemaTruthMissException` (Tier 3 ulaşılır ama miss = gerçek incident)
 ```
 
-### 2.3 Build-time vs Runtime mode
+### 2.3 Lookup Policy → Tier Behavior (Codex iter-1 §1 absorb)
 
-| Mode | Tier 1 | Tier 2 | Tier 3 |
+Aynı `SchemaTruthService` çağrısı **policy enum**'a göre farklı tier davranışı üretir:
+
+| Policy | Tier 1 | Tier 2 | Tier 3 |
 |---|---|---|---|
-| **Build-time** (CI `mvn test`) | **DISABLED** (Q1 default: on-demand only; CI bandwidth/rate limit önle) | **PRIMARY** (committed snapshot) | Fallback (RC-004 kontrolü için) |
-| **Runtime** (production JVM) | **PRIMARY** (5-min Caffeine cache) | Fallback if Tier 1 fail-soft | Fallback if Tier 2 fail-soft |
+| **`BUILD_DETERMINISTIC`** (Phase 2 Program 1 PR #91) | **DISABLED** (Q1 default: on-demand only; CI bandwidth/rate limit önle) | **PRIMARY** (committed snapshot) | Fallback (RC-004 kontrolü için, capability matrix Tier 3 izinli case'lerde) |
+| **`RUNTIME_STRICT_EXISTENCE`** (Phase 2 Program 2 PR #92 `TenantBoundaryGuard.exists`) | **PRIMARY** (5-min Caffeine cache) | **DISABLED** (no fallback — runtime fail-closed) | **DISABLED** (no fallback) |
+| **`RUNTIME_DEGRADED_TYPE`** (FilterTranslator + SqlBuilder + `useReportSchemaContext`) | **PRIMARY** (5-min Caffeine cache) | Fallback if Tier 1 fail-soft + WARN log | Fallback if Tier 2 fail-soft + WARN + `X-Schema-Truth-Tier: registry_type` header |
 
 Build-time'da Tier 1 disable: deterministic CI output (network-independent); committed snapshot zaten primary kaynak.
 
-Runtime'da Tier 1 primary: schema-service authoritative state; cache fast hot-path; fallback tier'lar incident sinyali.
+Runtime'da policy-driven:
+- `RUNTIME_STRICT_EXISTENCE`: fail-closed disiplini PR #92 absorb parity (silent fallback YOK; Plan §1 v3 revize prensibi)
+- `RUNTIME_DEGRADED_TYPE`: fast path + 3-tier fallback (column type lookup için degraded OK; tier sinyali frontend transparent)
 
 ### 2.4 Metric semantik (Q5 default `{tier, schema_mode}`)
 
@@ -136,22 +190,33 @@ schema_truth_snapshot_age_days
 schema_truth_snapshot_age_warn  # binary 0/1
 ```
 
-### 2.5 Frontend integration (`useReportSchemaContext`)
+### 2.5 Frontend integration (`useReportSchemaContext` — Codex iter-1 §4 absorb header canonical)
 
 ```ts
 // mfe-reporting/src/hooks/useReportSchemaContext.ts
 export function useReportSchemaContext(reportKey: string) {
   const { data, isLoading, error } = useQuery({
     queryKey: ["schema-context", reportKey],   // reactive on reportKey change (Q7 default)
-    queryFn: () => fetch(`/api/v1/reports/${reportKey}/schema-context`).then(r => r.json()),
+    queryFn: async () => {
+      const response = await fetch(`/api/v1/reports/${reportKey}/schema-context`);
+      // Canonical tier signal: HTTP response header (Codex iter-1 §4 absorb)
+      const tier = response.headers.get("X-Schema-Truth-Tier");
+      const body = await response.json();
+      if (tier === "registry_type") {
+        console.warn(
+          `[schema-truth] Report '${reportKey}' served from Tier 3 registry types — schema-service + committed snapshot both fail-soft`
+        );
+      }
+      return { ...body, tier };
+    },
     staleTime: 5 * 60 * 1000,                   // 5-min mirror of backend Caffeine
     refetchOnMount: true,                        // on-mount fetch (Q7 default)
   });
-  return { columnTypes: data?.columnTypes, isLoading, error };
+  return { columnTypes: data?.columnTypes, tier: data?.tier, isLoading, error };
 }
 ```
 
-Backend endpoint `GET /api/v1/reports/{key}/schema-context` `SchemaTruthService` üzerinden 3-tier fallback ile çözülür; response Tier 1/2/3 hangisinden geldiği `tier` field'ında döner (frontend'den `console.warn` if Tier 3 — incident sinyali kullanıcıya transparent).
+Tier signal **canonical = HTTP response header** `X-Schema-Truth-Tier` (`schema_service` | `committed_snapshot` | `registry_type`); body'de opsiyonel echo olarak `tier` field'ı eklenir ama hook'un karar yüzeyi header. Bu yaklaşım test plan + DoD + failure semantics ile aligned (önceki body-only çelişkisi kapandı).
 
 ---
 
@@ -184,9 +249,35 @@ Frontend `useReportSchemaContext`: AG Grid colDef enrichment (filter type, value
 
 ### 3.4 FilterTranslator (existing — Plan v2.1 §3.6 PR-0 zinciri)
 
-`FilterTranslator` runtime'da column type-aware T-SQL üretir (text → LIKE; number → equals/range; date → BETWEEN). `ColumnTypeRegistry.lookupColumnType(...)` Tier 1 primary.
+`FilterTranslator` runtime'da column type-aware T-SQL üretir (text → LIKE; number → equals/range; date → BETWEEN). `ColumnTypeRegistry.lookupColumnType(...)` policy=`RUNTIME_DEGRADED_TYPE` (Tier 1 primary, Tier 2/3 fallback OK).
 
-Per-request cache (Q6 default): aynı request'te aynı column repeated lookups O(1) (request-scope ThreadLocal Caffeine LayerCache).
+Per-request cache (Q6 default — Codex iter-1 §5 absorb): **Spring `@RequestScope` bean** (`RequestColumnTypeCache`) + `ObjectProvider<RequestColumnTypeCache>` for non-web context. ThreadLocal Caffeine LayerCache **kullanılmaz** (Tier 1 zaten 5-min Caffeine cache; ikinci layer overkill + ThreadLocal leak riski). Basit `Map<LookupKey, SchemaTruthResult>` request-scope bean'in iç state'i; servlet API `FilterTranslator`'a sızmaz.
+
+```java
+@Component
+@RequestScope
+public class RequestColumnTypeCache {
+    private final Map<LookupKey, SchemaTruthResult> cache = new HashMap<>();
+    public SchemaTruthResult getOrCompute(LookupKey key, Supplier<SchemaTruthResult> compute) { ... }
+}
+
+// FilterTranslator (no servlet dependency)
+@Component
+public class FilterTranslator {
+    private final ObjectProvider<RequestColumnTypeCache> cacheProvider;
+    private final ColumnTypeRegistry registry;
+    public String translate(...) {
+        RequestColumnTypeCache cache = cacheProvider.getIfAvailable(() -> null);
+        if (cache != null) {
+            return cache.getOrCompute(...);  // request-scope hot path
+        }
+        // non-web context (e.g. unit test, scheduled job): direct registry call
+        return registry.lookupColumnType(...);
+    }
+}
+```
+
+`@RequestScope` Spring lifecycle clean (request done → bean GC); ThreadLocal cleanup endişesi yok.
 
 ---
 
@@ -277,9 +368,10 @@ Plan §1 v3 revize: silent fallback yasak — feature flag explicit + WARN log +
 - [ ] `CommittedSnapshotLoader` Tier 2 + snapshot age check
 - [ ] `RegistryTypeFallback` Tier 3 + WARN at usage time (Q3 default)
 - [ ] `ColumnTypeRegistry` + `SchemaExistsService` + `TableColumnsListService` consumer interfaces
-- [ ] `SchemaTruthMetrics` (5 metric: `fallback_total{tier,schema_mode}` + `cache_hit_total` + `snapshot_age_days` + `snapshot_age_warn` + `cache_miss_burst`)
+- [ ] `SchemaTruthLookupContext` record (`reportKey`, `schemaMode`, `policy`, `consumer`) — API'a context parameter olarak inject (Codex iter-1 §3 absorb)
+- [ ] `SchemaTruthMetrics` (6 metric: `schema_truth_lookup_total{schema_mode}` + `schema_truth_fallback_total{tier,schema_mode}` + `schema_truth_cache_hit_total` + `schema_truth_snapshot_age_days` + `schema_truth_snapshot_age_warn` + `schema_truth_cache_miss_burst`)
 - [ ] `SchemaTruthLogContext` MDC enrichment (`tier`, `schema_mode`, `age_days`)
-- [ ] Per-request cache (Q6 default) — request-scope `ColumnTypeRegistry`
+- [ ] Per-request cache (Q6 default — Codex iter-1 §5 absorb) — Spring `@RequestScope` `RequestColumnTypeCache` bean + `ObjectProvider<RequestColumnTypeCache>` for non-web context (no ThreadLocal Caffeine, simple Map)
 - [ ] Frontend `useReportSchemaContext` — on-mount + reactive on reportKey change (Q7 default; 5-min staleTime mirror of backend cache)
 - [ ] `GET /api/v1/reports/{key}/schema-context` endpoint + `X-Schema-Truth-Tier` response header
 - [ ] 8 unit test PASS + 3 SpringBoot IT PASS + 3 Vitest test PASS
