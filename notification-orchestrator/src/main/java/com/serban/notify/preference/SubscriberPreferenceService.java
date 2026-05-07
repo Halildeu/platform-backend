@@ -64,6 +64,9 @@ public class SubscriberPreferenceService {
      *   <li>Exact match (orgId, subscriberId, topic_key, channel) → use</li>
      *   <li>Channel-wildcard (orgId, subscriberId, topic_key, channel=NULL) → use</li>
      *   <li>Topic-wildcard (orgId, subscriberId, topic_key=NULL, channel) → use</li>
+     *   <li>Both-null wildcard (topic_key=NULL AND channel=NULL) → use
+     *       (Faz 23.5 PR2 absorb: matches the subscriber-facing
+     *       "mute all topics & channels" rule).</li>
      *   <li>No match → ALLOW (default-allow per ADR-0013 D46 #8)</li>
      * </ol>
      *
