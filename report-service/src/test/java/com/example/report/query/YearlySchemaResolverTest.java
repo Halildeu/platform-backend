@@ -133,6 +133,21 @@ class YearlySchemaResolverTest {
     }
 
     @Test
+    void resolve_superAdminWithoutExplicitPickerScope_throwsTenantSelectionRequired() {
+        // Codex iter-11 §2a-AGREE absorb: super-admin no-picker path now
+        // hits the same fail-closed contract. Legacy unrestricted bypass
+        // for yearly execution is gone — picker header (X-Company-Id) is
+        // mandatory for super-admin yearly reports too.
+        ReportDefinition def = newDef("yearly", "ACTION_DATE", "workcube_mikrolink_1");
+        AuthzMeResponse authz = mock(AuthzMeResponse.class);
+        when(authz.getScopeRefIds("COMPANY")).thenReturn(Set.of());
+        when(authz.isSuperAdmin()).thenReturn(true);
+
+        assertThatThrownBy(() -> resolver.resolve(def, authz, Map.of()))
+                .isInstanceOf(TenantSelectionRequiredException.class);
+    }
+
+    @Test
     void resolve_yearlyWithDateRangeFilter_resolvesAllYearsInRange() {
         ReportDefinition def = newDef("yearly", "ACTION_DATE", "workcube_mikrolink_1");
         AuthzMeResponse authz = newAuthz(Set.of("1"));
