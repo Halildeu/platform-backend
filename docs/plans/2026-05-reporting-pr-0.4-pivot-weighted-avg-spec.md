@@ -25,7 +25,7 @@
 | # | Soru | Default önerisi | Alternatif |
 |---|---|---|---|
 | 1 | İlk pivot capability hangi rapor(lar)da açılacak? | `fin-muhasebe-detay` only (tek rapor canary) | Capability-driven (her opt-in raporda otomatik) |
-| 2 | Weighted AVG semantiği nedir? | `SUM(value * weight) / NULLIF(SUM(weight), 0)` (ANSI standart) | Domain-specific denominator (örn. `RECORD_COUNT` ya da `WORKING_DAYS`) |
+| 2 | Weighted AVG semantiği nedir? | `SUM(CASE WHEN value IS NOT NULL AND weight IS NOT NULL THEN value * weight END) / NULLIF(SUM(CASE WHEN value IS NOT NULL AND weight IS NOT NULL THEN weight END), 0)` (ANSI standart, null-skip her iki taraf — `weightedAvg(value, 1)` = `AVG(value)` parity) | Domain-specific denominator (örn. `RECORD_COUNT` ya da `WORKING_DAYS`) |
 | 3 | Null/zero weight bucket davranışı? | `NULL` döndür (NULLIF güvenli) | Sentinel bucket (`'no-weight'`) ya da bucket drop |
 | 4 | Multi-level groupKeys + pivot beraber çalışacak mı? | **Hayır** — PR-0.4 single-level row group + single pivot dim. Multi-level + pivot **PR-0.4e follow-up** (engine + UI kontratı yeşillendikten sonra). | Multi-level + pivot beraber (Workcube use case istiyor — ama blast radius yüksek) |
 | 5 | Export/count/pagination semantiği? | Pivot-applied result set üzerinde aynı pipeline (CSV/Excel için flatten) | Pivot off-mode export only (UX'te disable) |
@@ -140,7 +140,7 @@ public BuiltQuery buildPivotedGroupedQuery(
     YearlySchemaResolver.ResolvedSchemas resolvedSchemas,
     List<String> visibleColumns,
     String rowGroupCol,                  // single-level (PR-0.4 scope)
-    List<String> groupKeys,              // expanded path (single-level → at most 1 entry)
+    List<String> groupKeys,              // PR-0.4: must be empty (single-level first expansion); reserved for PR-0.4e ancestor expansion
     String pivotCol,                     // single pivot dim
     List<PivotValue> pivotValues,        // static or discovery-resolved
     List<GroupedAggregation> aggs,       // sum/avg/min/max/count
@@ -201,7 +201,7 @@ Pivot value bindings: `params.put("pivot0", "BORÇ"); params.put("pivot1", "ALAC
 | `min` | `MIN(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip) |
 | `max` | `MAX(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip) |
 | `count` (= `COUNT(value)`) | `COUNT(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip) |
-| `weightedAvg` | `SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] * [weight] END) / NULLIF(SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [weight] END), 0)` |
+| `weightedAvg` | `SUM(CASE WHEN [pivotCol] = :pivot<idx> AND [val] IS NOT NULL AND [weight] IS NOT NULL THEN [val] * [weight] END) / NULLIF(SUM(CASE WHEN [pivotCol] = :pivot<idx> AND [val] IS NOT NULL AND [weight] IS NOT NULL THEN [weight] END), 0)` (null-skip her iki taraf — §3.4.4'e bak) |
 
 Önemli: `avg/min/max/count` için `ELSE 0` yanlıştır — pivot-dışı satırların sıfır sayılması bucket aritmetiğini bozar (örn. AVG bucket dışı 0'larla seyrelir, MIN bucket-dışı 0'a düşer). `null-skip` pattern (no ELSE) sadece pivot-eşleşen satırları aggregator'a sokar.
 
@@ -258,7 +258,7 @@ Default: `static` (predictable). `discovery` yüksek-cardinality riskine sahip r
 
 ### 3.3.1 Discovery query parity contract (Codex iter-4 §6 absorb)
 
-Discovery query **aynı scope** üzerinde çalışmalı (data query ile filterModel + RLS + ancestor groupKeys parity):
+Discovery query **aynı scope** üzerinde çalışmalı (data query ile filterModel + RLS parity; PR-0.4'te `groupKeys` empty olduğundan ancestor parity sıfır-element; PR-0.4e'de ancestor groupKeys parity eklenir):
 
 ```sql
 SELECT DISTINCT TOP (:cap + 1) [ACTION_TYPE]
@@ -281,7 +281,7 @@ Eğer parity sağlanmazsa: secondary columns grid'de gözükür ama current buck
 
 Mevcut `SqlBuilder` multi-schema akışı raw satırları `UNION ALL` edip dış sorguda aggregate ediyor. Bu form `AVG(AMOUNT)` için **doğru** sonuç verir; `AVG(AVG(x))` bug'ı **mevcut kod tabanında yok**.
 
-Bu spec'in kapsamı: PR-0.4 implementation **branch-level pre-aggregation'a kaymamalı**. `weightedAvg` aggregator karışık SUM(value × weight) + SUM(weight) numerator/denominator carry'sini per-schema yapıp dış katmanda toplamaya kaymak **tasarım hatası** olur.
+Bu spec'in kapsamı: PR-0.4 implementation **raw-stream discipline'da kalmalı**. `weightedAvg` aggregator için SUM(value × weight) + SUM(weight) numerator/denominator carry'sini per-schema yapıp dış katmanda toplamak cebirsel olarak doğru kalır (§3.4.2'de detay), ama yeni aggregator'lar ekledikçe iki-katmanlı carry pattern'i incremental complexity üretir; PR-0.4 bunu tek-katmanlı raw UNION + outer aggregate ile sınırlar.
 
 **Doğru kontrat**: `weightedAvg` ve `pivot` implementation'ı raw `UNION ALL` üzerinden tek dış aggregate katmanında çalışır:
 
@@ -292,7 +292,8 @@ Implementation kontratı: numerator + denominator **kaynaktan akar**, branch-lev
 ```sql
 -- DOĞRU: raw UNION ALL akışı + tek dış aggregate
 SELECT [BRANCH_NAME],
-       SUM([RATE] * [WORKING_DAYS]) / NULLIF(SUM([WORKING_DAYS]), 0) AS [RATE_weightedAvg],
+       SUM(CASE WHEN [RATE] IS NOT NULL AND [WORKING_DAYS] IS NOT NULL THEN [RATE] * [WORKING_DAYS] END)
+         / NULLIF(SUM(CASE WHEN [RATE] IS NOT NULL AND [WORKING_DAYS] IS NOT NULL THEN [WORKING_DAYS] END), 0) AS [RATE_weightedAvg],
        COUNT_BIG(*) AS _rowCount
 FROM (
   SELECT [BRANCH_NAME], [RATE], [WORKING_DAYS]
@@ -353,7 +354,8 @@ Generated SQL (raw UNION + tek dış aggregate):
 
 ```sql
 SELECT [BRANCH_NAME],
-       SUM([RATE] * [WORKING_DAYS]) / NULLIF(SUM([WORKING_DAYS]), 0) AS [RATE_weightedAvg],
+       SUM(CASE WHEN [RATE] IS NOT NULL AND [WORKING_DAYS] IS NOT NULL THEN [RATE] * [WORKING_DAYS] END)
+         / NULLIF(SUM(CASE WHEN [RATE] IS NOT NULL AND [WORKING_DAYS] IS NOT NULL THEN [WORKING_DAYS] END), 0) AS [RATE_weightedAvg],
        COUNT_BIG(*) AS _rowCount
 FROM (
   SELECT [BRANCH_NAME], [RATE], [WORKING_DAYS]
@@ -368,9 +370,34 @@ GROUP BY [BRANCH_NAME];
 ```
 
 Null/zero weight (`Q3` kararı):
-- `RATE * WORKING_DAYS` → SQL Server `NULL * x = NULL`, `0 * x = 0` (deterministic).
 - `NULLIF(SUM(weight), 0)` denominator zero → result NULL (sentinel bucket'tan iyi UX, default `Q3.NULL`).
 - Owner alternatif önerirse: sentinel bucket veya bucket drop için ayrı flag (`weightZeroBehavior`).
+
+#### 3.4.4 NULL value/weight semantiği (Codex iter-7 absorb — blocking gap)
+
+Naive form `SUM([value] * [weight]) / NULLIF(SUM([weight]), 0)` NULL handling açısından `AVG(value)` ile uyumsuz. Senaryo:
+
+- `value=NULL, weight=10`: SQL Server `NULL * 10 = NULL`. `SUM(value*weight)` o satırı numerator'dan **düşer** (NULL toplama dahil değil). Ama `SUM(weight)` denominator'a `10` katar. Net: NULL value'lu bucket diluted as zero — yanlış aritmetik.
+- `weightedAvg(value, 1)` ≠ `AVG(value)` for buckets with NULL values.
+
+**Doğru kontrat** (null-skip her iki taraf):
+
+```sql
+SUM(CASE WHEN [value] IS NOT NULL AND [weight] IS NOT NULL THEN [value] * [weight] END)
+  / NULLIF(SUM(CASE WHEN [value] IS NOT NULL AND [weight] IS NOT NULL THEN [weight] END), 0)
+```
+
+Sonuç:
+- `value=NULL` → numerator + denominator'dan birlikte düşer (parity).
+- `weight=NULL` → aynı şekilde birlikte düşer.
+- `weight=0` → numerator'a 0 katkı, denominator'a 0 katkı; tüm bucket all-zero ise `NULLIF(0, 0)=NULL`.
+- `weightedAvg(value, 1)` = `AVG(value)` (NULL handling parity).
+
+§3.2.0a tablosundaki pivot CASE WHEN expressions zaten bu null-skip pattern'ini taşır (her iki taraf `IS NOT NULL` guard).
+
+Unit test eklendi (§5.1): `buildWeightedAvgGroupedQuery_skipsNullValuesFromDenominator` — fixture `value=NULL, weight=10` satırı içerir, expected denominator naive 10 değil, null-skip 0 (eğer bucket'ta non-null satır yok).
+
+IT acceptance (§5.2): `buildWeightedAvgGroupedQuery_crossSchemaReturnsWeightedAverage` fixture'ına `value=NULL, weight>0` satırı eklenir; expected sonuç null-skip kontratı ile hesaplanır (ek IT slot gerekmez, mevcut testin fixture genişletilir).
 
 ### 3.5 Capability contract genişletme
 
@@ -419,7 +446,8 @@ const supportsWeightedAvg = caps.supportedAggFuncs.includes("weightedAvg");
 | `buildPivotedGroupedQuery_dynamicPivotValuesAfterPreFlight` | İlk SELECT `DISTINCT pivotCol`, ikinci SELECT pivot |
 | `buildPivotedGroupedQuery_rejectsMultiPivotDim` | `IllegalArgumentException` |
 | `buildWeightedAvgGroupedQuery_projectsRawValueAndWeightAcrossUnion` | Raw `[val]` + `[weight]` columns each UNION branch (no per-branch aggregate); branches identical projection list |
-| `buildWeightedAvgGroupedQuery_outerAggregateUsesRawFormula` | Tek dış aggregate: `SUM([val] * [weight]) / NULLIF(SUM([weight]), 0) AS [<col>_weightedAvg]` |
+| `buildWeightedAvgGroupedQuery_outerAggregateUsesRawFormula` | Tek dış aggregate: `SUM(CASE WHEN [val] IS NOT NULL AND [weight] IS NOT NULL THEN [val] * [weight] END) / NULLIF(SUM(CASE WHEN [val] IS NOT NULL AND [weight] IS NOT NULL THEN [weight] END), 0) AS [<col>_weightedAvg]` (null-skip both sides) |
+| `buildWeightedAvgGroupedQuery_skipsNullValuesFromDenominator` | Fixture: `value=NULL, weight=10`; expected: `[value] IS NOT NULL` guard ile o satır numerator + denominator'dan birlikte düşer; `weightedAvg(value, 1)` = `AVG(value)` parity (Codex iter-7 absorb) |
 
 ### 5.2 Integration (SqlBuilderMssqlIntegrationTest, MSSQL Testcontainers — 5 yeni IT)
 
