@@ -65,6 +65,22 @@ spring:
             - Path=/schemas/**
           filters:
             - StripPrefix=1
+        # Faz 23.6 hardening (2026-05-08): notification-orchestrator
+        # `/api/v1/notify/**` requests were 404'ing at the gateway
+        # because no route matched the prefix. Browser console showed
+        # `/api/v1/notify/inbox/me` 404 + `/api/v1/notify/inbox/me/stream`
+        # 401 (security filter intercepted the latter before the router
+        # 404'd it). Backend controllers expect the full
+        # `/api/v1/notify/...` path (see NotificationIntentController,
+        # InboxController, PreferenceController, AdminDeliveryController,
+        # DeliveryLogController), so this route MUST NOT use
+        # `StripPrefix` — pass the path through verbatim. Service
+        # contract: notification-orchestrator listens on port 8089
+        # (HTTP server) with management on 8081 (actuator).
+        - id: notification-orchestrator
+          uri: ${NOTIFY_URL:http://notification-orchestrator:8089}
+          predicates:
+            - Path=/api/v1/notify/**
 
   security:
     oauth2:
