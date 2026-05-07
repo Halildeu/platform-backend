@@ -153,6 +153,18 @@ public class SchemaTruthMetrics {
         long deltaHits = current.hitCount() - previousHits;
         long deltaReqs = current.requestCount() - previousReqs;
 
+        // Codex iter-2 §1 absorb: native stats delta'dan schema_truth_cache_hit_total
+        // counter'ını re-export et (custom namespace contract korunur).
+        if (deltaHits > 0) {
+            MeterRegistry registry = meterRegistryProvider.getIfAvailable();
+            if (registry != null) {
+                String key = CACHE_HIT_TOTAL + ":" + Tags.empty();
+                Counter counter = counterCache.computeIfAbsent(key, k ->
+                        Counter.builder(CACHE_HIT_TOTAL).register(registry));
+                counter.increment(deltaHits);
+            }
+        }
+
         if (deltaReqs < 10L) {
             // Insufficient samples in 5-min window; flapping önle.
             cacheMissBurstGauge.set(0L);
