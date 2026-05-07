@@ -77,11 +77,13 @@ report-service/src/main/java/com/example/report/runtime/
   │   ├── CanonicalSchemaResolver.java     // workcube_mikrolink (no-op for tenantBoundary)
   │   └── SchemaResolverFactory.java       // tenantBoundary.schemaResolver → resolver instance
   └── observability/
-      ├── ReportRuntimeMetrics.java         // report_resolved_schema_miss + schema_truth_fallback_total
+      ├── ReportRuntimeMetrics.java         // report_resolved_schema_miss (runtime scope only; schema_truth_fallback_total build-time scope — Phase 2 Program 1/8, runtime scope dışı, Codex iter-2 §4 absorb)
       └── TenantGuardLogContext.java        // MDC enrichment (selectedCompanyId, schemaMode)
 ```
 
-### 2.2 Filter chain integration (Codex iter-1 §3 + §6 absorb)
+### 2.2 Filter chain integration (Codex iter-1 §3 + §6 + iter-2 §1 + §2 absorb)
+
+**`AuthzMeResponse` source** (Codex iter-2 §1 absorb): `TenantBoundaryGuard` `PermissionResolver` inject eder ve preHandle'da bir kez çağırır. Çözülen `AuthzMeResponse` request attribute olarak controller'a forward edilir (`request.setAttribute("authzMe", resolved)`); controller (`ReportController.java:281`) attribute'tan okur, ikinci `permissionClient.getAuthzMe(jwt)` çağrısı YOK. Aynı request'te tek permission-service round-trip.
 
 ```
 Spring Security filter chain
@@ -91,19 +93,25 @@ JwtAuthenticationFilter (existing) — sets SecurityContext.userId, scope
 [NEW] TenantBoundaryGuard (HandlerInterceptor preHandle)
   ↓ (per-request preflight)
   - resolveDef(reportKey)
+  - authzMe = permissionResolver.resolve(jwt)              // Codex iter-2 §1: tek round-trip
+  - request.setAttribute("authzMe", authzMe)               // controller burada okur
   - if def.tenantBoundary.mode == "schema":
     - companyId = TenantHeaderExtractor.extract(request)
+    - allowedCompanies = TenantScopeResolver.resolveAllowed(authzMe)
+      // authzMe.getScopeRefIds("COMPANY") — Set<Long>
+    - isSuperAdmin = authzMe.scope().equals("ALL")
     - if companyId == null:
-      - allowedCompanies = TenantScopeResolver.resolveAllowed(authzMe)
-        // authzMe.allowedScopes COMPANY type'ından çıkarılır:
-        // AuthzMeResponse.getScopeRefIds("COMPANY")
-      - if scope == ALL (super-admin): throw 400 tenant_selection_required
+      - if isSuperAdmin: throw 400 tenant_selection_required (super-admin must select)
       - if allowedCompanies.size() == 1: auto-pick (single-company user)
       - if allowedCompanies.size() > 1: throw 400 tenant_selection_required
       - if allowedCompanies.empty: throw 403 tenant_scope_violation
-    - if companyId not in allowedCompanies: throw 403 tenant_scope_violation
+    - if companyId != null AND !isSuperAdmin AND !allowedCompanies.contains(companyId):
+      throw 403 tenant_scope_violation
+      // Codex iter-2 §2 absorb: super-admin + header present → membership check BYPASS
+      // (mevcut CompanyHeaderScopeNarrower line 76 davranışıyla uyumlu)
     - schema = SchemaResolverFactory.resolve(def, companyId, year)
     - if !schemaService.schemaExists(schema): throw 503 schema_resolver_miss + metric
+      // Bu kontrol super-admin için de çalışır — gerçek tenant varlığını doğrular
     - TenantContext.set(companyId, scope, userId)
   - if def.tenantBoundary.mode == "row":
     - same companyId resolution; rowFilter SQL injection
@@ -256,6 +264,8 @@ Schema existence check fail-closed kararı tek yöne kilitlendi: 5-min Caffeine 
 | `TenantBoundaryGuard_threadLocalCleared_onControllerException` | preHandle sets TenantContext, controller throws RuntimeException, afterCompletion executes, TenantContext.get() returns null on next request (Codex iter-1 §3 absorb) |
 | `TenantBoundaryGuard_singleCompanyUserResolved_viaTenantScopeResolver` | scope=COMPANY + AuthzMeResponse.getScopeRefIds("COMPANY")=[35] + header=null → server resolves to 35 |
 | `TenantBoundaryGuard_companyOutOfScope_returns403` | scope=COMPANY + allowedCompanies=[35] + X-Company-Id=99 → 403 tenant_scope_violation |
+| `TenantBoundaryGuard_superAdminWithHeader_resolvesWithoutAllowedScopeMembership` | scope=ALL + X-Company-Id=99 (allowedCompanies bypass; mevcut `CompanyHeaderScopeNarrower:76` parity) + schema-service exists(workcube_mikrolink_99)=true → 200 OK (Codex iter-2 §2 absorb) |
+| `TenantBoundaryGuard_authzMeForwardedAsRequestAttribute` | preHandle çağırır + request.setAttribute("authzMe", resolved) → controller permissionClient.getAuthzMe çağrısı YOK; aynı request tek round-trip (Codex iter-2 §1 absorb) |
 
 ### 4.3 End-to-end Testcontainers IT (optional Q7 alternative)
 
@@ -309,7 +319,9 @@ Plan v2.1 §1 v3 revize prensibi: "Flag off does NOT silently fall back to flat 
 - [ ] `report_resolved_schema_miss` metric (cardinality `{report_key, schema_mode}` Q6 default)
 - [ ] `TenantSelectionException` + 400/403/503 hierarchy
 - [ ] 8 unit test PASS
-- [ ] 4+3 = 7 `@WebMvcTest` IT PASS (Codex iter-1 §3+§5 yeni testler dahil)
+- [ ] 4+3+2 = 9 `@WebMvcTest` IT PASS (Codex iter-1 §3+§5 + iter-2 §1+§2 yeni testler dahil)
+- [ ] `PermissionResolver` injection — preHandle'da tek `permissionClient.getAuthzMe()` çağrısı; `request.setAttribute("authzMe", resolved)` (Codex iter-2 §1 absorb)
+- [ ] Super-admin + header present allowedCompanies bypass; schemaExists() doğrulaması her zaman çalışır (Codex iter-2 §2 absorb)
 - [ ] Feature flag default OFF until Phase 2 Program 1 + tüm rapor `tenantBoundary` field set
 - [ ] Frontend mfe-reporting `X-Company-Id` header injection middleware (separate PR)
 - [ ] ADR `docs/adr/0007-runtime-tenant-guard.md` (Plan §3.2 mandate)
@@ -328,7 +340,7 @@ Bu spec'i okumak için 5 dakika ayırıp şu 7 soruya cevap verirseniz implement
 4. **Schema existence check fail**: 503 (default) mi, stale snapshot fallback + WARN mi?
 5. **Filter chain ordering**: HandlerInterceptor (default) mı, `@ControllerAdvice` mi?
 6. **`report_resolved_schema_miss` cardinality**: `{report_key, schema_mode}` (default) mu, tenant_id label da dahil mi?
-7. **Acceptance**: 4 `@WebMvcTest` IT (default) mi, sadece unit + 1 e2e mi?
+7. **Acceptance**: 7 `@WebMvcTest` IT (default; 4 base + 3 iter-1 absorb yeni: ThreadLocal exception path + TenantScopeResolver auto-pick + scope violation 403) mi, sadece unit + 1 e2e mi?
 
 Default önerileri seçerseniz "AGREE → impl başla" cevabı yeterlidir.
 
@@ -339,7 +351,7 @@ Default önerileri seçerseniz "AGREE → impl başla" cevabı yeterlidir.
 1. **Phase-2-Program-2a**: TenantBoundaryGuard + TenantContext + TenantHeaderExtractor + 8 unit test
 2. **Phase-2-Program-2b**: CurrentTenantSchemaResolver (NEW) + SchemaResolverFactory + 3 unit test
 3. **Phase-2-Program-2c**: YearlySchemaResolver hardening (`mode=schema` fallback YOK) + 3 unit test
-4. **Phase-2-Program-2d**: 4 `@WebMvcTest` IT + Spring config wiring
+4. **Phase-2-Program-2d**: 7 `@WebMvcTest` IT (4 base + 3 iter-1 absorb yeni) + Spring config wiring
 5. **Phase-2-Program-2e**: ReportRuntimeMetrics + TenantGuardLogContext MDC + ADR-0007 + feature flag
 
 5 sub-PR, her biri bağımsız Codex iter cycle, normal merge (admin merge YASAK), sırasıyla.
