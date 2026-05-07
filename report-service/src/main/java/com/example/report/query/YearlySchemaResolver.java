@@ -52,19 +52,21 @@ public class YearlySchemaResolver {
             return new ResolvedSchemas(List.of(def.sourceSchema()));
         }
 
-        // Extract company IDs from RLS scope
+        // Phase 2 Program 2a (Codex iter-10 §2a-AGREE absorb): tenant boundary
+        // hardening for yearly reports. Silent fallback to def.sourceSchema()
+        // removed — caller MUST provide explicit COMPANY scope (or super-admin
+        // with X-Company-Id picker via CompanyHeaderScopeNarrower) so the
+        // yearly partition resolver runs against an actual tenant ID.
+
+        // Extract company IDs from RLS scope (set by CompanyHeaderScopeNarrower
+        // for super-admin + picker; populated from JWT for regular users).
         Set<String> companyIds = authz != null ? authz.getScopeRefIds("COMPANY") : Set.of();
         if (companyIds.isEmpty()) {
-            // No COMPANY scope — try to extract company ID from sourceSchema pattern
-            // e.g. "workcube_mikrolink_1" → company 1
-            String companyFromSchema = extractCompanyFromSchema(def.sourceSchema());
-            if (companyFromSchema != null) {
-                companyIds = Set.of(companyFromSchema);
-                log.debug("Inferred company {} from sourceSchema for report {}", companyFromSchema, def.key());
-            } else {
-                log.warn("No COMPANY scope for yearly report {}, using base schema", def.key());
-                return new ResolvedSchemas(List.of(def.sourceSchema()));
-            }
+            throw new TenantSelectionRequiredException(def.key(),
+                    "Yearly report '" + def.key() + "' requires an explicit COMPANY scope; "
+                            + "no scope present in authz context (super-admin must use "
+                            + "X-Company-Id picker header). Silent sourceSchema fallback "
+                            + "removed (Phase 2 Program 2a tenant guard hardening).");
         }
 
         // Extract year range from date filters
@@ -77,9 +79,11 @@ public class YearlySchemaResolver {
 
         // Build schema list: for each company x each year, check if schema exists
         List<String> resolved = new ArrayList<>();
+        List<String> attempted = new ArrayList<>();
         for (String companyId : companyIds) {
             for (int year = startYear; year <= endYear; year++) {
                 String schema = "workcube_mikrolink_" + year + "_" + companyId;
+                attempted.add(schema);
                 if (available.contains(schema.toLowerCase(Locale.ROOT))) {
                     resolved.add(schema);
                 } else {
@@ -89,9 +93,16 @@ public class YearlySchemaResolver {
         }
 
         if (resolved.isEmpty()) {
-            log.warn("No year schemas found for report {} (years {}-{}, companies {}), falling back to base",
-                    def.key(), startYear, endYear, companyIds);
-            return new ResolvedSchemas(List.of(def.sourceSchema()));
+            // Phase 2 Program 2a: silent def.sourceSchema() fallback removed.
+            // Caller surfaces 503 schema_resolver_miss so users see a clearer
+            // error rather than silently querying canonical reference data.
+            throw new SchemaResolverMissException(def.key(), attempted,
+                    "Yearly schema resolver miss for report '" + def.key() + "': "
+                            + "no matching workcube_mikrolink_<year>_<companyId> schema "
+                            + "found for years " + startYear + "-" + endYear
+                            + ", companies " + companyIds + " (attempted "
+                            + attempted.size() + " schemas). Phase 2 Program 2a tenant "
+                            + "guard hardening: silent sourceSchema fallback removed.");
         }
 
         log.debug("Resolved {} schemas for report {}: {}", resolved.size(), def.key(), resolved);
