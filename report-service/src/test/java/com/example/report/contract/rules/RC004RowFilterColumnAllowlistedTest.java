@@ -141,10 +141,132 @@ class RC004RowFilterColumnAllowlistedTest {
                 .contains("not in tenant column allowlist");
     }
 
+    // Phase 2 Program 2c (Codex iter-15 §2c-AGREE absorb): existence cross-check tests
+
+    @Test
+    void validate_coverageLookup_columnPresent_passesExistenceCheck() {
+        // Allowlist matches, coverage PRESENT → no violation.
+        // Use yearly schemaMode so existence check is applicable.
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup mockLookup =
+                org.mockito.Mockito.mock(
+                        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
+        org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
+        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_2026_1", "INVOICE", "COMPANY_ID"))
+                .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
+                        .CoverageStatus.PRESENT);
+
+        ReportDefinition def = newYearlyDef("INVOICE", "COMPANY_ID", "workcube_mikrolink_2026_1");
+        List<ContractViolation> violations =
+                new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
+
+        assertThat(violations).isEmpty();
+    }
+
+    @Test
+    void validate_coverageLookup_columnMissing_failsWithRC004() {
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup mockLookup =
+                org.mockito.Mockito.mock(
+                        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
+        org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
+        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_2026_1", "INVOICE", "COMPANY_ID"))
+                .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
+                        .CoverageStatus.COLUMN_MISSING);
+
+        ReportDefinition def = newYearlyDef("INVOICE", "COMPANY_ID", "workcube_mikrolink_2026_1");
+        List<ContractViolation> violations =
+                new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
+
+        assertThat(violations).hasSize(1);
+        assertThat(violations.get(0).ruleId()).isEqualTo("RC-004");
+        assertThat(violations.get(0).message())
+                .contains("not found in schema truth")
+                .contains("INVOICE");
+    }
+
+    @Test
+    void validate_coverageLookup_notCovered_failsWithSchemaTruthCoverageMissing() {
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup mockLookup =
+                org.mockito.Mockito.mock(
+                        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
+        org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
+        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_2026_1", "INVOICE", "COMPANY_ID"))
+                .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
+                        .CoverageStatus.NOT_COVERED);
+
+        ReportDefinition def = newYearlyDef("INVOICE", "COMPANY_ID", "workcube_mikrolink_2026_1");
+        List<ContractViolation> violations =
+                new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
+
+        assertThat(violations).hasSize(1);
+        assertThat(violations.get(0).ruleId()).isEqualTo("SCHEMA_TRUTH_COVERAGE_MISSING");
+        assertThat(violations.get(0).message())
+                .contains("Snapshot does not cover")
+                .contains("governance artifact coverage gap");
+    }
+
+    @Test
+    void validate_emptyCoverageLookup_skipsExistenceCheck_gracefulDegradation() {
+        // Pre-2b deployment: coverage artifact not yet present. Lookup returns
+        // schemaCount=0 → existence check skipped. Allowlist match still
+        // applies (no false-positive SCHEMA_TRUTH_COVERAGE_MISSING).
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup emptyLookup =
+                org.mockito.Mockito.mock(
+                        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
+        org.mockito.Mockito.when(emptyLookup.schemaCount()).thenReturn(0);
+
+        ReportDefinition def = newDef("INVOICE", "COMPANY_ID");
+        List<ContractViolation> violations =
+                new RC004RowFilterColumnAllowlisted(ALLOWLIST, emptyLookup).validate(def);
+
+        assertThat(violations).isEmpty();  // allowlist OK, existence check skipped
+    }
+
+    @Test
+    void validate_combinedAllowlistMissAndColumnMissing_emitsBothFailures() {
+        // Allowlist miss + COLUMN_MISSING — both surface (orthogonal failure modes).
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup mockLookup =
+                org.mockito.Mockito.mock(
+                        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
+        org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
+        org.mockito.Mockito.when(mockLookup.lookup(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
+                        .CoverageStatus.COLUMN_MISSING);
+
+        // INVOICE allowlists COMPANY_ID only; UNKNOWN_COL is not in allowlist
+        // → produces both allowlist miss + column missing.
+        // Use yearly mode so existence check is applicable.
+        ReportDefinition def = newYearlyDef("INVOICE", "UNKNOWN_COL", "workcube_mikrolink_2026_1");
+        List<ContractViolation> violations =
+                new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
+
+        assertThat(violations).hasSize(2);
+        assertThat(violations).extracting("ruleId")
+                .containsExactly("RC-004", "RC-004");
+        assertThat(violations).extracting("message")
+                .anyMatch(m -> m.toString().contains("not in tenant column allowlist"))
+                .anyMatch(m -> m.toString().contains("not found in schema truth"));
+    }
+
     private ReportDefinition newDef(String source, String rowFilterColumn) {
+        // Static schema (workcube_mikrolink_1) — existence check NOT applicable.
+        // Used for allowlist-only test scenarios.
         return new ReportDefinition(
                 "test-rep", "1.0", "Test", null, "Finans",
                 source, "workcube_mikrolink_1", "static", null, null,
+                List.of(new ColumnDefinition(rowFilterColumn, "C", "number", 100, false)),
+                rowFilterColumn, "ASC",
+                new AccessConfig("perm", null, null,
+                        new AccessConfig.RowFilter(rowFilterColumn, "COMPANY", null)));
+    }
+
+    private ReportDefinition newYearlyDef(String source, String rowFilterColumn, String sourceSchema) {
+        // Yearly schema — existence check applicable (Phase 2 Program 2c).
+        return new ReportDefinition(
+                "test-rep", "1.0", "Test", null, "Finans",
+                source, sourceSchema, "yearly", "ACTION_DATE", null,
                 List.of(new ColumnDefinition(rowFilterColumn, "C", "number", 100, false)),
                 rowFilterColumn, "ASC",
                 new AccessConfig("perm", null, null,

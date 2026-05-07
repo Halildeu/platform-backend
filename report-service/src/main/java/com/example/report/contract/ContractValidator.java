@@ -66,12 +66,43 @@ public final class ContractValidator {
      * @param allowlist tenant column allowlist (RC-004 input)
      */
     public static ContractValidator withDefaultRules(TenantColumnAllowlist allowlist) {
+        return withDefaultRules(allowlist, (com.example.report.contract.schema.BuildTimeSchemaExistenceLookup) null);
+    }
+
+    /**
+     * Phase 2 Program 2c iter-15 absorb (legacy 2-arg overload): yearly
+     * coverage lookup only (no canonical). Production gate uses the 3-arg
+     * overload {@link #withDefaultRules(TenantColumnAllowlist, com.example.report.contract.schema.BuildTimeSchemaExistenceLookup)}.
+     */
+    public static ContractValidator withDefaultRules(
+            TenantColumnAllowlist allowlist,
+            com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup yearlyOnly) {
+        com.example.report.contract.schema.BuildTimeSchemaExistenceLookup unified =
+                yearlyOnly == null
+                        ? null
+                        : new com.example.report.contract.schema.BuildTimeSchemaExistenceLookup(null, yearlyOnly);
+        return withDefaultRules(allowlist, unified);
+    }
+
+    /**
+     * Phase 2 Program 2c iter-18 absorb (Codex thread 019e0119): default rule
+     * set with injected allowlist + unified existence lookup (canonical +
+     * yearly). RC-004 routes existence probe via canonical snapshot first
+     * (HR/static tables), then yearly fallback (CARI_ROWS, INVOICE_ROW, ...).
+     *
+     * @param allowlist       tenant column allowlist (RC-004 input)
+     * @param existenceLookup unified existence lookup (canonical + yearly);
+     *                        null → existence check skipped, 1d backward-compat
+     */
+    public static ContractValidator withDefaultRules(
+            TenantColumnAllowlist allowlist,
+            com.example.report.contract.schema.BuildTimeSchemaExistenceLookup existenceLookup) {
         return new ContractValidator(List.of(
                 new RC000SchemaModeEnumValid(),
                 new RC001YearlyRequiresYearColumn(),
                 new RC002YearlySourceQueryRequiresPlaceholder(),
                 new RC003HardcodedSchemaForbidden(),
-                new RC004RowFilterColumnAllowlisted(allowlist),
+                new RC004RowFilterColumnAllowlisted(allowlist, existenceLookup),
                 new RC005SchemaModePlusRowFilterForbidden(),
                 new RC006NoneModeForbidsTenantFactTables(),
                 new RC007ColumnFieldExistsInSourceQuery(),
