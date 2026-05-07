@@ -35,9 +35,10 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
      * for NetGSM); we update the existing delivery row.
      *
      * <p>V12 migration adds partial UNIQUE index on
-     * {@code (provider, provider_msg_id) WHERE provider_msg_id IS NOT NULL}
-     * — at most 1 row per (provider, msg_id) tuple after V12.
-     * {@code findFirst} preserves defensive semantics for pre-V12 data.
+     * {@code (provider_msg_id) WHERE provider_msg_id IS NOT NULL}
+     * — globally unique (provider_msg_id zaten provider prefix taşıyor,
+     * örn. "netgsm-{jobid}"). {@code findFirst} preserves defensive
+     * semantics for pre-V12 data.
      */
     Optional<NotificationDelivery> findFirstByProviderMsgId(String providerMsgId);
 
