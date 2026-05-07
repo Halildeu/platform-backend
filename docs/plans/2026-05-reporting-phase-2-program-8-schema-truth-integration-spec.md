@@ -79,7 +79,8 @@ report-service/src/main/java/com/example/report/schema/
   │   │                                      // schema_truth_cache_hit_total + snapshot_age_days
   │   └── SchemaTruthLogContext.java         // MDC enrichment (tier, schema_mode, report_key, age_days, consumer)
   └── consumer/
-      ├── ColumnTypeRegistry.java            // public API: lookupColumnType(ctx, schema, table, column)
+      ├── ColumnTypeRegistry.java            // public API: lookupColumnType(ctx, schema, table, column) +
+                                             //              exists(ctx, schema, table, column) — Codex iter-3 §2
       ├── SchemaExistsService.java           // public API: exists(ctx, schemaName) — RUNTIME_STRICT_EXISTENCE only
       ├── TableColumnsListService.java       // public API: listColumns(ctx, schema, table)
       └── RequestColumnTypeCache.java        // @RequestScope (Codex iter-1 §5 absorb) — request-scope cache,
@@ -243,7 +244,11 @@ CI integration: `mvn test` Tier 1 disabled; Tier 2 (committed snapshot) primary.
 ### 3.2 Phase 2 Program 2 (runtime tenant guard) — PR #92
 
 `TenantBoundaryGuard` consumer:
-- `SchemaExistsService.exists(schemaName)` → Tier 1 (Caffeine cache) primary
+- Schema existence check (Codex iter-3 §1 absorb — explicit ctx + policy):
+  ```java
+  ctx = new SchemaTruthLookupContext(reportKey, schemaMode, RUNTIME_STRICT_EXISTENCE, "tenant_boundary_guard");
+  SchemaExistsService.exists(ctx, schemaName);  // Tier 1 only; miss/unreachable => 503
+  ```
 - Tier 1 fail-soft → Tier 2 fallback'a düşmez; runtime'da fail-closed `503 schema_resolver_miss` (Codex iter-2 absorb)
 
 > Runtime contract'ı build-time'dan farklı: build-time'da Tier 2 graceful, runtime'da Tier 1 strict — Plan §3.8 v3 revize prensibi.
