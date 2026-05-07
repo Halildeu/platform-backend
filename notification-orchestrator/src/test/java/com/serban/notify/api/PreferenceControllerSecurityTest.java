@@ -130,6 +130,28 @@ class PreferenceControllerSecurityTest {
             .andExpect(status().isForbidden());
     }
 
+    @Test
+    void deleteAll_jwtOrgMismatchesHeader_returns403() throws Exception {
+        // Codex thread 019e0376 post-impl review: pin the
+        // NotifyOrgAccessGuard wiring at the controller surface.
+        // JWT trusts org-a, but X-Org-Id requests org-b → 403.
+        mockMvc.perform(delete("/api/v1/notify/preferences/me")
+                .with(jwt().jwt(j -> j.subject("alice").claim("org_id", "org-a")))
+                .header("X-Org-Id", "org-b")
+                .header("X-Subscriber-Id", "alice"))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void deleteAll_anonymousRequest_returns401() throws Exception {
+        // Resource-server filter chain catches anonymous calls before
+        // the controller even runs.
+        mockMvc.perform(delete("/api/v1/notify/preferences/me")
+                .header("X-Org-Id", "default")
+                .header("X-Subscriber-Id", "alice"))
+            .andExpect(status().isUnauthorized());
+    }
+
     @TestConfiguration
     static class SecurityTestConfig {
         @Bean
