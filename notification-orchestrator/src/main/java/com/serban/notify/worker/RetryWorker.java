@@ -269,6 +269,16 @@ public class RetryWorker {
             delivery.setDeliveredAt(now);
             delivery.setFailureReason(null);
             delivery.setNextRetryAt(null);
+            delivery.setPermanentFailureAt(null);  // recovered (was RETRY)
+        } else if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED) {
+            // Faz 23.4 PR-F: provider queued, awaiting DLR. Mirrors
+            // DeliveryDispatchService.upsertDelivery ACCEPTED branch.
+            // Codex iter-2 P1.1 absorb (PR-F).
+            delivery.setProviderMsgId(result.providerMessageId());
+            delivery.setFailureReason(null);
+            delivery.setNextRetryAt(null);
+            delivery.setPermanentFailureAt(null);  // recovered (was RETRY)
+            // delivered_at NOT set — terminal pending DLR
         } else {
             delivery.setFailureReason(result.failureReason());
             if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.RETRY) {
@@ -292,6 +302,8 @@ public class RetryWorker {
         if (result.providerResponseCode() != null) details.put("provider_response_code", result.providerResponseCode());
         switch (result.status()) {
             case DELIVERED -> audit.publish("DELIVERY_SUCCEEDED", intent,
+                delivery.getRecipientHash(), delivery.getChannel(), details);
+            case ACCEPTED -> audit.publish("DELIVERY_ACCEPTED", intent,
                 delivery.getRecipientHash(), delivery.getChannel(), details);
             case FAILED, BOUNCED -> audit.publish("DELIVERY_FAILED", intent,
                 delivery.getRecipientHash(), delivery.getChannel(), details);
