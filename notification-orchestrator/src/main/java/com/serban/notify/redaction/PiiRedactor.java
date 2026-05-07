@@ -79,7 +79,8 @@ public class PiiRedactor {
         "provider",                  // PR3 absorb: provider key
         "provider_response_code",    // PR3 absorb: HTTP / SMTP code
         "expire_at",                 // PR4 absorb: intent expiration
-        "deleted_count"              // Faz 23.6 PR-A1: PREFERENCE_RESTORE_DEFAULTS audit detail
+        "deleted_count",             // Faz 23.6 PR-A1: PREFERENCE_RESTORE_DEFAULTS audit detail
+        "deleted_override_count"     // Faz 23.6 PR-A2: PREFERENCE_MUTE_CHANNEL audit detail
     );
 
     private final NotifyConfig.RedactionConfig redactionConfig;

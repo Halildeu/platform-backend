@@ -272,4 +272,86 @@ class SubscriberPreferenceServiceTest {
             anyString(), anyString(), anyString(), any()
         );
     }
+
+    // ── Faz 23.6 PR-A2 — channel mute ─────────────────────────────────────
+
+    @Test
+    void muteChannel_writesWildcardDenyAndDeletesExactOverridesAndAudits() {
+        when(prefRepo.findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannel(
+            "default", "1204", "email"
+        )).thenReturn(Optional.empty());
+        when(prefRepo.save(any(SubscriberPreference.class))).thenAnswer(invocation -> {
+            SubscriberPreference incoming = invocation.getArgument(0);
+            incoming.setId(101L);
+            return incoming;
+        });
+        when(prefRepo.deleteSameChannelExactOverrides("default", "1204", "email"))
+            .thenReturn(3);
+
+        int deleted = service.muteChannel("default", "1204", "email");
+
+        assertThat(deleted).isEqualTo(3);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Map<String, Object>> details =
+            org.mockito.ArgumentCaptor.forClass(Map.class);
+        verify(auditPublisher).publishStandalone(
+            eq("PREFERENCE_MUTE_CHANNEL"),
+            eq("default"),
+            anyString(),
+            details.capture()
+        );
+        assertThat(details.getValue())
+            .containsEntry("channel", "email")
+            .containsEntry("deleted_override_count", 3)
+            .containsEntry("subscriber_id", "1204");
+    }
+
+    @Test
+    void muteChannel_zeroOverrides_stillWritesWildcardAndAudits() {
+        when(prefRepo.findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannel(
+            "default", "1204", "sms"
+        )).thenReturn(Optional.empty());
+        when(prefRepo.save(any(SubscriberPreference.class))).thenAnswer(invocation -> {
+            SubscriberPreference incoming = invocation.getArgument(0);
+            incoming.setId(102L);
+            return incoming;
+        });
+        when(prefRepo.deleteSameChannelExactOverrides(anyString(), anyString(), anyString()))
+            .thenReturn(0);
+
+        int deleted = service.muteChannel("default", "1204", "sms");
+
+        assertThat(deleted).isEqualTo(0);
+        verify(auditPublisher, times(1)).publishStandalone(
+            eq("PREFERENCE_MUTE_CHANNEL"),
+            eq("default"),
+            anyString(),
+            any()
+        );
+    }
+
+    @Test
+    void muteChannel_blankInputs_throwIllegalArgument() {
+        try {
+            service.muteChannel("", "1204", "email");
+            assertThat(false).as("should have thrown").isTrue();
+        } catch (IllegalArgumentException e) {
+            assertThat(e.getMessage()).contains("required");
+        }
+        try {
+            service.muteChannel("default", "", "email");
+            assertThat(false).as("should have thrown").isTrue();
+        } catch (IllegalArgumentException expected) {
+            // ok
+        }
+        try {
+            service.muteChannel("default", "1204", "");
+            assertThat(false).as("should have thrown").isTrue();
+        } catch (IllegalArgumentException expected) {
+            // ok
+        }
+        verify(prefRepo, org.mockito.Mockito.never())
+            .deleteSameChannelExactOverrides(anyString(), anyString(), anyString());
+    }
 }

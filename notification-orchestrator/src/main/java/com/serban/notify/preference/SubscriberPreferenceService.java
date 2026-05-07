@@ -271,6 +271,65 @@ public class SubscriberPreferenceService {
         return deleted;
     }
 
+    /**
+     * Atomic channel-mute (Faz 23.6 PR-A2 — Codex thread {@code 019e0387}
+     * `N` decision).
+     *
+     * <p>Writes a channel-wildcard deny preference
+     * ({@code topic_key IS NULL, channel=:channel, enabled=false,
+     * bypassForCritical=true}) and atomically removes every same-channel
+     * exact override so the wildcard actually wins the dispatch
+     * resolver precedence (resolver order: exact &gt; channel-wildcard
+     * &gt; topic-wildcard &gt; both-null).
+     *
+     * <p>Critical bypass stays ON by default — operators muting a
+     * channel almost never want to also lose security/critical
+     * notifications; an explicit per-row edit can flip
+     * {@code bypassForCritical} later.
+     *
+     * <p>An append-only {@code PREFERENCE_MUTE_CHANNEL} audit event is
+     * published with the deleted-override count so the operator action
+     * is observable in the audit table.
+     *
+     * @return number of exact override rows removed (0 when the caller
+     *         had no overrides for this channel)
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public int muteChannel(String orgId, String subscriberId, String channel) {
+        if (orgId == null || orgId.isBlank()
+            || subscriberId == null || subscriberId.isBlank()
+            || channel == null || channel.isBlank()) {
+            throw new IllegalArgumentException("orgId, subscriberId, and channel are required");
+        }
+        // 1. Upsert the channel-wildcard deny rule (preserves quiet
+        //    hours / frequency limits if the wildcard row already
+        //    existed).
+        SubscriberPreference wildcard = upsert(
+            orgId, subscriberId, /* topicKey */ null, channel,
+            /* enabled */ false, /* quietHours */ null,
+            /* frequencyLimitPerDay */ null, /* bypassForCritical */ true
+        );
+        // 2. Drop same-channel exact overrides so the wildcard fires.
+        int deletedOverrides = preferenceRepo.deleteSameChannelExactOverrides(
+            orgId, subscriberId, channel
+        );
+        // 3. Audit the operator command.
+        String recipientHash = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
+        auditPublisher.publishStandalone(
+            "PREFERENCE_MUTE_CHANNEL",
+            orgId,
+            recipientHash,
+            Map.of(
+                "subscriber_id", subscriberId,
+                "channel", channel,
+                "deleted_override_count", deletedOverrides
+            )
+        );
+        log.info("preference mute-channel: orgId={} subscriberId={} channel={} wildcardId={} deletedOverrides={}",
+            orgId, subscriberId, channel, wildcard.getId(), deletedOverrides);
+        return deletedOverrides;
+    }
+
     @org.springframework.transaction.annotation.Transactional
     public boolean delete(String orgId, String subscriberId, Long id) {
         if (orgId == null || orgId.isBlank() || subscriberId == null || subscriberId.isBlank()

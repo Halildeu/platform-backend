@@ -69,4 +69,32 @@ public interface SubscriberPreferenceRepository extends JpaRepository<Subscriber
         @Param("orgId") String orgId,
         @Param("subscriberId") String subscriberId
     );
+
+    /**
+     * Atomic same-channel exact-override delete for the channel-mute
+     * action (Faz 23.6 PR-A2 — Codex thread {@code 019e0387} `N`
+     * decision).
+     *
+     * <p>Removes every {@code (org, subscriber, channel)} row whose
+     * {@code topic_key} is non-NULL — i.e. exact overrides that would
+     * otherwise win the dispatch-resolver precedence over the new
+     * channel-wildcard deny rule. The wildcard deny row itself
+     * ({@code topic_key IS NULL}) is preserved so the
+     * `mute-all-channel` action survives this call.
+     *
+     * @return number of exact override rows removed
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        DELETE FROM SubscriberPreference p
+         WHERE p.orgId = :orgId
+           AND p.subscriberId = :subscriberId
+           AND p.channel = :channel
+           AND p.topicKey IS NOT NULL
+        """)
+    int deleteSameChannelExactOverrides(
+        @Param("orgId") String orgId,
+        @Param("subscriberId") String subscriberId,
+        @Param("channel") String channel
+    );
 }

@@ -137,6 +137,70 @@ class SubscriberPreferenceRepositoryTest extends AbstractPostgresTest {
         assertThat(repo.findBySubscriberIdAndOrgId("iso-1204", "restore-iso-b")).hasSize(1);
     }
 
+    // ── Faz 23.6 PR-A2 — same-channel exact override delete ──────────────
+
+    @Test
+    @Transactional
+    void deleteSameChannelExactOverrides_removesExactsButPreservesWildcardAndOtherChannels() {
+        // The mute-channel action writes a (topic=null, channel=email)
+        // wildcard deny rule and then drops same-channel exact overrides
+        // so the wildcard wins resolver precedence. This test pins:
+        //  - same-channel exact overrides ARE deleted
+        //  - the same-channel wildcard row is preserved
+        //  - other-channel rows are untouched
+        SubscriberPreference wildcardEmail =
+            newPref("mute-org", "mute-1204", null, "email", false);
+        SubscriberPreference exactEmail1 =
+            newPref("mute-org", "mute-1204", "report.export.ready", "email", true);
+        SubscriberPreference exactEmail2 =
+            newPref("mute-org", "mute-1204", "auth.password-reset", "email", false);
+        SubscriberPreference exactSms =
+            newPref("mute-org", "mute-1204", "auth.password-reset", "sms", true);
+        repo.save(wildcardEmail);
+        repo.save(exactEmail1);
+        repo.save(exactEmail2);
+        repo.save(exactSms);
+
+        int deleted = repo.deleteSameChannelExactOverrides("mute-org", "mute-1204", "email");
+
+        assertThat(deleted).isEqualTo(2);
+        java.util.List<SubscriberPreference> remaining =
+            repo.findBySubscriberIdAndOrgId("mute-1204", "mute-org");
+        assertThat(remaining).hasSize(2);
+        assertThat(remaining).extracting(SubscriberPreference::getTopicKey)
+            .containsExactlyInAnyOrder(null, "auth.password-reset");
+        assertThat(remaining).extracting(SubscriberPreference::getChannel)
+            .containsExactlyInAnyOrder("email", "sms");
+    }
+
+    @Test
+    @Transactional
+    void deleteSameChannelExactOverrides_isIdempotent_returnsZeroOnEmpty() {
+        int deleted = repo.deleteSameChannelExactOverrides("mute-org", "mute-ghost", "email");
+        assertThat(deleted).isEqualTo(0);
+    }
+
+    @Test
+    @Transactional
+    void deleteSameChannelExactOverrides_preservesOtherSubscribersAndOrgs() {
+        SubscriberPreference selfExact =
+            newPref("mute-iso-a", "mute-1204", "auth.password-reset", "email", true);
+        SubscriberPreference otherSubExact =
+            newPref("mute-iso-a", "mute-other", "auth.password-reset", "email", true);
+        SubscriberPreference otherOrgExact =
+            newPref("mute-iso-b", "mute-1204", "auth.password-reset", "email", true);
+        repo.save(selfExact);
+        repo.save(otherSubExact);
+        repo.save(otherOrgExact);
+
+        int deleted = repo.deleteSameChannelExactOverrides("mute-iso-a", "mute-1204", "email");
+
+        assertThat(deleted).isEqualTo(1);
+        assertThat(repo.findBySubscriberIdAndOrgId("mute-1204", "mute-iso-a")).isEmpty();
+        assertThat(repo.findBySubscriberIdAndOrgId("mute-other", "mute-iso-a")).hasSize(1);
+        assertThat(repo.findBySubscriberIdAndOrgId("mute-1204", "mute-iso-b")).hasSize(1);
+    }
+
     private SubscriberPreference newPref(
         String orgId, String subscriberId, String topicKey, String channel, boolean enabled
     ) {
