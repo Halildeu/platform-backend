@@ -121,7 +121,7 @@ report-service/src/main/java/com/example/report/contract/
 | `canonical` | `workcube_mikrolink` | Master/lookup tables (PROJECTS, COMPANIES) |
 | `static` | exception only | Legacy hardcoded — RC-003 Tier 0 FAIL |
 
-> **Migration: mevcut `schemaMode=standard` raporlar** (Codex iter-1 §2 absorb): Registry sweep'inde 1 rapor `schemaMode=standard` kullanıyor (`fin-butce-gerceklesen.json:9`). Plan v2.1 §3.1 enum'u `standard` içermiyor → **Phase-2-Program-1c sub-PR'ında migration**: bu rapor için doğru semantic değer atanır (data-shape'ine göre `canonical` master/lookup veya `current` per-tenant). Validator dry-run sırasında `schemaMode=standard` görürse `RC-001 ENUM_VIOLATION` üretir → exceptions.json'a geçici exception eklenmez (migration zorunlu); Phase-2-Program-1c PR'ında `standard` → uygun değer rename'i tek commit'te yapılır.
+> **Migration: mevcut `schemaMode=standard` raporlar** (Codex iter-1 §2 absorb): Registry sweep'inde 1 rapor `schemaMode=standard` kullanıyor (`fin-butce-gerceklesen.json:9`). Plan v2.1 §3.1 enum'u `standard` içermiyor → **Phase-2-Program-1c sub-PR'ında migration**: bu rapor için doğru semantic değer atanır (data-shape'ine göre `canonical` master/lookup veya `current` per-tenant). Validator dry-run sırasında `schemaMode=standard` görürse `RC-000 ENUM_VIOLATION` üretir → exceptions.json'a geçici exception eklenmez (migration zorunlu); Phase-2-Program-1c PR'ında `standard` → uygun değer rename'i tek commit'te yapılır.
 
 `tenantBoundary.mode`:
 | Value | Semantics | RC ihlali |
@@ -136,6 +136,7 @@ Plan v2.1 §3.1'in matrix'ini implementation-detail seviyesinde detaylandırır.
 
 | ID | Rule | Severity | Implementation |
 |---|---|---|---|
+| **RC-000** | `schemaMode` enum validity (yearly/current/canonical/static — registry'deki `standard` value FAIL) | FAIL | `if (!ENUM_SET.contains(def.schemaMode))` → `ENUM_VIOLATION` (Codex iter-2 §1 absorb: ayrı rule, RC-001 ile çakışma yok) |
 | **RC-001** | `schemaMode=yearly` requires non-empty `yearColumn` | FAIL | `if (def.schemaMode == "yearly" && isBlank(def.yearColumn))` |
 | **RC-002** | `schemaMode=yearly` + custom `sourceQuery` requires `[{schema}]` placeholder | FAIL | `if (yearly && hasSourceQuery && !sourceQuery.contains("{schema}"))` |
 | **RC-003** | Hardcoded `workcube_mikrolink_YYYY_ID` + `static` schemaMode | FAIL Tier 0 (current year) / WARN Tier 1+ | Regex `workcube_mikrolink_\d{4}_\d+` scan in sourceQuery + sourceSchema field |
@@ -222,7 +223,7 @@ CI step (post-test):
 ```yaml
 - name: Generate report-contract-summary.md
   if: always()
-  run: ./mvnw -pl report-service exec:java -Dexec.mainClass=com.example.report.contract.SummaryGenerator
+  run: ./mvnw -pl report-service exec:java -Dexec.mainClass=com.example.report.contract.report.SummaryGenerator -Dexec.classpathScope=test
 - name: Sticky PR comment (Marocchino)
   uses: marocchino/sticky-pull-request-comment@v2
   with:
@@ -252,7 +253,7 @@ CI step (post-test):
 | `400` (CI test fail) | `report_contract_violation` | RC-001..011 FAIL severity, no matching exception |
 | `400` (CI warn) | `report_contract_warning` | RC-007 WARN, surfaced in summary but doesn't fail CI |
 | `400` (exception expired) | `report_contract_exception_expired` | `exceptions.json` entry `expiresAt` < now |
-| Schema fallback | `schema_truth_fallback_total{tier}` metric | RC-004 column-existence check uses 30-day-old snapshot |
+| Schema snapshot age | `report_contract_snapshot_age_warn` summary counter | Snapshot file mtime > 30 days → WARN row in summary; CI doesn't fail (committed primary, refresh runbook) |
 
 ---
 
@@ -276,7 +277,7 @@ CI step (post-test):
 | `ExceptionsRegistry_rejectsExpired` | `expiresAt=2024-01-01` → exception ignored, original FAIL surfaces |
 | `ExceptionsRegistry_rejectsExpiresAtBeyond90Days` | `Clock` fixed to 2026-05-07 + `expiresAt=2028-01-01` → `EXCEPTION_BEYOND_90D_HORIZON` FAIL (Codex iter-1 §3 absorb) |
 | `ExceptionsRegistry_rejectsMissingExpiresAt` | exception entry without `expiresAt` field → `EXCEPTION_MISSING_EXPIRY` FAIL |
-| `RC003HardcodedSchemaForbidden_existingStandardSchemaMode_reportsEnumViolation` | `fin-butce-gerceklesen.json` mevcut `schemaMode=standard` → `RC-001 ENUM_VIOLATION` (mig path: Phase-2-Program-1c) |
+| `RC003HardcodedSchemaForbidden_existingStandardSchemaMode_reportsEnumViolation` | `fin-butce-gerceklesen.json` mevcut `schemaMode=standard` → `RC-000 ENUM_VIOLATION` (mig path: Phase-2-Program-1c) |
 
 ### 5.2 Integration (existing report registry sweep)
 
@@ -318,7 +319,7 @@ Validator implementation'ının kendisi rollback edilirse: yeni rapor merge'leri
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Mevcut 8+ rapor RC-001..011'de unexpected FAIL | M | CI red, dev productivity hit | Pre-merge dry-run (`mvn -pl report-service test -Dreport.contract.dryRun`) sonuçları PR description'a; tüm FAIL için ya fix ya `exceptions.json` ekle |
-| Schema-service unreachable in CI | M | RC-004 false-pass | Plan §3.8 fallback chain: 30-day-old snapshot + WARN log + metric increment |
+| Schema-service unreachable in CI | L | RC-004 false-pass minimal (committed snapshot primary) | Q4 absorbed: committed snapshot primary; service optional fresh refresh; unreachable silent (committed snapshot zaten kullanılır); snapshot mtime > 30 gün → `report_contract_snapshot_age_warn` summary counter, CI doesn't fail |
 | Validator çok yavaş (8+ rapor × 11 rule + schema lookup) | L | CI lane >2 dakika | Caffeine cache `schemaSnapshot` + parallel `@ParameterizedTest` @Execution(CONCURRENT) |
 | `exceptions.json` ÇOĞALIR (geçici exception kalıcılaşır) | M | Validator değer kaybeder | `expiresAt` zorunlu (Q3 default) + CI WARN at 30-day-pre-expire |
 
@@ -363,7 +364,7 @@ Default önerileri seçerseniz "AGREE → impl başla" cevabı yeterlidir.
 1. **Phase-2-Program-1a**: ContractValidator + 10 RC rule + ContractRule interface + ContractViolation/ContractReport records
 2. **Phase-2-Program-1b**: `tenant-column-allowlist.json` + `exceptions.json` + `ExceptionsRegistry` + auto-expire
 3. **Phase-2-Program-1c**: `report-definition.schema.json` (Draft 2020-12) + 8+ mevcut rapor `contractVersion=1` + `tenantBoundary` field
-4. **Phase-2-Program-1d**: `SchemaSnapshotLoader` + Plan §3.8 fallback chain + `ColumnTypeRegistry`
+4. **Phase-2-Program-1d**: `SchemaSnapshotLoader` (committed primary, optional schema-service fresh refresh CI step, snapshot age WARN) + `ColumnTypeRegistry`
 5. **Phase-2-Program-1e**: `ReportDefinitionContractTest` + Marocchino sticky comment CI integration + ADR-0006
 
 5 sub-PR, her biri bağımsız Codex iter cycle, normal merge (admin merge YASAK), sırasıyla.
