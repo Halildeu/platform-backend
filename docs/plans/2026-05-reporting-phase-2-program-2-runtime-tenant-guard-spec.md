@@ -20,10 +20,10 @@
 
 | # | Soru | Default önerisi | Alternatif |
 |---|---|---|---|
-| 1 | Super-admin'a tenant-bound rapor request'inde `X-Selected-Company-Id` header eksikse: 400 fail-closed mu, yoksa "select company" UI'a yönlendir mi (303 See Other)? | **400 `tenant_selection_required`** + frontend toast (Plan §3.2 default) | 303 + Location header (UX-friendly ama caching/redirect chain riski) |
-| 2 | Single-company user'lar için `X-Selected-Company-Id` otomatik mi, yoksa client-set zorunlu mu? | Otomatik (single tenant scope: 1 company → server resolver auto-pick) | Client-set zorunlu (homogeneous behavior) |
+| 1 | Super-admin'a tenant-bound rapor request'inde `X-Company-Id` header eksikse: 400 fail-closed mu, yoksa "select company" UI'a yönlendir mi (303 See Other)? Header adı **mevcut `X-Company-Id`** (Codex iter-1 §1 absorb: `CompanyHeaderScopeNarrower.HEADER_NAME` constant'ı korundu, yeni isim üretilmedi). | **400 `tenant_selection_required`** + frontend toast (Plan §3.2 default) | 303 + Location header (UX-friendly ama caching/redirect chain riski) |
+| 2 | Single-company user'lar için `X-Company-Id` otomatik mi, yoksa client-set zorunlu mu? | Otomatik (single tenant scope: 1 company → server resolver auto-pick) | Client-set zorunlu (homogeneous behavior) |
 | 3 | `extractCompanyFromSchema()` legacy exception ne kadar geniş? | Sadece `schemaMode=static` raporlar (RC-003 exempt eder) — non-static raporlarda forbidden | Geniş (her rapor type'da fallback olarak çalışsın) |
-| 4 | Schema existence check (Plan §3.8 §4.2 fallback): cache miss + service unreachable → behavior? | 503 + `report_resolved_schema_miss` metric (Plan §3.2 explicit) | Stale snapshot'a düş + WARN (graceful degrade) |
+| 4 | Schema existence check: cache miss + schema-service unreachable → behavior? | **503 `schema_resolver_miss` + `report_resolved_schema_miss` metric** (runtime fail-closed; stale snapshot fallback **runtime'da YOK**, build-time validator için kalır — Codex iter-1 §4 absorb) | Stale snapshot'a düş + WARN (graceful degrade — Plan §1 v3 silent fallback yasak prensibiyle çelişir) |
 | 5 | TenantBoundaryGuard preflight ordering: filter chain'in neresinde? | Spring Security filter chain'inden sonra, controller invocation'dan önce (`HandlerInterceptor`) — RBAC/scope check'i sonra | Controller advice (`@ControllerAdvice`) — slower but more localized |
 | 6 | `report_resolved_schema_miss` metric label cardinality: per-tenant + per-report? | `{report_key, schema_mode}` only — tenant_id label cardinality patlamasını önler | `{report_key, tenant_id, schema_mode}` (granular debug) |
 | 7 | Acceptance: integration test sayısı? | 4 yeni Spring `@WebMvcTest` IT (current spec'te tanımlı senaryolar) | Sadece unit + 1 e2e Testcontainers IT |
@@ -50,7 +50,7 @@
 ### 1.3 Bilinen riskler (Plan §3.2 Outcome rationale)
 
 - Build-time validator (Program 1) yeni rapor merge'lerinde gate yapar; **mevcut çalışan rapor'larda runtime tenant boundary breach** hâlâ mümkün:
-  - Bug: super-admin (`scopeType=ALL`) `X-Selected-Company-Id` header eksik → `extractCompanyFromSchema()` legacy fallback 1. company'ye düşüyor → cross-tenant data leak
+  - Bug: super-admin (`scopeType=ALL`) `X-Company-Id` header eksik → `extractCompanyFromSchema()` legacy fallback 1. company'ye düşüyor → cross-tenant data leak
   - Bug: yarım rebuild edilmiş image'da static `def.sourceSchema()` falback → multi-tenant rapor tek company'ye drop oluyor
 - Bu spec runtime path'inde fail-closed gate koyarak bu sınıf bug'ları kapatır
 
@@ -65,7 +65,11 @@ report-service/src/main/java/com/example/report/runtime/
   ├── tenant/
   │   ├── TenantBoundaryGuard.java        // HandlerInterceptor — preflight component
   │   ├── TenantContext.java               // ThreadLocal {selectedCompanyId, scope, userId}
-  │   ├── TenantHeaderExtractor.java       // X-Selected-Company-Id → Long (validates UUID format)
+  │   ├── TenantHeaderExtractor.java       // X-Company-Id → Long (numeric validation)
+  │   ├── TenantScopeResolver.java         // NEW: AuthzMeResponse.getScopeRefIds("COMPANY") →
+  │   │                                    //  Set<Long> allowedCompanies; super-admin handling;
+  │   │                                    //  single-company auto-pick; 403 scope violation source
+  │   │                                    //  (Codex iter-1 §5 absorb)
   │   └── TenantSelectionException.java    // 400 / 403 / 503 hierarchies
   ├── schema/
   │   ├── CurrentTenantSchemaResolver.java // NEW: workcube_mikrolink_{companyId}
@@ -77,7 +81,7 @@ report-service/src/main/java/com/example/report/runtime/
       └── TenantGuardLogContext.java        // MDC enrichment (selectedCompanyId, schemaMode)
 ```
 
-### 2.2 Filter chain integration
+### 2.2 Filter chain integration (Codex iter-1 §3 + §6 absorb)
 
 ```
 Spring Security filter chain
@@ -90,31 +94,49 @@ JwtAuthenticationFilter (existing) — sets SecurityContext.userId, scope
   - if def.tenantBoundary.mode == "schema":
     - companyId = TenantHeaderExtractor.extract(request)
     - if companyId == null:
+      - allowedCompanies = TenantScopeResolver.resolveAllowed(authzMe)
+        // authzMe.allowedScopes COMPANY type'ından çıkarılır:
+        // AuthzMeResponse.getScopeRefIds("COMPANY")
       - if scope == ALL (super-admin): throw 400 tenant_selection_required
-      - if scope == COMPANY + user has 1 company: auto-pick
-      - if scope == COMPANY + user has N>1 companies: throw 400 tenant_selection_required
+      - if allowedCompanies.size() == 1: auto-pick (single-company user)
+      - if allowedCompanies.size() > 1: throw 400 tenant_selection_required
+      - if allowedCompanies.empty: throw 403 tenant_scope_violation
+    - if companyId not in allowedCompanies: throw 403 tenant_scope_violation
     - schema = SchemaResolverFactory.resolve(def, companyId, year)
-    - if !schemaService.schemaExists(schema): throw 503 + metric
+    - if !schemaService.schemaExists(schema): throw 503 schema_resolver_miss + metric
     - TenantContext.set(companyId, scope, userId)
   - if def.tenantBoundary.mode == "row":
-    - same logic + add rowFilter to sql params
+    - same companyId resolution; rowFilter SQL injection
+      RowFilterInjector + QueryEngine query layer'ında yapılır,
+      interceptor sadece TenantContext'i set eder.
   - if def.tenantBoundary.mode == "none":
-    - no-op (master/lookup raporlar)
+    - no-op (master/lookup canonical raporlar — workcube_mikrolink, COMPANIES, PROJECTS)
   ↓
 Controller invocation (already RBAC-checked)
   ↓
-SqlBuilder uses TenantContext.get() to bind params
+SqlBuilder + RowFilterInjector use TenantContext.get() to bind params
   ↓
 ReportingResult flushed
   ↓
-[NEW] TenantBoundaryGuard.postHandle: TenantContext.clear()
+[NEW] TenantBoundaryGuard.afterCompletion: TenantContext.clear()
+  // ZORUNLU afterCompletion — postHandle controller exception attığında
+  // çalışmayabilir (Codex iter-1 §3 absorb); afterCompletion exception
+  // path dahil her zaman tetiklenir.
 ```
+
+> Codex iter-1 §6 absorb: row-mode SQL param mutation interceptor değil, mevcut `RowFilterInjector` (`report-service/src/main/java/com/example/report/access/RowFilterInjector.java:27`) + `QueryEngine` (`report-service/src/main/java/com/example/report/query/QueryEngine.java:48`) zincirinde yapılır. Interceptor sadece TenantContext'i set eder; SQL inception ownership query layer'da kalır.
 
 ### 2.3 `TenantHeaderExtractor` semantics
 
 ```java
 public class TenantHeaderExtractor {
-    public static final String HEADER = "X-Selected-Company-Id";
+    /**
+     * Codex iter-1 §1 absorb: mevcut backend
+     * {@link com.example.report.authz.CompanyHeaderScopeNarrower#HEADER_NAME}
+     * constant'ı kullanılır. Yeni header üretilmez — runtime contract
+     * mevcut frontend {@code dynamic-report/api.ts COMPANY_HEADER}'a uyumlu kalır.
+     */
+    public static final String HEADER = CompanyHeaderScopeNarrower.HEADER_NAME; // "X-Company-Id"
 
     public static Optional<Long> extract(HttpServletRequest request) {
         String value = request.getHeader(HEADER);
@@ -124,7 +146,7 @@ public class TenantHeaderExtractor {
         } catch (NumberFormatException e) {
             throw new TenantSelectionException(
                 "tenant_selection_invalid",
-                "X-Selected-Company-Id must be a numeric ID",
+                "X-Company-Id must be a numeric ID",
                 400);
         }
     }
@@ -142,7 +164,7 @@ public class CurrentTenantSchemaResolver implements SchemaResolver {
         if (companyId == null) {
             throw new TenantSelectionException(
                 "tenant_selection_required",
-                "Report '" + def.key() + "' requires X-Selected-Company-Id",
+                "Report '" + def.key() + "' requires X-Company-Id",
                 400);
         }
         return List.of("workcube_mikrolink_" + companyId);
@@ -153,7 +175,9 @@ public class CurrentTenantSchemaResolver implements SchemaResolver {
 }
 ```
 
-### 2.5 `YearlySchemaResolver` hardening
+### 2.5 `YearlySchemaResolver` hardening (Codex iter-1 §2 absorb)
+
+`tenantBoundary.mode` enum yalnız `{schema, row, none}` (Phase 2 Program 1 PR #91 spec line 108-113). `static` ise **`schemaMode`** değeri (yearly/current/canonical/static enum'unda); ikisi farklı eksen. Eski draft'taki `def.tenantBoundary().mode().equals("static")` kontrolü enum bug'ı içeriyordu — düzeltildi:
 
 ```java
 public class YearlySchemaResolver implements SchemaResolver {
@@ -161,42 +185,48 @@ public class YearlySchemaResolver implements SchemaResolver {
     public List<String> resolve(ReportDefinition def, TenantContext ctx) {
         // OLD (deleted): if (companyId == null) return List.of(def.sourceSchema());
         // NEW: fail-closed for tenantBoundary.mode=schema
-        if (def.tenantBoundary().mode().equals("schema")) {
+        if ("schema".equals(def.tenantBoundary().mode())) {
             Long companyId = ctx.selectedCompanyId();
             if (companyId == null) {
                 throw new TenantSelectionException(
                     "tenant_selection_required",
-                    "Report '" + def.key() + "' (schema mode) requires X-Selected-Company-Id",
+                    "Report '" + def.key() + "' (schema mode) requires X-Company-Id",
                     400);
             }
             // ... existing yearly + companyId composition
         }
 
-        // mode=static raporlar için legacy extractCompanyFromSchema() exception
-        if (def.tenantBoundary().mode().equals("static")) {
+        // schemaMode=static raporlar legacy extractCompanyFromSchema() exception
+        // (RC-003 Tier 1+ WARN scope'unda — Plan §3.1 expected migration path).
+        // static raporlar tenantBoundary.mode=none veya explicit RC exception
+        // ile zaten Program 1 build-time gate'inden geçer.
+        if ("static".equals(def.schemaMode())) {
             return List.of(def.sourceSchema());
         }
 
-        // mode=none / mode=row için existing logic
+        // mode=none (canonical raporlar) / mode=row için existing logic
         // ...
     }
 }
 ```
 
-`extractCompanyFromSchema()` artık sadece `schemaMode=static` raporlar için (RC-003 Tier 1+ WARN scope'unda — Plan §3.1 expected migration path).
+`schemaMode=static` raporlar için resolver fallback'i, ayrıca `tenantBoundary.mode=none` veya explicit RC-003 `exceptions.json` entry ile Program 1 gate'inden geçirilir. İki eksen ortogonal: `schemaMode` schema-naming pattern, `tenantBoundary.mode` runtime guard semantics.
 
 ---
 
-## 3. Failure semantics
+## 3. Failure semantics (Codex iter-1 §4 absorb)
+
+Schema existence check fail-closed kararı tek yöne kilitlendi: 5-min Caffeine cache hit + cache miss + schema-service available → resolve; cache miss + service unavailable → 503 (stale snapshot fallback YOK runtime'da). Plan §3.8 30-day-old committed snapshot fallback **build-time validator** için, runtime için değil. Bu Q4 default'unun explicit olarak yazılmış hali.
 
 | Status | Code | When | Header/Frontend behavior |
 |---|---|---|---|
-| `400` | `tenant_selection_required` | Super-admin or multi-company user without `X-Selected-Company-Id` on `mode=schema/row` rapor | Frontend modal: "Şirket seçimi yapın" — server-driven (no silent fallback) |
-| `400` | `tenant_selection_invalid` | Header `X-Selected-Company-Id` non-numeric | Same as above + invalid format error |
-| `400` | `tenant_boundary_mismatch` | `mode=none` rapor + `X-Selected-Company-Id` header set (boundary clarity) | Header should not have been sent |
-| `403` | `tenant_scope_violation` | Selected company outside user's scope (existing PR #70 semantics) | Frontend redirect to user-allowed company list |
-| `503` | `schema_resolver_miss` | Resolved schema does not exist (tenant DB drop, schema rename, etc.) + `report_resolved_schema_miss` metric increment | Frontend retry button + ops alert (3 alerts in Plan §3.4) |
-| `503` (degraded mode) | `schema_truth_fallback` | Plan §3.8 fallback chain triggered (schema-service unreachable + 30-day-old snapshot used + service NOT degraded gracefully) | Same as 503 above |
+| `400` | `tenant_selection_required` | Super-admin or multi-company user without `X-Company-Id` on `mode=schema/row` rapor | Frontend modal: "Şirket seçimi yapın" — server-driven (no silent fallback) |
+| `400` | `tenant_selection_invalid` | Header `X-Company-Id` non-numeric | Same as above + invalid format error |
+| `400` | `tenant_boundary_mismatch` | `mode=none` rapor + `X-Company-Id` header set (boundary clarity) | Header should not have been sent |
+| `403` | `tenant_scope_violation` | Selected company outside user's scope (existing PR #70 + new TenantScopeResolver semantics) | Frontend redirect to user-allowed company list |
+| `503` | `schema_resolver_miss` | Resolved schema does not exist on schema-service `schemaExists()` + `report_resolved_schema_miss` metric increment | Frontend retry button + ops alert (3 alerts in Plan §3.4) |
+
+> **No `schema_truth_fallback` runtime status code**: Plan §3.8 fallback chain build-time validator için (committed snapshot primary + service optional fresh refresh); runtime'da fail-closed disiplini bozulmaz. Stale snapshot runtime fallback Q4 alternatifi olarak owner tercih ederse açılır — default değil.
 
 ---
 
@@ -223,6 +253,9 @@ public class YearlySchemaResolver implements SchemaResolver {
 | `TenantBoundaryGuard_singleCompanyUserAutoPicked` | `scope=COMPANY` + user.companies=[35] + header eksik → server resolves to 35 |
 | `TenantBoundaryGuard_multiCompanyUserWithoutHeader_returns400` | `scope=COMPANY` + user.companies=[35, 36] + header eksik → 400 |
 | `TenantBoundaryGuard_resolvedSchemaMissReturns503` | header=99 (nonexistent company) + schema-service !exists(workcube_mikrolink_99) → 503 + metric increment |
+| `TenantBoundaryGuard_threadLocalCleared_onControllerException` | preHandle sets TenantContext, controller throws RuntimeException, afterCompletion executes, TenantContext.get() returns null on next request (Codex iter-1 §3 absorb) |
+| `TenantBoundaryGuard_singleCompanyUserResolved_viaTenantScopeResolver` | scope=COMPANY + AuthzMeResponse.getScopeRefIds("COMPANY")=[35] + header=null → server resolves to 35 |
+| `TenantBoundaryGuard_companyOutOfScope_returns403` | scope=COMPANY + allowedCompanies=[35] + X-Company-Id=99 → 403 tenant_scope_violation |
 
 ### 4.3 End-to-end Testcontainers IT (optional Q7 alternative)
 
@@ -259,25 +292,26 @@ Plan v2.1 §1 v3 revize prensibi: "Flag off does NOT silently fall back to flat 
 | Mevcut tenant-bound rapor flow'unda 400 patlaması (legacy `extractCompanyFromSchema` müşterileri) | M | Production downtime | Pre-merge dry-run + feature flag (`reporting.tenant-guard.enabled=false` default off until Plan §3.1 RC-001..011 tüm raporlarda PASS) |
 | Schema-service rate limiting (her request schema existence check) | M | Latency p95 artış | 5-min Caffeine cache `schemaSnapshot` (Plan §3.8 default); per-request schemaExists() cache hit rate %99+ |
 | `TenantContext` ThreadLocal leak (request after request) | L | Cross-request boundary breach | postHandle + afterCompletion ile `TenantContext.clear()` ZORUNLU; ThreadLocal interceptor pattern doğru kullanım |
-| `X-Selected-Company-Id` MDC leak to logs | L | Privacy/audit issue | TenantGuardLogContext sadece `selectedCompanyId` ve `schemaMode` MDC'ye basar; userId zaten JWT context'inde |
-| Frontend uyumsuzluk: client `X-Selected-Company-Id` göndermiyor | H | Phase 2 Program 2 merge sonrası tüm tenant-bound rapor 400 verir | mfe-reporting'de header injection middleware eklenmesi gerekir; frontend canary ile staged rollout |
+| `X-Company-Id` MDC leak to logs | L | Privacy/audit issue | TenantGuardLogContext sadece `selectedCompanyId` ve `schemaMode` MDC'ye basar; userId zaten JWT context'inde |
+| Frontend uyumsuzluk: client `X-Company-Id` göndermiyor | H | Phase 2 Program 2 merge sonrası tüm tenant-bound rapor 400 verir | mfe-reporting'de header injection middleware eklenmesi gerekir; frontend canary ile staged rollout |
 
 ---
 
 ## 8. Definition of Done
 
 - [ ] `TenantBoundaryGuard` HandlerInterceptor + Spring config (`WebMvcConfigurer.addInterceptors`)
-- [ ] `TenantContext` ThreadLocal + try/finally cleanup
-- [ ] `TenantHeaderExtractor` + 400 invalid path
+- [ ] `TenantContext` ThreadLocal + **`afterCompletion` clear** (postHandle exception path'te tetiklenmez; afterCompletion zorunlu — Codex iter-1 §3 absorb)
+- [ ] `TenantHeaderExtractor` (`HEADER = CompanyHeaderScopeNarrower.HEADER_NAME`, mevcut `X-Company-Id` constant) + 400 invalid path
+- [ ] **`TenantScopeResolver` (NEW)** — `AuthzMeResponse.getScopeRefIds("COMPANY")` → `Set<Long> allowedCompanies`; super-admin handling; single-company auto-pick; 403 source (Codex iter-1 §5 absorb)
 - [ ] `CurrentTenantSchemaResolver` (NEW) + factory registration
-- [ ] `YearlySchemaResolver` hardening: `mode=schema` fallback YOK
+- [ ] `YearlySchemaResolver` hardening: `tenantBoundary.mode=schema` fallback YOK; `schemaMode=static` raporlar legacy `def.sourceSchema()` exception (Codex iter-1 §2 absorb — enum eksen ayrımı)
 - [ ] `SchemaResolverFactory` + `tenantBoundary.schemaResolver` lookup
-- [ ] `report_resolved_schema_miss` + `schema_truth_fallback_total` metrics
+- [ ] `report_resolved_schema_miss` metric (cardinality `{report_key, schema_mode}` Q6 default)
 - [ ] `TenantSelectionException` + 400/403/503 hierarchy
 - [ ] 8 unit test PASS
-- [ ] 4 `@WebMvcTest` IT PASS
+- [ ] 4+3 = 7 `@WebMvcTest` IT PASS (Codex iter-1 §3+§5 yeni testler dahil)
 - [ ] Feature flag default OFF until Phase 2 Program 1 + tüm rapor `tenantBoundary` field set
-- [ ] Frontend mfe-reporting `X-Selected-Company-Id` header injection middleware (separate PR)
+- [ ] Frontend mfe-reporting `X-Company-Id` header injection middleware (separate PR)
 - [ ] ADR `docs/adr/0007-runtime-tenant-guard.md` (Plan §3.2 mandate)
 - [ ] Codex post-impl peer review AGREE (HARD RULE Cross-AI)
 - [ ] CI 9/9 green + admin merge YASAK
