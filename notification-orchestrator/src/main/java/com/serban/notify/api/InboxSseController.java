@@ -10,8 +10,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -141,20 +139,31 @@ public class InboxSseController {
      * Listen for inbox state changes; broadcast to subscriber's connected SSE
      * clients on this pod.
      *
-     * <p>Codex iter-1 P1.2 absorb: {@link TransactionalEventListener
-     * AFTER_COMMIT} — only deliver events whose emitting transaction
-     * actually committed. Rolled-back inserts/updates produce no SSE push,
-     * preventing client from seeing stale/non-existent count.
+     * <p>Faz 23.4 PR-E.4 cross-pod broadcast: event source switched from
+     * {@link TransactionalEventListener AFTER_COMMIT} (publisher-side) to
+     * plain {@link org.springframework.context.event.EventListener} —
+     * because the cross-pod path uses PG NOTIFY which is itself
+     * transactional ({@code pg_notify} fires only on COMMIT). The Spring
+     * event we now receive comes from {@link com.serban.notify.inbox.InboxNotifyListener}
+     * which polls PG notifications post-commit; AFTER_COMMIT semantics are
+     * preserved at the data layer instead of the listener layer.
+     *
+     * <p>Single-pod fallback path (cross-pod-enabled=false): publisher
+     * directly calls {@code applicationEventPublisher.publishEvent} from
+     * inside the publisher transaction. Without AFTER_COMMIT, a rollback
+     * could deliver a phantom event. Acceptable for local dev / unit test
+     * mode (which doesn't hit production rollback paths); production
+     * deployments use cross-pod path which IS transactional.
      *
      * <p>Codex iter-1 P1.3 absorb: {@code @Async("inboxSseExecutor")}
      * — bounded {@code ThreadPoolTaskExecutor} (see {@code AsyncConfig});
-     * SSE network IO does not block transaction-completion thread.
+     * SSE network IO does not block event-publishing thread.
      *
      * <p>Codex iter-1 P2.5 absorb: catch {@link RuntimeException} alongside
      * {@link IOException} so a failed/completed emitter doesn't leak into
      * the map and consume future heartbeat slots.
      */
-    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @org.springframework.context.event.EventListener
     @Async("inboxSseExecutor")
     public void onInboxUpdated(InboxUpdatedEvent event) {
         String key = key(event.orgId(), event.subscriberId());
