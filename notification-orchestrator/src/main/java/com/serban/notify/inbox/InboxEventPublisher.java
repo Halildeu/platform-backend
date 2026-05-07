@@ -131,6 +131,14 @@ public class InboxEventPublisher {
      *
      * <p>Payload = {@code {"orgId": ..., "subscriberId": ...}} — count
      * recomputed by listener post-commit (Codex iter-1 P2.1 absorb).
+     *
+     * <p><b>Why {@code query()} not {@code update()}</b> (Codex iter-3 CI fix):
+     * {@code pg_notify} returns {@code void} but PostgreSQL JDBC driver still
+     * surfaces a single-row result set. {@code JdbcTemplate.update()} throws
+     * {@code DataIntegrityViolationException: A result was returned when none
+     * was expected}. {@code query(sql, RowCallbackHandler, args)} consumes
+     * the result row (discarded) and runs the underlying {@code execute()}
+     * the same way — same parameter binding, same transactional context.
      */
     private void publishViaPgNotify(String orgId, String subscriberId) {
         try {
@@ -138,8 +146,14 @@ public class InboxEventPublisher {
                 "orgId", orgId,
                 "subscriberId", subscriberId
             ));
-            // Parameterized pg_notify avoids manual SQL literal escaping
-            jdbcTemplate.update("SELECT pg_notify(?, ?)", NOTIFY_CHANNEL, payload);
+            // Parameterized pg_notify avoids manual SQL literal escaping.
+            // RowCallbackHandler lambda is empty — pg_notify return value is
+            // void; we just need to consume the result row to satisfy JDBC.
+            jdbcTemplate.query(
+                "SELECT pg_notify(?, ?)",
+                (java.sql.ResultSet rs) -> { /* discard pg_notify void return */ },
+                NOTIFY_CHANNEL, payload
+            );
             log.debug("inbox NOTIFY: orgId={} subscriberId={} bytes={}",
                 orgId, subscriberId, payload.length());
         } catch (JsonProcessingException jpe) {

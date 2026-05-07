@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -50,12 +51,16 @@ class InboxEventPublisherTest {
         // Codex iter-1 P2.1 absorb: payload is dirty-flag (orgId + subscriberId)
         // ONLY. unreadCount intentionally omitted — listener recomputes
         // post-commit to avoid stale-snapshot race.
+        // Codex iter-3 CI fix: SELECT pg_notify(?, ?) returns a row → use
+        // jdbcTemplate.query(sql, RowCallbackHandler, args) (NOT update — which
+        // throws DataIntegrityViolationException on result).
         publisher.publishInboxUpdated("default", "sub-1");
 
-        // Verify pg_notify was issued via parameterized SQL with channel name +
+        // Verify pg_notify was issued via parameterized SELECT with channel +
         // JSON payload containing only orgId and subscriberId (no count)
-        verify(jdbcTemplate).update(
+        verify(jdbcTemplate).query(
             eq("SELECT pg_notify(?, ?)"),
+            any(RowCallbackHandler.class),
             eq("inbox_updated"),
             argThat((String json) ->
                 json.contains("\"orgId\":\"default\"")
@@ -77,7 +82,8 @@ class InboxEventPublisherTest {
         // rollback-only on error). Earlier "best-effort" semantics misled
         // caller into believing state was committed.
         doThrow(new org.springframework.dao.DataAccessResourceFailureException("conn lost"))
-            .when(jdbcTemplate).update(anyString(), anyString(), anyString());
+            .when(jdbcTemplate).query(anyString(), any(RowCallbackHandler.class),
+                anyString(), anyString());
 
         org.junit.jupiter.api.Assertions.assertThrows(
             org.springframework.dao.DataAccessException.class,
