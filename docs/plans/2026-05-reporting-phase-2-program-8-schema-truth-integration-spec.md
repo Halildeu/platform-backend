@@ -225,8 +225,17 @@ Tier signal **canonical = HTTP response header** `X-Schema-Truth-Tier` (`schema_
 ### 3.1 Phase 2 Program 1 (build-time validator) — PR #91
 
 `ContractValidator` consumer:
-- `RC-004` (rowFilter column allowlisted): `ColumnTypeRegistry.exists(schema, table, column)` → committed snapshot primary
-- `RC-006` (`mode=none` reports cannot reference tenant fact tables): `SchemaExistsService.isTenantFactTable(schema, table)` → committed snapshot scan
+- `RC-004` (rowFilter column allowlisted):
+  ```java
+  ctx = new SchemaTruthLookupContext(reportKey, schemaMode, BUILD_DETERMINISTIC, "contract_validator");
+  ColumnTypeRegistry.exists(ctx, schema, table, column);  // → committed snapshot primary
+  ```
+- `RC-006` (`mode=none` reports cannot reference tenant fact tables): tenant fact classification ayrı service (build-time scope; Tier 2 committed snapshot scan):
+  ```java
+  ctx = new SchemaTruthLookupContext(reportKey, schemaMode, BUILD_DETERMINISTIC, "contract_validator");
+  TenantFactTableClassifier.isTenantFactTable(ctx, schema, table);
+  ```
+  > `SchemaExistsService` "RUNTIME_STRICT_EXISTENCE only" daraltıldığı için (§2.1.1 enum), build-time tenant fact classification ayrı service olmalı (`TenantFactTableClassifier` — Tier 2 committed snapshot consume eder, policy = BUILD_DETERMINISTIC).
 - `RC-008` (schemaResolver registered): no Schema Truth dependency (config validation only)
 
 CI integration: `mvn test` Tier 1 disabled; Tier 2 (committed snapshot) primary.
@@ -242,8 +251,16 @@ CI integration: `mvn test` Tier 1 disabled; Tier 2 (committed snapshot) primary.
 ### 3.3 PR-0.4 (pivot + weighted AVG) — PR #90
 
 `SqlBuilder` consumer:
-- Pivot value discovery: `TableColumnsListService.listColumns(schema, table)` (discovery mode) — Tier 1 primary
-- Weighted AVG numerator/denominator: column type-aware (DECIMAL precision contract) — `ColumnTypeRegistry.lookupColumnType(...)` Tier 1 primary
+- Pivot value discovery (Codex iter-2 §2 absorb — explicit policy):
+  ```java
+  ctx = new SchemaTruthLookupContext(reportKey, schemaMode, RUNTIME_DEGRADED_TYPE, "sql_builder_discovery");
+  TableColumnsListService.listColumns(ctx, schema, table);  // Tier 1 primary
+  ```
+- Weighted AVG numerator/denominator: column type-aware (DECIMAL precision contract):
+  ```java
+  ctx = new SchemaTruthLookupContext(reportKey, schemaMode, RUNTIME_DEGRADED_TYPE, "sql_builder_weighted_avg");
+  ColumnTypeRegistry.lookupColumnType(ctx, schema, table, column);  // Tier 1 primary
+  ```
 
 Frontend `useReportSchemaContext`: AG Grid colDef enrichment (filter type, value formatter) — Tier 1 primary; Tier 3 transparent warning to dev console.
 
@@ -356,7 +373,7 @@ Plan §1 v3 revize: silent fallback yasak — feature flag explicit + WARN log +
 | Tier 1 schema-service rate limiting (5-min cache miss burst) | M | Latency p95 artış + 503 spike | `schema_truth_cache_miss_burst` WARN; Caffeine TTL adaptive (load > threshold → TTL extend) |
 | Committed snapshot stale (>30d) → Tier 2 yanlış column type | M | RC-004 yanlış FAIL/WARN; runtime FilterTranslator yanlış WHERE clause | `schema_truth_snapshot_age_warn` + refresh runbook (`docs/runbooks/refresh-schema-snapshot.md`) |
 | Tier 3 fallback chronic kullanım | H | Sistem genelinde "registry types" tier'ında kalmak = Tier 1 + 2 sürekli fail-soft = bilinçsiz incident | Pager alert: `schema_truth_fallback_total{tier="registry_type"} > 0` 5-min content over threshold |
-| `ColumnTypeRegistry.lookupColumnType` per-request cache thread leak | L | ThreadLocal residual | Plan §3.2 PR #92 ThreadLocal cleanup pattern (afterCompletion clear) |
+| `RequestColumnTypeCache` `@RequestScope` lifecycle/proxy misconfiguration | L | Missing request scope → no per-request hot path veya `ScopeNotActiveException` | `ObjectProvider<RequestColumnTypeCache>` fallback to direct registry call (non-web context safe); Spring MVC slice test verifies request-scope binding (Codex iter-2 §3 absorb) |
 | Frontend `useReportSchemaContext` 5-min stale + report definition update | L | Stale colDef enrichment | `staleTime: 5 * 60 * 1000` + `refetchOnMount: true` (Q7 default) |
 
 ---
