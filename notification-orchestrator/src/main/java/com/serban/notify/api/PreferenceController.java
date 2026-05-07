@@ -243,11 +243,10 @@ public class PreferenceController {
         if (request == null) {
             throw new InvalidRequestException("request body required");
         }
-        int deletedOverrides = preferenceService.muteChannel(
-            callerOrgId, subscriberId, request.channel()
-        );
+        com.serban.notify.preference.SubscriberPreferenceService.MuteChannelResult result =
+            preferenceService.muteChannel(callerOrgId, subscriberId, request.channel());
         return ResponseEntity.ok(new com.serban.notify.api.dto.PreferenceMuteChannelResponse(
-            request.channel(), true, deletedOverrides
+            request.channel(), true, result.deletedOverrideCount(), result.shadowDenyCount()
         ));
     }
 

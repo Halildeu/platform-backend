@@ -160,7 +160,8 @@ class PreferenceControllerSecurityTest {
             org.mockito.ArgumentMatchers.anyString(),
             org.mockito.ArgumentMatchers.anyString(),
             org.mockito.ArgumentMatchers.anyString()
-        )).thenReturn(0);
+        )).thenReturn(new com.serban.notify.preference.SubscriberPreferenceService
+            .MuteChannelResult(0, 0));
 
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .post("/api/v1/notify/preferences/me/mute-channel")

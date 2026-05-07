@@ -182,6 +182,53 @@ class SubscriberPreferenceRepositoryTest extends AbstractPostgresTest {
 
     @Test
     @Transactional
+    void findTopicWideAllowRows_returnsTopicWithChannelNullAndEnabled() {
+        // Faz 23.6 PR-A2 P1 absorb: muteChannel needs to enumerate the
+        // topic-wide allow rows (topic IS NOT NULL, channel IS NULL,
+        // enabled=true) so it can shadow them with a channel-specific
+        // exact deny.
+        SubscriberPreference topicWideAllow1 = newPref(
+            "shadow-org", "shadow-1204", "auth.password-reset", null, true
+        );
+        SubscriberPreference topicWideAllow2 = newPref(
+            "shadow-org", "shadow-1204", "report.export.ready", null, true
+        );
+        // Disabled topic-wide row — should NOT be returned (we only
+        // shadow allow rows; deny rows already match the resolver).
+        SubscriberPreference topicWideDeny = newPref(
+            "shadow-org", "shadow-1204", "marketing.weekly", null, false
+        );
+        // Channel-wildcard row — should NOT be returned.
+        SubscriberPreference channelWildcard = newPref(
+            "shadow-org", "shadow-1204", null, "email", false
+        );
+        // Exact row — should NOT be returned.
+        SubscriberPreference exact = newPref(
+            "shadow-org", "shadow-1204", "billing.alert", "email", true
+        );
+        repo.save(topicWideAllow1);
+        repo.save(topicWideAllow2);
+        repo.save(topicWideDeny);
+        repo.save(channelWildcard);
+        repo.save(exact);
+
+        java.util.List<SubscriberPreference> rows =
+            repo.findTopicWideAllowRows("shadow-org", "shadow-1204");
+
+        assertThat(rows).extracting(SubscriberPreference::getTopicKey)
+            .containsExactlyInAnyOrder("auth.password-reset", "report.export.ready");
+    }
+
+    @Test
+    @Transactional
+    void findTopicWideAllowRows_returnsEmpty_whenSubscriberHasNoTopicWideAllows() {
+        java.util.List<SubscriberPreference> rows =
+            repo.findTopicWideAllowRows("shadow-org", "no-rules-1204");
+        assertThat(rows).isEmpty();
+    }
+
+    @Test
+    @Transactional
     void deleteSameChannelExactOverrides_preservesOtherSubscribersAndOrgs() {
         SubscriberPreference selfExact =
             newPref("mute-iso-a", "mute-1204", "auth.password-reset", "email", true);

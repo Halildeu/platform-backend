@@ -193,8 +193,10 @@ class PreferenceControllerTest {
     // ── Faz 23.6 PR-A2 — POST /me/mute-channel ────────────────────────────
 
     @Test
-    void muteChannelReturns200WithDeletedOverrideCount() throws Exception {
-        when(preferenceService.muteChannel("default", "sub-1", "email")).thenReturn(3);
+    void muteChannelReturns200WithDeletedOverrideAndShadowDenyCounts() throws Exception {
+        when(preferenceService.muteChannel("default", "sub-1", "email"))
+            .thenReturn(new com.serban.notify.preference.SubscriberPreferenceService
+                .MuteChannelResult(3, 2));
 
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .post("/api/v1/notify/preferences/me/mute-channel")
@@ -205,7 +207,8 @@ class PreferenceControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.channel").value("email"))
             .andExpect(jsonPath("$.muted").value(true))
-            .andExpect(jsonPath("$.deletedOverrideCount").value(3));
+            .andExpect(jsonPath("$.deletedOverrideCount").value(3))
+            .andExpect(jsonPath("$.shadowDenyCount").value(2));
     }
 
     @Test

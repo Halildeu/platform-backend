@@ -294,26 +294,60 @@ public class SubscriberPreferenceService {
      * @return number of exact override rows removed (0 when the caller
      *         had no overrides for this channel)
      */
+    /**
+     * Result of a {@link #muteChannel(String, String, String)} call.
+     *
+     * <p>Codex thread {@code 019e0387} P1 absorb: the response contract
+     * exposes both numbers because each side answers a different
+     * operator question:
+     * <ul>
+     *   <li>{@code deletedOverrideCount} — how many same-channel exact
+     *       rules the action removed (e.g. existing
+     *       {@code (auth.password-reset, email, enabled=true)}).</li>
+     *   <li>{@code shadowDenyCount} — how many topic-wide allow rules
+     *       the action shadowed with a fresh channel-specific exact
+     *       deny so the resolver actually mutes the channel.</li>
+     * </ul>
+     */
+    public record MuteChannelResult(int deletedOverrideCount, int shadowDenyCount) {}
+
     @org.springframework.transaction.annotation.Transactional
-    public int muteChannel(String orgId, String subscriberId, String channel) {
+    public MuteChannelResult muteChannel(String orgId, String subscriberId, String channel) {
         if (orgId == null || orgId.isBlank()
             || subscriberId == null || subscriberId.isBlank()
             || channel == null || channel.isBlank()) {
             throw new IllegalArgumentException("orgId, subscriberId, and channel are required");
         }
-        // 1. Upsert the channel-wildcard deny rule (preserves quiet
-        //    hours / frequency limits if the wildcard row already
-        //    existed).
+        // 1. Upsert the channel-wildcard deny rule.
         SubscriberPreference wildcard = upsert(
             orgId, subscriberId, /* topicKey */ null, channel,
             /* enabled */ false, /* quietHours */ null,
             /* frequencyLimitPerDay */ null, /* bypassForCritical */ true
         );
-        // 2. Drop same-channel exact overrides so the wildcard fires.
+        // 2. Drop same-channel exact overrides so the wildcard fires
+        //    for topics that have no other rule.
         int deletedOverrides = preferenceRepo.deleteSameChannelExactOverrides(
             orgId, subscriberId, channel
         );
-        // 3. Audit the operator command.
+        // 3. Codex thread `019e0387` P1 absorb: shadow each topic-wide
+        //    allow row with a channel-specific exact deny so the
+        //    resolver (exact > topic-wildcard > channel-wildcard) sees
+        //    deny first when dispatching this channel. The topic-wide
+        //    allow itself is preserved so other channels keep working.
+        java.util.List<SubscriberPreference> topicWideAllows =
+            preferenceRepo.findTopicWideAllowRows(orgId, subscriberId);
+        int shadowDenyCount = 0;
+        for (SubscriberPreference row : topicWideAllows) {
+            upsert(
+                orgId, subscriberId, row.getTopicKey(), channel,
+                /* enabled */ false, /* quietHours */ null,
+                /* frequencyLimitPerDay */ null, /* bypassForCritical */ true
+            );
+            shadowDenyCount += 1;
+        }
+        // 4. Audit the operator command — both counts surface in
+        //    audit_event.details so PREFERENCE_MUTE_CHANNEL replays the
+        //    full mutation shape.
         String recipientHash = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
         auditPublisher.publishStandalone(
             "PREFERENCE_MUTE_CHANNEL",
@@ -322,12 +356,13 @@ public class SubscriberPreferenceService {
             Map.of(
                 "subscriber_id", subscriberId,
                 "channel", channel,
-                "deleted_override_count", deletedOverrides
+                "deleted_override_count", deletedOverrides,
+                "shadow_deny_count", shadowDenyCount
             )
         );
-        log.info("preference mute-channel: orgId={} subscriberId={} channel={} wildcardId={} deletedOverrides={}",
-            orgId, subscriberId, channel, wildcard.getId(), deletedOverrides);
-        return deletedOverrides;
+        log.info("preference mute-channel: orgId={} subscriberId={} channel={} wildcardId={} deletedOverrides={} shadowDenies={}",
+            orgId, subscriberId, channel, wildcard.getId(), deletedOverrides, shadowDenyCount);
+        return new MuteChannelResult(deletedOverrides, shadowDenyCount);
     }
 
     @org.springframework.transaction.annotation.Transactional

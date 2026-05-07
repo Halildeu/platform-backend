@@ -23,5 +23,13 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public record PreferenceMuteChannelResponse(
     @JsonProperty("channel") String channel,
     @JsonProperty("muted") boolean muted,
-    @JsonProperty("deletedOverrideCount") int deletedOverrideCount
+    @JsonProperty("deletedOverrideCount") int deletedOverrideCount,
+    /**
+     * Codex thread {@code 019e0387} P1 absorb: shadow exact-deny rows
+     * the action wrote for topic-wide allow rules so the resolver
+     * actually mutes the channel. Surface this so the UI can be honest
+     * ("3 same-channel kuralı silindi, 2 topic-wide kural email için
+     * gölgelendi").
+     */
+    @JsonProperty("shadowDenyCount") int shadowDenyCount
 ) {}
