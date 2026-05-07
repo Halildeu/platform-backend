@@ -1,0 +1,26 @@
+{
+  "version": "v1-test-fixture",
+  "metadata": {
+    "schema": "workcube_mikrolink_2026_35",
+    "tableCount": 2,
+    "columnCount": 4
+  },
+  "tables": {
+    "ACCOUNT_CARD_ROWS": {
+      "name": "ACCOUNT_CARD_ROWS",
+      "schema": "workcube_mikrolink_2026_35",
+      "columns": [
+        {"name": "AMOUNT", "dataType": "DECIMAL(18,2)", "nullable": false},
+        {"name": "ACC_COMPANY_ID", "dataType": "INT", "nullable": false}
+      ]
+    },
+    "INVOICES": {
+      "name": "INVOICES",
+      "schema": "workcube_mikrolink_2026_35",
+      "columns": [
+        {"name": "INVOICE_NUMBER", "dataType": "NVARCHAR(50)", "nullable": false},
+        {"name": "TOTAL_AMOUNT", "dataType": "DECIMAL(18,2)", "nullable": true}
+      ]
+    }
+  }
+}
