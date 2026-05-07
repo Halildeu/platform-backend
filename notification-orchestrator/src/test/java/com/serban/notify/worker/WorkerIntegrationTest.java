@@ -78,6 +78,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
     @Autowired NotificationIntentRepository intentRepo;
     @Autowired NotificationDeliveryRepository deliveryRepo;
     @Autowired DeadLetterRepository dlqRepo;
+    @Autowired com.serban.notify.repository.IdempotencyKeyRepository idempotencyRepo;
 
     @MockBean SmtpAdapter smtpAdapter;
     @MockBean SlackWebhookAdapter slackAdapter;
@@ -88,6 +89,14 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         when(smtpAdapter.channelKey()).thenReturn("email");
         when(slackAdapter.channelKey()).thenReturn("slack");
         when(webhookAdapter.channelKey()).thenReturn("webhook");
+
+        // Faz 23.4 PR-F V12 UNIQUE(provider_msg_id) absorb: clean dependent
+        // rows before each test to prevent hard-coded msg-id collision
+        // across test methods sharing same Testcontainers PG. Order:
+        // delivery + idempotency (FK to intent), then intent.
+        deliveryRepo.deleteAll();
+        idempotencyRepo.deleteAll();
+        intentRepo.deleteAll();
 
         if (templateRepo.findByTemplateIdAndVersionAndLocale("worker-test", 1, "tr-TR").isPresent()) {
             return;
