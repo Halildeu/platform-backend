@@ -63,7 +63,8 @@
       "headerName": "Para Birimi",
       "type": "text",
       "width": 60,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "OTHER_AMOUNT",
@@ -147,21 +148,24 @@
       "headerName": "Proje Adı",
       "type": "text",
       "width": 200,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "DEPARTMENT_NAME",
       "headerName": "Departman",
       "type": "text",
       "width": 160,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "BRANCH_NAME",
       "headerName": "Şube",
       "type": "text",
       "width": 160,
-      "sensitive": false
+      "sensitive": false,
+      "groupable": true
     },
     {
       "field": "EMPLOYEE_FULLNAME",
