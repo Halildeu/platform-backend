@@ -180,13 +180,30 @@ SELECT
 FROM (
   -- sourceQuery (yearly UNION ALL — branch-level pre-aggregation YOK)
 ) AS _src
-WHERE _src.[ACCOUNT_CODE] = :groupKey0
+WHERE 1=1 -- filterModel + RLS + (single-level: no groupKeys filter)
 GROUP BY [BRANCH_NAME]
 ORDER BY [BRANCH_NAME] ASC
 OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY;
 ```
 
+> Single-level (PR-0.4 scope): `WHERE` clause yalnız `filterModel` + RLS push-down. `groupKeys` non-empty gelirse → `400 pivot_group_keys_not_supported` (PR-0.4 fail-closed; ancestor expansion **PR-0.4e**'de açılır). Sessiz fallback YOK — Plan v2.1 §1 v3 revize prensibi (silent flat fallback yasak).
+
 Pivot value bindings: `params.put("pivot0", "BORÇ"); params.put("pivot1", "ALACAK");`
+
+#### 3.2.0a Aggregate-specific CASE expression (Codex iter-6 §2 absorb)
+
+`SUM(...ELSE 0 END)` sadece `sum` için doğru. Diğer aggregator'lar null-skip pattern'i ile farklı:
+
+| aggFunc | CASE WHEN expression |
+|---|---|
+| `sum` | `SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] ELSE 0 END)` |
+| `avg` | `AVG(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip; ELSE clause YOK) |
+| `min` | `MIN(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip) |
+| `max` | `MAX(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip) |
+| `count` (= `COUNT(value)`) | `COUNT(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] END)` (null-skip) |
+| `weightedAvg` | `SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] * [weight] END) / NULLIF(SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [weight] END), 0)` |
+
+Önemli: `avg/min/max/count` için `ELSE 0` yanlıştır — pivot-dışı satırların sıfır sayılması bucket aritmetiğini bozar (örn. AVG bucket dışı 0'larla seyrelir, MIN bucket-dışı 0'a düşer). `null-skip` pattern (no ELSE) sadece pivot-eşleşen satırları aggregator'a sokar.
 
 Frontend secondary column metadata (`pivotResultFields`):
 ```json
@@ -200,7 +217,8 @@ Frontend secondary column metadata (`pivotResultFields`):
 
 | Metric | Definition | Use |
 |---|---|---|
-| `_rowCount` | Row group bucket içindeki kaynak satır sayısı, **filters/RLS/groupKeys uygulandıktan sonra**, pivot cell'lerden bağımsız | Pagination total = `COUNT_BIG(*)`; bucket cardinality summary |
+| `_rowCount` | Row group bucket içindeki kaynak satır sayısı, **filters/RLS/groupKeys uygulandıktan sonra**, pivot cell'lerden bağımsız | Bucket cardinality summary; her result row'da emitted (Codex iter-6 §3 absorb: pagination total **DEĞİL**) |
+| Page total / `lastRow` (SSRM) | Distinct row-group bucket sayısı (filters/RLS scope sonrası) | Ayrı `buildPivotedGroupedCountQuery` döner: `SELECT COUNT(*) FROM (SELECT [rowGroupCol] FROM _src WHERE ... GROUP BY [rowGroupCol]) _g`. Pivot value sayısından ve cell count'larından bağımsız. |
 | `COUNT(value)` agg func **(default for `aggFunc=count`)** | Row group bucket × pivot cell'e düşen satır sayısı, NULL value satırları **dahil değil** | Mevcut SqlBuilder grouped builder davranışıyla uyumlu — value column null-skip count |
 | `COUNT(*)` agg func | Row group bucket × pivot cell'e düşen satır sayısı, NULL value satırları dahil | İleride `aggFunc=countRows` opt-in (PR-0.4 scope **dışı** — geri uyum disiplini) |
 
@@ -247,9 +265,7 @@ SELECT DISTINCT TOP (:cap + 1) [ACTION_TYPE]
 FROM (
   -- aynı sourceQuery (yearly UNION ALL)
 ) AS _src
-WHERE _src.[ACCOUNT_CODE] = :groupKey0
-  -- aynı filterModel injected
-  -- aynı RLS WHERE clause
+WHERE 1=1 -- filterModel + RLS push-down (single-level scope: no groupKeys filter)
 ORDER BY [ACTION_TYPE] ASC;
 ```
 
@@ -257,7 +273,7 @@ ORDER BY [ACTION_TYPE] ASC;
 
 `ORDER BY` deterministic — discovery sırası secondary column order'ını belirler (frontend pivot kolonlarının soldan sağa dizilişi).
 
-Eğer parity sağlanmazsa: secondary columns grid'de gözükür ama current bucket'ta karşılığı yok (boş kolon), ya da data'da gelen pivot value column metadata'da eksik → grid render error. **Bu yüzden discovery + data query exact aynı `_src` + filterModel + RLS + groupKeys** zorunlu.
+Eğer parity sağlanmazsa: secondary columns grid'de gözükür ama current bucket'ta karşılığı yok (boş kolon), ya da data'da gelen pivot value column metadata'da eksik → grid render error. **Bu yüzden discovery + data query exact aynı `_src` + filterModel + RLS scope** zorunlu (single-level: groupKeys parity sıfır-element). Multi-level + pivot PR-0.4e'de açılırsa ancestor groupKeys parity de eklenir.
 
 ### 3.4 Weighted AVG (cross-schema)
 
@@ -385,7 +401,9 @@ const supportsWeightedAvg = caps.supportedAggFuncs.includes("weightedAvg");
 | `400` | `multi_pivot_not_supported` | `pivotCols.length > 1` |
 | `400` | `pivot_dim_not_pivotable` | `pivotCols[0].id` config'de `pivotable=false` veya yok |
 | `400` | `pivot_cardinality_exceeded` | `discovery` mode + cap aşımı |
+| `400` | `pivot_group_keys_not_supported` | `pivotMode=true` + `groupKeys.length > 0` (PR-0.4 scope: single-level + ilk seviye expansion only; multi-level pivot **PR-0.4e**'de) |
 | `400` | `weighted_avg_weight_missing` | `aggFunc=weightedAvg` ama `weight` field tanımsız |
+| `400` | `sort_field_not_allowlisted` | `sortModel.field` row group field veya generated `pivotResultFields` colId'sinden hiçbiri değilse (§3.2.2) |
 | `501` | `pivot_not_supported` | `capabilities.serverSidePivoting=false` |
 | `501` | `weighted_avg_not_supported` | `capabilities.supportedAggFuncs` içinde yok |
 
@@ -400,8 +418,8 @@ const supportsWeightedAvg = caps.supportedAggFuncs.includes("weightedAvg");
 | `buildPivotedGroupedQuery_singleLevelStaticPivotValues` | `SUM(CASE WHEN [pivotCol] = :pivot<idx> THEN [val] ELSE 0 END) AS [p<idx>_<valueColField>_<aggFunc>]` × N (bind-param + safe alias contract) |
 | `buildPivotedGroupedQuery_dynamicPivotValuesAfterPreFlight` | İlk SELECT `DISTINCT pivotCol`, ikinci SELECT pivot |
 | `buildPivotedGroupedQuery_rejectsMultiPivotDim` | `IllegalArgumentException` |
-| `buildWeightedAvgGroupedQuery_carriesWeightSumAndProductSum` | `SUM(val * weight)` + `SUM(weight)` her UNION branch |
-| `buildWeightedAvgGroupedQuery_outerAggDividesSumByWeightSum` | `SUM(_sum_x_weight) / NULLIF(SUM(_sum_weight), 0)` |
+| `buildWeightedAvgGroupedQuery_projectsRawValueAndWeightAcrossUnion` | Raw `[val]` + `[weight]` columns each UNION branch (no per-branch aggregate); branches identical projection list |
+| `buildWeightedAvgGroupedQuery_outerAggregateUsesRawFormula` | Tek dış aggregate: `SUM([val] * [weight]) / NULLIF(SUM([weight]), 0) AS [<col>_weightedAvg]` |
 
 ### 5.2 Integration (SqlBuilderMssqlIntegrationTest, MSSQL Testcontainers — 5 yeni IT)
 
