@@ -8,6 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -93,6 +94,7 @@ class SubscriberPreferenceRepositoryTest extends AbstractPostgresTest {
     // ── Faz 23.6 PR-A1 — restore-defaults ─────────────────────────────────
 
     @Test
+    @Transactional
     void deleteAllByOrgIdAndSubscriberId_clearsCallerRows() {
         SubscriberPreference row1 = newPref("default", "1204", "auth.password-reset", "email", true);
         SubscriberPreference row2 = newPref("default", "1204", "report.export.ready", "email", false);
@@ -109,12 +111,14 @@ class SubscriberPreferenceRepositoryTest extends AbstractPostgresTest {
     }
 
     @Test
+    @Transactional
     void deleteAllByOrgIdAndSubscriberId_isIdempotent_returnsZeroOnEmpty() {
         int deleted = repo.deleteAllByOrgIdAndSubscriberId("default", "ghost-subscriber");
         assertThat(deleted).isEqualTo(0);
     }
 
     @Test
+    @Transactional
     void deleteAllByOrgIdAndSubscriberId_onlyTouchesCallerRows() {
         SubscriberPreference orgA = newPref("org-a", "1204", "auth.password-reset", "email", true);
         SubscriberPreference orgB = newPref("org-b", "1204", "auth.password-reset", "email", true);
