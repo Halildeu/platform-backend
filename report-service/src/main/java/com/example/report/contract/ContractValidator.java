@@ -66,12 +66,27 @@ public final class ContractValidator {
      * @param allowlist tenant column allowlist (RC-004 input)
      */
     public static ContractValidator withDefaultRules(TenantColumnAllowlist allowlist) {
+        return withDefaultRules(allowlist, null);
+    }
+
+    /**
+     * Phase 2 Program 2c (Codex iter-15 §2c-AGREE absorb): default rule set
+     * with injected allowlist + yearly coverage lookup. RC-004 now performs
+     * both allowlist match + schema truth existence cross-check.
+     *
+     * @param allowlist      tenant column allowlist (RC-004 input)
+     * @param coverageLookup yearly coverage lookup (RC-004 existence check;
+     *                       null → existence check skipped, 1d backward-compat)
+     */
+    public static ContractValidator withDefaultRules(
+            TenantColumnAllowlist allowlist,
+            com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup coverageLookup) {
         return new ContractValidator(List.of(
                 new RC000SchemaModeEnumValid(),
                 new RC001YearlyRequiresYearColumn(),
                 new RC002YearlySourceQueryRequiresPlaceholder(),
                 new RC003HardcodedSchemaForbidden(),
-                new RC004RowFilterColumnAllowlisted(allowlist),
+                new RC004RowFilterColumnAllowlisted(allowlist, coverageLookup),
                 new RC005SchemaModePlusRowFilterForbidden(),
                 new RC006NoneModeForbidsTenantFactTables(),
                 new RC007ColumnFieldExistsInSourceQuery(),

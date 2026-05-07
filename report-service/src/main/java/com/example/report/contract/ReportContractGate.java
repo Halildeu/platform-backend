@@ -110,7 +110,16 @@ public final class ReportContractGate {
         ReportDefinitionSchemaValidator schemaValidator =
                 new ReportDefinitionSchemaValidator(mapper);
         TenantColumnAllowlist allowlist = new TenantColumnAllowlist(loader, mapper);
-        ContractValidator contractValidator = ContractValidator.withDefaultRules(allowlist);
+        // Phase 2 Program 2c (Codex iter-15 §2c-AGREE absorb): wire yearly
+        // coverage lookup into RC-004 existence cross-check. Production path
+        // uses classpath:schema/workcube-schema-yearly-coverage.json (artifact
+        // produced by 2b YearlySchemaCoverageExporter; ops-managed deployment).
+        // Test/dev path: classpath:schema/workcube-schema-yearly-coverage-fixture.json.
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup coverageLookup =
+                new com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup(
+                        loader, mapper);
+        coverageLookup.loadCoverage();
+        ContractValidator contractValidator = ContractValidator.withDefaultRules(allowlist, coverageLookup);
         ExceptionsRegistry exceptions = new ExceptionsRegistry(
                 loader, mapper, "classpath:reports/exceptions.json", clock);
         exceptions.load();
