@@ -376,4 +376,97 @@ class NotificationInboxRepositoryTest extends AbstractPostgresTest {
         row.setCreatedAt(OffsetDateTime.now());
         return row;
     }
+
+    // ─── Faz 23.5 PR1: bulk mark-all-read repository contract ───────────
+
+    @Test
+    void markAllAsReadFlipsOnlyUnreadRowsScopedToCaller() {
+        // 3 UNREAD rows for sub-1 in default org → all should flip.
+        NotificationInbox a = repo.save(stub("default", "intent-a", "sub-1"));
+        repo.save(stub("default", "intent-b", "sub-1"));
+        repo.save(stub("default", "intent-c", "sub-1"));
+
+        // Pre-existing READ row — left alone (predicate state=UNREAD).
+        NotificationInbox preRead = stub("default", "intent-d", "sub-1");
+        preRead.setState(NotificationInbox.State.READ);
+        preRead.setReadAt(OffsetDateTime.now().minusHours(1));
+        repo.save(preRead);
+
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        int affected = repo.markAllAsRead("default", "sub-1", cutoff, cutoff);
+
+        // Only the 3 UNREAD rows should flip; the pre-READ row not counted.
+        assertThat(affected).isEqualTo(3);
+
+        // Re-fetch and verify state on a representative row.
+        NotificationInbox aFresh =
+            repo.findByOrgIdAndIdAndSubscriberId("default", a.getId(), "sub-1").orElseThrow();
+        assertThat(aFresh.getState()).isEqualTo(NotificationInbox.State.READ);
+        assertThat(aFresh.getReadAt()).isNotNull();
+    }
+
+    @Test
+    void markAllAsReadHonorsCreatedAtCutoff() {
+        // older row (createdAt minus 1h) should be inside the cutoff;
+        // newer row (createdAt plus 5min) should be excluded.
+        NotificationInbox older = stub("default", "intent-old", "sub-1");
+        older.setCreatedAt(OffsetDateTime.now().minusHours(1));
+        repo.save(older);
+
+        NotificationInbox newer = stub("default", "intent-new", "sub-1");
+        newer.setCreatedAt(OffsetDateTime.now().plusMinutes(5));
+        NotificationInbox newerSaved = repo.save(newer);
+
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        int affected = repo.markAllAsRead("default", "sub-1", cutoff, cutoff);
+
+        assertThat(affected).isEqualTo(1);
+        NotificationInbox newerFresh =
+            repo.findByOrgIdAndIdAndSubscriberId("default", newerSaved.getId(), "sub-1")
+                .orElseThrow();
+        assertThat(newerFresh.getState())
+            .as("future-dated row outside cutoff must remain UNREAD")
+            .isEqualTo(NotificationInbox.State.UNREAD);
+    }
+
+    @Test
+    void markAllAsReadIsOrgAndSubscriberScopedDoesNotLeakAcrossTenants() {
+        repo.save(stub("default", "intent-1", "sub-1"));
+        repo.save(stub("default", "intent-2", "sub-1"));
+        repo.save(stub("default", "intent-3", "sub-2"));  // different subscriber
+
+        OffsetDateTime cutoff = OffsetDateTime.now();
+
+        // Cross-org attempt: zero rows match, no leakage.
+        int crossOrg =
+            repo.markAllAsRead("wrong-org", "sub-1", OffsetDateTime.now(), cutoff);
+        assertThat(crossOrg).isZero();
+
+        // Cross-subscriber attempt within the same org: zero rows match.
+        int crossSub =
+            repo.markAllAsRead("default", "sub-99", OffsetDateTime.now(), cutoff);
+        assertThat(crossSub).isZero();
+
+        // Legit call sweeps only sub-1's rows in default org.
+        int affected =
+            repo.markAllAsRead("default", "sub-1", OffsetDateTime.now(), cutoff);
+        assertThat(affected).isEqualTo(2);
+
+        // sub-2's row left untouched.
+        long unreadSub2 = repo.countUnreadBySubscriber("default", "sub-2");
+        assertThat(unreadSub2).isEqualTo(1L);
+    }
+
+    @Test
+    void markAllAsReadIdempotentNoOpWhenNoUnreadRows() {
+        // Only a pre-READ row exists; bulk call must return 0 affected.
+        NotificationInbox r = stub("default", "intent-r", "sub-1");
+        r.setState(NotificationInbox.State.READ);
+        r.setReadAt(OffsetDateTime.now().minusHours(1));
+        repo.save(r);
+
+        OffsetDateTime cutoff = OffsetDateTime.now();
+        int affected = repo.markAllAsRead("default", "sub-1", cutoff, cutoff);
+        assertThat(affected).isZero();
+    }
 }
