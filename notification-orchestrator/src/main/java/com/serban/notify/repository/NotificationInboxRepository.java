@@ -134,6 +134,55 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
     );
 
     /**
+     * Bulk mark-all-read (Faz 23.5 PR1).
+     *
+     * <p>Flips every UNREAD row owned by the subscriber whose
+     * {@code created_at <= :cutoff} to READ in one SQL statement and
+     * returns the affected row count for the response body. Idempotent:
+     * a follow-up call with no eligible UNREAD rows returns 0.
+     *
+     * <p><b>Race window</b> (Codex thread {@code 019e021f} plan + iter
+     * absorb): the {@code cutoff} predicate is intended to keep
+     * notifications that arrive *after* the request lands on the server
+     * out of the bulk sweep. The controller captures
+     * {@link OffsetDateTime#now()} on the very first line of the handler
+     * (before the identity guard) and forwards it here.
+     *
+     * <p><b>Honest clock model</b>: the cutoff is the controller pod's
+     * JVM clock, and {@link com.serban.notify.domain.NotificationInbox#createdAt}
+     * is set by the writer pod's JVM clock. In an NTP-synced cluster
+     * with sub-second drift this comparison is monotonic in practice;
+     * if pod clocks drift further, an inbox row written on a clock that
+     * lags the cutoff window can be incorrectly bulk-marked as READ.
+     * The canonical fix — DB-clock cutoff via {@code CURRENT_TIMESTAMP}
+     * in the WHERE clause AND a DB-side {@code DEFAULT now()} on
+     * {@code created_at} — is tracked as a Faz 23.5 hardening
+     * follow-up; not a v1 blocker.
+     *
+     * <p>The cutoff lives in the WHERE clause so the database itself
+     * enforces the boundary atomically. Newer rows simply don't match
+     * and remain UNREAD; the next mark-all-read call sweeps them.
+     *
+     * @return number of rows that transitioned UNREAD → READ
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE NotificationInbox i
+        SET i.state = com.serban.notify.domain.NotificationInbox.State.READ,
+            i.readAt = :now
+        WHERE i.orgId = :orgId
+          AND i.subscriberId = :subscriberId
+          AND i.state = com.serban.notify.domain.NotificationInbox.State.UNREAD
+          AND i.createdAt <= :cutoff
+        """)
+    int markAllAsRead(
+        @Param("orgId") String orgId,
+        @Param("subscriberId") String subscriberId,
+        @Param("now") OffsetDateTime now,
+        @Param("cutoff") OffsetDateTime cutoff
+    );
+
+    /**
      * KVKK erasure — bulk delete inbox rows by (org, subscriber).
      *
      * <p>Codex iter-1 P1.2 absorb: existing {@link com.serban.notify.erasure.ErasureService}

@@ -147,6 +147,61 @@ public class InboxService {
         return inboxRepository.findByOrgIdAndIdAndSubscriberId(orgId, id, subscriberId);
     }
 
+    /**
+     * Bulk mark-all-read (Faz 23.5 PR1).
+     *
+     * <p>Flips every UNREAD row owned by the subscriber whose
+     * {@code created_at <= cutoff} to READ. The {@code cutoff} parameter
+     * is the server-side request-start timestamp passed by the
+     * controller — using a server clock ensures monotonic boundaries
+     * free of client clock skew, and the WHERE-clause predicate
+     * guarantees that notifications arriving between request acceptance
+     * and the UPDATE are not collateral-marked-as-read.
+     *
+     * <p>Idempotent: a follow-up call with no UNREAD rows returns
+     * {@code 0}. Emits {@link InboxEventPublisher#publishInboxUpdated}
+     * once at the end (not per row) so SSE subscribers see a single
+     * {@code unread-count} update with the post-bulk total.
+     *
+     * @param orgId tenant id
+     * @param subscriberId subscriber whose inbox is being swept
+     * @param cutoff inclusive upper bound on {@code created_at} of rows
+     *               eligible for the transition
+     * @return {@link BulkMarkAllReadResult} describing how many rows
+     *         flipped and which cutoff was applied
+     */
+    @Transactional
+    public BulkMarkAllReadResult markAllAsRead(
+        String orgId,
+        String subscriberId,
+        OffsetDateTime cutoff
+    ) {
+        validateTenancy(orgId, subscriberId);
+        if (cutoff == null) {
+            throw new InvalidRequestException("cutoff required");
+        }
+        OffsetDateTime now = OffsetDateTime.now();
+        int affected = inboxRepository.markAllAsRead(orgId, subscriberId, now, cutoff);
+        log.info(
+            "inbox.mark_all_read: orgId={} subscriberId={} cutoff={} affected={}",
+            orgId, subscriberId, cutoff, affected
+        );
+        // PR-E.3 / PR-E.4: emit event so SSE subscribers get the post-bulk
+        // unread count. Only when something actually flipped — calling
+        // with no UNREAD rows produces a no-op event-wise too.
+        if (affected > 0) {
+            eventPublisher.publishInboxUpdated(orgId, subscriberId);
+        }
+        return new BulkMarkAllReadResult(affected, cutoff);
+    }
+
+    /**
+     * Result of a {@link #markAllAsRead} call. Echoed back to the caller
+     * so a UI can surface "13 bildirim okundu işaretlendi" feedback and
+     * also know the cutoff that was actually applied (operator audit).
+     */
+    public record BulkMarkAllReadResult(int updatedCount, OffsetDateTime cutoff) {}
+
     private static void validateTenancy(String orgId, String subscriberId) {
         if (orgId == null || orgId.isBlank()) {
             throw new InvalidRequestException("orgId required");
