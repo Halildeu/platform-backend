@@ -47,7 +47,15 @@ public interface ChannelAdapter {
      *
      * <p>Status semantics:
      * <ul>
-     *   <li>{@code DELIVERED} — provider 2xx, message accepted</li>
+     *   <li>{@code DELIVERED} — terminal success. Synchronous channels
+     *       (email SMTP, slack, webhook, in-app) where send-success ≡ delivery
+     *       (no provider DLR loop)</li>
+     *   <li>{@code ACCEPTED} — Faz 23.4 PR-F: provider accepted message for
+     *       carrier delivery; awaits async DLR webhook to terminalize to
+     *       DELIVERED/FAILED. Used by SMS adapters (NetGSM, İletimerkezi).
+     *       providerMessageId required (non-blank) — DLR correlator;
+     *       missing/empty providerMessageId means caller should return
+     *       {@code retry()} instead (no DLR correlation possible).</li>
      *   <li>{@code FAILED} — provider 4xx (permanent client error, no retry)</li>
      *   <li>{@code RETRY} — provider 5xx or timeout (transient, PR4 worker retries)</li>
      *   <li>{@code BOUNCED} — email-specific (hard bounce, no retry)</li>
@@ -60,11 +68,28 @@ public interface ChannelAdapter {
         Integer providerResponseCode
     ) {
         public enum Status {
-            DELIVERED, FAILED, RETRY, BOUNCED
+            DELIVERED, ACCEPTED, FAILED, RETRY, BOUNCED
         }
 
         public static DeliveryAttemptResult delivered(String providerMsgId) {
             return new DeliveryAttemptResult(Status.DELIVERED, providerMsgId, null, null);
+        }
+
+        /**
+         * Faz 23.4 PR-F: provider accepted message for carrier delivery,
+         * awaits DLR. {@code providerMsgId} must be non-blank — DLR
+         * correlator. Caller MUST use {@link #retry} instead if provider
+         * did not return a message id (no DLR correlation possible).
+         *
+         * @throws IllegalArgumentException if providerMsgId is null or blank
+         */
+        public static DeliveryAttemptResult accepted(String providerMsgId) {
+            if (providerMsgId == null || providerMsgId.isBlank()) {
+                throw new IllegalArgumentException(
+                    "ACCEPTED requires non-blank providerMessageId for DLR correlation; "
+                        + "use retry() if provider did not return a correlator");
+            }
+            return new DeliveryAttemptResult(Status.ACCEPTED, providerMsgId, null, null);
         }
 
         public static DeliveryAttemptResult failed(String reason, Integer code) {

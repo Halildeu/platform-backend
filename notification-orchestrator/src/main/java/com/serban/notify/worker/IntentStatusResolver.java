@@ -48,7 +48,9 @@ public class IntentStatusResolver {
                 case FAILED, BOUNCED, BLOCKED_BY_PREFERENCE,
                      BLOCKED_BY_AUTHZ, BLOCKED_BY_IDEMPOTENCY,
                      BLOCKED_EXTERNAL_NOT_ALLOWED -> anyTerminalFailure = true;
-                case RETRY, PENDING -> anyOutstanding = true;
+                // Faz 23.4 PR-F: ACCEPTED is provider-queued waiting for DLR
+                // terminal verdict; treated as outstanding (intent stays PROCESSING).
+                case RETRY, PENDING, ACCEPTED -> anyOutstanding = true;
             }
         }
 

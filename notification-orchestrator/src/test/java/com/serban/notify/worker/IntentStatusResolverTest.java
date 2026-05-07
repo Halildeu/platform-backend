@@ -83,6 +83,32 @@ class IntentStatusResolverTest {
             .isEqualTo(NotificationIntent.Status.FAILED);
     }
 
+    // ─── Faz 23.4 PR-F: ACCEPTED state outstanding ──────────────────────
+
+    @Test
+    void anyAcceptedReturnsNullKeepsProcessing() {
+        // ACCEPTED = provider queued, awaiting DLR. Intent must stay PROCESSING.
+        var d1 = delivery(NotificationDelivery.Status.DELIVERED);
+        var d2 = delivery(NotificationDelivery.Status.ACCEPTED);
+        assertThat(resolver.resolve(List.of(d1, d2))).isNull();
+    }
+
+    @Test
+    void allAcceptedReturnsNull() {
+        // Multi-recipient SMS: hepsi ACCEPTED → DLR'leri bekliyoruz
+        var d1 = delivery(NotificationDelivery.Status.ACCEPTED);
+        var d2 = delivery(NotificationDelivery.Status.ACCEPTED);
+        assertThat(resolver.resolve(List.of(d1, d2))).isNull();
+    }
+
+    @Test
+    void mixedAcceptedAndFailedReturnsNull() {
+        // ACCEPTED outstanding olduğu için failed kararını ertele
+        var d1 = delivery(NotificationDelivery.Status.FAILED);
+        var d2 = delivery(NotificationDelivery.Status.ACCEPTED);
+        assertThat(resolver.resolve(List.of(d1, d2))).isNull();
+    }
+
     private NotificationDelivery delivery(NotificationDelivery.Status status) {
         NotificationDelivery d = new NotificationDelivery();
         d.setStatus(status);

@@ -13,7 +13,17 @@ import java.util.Objects;
 public class NotificationDelivery {
 
     public enum Status {
-        PENDING, DELIVERED, FAILED, BOUNCED, RETRY,
+        PENDING,
+        /**
+         * Faz 23.4 PR-F: provider accepted message for delivery (carrier
+         * queued); awaiting terminal DLR webhook to transition to DELIVERED
+         * or FAILED. Used by SMS adapters (NetGSM, İletimerkezi) where
+         * send response ≠ terminal delivery. Synchronous channels
+         * (email SMTP, slack, webhook, in-app) skip ACCEPTED — go directly
+         * to DELIVERED on send success.
+         */
+        ACCEPTED,
+        DELIVERED, FAILED, BOUNCED, RETRY,
         BLOCKED_BY_PREFERENCE, BLOCKED_BY_AUTHZ, BLOCKED_BY_IDEMPOTENCY,
         BLOCKED_EXTERNAL_NOT_ALLOWED
     }

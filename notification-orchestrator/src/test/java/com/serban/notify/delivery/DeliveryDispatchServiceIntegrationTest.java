@@ -66,6 +66,8 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
     @Autowired NotificationDeliveryRepository deliveryRepo;
     @Autowired NotificationInboxRepository inboxRepo;
     @Autowired AuditEventRepository auditRepo;
+    // PR-F V12 absorb: per-method cleanup needs idempotency rows too (FK to intent)
+    @Autowired com.serban.notify.repository.IdempotencyKeyRepository idempotencyRepo;
 
     // ChannelAdapterRegistry indexes lazily on first access (Codex 019df9ef CI
     // fix), so @MockBean returning null channelKey() at context startup no
@@ -80,6 +82,18 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
         when(smtpAdapter.channelKey()).thenReturn("email");
         when(slackAdapter.channelKey()).thenReturn("slack");
         when(webhookAdapter.channelKey()).thenReturn("webhook");
+
+        // Faz 23.4 PR-F V12 UNIQUE(provider_msg_id) absorb:
+        // Test methods share Testcontainers PG; @DirtiesContext refreshes
+        // Spring context but DB rows persist. Hard-coded provider_msg_id
+        // values ("<msg-1@host>", "<msg-A>" etc.) collide across tests
+        // under V12 unique constraint. Clean dependent rows before each
+        // method to isolate. Order: delivery + idempotency (FK to intent),
+        // inbox (no FK but lifecycle), then intent.
+        deliveryRepo.deleteAll();
+        idempotencyRepo.deleteAll();
+        inboxRepo.deleteAll();
+        intentRepo.deleteAll();
 
         if (templateRepo.findByTemplateIdAndVersionAndLocale("dispatch-test", 1, "tr-TR").isPresent()) {
             return;
@@ -307,7 +321,7 @@ class DeliveryDispatchServiceIntegrationTest extends AbstractPostgresTest {
             "email", "subscriber", "1", "rh-idem", "user@example.com", "smtp-default"
         );
         when(smtpAdapter.send(any(), any())).thenReturn(
-            ChannelAdapter.DeliveryAttemptResult.delivered("<msg-1@host>")
+            ChannelAdapter.DeliveryAttemptResult.delivered("<msg-" + UUID.randomUUID() + "@host>")
         );
 
         // First dispatch
