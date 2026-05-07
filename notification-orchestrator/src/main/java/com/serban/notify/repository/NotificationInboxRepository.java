@@ -91,21 +91,27 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
      *
      * @return rows affected (1 if state mutated UNREAD→READ, 0 otherwise)
      */
+    /**
+     * Per-row mark-as-read (Faz 23.5 hardening — Codex thread
+     * `019e03b5`). The {@code read_at} timestamp is sourced from the
+     * database via {@code NOW()} so single-pod and multi-pod clusters
+     * agree on the read clock; the application no longer passes a
+     * cutoff/now parameter.
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-        UPDATE NotificationInbox i
-        SET i.state = com.serban.notify.domain.NotificationInbox.State.READ,
-            i.readAt = :now
-        WHERE i.orgId = :orgId
-          AND i.id = :id
-          AND i.subscriberId = :subscriberId
-          AND i.state = com.serban.notify.domain.NotificationInbox.State.UNREAD
-        """)
+    @Query(value = """
+        UPDATE notify.notification_inbox
+           SET state = 'READ',
+               read_at = NOW()
+         WHERE org_id = :orgId
+           AND id = :id
+           AND subscriber_id = :subscriberId
+           AND state = 'UNREAD'
+        """, nativeQuery = true)
     int markAsRead(
         @Param("orgId") String orgId,
         @Param("id") Long id,
-        @Param("subscriberId") String subscriberId,
-        @Param("now") OffsetDateTime now
+        @Param("subscriberId") String subscriberId
     );
 
     /**
@@ -116,21 +122,26 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
      *
      * @return rows affected (1 if state mutated *→ARCHIVED, 0 otherwise)
      */
+    /**
+     * Archive transition (Faz 23.5 hardening — Codex thread `019e03b5`).
+     * {@code archived_at} is sourced from the database clock via
+     * {@code NOW()} for the same reason {@link #markAsRead}'s
+     * {@code read_at} is — multi-pod consistency.
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-        UPDATE NotificationInbox i
-        SET i.state = com.serban.notify.domain.NotificationInbox.State.ARCHIVED,
-            i.archivedAt = :now
-        WHERE i.orgId = :orgId
-          AND i.id = :id
-          AND i.subscriberId = :subscriberId
-          AND i.state <> com.serban.notify.domain.NotificationInbox.State.ARCHIVED
-        """)
+    @Query(value = """
+        UPDATE notify.notification_inbox
+           SET state = 'ARCHIVED',
+               archived_at = NOW()
+         WHERE org_id = :orgId
+           AND id = :id
+           AND subscriber_id = :subscriberId
+           AND state <> 'ARCHIVED'
+        """, nativeQuery = true)
     int archive(
         @Param("orgId") String orgId,
         @Param("id") Long id,
-        @Param("subscriberId") String subscriberId,
-        @Param("now") OffsetDateTime now
+        @Param("subscriberId") String subscriberId
     );
 
     /**
@@ -165,22 +176,49 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
      *
      * @return number of rows that transitioned UNREAD → READ
      */
+    /**
+     * Bulk mark-all-read with database-canonical cutoff (Faz 23.5
+     * hardening — Codex thread {@code 019e03b5} `N` decision).
+     *
+     * <p>The cutoff is captured by the database via
+     * {@code CURRENT_TIMESTAMP} inside the same SQL statement that does
+     * the UPDATE, so the boundary is race-safe across pods regardless
+     * of JVM clock drift. The {@code read_at} marker is also sourced
+     * from {@code NOW()} so the read timeline matches the cutoff
+     * predicate exactly.
+     *
+     * <p>Newer rows still match the {@code created_at <= NOW()}
+     * predicate at write time but are out of scope here because
+     * {@code created_at} is also DB-sourced (V14 ALTER + entity
+     * {@code insertable=false}); a row that the database stamps after
+     * the bulk update commits cannot satisfy the predicate inside the
+     * same transaction.
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("""
-        UPDATE NotificationInbox i
-        SET i.state = com.serban.notify.domain.NotificationInbox.State.READ,
-            i.readAt = :now
-        WHERE i.orgId = :orgId
-          AND i.subscriberId = :subscriberId
-          AND i.state = com.serban.notify.domain.NotificationInbox.State.UNREAD
-          AND i.createdAt <= :cutoff
-        """)
+    @Query(value = """
+        UPDATE notify.notification_inbox
+           SET state = 'READ',
+               read_at = NOW()
+         WHERE org_id = :orgId
+           AND subscriber_id = :subscriberId
+           AND state = 'UNREAD'
+           AND created_at <= NOW()
+        """, nativeQuery = true)
     int markAllAsRead(
         @Param("orgId") String orgId,
-        @Param("subscriberId") String subscriberId,
-        @Param("now") OffsetDateTime now,
-        @Param("cutoff") OffsetDateTime cutoff
+        @Param("subscriberId") String subscriberId
     );
+
+    /**
+     * Companion to {@link #markAllAsRead(String, String)} — returns the
+     * database-canonical cutoff timestamp the bulk UPDATE used so the
+     * controller can echo it back in the response shape
+     * {@code BulkMarkAllReadResponse}. The two queries run in the same
+     * transaction; PostgreSQL's {@code CURRENT_TIMESTAMP} returns the
+     * transaction start time, which is identical for both reads.
+     */
+    @Query(value = "SELECT CURRENT_TIMESTAMP", nativeQuery = true)
+    OffsetDateTime currentDatabaseTimestamp();
 
     /**
      * KVKK erasure — bulk delete inbox rows by (org, subscriber).

@@ -68,16 +68,24 @@ public class NotificationInbox {
     @Column(name = "archived_at")
     private OffsetDateTime archivedAt;
 
-    @Column(name = "created_at", nullable = false)
+    /**
+     * DB-authoritative creation timestamp (Faz 23.5 hardening — Codex
+     * thread `019e03b5`). The column carries {@code DEFAULT NOW()} so
+     * every row's {@code created_at} comes from the database clock,
+     * which keeps the mark-all-read cutoff predicate race-safe across
+     * multiple pods. The application MUST NOT set this field; JPA is
+     * told not to insert or update it via {@code insertable=false,
+     * updatable=false}.
+     */
+    @Column(name = "created_at", nullable = false, insertable = false, updatable = false)
     private OffsetDateTime createdAt;
 
     @Column(name = "expires_at")
     private OffsetDateTime expiresAt;
-
-    @PrePersist
-    void prePersist() {
-        if (createdAt == null) createdAt = OffsetDateTime.now();
-    }
+    // Faz 23.5 hardening (Codex thread `019e03b5`): no @PrePersist hook —
+    // created_at is owned by the database, not the JVM clock. Tests that
+    // need a specific created_at (e.g. "future row stays UNREAD after
+    // mark-all-read") must use raw SQL to set the column.
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }

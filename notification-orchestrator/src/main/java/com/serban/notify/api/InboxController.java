@@ -183,25 +183,17 @@ public class InboxController {
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
         @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
     ) {
-        // Codex iter on PR #97 P1 absorb: capture cutoff on the very
-        // first line of the handler so the "request-start" framing is
-        // accurate. The guard runs immediately after.
-        //
-        // Honest framing on the clock model: cutoff is set from the
-        // serving pod's JVM clock; {@code NotificationInbox.createdAt}
-        // is also JVM-clock-set on the writing pod. If multiple pods
-        // run with non-trivial clock drift (no NTP, container clock
-        // skew), a row inserted on a pod whose clock lags the cutoff
-        // window can be incorrectly bulk-marked as READ. NTP-synced
-        // clusters with sub-second drift are safe in practice; the
-        // canonical fix (DB-clock cutoff via {@code CURRENT_TIMESTAMP}
-        // in the WHERE clause AND DB-side {@code DEFAULT now()} on
-        // {@code created_at}) is tracked as a Faz 23.5 hardening
-        // follow-up; not a v1 blocker.
-        OffsetDateTime cutoff = OffsetDateTime.now();
+        // Faz 23.5 hardening (Codex thread `019e03b5`): the cutoff is
+        // now captured by the database via CURRENT_TIMESTAMP inside the
+        // same SQL statement that does the bulk UPDATE. The handler
+        // therefore no longer reads OffsetDateTime.now() — the JVM
+        // clock has zero authority on the read boundary, which makes
+        // the action race-safe across pods regardless of NTP drift.
+        // The response still echoes the cutoff timestamp for audit
+        // affordance, but it is now the DB clock value.
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
         InboxService.BulkMarkAllReadResult result =
-            inboxService.markAllAsRead(callerOrgId, subscriberId, cutoff);
+            inboxService.markAllAsRead(callerOrgId, subscriberId);
         return ResponseEntity.ok(BulkMarkAllReadResponse.from(result));
     }
 
