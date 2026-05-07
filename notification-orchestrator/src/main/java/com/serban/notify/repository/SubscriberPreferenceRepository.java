@@ -33,4 +33,15 @@ public interface SubscriberPreferenceRepository extends JpaRepository<Subscriber
     Optional<SubscriberPreference> findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannel(
         String orgId, String subscriberId, String channel
     );
+
+    /**
+     * Both-null wildcard preference (topic_key IS NULL AND channel IS
+     * NULL → "all topics, all channels"). Faz 23.5 PR2 absorb: the
+     * subscriber-facing upsert API can write this row, so the dispatch-
+     * time evaluation must also read it; otherwise a UI "mute all" rule
+     * has no effect on delivery (Codex iter P1).
+     */
+    Optional<SubscriberPreference> findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannelIsNull(
+        String orgId, String subscriberId
+    );
 }

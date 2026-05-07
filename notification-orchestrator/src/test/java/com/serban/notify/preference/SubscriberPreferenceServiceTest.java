@@ -129,6 +129,42 @@ class SubscriberPreferenceServiceTest {
         assertThat(decision.allowed()).isFalse();
     }
 
+    /**
+     * Faz 23.5 PR2 absorb (Codex iter P1 regression guard).
+     * When the only preference row is a both-null wildcard
+     * ({@code topic_key=null AND channel=null} → "mute all topics &
+     * channels"), the dispatch path must honor it. Without the 4th
+     * fallback this would silently allow delivery
+     * (no_preference_set → ALLOW).
+     */
+    @Test
+    void bothNullWildcardFallbackHonoredOnDispatch() {
+        SubscriberPreference muteAll = new SubscriberPreference();
+        muteAll.setOrgId("default");
+        muteAll.setSubscriberId("1204");
+        muteAll.setTopicKey(null);
+        muteAll.setChannel(null);
+        muteAll.setEnabled(false);
+        muteAll.setBypassForCritical(false);
+
+        when(prefRepo.findByOrgIdAndSubscriberIdAndTopicKeyAndChannel(
+            "default", "1204", "auth.password-reset", "email")).thenReturn(Optional.empty());
+        when(prefRepo.findByOrgIdAndSubscriberIdAndTopicKeyAndChannelIsNull(
+            "default", "1204", "auth.password-reset")).thenReturn(Optional.empty());
+        when(prefRepo.findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannel(
+            "default", "1204", "email")).thenReturn(Optional.empty());
+        when(prefRepo.findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannelIsNull(
+            "default", "1204")).thenReturn(Optional.of(muteAll));
+
+        NotificationIntent intent = makeIntent("auth.password-reset", NotificationIntent.Severity.info);
+        var decision = service.evaluate(intent, "email", "1204");
+
+        assertThat(decision.allowed())
+            .as("both-null mute-all wildcard must deny dispatch")
+            .isFalse();
+        assertThat(decision.reason()).isEqualTo("preference_disabled");
+    }
+
     private NotificationIntent makeIntent(String topic, NotificationIntent.Severity severity) {
         NotificationIntent i = new NotificationIntent();
         i.setIntentId("test");
