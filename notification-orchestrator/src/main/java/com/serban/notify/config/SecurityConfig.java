@@ -31,6 +31,8 @@ import java.util.Set;
  * <ul>
  *   <li>{@code /actuator/health} + {@code /actuator/prometheus}: permitAll
  *       (probe + metrics scrape no-auth)</li>
+ *   <li>{@code /api/v1/notify/dlr/**}: permitAll (Faz 23.4 PR-F — provider
+ *       webhooks; controller-level shared-secret token gate)</li>
  *   <li>{@code /api/v1/admin/notify/**}: authenticated + ROLE_PRIVACY_OFFICER
  *       (method-level @PreAuthorize on AdminErasureController)</li>
  *   <li>{@code /api/v1/notify/**}: authenticated (intent submission)</li>
@@ -63,6 +65,11 @@ public class SecurityConfig {
                 // Actuator probe + Prometheus scrape (api-gateway permitAll'da
                 // zaten ama defense-in-depth — direct port erişimi için)
                 .requestMatchers(EndpointRequest.to("health", "info", "prometheus")).permitAll()
+                // Faz 23.4 PR-F: provider DLR webhooks (NetGSM, ileride
+                // İletimerkezi vs.) — public path; auth controller seviyesinde
+                // shared-secret token (X-NetGSM-DLR-Token) ile constant-time
+                // compare. Provider Internet'ten POST yapacağı için JWT yok.
+                .requestMatchers("/api/v1/notify/dlr/**").permitAll()
                 // /api/v1/admin/notify/** — @PreAuthorize method-level (AdminErasureController)
                 // Burada path-level authenticated() yeterli; role gate method seviyesinde.
                 .requestMatchers("/api/v1/admin/notify/**").authenticated()

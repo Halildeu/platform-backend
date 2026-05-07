@@ -27,6 +27,20 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
         String intentId, String channel, String recipientHash
     );
 
+    /**
+     * Lookup by provider message id (Faz 23.4 PR-F DLR ingest).
+     *
+     * <p>Used by DLR (Delivery Receipt) callback ingestion: provider posts
+     * status update with original message id (e.g. {@code "netgsm-{jobid}"}
+     * for NetGSM); we update the existing delivery row.
+     *
+     * <p>Not strictly UNIQUE in schema (provider_msg_id is nullable for
+     * pending deliveries), but each successful send produces a unique id.
+     * Returns first match if multiple hypothetically exist (defensive;
+     * caller treats > 1 match as data error).
+     */
+    Optional<NotificationDelivery> findFirstByProviderMsgId(String providerMsgId);
+
     @Query("SELECT d FROM NotificationDelivery d WHERE d.status = :status " +
            "AND d.nextRetryAt <= :now")
     List<NotificationDelivery> findDueForRetry(

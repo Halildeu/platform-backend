@@ -137,6 +137,10 @@ notify:
         username: ${NOTIFY_ADAPTERS_SMS_NETGSM_USERNAME:}
         password: ${NOTIFY_ADAPTERS_SMS_NETGSM_PASSWORD:}
         msgheader: ${NOTIFY_ADAPTERS_SMS_NETGSM_MSGHEADER:Notify}
+        # Faz 23.4 PR-F DLR ingest shared-secret token. Production: Vault inject
+        # via kv/platform/notify/sms/netgsm dlr_token property. Empty default
+        # → DlrController fail-closed (any DLR request rejected with 401).
+        dlr-token: ${NOTIFY_ADAPTERS_SMS_NETGSM_DLR_TOKEN:}
 
   # PR5 preference + authz feature flags (Codex 019dfaaa absorb)
   # Production default: both enabled. Test profile: false (override per test class).
