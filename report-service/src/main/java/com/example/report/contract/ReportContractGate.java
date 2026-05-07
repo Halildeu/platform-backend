@@ -110,16 +110,23 @@ public final class ReportContractGate {
         ReportDefinitionSchemaValidator schemaValidator =
                 new ReportDefinitionSchemaValidator(mapper);
         TenantColumnAllowlist allowlist = new TenantColumnAllowlist(loader, mapper);
-        // Phase 2 Program 2c (Codex iter-15 §2c-AGREE absorb): wire yearly
-        // coverage lookup into RC-004 existence cross-check. Production path
-        // uses classpath:schema/workcube-schema-yearly-coverage.json (artifact
-        // produced by 2b YearlySchemaCoverageExporter; ops-managed deployment).
-        // Test/dev path: classpath:schema/workcube-schema-yearly-coverage-fixture.json.
-        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup coverageLookup =
-                new com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup(
-                        loader, mapper);
-        coverageLookup.loadCoverage();
-        ContractValidator contractValidator = ContractValidator.withDefaultRules(allowlist, coverageLookup);
+        // Phase 2 Program 2c iter-18 absorb (Codex thread 019e0119): wire
+        // unified existence lookup (canonical + yearly) into RC-004.
+        // Routing: canonical snapshot first (HR/static/global tables); yearly
+        // artifact fallback (CARI_ROWS, INVOICE_ROW per partition); empty
+        // artifact → graceful skip during pre-deployment rollout.
+        // Production paths:
+        //   - classpath:schema/workcube-schema.json (canonical, governance artifact)
+        //   - classpath:schema/workcube-schema-yearly-coverage.json (yearly, ops-managed)
+        com.example.report.contract.schema.BuildTimeSchemaTruthLookup canonical =
+                new com.example.report.contract.schema.BuildTimeSchemaTruthLookup(loader, mapper);
+        canonical.loadSnapshot();
+        com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup yearly =
+                new com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup(loader, mapper);
+        yearly.loadCoverage();
+        com.example.report.contract.schema.BuildTimeSchemaExistenceLookup existenceLookup =
+                new com.example.report.contract.schema.BuildTimeSchemaExistenceLookup(canonical, yearly);
+        ContractValidator contractValidator = ContractValidator.withDefaultRules(allowlist, existenceLookup);
         ExceptionsRegistry exceptions = new ExceptionsRegistry(
                 loader, mapper, "classpath:reports/exceptions.json", clock);
         exceptions.load();

@@ -146,15 +146,16 @@ class RC004RowFilterColumnAllowlistedTest {
     @Test
     void validate_coverageLookup_columnPresent_passesExistenceCheck() {
         // Allowlist matches, coverage PRESENT → no violation.
+        // Use yearly schemaMode so existence check is applicable.
         com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup mockLookup =
                 org.mockito.Mockito.mock(
                         com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
         org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
-        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_1", "INVOICE", "COMPANY_ID"))
+        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_2026_1", "INVOICE", "COMPANY_ID"))
                 .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
                         .CoverageStatus.PRESENT);
 
-        ReportDefinition def = newDef("INVOICE", "COMPANY_ID");
+        ReportDefinition def = newYearlyDef("INVOICE", "COMPANY_ID", "workcube_mikrolink_2026_1");
         List<ContractViolation> violations =
                 new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
 
@@ -167,11 +168,11 @@ class RC004RowFilterColumnAllowlistedTest {
                 org.mockito.Mockito.mock(
                         com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
         org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
-        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_1", "INVOICE", "COMPANY_ID"))
+        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_2026_1", "INVOICE", "COMPANY_ID"))
                 .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
                         .CoverageStatus.COLUMN_MISSING);
 
-        ReportDefinition def = newDef("INVOICE", "COMPANY_ID");
+        ReportDefinition def = newYearlyDef("INVOICE", "COMPANY_ID", "workcube_mikrolink_2026_1");
         List<ContractViolation> violations =
                 new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
 
@@ -188,11 +189,11 @@ class RC004RowFilterColumnAllowlistedTest {
                 org.mockito.Mockito.mock(
                         com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.class);
         org.mockito.Mockito.when(mockLookup.schemaCount()).thenReturn(3);
-        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_1", "INVOICE", "COMPANY_ID"))
+        org.mockito.Mockito.when(mockLookup.lookup("workcube_mikrolink_2026_1", "INVOICE", "COMPANY_ID"))
                 .thenReturn(com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup
                         .CoverageStatus.NOT_COVERED);
 
-        ReportDefinition def = newDef("INVOICE", "COMPANY_ID");
+        ReportDefinition def = newYearlyDef("INVOICE", "COMPANY_ID", "workcube_mikrolink_2026_1");
         List<ContractViolation> violations =
                 new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
 
@@ -236,7 +237,8 @@ class RC004RowFilterColumnAllowlistedTest {
 
         // INVOICE allowlists COMPANY_ID only; UNKNOWN_COL is not in allowlist
         // → produces both allowlist miss + column missing.
-        ReportDefinition def = newDef("INVOICE", "UNKNOWN_COL");
+        // Use yearly mode so existence check is applicable.
+        ReportDefinition def = newYearlyDef("INVOICE", "UNKNOWN_COL", "workcube_mikrolink_2026_1");
         List<ContractViolation> violations =
                 new RC004RowFilterColumnAllowlisted(ALLOWLIST, mockLookup).validate(def);
 
@@ -249,9 +251,22 @@ class RC004RowFilterColumnAllowlistedTest {
     }
 
     private ReportDefinition newDef(String source, String rowFilterColumn) {
+        // Static schema (workcube_mikrolink_1) — existence check NOT applicable.
+        // Used for allowlist-only test scenarios.
         return new ReportDefinition(
                 "test-rep", "1.0", "Test", null, "Finans",
                 source, "workcube_mikrolink_1", "static", null, null,
+                List.of(new ColumnDefinition(rowFilterColumn, "C", "number", 100, false)),
+                rowFilterColumn, "ASC",
+                new AccessConfig("perm", null, null,
+                        new AccessConfig.RowFilter(rowFilterColumn, "COMPANY", null)));
+    }
+
+    private ReportDefinition newYearlyDef(String source, String rowFilterColumn, String sourceSchema) {
+        // Yearly schema — existence check applicable (Phase 2 Program 2c).
+        return new ReportDefinition(
+                "test-rep", "1.0", "Test", null, "Finans",
+                source, sourceSchema, "yearly", "ACTION_DATE", null,
                 List.of(new ColumnDefinition(rowFilterColumn, "C", "number", 100, false)),
                 rowFilterColumn, "ASC",
                 new AccessConfig("perm", null, null,

@@ -1,6 +1,7 @@
 package com.example.report.contract.rules;
 
 import com.example.report.contract.report.ContractViolation;
+import com.example.report.contract.schema.BuildTimeSchemaExistenceLookup;
 import com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup;
 import com.example.report.contract.schema.BuildTimeYearlySchemaCoverageLookup.CoverageStatus;
 import com.example.report.contract.schema.TenantColumnAllowlist;
@@ -44,17 +45,31 @@ import java.util.List;
 public final class RC004RowFilterColumnAllowlisted implements ContractRule {
 
     private final TenantColumnAllowlist allowlist;
-    private final BuildTimeYearlySchemaCoverageLookup coverageLookup;
+    private final BuildTimeSchemaExistenceLookup existenceLookup;
 
     public RC004RowFilterColumnAllowlisted(TenantColumnAllowlist allowlist,
-                                            BuildTimeYearlySchemaCoverageLookup coverageLookup) {
+                                            BuildTimeSchemaExistenceLookup existenceLookup) {
         this.allowlist = allowlist;
-        this.coverageLookup = coverageLookup;
+        this.existenceLookup = existenceLookup;
+    }
+
+    /**
+     * Phase 2 Program 2c iter-18 absorb: legacy 2-arg constructor accepting
+     * only the yearly coverage lookup. Wraps it in the unified existence
+     * lookup with no canonical fallback (caller-supplied yearly only).
+     * Production gate uses the unified 3-arg constructor via
+     * {@link com.example.report.contract.ContractValidator#withDefaultRules(TenantColumnAllowlist, BuildTimeSchemaExistenceLookup)}.
+     */
+    public RC004RowFilterColumnAllowlisted(TenantColumnAllowlist allowlist,
+                                            BuildTimeYearlySchemaCoverageLookup yearlyOnly) {
+        this(allowlist, yearlyOnly == null
+                ? null
+                : new BuildTimeSchemaExistenceLookup(null, yearlyOnly));
     }
 
     /** Backward-compat: allowlist only (1d behavior, no existence check). */
     public RC004RowFilterColumnAllowlisted(TenantColumnAllowlist allowlist) {
-        this(allowlist, null);
+        this(allowlist, (BuildTimeSchemaExistenceLookup) null);
     }
 
     /**
@@ -64,7 +79,7 @@ public final class RC004RowFilterColumnAllowlisted implements ContractRule {
      * inject the real allowlist for production gate use.
      */
     public RC004RowFilterColumnAllowlisted() {
-        this(new TenantColumnAllowlist(java.util.Map.of()), null);
+        this(new TenantColumnAllowlist(java.util.Map.of()), (BuildTimeSchemaExistenceLookup) null);
     }
 
     @Override
@@ -109,25 +124,30 @@ public final class RC004RowFilterColumnAllowlisted implements ContractRule {
                             + "review allowlist or correct scopeType)"));
         }
 
-        // Phase 2 Program 2c (Codex iter-15 §2c-AGREE absorb): schema truth
-        // existence cross-check. NOT_COVERED → SCHEMA_TRUTH_COVERAGE_MISSING
-        // (governance/coverage problem); COLUMN_MISSING → "Column not found"
-        // (report-definition problem); PRESENT → pass.
-        // Graceful degradation: when artifact is empty (schemaCount=0), skip
-        // existence check entirely — environment hasn't deployed 2b artifact
-        // yet, so the lookup cannot authoritatively assert coverage. This
-        // avoids a flood of SCHEMA_TRUTH_COVERAGE_MISSING for every legitimate
-        // rowFilter pre-2b deployment.
-        if (coverageLookup != null && coverageLookup.schemaCount() > 0) {
-            // For yearly schemaMode: probe a representative partition. Since
-            // this is build-time and the artifact is generated from observed
-            // schemas, we probe whatever yearly partition the artifact has;
-            // schemaResolver runtime will pick the actual one per-request.
-            // Strategy: try direct sourceSchema first (static); if that's not
-            // covered, fall through to ALL covered schemas matching the report's
-            // tenant — this captures the case where def.sourceSchema is "
-            // workcube_mikrolink_<tenantId>" (static) but coverage is by year.
-            CoverageStatus status = coverageLookup.lookup(
+        // Phase 2 Program 2c (Codex iter-18 §2c-AGREE absorb, thread 019e0119):
+        // schema truth existence cross-check via unified existence lookup
+        // (canonical + yearly).
+        //
+        // Scope: existence check runs only for reports whose tables are
+        // expected to be in the governance artifacts:
+        //   - yearly schemaMode reports (CARI_ROWS/INVOICE_ROW from 2b yearly artifact)
+        //   - canonical-snapshot HR tables (EMPLOYEES_PUANTAJ_ROWS, OFFTIME, etc.)
+        // Static-schema tenant reports (workcube_mikrolink_<id>) referencing
+        // tables outside both artifact scopes are governance-debt-tracked via
+        // RC-004 allowlist + 2e scope migration; we don't double-flag them
+        // with SCHEMA_TRUTH_COVERAGE_MISSING.
+        //
+        // Routing inside BuildTimeSchemaExistenceLookup:
+        //   1. Canonical snapshot first (HR/static/global tables)
+        //   2. Yearly artifact fallback (CARI_ROWS, INVOICE_ROW, ...)
+        //   3. Empty artifact → graceful skip (pre-deployment rollout)
+        //
+        // NOT_COVERED → SCHEMA_TRUTH_COVERAGE_MISSING (governance/coverage gap)
+        // COLUMN_MISSING → RC-004 Column not found (report-definition issue)
+        // PRESENT → pass
+        boolean existenceCheckApplicable = isYearlyOrCanonicalScope(def);
+        if (existenceCheckApplicable && existenceLookup != null && existenceLookup.enforcementActive()) {
+            CoverageStatus status = existenceLookup.lookup(
                     def.sourceSchema(), def.source(), rowFilter.column());
             switch (status) {
                 case NOT_COVERED -> violations.add(ContractViolation.fail(
@@ -148,5 +168,33 @@ public final class RC004RowFilterColumnAllowlisted implements ContractRule {
         }
 
         return violations;
+    }
+
+    /**
+     * Phase 2 Program 2c iter-18 §2c absorb: existence check applicability
+     * gate. Returns true only when the report's source table is expected to
+     * be in either the canonical snapshot (HR/global tables) or the yearly
+     * artifact (yearly partitions).
+     *
+     * <p>Static-schema tenant reports (workcube_mikrolink_&lt;id&gt;) referencing
+     * tables outside both artifact scopes (e.g. ORDERS, ORDER_ROW in
+     * legacy reports) are NOT subject to existence enforcement here; they
+     * are governance-debt-tracked via RC-004 allowlist + 2e scope migration.
+     */
+    private static boolean isYearlyOrCanonicalScope(ReportDefinition def) {
+        if (def == null) {
+            return false;
+        }
+        // Yearly partitioning: definitely covered by 2b artifact contract
+        if ("yearly".equals(def.schemaMode())) {
+            return true;
+        }
+        // Static reports pointing to canonical workcube_mikrolink schema:
+        // HR/global tables expected in canonical snapshot.
+        if (def.sourceSchema() != null
+                && def.sourceSchema().equalsIgnoreCase("workcube_mikrolink")) {
+            return true;
+        }
+        return false;
     }
 }
