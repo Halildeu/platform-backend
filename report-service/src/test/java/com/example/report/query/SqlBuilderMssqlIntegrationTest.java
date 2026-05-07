@@ -6,14 +6,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.report.registry.AccessConfig;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
+import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.containers.MSSQLServerContainer;
@@ -48,7 +49,18 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @Testcontainers(disabledWithoutDocker = true)
 @Tag("integration")
+@Execution(ExecutionMode.SAME_THREAD)
 class SqlBuilderMssqlIntegrationTest {
+
+    /**
+     * Production-shaped schema name. Workcube tenant schemas follow the
+     * pattern {@code workcube_mikrolink_<year>_<companyId>}; using one
+     * here exercises the {@link SqlBuilder} {@code [schema].[table]}
+     * bracket quoting and the {@code {schema}} placeholder replacement
+     * with a real underscore-heavy identifier (Codex iter-1 absorb on
+     * PR #88 schema parity finding).
+     */
+    private static final String TEST_SCHEMA = "workcube_mikrolink_2026_35";
 
     @Container
     @SuppressWarnings("resource")
@@ -69,26 +81,32 @@ class SqlBuilderMssqlIntegrationTest {
         jdbc = new NamedParameterJdbcTemplate(ds);
         builder = new SqlBuilder();
 
-        // Top-level test schema. The production source uses
-        // workcube_mikrolink* multi-tenant schemas; we mimic the layout
-        // with a single 'dbo' schema since SqlBuilder's bracket-quoting
-        // is the same regardless of schema name.
+        // Create the production-shaped schema once per container.
         jdbc.getJdbcTemplate().execute(
-                "IF SCHEMA_ID('dbo') IS NULL EXEC('CREATE SCHEMA dbo')");
+                "IF SCHEMA_ID('" + TEST_SCHEMA + "') IS NULL "
+                        + "EXEC('CREATE SCHEMA [" + TEST_SCHEMA + "]')");
     }
 
     /**
-     * Helper: create a temporary scratch table, seed it with rows, and
-     * return a {@link ReportDefinition} pointing at it.
+     * Helper: create a temporary scratch table inside the production-
+     * shaped {@code TEST_SCHEMA}, seed it with rows, and return a
+     * {@link ReportDefinition} pointing at it. Callers pass
+     * {@code createSql} / {@code seedSql} with a {@code {schema}}
+     * placeholder so the helper substitutes the same identifier that
+     * {@link SqlBuilder} will quote in the generated FROM clause.
      */
     private static ReportDefinition scratch(String tableName,
                                               List<ColumnDefinition> columns,
-                                              String createSql,
-                                              List<String> seedSql) {
-        jdbc.getJdbcTemplate().execute("IF OBJECT_ID('dbo." + tableName + "', 'U') IS NOT NULL DROP TABLE dbo." + tableName);
-        jdbc.getJdbcTemplate().execute(createSql);
-        for (String row : seedSql) {
-            jdbc.getJdbcTemplate().execute(row);
+                                              String createSqlTemplate,
+                                              List<String> seedSqlTemplates) {
+        String fullyQualified = "[" + TEST_SCHEMA + "].[" + tableName + "]";
+        jdbc.getJdbcTemplate().execute(
+                "IF OBJECT_ID('" + TEST_SCHEMA + "." + tableName + "', 'U') IS NOT NULL "
+                        + "DROP TABLE " + fullyQualified);
+        jdbc.getJdbcTemplate().execute(
+                createSqlTemplate.replace("{schema}", TEST_SCHEMA));
+        for (String row : seedSqlTemplates) {
+            jdbc.getJdbcTemplate().execute(row.replace("{schema}", TEST_SCHEMA));
         }
         return new ReportDefinition(
                 "scratch-" + tableName,
@@ -97,7 +115,7 @@ class SqlBuilderMssqlIntegrationTest {
                 "test",
                 "test",
                 tableName,
-                "dbo",
+                TEST_SCHEMA,
                 "static",
                 null,
                 null,
@@ -114,13 +132,13 @@ class SqlBuilderMssqlIntegrationTest {
                 List.of(
                         new ColumnDefinition("id", "ID", "number", 50, false),
                         new ColumnDefinition("amount", "Amount", "number", 100, false)),
-                "CREATE TABLE dbo.tx (id INT NOT NULL PRIMARY KEY, amount DECIMAL(18,2) NOT NULL)",
+                "CREATE TABLE [{schema}].[tx] (id INT NOT NULL PRIMARY KEY, amount DECIMAL(18,2) NOT NULL)",
                 List.of(
-                        "INSERT INTO dbo.tx VALUES (1, 100.00)",
-                        "INSERT INTO dbo.tx VALUES (2, 200.00)",
-                        "INSERT INTO dbo.tx VALUES (3, 300.00)",
-                        "INSERT INTO dbo.tx VALUES (4, 400.00)",
-                        "INSERT INTO dbo.tx VALUES (5, 500.00)"));
+                        "INSERT INTO [{schema}].[tx] VALUES (1, 100.00)",
+                        "INSERT INTO [{schema}].[tx] VALUES (2, 200.00)",
+                        "INSERT INTO [{schema}].[tx] VALUES (3, 300.00)",
+                        "INSERT INTO [{schema}].[tx] VALUES (4, 400.00)",
+                        "INSERT INTO [{schema}].[tx] VALUES (5, 500.00)"));
 
         // Page 2, size 2 → rows 3, 4 with default ORDER BY (SELECT NULL).
         // We pass an explicit sort to make the assertion deterministic.
@@ -134,6 +152,13 @@ class SqlBuilderMssqlIntegrationTest {
         assertThat(rows).hasSize(2);
         assertThat(rows.get(0).get("id")).isEqualTo(3);
         assertThat(rows.get(1).get("id")).isEqualTo(4);
+        // DECIMAL(18,2) MUST round-trip through JDBC as BigDecimal — this
+        // proves the SqlBuilder pipeline is contract-stable for the
+        // currency columns the report layer relies on (Codex iter-1
+        // absorb on PR #88 precision contract finding).
+        assertThat(rows.get(0).get("amount")).isInstanceOf(BigDecimal.class);
+        assertThat(((BigDecimal) rows.get(0).get("amount")))
+                .isEqualByComparingTo(new BigDecimal("300.00"));
     }
 
     @Test
@@ -141,11 +166,11 @@ class SqlBuilderMssqlIntegrationTest {
         ReportDefinition def = scratch(
                 "tx_count",
                 List.of(new ColumnDefinition("id", "ID", "number", 50, false)),
-                "CREATE TABLE dbo.tx_count (id INT NOT NULL PRIMARY KEY)",
+                "CREATE TABLE [{schema}].[tx_count] (id INT NOT NULL PRIMARY KEY)",
                 List.of(
-                        "INSERT INTO dbo.tx_count VALUES (1)",
-                        "INSERT INTO dbo.tx_count VALUES (2)",
-                        "INSERT INTO dbo.tx_count VALUES (3)"));
+                        "INSERT INTO [{schema}].[tx_count] VALUES (1)",
+                        "INSERT INTO [{schema}].[tx_count] VALUES (2)",
+                        "INSERT INTO [{schema}].[tx_count] VALUES (3)"));
 
         SqlBuilder.BuiltQuery q = builder.buildCountQuery(
                 def, null, Collections.emptyMap(), List.of("id"), null, null);
@@ -161,13 +186,13 @@ class SqlBuilderMssqlIntegrationTest {
                 List.of(
                         new ColumnDefinition("category", "Cat", "text", 100, false),
                         new ColumnDefinition("amount", "Amount", "number", 100, false)),
-                "CREATE TABLE dbo.tx_grouped (category NVARCHAR(20) NOT NULL, amount DECIMAL(18,2) NOT NULL)",
+                "CREATE TABLE [{schema}].[tx_grouped] (category NVARCHAR(20) NOT NULL, amount DECIMAL(18,2) NOT NULL)",
                 List.of(
-                        "INSERT INTO dbo.tx_grouped VALUES ('FIN', 100.00)",
-                        "INSERT INTO dbo.tx_grouped VALUES ('FIN', 50.00)",
-                        "INSERT INTO dbo.tx_grouped VALUES ('FIN', 25.00)",
-                        "INSERT INTO dbo.tx_grouped VALUES ('HR', 1000.00)",
-                        "INSERT INTO dbo.tx_grouped VALUES ('HR', 500.00)"));
+                        "INSERT INTO [{schema}].[tx_grouped] VALUES ('FIN', 100.00)",
+                        "INSERT INTO [{schema}].[tx_grouped] VALUES ('FIN', 50.00)",
+                        "INSERT INTO [{schema}].[tx_grouped] VALUES ('FIN', 25.00)",
+                        "INSERT INTO [{schema}].[tx_grouped] VALUES ('HR', 1000.00)",
+                        "INSERT INTO [{schema}].[tx_grouped] VALUES ('HR', 500.00)"));
 
         SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
                 def, null, List.of("category", "amount"),
@@ -181,35 +206,66 @@ class SqlBuilderMssqlIntegrationTest {
         // ORDER BY [category] ASC by default → FIN first, HR second.
         assertThat(rows.get(0).get("category")).isEqualTo("FIN");
         assertThat(((Number) rows.get(0).get("_rowCount")).longValue()).isEqualTo(3L);
-        assertThat(((Number) rows.get(0).get("amount")).doubleValue()).isEqualTo(175.00);
+        assertThat(rows.get(0).get("amount")).isInstanceOf(BigDecimal.class);
+        assertThat(((BigDecimal) rows.get(0).get("amount")))
+                .isEqualByComparingTo(new BigDecimal("175.00"));
         assertThat(rows.get(1).get("category")).isEqualTo("HR");
         assertThat(((Number) rows.get(1).get("_rowCount")).longValue()).isEqualTo(2L);
-        assertThat(((Number) rows.get(1).get("amount")).doubleValue()).isEqualTo(1500.00);
+        assertThat(((BigDecimal) rows.get(1).get("amount")))
+                .isEqualByComparingTo(new BigDecimal("1500.00"));
     }
 
     @Test
-    void buildGroupedQuery_avgAndMinMax_overRealMssql() {
+    void buildGroupedQuery_avgMinMax_overRealMssql() {
         ReportDefinition def = scratch(
                 "tx_aggs",
                 List.of(
                         new ColumnDefinition("region", "R", "text", 100, false),
                         new ColumnDefinition("amount", "A", "number", 100, false)),
-                "CREATE TABLE dbo.tx_aggs (region NVARCHAR(20) NOT NULL, amount DECIMAL(18,2) NOT NULL)",
+                "CREATE TABLE [{schema}].[tx_aggs] (region NVARCHAR(20) NOT NULL, amount DECIMAL(18,2) NOT NULL)",
                 List.of(
-                        "INSERT INTO dbo.tx_aggs VALUES ('EU', 100.00)",
-                        "INSERT INTO dbo.tx_aggs VALUES ('EU', 200.00)",
-                        "INSERT INTO dbo.tx_aggs VALUES ('EU', 300.00)"));
+                        "INSERT INTO [{schema}].[tx_aggs] VALUES ('EU', 100.00)",
+                        "INSERT INTO [{schema}].[tx_aggs] VALUES ('EU', 200.00)",
+                        "INSERT INTO [{schema}].[tx_aggs] VALUES ('EU', 300.00)"));
 
-        SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+        // AVG branch.
+        SqlBuilder.BuiltQuery avgQ = builder.buildGroupedQuery(
                 def, null, List.of("region", "amount"),
                 "region",
                 List.of(new SqlBuilder.GroupedAggregation("amount", "avg")),
                 Collections.emptyMap(), Collections.emptyList(),
                 null, null, 1, 50);
 
-        List<Map<String, Object>> rows = jdbc.queryForList(q.sql(), q.params());
-        assertThat(rows).hasSize(1);
-        assertThat(((Number) rows.get(0).get("amount")).doubleValue()).isEqualTo(200.00);
+        List<Map<String, Object>> avgRows = jdbc.queryForList(avgQ.sql(), avgQ.params());
+        assertThat(avgRows).hasSize(1);
+        assertThat(avgRows.get(0).get("amount")).isInstanceOf(BigDecimal.class);
+        assertThat(((BigDecimal) avgRows.get(0).get("amount")))
+                .isEqualByComparingTo(new BigDecimal("200.00"));
+
+        // MIN branch — Codex iter-1 absorb on PR #88 aggregation breadth
+        // finding (avg alone leaves min/max as silent surface).
+        SqlBuilder.BuiltQuery minQ = builder.buildGroupedQuery(
+                def, null, List.of("region", "amount"),
+                "region",
+                List.of(new SqlBuilder.GroupedAggregation("amount", "min")),
+                Collections.emptyMap(), Collections.emptyList(),
+                null, null, 1, 50);
+        List<Map<String, Object>> minRows = jdbc.queryForList(minQ.sql(), minQ.params());
+        assertThat(minRows).hasSize(1);
+        assertThat(((BigDecimal) minRows.get(0).get("amount")))
+                .isEqualByComparingTo(new BigDecimal("100.00"));
+
+        // MAX branch.
+        SqlBuilder.BuiltQuery maxQ = builder.buildGroupedQuery(
+                def, null, List.of("region", "amount"),
+                "region",
+                List.of(new SqlBuilder.GroupedAggregation("amount", "max")),
+                Collections.emptyMap(), Collections.emptyList(),
+                null, null, 1, 50);
+        List<Map<String, Object>> maxRows = jdbc.queryForList(maxQ.sql(), maxQ.params());
+        assertThat(maxRows).hasSize(1);
+        assertThat(((BigDecimal) maxRows.get(0).get("amount")))
+                .isEqualByComparingTo(new BigDecimal("300.00"));
     }
 
     @Test
@@ -219,12 +275,12 @@ class SqlBuilderMssqlIntegrationTest {
                 List.of(
                         new ColumnDefinition("category", "Cat", "text", 100, false),
                         new ColumnDefinition("amount", "Amount", "number", 100, false)),
-                "CREATE TABLE dbo.tx_bucket (category NVARCHAR(20) NOT NULL, amount DECIMAL(18,2) NOT NULL)",
+                "CREATE TABLE [{schema}].[tx_bucket] (category NVARCHAR(20) NOT NULL, amount DECIMAL(18,2) NOT NULL)",
                 List.of(
-                        "INSERT INTO dbo.tx_bucket VALUES ('FIN', 100.00)",
-                        "INSERT INTO dbo.tx_bucket VALUES ('FIN', 50.00)",
-                        "INSERT INTO dbo.tx_bucket VALUES ('HR', 1000.00)",
-                        "INSERT INTO dbo.tx_bucket VALUES ('OPS', 5.00)"));
+                        "INSERT INTO [{schema}].[tx_bucket] VALUES ('FIN', 100.00)",
+                        "INSERT INTO [{schema}].[tx_bucket] VALUES ('FIN', 50.00)",
+                        "INSERT INTO [{schema}].[tx_bucket] VALUES ('HR', 1000.00)",
+                        "INSERT INTO [{schema}].[tx_bucket] VALUES ('OPS', 5.00)"));
 
         SqlBuilder.BuiltQuery q = builder.buildGroupedCountQuery(
                 def, null, List.of("category", "amount"), "category",
@@ -242,16 +298,29 @@ class SqlBuilderMssqlIntegrationTest {
         // ISNULL(NULLIF(LTRIM(RTRIM(x)), ''), 'Belirtilmemiş') so
         // null buckets collapse into a single sentinel value the
         // expansion path can handle. Verify the same behavior on a
-        // scratch table with a custom sourceQuery.
+        // scratch table with a custom sourceQuery using the
+        // {schema} placeholder (production parity — fin-muhasebe-detay
+        // and friends use the same pattern).
+        //
+        // The 'Belirtilmemiş' literal is N-prefixed so MSSQL treats it
+        // as NVARCHAR; without the N prefix the default Latin1 code
+        // page (CI Testcontainers default collation
+        // SQL_Latin1_General_CP1_CI_AS) silently strips the 'ş' to
+        // 's', breaking the assertion. Production Workcube DBs run
+        // Turkish_CI_AS so they happen to round-trip; we want the
+        // test deterministic across collations.
+        String tableName = "tx_null";
+        String fullyQualified = "[" + TEST_SCHEMA + "].[" + tableName + "]";
         jdbc.getJdbcTemplate().execute(
-                "IF OBJECT_ID('dbo.tx_null', 'U') IS NOT NULL DROP TABLE dbo.tx_null");
+                "IF OBJECT_ID('" + TEST_SCHEMA + "." + tableName + "', 'U') IS NOT NULL "
+                        + "DROP TABLE " + fullyQualified);
         jdbc.getJdbcTemplate().execute(
-                "CREATE TABLE dbo.tx_null (id INT NOT NULL PRIMARY KEY, "
+                "CREATE TABLE " + fullyQualified + " (id INT NOT NULL PRIMARY KEY, "
                         + "department NVARCHAR(20) NULL, amount DECIMAL(18,2) NOT NULL)");
-        jdbc.getJdbcTemplate().execute("INSERT INTO dbo.tx_null VALUES (1, 'FIN', 100.00)");
-        jdbc.getJdbcTemplate().execute("INSERT INTO dbo.tx_null VALUES (2, NULL,  50.00)");
-        jdbc.getJdbcTemplate().execute("INSERT INTO dbo.tx_null VALUES (3, '',    25.00)");
-        jdbc.getJdbcTemplate().execute("INSERT INTO dbo.tx_null VALUES (4, '   ', 10.00)");
+        jdbc.getJdbcTemplate().execute("INSERT INTO " + fullyQualified + " VALUES (1, N'FIN', 100.00)");
+        jdbc.getJdbcTemplate().execute("INSERT INTO " + fullyQualified + " VALUES (2, NULL,  50.00)");
+        jdbc.getJdbcTemplate().execute("INSERT INTO " + fullyQualified + " VALUES (3, '',    25.00)");
+        jdbc.getJdbcTemplate().execute("INSERT INTO " + fullyQualified + " VALUES (4, '   ', 10.00)");
 
         ReportDefinition def = new ReportDefinition(
                 "scratch-tx_null",
@@ -260,10 +329,10 @@ class SqlBuilderMssqlIntegrationTest {
                 "test",
                 "test",
                 null,
-                "dbo",
+                TEST_SCHEMA,
                 "static",
                 null,
-                "SELECT id, ISNULL(NULLIF(LTRIM(RTRIM(department)), ''), 'Belirtilmemiş') AS department, amount FROM dbo.tx_null",
+                "SELECT id, ISNULL(NULLIF(LTRIM(RTRIM(department)), ''), N'Belirtilmemiş') AS department, amount FROM [{schema}].[tx_null]",
                 List.of(
                         new ColumnDefinition("id", "ID", "number", 50, false),
                         new ColumnDefinition("department", "Dept", "text", 100, false),
@@ -285,11 +354,11 @@ class SqlBuilderMssqlIntegrationTest {
         assertThat(rows).anyMatch(r ->
                 "Belirtilmemiş".equals(r.get("department"))
                         && ((Number) r.get("_rowCount")).longValue() == 3L
-                        && ((Number) r.get("amount")).doubleValue() == 85.00);
+                        && ((BigDecimal) r.get("amount")).compareTo(new BigDecimal("85.00")) == 0);
         assertThat(rows).anyMatch(r ->
                 "FIN".equals(r.get("department"))
                         && ((Number) r.get("_rowCount")).longValue() == 1L
-                        && ((Number) r.get("amount")).doubleValue() == 100.00);
+                        && ((BigDecimal) r.get("amount")).compareTo(new BigDecimal("100.00")) == 0);
     }
 
     @Test
@@ -297,8 +366,8 @@ class SqlBuilderMssqlIntegrationTest {
         ReportDefinition def = scratch(
                 "tx_reject",
                 List.of(new ColumnDefinition("id", "ID", "number", 50, false)),
-                "CREATE TABLE dbo.tx_reject (id INT NOT NULL PRIMARY KEY)",
-                List.of("INSERT INTO dbo.tx_reject VALUES (1)"));
+                "CREATE TABLE [{schema}].[tx_reject] (id INT NOT NULL PRIMARY KEY)",
+                List.of("INSERT INTO [{schema}].[tx_reject] VALUES (1)"));
 
         // builder validates against the visible-column allowlist before
         // hitting the DB; we still cover this as an integration-level
@@ -318,13 +387,13 @@ class SqlBuilderMssqlIntegrationTest {
                 List.of(
                         new ColumnDefinition("id", "ID", "number", 50, false),
                         new ColumnDefinition("amount", "Amount", "number", 100, false)),
-                "CREATE TABLE dbo.tx_export (id INT NOT NULL PRIMARY KEY, amount DECIMAL(18,2) NOT NULL)",
+                "CREATE TABLE [{schema}].[tx_export] (id INT NOT NULL PRIMARY KEY, amount DECIMAL(18,2) NOT NULL)",
                 List.of(
-                        "INSERT INTO dbo.tx_export VALUES (1, 10.00)",
-                        "INSERT INTO dbo.tx_export VALUES (2, 20.00)",
-                        "INSERT INTO dbo.tx_export VALUES (3, 30.00)",
-                        "INSERT INTO dbo.tx_export VALUES (4, 40.00)",
-                        "INSERT INTO dbo.tx_export VALUES (5, 50.00)"));
+                        "INSERT INTO [{schema}].[tx_export] VALUES (1, 10.00)",
+                        "INSERT INTO [{schema}].[tx_export] VALUES (2, 20.00)",
+                        "INSERT INTO [{schema}].[tx_export] VALUES (3, 30.00)",
+                        "INSERT INTO [{schema}].[tx_export] VALUES (4, 40.00)",
+                        "INSERT INTO [{schema}].[tx_export] VALUES (5, 50.00)"));
 
         SqlBuilder.BuiltQuery q = builder.buildExportQuery(
                 def, null, List.of("id", "amount"),
@@ -347,11 +416,11 @@ class SqlBuilderMssqlIntegrationTest {
                 List.of(
                         new ColumnDefinition("id", "ID", "number", 50, false),
                         new ColumnDefinition("name", "Name", "text", 100, false)),
-                "CREATE TABLE dbo.tx_filter (id INT NOT NULL PRIMARY KEY, name NVARCHAR(50) NOT NULL)",
+                "CREATE TABLE [{schema}].[tx_filter] (id INT NOT NULL PRIMARY KEY, name NVARCHAR(50) NOT NULL)",
                 List.of(
-                        "INSERT INTO dbo.tx_filter VALUES (1, 'alpha')",
-                        "INSERT INTO dbo.tx_filter VALUES (2, 'beta')",
-                        "INSERT INTO dbo.tx_filter VALUES (3, 'alphabet')"));
+                        "INSERT INTO [{schema}].[tx_filter] VALUES (1, 'alpha')",
+                        "INSERT INTO [{schema}].[tx_filter] VALUES (2, 'beta')",
+                        "INSERT INTO [{schema}].[tx_filter] VALUES (3, 'alphabet')"));
 
         // FilterTranslator's "contains" should produce LIKE '%alpha%'
         // which on T-SQL with the default collation matches both

@@ -259,9 +259,13 @@
         <!--
         PR-0.5 (2026-05) reporting hardening: opt-in profile that flips
         Surefire's group filter from "exclude integration" to "include
-        everything (tagged + untagged)". Used by the
+        ONLY @Tag('integration') tests". Used by the
         `report-service-mssql-integration-test` CI job and by developers:
             ./mvnw -pl report-service test -Pintegration-tests
+        Codex iter-1 absorb on PR #88: prior comment claimed "include
+        everything (tagged + untagged)", but the configuration below
+        sets <groups>integration</groups> which restricts the run to
+        @Tag('integration')-only — comment now matches behavior.
         -->
         <profile>
             <id>integration-tests</id>
