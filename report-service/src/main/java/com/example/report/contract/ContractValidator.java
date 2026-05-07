@@ -83,11 +83,15 @@ public final class ContractValidator {
                     all.addAll(ruleViolations);
                 }
             } catch (RuntimeException e) {
-                // Defensive: a rule throwing should not derail the whole sweep.
-                all.add(ContractViolation.warn(
+                // Codex iter-1 BLOCKING absorb: rule implementation crash =
+                // validator infrastructure error → FAIL fail-closed (NOT WARN).
+                // RC-007 "WARN escalation YASAK" prensibi heuristic uyarıları
+                // için; rule crash'i ayrı kategori. WARN olsaydı bozuk FAIL
+                // rule sessizce CI'dan geçerdi.
+                all.add(ContractViolation.fail(
                         rule.ruleId(), def.key(), null,
-                        "Rule threw RuntimeException: " + e.getMessage()
-                                + " — investigate; treated as WARN to avoid CI fail-soft"));
+                        "RULE_EXECUTION_ERROR: rule threw RuntimeException: " + e.getMessage()
+                                + " — validator failed closed; fix rule implementation"));
             }
         }
         return all;

@@ -3,6 +3,7 @@ package com.example.report.contract;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.report.contract.report.ContractViolation;
+import com.example.report.contract.rules.ContractRule;
 import com.example.report.registry.AccessConfig;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
@@ -167,6 +168,26 @@ class ContractValidatorTest {
 
         // RC-008 should not flag yearly mode (workcube-year-company is registered)
         assertThat(violations).noneMatch(v -> "RC-008".equals(v.ruleId()));
+    }
+
+    @Test
+    void validate_ruleRuntimeException_becomesFailViolation() {
+        // Codex iter-1 BLOCKING absorb: rule crash → FAIL fail-closed.
+        ContractRule broken = new ContractRule() {
+            @Override public String ruleId() { return "RC-999"; }
+            @Override public List<ContractViolation> validate(ReportDefinition def) {
+                throw new RuntimeException("boom");
+            }
+        };
+        ContractValidator validatorWithBroken = new ContractValidator(List.of(broken));
+
+        List<ContractViolation> violations = validatorWithBroken.validate(
+                buildDef("test", "yearly", "ACTION_DATE"));
+
+        assertThat(violations).anyMatch(v ->
+                "RC-999".equals(v.ruleId())
+                        && v.severity() == ContractViolation.Severity.FAIL
+                        && v.message().contains("RULE_EXECUTION_ERROR"));
     }
 
     @Test
