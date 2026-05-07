@@ -15,12 +15,16 @@ import java.util.Map;
  * InboxEventPublisher — emits {@link InboxUpdatedEvent} after subscriber
  * inbox state mutation (Faz 23.3 PR-E.3 + Faz 23.4 PR-E.4 cross-pod).
  *
- * <p>Recomputes unread count via {@link NotificationInboxRepository#countUnreadBySubscriber}
- * before publishing — listener (SSE controller) pushes fresh count to client.
+ * <p><b>Cross-pod default (Faz 23.4 PR-E.4)</b>: emits dirty-flag
+ * NOTIFY (orgId+subscriberId only); count recomputed by
+ * {@link InboxNotifyListener} post-commit via
+ * {@link NotificationInboxRepository#countUnreadBySubscriber}. Avoids
+ * stale-snapshot race in concurrent mutations.
  *
- * <p>Tradeoff: one extra COUNT query per state mutation. Index
- * {@code idx_inbox_unread_badge} (V9 partial index WHERE state = UNREAD)
- * makes this O(unread rows for subscriber) — typically small.
+ * <p><b>Single-pod fallback</b>: count computed in-process before
+ * Spring event publish. Index {@code idx_inbox_unread_badge} (V9 partial
+ * index WHERE state = UNREAD) makes count query O(unread rows for
+ * subscriber) — typically small.
  *
  * <p><b>Faz 23.4 PR-E.4 cross-pod broadcast</b>: PostgreSQL
  * {@code LISTEN/NOTIFY} pattern. Publisher emits {@code NOTIFY inbox_updated,
