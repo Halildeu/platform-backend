@@ -509,8 +509,8 @@ Silent flat fallback **yok** (Plan v2.1 §1 v3 revize iter-15 prensibi: "Flag of
 
 ## 9. Definition of Done
 
-- [ ] `SqlBuilder.buildPivotedGroupedQuery(...)` API yazılı + 5 unit test PASS
-- [ ] `SqlBuilder` weighted-avg path 3 unit test PASS (raw-stream projection + outer formula + null-skip denominator)
+- [ ] `SqlBuilder.buildPivotedGroupedQuery(...)` API yazılı + 3 pivot unit test PASS (single-level + bind-param/safe-alias + multi-pivot reject + discovery preflight)
+- [ ] `SqlBuilder` weighted-avg path 3 unit test PASS (raw-stream projection + outer null-skip formula + null-skip denominator)
 - [ ] `SqlBuilderMssqlIntegrationTest` 5 yeni IT PASS (CI lane: `report-service-mssql-integration-test`)
 - [ ] `POST /api/v1/reports/{key}/query` controller `pivotMode=true` + `valueCols[].aggFunc=weightedAvg` path entegre (501 → 200)
 - [ ] `ReportCapabilities` envelope `serverSidePivoting=true` + `supportedAggFuncs=["sum","avg","min","max","count","weightedAvg"]`
