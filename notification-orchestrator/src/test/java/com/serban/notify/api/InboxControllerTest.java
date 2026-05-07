@@ -224,7 +224,7 @@ class InboxControllerTest {
                 inv.getArgument(2)
             ));
 
-        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+        mockMvc.perform(post("/api/v1/notify/inbox/me/mark-all-read")
                 .header("X-Org-Id", "default")
                 .header("X-Subscriber-Id", "sub-1"))
             .andExpect(status().isOk())
@@ -240,7 +240,7 @@ class InboxControllerTest {
                 inv.getArgument(2)
             ));
 
-        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+        mockMvc.perform(post("/api/v1/notify/inbox/me/mark-all-read")
                 .header("X-Org-Id", "default")
                 .header("X-Subscriber-Id", "sub-1"))
             .andExpect(status().isOk())
@@ -249,14 +249,14 @@ class InboxControllerTest {
 
     @Test
     void markAllAsReadWithoutOrgIdReturns400() throws Exception {
-        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+        mockMvc.perform(post("/api/v1/notify/inbox/me/mark-all-read")
                 .header("X-Subscriber-Id", "sub-1"))
             .andExpect(status().isBadRequest());
     }
 
     @Test
     void markAllAsReadWithoutSubscriberIdReturns400() throws Exception {
-        mockMvc.perform(post("/api/v1/notify/inbox/mark-all-read")
+        mockMvc.perform(post("/api/v1/notify/inbox/me/mark-all-read")
                 .header("X-Org-Id", "default"))
             .andExpect(status().isBadRequest());
     }

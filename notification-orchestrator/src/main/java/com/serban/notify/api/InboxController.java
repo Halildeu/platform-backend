@@ -157,7 +157,7 @@ public class InboxController {
     }
 
     /**
-     * POST /api/v1/notify/inbox/mark-all-read — Faz 23.5 PR1.
+     * POST /api/v1/notify/inbox/me/mark-all-read — Faz 23.5 PR1.
      *
      * <p>Replaces the v1 UI's N+1 mark-read loop with a single SQL UPDATE.
      * The handler captures the server-side request-start timestamp before
@@ -173,7 +173,7 @@ public class InboxController {
      * @return {@link BulkMarkAllReadResponse} echoing the affected row
      *         count and the cutoff that was applied (audit affordance)
      */
-    @PostMapping("/mark-all-read")
+    @PostMapping("/me/mark-all-read")
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Bulk mark-all-read result"),
         @ApiResponse(responseCode = "400", description = "Validation error"),

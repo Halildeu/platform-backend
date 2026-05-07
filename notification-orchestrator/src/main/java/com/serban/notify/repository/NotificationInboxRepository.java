@@ -136,18 +136,28 @@ public interface NotificationInboxRepository extends JpaRepository<NotificationI
     /**
      * Bulk mark-all-read (Faz 23.5 PR1).
      *
-     * <p>Flips every UNREAD row owned by the subscriber to READ in one
-     * SQL statement, returning the affected row count for the response
-     * body. Idempotent: a follow-up call with no UNREAD rows returns 0.
+     * <p>Flips every UNREAD row owned by the subscriber whose
+     * {@code created_at <= :cutoff} to READ in one SQL statement and
+     * returns the affected row count for the response body. Idempotent:
+     * a follow-up call with no eligible UNREAD rows returns 0.
      *
-     * <p><b>Race protection</b> (Codex thread {@code 019e021f} plan absorb):
-     * the {@code cutoff} parameter prevents a notification that arrives
-     * between the request reaching the server and the UPDATE running
-     * from being collateral-marked-as-read. Only rows whose
-     * {@code created_at <= :cutoff} are considered. The caller passes the
-     * server-side request-start timestamp (NOT a client clock) so the
-     * cutoff is monotonic and free of clock skew; the controller derives
-     * it from {@link OffsetDateTime#now()} at the start of the handler.
+     * <p><b>Race window</b> (Codex thread {@code 019e021f} plan + iter
+     * absorb): the {@code cutoff} predicate is intended to keep
+     * notifications that arrive *after* the request lands on the server
+     * out of the bulk sweep. The controller captures
+     * {@link OffsetDateTime#now()} on the very first line of the handler
+     * (before the identity guard) and forwards it here.
+     *
+     * <p><b>Honest clock model</b>: the cutoff is the controller pod's
+     * JVM clock, and {@link com.serban.notify.domain.NotificationInbox#createdAt}
+     * is set by the writer pod's JVM clock. In an NTP-synced cluster
+     * with sub-second drift this comparison is monotonic in practice;
+     * if pod clocks drift further, an inbox row written on a clock that
+     * lags the cutoff window can be incorrectly bulk-marked as READ.
+     * The canonical fix — DB-clock cutoff via {@code CURRENT_TIMESTAMP}
+     * in the WHERE clause AND a DB-side {@code DEFAULT now()} on
+     * {@code created_at} — is tracked as a Faz 23.5 hardening
+     * follow-up; not a v1 blocker.
      *
      * <p>The cutoff lives in the WHERE clause so the database itself
      * enforces the boundary atomically. Newer rows simply don't match
