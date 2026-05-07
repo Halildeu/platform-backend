@@ -55,7 +55,9 @@ class NetGsmSmsAdapterTest {
     // ─── Happy path ──────────────────────────────────────────────────────
 
     @Test
-    void delivered2xxWithCode00() {
+    void accepted2xxWithCode00AndJobid() {
+        // Faz 23.4 PR-F: code=00 + jobid → ACCEPTED (DLR bekleniyor),
+        // önceki DELIVERED semantik yanlıştı (terminal authority DLR'de)
         netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
             .willReturn(aResponse().withStatus(200)
                 .withHeader("Content-Type", "application/json")
@@ -66,8 +68,8 @@ class NetGsmSmsAdapterTest {
 
         ChannelAdapter.DeliveryAttemptResult r = adapter.send(target, msg);
 
-        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
-        assertThat(r.providerMessageId()).isEqualTo("netgsm-abc-123");
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
+        assertThat(r.providerMessageId()).isEqualTo("netgsm-abc-123");  // DLR correlator
 
         // Phone "+" stripped, BasicAuth header set, encoding "" for GSM-7
         netgsm.verify(postRequestedFor(urlEqualTo("/sms/rest/v2/send"))
@@ -79,7 +81,9 @@ class NetGsmSmsAdapterTest {
     }
 
     @Test
-    void deliveredFallsBackToProviderMsgIdWhenJobidEmpty() {
+    void code00MissingJobidRetries() {
+        // Faz 23.4 PR-F: code=00 ama jobid yok → RETRY (DLR korelasyonu
+        // imkansız; ACCEPTED yazmak forever-PROCESSING limbo'ya neden olur)
         netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
             .willReturn(aResponse().withStatus(200)
                 .withBody("{\"code\":\"00\",\"description\":\"OK\"}")));
@@ -89,8 +93,8 @@ class NetGsmSmsAdapterTest {
 
         ChannelAdapter.DeliveryAttemptResult r = adapter.send(target, msg);
 
-        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
-        assertThat(r.providerMessageId()).startsWith("netgsm-");
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        assertThat(r.failureReason()).contains("missing jobid");
     }
 
     @Test
@@ -159,7 +163,7 @@ class NetGsmSmsAdapterTest {
     }
 
     @Test
-    void deliveredTurkishTextSetsEncodingTr() {
+    void acceptedTurkishTextSetsEncodingTr() {
         netgsm.stubFor(post(urlEqualTo("/sms/rest/v2/send"))
             .willReturn(aResponse().withStatus(200)
                 .withBody("{\"code\":\"00\",\"jobid\":\"tr-1\"}")));
@@ -169,7 +173,7 @@ class NetGsmSmsAdapterTest {
 
         ChannelAdapter.DeliveryAttemptResult r = adapter.send(target, msg);
 
-        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
         netgsm.verify(postRequestedFor(urlEqualTo("/sms/rest/v2/send"))
             .withRequestBody(matchingJsonPath("$.encoding", containing("TR"))));
     }
@@ -317,7 +321,8 @@ class NetGsmSmsAdapterTest {
             new RenderedMessage("Subject only", null, null, "tr-TR")
         );
 
-        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED);
+        // PR-F: code=00 + jobid → ACCEPTED (DLR awaits)
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
         netgsm.verify(postRequestedFor(urlEqualTo("/sms/rest/v2/send"))
             .withRequestBody(matchingJsonPath("$.messages[0].msg", containing("Subject only"))));
     }

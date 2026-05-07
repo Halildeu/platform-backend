@@ -34,12 +34,50 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
      * status update with original message id (e.g. {@code "netgsm-{jobid}"}
      * for NetGSM); we update the existing delivery row.
      *
-     * <p>Not strictly UNIQUE in schema (provider_msg_id is nullable for
-     * pending deliveries), but each successful send produces a unique id.
-     * Returns first match if multiple hypothetically exist (defensive;
-     * caller treats > 1 match as data error).
+     * <p>V12 migration adds partial UNIQUE index on
+     * {@code (provider, provider_msg_id) WHERE provider_msg_id IS NOT NULL}
+     * — at most 1 row per (provider, msg_id) tuple after V12.
+     * {@code findFirst} preserves defensive semantics for pre-V12 data.
      */
     Optional<NotificationDelivery> findFirstByProviderMsgId(String providerMsgId);
+
+    /**
+     * Atomic DLR transition (Faz 23.4 PR-F — Codex iter-1 absorb).
+     *
+     * <p>Native UPDATE with status predicate: only mutates row if current
+     * status is ACCEPTED (provider-queued). DLR codes that map to
+     * DELIVERED or FAILED can use this; row count = 1 if transition
+     * applied, 0 if row not found OR status was not ACCEPTED (terminal
+     * conflict / already mutated by concurrent DLR).
+     *
+     * <p>Multi-pod safe: two pods receiving same DLR concurrently → DB
+     * SELECT FOR UPDATE semantics inside UPDATE prevent both from claiming
+     * the transition; one gets count=1 (winner), the other count=0 (loser).
+     *
+     * <p>Field cleanup mirrors V11 trigger but applied at app level for
+     * audit clarity (V11 trigger handles defensive case if app forgets).
+     *
+     * @return rows affected (1 if transition applied, 0 if not ACCEPTED)
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+        UPDATE notify.notification_delivery
+        SET status = :newStatus,
+            delivered_at = CASE WHEN :newStatus = 'DELIVERED' THEN COALESCE(:terminalAt, NOW()) ELSE delivered_at END,
+            permanent_failure_at = CASE WHEN :newStatus = 'FAILED' THEN COALESCE(:terminalAt, NOW()) ELSE permanent_failure_at END,
+            failure_reason = CASE WHEN :newStatus = 'FAILED' THEN :failureReason ELSE NULL END,
+            next_retry_at = NULL,
+            processing_lease_until = NULL,
+            updated_at = NOW()
+        WHERE provider_msg_id = :providerMsgId
+          AND status = 'ACCEPTED'
+        """, nativeQuery = true)
+    int dlrTerminalize(
+        @Param("providerMsgId") String providerMsgId,
+        @Param("newStatus") String newStatus,
+        @Param("terminalAt") java.time.OffsetDateTime terminalAt,
+        @Param("failureReason") String failureReason
+    );
 
     @Query("SELECT d FROM NotificationDelivery d WHERE d.status = :status " +
            "AND d.nextRetryAt <= :now")

@@ -182,6 +182,12 @@ public class DeliveryDispatchService {
 
             switch (outcome.status) {
                 case DELIVERED -> { /* ok */ }
+                case ACCEPTED -> {
+                    // Faz 23.4 PR-F: provider queued, awaiting DLR.
+                    // Intent stays PROCESSING (DLR will terminalize via
+                    // DlrIngestService → IntentStatusResolver).
+                    allDelivered = false;
+                }
                 case FAILED, BOUNCED -> { anyFailedPermanent = true; allDelivered = false; }
                 case RETRY -> allDelivered = false;
             }
@@ -332,6 +338,8 @@ public class DeliveryDispatchService {
         switch (result.status()) {
             case DELIVERED -> audit.publish("DELIVERY_SUCCEEDED", intent,
                 target.recipientHash(), target.channel(), additionalDetails(result));
+            case ACCEPTED -> audit.publish("DELIVERY_ACCEPTED", intent,
+                target.recipientHash(), target.channel(), additionalDetails(result));
             case FAILED, BOUNCED -> audit.publish("DELIVERY_FAILED", intent,
                 target.recipientHash(), target.channel(), additionalDetails(result));
             case RETRY -> audit.publish("DELIVERY_ATTEMPTED", intent,
@@ -386,13 +394,26 @@ public class DeliveryDispatchService {
         NotificationDelivery delivery;
         if (existing.isPresent()) {
             delivery = existing.get();
-            // iter-3 absorb: DELIVERED-regress guard — concurrent stale
-            // dispatch must NOT overwrite a committed DELIVERED row with
-            // RETRY/FAILED/BOUNCED. Status terminal once DELIVERED.
-            if (delivery.getStatus() == NotificationDelivery.Status.DELIVERED) {
-                log.info("upsert skip (DELIVERED-regress guard): intentId={} channel={} hash={}",
-                    intent.getIntentId(), target.channel(), target.recipientHash());
-                return false;
+            // Faz 23.4 PR-F: extended terminal-regress guard. V11 trigger
+            // enforces forward-only invariant at DB level; we short-circuit
+            // here to avoid noisy DataIntegrityViolationException on stale
+            // worker re-dispatch. Terminal states: DELIVERED, FAILED,
+            // BOUNCED, BLOCKED_*. ACCEPTED is NOT terminal — DLR may
+            // transition it; but a stale dispatch trying to overwrite
+            // ACCEPTED with same/lower-precedence state is also no-op
+            // (provider already has the message; second send would be a
+            // duplicate). Allow ACCEPTED → ACCEPTED idempotent path so
+            // attempt_count++ still meaningful.
+            switch (delivery.getStatus()) {
+                case DELIVERED, FAILED, BOUNCED,
+                     BLOCKED_BY_PREFERENCE, BLOCKED_BY_AUTHZ,
+                     BLOCKED_BY_IDEMPOTENCY, BLOCKED_EXTERNAL_NOT_ALLOWED -> {
+                    log.info("upsert skip (terminal-regress guard {}): intentId={} channel={} hash={}",
+                        delivery.getStatus(), intent.getIntentId(),
+                        target.channel(), target.recipientHash());
+                    return false;
+                }
+                default -> { /* PENDING/RETRY/ACCEPTED — allow update */ }
             }
             delivery.setAttemptCount(delivery.getAttemptCount() + 1);
         } else {
@@ -416,6 +437,14 @@ public class DeliveryDispatchService {
             delivery.setFailureReason(null);  // clear previous failure (recovered)
             delivery.setNextRetryAt(null);
             delivery.setProcessingLeaseUntil(null);
+        } else if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED) {
+            // Faz 23.4 PR-F: provider queued; no delivered_at (DLR will set
+            // it on terminalization to DELIVERED). DLR correlator persisted.
+            delivery.setProviderMsgId(result.providerMessageId());
+            delivery.setFailureReason(null);
+            delivery.setNextRetryAt(null);
+            delivery.setProcessingLeaseUntil(null);
+            // delivered_at NOT set — terminal status pending DLR
         } else {
             delivery.setFailureReason(result.failureReason());
             // PR4 absorb: BackoffCalculator schedules next_retry_at for RETRY

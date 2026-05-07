@@ -86,10 +86,14 @@ public class DlrController {
                 .body(Map.of("error", "unauthorized", "message", "invalid dlr token"));
         }
 
+        // Faz 23.4 PR-F Codex iter-1 P2.1 absorb: pass provider's
+        // delivered_at (ISO-8601). Service falls back to NOW() on
+        // null/blank/malformed.
         DlrIngestService.DlrResult result = dlrService.ingestNetgsm(
             request.jobid(),
             request.code(),
-            request.description()
+            request.description(),
+            request.deliveredAt()
         );
 
         return ResponseEntity.ok(Map.of(

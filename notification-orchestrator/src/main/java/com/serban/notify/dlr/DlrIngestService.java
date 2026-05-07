@@ -5,12 +5,14 @@ import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.repository.NotificationDeliveryRepository;
 import com.serban.notify.repository.NotificationIntentRepository;
+import com.serban.notify.worker.IntentStatusResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -20,27 +22,40 @@ import java.util.Set;
  * DLR (Delivery Receipt) ingest service — Faz 23.4 PR-F.
  *
  * <p>Provider posts terminal delivery status after SMS reaches/fails-at
- * carrier. We update the matching {@link NotificationDelivery} row and
- * append audit event {@code DELIVERY_DLR_RECEIVED}.
+ * carrier. We atomically transition the matching {@link NotificationDelivery}
+ * row from {@code ACCEPTED} to {@code DELIVERED} or {@code FAILED}, then
+ * recompute parent intent terminal status via {@link IntentStatusResolver}.
  *
  * <p>Status mapping (NetGSM REST v2 DLR codes):
  * <ul>
  *   <li>{@code 00} → {@link NotificationDelivery.Status#DELIVERED} terminal</li>
  *   <li>{@code 04, 05, 16, 17, 70} → {@link NotificationDelivery.Status#FAILED}
  *       terminal (carrier reject / undeliverable / expired / IYS opt-out)</li>
- *   <li>others → no status mutation; audit-only (transient ack)</li>
+ *   <li>others → no status mutation; audit-only transient ack</li>
  * </ul>
  *
- * <p>Idempotency: same DLR posted twice for an already-terminal delivery
- * row is a no-op (lookup finds row, but status mutation gated by current
- * state). Provider-side retry safety.
+ * <p><b>Atomic mutation</b> (Codex iter-1 P1.4 absorb): native UPDATE with
+ * status predicate {@code WHERE provider_msg_id = ? AND status = 'ACCEPTED'}.
+ * Multi-pod safe: two pods receiving same DLR → DB-level race resolution
+ * (one wins count=1, other count=0). No SELECT-then-UPDATE TOCTOU window.
+ *
+ * <p><b>Forward-only invariant</b>: terminal states (DELIVERED, FAILED,
+ * BOUNCED, BLOCKED_*) immutable. Late DLR for already-terminal row → atomic
+ * UPDATE returns 0 (predicate WHERE status='ACCEPTED' fails); we audit
+ * the conflict event ({@code DELIVERY_DLR_TERMINAL_CONFLICT}) for forensic
+ * trail but no state mutation.
+ *
+ * <p><b>Parent intent recompute</b> (Codex iter-1 P1.1 absorb): on actual
+ * mutation, fetch all sibling deliveries for the intent + invoke
+ * {@link IntentStatusResolver} to determine new intent terminal status
+ * (COMPLETED / PARTIALLY_FAILED / FAILED / null=PROCESSING).
  *
  * <p>Out of scope (this PR):
  * <ul>
  *   <li>Multi-provider DLR (İletimerkezi, Twilio) — provider-specific code
  *       maps belong in adapter-side translators future PR</li>
- *   <li>Cross-pod replay protection — provider DLR endpoint is idempotent
- *       at row level (status check), so duplicate POSTs across pods are safe</li>
+ *   <li>SSE push to subscriber on DLR terminalization (PR-G follow-up
+ *       after inbox/SSE bridges established)</li>
  * </ul>
  */
 @Service
@@ -58,26 +73,39 @@ public class DlrIngestService {
     private final NotificationDeliveryRepository deliveryRepo;
     private final NotificationIntentRepository intentRepo;
     private final AuditEventPublisher audit;
+    private final IntentStatusResolver intentStatusResolver;
 
     public DlrIngestService(
         NotificationDeliveryRepository deliveryRepo,
         NotificationIntentRepository intentRepo,
-        AuditEventPublisher audit
+        AuditEventPublisher audit,
+        IntentStatusResolver intentStatusResolver
     ) {
         this.deliveryRepo = deliveryRepo;
         this.intentRepo = intentRepo;
         this.audit = audit;
+        this.intentStatusResolver = intentStatusResolver;
     }
 
     /**
      * Process NetGSM DLR callback.
      *
+     * @param jobid provider correlator (we look up "netgsm-{jobid}")
+     * @param code provider DLR status code
+     * @param description provider human-readable description (audit only)
+     * @param providerDeliveredAtIso provider's terminal timestamp (ISO-8601);
+     *                                 null/blank → service uses NOW()
      * @return {@link DlrResult} with action taken (UPDATED / NOOP / NOT_FOUND)
      */
     @Transactional
-    public DlrResult ingestNetgsm(String jobid, String code, String description) {
+    public DlrResult ingestNetgsm(String jobid, String code, String description,
+                                   String providerDeliveredAtIso) {
         String providerMsgId = "netgsm-" + jobid;
 
+        // Map provider code → target terminal status (or null if transient)
+        NotificationDelivery.Status targetStatus = mapNetgsmCode(code);
+
+        // Probe row first to detect not-found vs terminal-conflict cases
         Optional<NotificationDelivery> opt = deliveryRepo.findFirstByProviderMsgId(providerMsgId);
         if (opt.isEmpty()) {
             log.warn("dlr netgsm: delivery not found provider_msg_id={} code={}",
@@ -87,60 +115,104 @@ public class DlrIngestService {
         NotificationDelivery delivery = opt.get();
         NotificationDelivery.Status priorStatus = delivery.getStatus();
 
-        // Map provider code → terminal status
-        NotificationDelivery.Status newStatus = mapNetgsmCode(code, priorStatus);
-
-        // Idempotency: already in target terminal status → audit-only no-op
-        boolean stateMutated = false;
-        if (newStatus != null && newStatus != priorStatus) {
-            // Forward-only: don't downgrade DELIVERED → FAILED via late DLR
-            if (priorStatus == NotificationDelivery.Status.DELIVERED) {
-                log.info("dlr netgsm: ignoring late status={} for already-DELIVERED row id={}",
-                    code, delivery.getId());
-            } else {
-                delivery.setStatus(newStatus);
-                if (newStatus == NotificationDelivery.Status.DELIVERED
-                    && delivery.getDeliveredAt() == null) {
-                    delivery.setDeliveredAt(OffsetDateTime.now());
-                }
-                if (newStatus == NotificationDelivery.Status.FAILED
-                    && delivery.getPermanentFailureAt() == null) {
-                    delivery.setPermanentFailureAt(OffsetDateTime.now());
-                    delivery.setFailureReason("dlr netgsm code=" + code);
-                }
-                deliveryRepo.save(delivery);
-                stateMutated = true;
-            }
+        // Transient/unknown DLR code → audit only, no mutation attempt
+        if (targetStatus == null) {
+            log.info("dlr netgsm transient: code={} prior={} delivery_id={}",
+                code, priorStatus, delivery.getId());
+            emitAudit(delivery, "DELIVERY_DLR_RECEIVED", code, false, null);
+            return new DlrResult(DlrAction.NOOP, providerMsgId, priorStatus);
         }
 
-        // Audit event (always — even on no-op, for compliance trail)
-        Map<String, Object> details = new HashMap<>();
-        details.put("provider", "netgsm");
-        details.put("provider_code", code);
-        details.put("delivery_id", delivery.getId());
-        details.put("status", newStatus != null ? newStatus.name() : priorStatus.name());
-        details.put("dlr_state_mutated", stateMutated);
+        // Atomic UPDATE WHERE status='ACCEPTED' — only mutates if row is in
+        // ACCEPTED state. Multi-pod race safe.
+        OffsetDateTime terminalAt = parseTerminalAt(providerDeliveredAtIso);
+        String failureReason = (targetStatus == NotificationDelivery.Status.FAILED)
+            ? "dlr netgsm code=" + code : null;
 
-        // Need parent intent for AuditEventPublisher.publish() contract
-        Optional<NotificationIntent> intentOpt = intentRepo.findByIntentId(delivery.getIntentId());
-        if (intentOpt.isPresent()) {
-            audit.publish(
-                "DELIVERY_DLR_RECEIVED",
-                intentOpt.get(),
-                delivery.getRecipientHash(),
-                "sms",
-                details
-            );
-        } else {
+        int affected = deliveryRepo.dlrTerminalize(
+            providerMsgId,
+            targetStatus.name(),
+            terminalAt,
+            failureReason
+        );
+
+        if (affected == 0) {
+            // Terminal-conflict: row prior status ≠ ACCEPTED. Could be:
+            //  - already DELIVERED/FAILED (late duplicate DLR)
+            //  - PENDING/RETRY (worker hasn't dispatched yet — should not happen
+            //    if NetGSM only DLRs for ACCEPTED, but defensive)
+            //  - BLOCKED_* (we never sent this; provider noise?)
+            log.info("dlr netgsm terminal-conflict (no mutation): code={} prior={} delivery_id={}",
+                code, priorStatus, delivery.getId());
+            emitAudit(delivery, "DELIVERY_DLR_TERMINAL_CONFLICT", code, false,
+                "prior_status_" + priorStatus.name().toLowerCase());
+            return new DlrResult(DlrAction.NOOP, providerMsgId, priorStatus);
+        }
+
+        // Mutation succeeded — re-fetch for accurate post-state
+        NotificationDelivery updated = deliveryRepo.findById(delivery.getId())
+            .orElseThrow(() -> new IllegalStateException(
+                "delivery " + delivery.getId() + " disappeared after dlrTerminalize"));
+
+        log.info("dlr netgsm UPDATED: code={} delivery_id={} prior=ACCEPTED new={}",
+            code, updated.getId(), updated.getStatus());
+
+        // Audit DLR event with delivery_id linkage
+        emitAudit(updated, "DELIVERY_DLR_RECEIVED", code, true, null);
+
+        // Recompute parent intent terminal status — DLR may have completed
+        // the last outstanding delivery (intent → COMPLETED or FAILED)
+        recomputeIntentStatus(updated.getIntentId());
+
+        return new DlrResult(DlrAction.UPDATED, providerMsgId, updated.getStatus());
+    }
+
+    /**
+     * Recompute intent terminal status from current delivery row aggregate.
+     * Mirror of RetryWorker / OutboxPoller pattern.
+     */
+    private void recomputeIntentStatus(String intentId) {
+        Optional<NotificationIntent> intentOpt = intentRepo.findByIntentId(intentId);
+        if (intentOpt.isEmpty()) {
+            log.warn("dlr netgsm: intent {} missing post-DLR — skip recompute", intentId);
+            return;
+        }
+        NotificationIntent intent = intentOpt.get();
+        // Skip if already terminal (no recompute needed; trigger guards future writes anyway)
+        if (intent.getStatus() == NotificationIntent.Status.COMPLETED
+            || intent.getStatus() == NotificationIntent.Status.FAILED
+            || intent.getStatus() == NotificationIntent.Status.PARTIALLY_FAILED
+            || intent.getStatus() == NotificationIntent.Status.EXPIRED) {
+            return;
+        }
+
+        var deliveries = deliveryRepo.findByIntentId(intentId);
+        NotificationIntent.Status newStatus = intentStatusResolver.resolve(deliveries);
+        if (newStatus != null && newStatus != intent.getStatus()) {
+            intent.setStatus(newStatus);
+            intent.setTerminatedAt(OffsetDateTime.now());
+            intentRepo.save(intent);
+            log.info("dlr netgsm: intent {} terminal transition → {}", intentId, newStatus);
+        }
+    }
+
+    private void emitAudit(NotificationDelivery delivery, String eventType,
+                            String providerCode, boolean stateMutated, String ignoredReason) {
+        Optional<NotificationIntent> intentOpt =
+            intentRepo.findByIntentId(delivery.getIntentId());
+        if (intentOpt.isEmpty()) {
             log.warn("dlr netgsm: intent {} not found for delivery {} — audit skipped",
                 delivery.getIntentId(), delivery.getId());
+            return;
         }
-
-        log.info("dlr netgsm processed: provider_msg_id={} code={} prior={} new={} mutated={}",
-            providerMsgId, code, priorStatus, newStatus, stateMutated);
-
-        DlrAction action = stateMutated ? DlrAction.UPDATED : DlrAction.NOOP;
-        return new DlrResult(action, providerMsgId, newStatus != null ? newStatus : priorStatus);
+        Map<String, Object> details = new HashMap<>();
+        details.put("provider", "netgsm");
+        details.put("provider_code", providerCode);
+        details.put("dlr_state_mutated", stateMutated);
+        if (ignoredReason != null) {
+            details.put("dlr_ignored_reason", ignoredReason);
+        }
+        audit.publishWithDelivery(eventType, intentOpt.get(), delivery, "sms", details);
     }
 
     /**
@@ -148,16 +220,28 @@ public class DlrIngestService {
      *
      * @return target status, or null if code is transient (no terminal mutation)
      */
-    private static NotificationDelivery.Status mapNetgsmCode(
-        String code, NotificationDelivery.Status priorStatus
-    ) {
+    private static NotificationDelivery.Status mapNetgsmCode(String code) {
         if ("00".equals(code)) {
             return NotificationDelivery.Status.DELIVERED;
         }
         if (code != null && NETGSM_PERMANENT_FAILURE_CODES.contains(code)) {
             return NotificationDelivery.Status.FAILED;
         }
-        return null;  // transient — keep current status
+        return null;  // transient — audit only
+    }
+
+    /**
+     * Parse ISO-8601 timestamp; null/blank/malformed → null (caller defaults
+     * to NOW()).
+     */
+    private static OffsetDateTime parseTerminalAt(String iso) {
+        if (iso == null || iso.isBlank()) return null;
+        try {
+            return OffsetDateTime.parse(iso);
+        } catch (DateTimeParseException ex) {
+            // Provider clock unparseable — fall back to server time silently
+            return null;
+        }
     }
 
     /** Result of DLR ingest call (controller reports back to provider). */
@@ -170,9 +254,10 @@ public class DlrIngestService {
     public enum DlrAction {
         /** Delivery row state mutated (status terminal transition applied). */
         UPDATED,
-        /** Delivery row found but no state mutation (idempotent re-call or transient code). */
+        /** Delivery row found but no state mutation (idempotent re-call,
+         *  transient code, or terminal-conflict for already-terminal row). */
         NOOP,
-        /** Delivery row not found by provider_msg_id (provider sent unknown id). */
+        /** Delivery row not found by provider_msg_id. */
         NOT_FOUND
     }
 }

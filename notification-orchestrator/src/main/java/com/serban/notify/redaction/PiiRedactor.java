@@ -66,6 +66,10 @@ public class PiiRedactor {
         "subscriber_id",             // erasure target (NOT email/phone — pseudonymous boundary)
         "deliveries_anonymized",     // count of recipient_id null'lanan delivery row
         "inbox_rows_deleted",        // Faz 23.3 PR-E.1 (Codex iter-2 P2 absorb): inbox hard delete count
+        "provider_code",             // Faz 23.4 PR-F: DLR provider terminal code (00/04/05/16/17/70)
+        "dlr_state_mutated",         // Faz 23.4 PR-F: did DLR cause delivery row state transition
+        "dlr_ignored_reason",        // Faz 23.4 PR-F: terminal-conflict / unknown / pre-dispatch
+        "delivery_id_long",          // Faz 23.4 PR-F: numeric delivery id for DLR audit linkage
         "policy",                    // PR5 absorb: BLOCKED_* policy identifier
         "reason",                    // PR5 absorb: human-readable detail
         "status",                    // PR5 absorb: BLOCKED_* status

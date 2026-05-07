@@ -53,8 +53,12 @@ public record NetgsmDlrRequest(
     @Size(max = 64)
     String deliveredAt,
 
-    /** Optional human-readable description from provider. */
+    /**
+     * Optional human-readable description from provider. NetGSM may send
+     * up to ~800 chars (carrier reject reason chains); generous limit
+     * prevents 400 reject on legit DLR.
+     */
     @JsonProperty("description")
-    @Size(max = 255)
+    @Size(max = 1024)
     String description
 ) {}

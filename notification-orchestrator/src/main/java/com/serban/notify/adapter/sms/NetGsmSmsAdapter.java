@@ -19,7 +19,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
@@ -32,14 +31,25 @@ import java.util.regex.Pattern;
  * email pattern paralel). DeliveryTarget.targetRef = E.164 phone number
  * (e.g. +905321234567).
  *
- * <p>Status semantics:
+ * <p>Status semantics (Faz 23.4 PR-F: provider terminal authority via DLR):
  * <ul>
- *   <li>HTTP 2xx + provider code "00" → DELIVERED</li>
+ *   <li>HTTP 2xx + provider code "00" + non-blank jobid → ACCEPTED
+ *       (carrier queued; awaits DLR webhook to terminalize DELIVERED/FAILED)</li>
+ *   <li>HTTP 2xx + provider code "00" + missing/blank jobid → RETRY
+ *       (no DLR correlator → infinite ACCEPTED limbo risk; treat as transient)</li>
  *   <li>HTTP 4xx OR provider permanent error code (20/30/40/50/70) → FAILED
- *       (invalid number, sender ID rejected, IYS opt-out)</li>
+ *       (invalid number, sender ID rejected, IYS opt-out send-side reject)</li>
  *   <li>HTTP 5xx / timeout / IOException / provider code 60 (insufficient
  *       credit) / unknown provider code → RETRY (PR4 worker)</li>
  * </ul>
+ *
+ * <p>Why ACCEPTED not DELIVERED on send=00? Provider {@code code=00} means
+ * "carrier accepted message for delivery", NOT "carrier delivered it". Real
+ * terminal status comes via async DLR webhook (DlrController), which can
+ * transition ACCEPTED → DELIVERED (DLR code 00) or ACCEPTED → FAILED (DLR
+ * carrier reject codes 04/05/16/17/70). Sending side cannot know terminal
+ * outcome; ACCEPTED preserves correctness + KVKK consent tracking (IYS
+ * opt-out reaches us only via DLR).
  *
  * <p>Provider response codes (NetGSM common):
  * <ul>
@@ -131,7 +141,8 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
             String body = objectMapper.writeValueAsString(payload);
             post.setEntity(new StringEntity(body, StandardCharsets.UTF_8));
 
-            String providerMsgId = "netgsm-" + UUID.randomUUID();
+            // PR-F absorb: providerMsgId UUID fallback removed — ACCEPTED
+            // requires real provider jobid (no DLR correlator → RETRY path).
             return client.execute(post, response -> {
                 int httpCode = response.getCode();
                 // PII safety: provider may echo phone in error body — never log
@@ -173,9 +184,19 @@ public class NetGsmSmsAdapter implements ChannelAdapter {
                 }
 
                 if ("00".equals(code)) {
-                    log.info("netgsm DELIVERED: jobid={} msg_id={}", netgsmJobid, providerMsgId);
-                    return DeliveryAttemptResult.delivered(
-                        netgsmJobid.isEmpty() ? providerMsgId : "netgsm-" + netgsmJobid);
+                    // Faz 23.4 PR-F: send response code=00 means "carrier
+                    // accepted message"; terminal status comes via DLR.
+                    // Require non-blank jobid for DLR correlation — without
+                    // it, ACCEPTED would be a forever-PROCESSING limbo.
+                    if (netgsmJobid.isEmpty()) {
+                        log.warn("netgsm code=00 but jobid empty — RETRY (no DLR correlator)");
+                        return DeliveryAttemptResult.retry(
+                            "code 00 missing jobid (no DLR correlator)", httpCode);
+                    }
+                    String correlator = "netgsm-" + netgsmJobid;
+                    log.info("netgsm ACCEPTED (awaits DLR): jobid={} msg_id={}",
+                        netgsmJobid, correlator);
+                    return DeliveryAttemptResult.accepted(correlator);
                 }
                 // Provider error paths: never log raw desc text — provider may
                 // echo phone in description. Code + length only (Codex iter-2

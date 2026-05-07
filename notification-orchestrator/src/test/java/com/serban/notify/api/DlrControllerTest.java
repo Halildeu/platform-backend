@@ -54,7 +54,7 @@ class DlrControllerTest {
 
     @Test
     void validTokenAndPayloadReturns200WithUpdatedAction() throws Exception {
-        when(dlrService.ingestNetgsm("abc-1", "00", "OK")).thenReturn(
+        when(dlrService.ingestNetgsm("abc-1", "00", "OK", "2026-05-07T10:15:30Z")).thenReturn(
             new DlrIngestService.DlrResult(
                 DlrIngestService.DlrAction.UPDATED,
                 "netgsm-abc-1",
@@ -79,7 +79,8 @@ class DlrControllerTest {
             .andExpect(jsonPath("$.provider_msg_id").value("netgsm-abc-1"))
             .andExpect(jsonPath("$.status").value("DELIVERED"));
 
-        verify(dlrService).ingestNetgsm("abc-1", "00", "OK");
+        // Faz 23.4 PR-F: delivered_at ISO param service'e iletildi
+        verify(dlrService).ingestNetgsm("abc-1", "00", "OK", "2026-05-07T10:15:30Z");
     }
 
     @Test
@@ -144,7 +145,7 @@ class DlrControllerTest {
 
     @Test
     void notFoundResultStillReturns200() throws Exception {
-        when(dlrService.ingestNetgsm(anyString(), anyString(), any())).thenReturn(
+        when(dlrService.ingestNetgsm(anyString(), anyString(), any(), any())).thenReturn(
             new DlrIngestService.DlrResult(
                 DlrIngestService.DlrAction.NOT_FOUND,
                 "netgsm-ghost",

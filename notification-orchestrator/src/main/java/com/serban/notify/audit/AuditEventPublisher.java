@@ -1,6 +1,7 @@
 package com.serban.notify.audit;
 
 import com.serban.notify.domain.AuditEvent;
+import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.redaction.PiiRedactor;
 import com.serban.notify.repository.AuditEventRepository;
@@ -105,6 +106,48 @@ public class AuditEventPublisher {
         event.setTemplateId(intent.getTemplateId());
         event.setTemplateVersion(intent.getTemplateVersion());
         event.setCorrelationId(intent.getCorrelationId());
+        event.setDetails(piiRedactor.filterAuditDetails(rawDetails));
+        repository.save(event);
+    }
+
+    /**
+     * Delivery-scoped audit event publish (Faz 23.4 PR-F — Codex iter-1
+     * absorb: AuditEvent.delivery_id field set so DLR audit row links to
+     * the delivery being terminalized).
+     *
+     * <p>Same as {@link #publish} but additionally sets
+     * {@code AuditEvent.delivery_id}. Used by DLR ingest path to
+     * correlate audit row with specific delivery_id (queryable for
+     * compliance: "show me all DLR events for delivery 12345").
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void publishWithDelivery(String eventType, NotificationIntent intent,
+                                     NotificationDelivery delivery, String channel,
+                                     Map<String, Object> additionalDetails) {
+        Map<String, Object> rawDetails = new HashMap<>();
+        rawDetails.put("template_id", intent.getTemplateId());
+        rawDetails.put("template_version", intent.getTemplateVersion());
+        rawDetails.put("recipient_hash", delivery.getRecipientHash());
+        rawDetails.put("channel", channel);
+        rawDetails.put("topic_key", intent.getTopicKey());
+        rawDetails.put("org_id", intent.getOrgId());
+        rawDetails.put("correlation_id", intent.getCorrelationId());
+        rawDetails.put("delivery_id_long", delivery.getId());
+        if (additionalDetails != null) {
+            rawDetails.putAll(additionalDetails);
+        }
+
+        AuditEvent event = new AuditEvent();
+        event.setIntentId(intent.getIntentId());
+        event.setEventType(eventType);
+        event.setOrgId(intent.getOrgId());
+        event.setTopicKey(intent.getTopicKey());
+        event.setRecipientHash(delivery.getRecipientHash());
+        event.setChannel(channel);
+        event.setTemplateId(intent.getTemplateId());
+        event.setTemplateVersion(intent.getTemplateVersion());
+        event.setCorrelationId(intent.getCorrelationId());
+        event.setDeliveryId(delivery.getId());  // Faz 23.4 PR-F new linkage
         event.setDetails(piiRedactor.filterAuditDetails(rawDetails));
         repository.save(event);
     }
