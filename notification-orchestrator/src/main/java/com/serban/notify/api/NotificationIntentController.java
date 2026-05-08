@@ -40,15 +40,18 @@ public class NotificationIntentController {
     private final IntentSubmissionService submissionService;
     private final NotificationIntentRepository intentRepository;
     private final NotifyConfig config;
+    private final NotifyOrgAccessGuard orgGuard;
 
     public NotificationIntentController(
         IntentSubmissionService submissionService,
         NotificationIntentRepository intentRepository,
-        NotifyConfig config
+        NotifyConfig config,
+        NotifyOrgAccessGuard orgGuard
     ) {
         this.submissionService = submissionService;
         this.intentRepository = intentRepository;
         this.config = config;
+        this.orgGuard = orgGuard;
     }
 
     /**
@@ -74,15 +77,37 @@ public class NotificationIntentController {
     })
     public ResponseEntity<SubmitIntentResponse> submit(
         @Valid @RequestBody SubmitIntentRequest request,
-        @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId
+        @RequestHeader(name = "X-Org-Id", required = false) String callerOrgIdHeader
     ) {
-        // Codex non-neg #1: caller org must match intent org (D41 multi-tenant boundary)
-        if (!callerOrgId.equals(request.orgId())) {
+        // Faz 24 / PR-5.2 (Codex thread `019e0675` AGREE iter-1):
+        //
+        // org_id is now resolved from the JWT (canonical source) via
+        // NotifyOrgAccessGuard. The body's `request.orgId()` selector
+        // stays the authoritative target for the new intent row, but the
+        // guard asserts the JWT principal actually has access to that
+        // org (`org_id` claim → `tenant_id` alias → `allowed_orgs[]` →
+        // configurable `defaultOrgId` fallback). This activates the
+        // PR-5.1 `notify_org_access_match_total` cutover-gate metric on
+        // the submit/status path so PR-5.4 has the observation it needs
+        // before flipping `defaultOrgId=""`.
+        //
+        // Backward compat — `X-Org-Id` is now OPTIONAL but MUST equal
+        // `request.orgId()` when supplied (legacy callers / smoke
+        // scripts still send the header). Any mismatch keeps the
+        // existing CrossOrgAccessException 403 path so multi-tenant
+        // boundary tests stay green.
+        if (callerOrgIdHeader != null && !callerOrgIdHeader.isBlank()
+                && !callerOrgIdHeader.equals(request.orgId())) {
             throw new CrossOrgAccessException(
-                "caller org_id (" + callerOrgId + ") does not match intent.org_id ("
+                "caller org_id (" + callerOrgIdHeader + ") does not match intent.org_id ("
                     + request.orgId() + ")"
             );
         }
+        // JWT-backed authority check. Throws OrgAccessDeniedException → 403
+        // when the JWT principal cannot reach `request.orgId()`. PR-5.2
+        // ships this in canary mode (defaultOrgId fallback still open);
+        // PR-5.4 closes the fallback once the metric gate is clean.
+        orgGuard.requireOrgAccessOrThrow(request.orgId());
         SubmitIntentResponse response = submissionService.submit(request);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
     }
@@ -99,6 +124,17 @@ public class NotificationIntentController {
         @PathVariable @NotBlank String intentId,
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId
     ) {
+        // Faz 24 / PR-5.2 (Codex thread `019e0675` AGREE iter-1):
+        //
+        // status() reads `X-Org-Id` as the explicit selector (which
+        // intent the caller wants) but the JWT must back the access
+        // claim. orgGuard verifies the JWT principal has reach into
+        // `callerOrgId`; the existing repository query then enforces
+        // tenancy by selecting only rows whose `org_id` column matches
+        // the same string (404 not 403 to preserve existence-disclosure
+        // discipline for cross-tenant lookups — the JWT couldn't have
+        // produced this id anyway).
+        orgGuard.requireOrgAccessOrThrow(callerOrgId);
         NotificationIntent intent = intentRepository
             .findByIntentIdAndOrgId(intentId, callerOrgId)
             .orElseThrow(() -> new IntentNotFoundException(
