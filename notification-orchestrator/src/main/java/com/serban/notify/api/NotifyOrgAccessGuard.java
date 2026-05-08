@@ -110,22 +110,6 @@ public class NotifyOrgAccessGuard {
             return;
         }
 
-        // Faz 24 / PR-5.2 absorb: under non-prod profiles
-        // (`@Profile("!local & !test")` excludes both this guard's wiring
-        // chain and the rest of SecurityConfig) the SecurityContext can
-        // still carry a non-JWT Authentication injected by Spring Boot's
-        // test slices (anonymous, basic, etc.). Treat that the same way
-        // as an absent auth — silent pass — because production JWT
-        // enforcement happens upstream of this guard via the resource
-        // server filter chain. Without this branch, cross-org IT tests
-        // that rely on `findByIntentIdAndOrgId` returning empty (404
-        // existence-disclosure pattern) would 403 here before the repo
-        // is even consulted.
-        if (!(auth instanceof JwtAuthenticationToken)
-                && !hasAuthority(auth, AUTHORITY_CROSS_ORG)) {
-            return;
-        }
-
         // Forward-compat cross-org bypass (v1: not seeded in catalogue)
         if (hasAuthority(auth, AUTHORITY_CROSS_ORG)) {
             incrementMatchCounter(SOURCE_CROSS_ORG);

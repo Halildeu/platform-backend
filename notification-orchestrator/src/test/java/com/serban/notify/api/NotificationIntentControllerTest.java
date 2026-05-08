@@ -109,8 +109,24 @@ class NotificationIntentControllerTest extends AbstractPostgresTest {
     }
 
     @Test
-    void getStatusCrossOrgReturns404NotForbidden() throws Exception {
-        // Codex non-neg #1: cross-tenant lookup → 404 (not 403, prevents existence disclosure)
+    void getStatusCrossOrgRejectedByGuard() throws Exception {
+        // Faz 24 / PR-5.2 (Codex `019e0675`): the IntentController status
+        // path is now guarded by NotifyOrgAccessGuard, which runs BEFORE
+        // the repository's cross-tenant existence-disclosure 404. Under
+        // the test profile Spring Boot seeds an anonymous Authentication
+        // in the SecurityContext; the guard's default-org fallback
+        // ("default") does not match the requested "org-attacker" so the
+        // call legitimately 403s out before reaching the repo. Under the
+        // production profile the same 403 path runs because the JWT
+        // principal does not declare "org-attacker" — different code
+        // path, same observable status.
+        //
+        // The original 404 contract (existence-disclosure for JWT-backed
+        // callers reaching their OWN org-but-wrong-id) is now provided
+        // by `findByIntentIdAndOrgId` returning empty inside the
+        // repository — see the JWT-mock test below once added under
+        // PR-5.5 strict cutover. For PR-5.2 we just assert the 403
+        // gate fires before any repo lookup.
         SubmitIntentRequest req = newRequest(UUID.randomUUID().toString(), "ctl-leak-key");
         mockMvc.perform(post("/api/v1/notify/intents")
                 .header("X-Org-Id", "default")
@@ -120,7 +136,7 @@ class NotificationIntentControllerTest extends AbstractPostgresTest {
 
         mockMvc.perform(get("/api/v1/notify/intents/{id}", req.intentId())
                 .header("X-Org-Id", "org-attacker"))
-            .andExpect(status().isNotFound());
+            .andExpect(status().isForbidden());
     }
 
     private SubmitIntentRequest newRequest(String intentId, String idemKey) {
