@@ -47,4 +47,19 @@ final class SubscriberIdentityGuardTestSupport {
             new SimpleMeterRegistry()
         );
     }
+
+    /**
+     * PR-5.5 strict cutover (Codex thread {@code 019e07d6} iter-1 absorb):
+     * factory for unit tests that exercise the new strict mode (no
+     * authentication / non-Jwt principal both fail-closed). The shared
+     * {@link MeterRegistry} lets the test inspect both
+     * {@code notify.subscriber.identity.match} and the new
+     * {@code notify.subscriber.identity.denied} counters.
+     */
+    static SubscriberIdentityGuard newStrictGuard(MeterRegistry meterRegistry) {
+        return new SubscriberIdentityGuard(
+            new NotifyConfig.SecurityConfig("default", DEFAULT_CLAIMS, true),
+            meterRegistry
+        );
+    }
 }
