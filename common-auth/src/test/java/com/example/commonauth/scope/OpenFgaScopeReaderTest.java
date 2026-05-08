@@ -74,16 +74,71 @@ class OpenFgaScopeReaderTest {
     }
 
     @Test
-    @DisplayName("readScopeContext: superAdmin → bypass scope, empty sets")
-    void superAdminBypass() {
+    @DisplayName("readScopeContext: superAdmin with persisted tuples → flag=true AND allowed sets populated")
+    void superAdminWithExplicitAssignments() {
+        // PR-BE-14 (Codex thread 019e0938 iter-7 AGREE absorb, 2026-05-08):
+        // pre-fix returned ScopeContext.superAdmin() (allowed sets EMPTY)
+        // — discarding the persisted OpenFGA tuples that the parallel
+        // futures had already fetched. Post-fix: allowed*Ids reflect
+        // the actual stored assignments. The superAdmin flag still
+        // takes precedence at canAccessX() predicates (separate test
+        // below) so the bypass guarantee is preserved; the scope
+        // summary's role narrows to "explicit assignments / admin
+        // observability".
+        when(authzService.listObjectIds("admin-1", "viewer", "company")).thenReturn(Set.of(12L, 21L, 35L));
+        when(authzService.listObjectIds("admin-1", "viewer", "project")).thenReturn(Set.of(100L));
+        when(authzService.listObjectIds("admin-1", "viewer", "warehouse")).thenReturn(Set.of());
+        when(authzService.listObjectIds("admin-1", "viewer", "branch")).thenReturn(Set.of());
+        when(authzService.check("admin-1", "admin", "organization", "default")).thenReturn(true);
+
+        var reader = new OpenFgaScopeReader(authzService, enabledProps());
+        ScopeContext ctx = reader.readScopeContext("admin-1");
+
+        assertTrue(ctx.superAdmin(), "superAdmin flag must remain true");
+        assertEquals(3, ctx.allowedCompanyIds().size(), "persisted company tuples must be reported");
+        assertTrue(ctx.allowedCompanyIds().contains(12L));
+        assertTrue(ctx.allowedCompanyIds().contains(21L));
+        assertTrue(ctx.allowedCompanyIds().contains(35L));
+        assertEquals(1, ctx.allowedProjectIds().size());
+    }
+
+    @Test
+    @DisplayName("readScopeContext: superAdmin with no persisted tuples → flag=true AND allowed sets empty")
+    void superAdminWithoutAssignments() {
+        // The legitimate-empty case: superAdmin user that was never
+        // assigned explicit OpenFGA scopes. Both the flag stays true
+        // AND the sets stay empty — matches the genuine "no scope
+        // assigned yet" view.
+        when(authzService.listObjectIds(anyString(), anyString(), anyString())).thenReturn(Set.of());
+        when(authzService.check("admin-fresh", "admin", "organization", "default")).thenReturn(true);
+
+        var reader = new OpenFgaScopeReader(authzService, enabledProps());
+        ScopeContext ctx = reader.readScopeContext("admin-fresh");
+
+        assertTrue(ctx.superAdmin());
+        assertTrue(ctx.allowedCompanyIds().isEmpty());
+        assertTrue(ctx.allowedProjectIds().isEmpty());
+    }
+
+    @Test
+    @DisplayName("readScopeContext: superAdmin canAccessX() predicates still bypass even with empty sets")
+    void superAdminBypassRegressionGuard() {
+        // PR-BE-14 regression guard: even though the allowed*Ids sets
+        // can now be populated for superAdmin, the canAccessX()
+        // predicates MUST short-circuit on the superAdmin flag.
+        // Important property: a superAdmin with NO explicit company
+        // tuple still passes canAccessCompany(99) — that's the
+        // semantic separation we're protecting.
         when(authzService.listObjectIds(anyString(), anyString(), anyString())).thenReturn(Set.of());
         when(authzService.check("admin-1", "admin", "organization", "default")).thenReturn(true);
 
         var reader = new OpenFgaScopeReader(authzService, enabledProps());
         ScopeContext ctx = reader.readScopeContext("admin-1");
 
-        assertTrue(ctx.superAdmin());
-        assertTrue(ctx.allowedCompanyIds().isEmpty());
+        assertTrue(ctx.canAccessCompany(99L), "superAdmin must bypass company access");
+        assertTrue(ctx.canAccessProject(99L), "superAdmin must bypass project access");
+        assertTrue(ctx.canAccessWarehouse(99L), "superAdmin must bypass warehouse access");
+        assertTrue(ctx.canAccessBranch(99L), "superAdmin must bypass branch access");
     }
 
     @Test
@@ -131,13 +186,43 @@ class OpenFgaScopeReaderTest {
     }
 
     @Test
-    @DisplayName("readScopeSummary: superAdmin returns empty map (legacy compat)")
-    void superAdminSummaryEmpty() {
-        when(authzService.listObjectIds(anyString(), anyString(), anyString())).thenReturn(Set.of());
+    @DisplayName("readScopeSummary: superAdmin returns persisted tuples (PR-BE-14, was empty pre-fix)")
+    void superAdminSummaryReturnsPersistedTuples() {
+        // PR-BE-14 (Codex thread 019e0938 iter-7 AGREE absorb,
+        // 2026-05-08): pre-fix this case returned Map.isEmpty()=true
+        // (legacy DB compat). Post-fix the summary reports the
+        // explicit assignments — same shape as a non-superAdmin user.
+        // Admin observability + UserDetailDrawer reload UX restored.
+        when(authzService.listObjectIds("admin-1", "viewer", "company")).thenReturn(Set.of(12L, 35L));
+        when(authzService.listObjectIds("admin-1", "viewer", "project")).thenReturn(Set.of(99L));
+        when(authzService.listObjectIds("admin-1", "viewer", "warehouse")).thenReturn(Set.of());
+        when(authzService.listObjectIds("admin-1", "viewer", "branch")).thenReturn(Set.of());
         when(authzService.check("admin-1", "admin", "organization", "default")).thenReturn(true);
 
         var reader = new OpenFgaScopeReader(authzService, enabledProps());
         Map<String, Set<Long>> summary = reader.readScopeSummary("admin-1");
+
+        assertEquals(2, summary.size(), "company + project keys, no empty-set keys included");
+        assertTrue(summary.containsKey("COMPANY"));
+        assertTrue(summary.get("COMPANY").contains(12L));
+        assertTrue(summary.get("COMPANY").contains(35L));
+        assertTrue(summary.containsKey("PROJECT"));
+        assertTrue(summary.get("PROJECT").contains(99L));
+        assertFalse(summary.containsKey("WAREHOUSE"));
+        assertFalse(summary.containsKey("BRANCH"));
+    }
+
+    @Test
+    @DisplayName("readScopeSummary: superAdmin with no persisted tuples → empty map (legitimate-empty case)")
+    void superAdminSummaryEmptyWhenNoTuples() {
+        // The legitimate-empty case is preserved. The reader returns
+        // the same shape (no keys) when there are no stored
+        // assignments, regardless of the superAdmin flag.
+        when(authzService.listObjectIds(anyString(), anyString(), anyString())).thenReturn(Set.of());
+        when(authzService.check("admin-fresh", "admin", "organization", "default")).thenReturn(true);
+
+        var reader = new OpenFgaScopeReader(authzService, enabledProps());
+        Map<String, Set<Long>> summary = reader.readScopeSummary("admin-fresh");
 
         assertTrue(summary.isEmpty());
     }
