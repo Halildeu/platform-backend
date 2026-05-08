@@ -125,8 +125,15 @@ public class AuthCookieRateLimitWebFilter implements WebFilter, Ordered {
     }
 
     long nowNanos = System.nanoTime();
-    MultiBucketGate.Decision decision =
-        MultiBucketGate.tryAcquireAll(List.of(ipBucket, tokenBucket == null ? ipBucket : tokenBucket), nowNanos);
+    // Codex iter-3 P1 #2 absorb: when there's no token fingerprint,
+    // pass ONLY the IP bucket. The previous "duplicate ipBucket"
+    // hack consumed the IP token TWICE per request, halving the
+    // effective burst for unauthenticated callers.
+    List<TokenBucket> buckets =
+        tokenBucket == null
+            ? java.util.Collections.singletonList(ipBucket)
+            : List.of(ipBucket, tokenBucket);
+    MultiBucketGate.Decision decision = MultiBucketGate.tryAcquireAll(buckets, nowNanos);
 
     if (!decision.allowed()) {
       // Log with masked actor key — full IP/fingerprint never logged

@@ -55,31 +55,31 @@ public class GatewayRouteClassifier {
     }
 
     // Domain endpoints (K8s prod + local/v1 alias)
-    if (path.matches("^/api(/v1)?/users(/.*)?$") || path.startsWith("/users")) {
+    if (matchesGroup(path, "users")) {
       return "users";
     }
-    if (path.matches("^/api(/v1)?/reports(/.*)?$") || path.startsWith("/reports")) {
+    if (matchesGroup(path, "reports")) {
       return "reports";
     }
-    if (path.matches("^/api(/v1)?/schemas(/.*)?$") || path.startsWith("/schemas")) {
+    if (matchesGroup(path, "schemas")) {
       return "schemas";
     }
-    if (path.matches("^/api(/v1)?/notify(/.*)?$") || path.startsWith("/notify")) {
+    if (matchesGroup(path, "notify")) {
       return "notify";
     }
-    if (path.matches("^/api(/v1)?/theme-registry(/.*)?$") || path.startsWith("/theme-registry")) {
+    if (matchesGroup(path, "theme-registry")) {
       return "theme_registry";
     }
-    if (path.matches("^/api(/v1)?/audit(/.*)?$") || path.startsWith("/audit")) {
+    if (matchesGroup(path, "audit")) {
       return "audit";
     }
-    if (path.matches("^/api(/v1)?/access(/.*)?$") || path.startsWith("/access")) {
+    if (matchesGroup(path, "access")) {
       return "access";
     }
-    if (path.matches("^/api(/v1)?/variants(/.*)?$") || path.startsWith("/variants")) {
+    if (matchesGroup(path, "variants")) {
       return "variants";
     }
-    if (path.matches("^/api(/v1)?/admin(/.*)?$") || path.startsWith("/admin")) {
+    if (matchesGroup(path, "admin")) {
       return "admin";
     }
 
@@ -89,5 +89,26 @@ public class GatewayRouteClassifier {
     }
 
     return "unknown";
+  }
+
+  /**
+   * Path-boundary-safe match for both K8s prod ({@code /<group>}) and
+   * local/v1 ({@code /api/<group>} or {@code /api/v1/<group>})
+   * variants. Codex iter-3 P2 #6 absorb: prevents
+   * {@code /usersx} from being misclassified as {@code users}.
+   */
+  private static boolean matchesGroup(String path, String group) {
+    String slashGroup = "/" + group;
+    String slashGroupSlash = slashGroup + "/";
+    String apiSlashGroup = "/api" + slashGroup;
+    String apiSlashGroupSlash = "/api" + slashGroupSlash;
+    String apiV1SlashGroup = "/api/v1" + slashGroup;
+    String apiV1SlashGroupSlash = "/api/v1" + slashGroupSlash;
+    return path.equals(slashGroup)
+        || path.startsWith(slashGroupSlash)
+        || path.equals(apiSlashGroup)
+        || path.startsWith(apiSlashGroupSlash)
+        || path.equals(apiV1SlashGroup)
+        || path.startsWith(apiV1SlashGroupSlash);
   }
 }

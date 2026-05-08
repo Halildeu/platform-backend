@@ -99,17 +99,30 @@ public class GatewayAuthTelemetryWebFilter implements WebFilter, Ordered {
    * post-PR-Auth-1 (httpOnly set by /auth/cookie); if both are
    * present, the cookie was the actual auth signal that reached the
    * gateway.
+   *
+   * <p>Codex iter-3 P0 #1 absorb: the cookie name is
+   * {@code erp_access_token}, NOT {@code auth_token}. See
+   * {@code AuthCookieEndpoint}, {@code CookieToAuthHeaderFilter},
+   * and {@code CookieAwareBearerTokenConverter} for the canonical
+   * cookie-name source. Reading via {@code request.getCookies()} is
+   * safer than parsing the raw {@code Cookie} header string.
    */
   private String detectAuthMode(ServerWebExchange exchange) {
-    HttpHeaders headers = exchange.getRequest().getHeaders();
-    String cookie = headers.getFirst(HttpHeaders.COOKIE);
-    if (cookie != null && cookie.contains("auth_token=")) {
+    if (exchange.getRequest().getCookies().containsKey(AUTH_COOKIE_NAME)) {
       return AUTH_MODE_COOKIE;
     }
+    HttpHeaders headers = exchange.getRequest().getHeaders();
     String authz = headers.getFirst(HttpHeaders.AUTHORIZATION);
     if (authz != null && !authz.isBlank()) {
       return AUTH_MODE_BEARER;
     }
     return AUTH_MODE_NONE;
   }
+
+  /**
+   * Canonical gateway auth cookie name. Mirrors
+   * {@code AuthCookieEndpoint.AUTH_COOKIE_NAME}; declared local-static
+   * here so this class doesn't depend on the controller package.
+   */
+  static final String AUTH_COOKIE_NAME = "erp_access_token";
 }

@@ -4,27 +4,30 @@ import java.util.List;
 
 /**
  * Phase 2 PR-BE-7 (Codex thread 019e0518 iter-2 implementation
- * guard): atomic dual-bucket gate. The contract:
- * "if either bucket denies, NEITHER consumes."
+ * guard, iter-3 P1 #3 honest-naming absorb): SOFT dual-bucket gate.
  *
- * <p>Naive implementation:
- * <pre>{@code
- * if (!ipBucket.tryAcquire() || (tokenBucket != null && !tokenBucket.tryAcquire())) {
- *     return deny429(...);
- * }
- * }</pre>
- * is broken — if the IP bucket succeeds and the token bucket then
- * fails, the IP token is wrongly consumed.
+ * <p>Semantic contract (soft, NOT strong-atomic):
+ * <ul>
+ *   <li>Phase 1 — peek every bucket. If any is empty, deny without
+ *       consuming any token. Strong here.</li>
+ *   <li>Phase 2 — consume each bucket sequentially. Under
+ *       contention, a concurrent caller can drain a bucket between
+ *       phase 1 peek and phase 2 consume. In that case we deny but
+ *       the buckets that DID consume forfeit their token. This is a
+ *       soft throttle, not a bank transaction.</li>
+ * </ul>
  *
- * <p>Correct: peek both buckets first; only consume both if both
- * peek positively. Concurrent callers may still race (peek says
- * available, then consume fails because someone else got there
- * first), in which case we fall back to deny — that's the correct
- * semantics under contention.
+ * <p>Why soft is OK here: HPA replicas already multiply the
+ * effective threshold cluster-wide, and the rate limiter is a
+ * dampener, not a security boundary. Forfeit-on-contention is
+ * bounded by burst (typically 2-20 tokens per minute) and refills
+ * within seconds. Stronger semantics (ordered locks, refund/
+ * reservation) would add deadlock risk for marginal benefit.
  *
- * <p>This is a soft-throttle: cluster-wide hard limits are not
- * guaranteed (HPA replicas multiply the effective threshold). The
- * dampener catches obvious storms, not surgically precise abuse.
+ * <p>The naive single-line {@code A || B} composition is broken
+ * because A's token is consumed even when B denies; this gate
+ * prevents that common case via the explicit phase-1 peek. The
+ * remaining contention-window forfeit is the documented compromise.
  */
 public final class MultiBucketGate {
 
@@ -33,10 +36,13 @@ public final class MultiBucketGate {
   }
 
   /**
-   * Atomically tries to acquire one token from each bucket in the
-   * list. Returns a decision indicating whether all buckets had a
-   * token AND were successfully consumed. On denial, NO bucket has
-   * a token consumed.
+   * Soft-atomically tries to acquire one token from each bucket in
+   * the list. Returns a decision indicating whether all buckets had
+   * a token AND were successfully consumed.
+   *
+   * <p>SOFT semantics (Codex iter-3 P1 #3 absorb): denial in phase 1
+   * (peek) consumes nothing. Denial in phase 2 (consume) under
+   * contention may forfeit some buckets' tokens — see class javadoc.
    *
    * <p>{@code null} entries in the list are ignored (e.g. when the
    * fingerprint bucket is absent because no Authorization header
