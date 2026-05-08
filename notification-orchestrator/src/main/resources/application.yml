@@ -46,42 +46,26 @@ spring:
     schemas: ${NOTIFY_DB_SCHEMA:notify}
     locations: classpath:db/migration
   # Faz 23.2 PR-D.3.x: Spring Security re-introduced.
+  # Faz 23.6 hardening (2026-05-08): JWT decoder is built by the
+  # custom `@Bean public JwtDecoder jwtDecoder()` in
+  # {@link com.serban.notify.config.SecurityConfig}. That bean uses
+  # {@code NimbusJwtDecoder.withJwkSetUri()} so no auto-discovery
+  # network call is made (the previous Spring Boot auto-config
+  # picked `withIssuerLocation()` and timed out against the public
+  # Keycloak URL inside the cluster). The bean also adds an explicit
+  # {@code JwtValidators.createDefaultWithIssuer()} validator so
+  # issuer claim assertion is preserved.
   #
-  # JWT decoder selection (Faz 23.6 hardening, 2026-05-08):
-  #
-  # Both `issuer-uri` and `jwk-set-uri` are optional. When BOTH are set
-  # Spring Boot's `OAuth2ResourceServerJwtConfiguration` prefers
-  # `withIssuerLocation()`, which calls
-  # `<issuer-uri>/.well-known/openid-configuration` once on first decode.
-  # In a cluster with `default-deny-egress` NetworkPolicy and no public
-  # hairpin routing that call times out (5s) → first JWT request
-  # surfaces `JwtDecoderInitializationException` → HTTP 500. This is the
-  # 17-error 500 storm we hit on testai 2026-05-08.
-  #
-  # Fix: leave both keys unset by default (`:#{null}` SpEL literal, not a
-  # local-only placeholder URL). The runner overrides whichever it can
-  # reach:
-  #   - test/prod: only `SECURITY_JWT_JWK_SET_URI` is set in the
-  #     ConfigMap (resolves on internal cluster DNS in 2ms);
-  #     `withJwkSetUri()` builds the decoder, no auto-discovery, no
-  #     issuer claim assertion.
-  #   - local: dev profile / docker compose set
-  #     `SECURITY_JWT_ISSUER_URI=http://localhost:8081/realms/serban`
-  #     so the legacy auto-discovery flow still works against a local
-  #     Keycloak.
-  #
-  # When the production overlay needs strict issuer claim assertion
-  # without auto-discovery, the long-term plan is a custom
-  # `JwtDecoder` bean that pairs `withJwkSetUri` with
-  # `JwtValidators.createDefaultWithIssuer(<public-url>)` — tracked as
-  # a Faz 24 / PR-5 follow-up. Until then this optional-default keeps
-  # both clusters healthy.
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ${SECURITY_JWT_ISSUER_URI:#{null}}
-          jwk-set-uri: ${SECURITY_JWT_JWK_SET_URI:#{null}}
+  # Spring Boot auto-config is intentionally NOT given any
+  # `spring.security.oauth2.resourceserver.jwt.*` keys here so that
+  # `OAuth2ResourceServerJwtConfiguration` short-circuits on the
+  # `@ConditionalOnMissingBean(JwtDecoder.class)` guard. Adding keys
+  # back would silently shadow the custom bean's validator chain —
+  # don't do it. The corresponding env vars
+  # (`SECURITY_JWT_JWK_SET_URI`, `SECURITY_JWT_ISSUER`,
+  # `SECURITY_JWT_AUDIENCE`, `SECURITY_AUTH_ALLOWED_CLIENT_IDS`)
+  # are read directly by the bean from {@code Environment}, mirroring
+  # permission-service / api-gateway.
 
 server:
   port: ${SERVER_PORT:8089}

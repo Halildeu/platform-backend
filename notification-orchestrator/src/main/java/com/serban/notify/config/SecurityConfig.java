@@ -162,28 +162,35 @@ public class SecurityConfig {
      */
     @Bean
     public JwtDecoder jwtDecoder() {
+        // Codex `019e0649` REVISE iter-1 absorb (#2): direct env vars are
+        // read FIRST so the previous application.yml `${...:#{null}}`
+        // sentinel — if it ever re-appears in a future drift — cannot
+        // shadow the canonical override. The literal "#{null}" string
+        // would otherwise satisfy `StringUtils.hasText` and produce a
+        // bogus issuer URL. `firstNonBlank` itself also rejects the
+        // sentinel string defensively.
         String jwkSetUri = firstNonBlank(
-                environment.getProperty("spring.security.oauth2.resourceserver.jwt.jwk-set-uri"),
-                environment.getProperty("security.jwt.jwk-set-uri"),
                 environment.getProperty("SECURITY_JWT_JWK_SET_URI"),
+                environment.getProperty("security.jwt.jwk-set-uri"),
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.jwk-set-uri"),
                 "http://localhost:8081/realms/serban/protocol/openid-connect/certs"
         );
         String issuer = firstNonBlank(
-                environment.getProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri"),
-                environment.getProperty("security.jwt.issuer"),
                 environment.getProperty("SECURITY_JWT_ISSUER"),
+                environment.getProperty("security.jwt.issuer"),
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri"),
                 "http://localhost:8081/realms/serban"
         );
         Collection<String> audiences = resolveCsv(
-                environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences"),
-                environment.getProperty("security.jwt.audience"),
                 environment.getProperty("SECURITY_JWT_AUDIENCE"),
+                environment.getProperty("security.jwt.audience"),
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences"),
                 environment.getProperty("spring.application.name"),
                 "notification-orchestrator"
         );
         Collection<String> allowedClientIds = resolveCsv(
-                environment.getProperty("security.jwt.allowed-client-ids"),
                 environment.getProperty("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+                environment.getProperty("security.jwt.allowed-client-ids"),
                 "frontend,admin-cli,serban-web"
         );
 
@@ -213,9 +220,17 @@ public class SecurityConfig {
     private static String firstNonBlank(String... values) {
         if (values == null) return null;
         for (String value : values) {
-            if (StringUtils.hasText(value)) {
-                return value.trim();
+            if (!StringUtils.hasText(value)) continue;
+            String trimmed = value.trim();
+            // Codex `019e0649` REVISE iter-1 absorb: defensive guard
+            // against a `${VAR:#{null}}` placeholder that Spring's
+            // PropertySourcesPropertyResolver did NOT expand to a real
+            // null. Treat the literal SpEL sentinel as "missing" so a
+            // future application.yml drift cannot poison the validator.
+            if ("#{null}".equals(trimmed) || "null".equalsIgnoreCase(trimmed)) {
+                continue;
             }
+            return trimmed;
         }
         return null;
     }

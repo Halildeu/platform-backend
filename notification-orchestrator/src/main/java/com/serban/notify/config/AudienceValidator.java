@@ -30,6 +30,10 @@ public class AudienceValidator implements OAuth2TokenValidator<Jwt> {
     private final Set<String> expectedAudiences;
     private final Set<String> allowedClientIds;
 
+    public AudienceValidator(String expectedAudience) {
+        this(expectedAudience == null ? Set.of() : Set.of(expectedAudience), Set.of());
+    }
+
     public AudienceValidator(Collection<String> expectedAudiences, Collection<String> allowedClientIds) {
         this.expectedAudiences = normalize(expectedAudiences);
         this.allowedClientIds = normalize(allowedClientIds);
