@@ -52,13 +52,16 @@ public class InboxController {
 
     private final InboxService inboxService;
     private final SubscriberIdentityGuard subscriberIdentityGuard;
+    private final NotifyOrgAccessGuard notifyOrgAccessGuard;
 
     public InboxController(
         InboxService inboxService,
-        SubscriberIdentityGuard subscriberIdentityGuard
+        SubscriberIdentityGuard subscriberIdentityGuard,
+        NotifyOrgAccessGuard notifyOrgAccessGuard
     ) {
         this.inboxService = inboxService;
         this.subscriberIdentityGuard = subscriberIdentityGuard;
+        this.notifyOrgAccessGuard = notifyOrgAccessGuard;
     }
 
     /**
@@ -80,6 +83,12 @@ public class InboxController {
         @RequestParam(name = "page", defaultValue = "0") @Min(0) int page,
         @RequestParam(name = "size", defaultValue = "20") @Min(1) int size
     ) {
+        // Faz 24 / PR-5.2.1 (Codex thread `019e0675` AGREE iter-5):
+        // org guard runs BEFORE the subscriber identity guard so the
+        // PR-5.1 `notify_org_access_match_total` cutover-gate metric
+        // captures every browser inbox call. This is the authoritative
+        // signal PR-5.4 needs to flip `defaultOrgId=""` safely.
+        notifyOrgAccessGuard.requireOrgAccessOrThrow(callerOrgId);
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
         Page<NotificationInbox> pageResult = inboxService.listActive(
             callerOrgId, subscriberId, page, size
@@ -99,6 +108,12 @@ public class InboxController {
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
         @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
     ) {
+        // Faz 24 / PR-5.2.1 (Codex thread `019e0675` AGREE iter-5):
+        // org guard runs BEFORE the subscriber identity guard so the
+        // PR-5.1 `notify_org_access_match_total` cutover-gate metric
+        // captures every browser inbox call. This is the authoritative
+        // signal PR-5.4 needs to flip `defaultOrgId=""` safely.
+        notifyOrgAccessGuard.requireOrgAccessOrThrow(callerOrgId);
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
         long count = inboxService.unreadCount(callerOrgId, subscriberId);
         return ResponseEntity.ok(new UnreadCountResponse(count));
@@ -120,6 +135,12 @@ public class InboxController {
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
         @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
     ) {
+        // Faz 24 / PR-5.2.1 (Codex thread `019e0675` AGREE iter-5):
+        // org guard runs BEFORE the subscriber identity guard so the
+        // PR-5.1 `notify_org_access_match_total` cutover-gate metric
+        // captures every browser inbox call. This is the authoritative
+        // signal PR-5.4 needs to flip `defaultOrgId=""` safely.
+        notifyOrgAccessGuard.requireOrgAccessOrThrow(callerOrgId);
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
         return inboxService.markAsRead(callerOrgId, id, subscriberId)
             .map(InboxItemResponse::fromEntity)
@@ -147,6 +168,12 @@ public class InboxController {
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
         @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
     ) {
+        // Faz 24 / PR-5.2.1 (Codex thread `019e0675` AGREE iter-5):
+        // org guard runs BEFORE the subscriber identity guard so the
+        // PR-5.1 `notify_org_access_match_total` cutover-gate metric
+        // captures every browser inbox call. This is the authoritative
+        // signal PR-5.4 needs to flip `defaultOrgId=""` safely.
+        notifyOrgAccessGuard.requireOrgAccessOrThrow(callerOrgId);
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
         return inboxService.archive(callerOrgId, id, subscriberId)
             .map(InboxItemResponse::fromEntity)
@@ -199,6 +226,12 @@ public class InboxController {
         // the action race-safe across pods regardless of NTP drift.
         // The response still echoes the cutoff timestamp for audit
         // affordance, but it is now the DB clock value.
+        // Faz 24 / PR-5.2.1 (Codex thread `019e0675` AGREE iter-5):
+        // org guard runs BEFORE the subscriber identity guard so the
+        // PR-5.1 `notify_org_access_match_total` cutover-gate metric
+        // captures every browser inbox call. This is the authoritative
+        // signal PR-5.4 needs to flip `defaultOrgId=""` safely.
+        notifyOrgAccessGuard.requireOrgAccessOrThrow(callerOrgId);
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
         InboxService.BulkMarkAllReadResult result =
             inboxService.markAllAsRead(callerOrgId, subscriberId);

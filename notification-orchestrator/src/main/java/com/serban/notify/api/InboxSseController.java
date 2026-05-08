@@ -82,16 +82,19 @@ public class InboxSseController {
 
     private final InboxService inboxService;
     private final SubscriberIdentityGuard subscriberIdentityGuard;
+    private final NotifyOrgAccessGuard notifyOrgAccessGuard;
 
     /** Per-(orgId, subscriberId) connected SSE emitters. */
     private final Map<String, List<SseEmitter>> emitters = new ConcurrentHashMap<>();
 
     public InboxSseController(
         InboxService inboxService,
-        SubscriberIdentityGuard subscriberIdentityGuard
+        SubscriberIdentityGuard subscriberIdentityGuard,
+        NotifyOrgAccessGuard notifyOrgAccessGuard
     ) {
         this.inboxService = inboxService;
         this.subscriberIdentityGuard = subscriberIdentityGuard;
+        this.notifyOrgAccessGuard = notifyOrgAccessGuard;
     }
 
     /**
@@ -105,6 +108,13 @@ public class InboxSseController {
         @RequestParam(name = "orgId", required = true) @NotBlank String orgId,
         @RequestParam(name = "subscriberId", required = true) @NotBlank String subscriberId
     ) {
+        // Faz 24 / PR-5.2.1 (Codex thread `019e0675` AGREE iter-5):
+        // org guard runs FIRST, before any emitter allocation, so a
+        // denied request 403s with no SSE side-effect (no emitter
+        // entry, no leaked stream). The PR-5.1 metric counter
+        // captures the org access source so PR-5.4 sees real
+        // browser SSE traffic on the cutover gate.
+        notifyOrgAccessGuard.requireOrgAccessOrThrow(orgId);
         // Faz 23.4 PR-E.5: enforce subscriberId query param matches JWT
         // principal so an authenticated caller cannot stream another
         // subscriber's unread updates by editing the query string.
