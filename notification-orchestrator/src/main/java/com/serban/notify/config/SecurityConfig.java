@@ -49,8 +49,10 @@ import java.util.Set;
  *   <li>others: authenticated</li>
  * </ul>
  *
- * <p>JWT decoder: Keycloak realm `serban` issuer-uri (overridable via
- * {@code SECURITY_JWT_ISSUER_URI}). JwtAuthenticationConverter maps:
+ * <p>JWT decoder: custom {@link #jwtDecoder()} bean (Faz 23.6 hardening,
+ * mirroring permission-service / api-gateway). Issuer comes from
+ * {@code SECURITY_JWT_ISSUER} env, JWK URL from
+ * {@code SECURITY_JWT_JWK_SET_URI}. JwtAuthenticationConverter maps:
  * <ul>
  *   <li>{@code permissions} claim → PERM_* authorities</li>
  *   <li>{@code realm_access.roles} → ROLE_* authorities (Keycloak standard)</li>
