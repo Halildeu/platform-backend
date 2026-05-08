@@ -156,19 +156,27 @@ public class OpenFgaScopeReader {
      * the {@code /authz/me} response and by admin endpoints that need
      * per-type lists without the superAdmin flag.
      *
-     * <p>SuperAdmin-as-scope semantics: when the user is the
-     * organization admin, this method returns an EMPTY map (not a
-     * "wildcard" set), matching the legacy DB-backed behavior of
-     * {@code AuthorizationQueryService.getUserScopeSummary} where
-     * superAdmin had no per-resource scope rows. Callers that need to
-     * detect superAdmin should use {@link #readScopeContext} which
-     * carries the boolean flag.
+     * <p>PR-BE-14 (Codex thread 019e0938 iter-7 AGREE absorb,
+     * 2026-05-08): "allowedScopes" semantics revisited. Pre-fix this
+     * method returned an EMPTY map for superAdmin (matching the legacy
+     * DB-backed getUserScopeSummary which had no per-resource scope
+     * rows for superAdmins). The legacy behaviour produced a UX bug on
+     * the testai UserDetailDrawer "Veri Erişimi → Şirketler" tab:
+     * superAdmin saved companies, OpenFGA tuples persisted (writes
+     * succeeded), but reload showed an empty list — admin observability
+     * broken, "kaydetmedi gibi" perception bug.
+     *
+     * <p>Post-fix: {@code allowedScopes} now means "explicit assigned
+     * scopes / observable assignments" — populated for ALL users,
+     * including superAdmin. Policy decisions still treat
+     * {@code superAdmin=true} as universal bypass via
+     * {@link ScopeContext#canAccessCompany}/Project/Warehouse/Branch
+     * (which short-circuit on superAdmin), so the bypass guarantee is
+     * preserved. The scope summary's role narrows to "what was
+     * actually assigned in OpenFGA", not "what the user can access".
      */
     public Map<String, Set<Long>> readScopeSummary(String userId) {
         ScopeContext ctx = readScopeContext(userId);
-        if (ctx.superAdmin()) {
-            return Collections.emptyMap();
-        }
         Map<String, Set<Long>> result = new LinkedHashMap<>();
         if (!ctx.allowedCompanyIds().isEmpty()) {
             result.put("COMPANY", new LinkedHashSet<>(ctx.allowedCompanyIds()));
@@ -213,15 +221,22 @@ public class OpenFgaScopeReader {
 
         CompletableFuture.allOf(companyFuture, projectFuture, warehouseFuture, branchFuture, adminFuture).join();
 
+        // PR-BE-14 (Codex thread 019e0938 iter-7 AGREE absorb, 2026-05-08):
+        // populate allowed*Ids even when superAdmin=true. The four
+        // listObjectIds futures already ran in parallel; discarding
+        // their results for superAdmin (the previous behaviour) was the
+        // root cause of the UserDetailDrawer "kaydetmedi gibi" UX bug
+        // — admins couldn't see assignments they had just persisted.
+        // The bypass guarantee at policy decision points stays intact
+        // because {@link ScopeContext#canAccessCompany}/Project/etc.
+        // short-circuit on the superAdmin flag, regardless of what's
+        // in the explicit allowed*Ids sets.
         boolean isSuperAdmin = adminFuture.join();
-        if (isSuperAdmin) {
-            return ScopeContext.superAdmin(userId);
-        }
         return new ScopeContext(userId,
                 companyFuture.join(),
                 projectFuture.join(),
                 warehouseFuture.join(),
                 branchFuture.join(),
-                false);
+                isSuperAdmin);
     }
 }
