@@ -47,13 +47,19 @@ import java.util.concurrent.CompletableFuture;
  * user X. Cache is invalidated on tuple writes via
  * {@link ScopeContextCache#evictUser(String)}.
  *
- * <p>Failure semantics: OpenFGA outage → returns empty
- * {@link ScopeContext} (graceful degrade, NOT throw). Caller decides
- * whether to render empty scope or 5xx. This matches the behavior of
- * {@link ScopeContextFilter#buildScopeContext} which falls back to dev
- * scope on exception; admin-callers receive an empty list which the UI
- * already renders as "no companies assigned" — the same shape as a
- * never-assigned user, so no new error path on the frontend.
+ * <p>Failure semantics — two contracts on the same fetch path:
+ * <ul>
+ *   <li>{@link #readScopeContext} (strict): propagates the underlying
+ *       OpenFGA exception. Used by {@link ScopeContextFilter} which
+ *       wraps the throw and substitutes its legacy "production OpenFGA
+ *       fail → dev scope" fallback (preserves pre-PR-BE-10 request-
+ *       binding behavior).</li>
+ *   <li>{@link #readScopeSummarySafe} (admin): catches the exception
+ *       and returns an empty map. Used by {@code UserScopeService}
+ *       and {@code AuthorizationQueryService} where the UI prefers a
+ *       deterministic "no scopes" view over a 5xx; the empty list has
+ *       the same shape as a legitimately scope-less user.</li>
+ * </ul>
  */
 public class OpenFgaScopeReader {
 
