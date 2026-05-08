@@ -40,7 +40,7 @@ class SubscriberIdentityGuardTest {
 
     private final MeterRegistry meterRegistry = new SimpleMeterRegistry();
     private final SubscriberIdentityGuard guard = new SubscriberIdentityGuard(
-        new NotifyConfig.SecurityConfig("default", LEGACY_CLAIMS), meterRegistry);
+        new NotifyConfig.SecurityConfig("default", LEGACY_CLAIMS, false), meterRegistry);
 
     @AfterEach
     void clearSecurityContext() {
@@ -206,7 +206,7 @@ class SubscriberIdentityGuardTest {
         // `subscriberId` claim is trusted. Legacy `userId` / `sub` matches
         // become 403 — the cutover signal.
         SubscriberIdentityGuard strict = new SubscriberIdentityGuard(
-            new NotifyConfig.SecurityConfig("default", List.of("subscriberId")),
+            new NotifyConfig.SecurityConfig("default", List.of("subscriberId"), false),
             meterRegistry);
         SecurityContextHolder.getContext().setAuthentication(
             new JwtAuthenticationToken(newJwt("alice"), List.of(new SimpleGrantedAuthority("ROLE_USER")))
@@ -222,7 +222,7 @@ class SubscriberIdentityGuardTest {
     @Test
     void strictMode_subscriberIdOnly_acceptsCanonicalClaim() {
         SubscriberIdentityGuard strict = new SubscriberIdentityGuard(
-            new NotifyConfig.SecurityConfig("default", List.of("subscriberId")),
+            new NotifyConfig.SecurityConfig("default", List.of("subscriberId"), false),
             meterRegistry);
         Jwt jwt = Jwt.withTokenValue("token")
             .header("alg", "RS256")
@@ -362,12 +362,12 @@ class SubscriberIdentityGuardTest {
     }
 
     @Test
-    void legacyMode_subscriberIdentityStrictDefaultsToFalse() {
-        // The two-arg legacy constructor must keep silent-pass on so the
-        // existing slice / @WebMvcTest(addFilters=false) suite is
-        // unaffected. The denied counter must never appear.
+    void legacyMode_subscriberIdentityStrictExplicitFalseKeepsSilentPass() {
+        // The legacy slice / @WebMvcTest(addFilters=false) suite relies on
+        // the silent-pass branch staying active when strict is false.
+        // The denied counter must never appear in this path.
         SubscriberIdentityGuard legacy = new SubscriberIdentityGuard(
-            new NotifyConfig.SecurityConfig("default", LEGACY_CLAIMS),
+            new NotifyConfig.SecurityConfig("default", LEGACY_CLAIMS, false),
             meterRegistry);
         SecurityContextHolder.clearContext();
 

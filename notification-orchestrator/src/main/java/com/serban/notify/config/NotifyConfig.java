@@ -161,15 +161,15 @@ public record NotifyConfig(
         List<@Pattern(regexp = "subscriberId|userId|sub") String> subscriberIdentityClaims,
         @DefaultValue("false") boolean subscriberIdentityStrict
     ) {
-        /**
-         * Backwards-compatible overload (Codex iter-1 absorb): existing test
-         * fixtures construct {@link SecurityConfig} with the original
-         * two-argument shape. The strict toggle defaults to {@code false}
-         * which keeps the legacy silent-pass behaviour those slice tests
-         * depend on.
-         */
-        public SecurityConfig(String defaultOrgId, List<String> subscriberIdentityClaims) {
-            this(defaultOrgId, subscriberIdentityClaims, false);
-        }
+        // Codex iter-1 absorb originally suggested a two-arg overload to
+        // keep legacy test fixtures compiling unchanged, but adding a
+        // second public constructor on a record breaks Spring Boot's
+        // @ConfigurationProperties auto-binding (the binder cannot pick
+        // a canonical constructor when two are visible and Boot 3.x
+        // record binding rejects the prefix with `Field error ... on
+        // field 'security': rejected value [null]`). The CI Testcontainers
+        // PG test caught this on PR #126 head 2f51f7d. Fix: drop the
+        // overload, update every test fixture to the three-arg form
+        // (passing `false` to preserve legacy silent-pass behaviour).
     }
 }
