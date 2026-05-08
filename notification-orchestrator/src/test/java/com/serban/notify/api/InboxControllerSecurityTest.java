@@ -154,5 +154,19 @@ class InboxControllerSecurityTest {
         public SubscriberIdentityGuard subscriberIdentityGuard() {
             return SubscriberIdentityGuardTestSupport.newGuard();
         }
+
+        // PR-5.2.1 (Codex thread `019e0675` AGREE iter-5): InboxController +
+        // InboxSseController constructor now takes a NotifyOrgAccessGuard.
+        // This security test runs the production-mode SecurityConfig so a
+        // real JWT principal flows in via SecurityMockMvcRequestPostProcessors.jwt();
+        // the guard reads `org_id`/`tenant_id`/`allowed_orgs` claims from
+        // that JWT and falls back to the default-org config. The test
+        // helper supplies the canonical single-tenant config ("default")
+        // so existing assertions (jwt has `org_id="default"` claim) still
+        // resolve to allow.
+        @Bean
+        public NotifyOrgAccessGuard notifyOrgAccessGuard() {
+            return NotifyOrgAccessGuardTestSupport.newGuard();
+        }
     }
 }
