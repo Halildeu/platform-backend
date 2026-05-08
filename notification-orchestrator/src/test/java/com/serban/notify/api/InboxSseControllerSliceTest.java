@@ -48,6 +48,16 @@ class InboxSseControllerSliceTest {
             return SubscriberIdentityGuardTestSupport.newGuard();
         }
 
+        // PR-5.2.1: org guard wired into the SSE controller (Codex
+        // thread `019e0675` AGREE iter-5). Slice runs with
+        // addFilters=false so SecurityContext is empty → guard
+        // silent-passes (auth==null branch); production behaviour
+        // is verified in NotifyOrgAccessGuardTest.
+        @org.springframework.context.annotation.Bean
+        NotifyOrgAccessGuard notifyOrgAccessGuard() {
+            return NotifyOrgAccessGuardTestSupport.newGuard();
+        }
+
         @org.springframework.context.annotation.Bean
         @org.springframework.context.annotation.Primary
         org.springframework.security.oauth2.jwt.JwtDecoder testJwtDecoder() {

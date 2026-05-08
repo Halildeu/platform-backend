@@ -289,6 +289,16 @@ class InboxControllerTest {
         public SubscriberIdentityGuard subscriberIdentityGuard() {
             return SubscriberIdentityGuardTestSupport.newGuard();
         }
+
+        // PR-5.2.1 (Codex thread `019e0675` AGREE iter-5): org guard
+        // wired into InboxController. Slice tests run with
+        // addFilters=false → SecurityContext empty → guard silent-pass
+        // (auth==null branch). Production-mode behaviour verified in
+        // NotifyOrgAccessGuardTest.
+        @Bean
+        public NotifyOrgAccessGuard notifyOrgAccessGuard() {
+            return NotifyOrgAccessGuardTestSupport.newGuard();
+        }
     }
 
     private static NotificationInbox stubRow() {
