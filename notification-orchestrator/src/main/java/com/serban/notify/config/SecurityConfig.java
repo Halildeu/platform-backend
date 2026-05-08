@@ -4,6 +4,7 @@ import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointR
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -11,10 +12,19 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.util.StringUtils;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +66,12 @@ import java.util.Set;
 @Profile("!local & !test")
 public class SecurityConfig {
 
+    private final Environment environment;
+
+    public SecurityConfig(Environment environment) {
+        this.environment = environment;
+    }
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
         http
@@ -84,10 +100,142 @@ public class SecurityConfig {
         return http.build();
     }
 
-    // JwtDecoder bean: Spring Boot auto-config (spring-boot-starter-oauth2-resource-server)
-    // creates it from `spring.security.oauth2.resourceserver.jwt.issuer-uri` property.
-    // No explicit @Bean here — auto-config respects @ConditionalOnMissingBean and tests
-    // can @Primary override.
+    /**
+     * Custom JwtDecoder bean — Faz 23.6 hardening (2026-05-08).
+     *
+     * <h3>Why we don't rely on Spring Boot auto-config</h3>
+     *
+     * <p>Spring Boot's {@code OAuth2ResourceServerJwtConfiguration} prefers
+     * {@code NimbusJwtDecoder.withIssuerLocation()} whenever
+     * {@code spring.security.oauth2.resourceserver.jwt.issuer-uri} is non-null,
+     * which forces a {@code .well-known/openid-configuration} discovery call
+     * on first decode. The platform clusters have a {@code default-deny-egress}
+     * NetworkPolicy and no public-domain hairpin routing, so a public issuer
+     * URL (the natural value because the token's {@code iss} claim is the
+     * Keycloak frontend URL) times out and surfaces as
+     * {@code JwtDecoderInitializationException → HTTP 500} on every JWT
+     * request. Live evidence (testai 2026-05-08): 3088 stream + 26 inbox 500s
+     * before this change.
+     *
+     * <h3>Pattern</h3>
+     *
+     * <p>This class mirrors the long-standing
+     * {@code permission-service / SecurityConfig.jwtDecoder()} bean (and the
+     * {@code api-gateway / SecurityConfig.jwtDecoder()} reactive variant). The
+     * shape is:
+     * <ul>
+     *   <li>{@link NimbusJwtDecoder#withJwkSetUri(String)} — internal Keycloak
+     *       JWK URL only ({@code http://keycloak:8080/...}); resolves on
+     *       cluster DNS in milliseconds, never triggers auto-discovery.</li>
+     *   <li>{@link JwtValidators#createDefaultWithIssuer(String)} — issuer
+     *       claim assertion against the public issuer URL ({@code iss} claim
+     *       must match exactly). Token signature is validated against the
+     *       JWK set, while the {@code iss} claim assertion is a string
+     *       comparison — no network call.</li>
+     *   <li>{@link AudienceValidator} — {@code aud} claim allow-list with
+     *       {@code azp} / {@code client_id} fallback (Keycloak {@code aud}
+     *       behaviour).</li>
+     * </ul>
+     *
+     * <h3>Configuration sources</h3>
+     *
+     * <p>Property resolution mirrors permission-service for operational
+     * parity (the same overlay env vars work):
+     * <ul>
+     *   <li>{@code SECURITY_JWT_JWK_SET_URI} — required, internal Keycloak
+     *       JWK URL.</li>
+     *   <li>{@code SECURITY_JWT_ISSUER} (or
+     *       {@code spring.security.oauth2.resourceserver.jwt.issuer-uri}) —
+     *       required for issuer claim assertion (public Keycloak URL).</li>
+     *   <li>{@code SECURITY_JWT_AUDIENCE} (or
+     *       {@code spring.security.oauth2.resourceserver.jwt.audiences}) —
+     *       comma-separated audience list.</li>
+     *   <li>{@code SECURITY_AUTH_ALLOWED_CLIENT_IDS} — comma-separated
+     *       Keycloak {@code azp} / {@code client_id} allow-list (defaults
+     *       cover {@code frontend, admin-cli, serban-web}).</li>
+     * </ul>
+     *
+     * <p>Local profile ({@code local} / {@code test}) bypasses this bean
+     * entirely via {@link Profile @Profile("!local & !test")} — Testcontainers
+     * fixtures use {@code @MockBean JwtDecoder} or skip security via
+     * {@link com.serban.notify.config.SecurityConfigTest}.
+     */
+    @Bean
+    public JwtDecoder jwtDecoder() {
+        String jwkSetUri = firstNonBlank(
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.jwk-set-uri"),
+                environment.getProperty("security.jwt.jwk-set-uri"),
+                environment.getProperty("SECURITY_JWT_JWK_SET_URI"),
+                "http://localhost:8081/realms/serban/protocol/openid-connect/certs"
+        );
+        String issuer = firstNonBlank(
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri"),
+                environment.getProperty("security.jwt.issuer"),
+                environment.getProperty("SECURITY_JWT_ISSUER"),
+                "http://localhost:8081/realms/serban"
+        );
+        Collection<String> audiences = resolveCsv(
+                environment.getProperty("spring.security.oauth2.resourceserver.jwt.audiences"),
+                environment.getProperty("security.jwt.audience"),
+                environment.getProperty("SECURITY_JWT_AUDIENCE"),
+                environment.getProperty("spring.application.name"),
+                "notification-orchestrator"
+        );
+        Collection<String> allowedClientIds = resolveCsv(
+                environment.getProperty("security.jwt.allowed-client-ids"),
+                environment.getProperty("SECURITY_AUTH_ALLOWED_CLIENT_IDS"),
+                "frontend,admin-cli,serban-web"
+        );
+
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(buildServiceValidator(issuer, audiences, allowedClientIds));
+        return decoder;
+    }
+
+    private static OAuth2TokenValidator<Jwt> buildServiceValidator(
+            String issuer,
+            Collection<String> audiences,
+            Collection<String> allowedClientIds) {
+        List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
+        if (StringUtils.hasText(issuer)) {
+            validators.add(JwtValidators.createDefaultWithIssuer(issuer));
+        } else {
+            validators.add(JwtValidators.createDefault());
+        }
+        if ((audiences != null && !audiences.isEmpty())
+                || (allowedClientIds != null && !allowedClientIds.isEmpty())) {
+            validators.add(new AudienceValidator(audiences, allowedClientIds));
+        }
+        return new DelegatingOAuth2TokenValidator<>(
+                validators.toArray(new OAuth2TokenValidator[0]));
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
+    private static Collection<String> resolveCsv(String... candidates) {
+        if (candidates == null) return Set.of();
+        Set<String> result = new LinkedHashSet<>();
+        for (String candidate : candidates) {
+            if (!StringUtils.hasText(candidate)) continue;
+            Arrays.stream(candidate.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isBlank())
+                    .forEach(result::add);
+            if (!result.isEmpty()) {
+                // Mirror permission-service: first non-blank source wins.
+                break;
+            }
+        }
+        return result;
+    }
 
     /**
      * Map JWT claims to Spring Security authorities.
