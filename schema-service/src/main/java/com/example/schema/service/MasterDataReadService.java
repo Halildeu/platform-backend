@@ -76,17 +76,25 @@ public class MasterDataReadService {
             // parentProjectId) so the frontend can compose a
             // hierarchical scope-picker view. Parent resolution follows
             // the workcube_mikrolink real FK graph (1774 relations
-            // dump):
-            //   OUR_COMPANY ← COMPANY ← BRANCH
-            //                          ← PRO_PROJECTS
-            //                          ← DEPARTMENT (also direct via OUR_COMPANY_ID)
+            // dump). Naming gotcha: OUR_COMPANY's primary key column is
+            // [COMP_ID], NOT [OUR_COMPANY_ID]. Other tables carry an
+            // [OUR_COMPANY_ID] FK column whose value targets
+            // OUR_COMPANY.[COMP_ID] — a workcube convention oddity.
+            // Refs: V25 schema contract; codex thread 019e0de4 iter-1
+            // P1 absorb (this exact alias was wrong in iter-1).
+            //
+            //   OUR_COMPANY (PK COMP_ID) ← COMPANY (FK OUR_COMPANY_ID)
+            //     ← BRANCH (FK COMPANY_ID)
+            //     ← PRO_PROJECTS (FK COMPANY_ID)
+            //     ← DEPARTMENT (FK OUR_COMPANY_ID, FK BRANCH_ID)
+            //
             // OUR_COMPANY rows are top-level — parent fields NULL.
             // PRO_PROJECTS / BRANCH go through COMPANY.OUR_COMPANY_ID
-            // because the FKs to COMPANY are direct in the source
-            // schema; OUR_COMPANY is the picker's "company" type so
-            // we lift the parent up by one hop. DEPARTMENT carries
-            // OUR_COMPANY_ID directly. parentProjectId is always
-            // NULL today — reserved for future project-scoped
+            // (their direct FK to COMPANY); OUR_COMPANY is the picker's
+            // "company" type so we lift the parent up by one hop with
+            // the JOIN. DEPARTMENT carries OUR_COMPANY_ID directly as
+            // an FK (target OUR_COMPANY.COMP_ID). parentProjectId is
+            // always NULL today — reserved for future project-scoped
             // permission types without another DTO bump.
             "companies",   new TableMapping("""
                     SELECT TOP (%1$d)
@@ -106,13 +114,13 @@ public class MasterDataReadService {
                         p.[PROJECT_ID]        AS id,
                         p.[PROJECT_NUMBER]    AS code,
                         p.[PROJECT_HEAD]      AS name,
-                        oc.[OUR_COMPANY_ID]   AS parentCompanyId,
+                        oc.[COMP_ID]          AS parentCompanyId,
                         p.[BRANCH_ID]         AS parentBranchId,
                         CAST(NULL AS BIGINT)  AS parentProjectId,
                         COALESCE(p.[PROJECT_STATUS], 1) AS status
                     FROM [%2$s].[PRO_PROJECTS] p
                     LEFT JOIN [%2$s].[COMPANY] cmp ON cmp.[COMPANY_ID] = p.[COMPANY_ID]
-                    LEFT JOIN [%2$s].[OUR_COMPANY] oc ON oc.[OUR_COMPANY_ID] = cmp.[OUR_COMPANY_ID]
+                    LEFT JOIN [%2$s].[OUR_COMPANY] oc ON oc.[COMP_ID] = cmp.[OUR_COMPANY_ID]
                     WHERE p.[PROJECT_HEAD] IS NOT NULL AND LEN(LTRIM(RTRIM(p.[PROJECT_HEAD]))) > 0
                     ORDER BY p.[PROJECT_HEAD], p.[PROJECT_ID]
                     """),
@@ -121,13 +129,13 @@ public class MasterDataReadService {
                         b.[BRANCH_ID]         AS id,
                         CAST(NULL AS NVARCHAR(64)) AS code,
                         b.[BRANCH_NAME]       AS name,
-                        oc.[OUR_COMPANY_ID]   AS parentCompanyId,
+                        oc.[COMP_ID]          AS parentCompanyId,
                         CAST(NULL AS BIGINT)  AS parentBranchId,
                         CAST(NULL AS BIGINT)  AS parentProjectId,
                         COALESCE(b.[BRANCH_STATUS], 1) AS status
                     FROM [%2$s].[BRANCH] b
                     LEFT JOIN [%2$s].[COMPANY] cmp ON cmp.[COMPANY_ID] = b.[COMPANY_ID]
-                    LEFT JOIN [%2$s].[OUR_COMPANY] oc ON oc.[OUR_COMPANY_ID] = cmp.[OUR_COMPANY_ID]
+                    LEFT JOIN [%2$s].[OUR_COMPANY] oc ON oc.[COMP_ID] = cmp.[OUR_COMPANY_ID]
                     WHERE b.[BRANCH_NAME] IS NOT NULL AND LEN(LTRIM(RTRIM(b.[BRANCH_NAME]))) > 0
                     ORDER BY b.[BRANCH_NAME], b.[BRANCH_ID]
                     """),

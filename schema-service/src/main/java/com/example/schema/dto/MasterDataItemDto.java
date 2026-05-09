@@ -16,14 +16,24 @@ package com.example.schema.dto;
  * relationships from workcube_mikrolink schema dump (1774 FKs):
  *
  * <ul>
- *   <li>{@code parentCompanyId} — parent OUR_COMPANY_ID. Resolution:
+ *   <li>{@code parentCompanyId} — value is the parent OUR_COMPANY's
+ *       primary key. NB: that PK column is named {@code COMP_ID} in
+ *       workcube (NOT {@code OUR_COMPANY_ID}); other tables carry an
+ *       {@code OUR_COMPANY_ID} FK column whose value targets
+ *       {@code OUR_COMPANY.COMP_ID}. The API field name
+ *       {@code parentCompanyId} stays generic; semantics is "the
+ *       OUR_COMPANY this row hangs under". Resolution:
  *     <ul>
  *       <li>OUR_COMPANY rows: NULL (top of hierarchy)</li>
- *       <li>PRO_PROJECTS: via {@code COMPANY.OUR_COMPANY_ID} JOIN</li>
- *       <li>BRANCH: via {@code COMPANY.OUR_COMPANY_ID} JOIN</li>
- *       <li>DEPARTMENT (warehouse): direct {@code OUR_COMPANY_ID}
- *           column (also has BRANCH_ID for a grandparent join, but
- *           OUR_COMPANY_ID is the canonical parent for the picker)</li>
+ *       <li>PRO_PROJECTS: via {@code PRO_PROJECTS.COMPANY_ID →
+ *           COMPANY.OUR_COMPANY_ID → OUR_COMPANY.COMP_ID} JOIN</li>
+ *       <li>BRANCH: via {@code BRANCH.COMPANY_ID →
+ *           COMPANY.OUR_COMPANY_ID → OUR_COMPANY.COMP_ID} JOIN</li>
+ *       <li>DEPARTMENT (warehouse): direct {@code OUR_COMPANY_ID} FK
+ *           column (target {@code OUR_COMPANY.COMP_ID}); also has
+ *           {@code BRANCH_ID} for a grandparent join, but
+ *           {@code OUR_COMPANY_ID} is the canonical parent for the
+ *           picker</li>
  *     </ul>
  *   </li>
  *   <li>{@code parentBranchId} — direct {@code BRANCH_ID} FK. Used

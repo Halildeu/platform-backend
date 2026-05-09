@@ -15,8 +15,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.ArgumentCaptor;
 
 /**
  * PR-BE-15 (2026-05-09): MasterDataReadService unit tests.
@@ -199,5 +202,100 @@ class MasterDataReadServiceTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.list(null))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * PR-BE-15 absorb iter-2 (Codex thread 019e0de4 #2): SQL capture
+     * assertion. iter-1 had `oc.[OUR_COMPANY_ID]` in projects/branches
+     * JOIN — wrong column (OUR_COMPANY's PK is COMP_ID). Mock-based
+     * RowMapper tests passed because they bypassed the real SQL.
+     * This test captures the rendered SQL string and asserts the
+     * correct identifier appears for both projects and branches; it
+     * also asserts the WRONG identifier does NOT appear, so a
+     * regression that re-introduces it would fail loudly.
+     */
+    @Test
+    void projectsAndBranchesJoinUseCorrectOurCompanyPk() throws SQLException {
+        var service = newService();
+        ResultSet rs = mock(ResultSet.class);
+        when(rs.getLong(anyString())).thenReturn(0L);
+        when(rs.wasNull()).thenReturn(true);
+        when(rs.getString(anyString())).thenReturn(null);
+        when(rs.getBoolean(anyString())).thenReturn(false);
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        // projects
+        service.list("projects");
+        ArgumentCaptor<String> projectsSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).query(projectsSql.capture(), anyMap(), any(RowMapper.class));
+        String pSql = projectsSql.getValue();
+        assertThat(pSql)
+                .as("projects SQL must JOIN OUR_COMPANY on its real PK column COMP_ID")
+                .contains("oc.[COMP_ID] = cmp.[OUR_COMPANY_ID]")
+                .contains("oc.[COMP_ID]          AS parentCompanyId")
+                .doesNotContain("oc.[OUR_COMPANY_ID]");
+
+        // branches — separate jdbc instance to capture the second call cleanly
+        NamedParameterJdbcTemplate jdbc2 = mock(NamedParameterJdbcTemplate.class);
+        when(jdbc2.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+        var service2 = new MasterDataReadService(jdbc2, "workcube_mikrolink", 50000);
+        service2.list("branches");
+        ArgumentCaptor<String> branchesSql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc2).query(branchesSql.capture(), anyMap(), any(RowMapper.class));
+        String bSql = branchesSql.getValue();
+        assertThat(bSql)
+                .as("branches SQL must JOIN OUR_COMPANY on its real PK column COMP_ID")
+                .contains("oc.[COMP_ID] = cmp.[OUR_COMPANY_ID]")
+                .contains("oc.[COMP_ID]          AS parentCompanyId")
+                .doesNotContain("oc.[OUR_COMPANY_ID]");
+    }
+
+    /**
+     * PR-BE-15 absorb iter-2: companies SQL projects NULL parents
+     * (top-level rows). Confirms the explicit CAST NULL projection
+     * is preserved — without these aliases the RowMapper would
+     * throw on getLong("parentCompanyId") because the column would
+     * not exist in the ResultSet.
+     */
+    @Test
+    void companiesSqlProjectsCastNullParents() {
+        var service = newService();
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+        service.list("companies");
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).query(sql.capture(), anyMap(), any(RowMapper.class));
+        String s = sql.getValue();
+        assertThat(s).contains("CAST(NULL AS BIGINT)   AS parentCompanyId");
+        assertThat(s).contains("CAST(NULL AS BIGINT)   AS parentBranchId");
+        assertThat(s).contains("CAST(NULL AS BIGINT)   AS parentProjectId");
+        // companies don't JOIN — assert no JOIN keyword
+        assertThat(s).doesNotContain("JOIN");
+    }
+
+    /**
+     * PR-BE-15 absorb iter-2: departments SQL uses the direct
+     * OUR_COMPANY_ID column (DEPARTMENT.OUR_COMPANY_ID is an FK whose
+     * value targets OUR_COMPANY.COMP_ID — workcube convention oddity).
+     * No JOIN to OUR_COMPANY needed.
+     */
+    @Test
+    void departmentsSqlUsesDirectColumns() {
+        var service = newService();
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+        service.list("departments");
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).query(sql.capture(), anyMap(), any(RowMapper.class));
+        String s = sql.getValue();
+        assertThat(s).contains("d.[OUR_COMPANY_ID]     AS parentCompanyId");
+        assertThat(s).contains("d.[BRANCH_ID]          AS parentBranchId");
+        // departments JOIN to SETUP_DEPARTMENT_NAME for the name resolution,
+        // but should NOT JOIN to OUR_COMPANY (parent comes from the direct
+        // column above).
+        assertThat(s).contains("LEFT JOIN [workcube_mikrolink].[SETUP_DEPARTMENT_NAME]");
+        assertThat(s).doesNotContain("[OUR_COMPANY] oc");
     }
 }
