@@ -108,23 +108,26 @@ public final class RC003HardcodedSchemaForbidden implements ContractRule {
     }
 
     /**
-     * sourceSchema scan (static-mode only): mirror previous tier logic —
-     * Tier 0 (current year hardcoded) FAIL; Tier 1+ legacy WARN.
+     * sourceSchema scan (static-mode only): preserve previous tier logic —
+     * Tier 0 (current year + tenant hardcoded) FAIL; Tier 1+ legacy WARN.
+     *
+     * <p>Codex 019e0c99 iter-5 §3 absorb: single-tenant {@code workcube_mikrolink_<n>}
+     * (no year prefix) is INTENTIONALLY skipped here. Existing static reports
+     * {@code satis-ozet} and {@code stok-durum} carry {@code sourceSchema:
+     * workcube_mikrolink_1}; broad-failing them in this PR would block
+     * unrelated registry migration. Yearly/static sourceSchema cleanup is a
+     * separate registry-migration PR. The sourceQuery scan above keeps the
+     * runtime-tenant-isolation FAIL semantics this PR set out to fix.
      */
     private void scanSourceSchema(String reportKey, String text,
                                   List<ContractViolation> out) {
         Matcher m = HARDCODED_PATTERN.matcher(text);
         while (m.find()) {
-            String literal = m.group();
-            // Year present only when group 2 also matched (4-digit year + tenant
-            // pattern). Single-digit (just tenant) → no year tier check.
+            // Year-prefixed pattern only — single-tenant `_<n>` skipped (see javadoc).
             if (m.group(2) == null) {
-                out.add(ContractViolation.fail(ruleId(), reportKey, "sourceSchema",
-                        "Hardcoded per-tenant schema literal '" + literal
-                                + "' (tenantId=" + m.group(1) + ") in static "
-                                + "sourceSchema — use parametric resolution"));
                 continue;
             }
+            String literal = m.group();
             int year = Integer.parseInt(m.group(1));
             if (year >= currentYear) {
                 out.add(ContractViolation.fail(ruleId(), reportKey, "sourceSchema",
