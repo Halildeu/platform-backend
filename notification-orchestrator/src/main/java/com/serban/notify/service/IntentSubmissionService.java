@@ -107,9 +107,10 @@ public class IntentSubmissionService {
         // Order rationale: idempotency replay sonrası, capacity check öncesi.
         // Idempotent retry'lar abuse guard'ı tetiklemez (replay path bypass);
         // gerçek yeni intent'ler abuse guard + capacity'den geçer.
-        // Critical bypass: severity=critical / classification=security
-        // operational alarm + system event'ler abuse guard tarafından bloke
-        // edilmez (must-have #8 critical bypass alignment).
+        // Critical bypass: sadece severity=critical (Codex `019e0c28` P1 absorb 2026-05-09:
+        // data_classification=security bypass kaldırıldı — request DTO client-controlled,
+        // trusted producer authority yok). Webhook fan-out cap hard safety limit;
+        // critical severity bile bypass etmez. must-have #8 alignment.
         AbuseGuardService.Decision abuseDecision = abuseGuard.check(
             request.orgId(),
             request.topicKey(),
@@ -137,7 +138,10 @@ public class IntentSubmissionService {
             if (request.correlationId() != null) {
                 auditDetails.put("correlation_id", request.correlationId());
             }
-            auditPublisher.publishStandalone(
+            // Codex `019e0c28` iter-2 P1 absorb: REQUIRES_NEW propagation
+            // çünkü hemen sonra unchecked exception throw → outer @Transactional
+            // rollback olur ama audit row ayrı txn'de commit kalır.
+            auditPublisher.publishStandaloneRequiresNew(
                 abuseDecision.auditEventType(),
                 request.orgId(),
                 null,

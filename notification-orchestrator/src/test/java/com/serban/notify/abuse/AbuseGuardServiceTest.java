@@ -1,6 +1,5 @@
 package com.serban.notify.abuse;
 
-import com.serban.notify.audit.AuditEventPublisher;
 import com.serban.notify.domain.NotificationIntent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 /**
  * AbuseGuardService unit test (Faz 23.2.F T1.6 — Codex thread `019e0c28`
@@ -28,16 +26,14 @@ import static org.mockito.Mockito.mock;
  */
 class AbuseGuardServiceTest {
 
-    private AuditEventPublisher audit;
     private SimpleMeterRegistry registry;
     private AbuseGuardService service;
 
     @BeforeEach
     void setUp() {
-        audit = mock(AuditEventPublisher.class);
         registry = new SimpleMeterRegistry();
         // Test config: window=60s, limit=5, fanoutCap=3 (low limits for fast test)
-        service = new AbuseGuardService(audit, registry, 60L, 5L, 3);
+        service = new AbuseGuardService(registry, 60L, 5L, 3);
     }
 
     @Test

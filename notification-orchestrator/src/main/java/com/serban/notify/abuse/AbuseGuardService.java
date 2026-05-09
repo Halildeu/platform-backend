@@ -1,6 +1,5 @@
 package com.serban.notify.abuse;
 
-import com.serban.notify.audit.AuditEventPublisher;
 import com.serban.notify.domain.NotificationIntent;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -94,7 +93,6 @@ public class AbuseGuardService {
     }
 
     private final ConcurrentHashMap<WindowKey, WindowState> windows = new ConcurrentHashMap<>();
-    private final AuditEventPublisher audit;
 
     private final Counter rateLimitedCounter;
     private final Counter fanoutCappedCounter;
@@ -105,13 +103,11 @@ public class AbuseGuardService {
     private final int webhookFanoutCap;
 
     public AbuseGuardService(
-        AuditEventPublisher audit,
         MeterRegistry meterRegistry,
         @Value("${notify.abuse.rate-limit.window-seconds:60}") long windowSeconds,
         @Value("${notify.abuse.rate-limit.max-per-window:100}") long rateLimit,
         @Value("${notify.abuse.webhook-fanout.cap:10}") int webhookFanoutCap
     ) {
-        this.audit = audit;
         this.windowMillis = windowSeconds * 1000L;
         this.rateLimit = rateLimit;
         this.webhookFanoutCap = webhookFanoutCap;
@@ -125,7 +121,7 @@ public class AbuseGuardService {
             .tag("reason", "webhook_fanout_cap")
             .register(meterRegistry);
         this.criticalBypassCounter = Counter.builder("notify_abuse_bypassed_total")
-            .description("Notification abuse guard bypasses (severity=critical, classification=security)")
+            .description("Notification abuse guard rate limit bypasses (severity=critical only)")
             .tag("reason", "critical_severity")
             .register(meterRegistry);
 
@@ -138,10 +134,12 @@ public class AbuseGuardService {
      *
      * <p>Pipeline:
      * <ol>
-     *   <li>Critical bypass: severity=critical OR classification=security →
-     *       audit `RATE_LIMIT_BYPASSED_CRITICAL` + return ALLOWED</li>
      *   <li>Webhook fan-out cap: channels.count("webhook") &gt; cap →
-     *       audit `WEBHOOK_FANOUT_CAPPED` + return BLOCKED_FANOUT</li>
+     *       audit `WEBHOOK_FANOUT_CAPPED` + return BLOCKED_FANOUT
+     *       (HARD limit — severity=critical bile bypass etmez)</li>
+     *   <li>Critical bypass (rate limit only): severity=critical →
+     *       audit `RATE_LIMIT_BYPASSED_CRITICAL` + return ALLOWED
+     *       (data_classification=security bypass YOK — Codex P1 absorb)</li>
      *   <li>Rate limit: sliding window check → audit `RATE_LIMITED` if exceeded
      *       + return BLOCKED_RATE_LIMIT</li>
      *   <li>Else: increment window counter + return ALLOWED</li>
