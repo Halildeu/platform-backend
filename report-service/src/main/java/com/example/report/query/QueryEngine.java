@@ -21,6 +21,8 @@ public class QueryEngine {
     private final ColumnFilter columnFilter;
     private final RowFilterInjector rowFilterInjector;
     private final YearlySchemaResolver yearlySchemaResolver;
+    private final CurrentTenantSchemaResolver currentTenantSchemaResolver;
+    private final com.example.report.registry.ReportRegistry reportRegistry;
     private final SqlBuilder sqlBuilder = new SqlBuilder();
 
     @Value("${report.query.max-export-rows:500000}")
@@ -29,11 +31,15 @@ public class QueryEngine {
     public QueryEngine(NamedParameterJdbcTemplate jdbc,
                        ColumnFilter columnFilter,
                        RowFilterInjector rowFilterInjector,
-                       YearlySchemaResolver yearlySchemaResolver) {
+                       YearlySchemaResolver yearlySchemaResolver,
+                       CurrentTenantSchemaResolver currentTenantSchemaResolver,
+                       com.example.report.registry.ReportRegistry reportRegistry) {
         this.jdbc = jdbc;
         this.columnFilter = columnFilter;
         this.rowFilterInjector = rowFilterInjector;
         this.yearlySchemaResolver = yearlySchemaResolver;
+        this.currentTenantSchemaResolver = currentTenantSchemaResolver;
+        this.reportRegistry = reportRegistry;
     }
 
     /**
@@ -153,10 +159,19 @@ public class QueryEngine {
     private YearlySchemaResolver.ResolvedSchemas resolveSchemas(ReportDefinition def,
                                                                   AuthzMeResponse authz,
                                                                   Map<String, Object> agGridFilter) {
-        if (!def.isYearlySchema()) {
-            return null; // SqlBuilder will use def.sourceSchema() directly
+        if (def.isYearlySchema()) {
+            return yearlySchemaResolver.resolve(def, authz, agGridFilter);
         }
-        return yearlySchemaResolver.resolve(def, authz, agGridFilter);
+        // Codex 019e0d06 iter-2 absorb: schemaMode=current dispatch.
+        // ReportRegistry side-channel carries the typed TenantBoundary; if
+        // schemaResolver is "workcube-current-company" we route to the
+        // current-tenant resolver instead of the legacy null fallback.
+        com.example.report.registry.TenantBoundary tb =
+                reportRegistry.getTenantBoundary(def.key()).orElse(null);
+        if (tb != null && tb.isCurrentCompanyResolver()) {
+            return currentTenantSchemaResolver.resolve(def, authz);
+        }
+        return null; // legacy static — SqlBuilder uses def.sourceSchema() directly
     }
 
     private long getCount(ReportDefinition def,
