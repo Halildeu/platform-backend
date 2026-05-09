@@ -121,6 +121,29 @@ public class IntentSubmissionService {
             log.warn("AbuseGuard blocked: orgId={} topic={} reason={} eventType={}",
                 request.orgId(), request.topicKey(),
                 abuseDecision.reason(), abuseDecision.auditEventType());
+
+            // Codex `019e0c28` P1 absorb 2026-05-09: audit append BEFORE
+            // exception throw (caller-side publish; AbuseGuardService request
+            // context'i bilmediği için Decision payload caller'da topic/severity
+            // ile zenginleştirilir).
+            // standalone publish (no intent row); recipient_hash null çünkü
+            // recipient validation öncesi reject (intent INSERT yok).
+            java.util.Map<String, Object> auditDetails = new java.util.HashMap<>(abuseDecision.auditDetails());
+            auditDetails.put("topic_key", request.topicKey());
+            auditDetails.put("severity", request.severity() != null ? request.severity().name() : null);
+            auditDetails.put("data_classification",
+                request.dataClassification() != null ? request.dataClassification().name() : null);
+            auditDetails.put("reason", abuseDecision.reason());
+            if (request.correlationId() != null) {
+                auditDetails.put("correlation_id", request.correlationId());
+            }
+            auditPublisher.publishStandalone(
+                abuseDecision.auditEventType(),
+                request.orgId(),
+                null,
+                auditDetails
+            );
+
             throw new AbuseGuardBlockedException(
                 abuseDecision.reason(),
                 abuseDecision.auditEventType(),

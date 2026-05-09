@@ -40,11 +40,22 @@ import java.util.concurrent.atomic.AtomicLong;
  * + R19 (mass send storm) materialization risk azaltılır ama elimine
  * edilmez.
  *
- * <p>Critical bypass (D45 + must-have #8 alignment):
- * {@code severity=critical} OR {@code data_classification=security} intent'ler
- * rate limit'i bypass eder (operational alarm + system event'lerin abuse
- * guard tarafından bloke edilmemesi için). Audit'te
- * `RATE_LIMIT_BYPASSED_CRITICAL` event publish edilir.
+ * <p>Critical bypass (D45 + must-have #8 alignment) — Codex `019e0c28` P1 absorb:
+ * **Sadece** {@code severity=critical} intent'ler **rate limit**'i bypass
+ * eder (operational alarm + system event'lerin abuse guard tarafından bloke
+ * edilmemesi için). Audit'te `RATE_LIMIT_BYPASSED_CRITICAL` event publish
+ * edilir.
+ *
+ * <p><strong>Bypass scope kasıtlı dar tutuldu</strong>:
+ * <ul>
+ *   <li>{@code data_classification=security} bypass KALDIRILDI — request DTO
+ *       client-controlled, trusted producer authority yok; abuse guard
+ *       trivial bypass riski (Codex P1 absorb 2026-05-09).</li>
+ *   <li>Webhook fan-out cap **hiçbir koşulda bypass edilmez** — hard
+ *       safety limit; severity=critical bile fan-out flood'a izin vermez.</li>
+ * </ul>
+ * Trusted producer signal (e.g., service-to-service authority) gelecek
+ * iter follow-up.
  *
  * <p>Source key derivation: caller `orgId` + `topicKey` (default; future:
  * client_id from JWT). Aynı org + aynı topic'e gelen ardışık intent'ler
@@ -154,17 +165,9 @@ public class AbuseGuardService {
         NotificationIntent.DataClassification dataClassification,
         java.util.List<String> channels
     ) {
-        // Step 1: Critical bypass
-        if (isCriticalBypass(severity, dataClassification)) {
-            criticalBypassCounter.increment();
-            log.debug("AbuseGuard critical bypass: orgId={} topic={} severity={} classification={}",
-                orgId, topicKey, severity, dataClassification);
-            // Audit append handled at outer service (intent context required);
-            // bypass kanıtı için decision payload taşınır.
-            return Decision.allowed("critical_bypass");
-        }
-
-        // Step 2: Webhook fan-out cap
+        // Step 1: Webhook fan-out cap — HARD SAFETY LIMIT (no bypass even for critical)
+        // Codex P1 absorb: fan-out flood her koşulda hard limit'e takılır;
+        // severity=critical bile çoklu webhook subscription istemine izin vermez.
         if (channels != null && !channels.isEmpty()) {
             long webhookCount = channels.stream()
                 .filter("webhook"::equalsIgnoreCase)
@@ -179,7 +182,17 @@ public class AbuseGuardService {
             }
         }
 
-        // Step 3: Rate limit sliding window
+        // Step 2: Critical bypass for RATE LIMIT only (Codex P1 absorb dar scope)
+        // Sadece severity=critical bypass; data_classification=security bypass
+        // kaldırıldı (request DTO client-controlled, authority signal yok).
+        if (severity == NotificationIntent.Severity.critical) {
+            criticalBypassCounter.increment();
+            log.debug("AbuseGuard rate limit critical bypass: orgId={} topic={} severity={}",
+                orgId, topicKey, severity);
+            return Decision.allowed("critical_bypass");
+        }
+
+        // Step 3: Rate limit sliding window (data_classification=security DAHIL non-bypass)
         WindowKey key = new WindowKey(orgId, topicKey);
         long now = System.currentTimeMillis();
         WindowState state = windows.computeIfAbsent(key, k -> new WindowState(now));
@@ -203,14 +216,6 @@ public class AbuseGuardService {
         }
 
         return Decision.allowed("within_window");
-    }
-
-    private boolean isCriticalBypass(
-        NotificationIntent.Severity severity,
-        NotificationIntent.DataClassification classification
-    ) {
-        return severity == NotificationIntent.Severity.critical
-            || classification == NotificationIntent.DataClassification.security;
     }
 
     /**

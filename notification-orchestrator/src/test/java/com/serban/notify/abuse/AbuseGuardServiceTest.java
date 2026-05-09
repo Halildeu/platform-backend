@@ -97,23 +97,39 @@ class AbuseGuardServiceTest {
     }
 
     @Test
-    void securityDataClassificationBypassesRateLimit() {
-        // Fill window
+    void securityDataClassificationDoesNotBypassRateLimit() {
+        // Codex `019e0c28` P1 absorb: data_classification=security bypass kaldırıldı
+        // (request DTO client-controlled, trusted producer authority yok).
+        // Sadece severity=critical bypass kalır.
         for (int i = 0; i < 5; i++) {
             service.check("acme", "topic.test",
                 NotificationIntent.Severity.info,
                 NotificationIntent.DataClassification.transactional,
                 List.of("email"));
         }
-        // Security classification → bypass
+        // Security classification + non-critical severity → BLOCKED (no longer bypass)
         AbuseGuardService.Decision d = service.check(
             "acme", "topic.test",
             NotificationIntent.Severity.info,
             NotificationIntent.DataClassification.security,
             List.of("email")
         );
-        assertThat(d.allowed()).isTrue();
-        assertThat(d.reason()).isEqualTo("critical_bypass");
+        assertThat(d.allowed()).isFalse();
+        assertThat(d.reason()).isEqualTo("rate_limit_exceeded");
+        assertThat(d.auditEventType()).isEqualTo(AbuseGuardService.EVENT_RATE_LIMITED);
+    }
+
+    @Test
+    void webhookFanoutCapNotBypassedByCriticalSeverity() {
+        // Codex P1 absorb: fan-out cap hard safety limit; severity=critical bile bypass etmez
+        AbuseGuardService.Decision d = service.check(
+            "acme", "topic.test",
+            NotificationIntent.Severity.critical,
+            NotificationIntent.DataClassification.transactional,
+            List.of("webhook", "webhook", "webhook", "webhook")  // 4 > cap=3
+        );
+        assertThat(d.allowed()).isFalse();
+        assertThat(d.reason()).isEqualTo("webhook_fanout_cap_exceeded");
     }
 
     @Test
