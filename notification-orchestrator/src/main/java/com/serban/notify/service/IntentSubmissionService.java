@@ -1,11 +1,13 @@
 package com.serban.notify.service;
 
+import com.serban.notify.abuse.AbuseGuardService;
 import com.serban.notify.api.dto.SubmitIntentRequest;
 import com.serban.notify.api.dto.SubmitIntentResponse;
 import com.serban.notify.audit.AuditEventPublisher;
 import com.serban.notify.config.NotifyConfig;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.domain.NotificationTemplate;
+import com.serban.notify.exception.AbuseGuardBlockedException;
 import com.serban.notify.exception.IntakeCapacityExceededException;
 import com.serban.notify.redaction.PiiRedactor;
 import com.serban.notify.repository.NotificationIntentRepository;
@@ -48,6 +50,7 @@ public class IntentSubmissionService {
     private final AuditEventPublisher auditPublisher;
     private final PiiRedactor piiRedactor;
     private final NotifyConfig config;
+    private final AbuseGuardService abuseGuard;
 
     public IntentSubmissionService(
         IdempotencyService idempotencyService,
@@ -55,7 +58,8 @@ public class IntentSubmissionService {
         NotificationIntentRepository intentRepository,
         AuditEventPublisher auditPublisher,
         PiiRedactor piiRedactor,
-        NotifyConfig config
+        NotifyConfig config,
+        AbuseGuardService abuseGuard
     ) {
         this.idempotencyService = idempotencyService;
         this.templateResolver = templateResolver;
@@ -63,6 +67,7 @@ public class IntentSubmissionService {
         this.auditPublisher = auditPublisher;
         this.piiRedactor = piiRedactor;
         this.config = config;
+        this.abuseGuard = abuseGuard;
     }
 
     /**
@@ -96,6 +101,31 @@ public class IntentSubmissionService {
             log.info("idempotency replay: orgId={} key={} originalIntentId={}",
                 request.orgId(), request.idempotencyKey(), existingIntentId.get());
             return SubmitIntentResponse.replayed(existingIntentId.get());
+        }
+
+        // Step 1.5: Abuse guard check (Faz 23.2.F T1.6 — Codex thread 019e0c28).
+        // Order rationale: idempotency replay sonrası, capacity check öncesi.
+        // Idempotent retry'lar abuse guard'ı tetiklemez (replay path bypass);
+        // gerçek yeni intent'ler abuse guard + capacity'den geçer.
+        // Critical bypass: severity=critical / classification=security
+        // operational alarm + system event'ler abuse guard tarafından bloke
+        // edilmez (must-have #8 critical bypass alignment).
+        AbuseGuardService.Decision abuseDecision = abuseGuard.check(
+            request.orgId(),
+            request.topicKey(),
+            request.severity(),
+            request.dataClassification(),
+            request.channels()
+        );
+        if (!abuseDecision.allowed()) {
+            log.warn("AbuseGuard blocked: orgId={} topic={} reason={} eventType={}",
+                request.orgId(), request.topicKey(),
+                abuseDecision.reason(), abuseDecision.auditEventType());
+            throw new AbuseGuardBlockedException(
+                abuseDecision.reason(),
+                abuseDecision.auditEventType(),
+                abuseDecision.auditDetails()
+            );
         }
 
         // Step 2: Bounded intake check sadece YENİ intent için (Codex Q3 PARTIAL)
