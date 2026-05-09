@@ -162,13 +162,14 @@ public class QueryEngine {
         if (def.isYearlySchema()) {
             return yearlySchemaResolver.resolve(def, authz, agGridFilter);
         }
-        // Codex 019e0d06 iter-2 absorb: schemaMode=current dispatch.
-        // ReportRegistry side-channel carries the typed TenantBoundary; if
-        // schemaResolver is "workcube-current-company" we route to the
-        // current-tenant resolver instead of the legacy null fallback.
-        com.example.report.registry.TenantBoundary tb =
-                reportRegistry.getTenantBoundary(def.key()).orElse(null);
-        if (tb != null && tb.isCurrentCompanyResolver()) {
+        // Codex 019e0d06 iter-3 §1 BLOCKER absorb: dispatch authoritative
+        // signal is `schemaMode`, NOT the side-channel tenantBoundary.
+        // Side-channel mismatch (typo/missing schemaResolver) used to fall
+        // through to legacy null path, which would render `[null].[TABLE]`.
+        // Now schemaMode=current always routes to currentTenantSchemaResolver;
+        // ReportRegistry.validate enforces tenantBoundary.schemaResolver ==
+        // workcube-current-company at startup (fail-closed).
+        if ("current".equals(def.schemaMode())) {
             return currentTenantSchemaResolver.resolve(def, authz);
         }
         return null; // legacy static — SqlBuilder uses def.sourceSchema() directly

@@ -28,7 +28,9 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>Single COMPANY scope → auto-pick (one branch).</li>
  *   <li>Multi-company scope without {@code X-Company-Id} narrowing →
- *       {@link TenantSelectionRequiredException} 400.</li>
+ *       {@link TenantSelectionRequiredException} 400. Header narrowing is
+ *       performed upstream by
+ *       {@code com.example.report.authz.CompanyHeaderScopeNarrower}.</li>
  *   <li>No COMPANY scope at all → {@link TenantSelectionRequiredException}.</li>
  *   <li>Implicit UNION ALL across tenants is INTENTIONALLY not supported;
  *       portfolio/cross-tenant view requires an explicit capability that
@@ -102,13 +104,16 @@ public class CurrentTenantSchemaResolver {
                             + "provisioned.");
         }
 
-        // Single branch: transaction schema == tenant master schema for
-        // current-mode reports (no year partition). lookupAvailable=true
-        // since the schema itself exists; per-table availability for the
-        // SETUP_PROCESS_CAT placeholder family is checked separately by
-        // TenantMasterSchemaResolver.isTenantLookupAvailable.
+        // Codex 019e0d06 iter-3 absorb: tenantLookupAvailable must reflect
+        // actual SETUP_PROCESS_CAT existence, not just schema existence.
+        // satis-ozet/stok-durum şu an placeholder kullanmıyor ama bu doğru
+        // değer ileride current sourceQuery {tenantSetupProcessCatRelation}
+        // kullandığında SqlBuilder'ın empty-rowset degrade kararını korur.
+        boolean lookupAvailable = tenantMasterResolver
+                .isTenantLookupAvailable(tenantId, "SETUP_PROCESS_CAT");
+
         YearlySchemaResolver.Branch branch = new YearlySchemaResolver.Branch(
-                tenantSchema, Year.now().getValue(), tenantId, tenantSchema, true);
+                tenantSchema, Year.now().getValue(), tenantId, tenantSchema, lookupAvailable);
 
         log.debug("Resolved current-tenant branch for report {}: {}", def.key(), branch);
         return new YearlySchemaResolver.ResolvedSchemas(List.of(branch));

@@ -79,6 +79,9 @@ public class ReportRegistry {
             }
 
             log.info("Report registry initialized with {} definitions", definitions.size());
+            // Codex 019e0d06 iter-3 §1+§2: post-parse fail-closed validation
+            // for schemaMode=current + tenantBoundary consistency.
+            validateTenantBoundaryConsistency();
         } catch (IOException e) {
             log.warn("Could not scan report definitions directory: {}", e.getMessage());
         }
@@ -135,6 +138,37 @@ public class ReportRegistry {
             if (!SAFE_IDENTIFIER.matcher(col.field()).matches()) {
                 throw new IllegalArgumentException(
                         "Column field '" + col.field() + "' in report '" + def.key() + "' contains unsafe characters.");
+            }
+        }
+    }
+
+    /**
+     * Codex 019e0d06 iter-3 §1+§2 BLOCKER absorb: schemaMode=current için
+     * tenantBoundary.schemaResolver=workcube-current-company zorunlu (startup
+     * fail-closed). Aksi halde QueryEngine dispatch artık schemaMode=current
+     * üzerinden current resolver'a gidiyor; tenantBoundary mismatch hâlâ
+     * runtime'da `[null].[TABLE]` riski oluştururdu.
+     *
+     * <p>Validate metodu private; bu metod loadDefinitions sonunda tek seferlik
+     * çağrılır (post-parse, side-channel doluyken).
+     */
+    private void validateTenantBoundaryConsistency() {
+        for (ReportDefinition def : definitions.values()) {
+            if (!"current".equals(def.schemaMode())) {
+                continue;
+            }
+            TenantBoundary tb = tenantBoundaries.get(def.key());
+            if (tb == null) {
+                throw new IllegalStateException(
+                        "Report '" + def.key() + "' has schemaMode=current but no tenantBoundary "
+                                + "block in JSON. tenantBoundary.schemaResolver=workcube-current-company "
+                                + "required (Codex 019e0d06 iter-3 fail-closed).");
+            }
+            if (!tb.isCurrentCompanyResolver()) {
+                throw new IllegalStateException(
+                        "Report '" + def.key() + "' has schemaMode=current but tenantBoundary"
+                                + ".schemaResolver='" + tb.schemaResolver() + "'. Required: "
+                                + "'workcube-current-company' (Codex 019e0d06 iter-3 fail-closed).");
             }
         }
     }

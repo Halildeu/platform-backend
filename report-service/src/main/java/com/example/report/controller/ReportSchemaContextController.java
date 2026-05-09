@@ -155,8 +155,10 @@ public class ReportSchemaContextController {
                 return r.branches().get(0).transactionSchema();
             }
         }
-        TenantBoundary tb = reportRegistry.getTenantBoundary(def.key()).orElse(null);
-        if (tb != null && tb.isCurrentCompanyResolver()) {
+        // Codex 019e0d06 iter-3 §1 BLOCKER absorb: dispatch authoritative
+        // signal is schemaMode, NOT the side-channel tenantBoundary
+        // (mismatch ile null fallback'e düşmek `[null].[TABLE]` üretirdi).
+        if ("current".equals(def.schemaMode())) {
             YearlySchemaResolver.ResolvedSchemas r =
                     currentTenantSchemaResolver.resolve(def, scopedAuthz);
             if (r != null && !r.branches().isEmpty()) {
