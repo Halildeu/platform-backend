@@ -64,7 +64,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 @TestPropertySource(properties = {
     "notify.audit.retention-enabled=true",
     "notify.audit.retention-scheduling-enabled=false",
-    "notify.audit.retention-days=30",
+    // Codex iter-2 absorb: with retention-days=30, V8 migration's initial
+    // partitions (audit_event_v2_2026_02..07) ALSO become eligible for
+    // detach because their range_end is < cutoff. This bleeds across to
+    // AuditPartitionV8IntegrationTest's
+    // v8MigrationCreatedPartitionedTableWithExpectedPartitions assertion.
+    // Use retention-days=365 so cutoff = (now - 1y) ≈ 2025-05-09:
+    //   - Our disposable 2024-01 partition (range_end 2024-02-01) IS eligible
+    //   - V8 initial 2026-02..07 partitions (range_end 2026-03-01..2026-08-01)
+    //     are NOT eligible
+    // This isolates retention behavior to ONLY our disposable fixture.
+    "notify.audit.retention-days=365",
     // Codex 019e0bb6 RED absorb: NotifyConfig.AuditConfig.retentionGraceHours
     // is `@Min(1)` validated; grace=0 fails @Validated bean instantiation
     // before Spring context loads. Use grace=1 and time-travel the
