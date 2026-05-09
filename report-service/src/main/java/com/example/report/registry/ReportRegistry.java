@@ -22,6 +22,14 @@ public class ReportRegistry {
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("^[a-zA-Z_][a-zA-Z0-9_.]*$");
 
     private final ConcurrentHashMap<String, ReportDefinition> definitions = new ConcurrentHashMap<>();
+    /**
+     * Codex 019e0d06 iter-2 absorb: side-channel storage for the
+     * {@code tenantBoundary} JSON block. Kept out of {@link ReportDefinition}
+     * record to avoid breaking the 49 existing positional-construction
+     * call sites (test fixtures + DashboardQueryEngine). Populated during
+     * {@link #loadDefinitions()} by re-reading the same JSON resource.
+     */
+    private final ConcurrentHashMap<String, TenantBoundary> tenantBoundaries = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
     private final String definitionsPath;
 
@@ -48,9 +56,22 @@ public class ReportRegistry {
                     continue;
                 }
                 try {
-                    ReportDefinition def = objectMapper.readValue(resource.getInputStream(), ReportDefinition.class);
+                    // Read once into the typed record (existing path)…
+                    byte[] bytes = resource.getInputStream().readAllBytes();
+                    ReportDefinition def = objectMapper.readValue(bytes, ReportDefinition.class);
                     validate(def);
                     definitions.put(def.key(), def);
+                    // …and a second pass extracts the typed tenantBoundary
+                    // block (Codex 019e0d06 iter-2). Side-channel keeps the
+                    // record signature stable.
+                    com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(bytes);
+                    com.fasterxml.jackson.databind.JsonNode tbNode = root.get("tenantBoundary");
+                    if (tbNode != null && tbNode.isObject()) {
+                        TenantBoundary tb = objectMapper.treeToValue(tbNode, TenantBoundary.class);
+                        if (tb != null) {
+                            tenantBoundaries.put(def.key(), tb);
+                        }
+                    }
                     log.info("Loaded report definition: {} ({})", def.key(), def.title());
                 } catch (Exception e) {
                     log.error("Failed to load report definition from {}: {}", filename, e.getMessage());
@@ -69,6 +90,15 @@ public class ReportRegistry {
 
     public Collection<ReportDefinition> getAll() {
         return definitions.values();
+    }
+
+    /**
+     * Codex 019e0d06 iter-2: typed {@link TenantBoundary} side-channel
+     * lookup. Returns {@link Optional#empty()} for legacy reports that
+     * have no {@code tenantBoundary} block in JSON.
+     */
+    public Optional<TenantBoundary> getTenantBoundary(String key) {
+        return Optional.ofNullable(tenantBoundaries.get(key));
     }
 
     public List<String> getCategories() {
