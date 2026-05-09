@@ -152,8 +152,9 @@ public class SubscriberErasureController {
      *
      * <p>Idempotent: ikinci çağrı = no-op (already erased; status="no_op").
      *
-     * <p>Reason field opsiyonel; legal evidence_ref otomatik
-     * {@code "self-service-kvkk-art-11"} olarak set edilir.
+     * <p>Free-form `reason` field accept edilmez; reason ve evidence_ref
+     * ikisi de sabit {@code "self-service-kvkk-art-11"} (Codex
+     * `019e0c28` P1 absorb: PII leakage riski).
      */
     @DeleteMapping("/me")
     @Operation(

@@ -6,10 +6,9 @@ import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.repository.NotificationIntentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
+// Pageable repository overload follow-up'a kadar service-side pagination kullanılır
+// (Codex `019e0c28` non-blocking nit: Pageable construction kullanılmadığı için
+// kaldırıldı; future Page<> repository overload eklendiğinde geri gelecek).
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,8 +28,9 @@ import java.util.List;
  *   <li>{@link #listMyAudit} — kendi (orgId, subscriberId) intent'leri
  *       paged döner; PII zaten retention policy + redaction'a tabi.</li>
  *   <li>{@link #eraseMyAudit} — {@link ErasureService#eraseSubscriber}
- *       reuse; evidence_ref="self-service-kvkk-art-11"; reason caller
- *       tarafından opsiyonel.</li>
+ *       reuse; evidence_ref="self-service-kvkk-art-11"; reason ve
+ *       evidence_ref ikisi de sabit constant (Codex `019e0c28` P1
+ *       absorb: free-form caller text accept etme; PII leakage riski).</li>
  * </ul>
  *
  * <p>Authorization: caller tarafından {@code SubscriberIdentityGuard}
@@ -99,8 +99,6 @@ public class SubscriberErasureService {
     ) {
         // Page size clamp (InboxService pattern; protect against DoS via massive page)
         int clampedSize = Math.max(MIN_PAGE_SIZE, Math.min(MAX_PAGE_SIZE, size));
-        Pageable pageable = PageRequest.of(page, clampedSize,
-            Sort.by(Sort.Direction.DESC, "createdAt"));
 
         // findIntentsBySubscriber currently returns List (full match);
         // service-side pagination ile sub-list. Future optimization:
