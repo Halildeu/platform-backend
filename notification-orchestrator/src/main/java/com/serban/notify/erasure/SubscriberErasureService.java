@@ -130,34 +130,43 @@ public class SubscriberErasureService {
      * KVKK §11 self-service right-to-erasure: subscriber'ın kendi
      * audit verisinin PII purge.
      *
-     * <p>Pipeline (admin {@link ErasureService} reuse): payload +
-     * recipients_snapshot + metadata + preference_override + channel_routing
-     * null'lanır; delivery.recipient_id null (subscriber link severance);
-     * recipient_hash KORUNUR (operational analytics; KVKK pseudonymous
-     * boundary). Audit append: SUBSCRIBER_ERASURE_REQUEST event
-     * (admin path ile aynı; evidence_ref ile ayırt edilir).
+     * <p>Pipeline (admin {@link ErasureService} reuse with explicit event
+     * type): payload + recipients_snapshot + metadata + preference_override
+     * + channel_routing null'lanır; delivery.recipient_id null (subscriber
+     * link severance); recipient_hash KORUNUR (operational analytics; KVKK
+     * pseudonymous boundary). Audit append:
+     * {@link ErasureService#EVENT_SELF_SERVICE_ERASURE} event type
+     * (admin scope `SUBSCRIBER_ERASURE_REQUEST`'tan ayrı — Codex
+     * `019e0c28` P2 absorb).
      *
      * <p>Idempotent: ikinci çağrı = no-op (intent.payload zaten null).
      *
+     * <p><strong>PII boundary (Codex `019e0c28` P1 absorb)</strong>:
+     * free-form `reason` kabul edilmez. Self-service path her zaman
+     * sabit {@link #SELF_SERVICE_EVIDENCE_REF} ile çalışır; subscriber
+     * tarafından sağlanan kullanıcı metni log + audit'e girmez (PII
+     * leakage riski). Legal review gerekirse evidence_ref ayrı
+     * follow-up'ta enum/whitelist yapılabilir.
+     *
      * @param orgId caller org_id
      * @param subscriberId caller subscriber_id (JWT match enforced upstream)
-     * @param reason opsiyonel; caller tarafından override edilebilir
      * @return EraseResult (intentsErased + deliveriesAnonymized + inboxRowsDeleted)
      */
     @Transactional
-    public ErasureService.EraseResult eraseMyAudit(
-        String orgId, String subscriberId, String reason
-    ) {
-        log.info("KVKK self-service erasure invoke: orgId={} subscriberId={} reason={}",
-            orgId, subscriberId, reason);
+    public ErasureService.EraseResult eraseMyAudit(String orgId, String subscriberId) {
+        // Free-form reason kabul edilmez (Codex P1 absorb): PII risk.
+        // Reason ve evidence_ref ikisi de sabit constant.
+        log.info("KVKK self-service erasure invoke: orgId={} subscriberId={}",
+            orgId, subscriberId);
 
         return erasureService.eraseSubscriber(
             new ErasureService.EraseRequest(
                 orgId,
                 subscriberId,
-                reason != null ? reason : SELF_SERVICE_EVIDENCE_REF,
+                SELF_SERVICE_EVIDENCE_REF,
                 SELF_SERVICE_EVIDENCE_REF
-            )
+            ),
+            ErasureService.EVENT_SELF_SERVICE_ERASURE
         );
     }
 }

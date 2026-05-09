@@ -14,6 +14,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -97,42 +98,38 @@ class SubscriberErasureServiceTest {
     }
 
     @Test
-    void eraseMyAuditReusesAdminWithSelfServiceEvidenceRef() {
-        when(erasureService.eraseSubscriber(any())).thenReturn(
-            new ErasureService.EraseResult(2, 5, 0)
-        );
+    void eraseMyAuditReusesAdminWithSelfServiceEventTypeAndEvidenceRef() {
+        when(erasureService.eraseSubscriber(any(), eq(ErasureService.EVENT_SELF_SERVICE_ERASURE)))
+            .thenReturn(new ErasureService.EraseResult(2, 5, 0));
 
-        ErasureService.EraseResult result = service.eraseMyAudit(
-            "acme", "1204", "I changed my mind"
-        );
+        ErasureService.EraseResult result = service.eraseMyAudit("acme", "1204");
 
         ArgumentCaptor<ErasureService.EraseRequest> captor =
             ArgumentCaptor.forClass(ErasureService.EraseRequest.class);
-        verify(erasureService).eraseSubscriber(captor.capture());
+        verify(erasureService).eraseSubscriber(captor.capture(),
+            eq(ErasureService.EVENT_SELF_SERVICE_ERASURE));
 
         ErasureService.EraseRequest captured = captor.getValue();
         assertThat(captured.orgId()).isEqualTo("acme");
         assertThat(captured.subscriberId()).isEqualTo("1204");
-        assertThat(captured.reason()).isEqualTo("I changed my mind");
+        // Codex P1 absorb: reason ve evidence_ref ikisi de sabit; user-provided
+        // free-form metin yok → PII leakage riski elimine.
+        assertThat(captured.reason()).isEqualTo(SubscriberErasureService.SELF_SERVICE_EVIDENCE_REF);
         assertThat(captured.evidenceRef()).isEqualTo(SubscriberErasureService.SELF_SERVICE_EVIDENCE_REF);
         assertThat(result.intentsErased()).isEqualTo(2);
         assertThat(result.deliveriesAnonymized()).isEqualTo(5);
     }
 
     @Test
-    void eraseMyAuditDefaultsReasonToEvidenceRefWhenNull() {
-        when(erasureService.eraseSubscriber(any())).thenReturn(
-            new ErasureService.EraseResult(0, 0, 0)
-        );
+    void eraseMyAuditAlwaysUsesSelfServiceEventTypeNotAdminEvent() {
+        when(erasureService.eraseSubscriber(any(), any()))
+            .thenReturn(new ErasureService.EraseResult(0, 0, 0));
 
-        service.eraseMyAudit("acme", "1204", null);
+        service.eraseMyAudit("acme", "1204");
 
-        ArgumentCaptor<ErasureService.EraseRequest> captor =
-            ArgumentCaptor.forClass(ErasureService.EraseRequest.class);
-        verify(erasureService).eraseSubscriber(captor.capture());
-        ErasureService.EraseRequest captured = captor.getValue();
-        assertThat(captured.reason()).isEqualTo(SubscriberErasureService.SELF_SERVICE_EVIDENCE_REF);
-        assertThat(captured.evidenceRef()).isEqualTo(SubscriberErasureService.SELF_SERVICE_EVIDENCE_REF);
+        // Audit reporting netliği: admin scope EVENT_ADMIN_ERASURE'dan ayrı
+        verify(erasureService).eraseSubscriber(any(),
+            eq(ErasureService.EVENT_SELF_SERVICE_ERASURE));
     }
 
     private NotificationIntent newIntent(String intentId, OffsetDateTime createdAt) {

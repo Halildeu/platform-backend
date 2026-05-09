@@ -40,18 +40,30 @@ import java.util.Map;
  * tarafından doğrulanır (403 on mismatch). Org access
  * {@code NotifyOrgAccessGuard.requireOrgAccessOrThrow}.
  *
- * <p>Cross-tenant leak prevention: 404 (not 403) for missing rows —
- * existence disclosure'a karşı (matches InboxController pattern).
+ * <p>Cross-tenant prevention: tenancy invariant `(orgId, subscriberId)`
+ * filter; başka subscriber'ın audit history'sine erişim mümkün değil.
+ * GET empty list döner; DELETE no-op counter döner. Identity mismatch
+ * (X-Subscriber-Id != JWT sub claim) {@code SubscriberIdentityGuard}
+ * tarafından 403'e dönüştürülür.
  *
  * <p>Pipeline:
  * <ul>
  *   <li>{@code DELETE /api/v1/notify/audit/me} → admin {@link ErasureService}
- *       reuse: payload + recipients_snapshot + metadata + preference_override
+ *       reuse with explicit event type {@link ErasureService#EVENT_SELF_SERVICE_ERASURE}:
+ *       payload + recipients_snapshot + metadata + preference_override
  *       null'lanır; recipient_hash KORUNUR (operational analytics).
- *       Audit append: {@code SUBSCRIBER_SELF_ERASURE_REQUEST} (silinmez).</li>
+ *       Audit append: {@code SUBSCRIBER_SELF_ERASURE_REQUEST} event type
+ *       (admin scope `SUBSCRIBER_ERASURE_REQUEST`'tan ayrı — audit
+ *       reporting netliği için).</li>
  *   <li>{@code GET /api/v1/notify/audit/me} → kendi audit row'larını
  *       paged döner (KVKK §13 right-to-information).</li>
  * </ul>
+ *
+ * <p><strong>PII boundary (Codex `019e0c28` P1 absorb)</strong>:
+ * Free-form `reason` kabul edilmez. Self-service path her zaman
+ * sabit {@code self-service-kvkk-art-11} ile çalışır; user-provided
+ * metin log/audit'e girmez (PII leakage riski). Legal review gerekirse
+ * evidence_ref ayrı follow-up'ta enum/whitelist yapılabilir.
  *
  * <p>Idempotent: ikinci DELETE çağrısı = no-op (already erased).
  *
@@ -157,17 +169,19 @@ public class SubscriberErasureController {
     })
     public ResponseEntity<Map<String, Object>> eraseMyAudit(
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
-        @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId,
-        @RequestParam(name = "reason", defaultValue = "self-service-kvkk-art-11") String reason
+        @RequestHeader(name = "X-Subscriber-Id", required = true) @NotBlank String subscriberId
     ) {
         notifyOrgAccessGuard.requireOrgAccessOrThrow(callerOrgId);
         subscriberIdentityGuard.requireMatchOrThrow(subscriberId);
 
-        log.info("KVKK self-service erasure request: orgId={} subscriberId={} reason={}",
-            callerOrgId, subscriberId, reason);
+        // Codex `019e0c28` P1 absorb: free-form `reason` kabul edilmez (PII
+        // leakage riski). Reason ve evidence_ref sabit
+        // `self-service-kvkk-art-11`; log surface minimal.
+        log.info("KVKK self-service erasure request: orgId={} subscriberId={}",
+            callerOrgId, subscriberId);
 
         ErasureService.EraseResult result = subscriberErasureService.eraseMyAudit(
-            callerOrgId, subscriberId, reason
+            callerOrgId, subscriberId
         );
 
         boolean anyMutation = result.intentsErased() > 0
