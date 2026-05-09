@@ -65,7 +65,11 @@ import static org.assertj.core.api.Assertions.assertThat;
     "notify.audit.retention-enabled=true",
     "notify.audit.retention-scheduling-enabled=false",
     "notify.audit.retention-days=30",
-    "notify.audit.retention-grace-hours=0",
+    // Codex 019e0bb6 RED absorb: NotifyConfig.AuditConfig.retentionGraceHours
+    // is `@Min(1)` validated; grace=0 fails @Validated bean instantiation
+    // before Spring context loads. Use grace=1 and time-travel the
+    // audit_retention_log.drop_after column manually for the DROP test.
+    "notify.audit.retention-grace-hours=1",
     "notify.audit.retention-future-months=2",
     "notify.audit.retention-dry-run=false"
 })
@@ -79,9 +83,12 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
     void cleanRetentionState() {
         // Same isolation pattern as AuditPartitionV8IntegrationTest.
         jdbc.execute("DELETE FROM notify.audit_retention_log");
-        // Drop any leftover disposable partition from previous test method.
-        // Idempotent — IF EXISTS swallows the not-attached case.
+        // Drop any leftover disposable partitions from previous test method.
+        // Idempotent — IF EXISTS swallows the not-attached case. Codex
+        // 019e0bb6 RED absorb: also clean the 2099_12 fixture used by the
+        // recentPartition test in case its cleanup didn't run (test failure).
         jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_2024_01");
+        jdbc.execute("DROP TABLE IF EXISTS notify.audit_event_v2_2099_12");
     }
 
     @Test
@@ -102,7 +109,10 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
             Boolean.class);
         assertThat(attachedBefore).isTrue();
 
-        // Run the cycle — should DETACH the partition
+        // Run the cycle — should DETACH the partition.
+        // grace-hours=1 means drop_after = now+1h, so the SAME cycle's
+        // dropEligiblePartitions() phase finds drop_after > now → no drop.
+        // Standalone table remains, log row stays in 'detached' status.
         retentionService.runCycle();
 
         // Partition no longer in inheritance graph (DETACHED)
@@ -116,7 +126,7 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
             Boolean.class);
         assertThat(attachedAfter).isFalse();
 
-        // But standalone table still exists (DROP is separate phase)
+        // But standalone table still exists (DROP gate not crossed yet — drop_after = now+1h)
         Boolean tableExists = jdbc.queryForObject(
             "SELECT EXISTS (SELECT 1 FROM pg_class c "
                 + "JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -132,13 +142,13 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
         assertThat(row.getDetachedAt()).isNotNull();
         assertThat(row.getDroppedAt()).isNull();
         assertThat(row.getDropAfter()).isNotNull();
-        // grace-hours=0 → drop_after ≈ detached_at (within tolerance)
-        assertThat(row.getDropAfter()).isBeforeOrEqualTo(OffsetDateTime.now(ZoneOffset.UTC).plusMinutes(1));
+        // grace-hours=1 → drop_after ≈ detached_at + 1h
+        assertThat(row.getDropAfter()).isAfter(row.getDetachedAt());
     }
 
     @Test
     void dropEligiblePartitionRemovesTableAndUpdatesLog() {
-        // Setup: same disposable partition + run first cycle to DETACH
+        // Setup: same disposable partition + run first cycle to DETACH (drop_after = now+1h)
         createOldPartition("audit_event_v2_2024_01", "2024-01-01", "2024-02-01");
         retentionService.runCycle();
 
@@ -147,8 +157,17 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
             .orElseThrow(() -> new AssertionError("Detach phase didn't insert log row"));
         assertThat(detachedRow.getStatus()).isEqualTo(AuditRetentionLog.Status.detached);
 
-        // Run second cycle — should DROP the detached partition
-        // (grace-hours=0 means drop_after has already passed)
+        // Codex 019e0bb6 RED absorb: rather than wait 1h grace window, manually
+        // time-travel drop_after into the past so the next runCycle's DROP phase
+        // finds it eligible. This exercises the same dropEligiblePartitions code
+        // path the production cron would on day N+1 with grace=24h.
+        jdbc.update(
+            "UPDATE notify.audit_retention_log "
+                + "SET drop_after = NOW() - INTERVAL '1 hour' "
+                + "WHERE partition_name = ?",
+            "audit_event_v2_2024_01");
+
+        // Run second cycle — should DROP the detached partition (drop_after passed)
         retentionService.runCycle();
 
         // Standalone table no longer exists
@@ -198,9 +217,15 @@ class AuditPartitionRetentionDetachDropTest extends AbstractPostgresTest {
         Optional<AuditRetentionLog> logEntry = logRepo.findByPartitionName(partitionName);
         assertThat(logEntry).isEmpty();
 
-        // Cleanup (BeforeEach won't drop _2099_12)
-        jdbc.execute("ALTER TABLE notify.audit_event_v2 DETACH PARTITION notify." + partitionName);
-        jdbc.execute("DROP TABLE notify." + partitionName);
+        // Cleanup (BeforeEach won't drop _2099_12 — Codex 019e0bb6 RED absorb).
+        // Use IF EXISTS to swallow already-detached/dropped state if assertion
+        // failed and detach happened anyway; safe for next test method.
+        try {
+            jdbc.execute("ALTER TABLE notify.audit_event_v2 DETACH PARTITION notify." + partitionName);
+        } catch (RuntimeException ignored) {
+            // Already detached or doesn't exist
+        }
+        jdbc.execute("DROP TABLE IF EXISTS notify." + partitionName);
     }
 
     @Test
