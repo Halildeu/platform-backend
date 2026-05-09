@@ -117,7 +117,11 @@ public class ReportRegistry {
             throw new IllegalArgumentException(
                     "Report source '" + def.source() + "' contains unsafe characters. Only alphanumeric, underscore, and dot allowed.");
         }
-        if (!SAFE_IDENTIFIER.matcher(def.sourceSchema()).matches()) {
+        // Codex 019e0d06 iter-2 §3 absorb: yearly+current resolver-driven mod'larda
+        // sourceSchema null/blank kabul (resolver runtime üretir). Literal mod'larda
+        // SAFE_IDENTIFIER zorunlu.
+        if (def.sourceSchema() != null && !def.sourceSchema().isBlank()
+                && !SAFE_IDENTIFIER.matcher(def.sourceSchema()).matches()) {
             throw new IllegalArgumentException(
                     "Report sourceSchema '" + def.sourceSchema() + "' contains unsafe characters. Only alphanumeric, underscore, and dot allowed.");
         }
