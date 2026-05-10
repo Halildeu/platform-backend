@@ -70,6 +70,18 @@ public class ImpersonationSessionClient {
                     e.getStatusCode(), e.getResponseBodyAsString());
             throw new ImpersonationSessionClientException(
                     "Failed to start impersonation session: " + e.getStatusCode(), e);
+        } catch (ActiveSessionExistsException | ImpersonationSessionClientException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // Codex iter-29 P0 absorb: timeout / DNS / connection-reset /
+            // WebClientRequestException / Reactor-wrapped failures must wrap
+            // as ImpersonationSessionClientException so the controller's
+            // SESSION_PERSIST_FAILED audit + 502 branch fires. Without this
+            // wrap raw RuntimeException escapes to default Spring 500 handler
+            // and IMPERSONATION_FAILED audit row is never written.
+            log.error("permission-service start session network/timeout failure: {}", e.getMessage());
+            throw new ImpersonationSessionClientException(
+                    "permission-service start session unreachable/timeout: " + e.getMessage(), e);
         }
     }
 
@@ -95,6 +107,13 @@ public class ImpersonationSessionClient {
                     e.getStatusCode(), e.getResponseBodyAsString());
             throw new ImpersonationSessionClientException(
                     "Failed to stop impersonation session: " + e.getStatusCode(), e);
+        } catch (ImpersonationSessionClientException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // Codex iter-29 P0 absorb: same network/timeout wrap as startSession.
+            log.error("permission-service stop session network/timeout failure: {}", e.getMessage());
+            throw new ImpersonationSessionClientException(
+                    "permission-service stop session unreachable/timeout: " + e.getMessage(), e);
         }
     }
 
@@ -133,6 +152,13 @@ public class ImpersonationSessionClient {
                     e.getStatusCode(), e.getResponseBodyAsString());
             throw new ImpersonationSessionClientException(
                     "Failed to revoke impersonation session: " + e.getStatusCode(), e);
+        } catch (ImpersonationSessionClientException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // Codex iter-29 P0 absorb: same network/timeout wrap.
+            log.error("permission-service revoke session network/timeout failure: {}", e.getMessage());
+            throw new ImpersonationSessionClientException(
+                    "permission-service revoke session unreachable/timeout: " + e.getMessage(), e);
         }
     }
 
@@ -155,6 +181,13 @@ public class ImpersonationSessionClient {
             log.error("permission-service get active session failed: status={}", e.getStatusCode());
             throw new ImpersonationSessionClientException(
                     "Failed to get active session: " + e.getStatusCode(), e);
+        } catch (ImpersonationSessionClientException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // Codex iter-29 P0 absorb: same network/timeout wrap.
+            log.error("permission-service get active session network/timeout failure: {}", e.getMessage());
+            throw new ImpersonationSessionClientException(
+                    "permission-service get active session unreachable/timeout: " + e.getMessage(), e);
         }
     }
 

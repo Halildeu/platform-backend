@@ -356,16 +356,12 @@ public class ImpersonationController {
 
         String azp = jwt.getClaimAsString("azp");
         if (brokerAzp.equals(azp)) {
-            // Broker token — find session via DB binding (issuer+jti+sid).
-            // permission-service exposes a token-binding lookup; if that's not
-            // wired yet for public consumption, fall back to "find by target_subject"
-            // heuristic via ImpersonationContextFilter request attribute.
-            // Simplest path: use the existing /active client method but keyed
-            // by the impersonator id which is NOT in this token. For MVP we
-            // require the original admin token; broker token caller is
-            // expected to either logout (KC) or call a future
-            // /sessions/by-binding endpoint. Reject explicitly so the
-            // contract is clear instead of silently looking up wrong row.
+            // Codex iter-29 absorb: broker-issued token (caller is INSIDE
+            // impersonation context). MVP contract: only the original admin
+            // token can stop /current. The exchanged token caller must
+            // either logout (KC) or use the future
+            // /sessions/by-binding endpoint (PR-D follow-up).
+            // Reject explicitly so we never silently stop the wrong row.
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .header("X-Error-Code", "STOP_FROM_BROKER_TOKEN_NOT_SUPPORTED")
                     .build();
