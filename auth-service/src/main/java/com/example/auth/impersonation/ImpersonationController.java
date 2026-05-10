@@ -331,6 +331,34 @@ public class ImpersonationController {
     }
 
     /**
+     * POST /api/v1/impersonation/sessions/{sessionId}/revoke
+     *
+     * <p>SuperAdmin-only force-revoke endpoint. Distinct from {@code DELETE /current}:
+     * a different SuperAdmin can revoke another admin's impersonation session
+     * (incident response, compromised actor handling). Audit row records
+     * IMPERSONATION_REVOKED with operator identity + reason.
+     */
+    @PostMapping("/{sessionId}/revoke")
+    public ResponseEntity<Void> revoke(
+            @AuthenticationPrincipal Jwt jwt,
+            @org.springframework.web.bind.annotation.PathVariable UUID sessionId,
+            @RequestBody(required = false) RevokeRequest request) {
+
+        Long operatorUserId = extractUserIdClaim(jwt);
+        if (operatorUserId == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        if (!superAdminAuthority.isSuperAdmin(operatorUserId, jwt.getTokenValue())) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        String reason = request != null && request.reason() != null
+                ? request.reason() : "ADMIN_REVOKE";
+        boolean revoked = sessionClient.revokeSession(sessionId, reason);
+        return revoked ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+    }
+
+    /**
      * GET /api/v1/impersonation/sessions/active
      */
     @GetMapping("/active")
@@ -382,6 +410,9 @@ public class ImpersonationController {
             @NotBlank @Size(max = 255) String targetSubject,
             @Size(max = 255) String targetEmail,
             @NotBlank @Size(min = 10, max = 500) String reason) {
+    }
+
+    public record RevokeRequest(@Size(max = 500) String reason) {
     }
 
     public record StartResponse(

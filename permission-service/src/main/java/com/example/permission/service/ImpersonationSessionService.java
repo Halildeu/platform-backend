@@ -134,6 +134,29 @@ public class ImpersonationSessionService {
         return false;
     }
 
+    /**
+     * Admin force-revoke — emergency terminate of an active session.
+     *
+     * <p>Same DB transition as {@link #stopSession(UUID, String)} but
+     * audit event type is {@code IMPERSONATION_REVOKED} with WARN level
+     * and operator-supplied reason captured as metadata. Caller (internal
+     * controller) authorizes the operator out-of-band.
+     */
+    @Transactional
+    public boolean revokeSession(UUID sessionId, String revokeReason) {
+        Instant now = Instant.now();
+        Optional<ImpersonationSession> snapshot = sessionRepository.findById(sessionId);
+        int updated = sessionRepository.stopSession(sessionId, now, revokeReason);
+        if (updated > 0) {
+            log.warn("Impersonation session revoked: id={} reason={}", sessionId, revokeReason);
+            snapshot.ifPresent(s -> auditWriter.writeRevoked(
+                    buildAuditContext(s), s.getJti(), revokeReason));
+            return true;
+        }
+        log.debug("Revoke session no-op (not active): id={}", sessionId);
+        return false;
+    }
+
     private ImpersonationAuditContext buildAuditContext(ImpersonationSession s) {
         return new ImpersonationAuditContext(
                 s.getId(),

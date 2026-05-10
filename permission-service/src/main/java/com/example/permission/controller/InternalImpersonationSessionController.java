@@ -132,6 +132,28 @@ public class InternalImpersonationSessionController {
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }
 
+    /**
+     * POST /api/v1/internal/impersonation/sessions/{id}/revoke
+     *
+     * <p>Admin force-revoke of an active session. Distinct from
+     * {@link #stop(String, String, UUID, String)}: revoke is the
+     * "operator emergency stop" path — used when an admin needs to
+     * terminate a session out-of-band (compromised actor, audit response,
+     * incident handling). Audit row carries
+     * {@code IMPERSONATION_REVOKED} with the operator-supplied reason.
+     */
+    @PostMapping("/{id}/revoke")
+    public ResponseEntity<Void> revoke(
+            @RequestHeader(value = "X-Internal-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKeyLegacy,
+            @PathVariable UUID id,
+            @RequestHeader(value = "X-Revoke-Reason", defaultValue = "ADMIN_REVOKE") String revokeReason) {
+
+        validateInternalApiKey(apiKey != null ? apiKey : apiKeyLegacy);
+        boolean stopped = sessionService.revokeSession(id, revokeReason);
+        return stopped ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+    }
+
     private void validateInternalApiKey(String apiKey) {
         if (internalApiKey == null || internalApiKey.isBlank()) {
             // Service mis-configured — fail-closed

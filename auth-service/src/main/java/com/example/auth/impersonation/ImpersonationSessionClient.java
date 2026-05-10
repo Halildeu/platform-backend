@@ -95,6 +95,31 @@ public class ImpersonationSessionClient {
     }
 
     /**
+     * POST /internal/impersonation/sessions/{id}/revoke — admin force-revoke.
+     */
+    public boolean revokeSession(UUID sessionId, String revokeReason) {
+        try {
+            webClient.post()
+                    .uri(uriBuilder -> uriBuilder.path("/api/v1/internal/impersonation/sessions/{id}/revoke").build(sessionId))
+                    .header("X-Internal-Api-Key", internalApiKey)
+                    .header("X-Revoke-Reason", revokeReason)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .timeout(TIMEOUT)
+                    .block();
+            return true;
+        } catch (WebClientResponseException e) {
+            if (e.getStatusCode() == HttpStatus.NOT_FOUND) {
+                return false;
+            }
+            log.error("permission-service revoke session failed: status={} body={}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            throw new ImpersonationSessionClientException(
+                    "Failed to revoke impersonation session: " + e.getStatusCode(), e);
+        }
+    }
+
+    /**
      * GET /internal/impersonation/sessions/active?impersonatorUserId=N
      */
     public Optional<SessionResource> getActiveByImpersonator(Long impersonatorUserId) {
