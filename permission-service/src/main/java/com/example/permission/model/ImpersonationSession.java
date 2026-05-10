@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 
 import java.net.InetAddress;
@@ -102,6 +103,19 @@ public class ImpersonationSession {
     }
 
     public ImpersonationSession() {
+    }
+
+    /**
+     * App-generated UUID — Codex iter-25 P1 absorb.
+     * DB default `gen_random_uuid()` defansif katman, ama JPA save akışı
+     * için Hibernate id'yi assigned bekler. PrePersist ile null id
+     * production'da {@link java.util.UUID#randomUUID()} ile doldurulur.
+     */
+    @PrePersist
+    protected void ensureId() {
+        if (this.id == null) {
+            this.id = UUID.randomUUID();
+        }
     }
 
     // Getters & setters

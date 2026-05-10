@@ -32,17 +32,35 @@ public class ImpersonationContextExtractor {
 
     private static final Logger log = LoggerFactory.getLogger(ImpersonationContextExtractor.class);
 
-    /** Broker client_id — azp claim ile match (yalnız bu token'lar lookup'a girer). */
-    private static final String BROKER_AZP = "impersonation-broker";
+    /**
+     * Broker client_id — azp claim ile match (yalnız bu token'lar lookup'a girer).
+     * Codex iter-25 absorb: hard-coded yerine config property (KC realm/client
+     * isimleri ileride değişebilir).
+     */
+    private final String brokerAzp;
 
     private final ImpersonationSessionRepository sessionRepository;
     private final boolean requireBrokerSessionLookup;
 
     public ImpersonationContextExtractor(
             ImpersonationSessionRepository sessionRepository,
+            @Value("${auth.impersonation.broker-client-id:impersonation-broker}") String brokerAzp,
             @Value("${auth.impersonation.require-broker-session-lookup:true}") boolean requireBrokerSessionLookup) {
         this.sessionRepository = sessionRepository;
+        this.brokerAzp = brokerAzp;
         this.requireBrokerSessionLookup = requireBrokerSessionLookup;
+    }
+
+    /**
+     * Codex iter-25 absorb: prod log'da raw jti/sid binding identifier'ları
+     * truncate edilir (token değil, ama session reference; PII/replay surface
+     * minimize). Audit tablosunda full saklanır, sadece log'da truncated.
+     */
+    private static String truncateForLog(String value) {
+        if (value == null || value.length() <= 12) {
+            return value;
+        }
+        return value.substring(0, 8) + "..." + value.substring(value.length() - 4);
     }
 
     /**
@@ -59,7 +77,7 @@ public class ImpersonationContextExtractor {
         }
 
         String azp = jwt.getClaimAsString("azp");
-        if (azp == null || !BROKER_AZP.equals(azp)) {
+        if (azp == null || !brokerAzp.equals(azp)) {
             // Normal frontend/auth-service token — not broker-issued; skip lookup.
             return Optional.empty();
         }
@@ -74,8 +92,7 @@ public class ImpersonationContextExtractor {
             log.warn("Broker-issued token missing required claims (iss/jti/sid/sub) — fail-closed reject");
             if (requireBrokerSessionLookup) {
                 throw new ImpersonationContextException(
-                        "Broker-issued token missing required claims: iss=" + issuer
-                                + " jti=" + jti + " sid=" + sid + " sub=" + targetSubject);
+                        "Broker-issued token missing required claims");
             }
             return Optional.empty();
         }
@@ -86,10 +103,10 @@ public class ImpersonationContextExtractor {
 
         if (sessionOpt.isEmpty()) {
             log.warn("Broker-issued token but no active impersonation session: issuer={} jti={} sid={} — fail-closed",
-                    issuer, jti, sid);
+                    issuer, truncateForLog(jti), truncateForLog(sid));
             if (requireBrokerSessionLookup) {
                 throw new ImpersonationContextException(
-                        "Broker-issued token but no active impersonation session");
+                        "Broker-issued token requires active impersonation session");
             }
             return Optional.empty();
         }
@@ -98,8 +115,8 @@ public class ImpersonationContextExtractor {
 
         // Defensive: target_subject mismatch fail-closed (replay/forge guard)
         if (!targetSubject.equals(session.getTargetSubject())) {
-            log.warn("Token sub mismatch with session target_subject: token.sub={} session.target_subject={} — fail-closed",
-                    targetSubject, session.getTargetSubject());
+            log.warn("Token sub mismatch with session target_subject: jti={} sid={} — fail-closed",
+                    truncateForLog(jti), truncateForLog(sid));
             throw new ImpersonationContextException(
                     "Token subject does not match session target_subject");
         }
@@ -139,10 +156,21 @@ public class ImpersonationContextExtractor {
     /**
      * Fail-closed reject signal for broker-issued tokens missing/invalid
      * DB session.
+     *
+     * <p>Codex iter-25 absorb: filter/controller chain'inde 500 yerine
+     * 403 IMPERSONATION_SESSION_REQUIRED'a map edilmek üzere ayrı tip.
+     * Spring Security exception handler'lara `@ResponseStatus(FORBIDDEN)`
+     * + body `{ "error_code": "IMPERSONATION_SESSION_REQUIRED" }` döner.
      */
     public static class ImpersonationContextException extends RuntimeException {
+        public static final String ERROR_CODE = "IMPERSONATION_SESSION_REQUIRED";
+
         public ImpersonationContextException(String message) {
             super(message);
+        }
+
+        public String errorCode() {
+            return ERROR_CODE;
         }
     }
 }

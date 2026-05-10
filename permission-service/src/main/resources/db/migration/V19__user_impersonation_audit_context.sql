@@ -41,8 +41,12 @@ CREATE INDEX IF NOT EXISTS idx_permission_audit_target
 -- ─── 2. impersonation_sessions table ──────────────────────────────────
 -- Authoritative source for actor/target identity in audit middleware;
 -- jti+sid lookup via runtime middleware (jti_session_lookup binding).
+-- 2026-05-10 (Codex iter-25 P1 absorb): pgcrypto extension assumption
+-- DROP edildi. App-generated UUID birincil yol (Hibernate @PrePersist);
+-- DB default kalmadı — JPA save akışı sırasında Hibernate id assigned
+-- bekler. Defansif katman gerekirse application code güvence verir.
 CREATE TABLE impersonation_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY,
 
     -- Actor / target identity (authoritative)
     impersonator_user_id BIGINT NOT NULL,
@@ -77,6 +81,10 @@ CREATE TABLE impersonation_sessions (
         CHECK (status IN ('ACTIVE', 'STOPPED', 'EXPIRED', 'REVOKED')),
     CONSTRAINT impersonation_sessions_no_self
         CHECK (impersonator_user_id != target_user_id),
+    -- Codex iter-25 P1 absorb: subject-level no-self guard (user_id check
+    -- yetmez — keycloak subject'leri farklı id mapping'iyle eşleşebilir).
+    CONSTRAINT impersonation_sessions_no_self_subject
+        CHECK (impersonator_subject != target_subject),
     CONSTRAINT impersonation_sessions_ended_after_start
         CHECK (ended_at IS NULL OR ended_at >= started_at),
     CONSTRAINT impersonation_sessions_expires_after_start
@@ -97,9 +105,14 @@ CREATE INDEX ix_impersonation_sessions_active_lookup
 CREATE INDEX ix_impersonation_sessions_actor_target_started
     ON impersonation_sessions(impersonator_user_id, target_user_id, started_at DESC);
 
--- Active session per impersonator (single-active-session policy)
-CREATE INDEX ix_impersonation_sessions_active_per_impersonator
-    ON impersonation_sessions(impersonator_user_id, status)
+-- Single-active-session policy DB ENFORCE (Codex iter-25 P1 absorb).
+-- Bir impersonator'ın aynı anda en fazla 1 active session'ı olabilir.
+-- HPA-managed pod-paralel POST request'lerinde DB UNIQUE constraint
+-- ile race condition kapanır. Repository check yetmez (TOCTOU race).
+-- Start endpoint transaction başında sweepExpiredSessions(now) çağırarak
+-- expired ama henüz ACTIVE row'u temizler (yoksa unique violation).
+CREATE UNIQUE INDEX ux_impersonation_sessions_one_active_per_impersonator
+    ON impersonation_sessions(impersonator_user_id)
     WHERE status = 'ACTIVE' AND ended_at IS NULL;
 
 -- ─── 3. Comments for audit clarity ────────────────────────────────────
