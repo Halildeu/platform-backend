@@ -66,28 +66,63 @@ class VaultFailfastFallbackHandlerTest {
      * instead of a "vault down" outage page.
      */
     @Test
-    void doesNotHandleWebClientRequestExceptionWithoutConnectionRootCause() {
+    void writesBadGatewayForWebClientRequestExceptionWithoutConnectionRootCause() {
+        // Iter-2 (Codex 019e139e P1 #3 absorb): explicit 502 Bad Gateway
+        // with stable JSON shape (X-Serban-Outage-Code=GATEWAY_TRANSIENT)
+        // for transient WebClient errors that are NOT genuine vault
+        // outages. Iter-1 only delegated, leaking 500s with no taxonomy;
+        // iter-2 owns the contract.
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                org.springframework.mock.http.server.reactive.MockServerHttpRequest.get("/api/v1/auth/sessions")
-        );
+                org.springframework.mock.http.server.reactive.MockServerHttpRequest
+                        .get("/api/v1/auth/sessions")
+                        .header("X-Trace-Id", "trace-789"));
 
-        // WebClientRequestException whose underlying cause is just a
-        // generic RuntimeException (NOT ConnectException / SocketTimeout
-        // / NoRouteToHost / TimeoutException) — represents an HTTP-level
-        // transient that the loadbalancer retry should handle, not a
-        // vault outage. With the iter-1 fix this falls through (handler
-        // returns Mono.error(ex) so Spring's default error handler runs).
         org.springframework.web.reactive.function.client.WebClientRequestException ex =
                 new org.springframework.web.reactive.function.client.WebClientRequestException(
                         new RuntimeException("transient WebClient HTTP error"),
                         org.springframework.http.HttpMethod.GET,
-                        java.net.URI.create("http://upstream/realms/platform-test/protocol/openid-connect/auth"),
+                        java.net.URI.create("http://auth-service/api/auth/cookie"),
                         new org.springframework.http.HttpHeaders());
 
-        StepVerifier.create(handler.handle(exchange, ex))
-                .expectErrorMatches(thrown ->
-                        thrown instanceof org.springframework.web.reactive.function.client.WebClientRequestException)
-                .verify();
+        handler.handle(exchange, ex).block();
+
+        ServerHttpResponse response = exchange.getResponse();
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
+        assertThat(response.getHeaders().getFirst("X-Serban-Outage-Code"))
+                .isEqualTo("GATEWAY_TRANSIENT");
+        assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("5");
+
+        String body = ((MockServerHttpResponse) response).getBodyAsString().block();
+        assertThat(body).contains("\"error\":\"bad_gateway\"");
+        assertThat(body).contains("\"outageCode\":\"GATEWAY_TRANSIENT\"");
+        assertThat(body).contains("\"traceId\":\"trace-789\"");
+    }
+
+    @Test
+    void handlesNestedConnectExceptionDeepInCauseChain() {
+        // Codex 019e139e P2 absorb: nested cause chain
+        // (RuntimeException → WebClientRequestException → ConnectException)
+        // — the cause-chain walker should still find the connect-level
+        // exception and trigger the vault-outage 503.
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                org.springframework.mock.http.server.reactive.MockServerHttpRequest
+                        .get("/api/v1/auth/sessions"));
+
+        java.net.ConnectException connectEx = new java.net.ConnectException("Connection refused");
+        org.springframework.web.reactive.function.client.WebClientRequestException webEx =
+                new org.springframework.web.reactive.function.client.WebClientRequestException(
+                        connectEx,
+                        org.springframework.http.HttpMethod.GET,
+                        java.net.URI.create("http://keycloak:8080/some/path"),
+                        new org.springframework.http.HttpHeaders());
+        RuntimeException outer = new RuntimeException("wrapper", webEx);
+
+        handler.handle(exchange, outer).block();
+
+        ServerHttpResponse response = exchange.getResponse();
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        assertThat(response.getHeaders().getFirst("X-Serban-Outage-Code"))
+                .isEqualTo("VAULT_UNAVAILABLE");
     }
 
     @Test
