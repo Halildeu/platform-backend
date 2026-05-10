@@ -84,9 +84,12 @@ public class ImpersonationSessionService {
         session.setUserAgent(request.userAgent());
         session.setClientIpViaXff(request.clientIpViaXff());
 
-        // Step 3: insert (DB unique constraint çakışırsa 409)
+        // Step 3: insert + EXPLICIT FLUSH (Codex iter-27 P1 absorb).
+        // saveAndFlush forces DB constraint check inside this try block;
+        // without flush a unique/CHECK violation could surface only at TX
+        // commit time and bypass the catch below → 500 instead of 409/400.
         try {
-            ImpersonationSession saved = sessionRepository.save(session);
+            ImpersonationSession saved = sessionRepository.saveAndFlush(session);
             log.info("Impersonation session started: id={} impersonator={} target={}",
                     saved.getId(), saved.getImpersonatorUserId(), saved.getTargetUserId());
 
@@ -141,16 +144,32 @@ public class ImpersonationSessionService {
      * audit event type is {@code IMPERSONATION_REVOKED} with WARN level
      * and operator-supplied reason captured as metadata. Caller (internal
      * controller) authorizes the operator out-of-band.
+     *
+     * <p>Codex iter-27 P1 absorb: operator identity (revoking SuperAdmin)
+     * propagated through to the audit row's performedBy/userEmail fields,
+     * NOT the impersonator from the session snapshot. V19 impersonator/target
+     * context columns still come from the session snapshot.
      */
     @Transactional
-    public boolean revokeSession(UUID sessionId, String revokeReason) {
+    public boolean revokeSession(UUID sessionId,
+                                 String revokeReason,
+                                 Long operatorUserId,
+                                 String operatorSubject,
+                                 String operatorEmail,
+                                 String correlationId) {
         Instant now = Instant.now();
         Optional<ImpersonationSession> snapshot = sessionRepository.findById(sessionId);
         int updated = sessionRepository.stopSession(sessionId, now, revokeReason);
         if (updated > 0) {
-            log.warn("Impersonation session revoked: id={} reason={}", sessionId, revokeReason);
-            snapshot.ifPresent(s -> auditWriter.writeRevoked(
-                    buildAuditContext(s), s.getJti(), revokeReason));
+            log.warn("Impersonation session revoked: id={} reason={} operator_user_id={}",
+                    sessionId, revokeReason, operatorUserId);
+            snapshot.ifPresent(s -> auditWriter.writeRevokedByOperator(
+                    buildAuditContext(s),
+                    correlationId != null ? correlationId : s.getJti(),
+                    revokeReason,
+                    operatorUserId,
+                    operatorSubject,
+                    operatorEmail));
             return true;
         }
         log.debug("Revoke session no-op (not active): id={}", sessionId);

@@ -122,6 +122,10 @@ public class ImpersonationAuditWriter {
 
     /**
      * IMPERSONATION_REVOKED — admin/system terminate of an active session.
+     *
+     * <p>Used for system-driven revokes (no operator identity, e.g. fraud
+     * detection script). For operator-driven revokes use
+     * {@link #writeRevokedByOperator}.
      */
     public PermissionAuditEvent writeRevoked(ImpersonationAuditContext ctx,
                                              String correlationId,
@@ -137,6 +141,52 @@ public class ImpersonationAuditWriter {
                 ctx,
                 correlationId,
                 meta));
+    }
+
+    /**
+     * IMPERSONATION_REVOKED with operator override — Codex iter-27 P1 absorb.
+     *
+     * <p>Records the revoking SuperAdmin as actor (performedBy/userEmail)
+     * while preserving the impersonator/target identity in V19 context
+     * columns from the session snapshot. Operator identity goes to
+     * metadata as well for forensic clarity.
+     */
+    public PermissionAuditEvent writeRevokedByOperator(ImpersonationAuditContext ctx,
+                                                       String correlationId,
+                                                       String revokeReason,
+                                                       Long operatorUserId,
+                                                       String operatorSubject,
+                                                       String operatorEmail) {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        if (revokeReason != null) {
+            meta.put("revokeReason", revokeReason);
+        }
+        if (operatorUserId != null) {
+            meta.put("operatorUserId", operatorUserId);
+        }
+        if (operatorSubject != null) {
+            meta.put("operatorSubject", operatorSubject);
+        }
+        if (operatorEmail != null) {
+            meta.put("operatorEmail", operatorEmail);
+        }
+        PermissionAuditEvent event = buildEvent(
+                ImpersonationAuditEventTypes.IMPERSONATION_REVOKED,
+                "WARN",
+                "Impersonation session revoked by operator",
+                ctx,
+                correlationId,
+                meta);
+        // Override actor identity — performedBy + userEmail = revoker
+        if (operatorUserId != null) {
+            event.setPerformedBy(operatorUserId);
+        }
+        if (operatorEmail != null && !operatorEmail.isBlank()) {
+            event.setUserEmail(operatorEmail);
+        } else if (operatorSubject != null && !operatorSubject.isBlank()) {
+            event.setUserEmail("subject:" + operatorSubject);
+        }
+        return persist(event);
     }
 
     private PermissionAuditEvent buildEvent(String eventType,

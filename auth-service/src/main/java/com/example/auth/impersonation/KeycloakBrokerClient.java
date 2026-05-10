@@ -109,6 +109,19 @@ public class KeycloakBrokerClient {
             log.warn("Keycloak token exchange failed: status={} body={}", e.getStatusCode(), body);
             throw new TokenExchangeException(
                     "Keycloak token exchange failed (" + e.getStatusCode() + "): " + body);
+        } catch (TokenExchangeException e) {
+            // Internal validation throws (invalid response) — propagate untouched.
+            throw e;
+        } catch (RuntimeException e) {
+            // Codex iter-27 P0 absorb: timeout / DNS / connection-reset /
+            // any non-WebClientResponseException must NOT escape as raw
+            // RuntimeException, otherwise the controller's
+            // TokenExchangeException catch misses and IMPERSONATION_FAILED
+            // audit row never gets written.
+            log.warn("Keycloak token exchange unexpected error for target_subject_present={}: {}",
+                    targetUserSubject != null, e.getMessage());
+            throw new TokenExchangeException(
+                    "Keycloak token exchange failed (network/timeout): " + e.getMessage());
         }
     }
 

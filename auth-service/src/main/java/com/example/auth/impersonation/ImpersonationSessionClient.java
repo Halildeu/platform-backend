@@ -34,7 +34,11 @@ public class ImpersonationSessionClient {
     public ImpersonationSessionClient(
             @Qualifier("plainWebClientBuilder") WebClient.Builder builder,
             @Value("${permission.service.base-url:http://permission-service}") String baseUrl,
-            @Value("${permission.internal.api-key:}") String internalApiKey) {
+            // Codex iter-27 PARTIAL P0 absorb: use existing audit-mirror key
+            // convention as primary; permission.internal.api-key + env vars
+            // as fallback chain for new deployments. Empty default → fail-closed
+            // at request time (validateInternalApiKey rejects).
+            @Value("${permission.audit-mirror.internal-api-key:${permission.internal.api-key:${PERMISSION_SERVICE_INTERNAL_API_KEY:}}}") String internalApiKey) {
         this.webClient = builder.baseUrl(baseUrl).build();
         this.internalApiKey = internalApiKey;
     }
@@ -96,13 +100,26 @@ public class ImpersonationSessionClient {
 
     /**
      * POST /internal/impersonation/sessions/{id}/revoke — admin force-revoke.
+     *
+     * <p>Codex iter-27 P1 absorb: operator identity (revoking SuperAdmin)
+     * propagated via X-Operator-* headers so audit row records actor as
+     * the revoker, not the impersonator from the session snapshot.
      */
-    public boolean revokeSession(UUID sessionId, String revokeReason) {
+    public boolean revokeSession(UUID sessionId,
+                                 String revokeReason,
+                                 Long operatorUserId,
+                                 String operatorSubject,
+                                 String operatorEmail,
+                                 String correlationId) {
         try {
             webClient.post()
                     .uri(uriBuilder -> uriBuilder.path("/api/v1/internal/impersonation/sessions/{id}/revoke").build(sessionId))
                     .header("X-Internal-Api-Key", internalApiKey)
-                    .header("X-Revoke-Reason", revokeReason)
+                    .header("X-Revoke-Reason", revokeReason == null ? "ADMIN_REVOKE" : revokeReason)
+                    .header("X-Operator-User-Id", operatorUserId == null ? "" : operatorUserId.toString())
+                    .header("X-Operator-Subject", operatorSubject == null ? "" : operatorSubject)
+                    .header("X-Operator-Email", operatorEmail == null ? "" : operatorEmail)
+                    .header("X-Correlation-Id", correlationId == null ? "" : correlationId)
                     .retrieve()
                     .toBodilessEntity()
                     .timeout(TIMEOUT)

@@ -36,7 +36,11 @@ public class ImpersonationAuditClient {
     public ImpersonationAuditClient(
             @Qualifier("plainWebClientBuilder") WebClient.Builder builder,
             @Value("${permission.service.base-url:http://permission-service}") String baseUrl,
-            @Value("${permission.internal.api-key:}") String internalApiKey) {
+            // Codex iter-27 PARTIAL P0 absorb: align with existing
+            // permission.audit-mirror.internal-api-key convention so
+            // PERMISSION_SERVICE_INTERNAL_API_KEY env var (already set in
+            // .env.prod.example + k8s ConfigMap) flows through.
+            @Value("${permission.audit-mirror.internal-api-key:${permission.internal.api-key:${PERMISSION_SERVICE_INTERNAL_API_KEY:}}}") String internalApiKey) {
         this.webClient = builder.baseUrl(baseUrl).build();
         this.internalApiKey = internalApiKey;
     }

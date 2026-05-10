@@ -3,6 +3,7 @@ package com.example.permission.controller;
 import com.example.permission.model.ImpersonationSession;
 import com.example.permission.service.ImpersonationSessionService;
 import com.example.permission.service.ImpersonationSessionService.ActiveSessionExistsException;
+import com.example.permission.service.ImpersonationSessionService.ImpersonationConstraintException;
 import com.example.permission.service.ImpersonationSessionService.StartSessionRequest;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.Valid;
@@ -147,11 +148,31 @@ public class InternalImpersonationSessionController {
             @RequestHeader(value = "X-Internal-Api-Key", required = false) String apiKey,
             @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKeyLegacy,
             @PathVariable UUID id,
-            @RequestHeader(value = "X-Revoke-Reason", defaultValue = "ADMIN_REVOKE") String revokeReason) {
+            @RequestHeader(value = "X-Revoke-Reason", defaultValue = "ADMIN_REVOKE") String revokeReason,
+            // Codex iter-27 P1 absorb: operator identity propagated by
+            // auth-service so audit row records the revoking SuperAdmin
+            // as performedBy, not the impersonator from session snapshot.
+            @RequestHeader(value = "X-Operator-User-Id", required = false) String operatorUserId,
+            @RequestHeader(value = "X-Operator-Subject", required = false) String operatorSubject,
+            @RequestHeader(value = "X-Operator-Email", required = false) String operatorEmail,
+            @RequestHeader(value = "X-Correlation-Id", required = false) String correlationId) {
 
         validateInternalApiKey(apiKey != null ? apiKey : apiKeyLegacy);
-        boolean stopped = sessionService.revokeSession(id, revokeReason);
+        Long opUserId = parseLongOrNull(operatorUserId);
+        boolean stopped = sessionService.revokeSession(
+                id, revokeReason, opUserId, operatorSubject, operatorEmail, correlationId);
         return stopped ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+    }
+
+    private Long parseLongOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private void validateInternalApiKey(String apiKey) {
@@ -180,6 +201,17 @@ public class InternalImpersonationSessionController {
     @ExceptionHandler(ActiveSessionExistsException.class)
     public ResponseEntity<ErrorResponse> handleActiveExists(ActiveSessionExistsException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponse(e.errorCode(), e.getMessage()));
+    }
+
+    /**
+     * Codex iter-27 P1 absorb: non-active-session DB constraint violations
+     * (no_self / no_self_subject / expires_after_start / status_check) →
+     * 400 BadRequest instead of 500.
+     */
+    @ExceptionHandler(ImpersonationConstraintException.class)
+    public ResponseEntity<ErrorResponse> handleConstraint(ImpersonationConstraintException e) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorResponse(e.errorCode(), e.getMessage()));
     }
 
