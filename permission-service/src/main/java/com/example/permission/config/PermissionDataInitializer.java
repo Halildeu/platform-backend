@@ -49,8 +49,15 @@ public class PermissionDataInitializer implements CommandLineRunner {
             // --- Access (2 — read + write) ---
             Map.entry("access-read", new PermissionDefinition("Read access management data", "Access")),
             Map.entry("access-write", new PermissionDefinition("Create/update/delete access management records", "Access")),
-            // --- Audit (1) ---
+            // --- Audit (2) ---
             Map.entry("audit-read", new PermissionDefinition("Read audit events", "Audit")),
+            // PR-D (User Impersonation v1): SuperAdmin-restricted view of
+            // IMPERSONATION_* audit events (STARTED/STOPPED/BLOCKED/FAILED/
+            // REVOKED rows). Distinct from audit-read because impersonation
+            // events expose actor + target identity together — only
+            // operators with full system-trust should see the join.
+            Map.entry("impersonation-audit-view",
+                    new PermissionDefinition("View impersonation audit events", "Audit")),
             // --- Company (2) ---
             Map.entry("company-read", new PermissionDefinition("Read company master data", "Company")),
             Map.entry("company-write", new PermissionDefinition("Create or update company master data", "Company")),
@@ -141,6 +148,7 @@ public class PermissionDataInitializer implements CommandLineRunner {
                     "VARIANTS_READ", "VARIANTS_WRITE", "MANAGE_GLOBAL_VARIANTS",
                     "access-read", "access-write",
                     "audit-read",
+                    "impersonation-audit-view",
                     "company-read", "company-write",
                     "role-manage", "permission-manage", "permission-scope-manage", "system-configure",
                     "THEME_ADMIN",

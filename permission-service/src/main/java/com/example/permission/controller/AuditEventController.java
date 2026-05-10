@@ -113,6 +113,50 @@ public class AuditEventController {
                 .body(job.getPayload());
     }
 
+    /**
+     * GET /api/audit/events/impersonation
+     *
+     * <p>PR-D (User Impersonation v1): pre-filtered audit log for
+     * IMPERSONATION_* event types (STARTED / STOPPED / BLOCKED / FAILED /
+     * REVOKED). Uses the same paging + sort + filter machinery as the
+     * generic listEvents endpoint, but server-side hard-locks the
+     * action filter to IMPERSONATION so a malformed client filter
+     * cannot leak non-impersonation rows through this endpoint.
+     *
+     * <p>Authorization: AUDIT.can_view via @RequireModule (same as the
+     * generic list endpoint). The dedicated permission constant
+     * {@code impersonation-audit-view} is seeded by PermissionDataInitializer
+     * for governance/audit-trail clarity; the OpenFGA gate remains the
+     * authoritative runtime check until a future "IMPERSONATION_AUDIT"
+     * module is registered in the FGA model.
+     */
+    @GetMapping("/impersonation")
+    @RequireModule(value = "AUDIT", relation = "can_view")
+    public ResponseEntity<AuditEventPageResponse> listImpersonationEvents(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(name = "pageSize", defaultValue = "50") int pageSize,
+            @RequestParam(required = false) String sort,
+            @RequestParam Map<String, String> query) {
+        Map<String, String> filters = extractFilters(query);
+        // Hard-lock the action filter so this endpoint cannot leak
+        // non-impersonation events even if a client sends a different
+        // filter[action]= value. Caller may still narrow via
+        // filter[action]=IMPERSONATION_BLOCKED etc; we validate the
+        // narrowed value still starts with IMPERSONATION.
+        String existing = filters.get("action");
+        if (existing != null && !existing.toUpperCase().startsWith("IMPERSONATION")) {
+            // Reject client attempt to narrow outside the impersonation
+            // scope by setting back to the prefix.
+            filters.put("action", "IMPERSONATION");
+        } else if (existing == null) {
+            filters.put("action", "IMPERSONATION");
+        }
+        int zeroBasedPage = Math.max(1, page) - 1;
+        AuditEventPageResponse result = auditEventService.listEvents(
+                zeroBasedPage, pageSize, sort, filters);
+        return ResponseEntity.ok(result);
+    }
+
     @GetMapping(value = "/live", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @RequireModule(value = "AUDIT", relation = "can_view")
     public SseEmitter liveEvents() {
