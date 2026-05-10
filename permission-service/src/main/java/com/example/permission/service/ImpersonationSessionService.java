@@ -86,10 +86,20 @@ public class ImpersonationSessionService {
                     saved.getId(), saved.getImpersonatorUserId(), saved.getTargetUserId());
             return saved;
         } catch (DataIntegrityViolationException e) {
-            log.warn("Active impersonation session already exists for impersonator={}",
-                    request.impersonatorUserId());
-            throw new ActiveSessionExistsException(
-                    "Active impersonation session already exists for impersonator");
+            // Codex iter-27 P1 absorb: constraint name'ine göre ayrıştır.
+            // ux_impersonation_sessions_one_active_per_impersonator violation
+            // → ActiveSessionExistsException (409). Diğer constraint
+            // (no_self, expires_after_start, status_check) → 400 BadRequest.
+            String message = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (message.contains("ux_impersonation_sessions_one_active_per_impersonator")) {
+                log.warn("Active impersonation session already exists for impersonator={}",
+                        request.impersonatorUserId());
+                throw new ActiveSessionExistsException(
+                        "Active impersonation session already exists for impersonator");
+            }
+            log.warn("ImpersonationSession DB constraint violation (non-active-session): {}", e.getMessage());
+            throw new ImpersonationConstraintException(
+                    "Session insert failed (constraint): " + e.getMostSpecificCause().getMessage());
         }
     }
 
@@ -158,6 +168,22 @@ public class ImpersonationSessionService {
         public static final String ERROR_CODE = "ACTIVE_IMPERSONATION_EXISTS";
 
         public ActiveSessionExistsException(String message) {
+            super(message);
+        }
+
+        public String errorCode() {
+            return ERROR_CODE;
+        }
+    }
+
+    /**
+     * Other DB constraint violations (no_self, expires_after_start, status_check)
+     * → 400 BadRequest (not single-active-session 409).
+     */
+    public static class ImpersonationConstraintException extends RuntimeException {
+        public static final String ERROR_CODE = "IMPERSONATION_CONSTRAINT_VIOLATION";
+
+        public ImpersonationConstraintException(String message) {
             super(message);
         }
 

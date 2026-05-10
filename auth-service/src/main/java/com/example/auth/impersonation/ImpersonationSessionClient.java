@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -24,6 +25,8 @@ import java.util.UUID;
 public class ImpersonationSessionClient {
 
     private static final Logger log = LoggerFactory.getLogger(ImpersonationSessionClient.class);
+    /** Codex iter-27 P1 absorb: cluster-wide hang prevention. */
+    private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     private final WebClient webClient;
     private final String internalApiKey;
@@ -46,11 +49,12 @@ public class ImpersonationSessionClient {
     public SessionResource startSession(StartRequest request) {
         try {
             return webClient.post()
-                    .uri("/internal/impersonation/sessions")
-                    .header("X-Internal-API-Key", internalApiKey)
+                    .uri("/api/v1/internal/impersonation/sessions")
+                    .header("X-Internal-Api-Key", internalApiKey)
                     .bodyValue(request)
                     .retrieve()
                     .bodyToMono(SessionResource.class)
+                    .timeout(TIMEOUT)
                     .block();
         } catch (WebClientResponseException e) {
             if (e.getStatusCode() == HttpStatus.CONFLICT) {
@@ -71,11 +75,12 @@ public class ImpersonationSessionClient {
     public boolean stopSession(UUID sessionId, String reason) {
         try {
             webClient.delete()
-                    .uri(uriBuilder -> uriBuilder.path("/internal/impersonation/sessions/{id}").build(sessionId))
-                    .header("X-Internal-API-Key", internalApiKey)
+                    .uri(uriBuilder -> uriBuilder.path("/api/v1/internal/impersonation/sessions/{id}").build(sessionId))
+                    .header("X-Internal-Api-Key", internalApiKey)
                     .header("X-Stop-Reason", reason)
                     .retrieve()
                     .toBodilessEntity()
+                    .timeout(TIMEOUT)
                     .block();
             return true;
         } catch (WebClientResponseException e) {
@@ -95,12 +100,13 @@ public class ImpersonationSessionClient {
     public Optional<SessionResource> getActiveByImpersonator(Long impersonatorUserId) {
         try {
             SessionResource result = webClient.get()
-                    .uri(uriBuilder -> uriBuilder.path("/internal/impersonation/sessions/active")
+                    .uri(uriBuilder -> uriBuilder.path("/api/v1/internal/impersonation/sessions/active")
                             .queryParam("impersonatorUserId", impersonatorUserId)
                             .build())
-                    .header("X-Internal-API-Key", internalApiKey)
+                    .header("X-Internal-Api-Key", internalApiKey)
                     .retrieve()
                     .bodyToMono(SessionResource.class)
+                    .timeout(TIMEOUT)
                     .block();
             return Optional.ofNullable(result);
         } catch (WebClientResponseException e) {

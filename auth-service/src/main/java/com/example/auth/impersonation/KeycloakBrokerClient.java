@@ -13,6 +13,7 @@ import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.time.Duration;
 import java.util.Base64;
 
 /**
@@ -41,6 +42,8 @@ public class KeycloakBrokerClient {
     private static final Logger log = LoggerFactory.getLogger(KeycloakBrokerClient.class);
     private static final String GRANT_TYPE_TOKEN_EXCHANGE =
             "urn:ietf:params:oauth:grant-type:token-exchange";
+    /** Codex iter-27 P1 absorb: KC exchange hang prevention. */
+    private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     private final WebClient webClient;
     private final String realmTokenUrl;
@@ -89,6 +92,7 @@ public class KeycloakBrokerClient {
                     .body(BodyInserters.fromFormData(form))
                     .retrieve()
                     .bodyToMono(JsonNode.class)
+                    .timeout(TIMEOUT)
                     .block();
 
             if (response == null || !response.hasNonNull("access_token")) {

@@ -41,7 +41,7 @@ import java.util.UUID;
  * (PERMISSION_SERVICE_INTERNAL_API_KEY env'den).
  */
 @RestController
-@RequestMapping("/internal/impersonation/sessions")
+@RequestMapping("/api/v1/internal/impersonation/sessions")
 public class InternalImpersonationSessionController {
 
     private final ImpersonationSessionService sessionService;
@@ -49,7 +49,7 @@ public class InternalImpersonationSessionController {
 
     public InternalImpersonationSessionController(
             ImpersonationSessionService sessionService,
-            @Value("${permission.internal.api-key:}") String internalApiKey) {
+            @Value("${security.internal-api-key.value:}") String internalApiKey) {
         this.sessionService = sessionService;
         this.internalApiKey = internalApiKey;
     }
@@ -69,10 +69,15 @@ public class InternalImpersonationSessionController {
      */
     @PostMapping
     public ResponseEntity<SessionResource> create(
-            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKeyLegacy,
             @Valid @RequestBody CreateSessionRequest request) {
 
-        validateInternalApiKey(apiKey);
+        // Codex iter-27 P0 absorb: existing canonical header X-Internal-Api-Key
+        // (primary) + legacy fallback X-Internal-API-Key.
+        String effectiveKey = apiKey != null ? apiKey : apiKeyLegacy;
+
+        validateInternalApiKey(effectiveKey);
 
         InetAddress ip = parseInetAddress(request.ipAddress());
         InetAddress xff = parseInetAddress(request.clientIpViaXff());
@@ -102,24 +107,26 @@ public class InternalImpersonationSessionController {
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> stop(
-            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKeyLegacy,
             @PathVariable UUID id,
             @RequestHeader(value = "X-Stop-Reason", defaultValue = "USER_STOP") String stopReason) {
 
-        validateInternalApiKey(apiKey);
+        validateInternalApiKey(apiKey != null ? apiKey : apiKeyLegacy);
         boolean stopped = sessionService.stopSession(id, stopReason);
         return stopped ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 
     /**
-     * GET /internal/impersonation/sessions/active?impersonatorUserId=N
+     * GET /api/v1/internal/impersonation/sessions/active?impersonatorUserId=N
      */
     @GetMapping("/active")
     public ResponseEntity<SessionResource> getActive(
-            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-Api-Key", required = false) String apiKey,
+            @RequestHeader(value = "X-Internal-API-Key", required = false) String apiKeyLegacy,
             @org.springframework.web.bind.annotation.RequestParam("impersonatorUserId") Long impersonatorUserId) {
 
-        validateInternalApiKey(apiKey);
+        validateInternalApiKey(apiKey != null ? apiKey : apiKeyLegacy);
         Optional<ImpersonationSession> active = sessionService.getActiveByImpersonator(impersonatorUserId);
         return active.map(s -> ResponseEntity.ok(SessionResource.from(s)))
                 .orElseGet(() -> ResponseEntity.noContent().build());

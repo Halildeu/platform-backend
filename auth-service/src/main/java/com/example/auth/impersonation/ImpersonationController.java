@@ -54,16 +54,24 @@ import java.util.UUID;
 public class ImpersonationController {
 
     private static final Logger log = LoggerFactory.getLogger(ImpersonationController.class);
-    private static final String BROKER_AZP = "impersonation-broker";
-
+    /**
+     * Codex iter-27 P1 absorb: hard-coded yerine config (extractor ile aynı
+     * property kullanılır).
+     */
+    private final String brokerAzp;
     private final KeycloakBrokerClient brokerClient;
     private final ImpersonationSessionClient sessionClient;
+    private final SuperAdminAuthority superAdminAuthority;
 
     public ImpersonationController(
             KeycloakBrokerClient brokerClient,
-            ImpersonationSessionClient sessionClient) {
+            ImpersonationSessionClient sessionClient,
+            SuperAdminAuthority superAdminAuthority,
+            @org.springframework.beans.factory.annotation.Value("${auth.impersonation.broker-client-id:impersonation-broker}") String brokerAzp) {
         this.brokerClient = brokerClient;
         this.sessionClient = sessionClient;
+        this.superAdminAuthority = superAdminAuthority;
+        this.brokerAzp = brokerAzp;
     }
 
     /**
@@ -72,7 +80,6 @@ public class ImpersonationController {
      * <p>Authorization: SuperAdmin only (PreAuthorize role check).
      */
     @PostMapping
-    @PreAuthorize("hasAuthority('ROLE_SUPER_ADMIN') or hasAuthority('SUPER_ADMIN')")
     public ResponseEntity<StartResponse> startSession(
             @Valid @RequestBody StartSessionRequest request,
             @AuthenticationPrincipal Jwt adminJwt,
@@ -80,7 +87,7 @@ public class ImpersonationController {
 
         // Step 1: Nested impersonation guard — admin token broker-issued olamaz
         String adminAzp = adminJwt.getClaimAsString("azp");
-        if (BROKER_AZP.equals(adminAzp)) {
+        if (brokerAzp.equals(adminAzp)) {
             log.warn("Nested impersonation attempt rejected: admin token azp={}", adminAzp);
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(new StartResponse(null, null, null,
@@ -99,7 +106,18 @@ public class ImpersonationController {
                             "Admin JWT missing userId or subject claim"));
         }
 
-        // Step 2: Token exchange (KC broker)
+        // Step 2: SuperAdmin authority check (Codex iter-27 P0 absorb)
+        // — JWT @PreAuthorize KC realm role converter eksik olabilir;
+        // permission-service authoritative authz source kullanırız.
+        if (!superAdminAuthority.isSuperAdmin(impersonatorUserId, adminJwt.getTokenValue())) {
+            log.warn("Non-superAdmin impersonation attempt rejected: user_id={}", impersonatorUserId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new StartResponse(null, null, null,
+                            "INSUFFICIENT_AUTHORITY",
+                            "Only super admins can start impersonation sessions"));
+        }
+
+        // Step 3: Token exchange (KC broker)
         ExchangeResult exchange;
         try {
             exchange = brokerClient.exchange(adminJwt.getTokenValue(), request.targetSubject());
@@ -112,6 +130,36 @@ public class ImpersonationController {
         }
 
         DecodedClaims claims = exchange.claims();
+
+        // Step 3a: Defensive — exchanged token sub MUST match request targetSubject
+        // (Codex iter-27 P0: prevent audit poisoning by client-provided target).
+        if (!request.targetSubject().equals(claims.subject())) {
+            log.warn("Exchange subject mismatch: request.targetSubject={} claims.sub={}",
+                    request.targetSubject(), claims.subject());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new StartResponse(null, null, null,
+                            "TARGET_SUBJECT_MISMATCH",
+                            "Exchanged token subject does not match requested target"));
+        }
+
+        // Step 3b: azp must be broker (token actually exchanged through broker client).
+        if (!brokerAzp.equals(claims.authorizedParty())) {
+            log.warn("Exchange azp not broker: azp={}", claims.authorizedParty());
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(new StartResponse(null, null, null,
+                            "EXCHANGED_TOKEN_NOT_BROKER_ISSUED",
+                            "Exchanged token azp is not the broker client"));
+        }
+
+        // Step 3c: exp validation — must be in the future.
+        long nowEpoch = Instant.now().getEpochSecond();
+        if (claims.expEpoch() <= nowEpoch) {
+            log.warn("Exchange token already expired: exp={} now={}", claims.expEpoch(), nowEpoch);
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                    .body(new StartResponse(null, null, null,
+                            "EXCHANGED_TOKEN_EXPIRED",
+                            "Exchanged token expired before session creation"));
+        }
 
         // Step 3: permission-service internal session create (DB authority)
         StartRequest internalRequest = new StartRequest(
