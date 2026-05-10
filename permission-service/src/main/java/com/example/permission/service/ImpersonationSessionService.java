@@ -1,5 +1,7 @@
 package com.example.permission.service;
 
+import com.example.permission.audit.ImpersonationAuditWriter;
+import com.example.permission.audit.ImpersonationAuditWriter.ImpersonationAuditContext;
 import com.example.permission.model.ImpersonationSession;
 import com.example.permission.repository.ImpersonationSessionRepository;
 import org.slf4j.Logger;
@@ -30,9 +32,12 @@ public class ImpersonationSessionService {
     private static final Logger log = LoggerFactory.getLogger(ImpersonationSessionService.class);
 
     private final ImpersonationSessionRepository sessionRepository;
+    private final ImpersonationAuditWriter auditWriter;
 
-    public ImpersonationSessionService(ImpersonationSessionRepository sessionRepository) {
+    public ImpersonationSessionService(ImpersonationSessionRepository sessionRepository,
+                                       ImpersonationAuditWriter auditWriter) {
         this.sessionRepository = sessionRepository;
+        this.auditWriter = auditWriter;
     }
 
     /**
@@ -84,6 +89,11 @@ public class ImpersonationSessionService {
             ImpersonationSession saved = sessionRepository.save(session);
             log.info("Impersonation session started: id={} impersonator={} target={}",
                     saved.getId(), saved.getImpersonatorUserId(), saved.getTargetUserId());
+
+            // Step 4: audit IMPERSONATION_STARTED (Codex iter-27 mandate).
+            // Same transaction — audit row commits with session row.
+            auditWriter.writeStarted(buildAuditContext(saved), saved.getJti());
+
             return saved;
         } catch (DataIntegrityViolationException e) {
             // Codex iter-27 P1 absorb: constraint name'ine göre ayrıştır.
@@ -111,13 +121,29 @@ public class ImpersonationSessionService {
     @Transactional
     public boolean stopSession(UUID sessionId, String reason) {
         Instant now = Instant.now();
+        // Read snapshot BEFORE stop for audit context (Codex iter-27).
+        Optional<ImpersonationSession> snapshot = sessionRepository.findById(sessionId);
         int updated = sessionRepository.stopSession(sessionId, now, reason);
         if (updated > 0) {
             log.info("Impersonation session stopped: id={} reason={}", sessionId, reason);
+            snapshot.ifPresent(s -> auditWriter.writeStopped(
+                    buildAuditContext(s), s.getJti(), reason));
             return true;
         }
         log.debug("Stop session no-op (not active): id={}", sessionId);
         return false;
+    }
+
+    private ImpersonationAuditContext buildAuditContext(ImpersonationSession s) {
+        return new ImpersonationAuditContext(
+                s.getId(),
+                s.getImpersonatorUserId(),
+                s.getImpersonatorSubject(),
+                s.getImpersonatorEmail(),
+                s.getTargetUserId(),
+                s.getTargetSubject(),
+                s.getTargetEmail(),
+                s.getReason());
     }
 
     /**

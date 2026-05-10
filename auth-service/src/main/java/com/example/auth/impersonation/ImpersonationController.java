@@ -62,15 +62,18 @@ public class ImpersonationController {
     private final KeycloakBrokerClient brokerClient;
     private final ImpersonationSessionClient sessionClient;
     private final SuperAdminAuthority superAdminAuthority;
+    private final ImpersonationAuditClient auditClient;
 
     public ImpersonationController(
             KeycloakBrokerClient brokerClient,
             ImpersonationSessionClient sessionClient,
             SuperAdminAuthority superAdminAuthority,
+            ImpersonationAuditClient auditClient,
             @org.springframework.beans.factory.annotation.Value("${auth.impersonation.broker-client-id:impersonation-broker}") String brokerAzp) {
         this.brokerClient = brokerClient;
         this.sessionClient = sessionClient;
         this.superAdminAuthority = superAdminAuthority;
+        this.auditClient = auditClient;
         this.brokerAzp = brokerAzp;
     }
 
@@ -85,10 +88,27 @@ public class ImpersonationController {
             @AuthenticationPrincipal Jwt adminJwt,
             HttpServletRequest httpRequest) {
 
+        String correlationId = httpRequest.getHeader("X-Correlation-Id");
+        if (correlationId == null || correlationId.isBlank()) {
+            correlationId = java.util.UUID.randomUUID().toString();
+        }
+
         // Step 1: Nested impersonation guard — admin token broker-issued olamaz
         String adminAzp = adminJwt.getClaimAsString("azp");
         if (brokerAzp.equals(adminAzp)) {
             log.warn("Nested impersonation attempt rejected: admin token azp={}", adminAzp);
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(extractUserIdClaim(adminJwt))
+                    .impersonatorSubject(adminJwt.getSubject())
+                    .impersonatorEmail(adminJwt.getClaimAsString("email"))
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("NESTED_IMPERSONATION_FORBIDDEN")
+                    .message("Cannot impersonate while already impersonating (azp=" + adminAzp + ")")
+                    .build());
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(new StartResponse(null, null, null,
                             "NESTED_IMPERSONATION_FORBIDDEN",
@@ -100,6 +120,17 @@ public class ImpersonationController {
         String impersonatorEmail = adminJwt.getClaimAsString("email");
 
         if (impersonatorUserId == null || impersonatorSubject == null) {
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("ADMIN_IDENTITY_MISSING")
+                    .message("Admin JWT missing userId or subject claim")
+                    .build());
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new StartResponse(null, null, null,
                             "ADMIN_IDENTITY_MISSING",
@@ -111,6 +142,18 @@ public class ImpersonationController {
         // permission-service authoritative authz source kullanırız.
         if (!superAdminAuthority.isSuperAdmin(impersonatorUserId, adminJwt.getTokenValue())) {
             log.warn("Non-superAdmin impersonation attempt rejected: user_id={}", impersonatorUserId);
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("INSUFFICIENT_AUTHORITY")
+                    .message("Only super admins can start impersonation sessions")
+                    .build());
             return ResponseEntity.status(HttpStatus.FORBIDDEN)
                     .body(new StartResponse(null, null, null,
                             "INSUFFICIENT_AUTHORITY",
@@ -123,6 +166,18 @@ public class ImpersonationController {
             exchange = brokerClient.exchange(adminJwt.getTokenValue(), request.targetSubject());
         } catch (TokenExchangeException e) {
             log.warn("Token exchange failed for target={}: {}", request.targetSubject(), e.getMessage());
+            auditClient.writeFailed(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode(e.errorCode())
+                    .message("Keycloak token exchange failed: " + e.getMessage())
+                    .build());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(new StartResponse(null, null, null,
                             e.errorCode(),
@@ -136,6 +191,18 @@ public class ImpersonationController {
         if (!request.targetSubject().equals(claims.subject())) {
             log.warn("Exchange subject mismatch: request.targetSubject={} claims.sub={}",
                     request.targetSubject(), claims.subject());
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("TARGET_SUBJECT_MISMATCH")
+                    .message("Exchanged token sub=" + claims.subject() + " != requested " + request.targetSubject())
+                    .build());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(new StartResponse(null, null, null,
                             "TARGET_SUBJECT_MISMATCH",
@@ -145,6 +212,18 @@ public class ImpersonationController {
         // Step 3b: azp must be broker (token actually exchanged through broker client).
         if (!brokerAzp.equals(claims.authorizedParty())) {
             log.warn("Exchange azp not broker: azp={}", claims.authorizedParty());
+            auditClient.writeFailed(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("EXCHANGED_TOKEN_NOT_BROKER_ISSUED")
+                    .message("Exchanged token azp=" + claims.authorizedParty() + " != broker " + brokerAzp)
+                    .build());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(new StartResponse(null, null, null,
                             "EXCHANGED_TOKEN_NOT_BROKER_ISSUED",
@@ -155,6 +234,18 @@ public class ImpersonationController {
         long nowEpoch = Instant.now().getEpochSecond();
         if (claims.expEpoch() <= nowEpoch) {
             log.warn("Exchange token already expired: exp={} now={}", claims.expEpoch(), nowEpoch);
+            auditClient.writeFailed(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("EXCHANGED_TOKEN_EXPIRED")
+                    .message("Exchanged token exp=" + claims.expEpoch() + " <= now=" + nowEpoch)
+                    .build());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                     .body(new StartResponse(null, null, null,
                             "EXCHANGED_TOKEN_EXPIRED",
@@ -182,6 +273,18 @@ public class ImpersonationController {
         try {
             session = sessionClient.startSession(internalRequest);
         } catch (ActiveSessionExistsException e) {
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode(e.errorCode())
+                    .message("Active impersonation session already exists for this user")
+                    .build());
             return ResponseEntity.status(HttpStatus.CONFLICT)
                     .body(new StartResponse(null, null, null,
                             e.errorCode(),
