@@ -1,0 +1,162 @@
+package com.example.auth.impersonation;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+
+import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * permission-service Internal Impersonation Session API client.
+ *
+ * <p>Codex 019e0dfb iter-26 mimari split — auth-service identity broker
+ * rolünde KC token exchange yapar; bu client permission-service'e
+ * (session/audit authority) write delegate eder.
+ */
+@Component
+public class ImpersonationSessionClient {
+
+    private static final Logger log = LoggerFactory.getLogger(ImpersonationSessionClient.class);
+
+    private final WebClient webClient;
+    private final String internalApiKey;
+
+    public ImpersonationSessionClient(
+            @Qualifier("plainWebClientBuilder") WebClient.Builder builder,
+            @Value("${permission.service.base-url:http://permission-service}") String baseUrl,
+            @Value("${permission.internal.api-key:}") String internalApiKey) {
+        this.webClient = builder.baseUrl(baseUrl).build();
+        this.internalApiKey = internalApiKey;
+    }
+
+    /**
+     * POST /internal/impersonation/sessions — start session.
+     *
+     * @return SessionResource on 201
+     * @throws ActiveSessionExistsException on 409 (single-active-session policy)
+     * @throws ImpersonationSessionClientException on other errors
+     */
+    public SessionResource startSession(StartRequest request) {
+        try {
+            return webClient.post()
+                    .uri("/internal/impersonation/sessions")
+                    .header("X-Internal-API-Key", internalApiKey)
+                    .bodyValue(request)
+                    .retrieve()
+                    .bodyToMono(SessionResource.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            if (e.getStatusCode() == HttpStatus.CONFLICT) {
+                log.warn("Active impersonation session exists for impersonator={}",
+                        request.impersonatorUserId());
+                throw new ActiveSessionExistsException("Active impersonation session already exists");
+            }
+            log.error("permission-service start session failed: status={} body={}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            throw new ImpersonationSessionClientException(
+                    "Failed to start impersonation session: " + e.getStatusCode(), e);
+        }
+    }
+
+    /**
+     * DELETE /internal/impersonation/sessions/{id}
+     */
+    public boolean stopSession(UUID sessionId, String reason) {
+        try {
+            webClient.delete()
+                    .uri(uriBuilder -> uriBuilder.path("/internal/impersonation/sessions/{id}").build(sessionId))
+                    .header("X-Internal-API-Key", internalApiKey)
+                    .header("X-Stop-Reason", reason)
+                    .retrieve()
+                    .toBodilessEntity()
+                    .block();
+            return true;
+        } catch (WebClientResponseException e) {
+            if (e.getStatusCode() == HttpStatus.NOT_FOUND) {
+                return false;
+            }
+            log.error("permission-service stop session failed: status={} body={}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            throw new ImpersonationSessionClientException(
+                    "Failed to stop impersonation session: " + e.getStatusCode(), e);
+        }
+    }
+
+    /**
+     * GET /internal/impersonation/sessions/active?impersonatorUserId=N
+     */
+    public Optional<SessionResource> getActiveByImpersonator(Long impersonatorUserId) {
+        try {
+            SessionResource result = webClient.get()
+                    .uri(uriBuilder -> uriBuilder.path("/internal/impersonation/sessions/active")
+                            .queryParam("impersonatorUserId", impersonatorUserId)
+                            .build())
+                    .header("X-Internal-API-Key", internalApiKey)
+                    .retrieve()
+                    .bodyToMono(SessionResource.class)
+                    .block();
+            return Optional.ofNullable(result);
+        } catch (WebClientResponseException e) {
+            log.error("permission-service get active session failed: status={}", e.getStatusCode());
+            throw new ImpersonationSessionClientException(
+                    "Failed to get active session: " + e.getStatusCode(), e);
+        }
+    }
+
+    public record StartRequest(
+            Long impersonatorUserId,
+            String impersonatorSubject,
+            String impersonatorEmail,
+            Long targetUserId,
+            String targetSubject,
+            String targetEmail,
+            String issuer,
+            String jti,
+            String sid,
+            String reason,
+            Instant expiresAt,
+            String ipAddress,
+            String userAgent,
+            String clientIpViaXff) {
+    }
+
+    public record SessionResource(
+            UUID sessionId,
+            Long impersonatorUserId,
+            Long targetUserId,
+            Instant startedAt,
+            Instant expiresAt,
+            String status) {
+    }
+
+    /**
+     * 409 — single-active-session policy violation.
+     */
+    public static class ActiveSessionExistsException extends RuntimeException {
+        public static final String ERROR_CODE = "ACTIVE_IMPERSONATION_EXISTS";
+
+        public ActiveSessionExistsException(String message) {
+            super(message);
+        }
+
+        public String errorCode() {
+            return ERROR_CODE;
+        }
+    }
+
+    /**
+     * Generic permission-service internal API failure (500/timeout/etc).
+     */
+    public static class ImpersonationSessionClientException extends RuntimeException {
+        public ImpersonationSessionClientException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+}
