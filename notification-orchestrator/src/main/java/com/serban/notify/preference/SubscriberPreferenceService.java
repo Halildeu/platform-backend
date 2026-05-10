@@ -47,7 +47,7 @@ public class SubscriberPreferenceService {
     private final AuditEventPublisher auditPublisher;
     private final PiiRedactor piiRedactor;
     /**
-     * T1.1.7 frequency limit per-user sliding window (Faz 23.2.A).
+     * T1.1.7 frequency limit per-user fixed-window soft limiter (Faz 23.2.A).
      * Optional — if bean not registered, frequency_limit_per_day check is
      * skipped (no enforcement).
      */

@@ -43,10 +43,10 @@ public class FrequencyLimitService {
 
     private static final Logger log = LoggerFactory.getLogger(FrequencyLimitService.class);
 
-    /** Sliding window key — (orgId, subscriberId) tuple. */
+    /** Fixed-window key — (orgId, subscriberId) tuple. */
     private record WindowKey(String orgId, String subscriberId) {}
 
-    /** Sliding window value — current count + window start (epoch ms). */
+    /** Fixed-window value — current count + window start (epoch ms). */
     private static class WindowState {
         final AtomicLong count = new AtomicLong(0);
         volatile long windowStartMs;
