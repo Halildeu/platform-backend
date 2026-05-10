@@ -3,12 +3,16 @@ package com.serban.notify.unsubscribe;
 import com.serban.notify.audit.AuditEventPublisher;
 import com.serban.notify.domain.SubscriberPreference;
 import com.serban.notify.preference.SubscriberPreferenceService;
+import com.serban.notify.preference.SubscriberPreferenceService.MuteChannelResult;
+import com.serban.notify.redaction.PiiRedactor;
 import com.serban.notify.unsubscribe.UnsubscribeTokenService.UnsubscribeClaims;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -44,13 +48,16 @@ public class UnsubscribeRevokeService {
 
     private final SubscriberPreferenceService preferenceService;
     private final AuditEventPublisher auditPublisher;
+    private final PiiRedactor piiRedactor;
 
     public UnsubscribeRevokeService(
         SubscriberPreferenceService preferenceService,
-        AuditEventPublisher auditPublisher
+        AuditEventPublisher auditPublisher,
+        PiiRedactor piiRedactor
     ) {
         this.preferenceService = preferenceService;
         this.auditPublisher = auditPublisher;
+        this.piiRedactor = piiRedactor;
     }
 
     /**
@@ -65,34 +72,65 @@ public class UnsubscribeRevokeService {
         String subscriberId = claims.subscriberId();
         String topicKey = claims.topicKey();
 
-        // Topic-specific revoke: preference for (org, sub, topic, channel=email)
-        // Global revoke: both-null wildcard (mute all)
-        String channelForRevoke = topicKey != null ? "email" : null;
-        SubscriberPreference saved = preferenceService.upsert(
-            orgId,
-            subscriberId,
-            topicKey,
-            channelForRevoke,
-            false,                  // enabled = false (revoke)
-            null,                   // preserve quiet hours (or null on insert)
-            null,                   // preserve frequency limit
-            null                    // preserve bypassForCritical (default true on insert)
-        );
+        Long preferenceId;
+        String channelForRevoke;
+        Map<String, Object> auditDetails = new LinkedHashMap<>();
 
-        log.info("unsubscribe revoke: orgId={} subscriberId={} topicKey={} channel={} prefId={}",
+        if (topicKey != null) {
+            // Topic-specific revoke: exact (org, sub, topic, channel=email) deny.
+            // Resolver hits exact match first → preference disabled.
+            channelForRevoke = "email";
+            SubscriberPreference saved = preferenceService.upsert(
+                orgId,
+                subscriberId,
+                topicKey,
+                channelForRevoke,
+                false,                  // enabled = false (revoke)
+                null,                   // preserve quiet hours
+                null,                   // preserve frequency limit
+                null                    // preserve bypassForCritical (default true)
+            );
+            preferenceId = saved.getId();
+            auditDetails.put("scope", "topic_specific");
+            auditDetails.put("topic_key", topicKey);
+            auditDetails.put("channel", channelForRevoke);
+            auditDetails.put("preference_id", preferenceId);
+        } else {
+            // Global revoke: muteChannel pattern (Codex iter-1 thread `019e12d4`
+            // absorb). Delete exact overrides + shadow topic-wide allows with
+            // channel-specific deny so resolver (exact > topic-wildcard >
+            // channel-wildcard > both-null) reaches a deny first for this
+            // channel. Email link → mute email channel; other channels (push,
+            // slack) preserved unless user uses those-channel unsubscribe links.
+            channelForRevoke = "email";
+            MuteChannelResult muteResult = preferenceService.muteChannel(
+                orgId, subscriberId, channelForRevoke
+            );
+            preferenceId = null;  // muteChannel writes multiple rows, no single id
+            auditDetails.put("scope", "global_email");
+            auditDetails.put("channel", channelForRevoke);
+            auditDetails.put("deleted_overrides", muteResult.deletedOverrideCount());
+            auditDetails.put("shadow_deny_count", muteResult.shadowDenyCount());
+        }
+
+        log.info("unsubscribe revoke: orgId={} subscriberId={} topicKey={} channel={} details={}",
             orgId, subscriberId,
             topicKey != null ? topicKey : "<global>",
-            channelForRevoke != null ? channelForRevoke : "<all>",
-            saved.getId());
+            channelForRevoke,
+            auditDetails);
 
-        // TODO: Publish UNSUBSCRIBED audit event. AuditEventPublisher.publish()
-        // signature requires NotificationIntent context which is not available
-        // in the unsubscribe flow. Defer audit integration to follow-up PR
-        // that extends AuditEventPublisher with a standalone (intent-less)
-        // publish method, or wire via separate UnsubscribeAuditEventService.
-        // PR-C scope: log + DB row mutation; audit table population in PR-C.1.
+        // Codex iter-1 (019e12d4) absorb: publishStandalone audit event.
+        // PiiRedactor hashes subscriber for KVKK-compliant audit trail.
+        String recipientHash = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
+        auditDetails.put("subscriber_id", subscriberId);
+        auditPublisher.publishStandalone(
+            EVENT_UNSUBSCRIBED,
+            orgId,
+            recipientHash,
+            auditDetails
+        );
 
-        return new RevokeResult(saved.getId(), orgId, subscriberId, topicKey,
+        return new RevokeResult(preferenceId, orgId, subscriberId, topicKey,
             channelForRevoke, true);
     }
 
