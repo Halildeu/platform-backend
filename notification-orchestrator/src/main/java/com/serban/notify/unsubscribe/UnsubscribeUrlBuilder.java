@@ -26,9 +26,12 @@ import org.springframework.web.util.UriComponentsBuilder;
  * (default {@code https://testai.acik.com/api/v1/notify/unsubscribe} for
  * test; production overlay sets {@code https://ai.acik.com/api/v1/notify/unsubscribe}).
  *
- * <p>**Production hostname guard**: ProductionConfigValidator (T1.1.8 PR-A
- * absorb iter-1 thread `019e12c0`) verifies the base URL is not a default
- * dev value in prod.
+ * <p>**Production hostname guard**: PR-A absorb iter-1 (thread `019e12c0`)
+ * added {@code notify.unsubscribe.signing-secret} guard to
+ * ProductionConfigValidator. Base URL hostname guard
+ * ({@code notify.unsubscribe.base-url} prod prefix `https://ai.acik.com`)
+ * scheduled for **PR-C** acceptance gate (DeliveryDispatchService email
+ * channel integration includes prod-host validation).
  */
 @Service
 public class UnsubscribeUrlBuilder {
