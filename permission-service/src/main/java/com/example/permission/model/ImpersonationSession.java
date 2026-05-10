@@ -107,9 +107,12 @@ public class ImpersonationSession {
 
     /**
      * App-generated UUID — Codex iter-25 P1 absorb.
-     * DB default `gen_random_uuid()` defansif katman, ama JPA save akışı
-     * için Hibernate id'yi assigned bekler. PrePersist ile null id
-     * production'da {@link java.util.UUID#randomUUID()} ile doldurulur.
+     *
+     * <p>V19 migration'da DB default `gen_random_uuid()` KALDIRILDI
+     * (pgcrypto extension assumption riski). Hibernate 6 + Spring Boot
+     * 3.5 ile id assigned bekler; @PrePersist null id'yi
+     * {@link java.util.UUID#randomUUID()} ile doldurur — JVM-side
+     * deterministic, DB extension bağımsız.
      */
     @PrePersist
     protected void ensureId() {

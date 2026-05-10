@@ -159,8 +159,10 @@ public class ImpersonationContextExtractor {
      *
      * <p>Codex iter-25 absorb: filter/controller chain'inde 500 yerine
      * 403 IMPERSONATION_SESSION_REQUIRED'a map edilmek üzere ayrı tip.
-     * Spring Security exception handler'lara `@ResponseStatus(FORBIDDEN)`
-     * + body `{ "error_code": "IMPERSONATION_SESSION_REQUIRED" }` döner.
+     * Mapping PR-B Step 2 exception handler'da yapılır
+     * ({@code @ControllerAdvice} class veya Spring Security
+     * {@code AuthenticationEntryPoint}). Bu commit sadece exception
+     * tipini ve sabit error code'unu sağlar.
      */
     public static class ImpersonationContextException extends RuntimeException {
         public static final String ERROR_CODE = "IMPERSONATION_SESSION_REQUIRED";
