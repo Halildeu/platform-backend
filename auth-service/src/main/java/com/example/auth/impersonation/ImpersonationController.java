@@ -336,17 +336,18 @@ public class ImpersonationController {
     /**
      * DELETE /api/v1/impersonation/sessions/current
      *
-     * <p>Codex iter-27 P1 absorb: dual-token contract.
-     * <ul>
-     *   <li>Original admin token (azp != broker): impersonator stops their
-     *       OWN active session (impersonator_user_id == userId claim).</li>
-     *   <li>Broker-issued exchanged token (azp == broker): the request is
-     *       coming from inside the impersonation context. Lookup the session
-     *       by the token binding (issuer+jti+sid) and stop that one.</li>
-     * </ul>
-     *
-     * <p>Both cases produce IMPERSONATION_STOPPED audit row from
+     * <p>MVP contract (Codex iter-29 absorb): only the ORIGINAL admin token
+     * (azp != broker) may stop /current. Caller is the impersonator; we
+     * lookup their active session via {@code impersonator_user_id == userId}
+     * and stop it. Produces IMPERSONATION_STOPPED audit row from
      * permission-service.
+     *
+     * <p>Broker-issued exchanged token (azp == broker) is rejected with
+     * 400 + {@code X-Error-Code: STOP_FROM_BROKER_TOKEN_NOT_SUPPORTED}.
+     * The exchanged-token caller has no impersonator_user_id claim and
+     * naive lookup would stop the wrong row. PR-D follow-up: add
+     * {@code POST /sessions/by-binding/stop} that resolves session via
+     * {@code (iss, jti, sid)} for self-stop from inside impersonation.
      */
     @DeleteMapping("/current")
     public ResponseEntity<Void> stopCurrent(@AuthenticationPrincipal Jwt jwt) {
