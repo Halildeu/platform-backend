@@ -1,5 +1,7 @@
 package com.example.permission.service;
 
+import com.example.permission.audit.AuditReadScope;
+import com.example.permission.audit.ImpersonationActionPredicate;
 import com.example.permission.dto.AuditEventPageResponse;
 import com.example.permission.dto.AuditEventResponse;
 import com.example.permission.dto.v1.AuditExportJobResponseDto;
@@ -64,33 +66,78 @@ public class AuditEventService {
         this.liveStreamEnabled = liveStreamEnabled;
     }
 
+    /**
+     * Backward-compatible default: GENERIC_AUDIT scope. Existing internal callers
+     * (AuditCompareService etc.) get the safer behavior — generic feed never
+     * leaks impersonation rows.
+     */
     public AuditEventPageResponse listEvents(int page,
                                              int size,
                                              String sort,
                                              Map<String, String> filters) {
+        return listEvents(page, size, sort, filters, AuditReadScope.GENERIC_AUDIT);
+    }
+
+    /**
+     * Scope-aware list. PR-D2:
+     * <ul>
+     *   <li>{@link AuditReadScope#GENERIC_AUDIT} — IMPERSONATION_* rows excluded
+     *       unconditionally (the {@code /api/audit/events} feed)</li>
+     *   <li>{@link AuditReadScope#IMPERSONATION_AUDIT} — only IMPERSONATION_*
+     *       rows; {@code filter[action]} validated against the canonical 5-set
+     *       (or alias {@code "IMPERSONATION"}) by the controller</li>
+     * </ul>
+     */
+    public AuditEventPageResponse listEvents(int page,
+                                             int size,
+                                             String sort,
+                                             Map<String, String> filters,
+                                             AuditReadScope scope) {
         int safePage = Math.max(page, 0);
         int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
-        List<AuditEventResponse> events = filterAndSortEvents(filters, sort);
+        List<AuditEventResponse> events = filterAndSortEvents(filters, sort, scope);
         int startIndex = Math.min(safePage * safeSize, events.size());
         int endIndex = Math.min(startIndex + safeSize, events.size());
         return new AuditEventPageResponse(events.subList(startIndex, endIndex), safePage, events.size());
     }
 
+    /** Backward-compatible default: GENERIC_AUDIT scope. */
     public List<AuditEventResponse> exportEvents(String sort,
                                                  Map<String, String> filters,
                                                  Integer limit) {
+        return exportEvents(sort, filters, limit, AuditReadScope.GENERIC_AUDIT);
+    }
+
+    public List<AuditEventResponse> exportEvents(String sort,
+                                                 Map<String, String> filters,
+                                                 Integer limit,
+                                                 AuditReadScope scope) {
         int pageSize = limit != null
                 ? Math.min(Math.max(limit, 1), MAX_EXPORT_LIMIT)
                 : DEFAULT_EXPORT_LIMIT;
-        List<AuditEventResponse> events = filterAndSortEvents(filters, sort);
+        List<AuditEventResponse> events = filterAndSortEvents(filters, sort, scope);
         return events.subList(0, Math.min(pageSize, events.size()));
     }
 
+    /** Backward-compatible default: GENERIC_AUDIT scope. */
     public AuditEventPageResponse findByIdPage(String idString) {
+        return findByIdPage(idString, AuditReadScope.GENERIC_AUDIT);
+    }
+
+    /**
+     * Scope-aware id shortcut. When loaded from
+     * {@link AuditReadScope#GENERIC_AUDIT}, an impersonation row id returns
+     * 404 — as if the row did not exist for this caller. This closes the
+     * "id-shortcut leak" channel: an AUDIT viewer who guesses an impersonation
+     * event id otherwise would receive the full record bypassing the
+     * generic-feed exclusion filter.
+     */
+    public AuditEventPageResponse findByIdPage(String idString, AuditReadScope scope) {
         if (idString != null && idString.startsWith("user-")) {
             Long userAuditId = parseAuditId(idString.substring("user-".length()));
             return userAuditEventMirrorRepository.findById(userAuditId)
                     .map(this::mapUserAuditToResponse)
+                    .filter(resp -> matchesScope(resp, scope))
                     .map(resp -> new AuditEventPageResponse(java.util.List.of(resp), 0, 1))
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit event not found"));
         }
@@ -98,6 +145,7 @@ public class AuditEventService {
             Long id = parseAuditId(idString);
             return repository.findById(id)
                     .map(this::mapToResponse)
+                    .filter(resp -> matchesScope(resp, scope))
                     .map(resp -> new AuditEventPageResponse(java.util.List.of(resp), 0, 1))
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Audit event not found"));
         } catch (NumberFormatException nfe) {
@@ -119,11 +167,26 @@ public class AuditEventService {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unsupported export format: " + format);
     }
 
+    /** Backward-compatible default: GENERIC_AUDIT scope. */
     public AuditExportJobResponseDto createExportJob(String requestedBy,
                                                      String format,
                                                      Integer limit,
                                                      String sort,
                                                      Map<String, String> filters) {
+        return createExportJob(requestedBy, format, limit, sort, filters, AuditReadScope.GENERIC_AUDIT);
+    }
+
+    /**
+     * Scope-aware export job creation. The job's payload is built with the
+     * supplied scope so a GENERIC_AUDIT export never embeds impersonation
+     * rows even if the caller crafts a clever filter string.
+     */
+    public AuditExportJobResponseDto createExportJob(String requestedBy,
+                                                     String format,
+                                                     Integer limit,
+                                                     String sort,
+                                                     Map<String, String> filters,
+                                                     AuditReadScope scope) {
         String normalizedFormat = normalizeExportFormat(format);
         AuditExportJob job = new AuditExportJob();
         job.setId(UUID.randomUUID().toString());
@@ -136,7 +199,7 @@ public class AuditEventService {
         auditExportJobRepository.save(job);
 
         try {
-            List<AuditEventResponse> events = exportEvents(sort, filters == null ? Map.of() : filters, limit);
+            List<AuditEventResponse> events = exportEvents(sort, filters == null ? Map.of() : filters, limit, scope);
             byte[] payload = buildExportPayload(events, normalizedFormat);
             job.setPayload(payload);
             job.setContentType(resolveExportContentType(normalizedFormat));
@@ -253,6 +316,16 @@ public class AuditEventService {
         if (!liveStreamEnabled || event == null) {
             return;
         }
+        // PR-D2: AUDIT.can_view holders subscribed to /api/audit/events/live
+        // must NOT receive IMPERSONATION_* events. The shared SSE channel
+        // is gated by AUDIT.can_view, but impersonation events live behind
+        // IMPERSONATION_AUDIT.can_view — at-source suppression is the
+        // simplest correct closure (Codex iter-2 amendment: per-emitter
+        // authz is deferred; a separate IMPERSONATION_AUDIT live stream
+        // can be added in a follow-up if needed).
+        if (ImpersonationActionPredicate.isImpersonationAction(event.getAction())) {
+            return;
+        }
         AuditEventResponse response = mapToResponse(event);
         auditEventStream.publish(response);
     }
@@ -310,11 +383,34 @@ public class AuditEventService {
         }
     }
 
-    private List<AuditEventResponse> filterAndSortEvents(Map<String, String> filters, String sort) {
+    private List<AuditEventResponse> filterAndSortEvents(Map<String, String> filters,
+                                                         String sort,
+                                                         AuditReadScope scope) {
         return collectMergedEvents().stream()
-                .filter(event -> matchesFilters(event, filters))
+                .filter(event -> matchesScope(event, scope))
+                .filter(event -> matchesFilters(event, filters, scope))
                 .sorted(resolveResponseComparator(sort))
                 .toList();
+    }
+
+    /**
+     * Scope predicate. Authoritative gate based on the canonical 5-set in
+     * {@link ImpersonationActionPredicate} — no substring matching, no
+     * accidental inclusion of {@code NON_IMPERSONATION_*} or fabricated codes.
+     *
+     * <ul>
+     *   <li>{@link AuditReadScope#GENERIC_AUDIT}: returns true iff the action
+     *       is NOT one of the 5 impersonation codes (or action is null).</li>
+     *   <li>{@link AuditReadScope#IMPERSONATION_AUDIT}: returns true iff the
+     *       action IS one of the 5 impersonation codes.</li>
+     * </ul>
+     */
+    private boolean matchesScope(AuditEventResponse event, AuditReadScope scope) {
+        boolean isImpersonation = ImpersonationActionPredicate.isImpersonationAction(event.action());
+        return switch (scope) {
+            case GENERIC_AUDIT -> !isImpersonation;
+            case IMPERSONATION_AUDIT -> isImpersonation;
+        };
     }
 
     private List<AuditEventResponse> collectMergedEvents() {
@@ -348,7 +444,7 @@ public class AuditEventService {
         return ascending ? comparator : comparator.reversed();
     }
 
-    private boolean matchesFilters(AuditEventResponse event, Map<String, String> filters) {
+    private boolean matchesFilters(AuditEventResponse event, Map<String, String> filters, AuditReadScope scope) {
         if (filters == null || filters.isEmpty()) {
             return true;
         }
@@ -362,8 +458,20 @@ public class AuditEventService {
                 && (event.level() == null || !event.level().equalsIgnoreCase(filters.get("level")))) {
             return false;
         }
-        if (isNotBlank(filters.get("action")) && !containsIgnoreCase(event.action(), filters.get("action"))) {
-            return false;
+        String actionFilter = filters.get("action");
+        if (isNotBlank(actionFilter)) {
+            if (scope == AuditReadScope.IMPERSONATION_AUDIT) {
+                // Strict: the controller has already validated the value
+                // against ImpersonationActionPredicate.isAllowedImpersonationFilter.
+                // ALIAS_ALL ("IMPERSONATION") = no narrowing (all 5 pass);
+                // a specific impersonation code = exact match only.
+                if (!ImpersonationActionPredicate.ALIAS_ALL.equals(actionFilter)
+                        && !actionFilter.equals(event.action())) {
+                    return false;
+                }
+            } else if (!containsIgnoreCase(event.action(), actionFilter)) {
+                return false;
+            }
         }
         if (isNotBlank(filters.get("correlationId"))
                 && (event.correlationId() == null || !event.correlationId().equals(filters.get("correlationId")))) {

@@ -1,5 +1,8 @@
 package com.example.permission.service;
 
+import com.example.permission.audit.AuditReadScope;
+import com.example.permission.audit.ImpersonationActionPredicate;
+import com.example.permission.audit.ImpersonationAuditEventTypes;
 import com.example.permission.dto.AuditEventPageResponse;
 import com.example.permission.dto.AuditEventResponse;
 import com.example.permission.dto.v1.AuditExportJobResponseDto;
@@ -20,15 +23,19 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -235,5 +242,197 @@ class AuditEventServiceTest {
         assertThat(response.filename()).endsWith(".json");
         assertThat(response.eventCount()).isEqualTo(1);
         verify(auditExportJobRepository, org.mockito.Mockito.atLeastOnce()).save(any(AuditExportJob.class));
+    }
+
+    // =====================================================================
+    // PR-D2 (User Impersonation v1): scope-aware list / find / live stream
+    // Codex peer review thread 019e10bf iter-2 AGREE WITH AMENDMENTS.
+    // =====================================================================
+
+    private static PermissionAuditEvent eventWithAction(long id, String action) {
+        PermissionAuditEvent e = new PermissionAuditEvent();
+        e.setId(id);
+        e.setOccurredAt(Instant.parse("2026-05-09T10:00:00Z").plusSeconds(id));
+        e.setUserEmail("admin@example.com");
+        e.setService("permission-service");
+        e.setLevel("INFO");
+        e.setAction(action);
+        e.setDetails(action + " details");
+        e.setCorrelationId("corr-" + id);
+        return e;
+    }
+
+    @Test
+    void listEvents_genericScope_excludesImpersonationActions() {
+        when(repository.findAll()).thenReturn(List.of(
+                eventWithAction(1L, ImpersonationAuditEventTypes.IMPERSONATION_STARTED),
+                eventWithAction(2L, "ASSIGN_ROLE"),
+                // KEY case: NON_IMPERSONATION_* should NOT be excluded by the
+                // generic feed — the previous substring matcher ate this row.
+                eventWithAction(3L, "NON_IMPERSONATION_STARTED"),
+                eventWithAction(4L, ImpersonationAuditEventTypes.IMPERSONATION_BLOCKED),
+                eventWithAction(5L, "REPORT_ACCESS")
+        ));
+        when(userAuditEventMirrorRepository.findAll()).thenReturn(List.of());
+
+        AuditEventPageResponse resp = auditEventService.listEvents(
+                0, 50, null, Map.of(), AuditReadScope.GENERIC_AUDIT);
+
+        assertThat(resp.events()).extracting(AuditEventResponse::action)
+                .containsExactlyInAnyOrder("ASSIGN_ROLE", "NON_IMPERSONATION_STARTED", "REPORT_ACCESS");
+        assertThat(resp.events()).extracting(AuditEventResponse::action)
+                .doesNotContain(ImpersonationAuditEventTypes.IMPERSONATION_STARTED,
+                        ImpersonationAuditEventTypes.IMPERSONATION_BLOCKED);
+    }
+
+    @Test
+    void listEvents_impersonationScope_returnsOnlyImpersonationActions() {
+        when(repository.findAll()).thenReturn(List.of(
+                eventWithAction(1L, ImpersonationAuditEventTypes.IMPERSONATION_STARTED),
+                eventWithAction(2L, ImpersonationAuditEventTypes.IMPERSONATION_STOPPED),
+                eventWithAction(3L, ImpersonationAuditEventTypes.IMPERSONATION_BLOCKED),
+                eventWithAction(4L, ImpersonationAuditEventTypes.IMPERSONATION_FAILED),
+                eventWithAction(5L, ImpersonationAuditEventTypes.IMPERSONATION_REVOKED),
+                eventWithAction(6L, "ASSIGN_ROLE"),
+                eventWithAction(7L, "NON_IMPERSONATION_STARTED")
+        ));
+        when(userAuditEventMirrorRepository.findAll()).thenReturn(List.of());
+
+        AuditEventPageResponse resp = auditEventService.listEvents(
+                0, 50, null, Map.of(), AuditReadScope.IMPERSONATION_AUDIT);
+
+        assertThat(resp.events()).hasSize(5);
+        assertThat(resp.events()).extracting(AuditEventResponse::action)
+                .containsExactlyInAnyOrder(
+                        ImpersonationAuditEventTypes.IMPERSONATION_STARTED,
+                        ImpersonationAuditEventTypes.IMPERSONATION_STOPPED,
+                        ImpersonationAuditEventTypes.IMPERSONATION_BLOCKED,
+                        ImpersonationAuditEventTypes.IMPERSONATION_FAILED,
+                        ImpersonationAuditEventTypes.IMPERSONATION_REVOKED);
+    }
+
+    @Test
+    void listEvents_impersonationScope_specificActionFilter_narrows() {
+        when(repository.findAll()).thenReturn(List.of(
+                eventWithAction(1L, ImpersonationAuditEventTypes.IMPERSONATION_STARTED),
+                eventWithAction(2L, ImpersonationAuditEventTypes.IMPERSONATION_FAILED)
+        ));
+        when(userAuditEventMirrorRepository.findAll()).thenReturn(List.of());
+
+        AuditEventPageResponse resp = auditEventService.listEvents(
+                0, 50, null,
+                Map.of("action", ImpersonationAuditEventTypes.IMPERSONATION_FAILED),
+                AuditReadScope.IMPERSONATION_AUDIT);
+
+        assertThat(resp.events()).hasSize(1);
+        assertThat(resp.events().get(0).action()).isEqualTo(ImpersonationAuditEventTypes.IMPERSONATION_FAILED);
+    }
+
+    @Test
+    void listEvents_impersonationScope_aliasIsNoNarrowing() {
+        when(repository.findAll()).thenReturn(List.of(
+                eventWithAction(1L, ImpersonationAuditEventTypes.IMPERSONATION_STARTED),
+                eventWithAction(2L, ImpersonationAuditEventTypes.IMPERSONATION_FAILED),
+                eventWithAction(3L, ImpersonationAuditEventTypes.IMPERSONATION_REVOKED)
+        ));
+        when(userAuditEventMirrorRepository.findAll()).thenReturn(List.of());
+
+        AuditEventPageResponse resp = auditEventService.listEvents(
+                0, 50, null,
+                Map.of("action", ImpersonationActionPredicate.ALIAS_ALL),
+                AuditReadScope.IMPERSONATION_AUDIT);
+
+        assertThat(resp.events()).hasSize(3);
+    }
+
+    @Test
+    void findByIdPage_genericScope_impersonationEvent_returns404() {
+        PermissionAuditEvent imp = eventWithAction(42L, ImpersonationAuditEventTypes.IMPERSONATION_STARTED);
+        when(repository.findById(42L)).thenReturn(Optional.of(imp));
+
+        assertThatThrownBy(() ->
+                auditEventService.findByIdPage("42", AuditReadScope.GENERIC_AUDIT))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("Audit event not found");
+    }
+
+    @Test
+    void findByIdPage_genericScope_normalEvent_returnsEvent() {
+        PermissionAuditEvent normal = eventWithAction(43L, "ASSIGN_ROLE");
+        when(repository.findById(43L)).thenReturn(Optional.of(normal));
+
+        AuditEventPageResponse resp = auditEventService.findByIdPage("43", AuditReadScope.GENERIC_AUDIT);
+
+        assertThat(resp.events()).hasSize(1);
+        assertThat(resp.events().get(0).action()).isEqualTo("ASSIGN_ROLE");
+    }
+
+    @Test
+    void findByIdPage_impersonationScope_impersonationEvent_returnsEvent() {
+        PermissionAuditEvent imp = eventWithAction(44L, ImpersonationAuditEventTypes.IMPERSONATION_BLOCKED);
+        when(repository.findById(44L)).thenReturn(Optional.of(imp));
+
+        AuditEventPageResponse resp = auditEventService.findByIdPage("44", AuditReadScope.IMPERSONATION_AUDIT);
+
+        assertThat(resp.events()).hasSize(1);
+        assertThat(resp.events().get(0).action()).isEqualTo(ImpersonationAuditEventTypes.IMPERSONATION_BLOCKED);
+    }
+
+    @Test
+    void recordEvent_impersonationAction_notDispatchedToLiveStream() {
+        when(repository.save(any(PermissionAuditEvent.class))).thenAnswer(inv -> {
+            PermissionAuditEvent e = inv.getArgument(0);
+            e.setId(99L);
+            return e;
+        });
+
+        PermissionAuditEvent imp = new PermissionAuditEvent();
+        imp.setEventType(ImpersonationAuditEventTypes.IMPERSONATION_STARTED);
+        imp.setAction(ImpersonationAuditEventTypes.IMPERSONATION_STARTED);
+        imp.setOccurredAt(Instant.parse("2026-05-09T10:00:00Z"));
+        imp.setService("permission-service");
+        imp.setLevel("INFO");
+
+        auditEventService.recordEvent(imp);
+
+        verify(repository).save(any(PermissionAuditEvent.class));
+        // PR-D2: AUDIT.can_view live SSE channel must NOT receive impersonation
+        // events; the AuditEventStream.publish call is suppressed at source.
+        verify(auditEventStream, never()).publish(any());
+    }
+
+    @Test
+    void recordEvent_normalAction_dispatchedToLiveStream() {
+        when(repository.save(any(PermissionAuditEvent.class))).thenAnswer(inv -> {
+            PermissionAuditEvent e = inv.getArgument(0);
+            e.setId(100L);
+            return e;
+        });
+
+        PermissionAuditEvent normal = new PermissionAuditEvent();
+        normal.setAction("ASSIGN_ROLE");
+        normal.setOccurredAt(Instant.parse("2026-05-09T10:00:00Z"));
+        normal.setService("permission-service");
+        normal.setLevel("INFO");
+
+        auditEventService.recordEvent(normal);
+
+        verify(auditEventStream).publish(any());
+    }
+
+    @Test
+    void exportEvents_genericScope_excludesImpersonationActions() {
+        when(repository.findAll()).thenReturn(List.of(
+                eventWithAction(1L, ImpersonationAuditEventTypes.IMPERSONATION_STARTED),
+                eventWithAction(2L, "ASSIGN_ROLE"),
+                eventWithAction(3L, "NON_IMPERSONATION_STARTED")
+        ));
+        when(userAuditEventMirrorRepository.findAll()).thenReturn(List.of());
+
+        List<AuditEventResponse> events = auditEventService.exportEvents(
+                null, Map.of(), null, AuditReadScope.GENERIC_AUDIT);
+
+        assertThat(events).extracting(AuditEventResponse::action)
+                .containsExactlyInAnyOrder("ASSIGN_ROLE", "NON_IMPERSONATION_STARTED");
     }
 }
