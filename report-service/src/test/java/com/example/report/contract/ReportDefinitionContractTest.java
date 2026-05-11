@@ -155,6 +155,46 @@ class ReportDefinitionContractTest {
                 .contains("END AS BA");
     }
 
+    @Test
+    @DisplayName("fin-muhasebe-detay: ACCOUNT_CARD_ROWS amount_2 fields are exposed")
+    void finMuhasebeDetay_accountCardRowsAmount2FieldsAreExposed() {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        ReportRegistry registry = new ReportRegistry(mapper, "classpath*:reports/");
+        registry.loadDefinitions();
+
+        ReportDefinition def = registry.get("fin-muhasebe-detay").orElseThrow();
+        List<String> fields = def.columns().stream()
+                .map(ColumnDefinition::field)
+                .toList();
+
+        assertThat(fields)
+                .containsSubsequence(
+                        "AMOUNT",
+                        "AMOUNT_CURRENCY",
+                        "AMOUNT_2",
+                        "AMOUNT_CURRENCY_2",
+                        "OTHER_AMOUNT",
+                        "OTHER_CURRENCY");
+
+        ColumnDefinition amount2 = def.columns().stream()
+                .filter(c -> "AMOUNT_2".equals(c.field()))
+                .findFirst()
+                .orElseThrow();
+        ColumnDefinition amountCurrency2 = def.columns().stream()
+                .filter(c -> "AMOUNT_CURRENCY_2".equals(c.field()))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(amount2.headerName()).isEqualTo("Tutar 2");
+        assertThat(amount2.type()).isEqualTo("number");
+        assertThat(amountCurrency2.headerName()).isEqualTo("Para Birimi 2");
+        assertThat(amountCurrency2.type()).isEqualTo("text");
+        assertThat(amountCurrency2.groupable()).isTrue();
+        assertThat(def.sourceQuery())
+                .contains("ACR.AMOUNT_2")
+                .contains("ACR.AMOUNT_CURRENCY_2");
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("knownReportKeys")
     @DisplayName("Per-report: zero unsuppressed failures")
