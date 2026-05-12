@@ -60,15 +60,15 @@ class GlobalExceptionHandlerTest {
     @Test
     void mapsMethodNotSupportedTo405WithAllowHeader() {
         HttpRequestMethodNotSupportedException ex =
-                new HttpRequestMethodNotSupportedException("GET", new String[]{"POST"});
+                new HttpRequestMethodNotSupportedException("GET", java.util.List.of("POST"));
 
         ResponseEntity<ErrorResponse> response = handler.handleMethodNotAllowed(ex);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
         assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().error()).isEqualTo("METHOD_NOT_ALLOWED");
-        assertThat(response.getBody().message()).contains("GET");
-        assertThat(response.getBody().message()).contains("desteklenmiyor");
+        assertThat(response.getBody().getError()).isEqualTo("METHOD_NOT_ALLOWED");
+        assertThat(response.getBody().getMessage()).contains("GET");
+        assertThat(response.getBody().getMessage()).contains("desteklenmiyor");
         assertThat(response.getHeaders().getFirst(HttpHeaders.ALLOW))
                 .as("RFC 7231 §6.5.5 MUST: 405 response includes Allow header")
                 .isEqualTo("POST");
@@ -85,7 +85,7 @@ class GlobalExceptionHandlerTest {
         ResponseEntity<ErrorResponse> response = handler.handleMethodNotAllowed(ex);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
-        assertThat(response.getBody().error()).isEqualTo("METHOD_NOT_ALLOWED");
+        assertThat(response.getBody().getError()).isEqualTo("METHOD_NOT_ALLOWED");
         assertThat(response.getHeaders().getFirst(HttpHeaders.ALLOW)).isNull();
     }
 
@@ -99,7 +99,7 @@ class GlobalExceptionHandlerTest {
         ResponseEntity<ErrorResponse> response = handler.handleNotFound(ex);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
-        assertThat(response.getBody().error()).isEqualTo("NOT_FOUND");
+        assertThat(response.getBody().getError()).isEqualTo("NOT_FOUND");
     }
 
     /**
