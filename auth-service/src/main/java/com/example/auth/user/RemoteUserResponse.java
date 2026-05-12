@@ -67,4 +67,23 @@ public class RemoteUserResponse {
     public void setLastLogin(LocalDateTime lastLogin) {
         this.lastLogin = lastLogin;
     }
+
+    /**
+     * Keycloak subject (UUID) mapped to this platform user. Codex
+     * {@code 019e1bed} AGREE — auth-service ImpersonationController
+     * resolves target subject server-side from this field so the admin
+     * UI never has to type a KC UUID. May be {@code null} for users
+     * that pre-date the V16 user-service migration backfill; callers
+     * must treat that as "subject unknown" and surface a remediation
+     * error rather than passing {@code null} to KC token-exchange.
+     */
+    private String kcSubject;
+
+    public String getKcSubject() {
+        return kcSubject;
+    }
+
+    public void setKcSubject(String kcSubject) {
+        this.kcSubject = kcSubject;
+    }
 }

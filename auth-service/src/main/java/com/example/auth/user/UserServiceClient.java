@@ -58,6 +58,35 @@ public class UserServiceClient {
         }
     }
 
+    /**
+     * Codex thread {@code 019e1bed} REVISE-1 absorb — lookup by numeric
+     * platform id via the service-token protected internal endpoint
+     * {@code /api/users/internal/{id}/impersonation-target}. The public
+     * {@code /api/v1/users/{id}} endpoint does NOT expose {@code kc_subject}
+     * (browser-facing surface stays clean); this internal path requires
+     * {@code PERM_users:internal} authority and returns only the fields
+     * needed for backend-authoritative impersonation subject resolution.
+     *
+     * @param userId numeric platform user id
+     * @return impersonation target details (id, email, kcSubject) or
+     *         {@link Optional#empty()} when user-service returns 404
+     */
+    public Optional<RemoteUserResponse> findUserById(Long userId) {
+        try {
+            return Optional.ofNullable(
+                    webClient.get()
+                            .uri("/api/users/internal/{userId}/impersonation-target", userId)
+                            .headers(headers -> headers.setBearerAuth(
+                                    serviceTokenProvider.getToken(USER_SERVICE_AUDIENCE, List.of(REQUIRED_PERMISSION))))
+                            .retrieve()
+                            .bodyToMono(RemoteUserResponse.class)
+                            .block()
+            );
+        } catch (WebClientResponseException.NotFound ex) {
+            return Optional.empty();
+        }
+    }
+
     public Optional<InternalUserResponse> findInternalUserByEmail(String email) {
         try {
             return Optional.ofNullable(

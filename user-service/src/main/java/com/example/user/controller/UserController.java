@@ -169,6 +169,31 @@ public class UserController {
     }
 
     /**
+     * Internal endpoint for backend-authoritative Keycloak subject
+     * resolution. Codex thread {@code 019e1bed} REVISE-1 absorb: the
+     * public {@code GET /api/v1/users/{id}} endpoint must not expose
+     * {@code kc_subject} to browsers; this service-token protected path
+     * keeps the KC UUID surface server-to-server only (auth-service
+     * {@code UserServiceClient.findUserById} → impersonation start flow).
+     */
+    @GetMapping("/internal/{userId}/impersonation-target")
+    public ResponseEntity<com.example.user.dto.ImpersonationTargetResponse> getImpersonationTargetInternal(
+            @PathVariable Long userId) {
+        requireServiceAuthority("PERM_users:internal");
+        try {
+            User user = userService.findRequiredById(userId);
+            return ResponseEntity.ok(new com.example.user.dto.ImpersonationTargetResponse(
+                    user.getId(),
+                    user.getEmail(),
+                    user.getKcSubject(),
+                    user.isEnabled()
+            ));
+        } catch (org.springframework.web.server.ResponseStatusException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
      * Internal endpoint for trusted services that require credential details.
      */
     @GetMapping("/internal/by-email/{email}")
@@ -627,6 +652,12 @@ public class UserController {
     }
 
     private UserResponse mapToUserResponse(User user) {
+        // Codex 019e1bed REVISE-1: `kcSubject` REMOVED from the public
+        // {@code UserResponse}. The admin UI no longer needs the KC UUID
+        // — auth-service resolves it server-side via the internal
+        // service-token endpoint {@code /api/users/internal/{id}/
+        // impersonation-target}. Keeping the field out of the
+        // browser-facing payload keeps KC internals on the server side.
         return new UserResponse(
                 user.getId(),
                 user.getName(),
