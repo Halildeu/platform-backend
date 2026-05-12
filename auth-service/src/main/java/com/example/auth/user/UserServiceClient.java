@@ -59,36 +59,36 @@ public class UserServiceClient {
     }
 
     /**
-     * Codex thread {@code 019e1bed} REVISE-1 absorb — lookup by numeric
-     * platform id via the service-token protected internal endpoint
+     * Codex thread {@code 019e1bed} REVISE-1 absorb (restored after the
+     * Session 47 hotfix-1/2/3 chain). Lookup by numeric platform id via
+     * the service-token protected internal endpoint
      * {@code /api/users/internal/{id}/impersonation-target}. The public
      * {@code /api/v1/users/{id}} endpoint does NOT expose {@code kc_subject}
-     * (browser-facing surface stays clean); this internal path requires
-     * {@code PERM_users:internal} authority and returns only the fields
-     * needed for backend-authoritative impersonation subject resolution.
+     * after the platform-backend revert in this PR (paired with the
+     * service-token configmap fix in platform-k8s-gitops PR #543).
+     *
+     * <p>Codex {@code 019e1df7} REVISE absorb — the
+     * {@link ServiceTokenProvider} mints tokens for audience
+     * {@code user-service} with permissions
+     * {@code ["users:internal"]} (the authority bound by user-service's
+     * {@code @PreAuthorize("hasAuthority('PERM_users:internal')")} on
+     * the {@code /api/users/internal/**} endpoints). Signed with the
+     * auth-service RSA key (iss=auth-service), verified by user-service
+     * via {@code SERVICE_AUTH_ISSUER=auth-service} +
+     * {@code SERVICE_AUTH_JWK_SET_URI=http://auth-service:8088/oauth2/jwks}.
      *
      * @param userId numeric platform user id
-     * @return impersonation target details (id, email, kcSubject) or
-     *         {@link Optional#empty()} when user-service returns 404
+     * @return impersonation target details (id, email, kcSubject, enabled)
+     *         or {@link Optional#empty()} when user-service returns 404
      */
-    public Optional<RemoteUserResponse> findUserById(Long userId, String adminToken) {
-        // Codex 019e1bed REVISE-6 (hotfix-2): forward the admin JWT so the
-        // public /api/v1/users/{id} endpoint (which requires
-        // authenticated admin scope) accepts the call. Earlier hotfix
-        // tried this path without a bearer header and hit 401. The
-        // admin JWT is in scope inside ImpersonationController; we
-        // pass it through. user-service KC issuer drift fix is still
-        // a follow-up — for now the public path + admin token is the
-        // working contract.
+    public Optional<RemoteUserResponse> findUserById(Long userId) {
         try {
+            String serviceToken = serviceTokenProvider.getToken(
+                    USER_SERVICE_AUDIENCE, java.util.List.of(REQUIRED_PERMISSION));
             return Optional.ofNullable(
                     webClient.get()
-                            .uri("/api/v1/users/{id}", userId)
-                            .headers(headers -> {
-                                if (adminToken != null && !adminToken.isBlank()) {
-                                    headers.setBearerAuth(adminToken);
-                                }
-                            })
+                            .uri("/api/users/internal/{id}/impersonation-target", userId)
+                            .headers(headers -> headers.setBearerAuth(serviceToken))
                             .retrieve()
                             .bodyToMono(RemoteUserResponse.class)
                             .block()
