@@ -10,6 +10,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.BindingResult;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -64,6 +65,25 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ErrorResponse> handleNotFound(NoResourceFoundException ex) {
         return build(HttpStatus.NOT_FOUND, "NOT_FOUND", "Kaynak bulunamadı.");
+    }
+
+    /**
+     * Session 47 stabilization regression — {@code GET /api/v1/impersonation/sessions?status=ACTIVE}
+     * (no {@code @GetMapping} on the root path) was falling through
+     * {@link #handleGeneric(Exception)} and returning {@code 500
+     * INTERNAL_ERROR} instead of {@code 405 Method Not Allowed}, which
+     * leaks Spring routing details to API clients and confuses FE error
+     * mapping. The canonical lookup endpoint for the user's active
+     * session is {@code GET /api/v1/impersonation/sessions/active}.
+     *
+     * <p>Maps {@link HttpRequestMethodNotSupportedException} to a
+     * controlled 405 with {@code METHOD_NOT_ALLOWED} error code so the
+     * FE error map and audit traces capture the real cause.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotAllowed(HttpRequestMethodNotSupportedException ex) {
+        return build(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED",
+                "Bu endpoint için '" + ex.getMethod() + "' metodu desteklenmiyor.");
     }
 
     @ExceptionHandler(Exception.class)
