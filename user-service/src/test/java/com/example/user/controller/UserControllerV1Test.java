@@ -124,17 +124,18 @@ class UserControllerV1Test {
     }
 
     /**
-     * Codex 019e1bed REVISE-7 hotfix-3 regression: the V1 detail payload
-     * MUST carry {@code kcSubject} so auth-service backend-authoritative
-     * impersonation target resolution can read it. The previous REVISE-5
-     * hotfix only fixed the legacy {@code UserResponse} (mapped by the
-     * old {@code /api/users/{id}} controller); live testai smoke proved
-     * {@code GET /api/v1/users/{id}} returns {@code UserDetailDto}, which
-     * was missing the field — every impersonation start failed with
-     * {@code TARGET_SUBJECT_UNRESOLVABLE} (422) even with a valid backfill.
+     * Session 47 stabilization revert (Codex 019e1df7 follow-up): the
+     * V1 detail payload MUST NOT expose {@code kcSubject}. The Session
+     * 47 hotfix chain (#160/#162) leaked it because the
+     * {@code ServiceTokenAuthenticationFilter} was misconfigured
+     * (defaulting to unreachable {@code localhost:8081/realms/serban}),
+     * forcing auth-service to fall back to the public path + admin JWT.
+     * platform-k8s-gitops PR #543 fixed the {@code SERVICE_AUTH_*}
+     * config; this revert restores the internal service-token contract
+     * and removes the public leak.
      */
     @Test
-    void getUser_v1_detailExposesKcSubject() throws Exception {
+    void getUser_v1_detailDoesNotExposeKcSubject() throws Exception {
         User saved = ensureUserExists("kcsubject-detail@example.com");
         saved.setKcSubject("11111111-2222-3333-4444-555555555555");
         userRepository.save(saved);
@@ -143,7 +144,8 @@ class UserControllerV1Test {
         mockMvc.perform(get("/api/v1/users/{id}", saved.getId())
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString("\"kcSubject\":\"11111111-2222-3333-4444-555555555555\"")));
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        containsString("kcSubject"))));
     }
 
     @Test

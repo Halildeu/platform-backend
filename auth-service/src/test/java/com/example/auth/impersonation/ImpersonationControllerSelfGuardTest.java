@@ -22,7 +22,6 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -100,7 +99,7 @@ class ImpersonationControllerSelfGuardTest {
         assertThat(response.getBody().errorCode()).isEqualTo("SELF_IMPERSONATION_FORBIDDEN");
         // Critical assertion: user-service is NEVER called for self-target —
         // the id-equality short-circuit fires before subject resolution.
-        verify(userServiceClient, never()).findUserById(anyLong(), anyString());
+        verify(userServiceClient, never()).findUserById(anyLong());
         // No KC token-exchange, no session persist either.
         verify(brokerClient, never()).exchange(any(), any());
         verify(sessionClient, never()).startSession(any());
@@ -124,7 +123,7 @@ class ImpersonationControllerSelfGuardTest {
         stub.setEmail("ghost@example.com");
         stub.setKcSubject(null);
         stub.setEnabled(true);
-        when(userServiceClient.findUserById(42L, "fake-token")).thenReturn(Optional.of(stub));
+        when(userServiceClient.findUserById(42L)).thenReturn(Optional.of(stub));
 
         ResponseEntity<StartResponse> response = controller.startSession(request, adminJwt, httpRequest);
 
@@ -144,7 +143,7 @@ class ImpersonationControllerSelfGuardTest {
         Jwt adminJwt = adminJwt(1L);
         StartSessionRequest request = new StartSessionRequest(
                 999L, null, "missing@example.com", "Codex 019e1bed user-service 404 regression test");
-        when(userServiceClient.findUserById(999L, "fake-token")).thenReturn(Optional.empty());
+        when(userServiceClient.findUserById(999L)).thenReturn(Optional.empty());
 
         ResponseEntity<StartResponse> response = controller.startSession(request, adminJwt, httpRequest);
 
@@ -165,7 +164,7 @@ class ImpersonationControllerSelfGuardTest {
         stub.setEmail("blocked@example.com");
         stub.setKcSubject("blocked-kc-uuid");
         stub.setEnabled(false);
-        when(userServiceClient.findUserById(77L, "fake-token")).thenReturn(Optional.of(stub));
+        when(userServiceClient.findUserById(77L)).thenReturn(Optional.of(stub));
 
         ResponseEntity<StartResponse> response = controller.startSession(request, adminJwt, httpRequest);
 
@@ -193,7 +192,7 @@ class ImpersonationControllerSelfGuardTest {
         stub.setEmail("alias@example.com");
         stub.setKcSubject(ADMIN_SUBJECT);
         stub.setEnabled(true);
-        when(userServiceClient.findUserById(42L, "fake-token")).thenReturn(Optional.of(stub));
+        when(userServiceClient.findUserById(42L)).thenReturn(Optional.of(stub));
 
         ResponseEntity<StartResponse> response = controller.startSession(request, adminJwt, httpRequest);
 
