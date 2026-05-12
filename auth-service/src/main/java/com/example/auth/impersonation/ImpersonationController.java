@@ -6,6 +6,8 @@ import com.example.auth.impersonation.ImpersonationSessionClient.StartRequest;
 import com.example.auth.impersonation.KeycloakBrokerClient.DecodedClaims;
 import com.example.auth.impersonation.KeycloakBrokerClient.ExchangeResult;
 import com.example.auth.impersonation.KeycloakBrokerClient.TokenExchangeException;
+import com.example.auth.user.RemoteUserResponse;
+import com.example.auth.user.UserServiceClient;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -63,17 +65,26 @@ public class ImpersonationController {
     private final ImpersonationSessionClient sessionClient;
     private final SuperAdminAuthority superAdminAuthority;
     private final ImpersonationAuditClient auditClient;
+    /**
+     * Codex {@code 019e1bed} AGREE — user-service is the authoritative
+     * source for the Keycloak subject (UUID) of a target user. Resolving
+     * it server-side from {@code targetUserId} removes the need for the
+     * admin UI to ask operators for the KC UUID.
+     */
+    private final UserServiceClient userServiceClient;
 
     public ImpersonationController(
             KeycloakBrokerClient brokerClient,
             ImpersonationSessionClient sessionClient,
             SuperAdminAuthority superAdminAuthority,
             ImpersonationAuditClient auditClient,
+            UserServiceClient userServiceClient,
             @org.springframework.beans.factory.annotation.Value("${auth.impersonation.broker-client-id:impersonation-broker}") String brokerAzp) {
         this.brokerClient = brokerClient;
         this.sessionClient = sessionClient;
         this.superAdminAuthority = superAdminAuthority;
         this.auditClient = auditClient;
+        this.userServiceClient = userServiceClient;
         this.brokerAzp = brokerAzp;
     }
 
@@ -137,6 +148,139 @@ public class ImpersonationController {
                             "Admin JWT missing userId or subject claim"));
         }
 
+        // Step 1b: Self-id guard BEFORE target subject resolution (Codex
+        // {@code 019e1bed} REVISE-1 absorb). Reject by platform user id
+        // equality first — that catches the self-target case even when
+        // the target's {@code kc_subject} backfill is pending (which
+        // would otherwise return TARGET_SUBJECT_UNRESOLVABLE and mask
+        // the real reason). Subject-equality guard runs again later as
+        // defense-in-depth once the subject is resolved.
+        if (impersonatorUserId.equals(request.targetUserId())) {
+            log.warn("Self-impersonation attempt rejected (id match): impersonator={} target={}",
+                    impersonatorUserId, request.targetUserId());
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(request.targetSubject())
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("SELF_IMPERSONATION_FORBIDDEN")
+                    .message("Cannot impersonate your own account")
+                    .build());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new StartResponse(null, null, null,
+                            "SELF_IMPERSONATION_FORBIDDEN",
+                            "Kendi hesabını impersonate edemezsin"));
+        }
+
+        // Step 1c: Backend-authoritative target subject resolution (Codex
+        // {@code 019e1bed} AGREE C-prime). The admin UI MUST NOT need the
+        // Keycloak UUID — it is a server-side internal identifier. If the
+        // client did not send {@code targetSubject}, resolve it from
+        // {@code targetUserId} via the service-token protected user-service
+        // internal endpoint. If still unresolved (user pre-dates V16
+        // backfill or user-service unreachable), reject with a specific
+        // error so the UI can surface remediation guidance instead of
+        // generic auth failures.
+        // Codex 019e1bed REVISE-4: target resolution returns both
+        // {@code kcSubject} and {@code enabled} from the user-service
+        // internal endpoint. We capture the full {@link RemoteUserResponse}
+        // so the disabled-user gate (below) can short-circuit before KC
+        // token-exchange. Legacy callers that already passed
+        // {@code targetSubject} skip the lookup and the disabled gate
+        // (defensible — explicit subject implies the caller asserts the
+        // user is provisioned correctly).
+        String resolvedTargetSubject = request.targetSubject();
+        RemoteUserResponse targetRecord = null;
+        if (resolvedTargetSubject == null || resolvedTargetSubject.isBlank()) {
+            try {
+                targetRecord = userServiceClient.findUserById(request.targetUserId()).orElse(null);
+                if (targetRecord != null) {
+                    String kc = targetRecord.getKcSubject();
+                    if (kc != null && !kc.isBlank()) {
+                        resolvedTargetSubject = kc;
+                    }
+                }
+            } catch (RuntimeException ex) {
+                log.warn("user-service lookup failed during target subject resolution: userId={} msg={}",
+                        request.targetUserId(), ex.getMessage());
+                resolvedTargetSubject = null;
+            }
+        }
+        if (resolvedTargetSubject == null || resolvedTargetSubject.isBlank()) {
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("TARGET_SUBJECT_UNRESOLVABLE")
+                    .message("Hedef kullanıcı için Keycloak subject çözümlenemedi (V16 backfill veya provisioning eksik)")
+                    .build());
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                    .body(new StartResponse(null, null, null,
+                            "TARGET_SUBJECT_UNRESOLVABLE",
+                            "Hedef kullanıcı için Keycloak subject çözümlenemedi"));
+        }
+
+        // Step 1d: Disabled target gate (Codex {@code 019e1bed} REVISE-4
+        // absorb). When the lookup returned a record and the target user
+        // is disabled, reject before KC token-exchange — policy violation,
+        // not authentication failure, so 403 + dedicated errorCode keeps
+        // the audit trail readable. The lookup only fires when the
+        // caller did NOT supply {@code targetSubject}, so legacy callers
+        // that explicitly pass a subject bypass this gate (acceptable —
+        // they have already asserted the user is provisioned).
+        if (targetRecord != null && !targetRecord.isEnabled()) {
+            log.warn("Disabled target impersonation rejected: userId={} email={}",
+                    request.targetUserId(), targetRecord.getEmail());
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(resolvedTargetSubject)
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail() != null ? request.targetEmail() : targetRecord.getEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("TARGET_USER_DISABLED")
+                    .message("Pasif kullanıcı için impersonation başlatılamaz")
+                    .build());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new StartResponse(null, null, null,
+                            "TARGET_USER_DISABLED",
+                            "Pasif kullanıcı için impersonation başlatılamaz"));
+        }
+
+        // Step 1e: Subject-equality self-guard (defense-in-depth, runs
+        // after resolution so even a target with mismatched user_id but
+        // identical KC subject is rejected).
+        if (impersonatorSubject.equals(resolvedTargetSubject)) {
+            log.warn("Self-impersonation attempt rejected (subject match): impersonator={} resolvedSubject={}",
+                    impersonatorUserId, resolvedTargetSubject);
+            auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
+                    .impersonatorUserId(impersonatorUserId)
+                    .impersonatorSubject(impersonatorSubject)
+                    .impersonatorEmail(impersonatorEmail)
+                    .targetSubject(resolvedTargetSubject)
+                    .targetUserId(request.targetUserId())
+                    .targetEmail(request.targetEmail())
+                    .reason(request.reason())
+                    .correlationId(correlationId)
+                    .errorCode("SELF_IMPERSONATION_FORBIDDEN")
+                    .message("Cannot impersonate your own KC subject")
+                    .build());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(new StartResponse(null, null, null,
+                            "SELF_IMPERSONATION_FORBIDDEN",
+                            "Kendi hesabını impersonate edemezsin"));
+        }
+
         // Step 2: SuperAdmin authority check (Codex iter-27 P0 absorb)
         // — JWT @PreAuthorize KC realm role converter eksik olabilir;
         // permission-service authoritative authz source kullanırız.
@@ -146,7 +290,7 @@ public class ImpersonationController {
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
@@ -163,14 +307,14 @@ public class ImpersonationController {
         // Step 3: Token exchange (KC broker)
         ExchangeResult exchange;
         try {
-            exchange = brokerClient.exchange(adminJwt.getTokenValue(), request.targetSubject());
+            exchange = brokerClient.exchange(adminJwt.getTokenValue(), resolvedTargetSubject);
         } catch (TokenExchangeException e) {
-            log.warn("Token exchange failed for target={}: {}", request.targetSubject(), e.getMessage());
+            log.warn("Token exchange failed for target={}: {}", resolvedTargetSubject, e.getMessage());
             auditClient.writeFailed(ImpersonationAuditClient.AuditPayload.builder()
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
@@ -188,20 +332,20 @@ public class ImpersonationController {
 
         // Step 3a: Defensive — exchanged token sub MUST match request targetSubject
         // (Codex iter-27 P0: prevent audit poisoning by client-provided target).
-        if (!request.targetSubject().equals(claims.subject())) {
+        if (!resolvedTargetSubject.equals(claims.subject())) {
             log.warn("Exchange subject mismatch: request.targetSubject={} claims.sub={}",
-                    request.targetSubject(), claims.subject());
+                    resolvedTargetSubject, claims.subject());
             auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
                     .correlationId(correlationId)
                     .errorCode("TARGET_SUBJECT_MISMATCH")
-                    .message("Exchanged token sub=" + claims.subject() + " != requested " + request.targetSubject())
+                    .message("Exchanged token sub=" + claims.subject() + " != requested " + resolvedTargetSubject)
                     .build());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(new StartResponse(null, null, null,
@@ -216,7 +360,7 @@ public class ImpersonationController {
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
@@ -238,7 +382,7 @@ public class ImpersonationController {
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
@@ -265,7 +409,7 @@ public class ImpersonationController {
                 impersonatorSubject,
                 impersonatorEmail,
                 request.targetUserId(),
-                request.targetSubject(),
+                resolvedTargetSubject,
                 resolvedTargetEmail,
                 claims.issuer(),
                 claims.jti(),
@@ -284,7 +428,7 @@ public class ImpersonationController {
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
@@ -301,12 +445,12 @@ public class ImpersonationController {
             // (timeout/500/network) must produce IMPERSONATION_FAILED audit
             // before bubbling 502/503 to the caller.
             log.warn("permission-service session create failed for target={}: {}",
-                    request.targetSubject(), e.getMessage());
+                    resolvedTargetSubject, e.getMessage());
             auditClient.writeFailed(ImpersonationAuditClient.AuditPayload.builder()
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
-                    .targetSubject(request.targetSubject())
+                    .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
                     .targetEmail(request.targetEmail())
                     .reason(request.reason())
@@ -467,7 +611,11 @@ public class ImpersonationController {
 
     public record StartSessionRequest(
             @NotNull Long targetUserId,
-            @NotBlank @Size(max = 255) String targetSubject,
+            // Codex 019e1bed AGREE — was @NotBlank; relaxed to optional so the
+            // admin UI never has to know/type the Keycloak UUID. The
+            // controller resolves the subject server-side from
+            // {@code targetUserId} via user-service when this is blank.
+            @Size(max = 255) String targetSubject,
             @Size(max = 255) String targetEmail,
             @NotBlank @Size(min = 10, max = 500) String reason) {
     }

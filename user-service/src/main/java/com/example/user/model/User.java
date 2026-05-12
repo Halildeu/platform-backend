@@ -75,6 +75,16 @@ public class User implements UserDetails {
     @Column(name = "time_format", nullable = false, length = 16)
     private String timeFormat = DEFAULT_TIME_FORMAT;
 
+    /**
+     * Keycloak user UUID (subject) mapped to this platform user. Used by
+     * {@code auth-service} ImpersonationController to resolve target subject
+     * server-side so the admin UI never has to ask operators for the KC UUID.
+     * Nullable while existing rows are backfilled; new user provisioning
+     * must populate this on KC create. Codex thread {@code 019e1bed} AGREE.
+     */
+    @Column(name = "kc_subject", length = 64, unique = true)
+    private String kcSubject;
+
     @Version
     @Column(name = "version", nullable = false)
     private Integer version = 0;
@@ -111,6 +121,8 @@ public class User implements UserDetails {
     public void setDateFormat(String dateFormat) { this.dateFormat = normalizeDateFormat(dateFormat); }
     public String getTimeFormat() { return timeFormat; }
     public void setTimeFormat(String timeFormat) { this.timeFormat = normalizeTimeFormat(timeFormat); }
+    public String getKcSubject() { return kcSubject; }
+    public void setKcSubject(String kcSubject) { this.kcSubject = kcSubject; }
     public Integer getVersion() { return version; }
     public void setVersion(Integer version) { this.version = version; }
 
