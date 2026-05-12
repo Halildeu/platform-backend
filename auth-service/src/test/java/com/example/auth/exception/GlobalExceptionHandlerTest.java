@@ -1,35 +1,66 @@
 package com.example.auth.exception;
 
 import com.example.auth.dto.ErrorResponse;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
  * Session 47 stabilization regression — pin the
  * {@link HttpRequestMethodNotSupportedException} branch to
- * {@code 405 METHOD_NOT_ALLOWED} (was leaking as 500
- * {@code INTERNAL_ERROR} via {@code handleGeneric}, which confused FE
- * error mapping and audit traces on live testai).
+ * {@code 405 METHOD_NOT_ALLOWED} with the {@code Allow} response
+ * header (RFC 7231 §6.5.5). Was leaking as 500 {@code INTERNAL_ERROR}
+ * via {@code handleGeneric} on live testai 2026-05-12, breaking FE
+ * error mapping and audit traces.
  *
  * <p>Reproduction: {@code GET /api/v1/impersonation/sessions?status=ACTIVE}
- * (no {@code @GetMapping} on the root path — only {@code @PostMapping}
- * for start, {@code @GetMapping("/active")} for lookup) used to return
- * {@code 500 INTERNAL_ERROR}. After this fix, it returns {@code 405
- * METHOD_NOT_ALLOWED} with {@code METHOD_NOT_ALLOWED} error code.
+ * (only {@code @PostMapping} on the root path, {@code @GetMapping("/active")}
+ * for lookup) used to return {@code 500 INTERNAL_ERROR}. After this
+ * fix, returns {@code 405 METHOD_NOT_ALLOWED} + {@code Allow: POST}
+ * header.
+ *
+ * <p>Codex {@code 019e1dd6} REVISE-1 absorb:
+ * <ul>
+ *   <li>Direct handler tests pin the response shape + Allow header
+ *       branch logic.</li>
+ *   <li>MockMvc standalone tests exercise the actual Spring routing
+ *       path (dispatcher → handler-mapping → 405 fallback →
+ *       {@code @ControllerAdvice} resolution) using a minimal POST-only
+ *       fixture controller.</li>
+ * </ul>
  */
 class GlobalExceptionHandlerTest {
 
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
 
+    private MockMvc mockMvc;
+
+    @BeforeEach
+    void setUp() {
+        mockMvc = MockMvcBuilders.standaloneSetup(new PostOnlyFixtureController())
+                .setControllerAdvice(handler)
+                .build();
+    }
+
     @Test
-    void mapsMethodNotSupportedTo405() {
+    void mapsMethodNotSupportedTo405WithAllowHeader() {
         HttpRequestMethodNotSupportedException ex =
-                new HttpRequestMethodNotSupportedException("GET");
+                new HttpRequestMethodNotSupportedException("GET", new String[]{"POST"});
 
         ResponseEntity<ErrorResponse> response = handler.handleMethodNotAllowed(ex);
 
@@ -38,6 +69,24 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().error()).isEqualTo("METHOD_NOT_ALLOWED");
         assertThat(response.getBody().message()).contains("GET");
         assertThat(response.getBody().message()).contains("desteklenmiyor");
+        assertThat(response.getHeaders().getFirst(HttpHeaders.ALLOW))
+                .as("RFC 7231 §6.5.5 MUST: 405 response includes Allow header")
+                .isEqualTo("POST");
+    }
+
+    @Test
+    void mapsMethodNotSupportedWithoutSupportedMethodsTo405() {
+        // Edge case: supportedMethods can be null (some Spring paths
+        // synthesize the exception without populating it). Should still
+        // return 405 with no Allow header rather than NPE'ing.
+        HttpRequestMethodNotSupportedException ex =
+                new HttpRequestMethodNotSupportedException("GET");
+
+        ResponseEntity<ErrorResponse> response = handler.handleMethodNotAllowed(ex);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(response.getBody().error()).isEqualTo("METHOD_NOT_ALLOWED");
+        assertThat(response.getHeaders().getFirst(HttpHeaders.ALLOW)).isNull();
     }
 
     @Test
@@ -51,5 +100,51 @@ class GlobalExceptionHandlerTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(response.getBody().error()).isEqualTo("NOT_FOUND");
+    }
+
+    /**
+     * Routing-path regression — actual Spring dispatcher flow (vs
+     * direct handler call). Codex {@code 019e1dd6} REVISE-1 ask:
+     * "Mevcut 404 testi de gerçek 'ordering guard' değil, çünkü
+     * handler metodunu doğrudan çağırıyor."
+     *
+     * <p>{@link PostOnlyFixtureController} mounts a POST-only endpoint
+     * mirroring the {@code ImpersonationController} root path
+     * geometry. GET against it goes through Spring's
+     * {@code RequestMappingInfoHandlerMapping.handleNoMatch}, raising
+     * {@link HttpRequestMethodNotSupportedException}, which the
+     * {@code @ControllerAdvice} resolves to 405.
+     */
+    @Test
+    void routingDispatcherProduces405WithAllowOnGetToPostOnly() throws Exception {
+        mockMvc.perform(get("/fixture/post-only"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string(HttpHeaders.ALLOW, "POST"))
+                .andExpect(jsonPath("$.error").value("METHOD_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("GET")));
+    }
+
+    @Test
+    void routingDispatcherProduces200OnPostToPostOnly() throws Exception {
+        mockMvc.perform(post("/fixture/post-only")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk());
+    }
+
+    @RestController
+    @RequestMapping("/fixture/post-only")
+    static class PostOnlyFixtureController {
+
+        /**
+         * Mirrors {@code ImpersonationController} geometry: only POST
+         * mapped on the root path. GET should produce 405 (handled by
+         * {@link GlobalExceptionHandler}) — not 404, not 500.
+         */
+        @PostMapping
+        public String create() {
+            return "{\"ok\":true}";
+        }
     }
 }

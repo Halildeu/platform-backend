@@ -18,9 +18,12 @@
 
 ## Matrix
 
+10 cells. **M2 is the canonical happy/stop pair** verified end-to-end during the Session 47 UX overhaul (admin → testuser, 2026-05-12 ~19:17 UTC+3); cells M1, M3–M10 below extend coverage to negative gates, alternate target types, and policy edges.
+
 | Cell | Scenario | Method | Expected | Audit |
 |---|---|---|---|---|
 | **M1** | admin → admin (self) | UI: button hidden + JS bypass | FE button absent, BE 403 `SELF_IMPERSONATION_FORBIDDEN` | `IMPERSONATION_BLOCKED` |
+| **M2** | admin → primary ADMIN target (full lifecycle: start + identity swap + banner + stop) | UI button | 201 + identity swap + banner mount → stop 204 + revert + banner unmount | `IMPERSONATION_STARTED` + `IMPERSONATION_REVOKED` (same session_id) |
 | **M3** | admin → alt admin | JS fetch | 201, session ACTIVE | `IMPERSONATION_STARTED` |
 | **M4** | admin → USER role target | UI button | 201 + identity swap + grid 403 for admin features | `IMPERSONATION_STARTED` |
 | **M5** | admin → 60min-config user | JS fetch | 201, `expiresAt` = now + 60min (TTL is fixed, NOT target.sessionTimeoutMinutes) | `IMPERSONATION_STARTED` |
@@ -33,6 +36,34 @@
 ---
 
 ## Step-by-step (run from browser DevTools console while logged in as admin)
+
+### M2 — canonical happy/stop lifecycle (Session 47 reference run)
+
+This is the full E2E reference flow. Run via UI button — not raw JS — because the FE `impersonation-orchestration.ts` (PR #411) is what writes the impersonation cookie and triggers the authz state refresh that produces the identity swap. Raw `fetch` calls create the BE session correctly but do NOT swap FE identity (see NOTE #2 below).
+
+1. Open User Management → İşlemler dropdown on **primary ADMIN target row** (Session 47 reference: `testuser@testai.acik.com`).
+2. Click "Detayı Görüntüle" → drawer opens.
+3. Click "Impersonate this user" → orange button at top.
+4. Enter reason ≥10 char → click "Impersonate başlat".
+5. Verify:
+   - Network: `POST /api/v1/impersonation/sessions` returns **201** with `sessionId` + `expiresAt = now + 60min`.
+   - Header right corner swaps from admin display name to target's display name (e.g. "TU Test User").
+   - Banner mounts: `[data-testid="impersonation-banner"]` with text "⚠ {admin email} olarak {target email} adına işlem yapıyorsun (oturum 59 dk içinde sona erer)."
+6. Click banner "Impersonation'ı durdur" button:
+   - Network: `POST /api/v1/impersonation/sessions/{sid}/revoke` returns **204**.
+   - Header reverts to admin display name.
+   - Banner unmounts.
+7. Verify DB:
+```sql
+SELECT id, event_type, target_email, impersonation_session_id
+FROM permission_audit_events WHERE impersonation_session_id = '<SID>'
+ORDER BY id;
+-- EXPECT: IMPERSONATION_STARTED + IMPERSONATION_REVOKED (same session_id)
+
+SELECT id, status, started_at, ended_at, ended_reason
+FROM impersonation_sessions WHERE id = '<SID>';
+-- EXPECT: status=STOPPED, ended_reason=USER_STOP_FROM_BANNER
+```
 
 ### M1 — self-impersonation guard
 

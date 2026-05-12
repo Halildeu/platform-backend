@@ -78,12 +78,23 @@ public class GlobalExceptionHandler {
      *
      * <p>Maps {@link HttpRequestMethodNotSupportedException} to a
      * controlled 405 with {@code METHOD_NOT_ALLOWED} error code so the
-     * FE error map and audit traces capture the real cause.
+     * FE error map and audit traces capture the real cause. Codex
+     * {@code 019e1dd6} REVISE-1 absorb: includes the {@code Allow}
+     * response header listing supported HTTP methods (RFC 7231 §6.5.5
+     * MUST-requirement for 405 responses) so HTTP-aware clients can
+     * negotiate without parsing the body.
      */
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<ErrorResponse> handleMethodNotAllowed(HttpRequestMethodNotSupportedException ex) {
-        return build(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED",
+        ResponseEntity<ErrorResponse> response = build(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED",
                 "Bu endpoint için '" + ex.getMethod() + "' metodu desteklenmiyor.");
+        String[] supported = ex.getSupportedMethods();
+        if (supported != null && supported.length > 0) {
+            return ResponseEntity.status(response.getStatusCode())
+                    .header(org.springframework.http.HttpHeaders.ALLOW, String.join(", ", supported))
+                    .body(response.getBody());
+        }
+        return response;
     }
 
     @ExceptionHandler(Exception.class)
