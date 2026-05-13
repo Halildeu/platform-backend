@@ -186,6 +186,71 @@ class ImpersonationControllerSelfGuardTest {
         assertThat(captor.getValue().errorCode()).isEqualTo("TARGET_USER_DISABLED");
     }
 
+    /**
+     * Codex 019e1e0f sprint follow-up — concurrent session policy.
+     * Live testai M8 acceptance (Session 47 stabilization runbook):
+     * second {@code POST /sessions} while admin already has ACTIVE
+     * session must return {@code 409 ACTIVE_IMPERSONATION_EXISTS}
+     * (permission-service single-active-per-impersonator constraint
+     * enforced via {@code ux_impersonation_sessions_one_active_per_impersonator}
+     * partial unique index). The controller maps the
+     * {@link ImpersonationSessionClient.ActiveSessionExistsException}
+     * branch to 409 + BLOCKED audit row.
+     */
+    @Test
+    void rejectsConcurrentSessionWith409() {
+        Jwt adminJwt = adminJwt(1L);
+        StartSessionRequest request = new StartSessionRequest(
+                42L, null, "concurrent@example.com",
+                "Codex 019e1e0f concurrent session 409 regression test");
+        RemoteUserResponse stub = new RemoteUserResponse();
+        stub.setId(42L);
+        stub.setEmail("concurrent@example.com");
+        stub.setKcSubject(TARGET_SUBJECT);
+        stub.setEnabled(true);
+        when(userServiceClient.findUserById(42L)).thenReturn(Optional.of(stub));
+
+        // Step 2: admin must be superAdmin or controller returns 403
+        // INSUFFICIENT_AUTHORITY before reaching token-exchange. Stub the
+        // authority check to true so the flow reaches sessionClient.startSession.
+        when(superAdminAuthority.isSuperAdmin(anyLong(), any())).thenReturn(true);
+
+        // KC token-exchange succeeds (admin authorized, target enabled).
+        KeycloakBrokerClient.DecodedClaims claims = new KeycloakBrokerClient.DecodedClaims(
+                "https://kc/realms/platform-test",
+                "jti-123",
+                "sid-123",
+                TARGET_SUBJECT,
+                BROKER_AZP,
+                Instant.now().plusSeconds(300).getEpochSecond(),
+                "concurrent@example.com");
+        KeycloakBrokerClient.ExchangeResult exchange =
+                new KeycloakBrokerClient.ExchangeResult("exchanged-token", 300L, claims);
+        when(brokerClient.exchange(any(), any())).thenReturn(exchange);
+
+        // permission-service rejects because admin already has ACTIVE session.
+        when(sessionClient.startSession(any())).thenThrow(
+                new ImpersonationSessionClient.ActiveSessionExistsException(
+                        "Active impersonation session already exists"));
+
+        ResponseEntity<StartResponse> response = controller.startSession(request, adminJwt, httpRequest);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().errorCode()).isEqualTo("ACTIVE_IMPERSONATION_EXISTS");
+        // No exchanged token leaked back to FE — caller must stop existing
+        // session before retrying.
+        assertThat(response.getBody().exchangedToken()).isNull();
+        assertThat(response.getBody().sessionId()).isNull();
+        // BLOCKED audit row written with the concurrent-attempt context.
+        ArgumentCaptor<ImpersonationAuditClient.AuditPayload> captor =
+                ArgumentCaptor.forClass(ImpersonationAuditClient.AuditPayload.class);
+        verify(auditClient).writeBlocked(captor.capture());
+        assertThat(captor.getValue().errorCode()).isEqualTo("ACTIVE_IMPERSONATION_EXISTS");
+        assertThat(captor.getValue().impersonatorUserId()).isEqualTo(1L);
+        assertThat(captor.getValue().targetEmail()).isEqualTo("concurrent@example.com");
+    }
+
     @Test
     void rejectsSubjectEqualitySelfImpersonation() {
         Jwt adminJwt = adminJwt(1L);
