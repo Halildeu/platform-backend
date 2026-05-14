@@ -241,34 +241,44 @@ jobs:
             echo "✓ ${required} present in canonical model"
           done
 
-      - name: Verify fga test fixtures present (manual lint)
+      - name: Render canonical model JSON (runtime parser path)
+        # R16 PR-B (Codex 019e27f5 PR-B P1 absorb — fallback): runtime init.sh
+        # canonical model'i render_model_json.py ile JSON'a çeviriyor (OpenFGA
+        # StatefulSet upload). Bu adım aynı renderer'ı CI'da koşturur — runtime
+        # ile aynı parser path. `but not` syntax desteklenir (fga CLI v0.7.13
+        # parser limit'ine alternatif).
+        run: |
+          python3 backend/openfga/render_model_json.py backend/openfga/model.fga > /tmp/model.json
+          jq -e '.type_definitions | length > 0' /tmp/model.json > /dev/null
+          # type_definitions içinde 'report_group' var mı? (R16 PR-B regression guard)
+          jq -e '.type_definitions[] | select(.type == "report_group")' /tmp/model.json > /dev/null
+          echo "✓ Canonical model rendered + report_group type present"
+
+      - name: Verify fga test fixtures present (R16 PR-B Codex 019e27f5 P2 hard-fail)
         # R16 PR-B: fga CLI v0.7.13'te `but not` syntax parser incompat
-        # (canonical model'de var; fga model validate/transform/test fail
-        # 'syntax error at line=47, column=41: no viable alternative at input').
+        # (mevcut canonical model'de var; validate/transform/test fail).
         # Authoritative validation: K8s OpenFGA StatefulSet runtime upload.
-        # Şimdilik manuel fixture lint: yaml syntax + assertion count.
+        # Şimdilik manuel fixture lint: yaml syntax + required top-level keys.
         #
-        # Future work: fga CLI'nin newer versiyonu `but not` desteklediğinde
-        # bu adım `fga model test` ile değiştirilir. (Codex 019e27f5 PR-B
-        # P1 — full fga test integration deferred until DSL parser compat).
-        # Codex önerisi kalıcı framework + fixture model contract için
-        # fga test yine de değerli; sadece şu an CLI parser limit.
+        # Codex 019e27f5 P2 absorb: fixture directory veya file yoksa HARD FAIL
+        # (exit 0 warning değil) — close-out discipline ile uyum, fixture
+        # silinmesi sessiz drift olmamalı.
         run: |
           set -e
           if [ ! -d backend/openfga/tests ]; then
-            echo "::warning::backend/openfga/tests/ directory missing — no fga test fixtures yet"
-            exit 0
+            echo "::error::backend/openfga/tests/ directory missing — fga test fixtures silinmiş veya hiç eklenmemiş. R16 PR-B regression guard."
+            exit 1
           fi
           fixture_count=$(ls backend/openfga/tests/*.fga.yaml 2>/dev/null | wc -l)
           if [ "$fixture_count" -eq 0 ]; then
-            echo "::warning::No fga test fixtures found"
-            exit 0
+            echo "::error::No fga test fixtures found in backend/openfga/tests/ — R16 PR-B contract violation."
+            exit 1
           fi
+          # PyYAML pre-installed via Python 3.x default on ubuntu-latest setup-python image
+          python3 -c "import yaml" || pip install --quiet pyyaml
           for test_file in backend/openfga/tests/*.fga.yaml; do
             echo "::group::lint ${test_file}"
-            # YAML syntax check (python yaml is preinstalled on ubuntu-latest)
             python3 -c "import yaml; yaml.safe_load(open('${test_file}'))"
-            # Required top-level keys
             grep -q "^name:" "${test_file}"
             grep -q "^model_file:" "${test_file}"
             grep -q "^tuples:" "${test_file}"
