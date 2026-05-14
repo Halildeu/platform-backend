@@ -571,10 +571,16 @@ class SqlBuilderTest {
                     Collections.emptyMap(), Collections.emptyList(),
                     "[OWNER_ID] IN (:_rlsIds)", rlsParams, 1, 50);
 
+            // Codex 019e2695 review iter-2: tighten the parity assertion
+            // from a substring contains() to an exact "WHERE 1=1 AND ..."
+            // join so a future refactor that drops the RLS append from
+            // buildFromClause is caught at the SQL-shape boundary, not
+            // just at the textual substring level.
             assertThat(q.sql())
                     .contains("COUNT(DISTINCT [user_id]) AS [user_id]")
-                    .contains("[OWNER_ID] IN (:_rlsIds)");
-            assertThat(q.params().getValue("_rlsIds")).isNotNull();
+                    .contains("WHERE 1=1 AND [OWNER_ID] IN (:_rlsIds)");
+            assertThat(q.params().getValue("_rlsIds"))
+                    .isEqualTo(List.of(1L, 2L));
         }
 
         @Test
