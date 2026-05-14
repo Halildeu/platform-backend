@@ -41,6 +41,17 @@ public class FilterTranslator {
 
     @SuppressWarnings("unchecked")
     private String translateSingleFilter(String column, Map<?, ?> filterMap, MapSqlParameterSource params) {
+        // PR #5a (Codex thread 019e2695): if the filter entry carries an
+        // `operator`, dispatch to the compound parser. This is what AG
+        // Grid SSRM emits when the user stacks two filter chips on the
+        // same column, and what PR #5b's compound ancestor merge will
+        // produce when an ancestor groupKey lands on a column that also
+        // has a user filter. Compound parsing is recursive so a nested
+        // OR inside an outer AND keeps its own parentheses.
+        if (filterMap.containsKey("operator")) {
+            return translateCompoundFilter(column, filterMap, params);
+        }
+
         String filterType = (String) filterMap.get("filterType");
         String type = (String) filterMap.get("type");
 
@@ -124,5 +135,72 @@ public class FilterTranslator {
 
     private String nextParam() {
         return "p" + (++paramCounter);
+    }
+
+    /**
+     * PR #5a (Codex thread 019e2695): recursive parser for AG Grid
+     * compound filter entries.
+     *
+     * <p>Two payload shapes are accepted:
+     * <ul>
+     *   <li>Legacy two-slot: {@code {operator: "AND", condition1: {...},
+     *       condition2: {...}}}</li>
+     *   <li>Modern array: {@code {operator: "AND", conditions: [...]}}</li>
+     * </ul>
+     *
+     * <p>{@code operator} is case-insensitive and must be {@code AND}
+     * or {@code OR}. Anything else (including a missing operator) is
+     * dropped to {@code null} — same defensive-skip semantics as the
+     * existing simple-filter {@code default ->} branch. The merge
+     * upstream ({@link com.example.report.controller.ReportController#mergeAncestorFilters})
+     * only emits {@code AND}, but the parser still accepts {@code OR}
+     * because user-supplied filterModel entries may carry a native
+     * compound {@code OR} (e.g. two text-filter chips connected with
+     * an OR). Sub-conditions that fail to translate are dropped
+     * silently; the surviving siblings are still joined.
+     */
+    @SuppressWarnings("unchecked")
+    private String translateCompoundFilter(String column, Map<?, ?> filterMap, MapSqlParameterSource params) {
+        Object opObj = filterMap.get("operator");
+        if (!(opObj instanceof String opStr)) {
+            return null;
+        }
+        String operator = opStr.trim().toUpperCase();
+        if (!"AND".equals(operator) && !"OR".equals(operator)) {
+            return null;
+        }
+
+        List<Map<?, ?>> childConditions = new ArrayList<>();
+        Object conditionsArr = filterMap.get("conditions");
+        if (conditionsArr instanceof List<?> list) {
+            for (Object child : list) {
+                if (child instanceof Map<?, ?> childMap) {
+                    childConditions.add(childMap);
+                }
+            }
+        } else {
+            // Legacy two-slot shape — condition1/condition2.
+            Object c1 = filterMap.get("condition1");
+            Object c2 = filterMap.get("condition2");
+            if (c1 instanceof Map<?, ?> c1Map) childConditions.add(c1Map);
+            if (c2 instanceof Map<?, ?> c2Map) childConditions.add(c2Map);
+        }
+
+        List<String> clauses = new ArrayList<>();
+        for (Map<?, ?> child : childConditions) {
+            String clause = translateSingleFilter(column, child, params);
+            if (clause != null && !clause.isBlank()) {
+                clauses.add(clause);
+            }
+        }
+
+        if (clauses.isEmpty()) {
+            return null;
+        }
+        if (clauses.size() == 1) {
+            // Single surviving child — no need for an outer wrapper.
+            return clauses.get(0);
+        }
+        return "(" + String.join(" " + operator + " ", clauses) + ")";
     }
 }
