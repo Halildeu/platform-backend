@@ -49,7 +49,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/workcube")
 @ConditionalOnBean(name = "workcubeMssqlDataSource")
-@PreAuthorize("@workcubeAccessGuard.isInterimAdmin(authentication)")
 public class WorkcubeReportController {
 
     private static final Logger log = LoggerFactory.getLogger(WorkcubeReportController.class);
@@ -74,6 +73,7 @@ public class WorkcubeReportController {
      * ]
      * </pre>
      */
+    @PreAuthorize("@workcubeAccessGuard.isInterimAdmin(authentication)")
     @GetMapping(value = "/views", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> listViews() {
         try {
@@ -94,6 +94,7 @@ public class WorkcubeReportController {
      *
      * <p>Örnek: {@code GET /api/v1/workcube/views/vw_recent_orders?limit=50&status=APPROVED}
      */
+    @PreAuthorize("@workcubeAccessGuard.isInterimAdmin(authentication)")
     @GetMapping(value = "/views/{key}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> queryView(
             @PathVariable("key") String key,
@@ -130,6 +131,7 @@ public class WorkcubeReportController {
     /**
      * Allowlist key ile row count.
      */
+    @PreAuthorize("@workcubeAccessGuard.isInterimAdmin(authentication)")
     @GetMapping(value = "/views/{key}/count", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> countView(@PathVariable("key") String key) {
         if (!WorkcubeAllowlist.isAllowed(key)) {

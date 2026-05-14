@@ -12,6 +12,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.report.access.ColumnFilter;
+import com.example.report.access.ReportAccessEvaluator;
+import com.example.report.access.ReportAccessEvaluator.AccessResult;
+import com.example.report.access.RowFilterInjector;
+import com.example.report.audit.ReportAuditClient;
 import com.example.report.authz.AuthzMeResponse;
 import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
@@ -49,15 +54,35 @@ class WorkcubeReportExecutionServiceTest {
     private WorkcubeQueryAdapter adapter;
     private WorkcubeReportExecutionService service;
 
+    private ReportAccessEvaluator accessEvaluator;
+    private ColumnFilter columnFilter;
+    private RowFilterInjector rowFilterInjector;
+    private ReportAuditClient auditClient;
+
     @BeforeEach
     void setUp() {
         registry = mock(ReportRegistry.class);
         permissionResolver = mock(PermissionResolver.class);
         narrower = new CompanyHeaderScopeNarrower();
         adapter = mock(WorkcubeQueryAdapter.class);
+        accessEvaluator = mock(ReportAccessEvaluator.class);
+        columnFilter = mock(ColumnFilter.class);
+        rowFilterInjector = mock(RowFilterInjector.class);
+        auditClient = mock(ReportAuditClient.class);
+        // Sensible defaults: allow access, expose all columns, no RLS clause
+        when(accessEvaluator.evaluate(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any())).thenReturn(AccessResult.ALLOWED);
+        when(columnFilter.getVisibleColumns(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(List.of("INVOICE_ID", "FULLNAME"));
+        when(rowFilterInjector.buildRlsClause(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new RowFilterInjector.RlsResult(null, null));
+
         service = new WorkcubeReportExecutionService(
                 registry, permissionResolver, narrower, adapter,
                 mock(YearlySchemaResolver.class), mock(CurrentTenantSchemaResolver.class),
+                accessEvaluator, columnFilter, rowFilterInjector, auditClient,
                 new ObjectMapper());
     }
 
@@ -194,5 +219,108 @@ class WorkcubeReportExecutionServiceTest {
 
         long count = service.executeCount("workcube-inv", null, null, mock(Jwt.class));
         assertThat(count).isEqualTo(42L);
+    }
+
+    // ---- Adım 11.4: full authz pipeline acceptance ------------------------
+
+    @Test
+    void executeData_accessDenied_throwsForbidden_andAuditDenied() {
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(scopedUser("35"));
+        when(accessEvaluator.evaluate(any(), any()))
+                .thenReturn(AccessResult.DENIED_NO_REPORT_PERMISSION);
+
+        assertThatThrownBy(() -> service.executeData(
+                "workcube-inv", 1, 50, null, null, null, mock(Jwt.class)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .extracting(t -> ((org.springframework.web.server.ResponseStatusException) t).getStatusCode())
+                .isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN);
+
+        org.mockito.Mockito.verify(auditClient).logReportAccessDenied(
+                org.mockito.ArgumentMatchers.eq("workcube-inv"),
+                any(), any(),
+                org.mockito.ArgumentMatchers.contains("DENIED"));
+        org.mockito.Mockito.verify(adapter, org.mockito.Mockito.never())
+                .executeData(any(), any(), anyList(), anyMap(), anyList(),
+                        anyString(), any(), org.mockito.ArgumentMatchers.anyInt(),
+                        org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void executeData_accessAllowed_auditSuccessInvoked() {
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(superAdmin());
+        when(adapter.executeData(any(), any(), anyList(), anyMap(), anyList(),
+                anyString(), any(), anyInt(), anyInt())).thenReturn(List.of());
+        when(adapter.executeCount(any(), any(), anyMap(), anyList(),
+                anyString(), any(MapSqlParameterSource.class))).thenReturn(0L);
+
+        service.executeData("workcube-inv", 1, 50, null, null, null, mock(Jwt.class));
+
+        org.mockito.Mockito.verify(auditClient).logReportAccess(
+                org.mockito.ArgumentMatchers.eq("workcube-inv"), any(), any());
+        org.mockito.Mockito.verify(auditClient, org.mockito.Mockito.never())
+                .logReportAccessDenied(any(), any(), any(), any());
+    }
+
+    @Test
+    void executeData_columnFilterDictatesVisibleColumns() {
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(superAdmin());
+        when(columnFilter.getVisibleColumns(any(), any()))
+                .thenReturn(List.of("INVOICE_ID"));  // FULLNAME hidden via column-level RLS
+        when(adapter.executeData(any(), any(), anyList(), anyMap(), anyList(),
+                anyString(), any(), anyInt(), anyInt())).thenReturn(List.of());
+        when(adapter.executeCount(any(), any(), anyMap(), anyList(),
+                anyString(), any(MapSqlParameterSource.class))).thenReturn(0L);
+
+        service.executeData("workcube-inv", 1, 50, null, null, null, mock(Jwt.class));
+
+        // verify adapter received exactly the ColumnFilter-supplied visibleColumns
+        org.mockito.Mockito.verify(adapter).executeData(any(), any(),
+                org.mockito.ArgumentMatchers.argThat(cols ->
+                        cols.size() == 1 && cols.contains("INVOICE_ID")),
+                anyMap(), anyList(), anyString(),
+                any(MapSqlParameterSource.class), anyInt(), anyInt());
+    }
+
+    @Test
+    void executeData_rowFilterAppendsRlsClause() {
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(scopedUser("35"));
+        when(rowFilterInjector.buildRlsClause(any(), any()))
+                .thenReturn(new RowFilterInjector.RlsResult(
+                        "[COMPANY_ID] IN (:_rlsIds)",
+                        new MapSqlParameterSource("_rlsIds", List.of(35L))));
+        when(adapter.executeData(any(), any(), anyList(), anyMap(), anyList(),
+                anyString(), any(), anyInt(), anyInt())).thenReturn(List.of());
+        when(adapter.executeCount(any(), any(), anyMap(), anyList(),
+                anyString(), any(MapSqlParameterSource.class))).thenReturn(0L);
+
+        service.executeData("workcube-inv", 1, 50, null, null, "35", mock(Jwt.class));
+
+        // adapter receives non-empty RLS clause
+        org.mockito.Mockito.verify(adapter).executeData(any(), any(), anyList(),
+                anyMap(), anyList(),
+                org.mockito.ArgumentMatchers.argThat(rls ->
+                        rls != null && rls.contains("COMPANY_ID") && rls.contains(":_rlsIds")),
+                any(MapSqlParameterSource.class), anyInt(), anyInt());
+    }
+
+    @Test
+    void executeCount_accessDenied_throwsForbidden() {
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(scopedUser("35"));
+        when(accessEvaluator.evaluate(any(), any()))
+                .thenReturn(AccessResult.DENIED_NO_REPORT_PERMISSION);
+
+        assertThatThrownBy(() -> service.executeCount(
+                "workcube-inv", null, null, mock(Jwt.class)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
     }
 }
