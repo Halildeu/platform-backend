@@ -197,7 +197,8 @@ public class SqlBuilder {
      */
     private static final Set<String> ALLOWED_AGG_FUNCS = Set.of(
             "sum", "avg", "min", "max", "count",
-            "stddev", "stddevp", "distinctcount");
+            "stddev", "stddevp", "distinctcount",
+            "median");
 
     /**
      * Specifies a single value-column aggregation for
@@ -223,7 +224,11 @@ public class SqlBuilder {
                 throw new IllegalArgumentException(
                         "GroupedAggregation func must not be blank");
             }
-            String normalized = func.trim().toLowerCase();
+            // Locale.ROOT avoids the Turkish dotless-ı trap on tr_TR
+            // hosts — "MEDIAN".toLowerCase() would otherwise drop to
+            // "medıan" and miss the whitelist. Mirrors the same
+            // discipline applied to ColumnDefinition.defaultAggFunc.
+            String normalized = func.trim().toLowerCase(java.util.Locale.ROOT);
             if (!ALLOWED_AGG_FUNCS.contains(normalized)) {
                 throw new IllegalArgumentException(
                         "GroupedAggregation func must be one of "
@@ -338,15 +343,59 @@ public class SqlBuilder {
         FromClauseResult fromResult = buildFromClause(def, resolvedSchemas, selectCols,
                 rlsWhereClause, rlsParams, filterResult, params);
 
-        StringBuilder sql = new StringBuilder();
-        sql.append("SELECT [").append(groupColumn).append("]");
-        sql.append(", COUNT(*) AS [_rowCount]");
+        // PR #6a (Codex thread 019e2695): median requires a different
+        // SQL shape — MSSQL exposes PERCENTILE_CONT only as a window
+        // function, so we wrap the filtered source in an inner SELECT
+        // that emits the window result alongside the raw row, then
+        // collapse to one row per group with MAX(__median_<field>) in
+        // the outer SELECT. Non-median aggregations stay on the
+        // existing single-pass path so byte-for-byte parity is
+        // preserved for the simple SUM/AVG/MIN/MAX/COUNT/STDEV cases.
+        boolean hasMedian = false;
         for (GroupedAggregation a : sanitized) {
-            sql.append(", ").append(renderAggExpression(a))
-               .append(" AS [").append(a.field()).append("]");
+            if ("median".equals(a.func())) {
+                hasMedian = true;
+                break;
+            }
         }
-        sql.append(" FROM ").append(fromResult.sql());
-        sql.append(" GROUP BY [").append(groupColumn).append("]");
+
+        StringBuilder sql = new StringBuilder();
+        if (!hasMedian) {
+            sql.append("SELECT [").append(groupColumn).append("]");
+            sql.append(", COUNT(*) AS [_rowCount]");
+            for (GroupedAggregation a : sanitized) {
+                sql.append(", ").append(renderAggExpression(a))
+                   .append(" AS [").append(a.field()).append("]");
+            }
+            sql.append(" FROM ").append(fromResult.sql());
+            sql.append(" GROUP BY [").append(groupColumn).append("]");
+        } else {
+            // Outer projection: groupCol + COUNT(*) + (standard agg | MAX-collapse for median)
+            sql.append("SELECT [").append(groupColumn).append("]");
+            sql.append(", COUNT(*) AS [_rowCount]");
+            for (GroupedAggregation a : sanitized) {
+                if ("median".equals(a.func())) {
+                    sql.append(", MAX([__median_").append(a.field()).append("])")
+                       .append(" AS [").append(a.field()).append("]");
+                } else {
+                    sql.append(", ").append(renderAggExpression(a))
+                       .append(" AS [").append(a.field()).append("]");
+                }
+            }
+            sql.append(" FROM (");
+            sql.append("SELECT ").append(selectCols);
+            for (GroupedAggregation a : sanitized) {
+                if ("median".equals(a.func())) {
+                    sql.append(", PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY [")
+                       .append(a.field()).append("])")
+                       .append(" OVER (PARTITION BY [").append(groupColumn).append("])")
+                       .append(" AS [__median_").append(a.field()).append("]");
+                }
+            }
+            sql.append(" FROM ").append(fromResult.sql());
+            sql.append(") AS _med");
+            sql.append(" GROUP BY [").append(groupColumn).append("]");
+        }
 
         // The order-by on a grouped query may only reference the group
         // column or an aggregation alias. PR-0.2 keeps this simple: if

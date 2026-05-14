@@ -51,7 +51,12 @@ public record ColumnDefinition(
             width = 150;
         }
         if (defaultAggFunc != null) {
-            String normalized = defaultAggFunc.trim().toLowerCase();
+            // Locale.ROOT keeps the Turkish dotless-ı pitfall out of the
+            // canonical comparison — "MEDIAN".toLowerCase() under tr_TR
+            // would otherwise return "medıan" and miss the whitelist
+            // entry. Same defensive normalisation pattern as
+            // GroupedAggregation on the SqlBuilder side.
+            String normalized = defaultAggFunc.trim().toLowerCase(java.util.Locale.ROOT);
             if (!normalized.isEmpty()
                     && !normalized.equals("sum")
                     && !normalized.equals("avg")
@@ -60,10 +65,11 @@ public record ColumnDefinition(
                     && !normalized.equals("count")
                     && !normalized.equals("stddev")
                     && !normalized.equals("stddevp")
-                    && !normalized.equals("distinctcount")) {
+                    && !normalized.equals("distinctcount")
+                    && !normalized.equals("median")) {
                 throw new IllegalArgumentException(
                         "defaultAggFunc must be one of "
-                                + "sum/avg/min/max/count/stddev/stddevp/distinctcount, got: "
+                                + "sum/avg/min/max/count/stddev/stddevp/distinctcount/median, got: "
                                 + defaultAggFunc);
             }
             defaultAggFunc = normalized.isEmpty() ? null : normalized;

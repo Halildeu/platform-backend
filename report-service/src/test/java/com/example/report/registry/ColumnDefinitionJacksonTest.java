@@ -101,11 +101,11 @@ class ColumnDefinitionJacksonTest {
     }
 
     @Test
-    void invalidDefaultAggFuncRejected() {
-        // Hand-edited typo ("median" isn't supported) must fail loudly
-        // at registry load — registry catches the ResponseStatusException
-        // analogue and skips the report, but we want the validation to
-        // run rather than silently accept garbage.
+    void invalidDefaultAggFuncRejected_garbageToken() {
+        // Codex 019e2695 iter-5 absorb: PR #6a accepts `median`, so
+        // the negative test now uses a permanently invalid token.
+        // Roadmap functions (percentile, weightedavg) belong in
+        // positive tests once their PRs land.
         String json = """
                 {
                   "field": "X",
@@ -114,12 +114,60 @@ class ColumnDefinitionJacksonTest {
                   "width": 100,
                   "sensitive": false,
                   "aggregatable": true,
-                  "defaultAggFunc": "median"
+                  "defaultAggFunc": "garbage_xyz"
                 }
                 """;
 
         assertThrows(Exception.class,
                 () -> mapper.readValue(json, ColumnDefinition.class));
+    }
+
+    @Test
+    void defaultAggFuncMedianAccepted() {
+        // PR #6a positive case: median is a valid registry token.
+        // Numeric-column constraint is enforced at the controller
+        // sanitizeAggregations layer (not at Jackson deserialization),
+        // so this happy-path test does not need to assert column type.
+        String json = """
+                {
+                  "field": "AMOUNT",
+                  "headerName": "Amount",
+                  "type": "number",
+                  "width": 120,
+                  "sensitive": false,
+                  "aggregatable": true,
+                  "defaultAggFunc": "median"
+                }
+                """;
+
+        try {
+            ColumnDefinition cd = mapper.readValue(json, ColumnDefinition.class);
+            assertEquals("median", cd.defaultAggFunc());
+        } catch (Exception e) {
+            throw new AssertionError("median must deserialize cleanly", e);
+        }
+    }
+
+    @Test
+    void defaultAggFuncMedianMixedCase_normalized() {
+        String json = """
+                {
+                  "field": "AMOUNT",
+                  "headerName": "Amount",
+                  "type": "number",
+                  "width": 120,
+                  "sensitive": false,
+                  "aggregatable": true,
+                  "defaultAggFunc": "MEDIAN"
+                }
+                """;
+        try {
+            ColumnDefinition cd = mapper.readValue(json, ColumnDefinition.class);
+            assertEquals("median", cd.defaultAggFunc(),
+                    "mixed-case input must canonicalise to lower-case");
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
     }
 
     // ── PR-0.4z extended aggregate funcs (Codex thread 019e2695) ────────
