@@ -62,8 +62,14 @@ class WorkcubeMethodSecurityTest {
         }
 
         @Bean
-        WorkcubeReportController workcubeReportController(WorkcubeReportRepository repo) {
-            return new WorkcubeReportController(repo, null);
+        WorkcubeReportExecutionService workcubeReportExecutionService() {
+            return mock(WorkcubeReportExecutionService.class);
+        }
+
+        @Bean
+        WorkcubeReportController workcubeReportController(WorkcubeReportRepository repo,
+                                                          WorkcubeReportExecutionService service) {
+            return new WorkcubeReportController(repo, service);
         }
     }
 
@@ -75,6 +81,9 @@ class WorkcubeMethodSecurityTest {
 
     @Autowired
     private WorkcubeReportRepository repo;
+
+    @Autowired
+    private WorkcubeReportExecutionService executionService;
 
     @BeforeEach
     void clearContext() {
@@ -123,6 +132,52 @@ class WorkcubeMethodSecurityTest {
 
         ResponseEntity<?> response = controller.listViews();
         assertThat(response.getStatusCode().value()).isEqualTo(200);
+    }
+
+    // ---- Adım 11.3 new endpoint method-security coverage (Codex iter-30) ----
+
+    @Test
+    void reportData_denies_403_whenNonAdmin() {
+        Jwt jwt = jwt("user2");
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+
+        AuthzMeResponse nonAdmin = new AuthzMeResponse();
+        nonAdmin.setSuperAdmin(false);
+        when(permissionResolver.getAuthzMe(any())).thenReturn(nonAdmin);
+
+        assertThatThrownBy(() -> controller.reportData("workcube-inv", 1, 50, null, null, null, jwt))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void reportData_allows_andDelegatesToService_whenSuperAdmin() {
+        Jwt jwt = jwt("admin2");
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+
+        AuthzMeResponse admin = new AuthzMeResponse();
+        admin.setSuperAdmin(true);
+        when(permissionResolver.getAuthzMe(any())).thenReturn(admin);
+        when(executionService.executeData(any(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt(), any(), any(), any(), any()))
+                .thenReturn(new com.example.report.dto.PagedResultDto<Map<String, Object>>(
+                        List.of(), 0L, 1, 50));
+
+        ResponseEntity<?> response = controller.reportData(
+                "workcube-inv", 1, 50, null, null, null, jwt);
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+    }
+
+    @Test
+    void reportCount_denies_403_whenNonAdmin() {
+        Jwt jwt = jwt("user3");
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+
+        AuthzMeResponse nonAdmin = new AuthzMeResponse();
+        nonAdmin.setSuperAdmin(false);
+        when(permissionResolver.getAuthzMe(any())).thenReturn(nonAdmin);
+
+        assertThatThrownBy(() -> controller.reportCount("workcube-inv", null, null, jwt))
+                .isInstanceOf(AccessDeniedException.class);
     }
 
     private Jwt jwt(String sub) {

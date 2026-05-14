@@ -4,6 +4,8 @@ import com.example.report.authz.AuthzMeResponse;
 import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.PagedResultDto;
+import com.example.report.query.CurrentTenantSchemaResolver;
+import com.example.report.query.YearlySchemaResolver;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
 import com.example.report.registry.ReportRegistry;
@@ -65,18 +67,42 @@ public class WorkcubeReportExecutionService {
     private final PermissionResolver permissionResolver;
     private final CompanyHeaderScopeNarrower narrower;
     private final WorkcubeQueryAdapter adapter;
+    private final YearlySchemaResolver yearlySchemaResolver;
+    private final CurrentTenantSchemaResolver currentTenantSchemaResolver;
     private final ObjectMapper objectMapper;
 
     public WorkcubeReportExecutionService(ReportRegistry reportRegistry,
                                           PermissionResolver permissionResolver,
                                           CompanyHeaderScopeNarrower narrower,
                                           WorkcubeQueryAdapter adapter,
+                                          YearlySchemaResolver yearlySchemaResolver,
+                                          CurrentTenantSchemaResolver currentTenantSchemaResolver,
                                           ObjectMapper objectMapper) {
         this.reportRegistry = reportRegistry;
         this.permissionResolver = permissionResolver;
         this.narrower = narrower;
         this.adapter = adapter;
+        this.yearlySchemaResolver = yearlySchemaResolver;
+        this.currentTenantSchemaResolver = currentTenantSchemaResolver;
         this.objectMapper = objectMapper;
+    }
+
+    /**
+     * Resolve the tenant-scoped schema set for the given report definition.
+     * Codex iter-30 REVISE-1 blocker 1: yearly/current reports MUST go
+     * through the resolver so the rendered SQL targets the correct tenant
+     * schema (not the legacy hardcoded {@code def.sourceSchema()} fallback).
+     */
+    private YearlySchemaResolver.ResolvedSchemas resolveSchemas(ReportDefinition def,
+                                                                AuthzMeResponse authz,
+                                                                Map<String, Object> filter) {
+        if (def.isYearlySchema()) {
+            return yearlySchemaResolver.resolve(def, authz, filter);
+        }
+        if ("current".equals(def.schemaMode())) {
+            return currentTenantSchemaResolver.resolve(def, authz);
+        }
+        return null;
     }
 
     public PagedResultDto<Map<String, Object>> executeData(String reportKey,
@@ -101,17 +127,24 @@ public class WorkcubeReportExecutionService {
                 .map(ColumnDefinition::field)
                 .toList();
 
-        // Adım 11.3 minimum: schemas=null (SqlBuilder single-schema fallback);
-        // schema resolution (yearly partition) Adım 11.4'te eklenir.
+        // Codex iter-30 blocker 1: yearly/current reports route through
+        // the resolver so X-Company-Id actually drives the schema target.
+        YearlySchemaResolver.ResolvedSchemas schemas = resolveSchemas(def, authz, agGridFilter);
+
         List<Map<String, Object>> rows = adapter.executeData(
-                def, null, visibleColumns, agGridFilter, sortModel,
+                def, schemas, visibleColumns, agGridFilter, sortModel,
                 "", new MapSqlParameterSource(),
                 boundedPage, boundedPageSize);
 
-        log.debug("Workcube execute report={} page={} pageSize={} rowCount={}",
-                reportKey, boundedPage, boundedPageSize, rows.size());
+        // Codex iter-30 PagedResultDto.total fix: real count via adapter
+        // count path (extra DB round-trip; matches /api/v1/reports contract).
+        long total = adapter.executeCount(def, schemas, agGridFilter, visibleColumns,
+                "", new MapSqlParameterSource());
 
-        return new PagedResultDto<>(rows, rows.size(), boundedPage, boundedPageSize);
+        log.debug("Workcube execute report={} page={} pageSize={} rowCount={} total={}",
+                reportKey, boundedPage, boundedPageSize, rows.size(), total);
+
+        return new PagedResultDto<>(rows, total, boundedPage, boundedPageSize);
     }
 
     public long executeCount(String reportKey,
@@ -129,7 +162,9 @@ public class WorkcubeReportExecutionService {
                 .map(ColumnDefinition::field)
                 .toList();
 
-        return adapter.executeCount(def, null, agGridFilter, visibleColumns,
+        YearlySchemaResolver.ResolvedSchemas schemas = resolveSchemas(def, authz, agGridFilter);
+
+        return adapter.executeCount(def, schemas, agGridFilter, visibleColumns,
                 "", new MapSqlParameterSource());
     }
 

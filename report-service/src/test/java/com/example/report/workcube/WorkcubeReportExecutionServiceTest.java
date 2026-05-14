@@ -17,6 +17,8 @@ import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.authz.ScopeSummaryDto;
 import com.example.report.dto.PagedResultDto;
+import com.example.report.query.CurrentTenantSchemaResolver;
+import com.example.report.query.YearlySchemaResolver;
 import com.example.report.registry.ColumnDefinition;
 import com.example.report.registry.ReportDefinition;
 import com.example.report.registry.ReportRegistry;
@@ -54,7 +56,9 @@ class WorkcubeReportExecutionServiceTest {
         narrower = new CompanyHeaderScopeNarrower();
         adapter = mock(WorkcubeQueryAdapter.class);
         service = new WorkcubeReportExecutionService(
-                registry, permissionResolver, narrower, adapter, new ObjectMapper());
+                registry, permissionResolver, narrower, adapter,
+                mock(YearlySchemaResolver.class), mock(CurrentTenantSchemaResolver.class),
+                new ObjectMapper());
     }
 
     private ReportDefinition def(String key) {
