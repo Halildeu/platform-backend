@@ -255,11 +255,13 @@ jobs:
           chmod +x /usr/local/bin/fga
           fga version
 
-      - name: Run fga model validate (canonical DSL syntactic)
-        # Codex 019e27f5 PR-B P1 absorb: validate ucuz + net fail surface;
-        # test'ten önce DSL syntactic kontrol.
+      - name: Run fga model transform (canonical DSL syntactic)
+        # Codex 019e27f5 PR-B P1 absorb: DSL → JSON transform fail surface
+        # `fga model validate` v0.7.13'te `but not` syntax'ı kabul etmiyor;
+        # transform aynı parser'ı kullanıyor ve `but not`'ı destekliyor.
         run: |
-          fga model validate --file backend/openfga/model.fga
+          fga model transform --file backend/openfga/model.fga > /dev/null
+          echo "✓ DSL transform PASS"
 
       - name: Run fga test (model + tuples + assertions)
         # R16 PR-B Option 3: deklaratif OpenFGA test framework — report_group
