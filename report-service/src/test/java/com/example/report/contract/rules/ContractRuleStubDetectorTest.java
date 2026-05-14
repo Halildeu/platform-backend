@@ -6,10 +6,15 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -71,6 +76,7 @@ class ContractRuleStubDetectorTest {
         Set<String> deferredRuleIds = loadDeferredRuleIds();
 
         List<String> undeferredStubs = new ArrayList<>();
+        List<String> unparseable = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(RULES_DIR, 1)) {
             walk.filter(p -> RULE_FILE_PATTERN.matcher(p.getFileName().toString()).matches())
                     .forEach(file -> {
@@ -86,12 +92,28 @@ class ContractRuleStubDetectorTest {
                             // No ruleId() → not a ContractRule impl, skip.
                             return;
                         }
+                        // Codex 019e2804 REVISE P2/P3 absorb: validate body parse-miss
+                        // must FAIL (not silently pass). Otherwise small formatter
+                        // variations could let new stubs slip through undetected.
+                        if (!hasParseableValidateBody(source)) {
+                            unparseable.add(ruleId + " (" + file.getFileName()
+                                    + " — validate(ReportDefinition) body parse failed;"
+                                    + " stub detector cannot inspect this rule)");
+                            return;
+                        }
                         if (isStub(source) && !deferredRuleIds.contains(ruleId)) {
                             undeferredStubs.add(
                                     ruleId + " (" + file.getFileName() + ")");
                         }
                     });
         }
+
+        assertThat(unparseable)
+                .as("RC rule files whose validate(ReportDefinition) body could not be parsed;"
+                        + " stub detector regex is too narrow or rule uses unsupported"
+                        + " formatting (multi-line param, qualified List name, final qualifier)."
+                        + " Either normalize the rule formatting OR widen the detector regex.")
+                .isEmpty();
 
         assertThat(undeferredStubs)
                 .as("Undeferred RC stub rules found — implement validate() behavior or add"
@@ -126,6 +148,7 @@ class ContractRuleStubDetectorTest {
         assertThat(DEFERRED_REGISTRY).exists();
 
         List<Map<String, Object>> entries = loadDeferredEntries();
+        LocalDate today = LocalDate.now(ZoneOffset.UTC);
 
         List<String> invalidEntries = new ArrayList<>();
         for (Map<String, Object> entry : entries) {
@@ -139,17 +162,43 @@ class ContractRuleStubDetectorTest {
                         + " (missing required fields: rule_id, deferral_until, owner, reason)");
                 continue;
             }
-            // expiry tarihinin geçerli ISO format'ta olup olmadığını yapısal check.
-            // Yaml zaten date'i java.util.Date'e parse edebilir; string ise pattern check.
+            // Codex 019e2804 REVISE P2 absorb: expiry semantik gate, format-only değil.
+            // SnakeYAML date'i java.util.Date olarak da parse edebilir; string'e çevirip
+            // ISO_LOCAL_DATE ile parse et + UTC today ile karşılaştır.
             String expiryStr = expiry.toString();
-            if (!expiryStr.matches("\\d{4}-\\d{2}-\\d{2}.*")) {
-                invalidEntries.add(ruleId + " (invalid expiry format: " + expiryStr + ")");
+            LocalDate expiryDate;
+            try {
+                expiryDate = LocalDate.parse(expiryStr.substring(0, Math.min(10, expiryStr.length())),
+                        DateTimeFormatter.ISO_LOCAL_DATE);
+            } catch (DateTimeParseException ex) {
+                invalidEntries.add(ruleId + " (invalid expiry format '" + expiryStr
+                        + "' — expected ISO YYYY-MM-DD)");
+                continue;
+            }
+            if (expiryDate.isBefore(today)) {
+                invalidEntries.add(ruleId + " (deferral_until=" + expiryStr
+                        + " is in the past, today=" + today
+                        + "; either implement the rule or extend the deferral with"
+                        + " justification + ADR reference)");
+            }
+            // Non-blank owner / reason / tracking_pr enforcement.
+            if (owner.toString().isBlank()) {
+                invalidEntries.add(ruleId + " (owner is blank)");
+            }
+            if (reason.toString().isBlank()) {
+                invalidEntries.add(ruleId + " (reason is blank)");
+            }
+            Object trackingPr = entry.get("tracking_pr");
+            if (trackingPr == null || trackingPr.toString().isBlank()) {
+                invalidEntries.add(ruleId + " (tracking_pr field missing — link the original"
+                        + " PR/issue that introduced the deferral)");
             }
         }
 
         assertThat(invalidEntries)
                 .as("deferred-stub-rules.yaml entries must declare rule_id, deferral_until,"
-                        + " owner, reason fields (ISO date format YYYY-MM-DD)")
+                        + " owner, reason, tracking_pr fields with ISO YYYY-MM-DD expiry that"
+                        + " is not in the past (UTC). Codex 019e2804 REVISE P2 absorb.")
                 .isEmpty();
     }
 
@@ -161,8 +210,20 @@ class ContractRuleStubDetectorTest {
     }
 
     /**
+     * Validate body parse edilebilir mi? VALIDATE_BODY_PATTERN regex'in eşleşmediği
+     * dosyalar stub detector için kör nokta yaratır. Codex 019e2804 P2/P3 absorb:
+     * parse-miss durumunda silent pass yerine açık FAIL liste girilir.
+     */
+    private static boolean hasParseableValidateBody(String source) {
+        Matcher m = VALIDATE_BODY_PATTERN.matcher(source);
+        return m.find();
+    }
+
+    /**
      * Validate body stub mi? Yorumlar + boş satırlar strip edildikten sonra sadece
-     * {@code return List.of();} kalıyorsa stub.
+     * {@code return List.of();} (veya tam-qualified {@code java.util.List.of();})
+     * kalıyorsa stub. Bu metoda girmek için önce {@link #hasParseableValidateBody}
+     * true dönmüş olmalı.
      */
     private static boolean isStub(String source) {
         Matcher m = VALIDATE_BODY_PATTERN.matcher(source);
@@ -174,7 +235,10 @@ class ContractRuleStubDetectorTest {
         body = body.replaceAll("(?s)/\\*.*?\\*/", "");
         // Normalize whitespace
         String stripped = body.replaceAll("\\s+", " ").trim();
-        return stripped.equals("return List.of();");
+        // Accept both `return List.of();` and `return java.util.List.of();` —
+        // Codex 019e2804 P2/P3 absorb: küçük varyasyon stub'ı kaçırmasın.
+        return stripped.equals("return List.of();")
+                || stripped.equals("return java.util.List.of();");
     }
 
     @SuppressWarnings("unchecked")
