@@ -832,6 +832,71 @@ class ReportControllerQueryTest {
         }
 
         @Test
+        void ancestorNumericEqualsUserIntegerEquals_compoundDespiteValueParity() {
+            // Codex 019e2695 iter-5 absorb: numeric ancestor groupKeys
+            // are coerced to Double by coerceGroupKey, but a user
+            // filterModel value can arrive as Integer from JSON.
+            // Objects.equals(2024.0, 2024) is false, so the merge layer
+            // must NOT idempotent-skip here — type-coercion ambiguity
+            // falls through to compound AND emit, and the SQL surfaces
+            // both predicates so the user sees the actual semantic
+            // (the predicate evaluates true via numeric comparison
+            // anyway, but the audit trail keeps both shapes).
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("year", "Year", "number",
+                                    100, false, true, false, null),
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null)));
+            when(queryEngine.executeGroupedQuery(any(), any(), any(), any(),
+                    any(), any(), anyInt(), anyInt()))
+                    .thenReturn(new com.example.report.query.QueryEngine.PagedData(
+                            java.util.List.of(), 0, 1, 50, java.util.List.of()));
+
+            // User filter carries Integer 2024 (JSON-native); ancestor
+            // groupKey "2024" coerces to Double 2024.0.
+            Map<String, Object> userFilter = new java.util.HashMap<>();
+            userFilter.put("year", Map.of("type", "equals", "filter", 2024));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(
+                            new ColumnVO("year", "Year", "year", null),
+                            new ColumnVO("category", "Category", "category", null)),
+                    null, null, false,
+                    List.of("2024"), userFilter, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(200, response.getStatusCode().value());
+
+            @SuppressWarnings("unchecked")
+            org.mockito.ArgumentCaptor<java.util.Map<String, Object>> filterCaptor =
+                    (org.mockito.ArgumentCaptor<java.util.Map<String, Object>>)
+                            (org.mockito.ArgumentCaptor<?>)
+                                    org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+            verify(queryEngine).executeGroupedQuery(any(), any(), any(), any(),
+                    filterCaptor.capture(), any(), anyInt(), anyInt());
+            var mergedFilter = filterCaptor.getValue();
+
+            @SuppressWarnings("unchecked")
+            var yearEntry = (java.util.Map<String, Object>) mergedFilter.get("year");
+            assertEquals("AND", yearEntry.get("operator"),
+                    "Double 2024.0 ancestor + Integer 2024 user must not "
+                            + "idempotent-skip — compound AND emit instead");
+            @SuppressWarnings("unchecked")
+            var c1 = (java.util.Map<String, Object>) yearEntry.get("condition1");
+            @SuppressWarnings("unchecked")
+            var c2 = (java.util.Map<String, Object>) yearEntry.get("condition2");
+            assertEquals(2024.0, c1.get("filter"),
+                    "ancestor side carries Double 2024.0 from coerceGroupKey");
+            assertEquals(2024, c2.get("filter"),
+                    "user side preserves the original Integer 2024");
+        }
+
+        @Test
         void ancestorEquals_existingUserCompoundAnd_flattenedConditions() {
             // Codex iter-2 §5: an existing AND compound on the same
             // column should be flattened — ancestor lands in the

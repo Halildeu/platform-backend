@@ -314,12 +314,13 @@ class RlsExecutionMssqlIntegrationTest {
      * when an ancestor + user filter collide — an AND compound with
      * {@code condition1} = ancestor equals, {@code condition2} = user
      * contains — and verify the SQL contains both predicates joined
-     * with AND inside parentheses, plus the row count is 1
-     * (FIN-prefixed and equals 'FIN' both narrow to a single row).
+     * with AND inside parentheses, plus the row count is 2 (both
+     * FIN-category rows owned by owner 100 satisfy both predicates).
      *
-     * <p>Composes with the RLS scope: only owner 100 + 200 are
-     * visible, so FIN-category rows from owner 100 (ids 1, 2) survive
-     * the RLS clause too.
+     * <p>Composes with the RLS scope: owner 100 + 200 are visible,
+     * so the two FIN rows from owner 100 (ids 1, 2) survive the
+     * RLS clause; owner 200 (HR) is filtered out by the category
+     * predicate, owner 300 (OPS) is filtered out by RLS.
      */
     @Test
     void rlsCombinesWithCompoundAncestorAndUserFilter() {

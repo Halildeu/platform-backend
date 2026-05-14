@@ -345,9 +345,10 @@ public class ReportController {
                         "INVALID_AGGREGATION_REQUEST", iae.getMessage()));
             }
 
-            // Merge ancestor groupKeys as equality filters on top of the
-            // user's filterModel. Collisions and type-coercion failures
-            // become structured 400s.
+            // PR #5b (Codex 019e2695): merge ancestor groupKeys on top
+            // of the user's filterModel. Same-field user+ancestor pairs
+            // now produce a compound AND entry rather than a 400; only
+            // type-coercion failures still surface as structured 400.
             List<ColumnVO> rowGroupCols = safeRequest.rowGroupCols();
             List<String> groupKeys = safeRequest.groupKeys() != null
                     ? safeRequest.groupKeys()
@@ -476,31 +477,34 @@ public class ReportController {
      * mirrors {@link com.example.report.query.FilterTranslator}'s
      * existing {@code equals} branch.
      *
-     * <p>PR-0.3 hardening (Codex iter-1 absorb):
+     * <p>Hardening contract (PR-0.3 → PR #4 → PR #5b):
      * <ul>
-     *   <li>If the user's {@code filterModel} already constrains a
-     *       group-key column, the merge throws
-     *       {@link AncestorFilterCollisionException} and the controller
-     *       turns it into a structured 400. Compound AND between user
-     *       and route filters belongs to a follow-up PR that extends
-     *       {@code FilterTranslator}.</li>
      *   <li>{@code groupKeys[i]} is type-coerced via
      *       {@link ColumnDefinition#type()}: {@code "number"} →
      *       parse double; {@code "date"} → leave as ISO string (the
-     *       SQL Server driver accepts ISO-8601). Parse failures become
-     *       a structured 400 so a client never sees a silent SQL
-     *       implicit-conversion result.</li>
+     *       SQL Server driver accepts ISO-8601). Parse failures
+     *       still throw {@link IllegalArgumentException}, which the
+     *       controller turns into a structured
+     *       {@code 400 INVALID_GROUP_KEY}.</li>
      *   <li>PR #4 (Codex thread {@code 019e2695}): a {@code null}
-     *       ancestor key renders as a {@code blank} filter entry rather
-     *       than an {@code equals null} (which {@code Map.of} cannot
-     *       even represent and which is the wrong SQL semantics
-     *       anyway). {@link com.example.report.query.FilterTranslator}
-     *       already maps {@code blank} → {@code [col] IS NULL}, so the
-     *       AG Grid "(Blanks)" expansion case now lights up end-to-end
-     *       without any further wiring. Collision detection runs first
-     *       — a {@code null} ancestor key on a column that also has a
-     *       user filterModel entry still throws
-     *       {@link AncestorFilterCollisionException}.</li>
+     *       ancestor key renders as a {@code blank} filter entry,
+     *       which {@link com.example.report.query.FilterTranslator}
+     *       maps to {@code [col] IS NULL} — AG Grid's "(Blanks)"
+     *       expansion case lights up end-to-end without any further
+     *       wiring.</li>
+     *   <li>PR #5b (same Codex thread): same-field user filter +
+     *       ancestor groupKey no longer throws. The merge layer
+     *       calls {@link #buildAncestorEntry} for the ancestor
+     *       shape, {@link #areSimpleEntriesEquivalent} to skip
+     *       semantically redundant predicates (same-equals,
+     *       same-blank), and {@link #mergeAsCompoundAnd} to wrap
+     *       the rest into an AND compound that
+     *       {@link com.example.report.query.FilterTranslator} (PR #5a)
+     *       parses into a parenthesised SQL clause. Logically
+     *       conflicting predicates (e.g. {@code equals FIN AND
+     *       equals HR}) compose into a 0-row SQL result rather
+     *       than a fail-fast 400 — Codex Q4 verdict: SQL is the
+     *       source of truth for predicate satisfiability.</li>
      * </ul>
      */
     @SuppressWarnings("unchecked")
