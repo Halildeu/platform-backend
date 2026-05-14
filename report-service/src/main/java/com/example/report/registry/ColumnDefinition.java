@@ -1,5 +1,7 @@
 package com.example.report.registry;
 
+import java.util.Map;
+
 /**
  * Per-column metadata declared in a report's JSON registry entry.
  *
@@ -42,7 +44,8 @@ public record ColumnDefinition(
         boolean sensitive,
         boolean groupable,
         boolean aggregatable,
-        String defaultAggFunc
+        String defaultAggFunc,
+        Map<String, Object> defaultAggParams
 ) {
     public ColumnDefinition {
         if (field == null || field.isBlank()) {
@@ -53,6 +56,14 @@ public record ColumnDefinition(
         }
         if (width == null || width <= 0) {
             width = 150;
+        }
+        if (defaultAggParams != null) {
+            // Defensive: take an immutable copy so the registry-loaded
+            // map cannot be mutated underneath us after canonical
+            // construction. Empty maps collapse to null for clarity.
+            defaultAggParams = defaultAggParams.isEmpty()
+                    ? null
+                    : Map.copyOf(defaultAggParams);
         }
         if (defaultAggFunc != null) {
             // Locale.ROOT keeps the Turkish dotless-ı pitfall out of the
@@ -70,10 +81,11 @@ public record ColumnDefinition(
                     && !normalized.equals("stddev")
                     && !normalized.equals("stddevp")
                     && !normalized.equals("distinctcount")
-                    && !normalized.equals("median")) {
+                    && !normalized.equals("median")
+                    && !normalized.equals("percentilecont")) {
                 throw new IllegalArgumentException(
                         "defaultAggFunc must be one of "
-                                + "sum/avg/min/max/count/stddev/stddevp/distinctcount/median, got: "
+                                + "sum/avg/min/max/count/stddev/stddevp/distinctcount/median/percentilecont, got: "
                                 + defaultAggFunc);
             }
             defaultAggFunc = normalized.isEmpty() ? null : normalized;
@@ -89,6 +101,20 @@ public record ColumnDefinition(
     public ColumnDefinition(String field, String headerName, String type,
                             Integer width, boolean sensitive) {
         this(field, headerName, type, width, sensitive,
-                false, false, null);
+                false, false, null, null);
+    }
+
+    /**
+     * Backward-compatible 8-arg constructor for PR-0.2 / PR #6a call
+     * sites that predate PR #6b's {@code defaultAggParams} field.
+     * Defaults the new map to {@code null} so existing tests and
+     * registry entries continue to deserialize without modification.
+     */
+    public ColumnDefinition(String field, String headerName, String type,
+                            Integer width, boolean sensitive,
+                            boolean groupable, boolean aggregatable,
+                            String defaultAggFunc) {
+        this(field, headerName, type, width, sensitive,
+                groupable, aggregatable, defaultAggFunc, null);
     }
 }

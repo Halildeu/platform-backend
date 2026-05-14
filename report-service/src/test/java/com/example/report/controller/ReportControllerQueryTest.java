@@ -1159,6 +1159,116 @@ class ReportControllerQueryTest {
             assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
         }
 
+        // ── PR #6b: percentilecont parametric agg + duplicate field reject ─
+
+        @Test
+        void percentileContAggMissingParams_returns400() {
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, true, null)));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    List.of(new ColumnVO("amount", "Amount", "amount", "percentilecont")),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            var error = assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
+            assertTrue(error.message().contains("percentile"),
+                    "error must mention 'percentile' so the client can fix the request");
+        }
+
+        @Test
+        void percentileContAggRangeOutOfBounds_returns400() {
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, true, null)));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    List.of(new ColumnVO("amount", "Amount", "amount", "percentilecont",
+                            Map.of("percentile", 1.5))),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            var error = assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
+        }
+
+        @Test
+        void duplicateValueColField_returns400() {
+            // PR #6b: external alias contract reserves one response
+            // column per field. sum+median on the same AMOUNT would
+            // either silently overwrite or require an alias suffix
+            // scheme this PR does not introduce — reject up front.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, true, null)));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    List.of(new ColumnVO("amount", "Amount", "amount", "sum"),
+                            new ColumnVO("amount", "Amount", "amount", "median")),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            var error = assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
+            assertTrue(error.message().contains("duplicate") || error.message().contains("duplicated"),
+                    "error must explain the field-duplication rejection");
+        }
+
+        @Test
+        void aggParamsOnNonParametricFunc_returns400() {
+            // sum + populated aggParams → reject (Codex iter-7 absorb).
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(columnFilter.getVisibleColumnDefinitions(any(), any()))
+                    .thenReturn(List.of(
+                            new ColumnDefinition("category", "Category", "text",
+                                    150, false, true, false, null),
+                            new ColumnDefinition("amount", "Amount", "number",
+                                    120, false, false, true, null)));
+
+            var dto = new ReportQueryRequestDto(
+                    0, 50,
+                    List.of(new ColumnVO("category", "Category", "category", null)),
+                    List.of(new ColumnVO("amount", "Amount", "amount", "sum",
+                            Map.of("percentile", 0.9))),
+                    null, false, null, null, null);
+
+            var response = controller.queryReport("any", dto, null, testJwt("admin"));
+
+            assertEquals(400, response.getStatusCode().value());
+            var error = assertInstanceOf(ReportQueryErrorDto.class, response.getBody());
+            assertEquals("INVALID_AGGREGATION_REQUEST", error.code());
+        }
+
         @Test
         void medianAggOnNonNumericColumn_returns400Structured() {
             // PR #6a contract: median is only valid on `type=number`
