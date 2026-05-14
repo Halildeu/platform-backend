@@ -57,17 +57,35 @@ public final class RC012AuthzReferenceCheck implements ContractRule {
             return violations;
         }
 
+        String reportGroup = def.access().reportGroup();
+
         if (!registry.isReportGroupTypeRegistered()) {
             // Type registry'de yok → WARN-first; tüm reportGroup-yazılı raporlar
             // canonical authz contract'tan kopuk. PR-B merge edilirse fix.
             violations.add(ContractViolation.warn(
                     ruleId(), def.key(), "access.reportGroup",
-                    "reportGroup='" + def.access().reportGroup()
+                    "reportGroup='" + reportGroup
                             + "' specified but canonical OpenFGA model is missing"
                             + " 'type report_group' definition. Merge PR-B"
                             + " (#196) or migrate the report to a registered"
                             + " authz reference. See ADR-0017 + R16 close-out"
                             + " discipline."));
+            return violations;
+        }
+
+        // Codex 019e27f5 PR-C REVISE P1 absorb: actual reportGroup registry
+        // check (type-level kontrolü ek olarak). Permission catalog
+        // (PermissionDataInitializer) source'da `reports.<GROUP>` key var mı?
+        java.util.Set<String> knownGroups = registry.knownReportGroups();
+        if (!knownGroups.isEmpty() && !knownGroups.contains(reportGroup)) {
+            violations.add(ContractViolation.warn(
+                    ruleId(), def.key(), "access.reportGroup",
+                    "reportGroup='" + reportGroup + "' permission catalog'da"
+                            + " tanımlı değil (PermissionDataInitializer source"
+                            + " parse). Known groups: " + knownGroups
+                            + ". Yeni reportGroup eklenirken permission catalog +"
+                            + " OpenFGA tuple seed senkronize olmalı."
+                            + " See ADR-0017 + authz-reference-debt.yaml."));
         }
 
         return violations;

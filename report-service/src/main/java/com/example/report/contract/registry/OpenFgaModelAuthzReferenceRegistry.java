@@ -40,20 +40,41 @@ public final class OpenFgaModelAuthzReferenceRegistry implements AuthzReferenceR
     private static final Pattern TYPE_PATTERN = Pattern.compile("^type\\s+(\\w+)\\s*$",
             Pattern.MULTILINE);
 
+    /**
+     * Codex 019e27f5 PR-C REVISE P1 absorb: PermissionDataInitializer source
+     * parse — transitional pattern (Codex önerisi: "source parser PermissionDataInitializer
+     * üstünden yapılabilir, ama bunu transitional kabul et").
+     *
+     * <p>Matches: {@code "reports.HR_REPORTS"}, {@code "reports.FINANCE_REPORTS"}, etc.
+     */
+    private static final Pattern PERMISSION_REPORT_GROUP_PATTERN = Pattern.compile(
+            "\"reports\\.([A-Z_]+)\"");
+
+    private static final Path DEFAULT_PERMISSION_INITIALIZER_PATH = Path.of(
+            "../permission-service/src/main/java/com/example/permission/config/PermissionDataInitializer.java");
+
     private final Path canonicalModelPath;
+    private final Path permissionInitializerPath;
     private final Set<String> reportGroups;
     private final Set<String> permissions;
 
     /**
-     * Default constructor — canonical model `../backend/openfga/model.fga`
-     * (Maven module root'tan).
+     * Default constructor — canonical model `../backend/openfga/model.fga` +
+     * source parse `../permission-service/.../PermissionDataInitializer.java`
+     * (Maven module root'tan; transitional pattern Codex 019e27f5 P1 absorb).
      */
     public OpenFgaModelAuthzReferenceRegistry() {
-        this(Path.of("../backend/openfga/model.fga"));
+        this(Path.of("../backend/openfga/model.fga"), DEFAULT_PERMISSION_INITIALIZER_PATH);
     }
 
     public OpenFgaModelAuthzReferenceRegistry(Path canonicalModelPath) {
+        this(canonicalModelPath, DEFAULT_PERMISSION_INITIALIZER_PATH);
+    }
+
+    public OpenFgaModelAuthzReferenceRegistry(Path canonicalModelPath,
+                                              Path permissionInitializerPath) {
         this.canonicalModelPath = canonicalModelPath;
+        this.permissionInitializerPath = permissionInitializerPath;
         this.reportGroups = computeReportGroups();
         this.permissions = Collections.emptySet(); // PR-C kapsamı dışı (PR-C-2)
     }
@@ -100,18 +121,41 @@ public final class OpenFgaModelAuthzReferenceRegistry implements AuthzReferenceR
         }
     }
 
+    /**
+     * PermissionDataInitializer source'dan `reports.<GROUP>` key set'i parse.
+     *
+     * <p>Codex 019e27f5 PR-C REVISE P1 absorb: actual reportGroup registry
+     * implementation. Transitional pattern (Codex: "kısa vadede source parser
+     * PermissionDataInitializer üstünden yapılabilir, ama bunu transitional
+     * kabul et").
+     *
+     * <p>Daha kalıcı çözüm: ortak `report-groups.yaml` shared resource
+     * (PR-C-2'de). Şu an permission-service ana source'tur.
+     */
     private Set<String> computeReportGroups() {
-        // PR-C kapsamı: type report_group var mı kontrol et (instance key'leri
-        // PR-B-2 runtime'da gelir). Authz catalog source registry için type
-        // varlığı yeterli — type yoksa hiçbir reportGroup authz'lanamaz.
-        // Type varsa, instance key'leri WARN-first registry'den döner (boş
-        // başlangıç; debt yaml manuel doldurulur).
-        if (isReportGroupTypeRegistered()) {
-            // Type var → registry açık. Specific keys runtime tuple seed
-            // ile dolar; source-side hardcoded set tutmak yanlış olur.
-            // Bu yüzden boş döner ama RC-012 type varlığını kontrol eder.
+        // 1. Canonical model'de type report_group yoksa registry kapalı.
+        if (!isReportGroupTypeRegistered()) {
             return Collections.emptySet();
         }
-        return Collections.emptySet();
+        // 2. PermissionDataInitializer source'dan reports.<GROUP> key'leri parse.
+        if (!Files.exists(permissionInitializerPath)) {
+            log.warn("PermissionDataInitializer source bulunamadı: {} — reportGroup"
+                    + " registry boş, RC-012 type-level WARN'a düşer",
+                    permissionInitializerPath);
+            return Collections.emptySet();
+        }
+        try {
+            String content = Files.readString(permissionInitializerPath);
+            Matcher m = PERMISSION_REPORT_GROUP_PATTERN.matcher(content);
+            Set<String> groups = new HashSet<>();
+            while (m.find()) {
+                groups.add(m.group(1));
+            }
+            log.debug("Parsed {} reportGroups from PermissionDataInitializer", groups.size());
+            return Collections.unmodifiableSet(groups);
+        } catch (IOException ex) {
+            log.warn("PermissionDataInitializer parse hatası: {}", ex.getMessage());
+            return Collections.emptySet();
+        }
     }
 }
