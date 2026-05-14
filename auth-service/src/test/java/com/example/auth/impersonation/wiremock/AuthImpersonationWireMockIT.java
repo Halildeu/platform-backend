@@ -259,6 +259,9 @@ class AuthImpersonationWireMockIT {
         assertThat(sessionBody.get("jti").asText()).isEqualTo("jti-happy-1");
         assertThat(sessionBody.get("sid").asText()).isEqualTo("sid-happy-1");
         assertThat(sessionBody.get("reason").asText()).contains("Faz 1 happy path proof");
+
+        // assert wire contract headers (Codex REVISE-2)
+        assertHappyPathHeaders(targetUserId);
     }
 
     @Test
@@ -338,9 +341,47 @@ class AuthImpersonationWireMockIT {
                 .as("validation response must include a 'reason' field error")
                 .isTrue();
 
-        // assert zero downstream calls
+        // assert zero downstream calls (Codex REVISE-2: include audit sink)
         assertThat(countGetsTo("/api/users/internal/42/impersonation-target")).isZero();
         assertThat(countPostsTo("/api/v1/internal/impersonation/sessions")).isZero();
+        assertThat(countPostsTo("/api/v1/internal/impersonation/audit-events")).isZero();
         verify(keycloakBrokerClient, never()).exchange(any(), any());
+    }
+
+    // ------------------------------------------------------------------
+    // Wire contract header assertions (Codex REVISE-2 optional, absorbed):
+    // verify that internal HTTP calls carry the auth headers configured by
+    // the SERVICE_AUTH / internal-api-key drift guards.
+    // ------------------------------------------------------------------
+
+    /** Last request to a given path (POST or GET), or null if none. */
+    private com.github.tomakehurst.wiremock.verification.LoggedRequest lastRequestTo(String path) {
+        var all = wireMock.getAllServeEvents();
+        com.github.tomakehurst.wiremock.verification.LoggedRequest match = null;
+        for (var ev : all) {
+            if (path.equals(ev.getRequest().getUrl().split("\\?")[0])) {
+                match = ev.getRequest();
+            }
+        }
+        return match;
+    }
+
+    /** Header assertions shared by the happy case — kept as a separate
+     *  helper so Phase 2 can reuse it. */
+    private void assertHappyPathHeaders(long targetUserId) {
+        var userServiceReq = lastRequestTo(
+                "/api/users/internal/" + targetUserId + "/impersonation-target");
+        assertThat(userServiceReq)
+                .as("user-service internal lookup must have been called")
+                .isNotNull();
+        assertThat(userServiceReq.getHeader("Authorization"))
+                .as("user-service call must forward a service-token bearer")
+                .startsWith("Bearer ");
+
+        var sessionReq = lastRequestTo("/api/v1/internal/impersonation/sessions");
+        assertThat(sessionReq).isNotNull();
+        assertThat(sessionReq.getHeader("X-Internal-Api-Key"))
+                .as("permission-service session create must carry the internal API key")
+                .isNotEmpty();
     }
 }
