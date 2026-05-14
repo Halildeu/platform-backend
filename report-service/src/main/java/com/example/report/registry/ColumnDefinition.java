@@ -25,9 +25,10 @@ package com.example.report.registry;
  * @param defaultAggFunc PR-0.2: default aggregation function applied when
  *                       the column appears in {@code valueCols} without
  *                       an explicit {@code aggFunc}. One of
- *                       {@code sum / avg / min / max / count}; null →
- *                       defaults to {@code sum} for numeric columns and
- *                       {@code count} for everything else.
+ *                       {@code sum / avg / min / max / count / stddev /
+ *                       stddevp / distinctcount} (PR-0.4z extended);
+ *                       null → defaults to {@code sum} for numeric
+ *                       columns and {@code count} for everything else.
  */
 public record ColumnDefinition(
         String field,
@@ -56,9 +57,13 @@ public record ColumnDefinition(
                     && !normalized.equals("avg")
                     && !normalized.equals("min")
                     && !normalized.equals("max")
-                    && !normalized.equals("count")) {
+                    && !normalized.equals("count")
+                    && !normalized.equals("stddev")
+                    && !normalized.equals("stddevp")
+                    && !normalized.equals("distinctcount")) {
                 throw new IllegalArgumentException(
-                        "defaultAggFunc must be one of sum/avg/min/max/count, got: "
+                        "defaultAggFunc must be one of "
+                                + "sum/avg/min/max/count/stddev/stddevp/distinctcount, got: "
                                 + defaultAggFunc);
             }
             defaultAggFunc = normalized.isEmpty() ? null : normalized;

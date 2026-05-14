@@ -183,9 +183,21 @@ public class SqlBuilder {
      * Allowed AG Grid SSRM aggregation function tokens. Both the request
      * payload and the column registry's {@code defaultAggFunc} normalise
      * to lower-case before comparing, so the set is canonical.
+     *
+     * <p>PR-0.4z (2026-05) extends the original PR-0.2 set
+     * ({@code sum, avg, min, max, count}) with three direct MSSQL
+     * aggregate mappings: {@code stddev} → {@code STDEV},
+     * {@code stddevp} → {@code STDEVP}, and {@code distinctcount} →
+     * {@code COUNT(DISTINCT ...)}. Reports opt in per column via
+     * {@code defaultAggFunc} or per request via {@code valueCols.aggFunc}.
+     *
+     * <p>Functions that require a different SQL shape (median,
+     * percentile, weightedAvg) remain rejected and are scheduled for
+     * follow-up PRs (PR #6a median, PR #6b percentile, PR-0.4 weightedAvg).
      */
     private static final Set<String> ALLOWED_AGG_FUNCS = Set.of(
-            "sum", "avg", "min", "max", "count");
+            "sum", "avg", "min", "max", "count",
+            "stddev", "stddevp", "distinctcount");
 
     /**
      * Specifies a single value-column aggregation for
@@ -193,11 +205,13 @@ public class SqlBuilder {
      * List, String, List, Map, List, String, MapSqlParameterSource, int, int)}.
      * The SQL builder emits {@code <func>([field]) AS [field]} so the
      * aggregated column shadows the raw field on the response row, matching
-     * AG Grid's convention.
+     * AG Grid's convention. {@code distinctcount} renders as
+     * {@code COUNT(DISTINCT [field]) AS [field]}.
      *
      * @param field SQL column name (must be in the visible-columns
      *              allow-list).
-     * @param func  Aggregation function (sum / avg / min / max / count).
+     * @param func  Aggregation function (sum / avg / min / max / count /
+     *              stddev / stddevp / distinctcount).
      */
     public record GroupedAggregation(String field, String func) {
         public GroupedAggregation {
@@ -217,6 +231,38 @@ public class SqlBuilder {
             }
             func = normalized;
         }
+    }
+
+    /**
+     * Render the aggregate SQL expression for a {@link GroupedAggregation}.
+     * Token-to-T-SQL mapping:
+     * <ul>
+     *   <li>{@code sum / avg / min / max / count} → canonical
+     *       {@code FUNC([field])}.</li>
+     *   <li>{@code stddev} → {@code STDEV([field])} (MSSQL sample
+     *       standard deviation — single {@code D}).</li>
+     *   <li>{@code stddevp} → {@code STDEVP([field])} (MSSQL population
+     *       standard deviation).</li>
+     *   <li>{@code distinctcount} → {@code COUNT(DISTINCT [field])}.</li>
+     * </ul>
+     *
+     * <p>The AG Grid SSRM payload uses the double-{@code D} {@code stddev}
+     * convention, so the token is normalised at the registry/DTO boundary
+     * and the MSSQL spelling is applied only at render time. This keeps
+     * the registry vocabulary aligned with the frontend value-column
+     * picker while emitting valid T-SQL on the wire.
+     *
+     * <p>The output never includes an outer {@code AS [alias]} — callers
+     * append the alias separately to keep the alias contract uniform with
+     * other emitted columns.
+     */
+    private static String renderAggExpression(GroupedAggregation a) {
+        return switch (a.func()) {
+            case "distinctcount" -> "COUNT(DISTINCT [" + a.field() + "])";
+            case "stddev" -> "STDEV([" + a.field() + "])";
+            case "stddevp" -> "STDEVP([" + a.field() + "])";
+            default -> a.func().toUpperCase() + "([" + a.field() + "])";
+        };
     }
 
     /**
@@ -296,8 +342,7 @@ public class SqlBuilder {
         sql.append("SELECT [").append(groupColumn).append("]");
         sql.append(", COUNT(*) AS [_rowCount]");
         for (GroupedAggregation a : sanitized) {
-            sql.append(", ").append(a.func().toUpperCase())
-               .append("([").append(a.field()).append("])")
+            sql.append(", ").append(renderAggExpression(a))
                .append(" AS [").append(a.field()).append("]");
         }
         sql.append(" FROM ").append(fromResult.sql());
