@@ -214,21 +214,28 @@ class WorkcubeMethodSecurityTest {
         assertThat(body).containsEntry("error", "mssql_unavailable");
     }
 
-    // Adım 11.4: reportCount_denies_403_whenNonAdmin removed for same reason
-    // as reportData_denies_403 above — class-level guard gone; service-level
-    // authz proven via WorkcubeReportExecutionServiceTest 11.4 acceptance.
-    @org.junit.jupiter.api.Disabled("Adım 11.4: class-level guard removed; see WorkcubeReportExecutionServiceTest")
+    // Adım 11.4: reportCount class-level guard removed. Non-admin denial
+    // now happens at service level via accessEvaluator.evaluate() ==
+    // DENIED branch (tested in WorkcubeReportExecutionServiceTest
+    // executeCount_accessDenied_throwsForbidden). Old AccessDeniedException
+    // expectation removed; no replacement here (route-level proof in
+    // service-test class).
     @Test
-    void reportCount_denies_403_whenNonAdmin_DEPRECATED() {
+    void reportCount_classLevelGuardRemoved_serviceLevelHandlesAuthz() {
+        // Sanity: with mock service, controller path returns whatever
+        // service decides; no AccessDeniedException from class-level guard.
         Jwt jwt = jwt("user3");
         SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
 
         AuthzMeResponse nonAdmin = new AuthzMeResponse();
         nonAdmin.setSuperAdmin(false);
         when(permissionResolver.getAuthzMe(any())).thenReturn(nonAdmin);
+        when(executionService.executeCount(any(), any(), any(), any())).thenReturn(0L);
 
-        assertThatThrownBy(() -> controller.reportCount("workcube-inv", null, null, jwt))
-                .isInstanceOf(AccessDeniedException.class);
+        ResponseEntity<?> response = controller.reportCount("workcube-inv", null, null, jwt);
+        // No AccessDeniedException — class-level guard gone. Service path
+        // returns the mocked count without any controller-level authz block.
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
     }
 
     private Jwt jwt(String sub) {

@@ -311,6 +311,45 @@ class WorkcubeReportExecutionServiceTest {
                 any(MapSqlParameterSource.class), anyInt(), anyInt());
     }
 
+    // ---- Adım 11.4 REVISE-1 Codex iter-34: Workcube pipeline composite ----
+
+    @Test
+    void executeData_scopedUserValidPermissionWithHeader_returns200_AdimaSemantic() {
+        // Codex iter-34 Blocker 1: prove interim gate actually removed —
+        // non-super-admin with valid permission + valid X-Company-Id can
+        // now execute Workcube reports (was 403 before Adım 11.4).
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(scopedUser("35"));
+        when(adapter.executeData(any(), any(), anyList(), anyMap(), anyList(),
+                anyString(), any(), anyInt(), anyInt())).thenReturn(List.of(Map.of("x", 1)));
+        when(adapter.executeCount(any(), any(), anyMap(), anyList(),
+                anyString(), any(MapSqlParameterSource.class))).thenReturn(1L);
+
+        PagedResultDto<Map<String, Object>> result = service.executeData(
+                "workcube-inv", 1, 50, null, null, "35", mock(Jwt.class));
+
+        assertThat(result.items()).hasSize(1);
+        org.mockito.Mockito.verify(auditClient).logReportAccess(
+                org.mockito.ArgumentMatchers.eq("workcube-inv"), any(), any());
+    }
+
+    @Test
+    void executeData_scopedUserOutOfScopeCompany_throwsResponseStatus403() {
+        // Codex iter-34 Blocker 2: out-of-scope company narrow throws
+        // ResponseStatusException 403 from CompanyHeaderScopeNarrower in
+        // Workcube service pipeline (not just narrower unit test).
+        ReportDefinition def = def("workcube-inv");
+        when(registry.get("workcube-inv")).thenReturn(Optional.of(def));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(scopedUser("35"));
+
+        assertThatThrownBy(() -> service.executeData(
+                "workcube-inv", 1, 50, null, null, "99", mock(Jwt.class)))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .extracting(t -> ((org.springframework.web.server.ResponseStatusException) t).getStatusCode())
+                .isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN);
+    }
+
     @Test
     void executeCount_accessDenied_throwsForbidden() {
         ReportDefinition def = def("workcube-inv");
