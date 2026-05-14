@@ -63,7 +63,7 @@ class WorkcubeMethodSecurityTest {
 
         @Bean
         WorkcubeReportController workcubeReportController(WorkcubeReportRepository repo) {
-            return new WorkcubeReportController(repo);
+            return new WorkcubeReportController(repo, null);
         }
     }
 
