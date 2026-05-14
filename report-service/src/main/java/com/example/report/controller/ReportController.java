@@ -358,10 +358,12 @@ public class ReportController {
             try {
                 mergedFilter = mergeAncestorFilters(
                         safeRequest.filterModel(), rowGroupCols, groupKeys, visibleCols);
-            } catch (AncestorFilterCollisionException afce) {
-                return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
-                        "ANCESTOR_FILTER_COLLISION", afce.getMessage()));
             } catch (IllegalArgumentException iae) {
+                // PR #5b (Codex 019e2695): AncestorFilterCollisionException
+                // removed; same-field ancestor + user filter now merges
+                // as a compound AND. Only the type-coercion failure
+                // path (IllegalArgumentException from coerceGroupKey)
+                // still surfaces as a structured 400.
                 return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
                         "INVALID_GROUP_KEY", iae.getMessage()));
             }
@@ -501,6 +503,7 @@ public class ReportController {
      *       {@link AncestorFilterCollisionException}.</li>
      * </ul>
      */
+    @SuppressWarnings("unchecked")
     private static Map<String, Object> mergeAncestorFilters(
             Map<String, Object> userFilter,
             List<ColumnVO> rowGroupCols,
@@ -517,28 +520,147 @@ public class ReportController {
             String field = col != null ? col.field() : null;
             String value = groupKeys.get(i);
             if (field == null) continue;
+
+            Map<String, Object> ancestorEntry =
+                    buildAncestorEntry(field, value, byField.get(field));
+
+            // PR #5b (Codex thread 019e2695): compound AND merge.
+            // Existing semantics flipped — same-field user filter and
+            // ancestor groupKey are no longer fatal. The merge layer
+            // emits a compound `{operator: "AND", ...}` entry that the
+            // FilterTranslator (PR #5a) translates into a parenthesised
+            // SQL clause. Pure-duplicate predicates (same-equals,
+            // same-blank) are skipped to keep the generated SQL clean.
             if (merged.containsKey(field)) {
-                throw new AncestorFilterCollisionException(
-                        "Ancestor groupKey for '" + field + "' collides with "
-                                + "user filterModel entry for the same column. "
-                                + "Compound AND is not yet supported; remove the "
-                                + "user filter on this column or wait until the "
-                                + "follow-up PR extends FilterTranslator.");
+                Object existingObj = merged.get(field);
+                if (existingObj instanceof Map<?, ?> existingRaw) {
+                    Map<String, Object> existing = (Map<String, Object>) existingRaw;
+                    if (areSimpleEntriesEquivalent(ancestorEntry, existing)) {
+                        // Redundant predicate (ancestor reasserts what
+                        // the user filter already says); skip to avoid
+                        // `[col] = X AND [col] = X` noise. Codex iter-2
+                        // §1 absorb: idempotent skip only on exact
+                        // simple equivalence — number/type coercion
+                        // mismatches fall through to compound emit.
+                        continue;
+                    }
+                    merged.put(field, mergeAsCompoundAnd(ancestorEntry, existing));
+                    continue;
+                }
+                // Existing entry is not a map (malformed). Defensive
+                // fallback: overwrite with the ancestor so the query
+                // still runs with the route constraint applied.
             }
-            if (value == null) {
-                // PR #4: null ancestor → blank filter (IS NULL).
-                // coerceGroupKey is intentionally skipped for null
-                // values; there is no scalar to type-coerce, and the
-                // FilterTranslator `blank` branch is type-agnostic.
-                merged.put(field, Map.of("type", "blank"));
-            } else {
-                Object coercedValue = coerceGroupKey(field, value, byField.get(field));
-                merged.put(field, Map.of(
-                        "type", "equals",
-                        "filter", coercedValue));
-            }
+            merged.put(field, ancestorEntry);
         }
         return merged;
+    }
+
+    /**
+     * Build the canonical filter entry shape for a single ancestor
+     * groupKey. {@code null} value renders as {@code {type: "blank"}}
+     * (FilterTranslator emits {@code IS NULL}); scalar values run
+     * through {@link #coerceGroupKey} for type-aware binding.
+     */
+    private static Map<String, Object> buildAncestorEntry(
+            String field, String value, ColumnDefinition cd) {
+        if (value == null) {
+            return Map.of("type", "blank");
+        }
+        Object coercedValue = coerceGroupKey(field, value, cd);
+        return Map.of("type", "equals", "filter", coercedValue);
+    }
+
+    /**
+     * PR #5b idempotent-skip predicate. Two filter entries count as
+     * semantically equivalent when both are simple (no compound
+     * {@code operator}) AND either both are {@code blank} or both are
+     * {@code equals} with {@link java.util.Objects#equals} value
+     * parity. Anything else returns {@code false} so the merge layer
+     * falls through to compound AND emission.
+     *
+     * <p>Codex iter-2 §1 absorb: the skip must be type-aware, since
+     * a numeric ancestor groupKey is coerced to {@code Double} while
+     * a user filterModel value can arrive as {@code Integer} from
+     * JSON. {@code Double(2024.0)} != {@code Integer(2024)} via
+     * {@code Objects.equals}, so the type-coercion ambiguity falls
+     * through to compound emit rather than producing a silent skip.
+     */
+    private static boolean areSimpleEntriesEquivalent(
+            Map<String, Object> ancestor, Map<String, Object> existing) {
+        if (ancestor == null || existing == null) return false;
+        if (ancestor.containsKey("operator") || existing.containsKey("operator")) {
+            return false;
+        }
+        String ancestorType = (String) ancestor.get("type");
+        String existingType = (String) existing.get("type");
+        if (ancestorType == null || existingType == null) return false;
+        if (!ancestorType.equals(existingType)) return false;
+
+        if ("blank".equals(ancestorType)) {
+            return true;
+        }
+        if ("equals".equals(ancestorType)) {
+            return java.util.Objects.equals(
+                    ancestor.get("filter"), existing.get("filter"));
+        }
+        // Other simple-filter types (contains, inRange, set, ...) do not
+        // claim idempotent equivalence; they fall through to compound
+        // emit so the SQL preserves both predicates.
+        return false;
+    }
+
+    /**
+     * PR #5b compound merge. Wraps the ancestor entry and the existing
+     * user-filter entry into a single AND compound that
+     * {@link com.example.report.query.FilterTranslator} can parse via
+     * its PR #5a recursive shape.
+     *
+     * <p>When the existing entry is already an {@code AND} compound,
+     * the ancestor is flattened into the {@code conditions[]} list so
+     * the resulting predicate stays {@code (ancestor AND a AND b)}
+     * rather than {@code (ancestor AND (a AND b))} — equivalent SQL
+     * but easier to read in logs.
+     *
+     * <p>When the existing entry is an {@code OR} compound, an outer
+     * {@code AND} wraps it intact, preserving the OR precedence:
+     * {@code (ancestor AND (a OR b))}.
+     *
+     * <p>Simple-filter or unrecognised existing entries always go
+     * through a fresh outer AND.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> mergeAsCompoundAnd(
+            Map<String, Object> ancestorEntry,
+            Map<String, Object> existing) {
+        Object opObj = existing.get("operator");
+        if (opObj instanceof String opStr && "AND".equalsIgnoreCase(opStr.trim())) {
+            // Flatten into existing AND.
+            List<Map<String, Object>> flattened = new java.util.ArrayList<>();
+            flattened.add(ancestorEntry);
+            Object conditionsObj = existing.get("conditions");
+            if (conditionsObj instanceof List<?> list) {
+                for (Object child : list) {
+                    if (child instanceof Map<?, ?> childMap) {
+                        flattened.add((Map<String, Object>) childMap);
+                    }
+                }
+            } else {
+                Object c1 = existing.get("condition1");
+                Object c2 = existing.get("condition2");
+                if (c1 instanceof Map<?, ?> c1Map) flattened.add((Map<String, Object>) c1Map);
+                if (c2 instanceof Map<?, ?> c2Map) flattened.add((Map<String, Object>) c2Map);
+            }
+            return Map.of(
+                    "operator", "AND",
+                    "conditions", flattened);
+        }
+        // Existing is simple, OR-compound, or unknown — nest under a
+        // fresh AND wrapper so the user's predicate keeps its shape.
+        return Map.of(
+                "operator", "AND",
+                "condition1", ancestorEntry,
+                "condition2", existing);
     }
 
     /**
@@ -569,17 +691,10 @@ public class ReportController {
         }
     }
 
-    /**
-     * Sentinel raised by {@link #mergeAncestorFilters} when an ancestor
-     * route key collides with a user-supplied filter on the same column.
-     * The controller catches this and emits
-     * {@code 400 ANCESTOR_FILTER_COLLISION}.
-     */
-    static final class AncestorFilterCollisionException extends RuntimeException {
-        AncestorFilterCollisionException(String message) {
-            super(message);
-        }
-    }
+    // PR #5b (Codex thread 019e2695): AncestorFilterCollisionException
+    // removed. Same-field ancestor + user filter is no longer a fatal
+    // condition; mergeAncestorFilters emits a compound AND entry that
+    // FilterTranslator (PR #5a) parses into a parenthesised SQL clause.
 
     /**
      * Project AG Grid's {@code valueCols} payload onto the registry's
