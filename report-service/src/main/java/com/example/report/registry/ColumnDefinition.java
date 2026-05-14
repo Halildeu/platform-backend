@@ -24,17 +24,27 @@ import java.util.Map;
  * @param aggregatable   PR-0.2: when true, the column is offered as a
  *                       {@code valueCols} candidate (frontend value-column
  *                       picker).
- * @param defaultAggFunc PR-0.2: default aggregation function applied when
- *                       the column appears in {@code valueCols} without
- *                       an explicit {@code aggFunc}. One of
- *                       {@code sum / avg / min / max / count / stddev /
- *                       stddevp / distinctcount / median} (PR-0.4z + PR #6a
- *                       extended); null → defaults to {@code sum} for
- *                       numeric columns and {@code count} for everything
- *                       else. {@code percentile} (PR #6b with
- *                       {@code aggParams} contract) and
- *                       {@code weightedAvg} (PR-0.4 with value+weight pair)
- *                       remain on the roadmap.
+ * @param defaultAggFunc      PR-0.2: default aggregation function applied
+ *                            when the column appears in {@code valueCols}
+ *                            without an explicit {@code aggFunc}. One of
+ *                            {@code sum / avg / min / max / count / stddev /
+ *                            stddevp / distinctcount / median /
+ *                            percentilecont} (PR-0.4z + PR #6a + PR #6b
+ *                            extended); null → defaults to {@code sum} for
+ *                            numeric columns and {@code count} for
+ *                            everything else. {@code weightedAvg} (PR-0.4
+ *                            with value+weight pair semantics) remains on
+ *                            the roadmap.
+ * @param defaultAggParams    PR #6b: parametric aggregation defaults. For
+ *                            {@code percentilecont} the map must carry a
+ *                            {@code percentile} entry whose value is a
+ *                            {@link Number} in {@code [0, 1]}. The
+ *                            controller layer ({@code sanitizeAggParams})
+ *                            only consults this map when the resolved
+ *                            aggregation func actually matches the
+ *                            registry's default func, so a stray
+ *                            percentile default cannot leak into an
+ *                            explicit {@code sum} override.
  */
 public record ColumnDefinition(
         String field,

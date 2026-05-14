@@ -811,8 +811,18 @@ public class ReportController {
     private static Map<String, Object> sanitizeAggParams(
             ColumnVO vc, ColumnDefinition cd, String func) {
         Map<String, Object> params = vc.aggParams();
+        // Codex 019e2695 iter-8 absorb: registry defaultAggParams
+        // fallback applies ONLY when (a) the request did not supply
+        // its own aggParams, (b) the resolved func is `percentilecont`,
+        // AND (c) the registry's defaultAggFunc is also `percentilecont`
+        // — otherwise an explicit request `aggFunc=sum` would pick up
+        // a stray percentile default from the registry and fail the
+        // "non-parametric + populated params" guard further down.
         if ((params == null || params.isEmpty())
-                && cd != null && cd.defaultAggParams() != null) {
+                && "percentilecont".equals(func)
+                && cd != null
+                && "percentilecont".equals(cd.defaultAggFunc())
+                && cd.defaultAggParams() != null) {
             params = cd.defaultAggParams();
         }
         if (params == null || params.isEmpty()) {

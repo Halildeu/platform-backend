@@ -40,6 +40,17 @@ public record ColumnVO(
         String aggFunc,
         Map<String, Object> aggParams) {
 
+    public ColumnVO {
+        // Codex 019e2695 iter-8 absorb: defensive immutability for
+        // aggParams. Empty maps collapse to null so the rest of the
+        // pipeline can use a single null-check; non-empty maps are
+        // copied to an immutable view so a future mutation on the
+        // caller side cannot leak into the canonical record.
+        if (aggParams != null) {
+            aggParams = aggParams.isEmpty() ? null : Map.copyOf(aggParams);
+        }
+    }
+
     /**
      * Backward-compatible 4-arg constructor for call sites that predate
      * PR #6b. Defaults {@code aggParams} to {@code null} so existing

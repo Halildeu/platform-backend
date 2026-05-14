@@ -191,17 +191,16 @@ public class SqlBuilder {
      * {@code COUNT(DISTINCT ...)}. Reports opt in per column via
      * {@code defaultAggFunc} or per request via {@code valueCols.aggFunc}.
      *
-     * <p>PR #6a (Codex thread 019e2695): {@code median} joins the
-     * whitelist with a different SQL shape — PERCENTILE_CONT is a
-     * window function in MSSQL, so {@link #buildGroupedQuery} routes
-     * median through an inner-subquery + outer-MAX-collapse path
+     * <p>PR #6a + PR #6b (Codex thread 019e2695): {@code median} and
+     * {@code percentilecont} both depend on MSSQL's
+     * {@code PERCENTILE_CONT} window function, so {@link #buildGroupedQuery}
+     * routes them through an inner-subquery + outer-MAX-collapse path
      * instead of the simple {@code FUNC([field])} render. The simple
-     * {@link #renderAggExpression} helper rejects median to make the
-     * routing invariant explicit.
+     * {@link #renderAggExpression} helper rejects both tokens to make
+     * the routing invariant explicit.
      *
-     * <p>Remaining roadmap functions: {@code percentile} (PR #6b
-     * with registry {@code aggParams} contract) and
-     * {@code weightedAvg} (PR-0.4 with value+weight pair semantics).
+     * <p>Remaining roadmap function: {@code weightedAvg} (PR-0.4 with
+     * value+weight pair semantics).
      */
     private static final Set<String> ALLOWED_AGG_FUNCS = Set.of(
             "sum", "avg", "min", "max", "count",
@@ -219,8 +218,15 @@ public class SqlBuilder {
      *
      * @param field SQL column name (must be in the visible-columns
      *              allow-list).
-     * @param func  Aggregation function (sum / avg / min / max / count /
-     *              stddev / stddevp / distinctcount).
+     * @param func    Aggregation function token (sum / avg / min / max /
+     *                count / stddev / stddevp / distinctcount / median /
+     *                percentilecont). {@code median} and {@code percentilecont}
+     *                are routed through the inner-subquery PERCENTILE_CONT
+     *                window path by {@link #buildGroupedQuery}; the rest
+     *                use {@link #renderAggExpression}.
+     * @param params  PR #6b: parametric aggregation arguments. Only
+     *                {@code percentilecont} consumes them today, with a
+     *                required {@code percentile} entry in {@code [0, 1]}.
      */
     public record GroupedAggregation(String field, String func, Map<String, Object> params) {
         public GroupedAggregation {
