@@ -191,9 +191,17 @@ public class SqlBuilder {
      * {@code COUNT(DISTINCT ...)}. Reports opt in per column via
      * {@code defaultAggFunc} or per request via {@code valueCols.aggFunc}.
      *
-     * <p>Functions that require a different SQL shape (median,
-     * percentile, weightedAvg) remain rejected and are scheduled for
-     * follow-up PRs (PR #6a median, PR #6b percentile, PR-0.4 weightedAvg).
+     * <p>PR #6a (Codex thread 019e2695): {@code median} joins the
+     * whitelist with a different SQL shape — PERCENTILE_CONT is a
+     * window function in MSSQL, so {@link #buildGroupedQuery} routes
+     * median through an inner-subquery + outer-MAX-collapse path
+     * instead of the simple {@code FUNC([field])} render. The simple
+     * {@link #renderAggExpression} helper rejects median to make the
+     * routing invariant explicit.
+     *
+     * <p>Remaining roadmap functions: {@code percentile} (PR #6b
+     * with registry {@code aggParams} contract) and
+     * {@code weightedAvg} (PR-0.4 with value+weight pair semantics).
      */
     private static final Set<String> ALLOWED_AGG_FUNCS = Set.of(
             "sum", "avg", "min", "max", "count",
@@ -266,7 +274,18 @@ public class SqlBuilder {
             case "distinctcount" -> "COUNT(DISTINCT [" + a.field() + "])";
             case "stddev" -> "STDEV([" + a.field() + "])";
             case "stddevp" -> "STDEVP([" + a.field() + "])";
-            default -> a.func().toUpperCase() + "([" + a.field() + "])";
+            // PR #6a (Codex 019e2695 iter-6): median must never travel
+            // through the simple-render path. PERCENTILE_CONT is a
+            // window function in MSSQL, so calling FUNC([field]) here
+            // would emit invalid T-SQL. The buildGroupedQuery median
+            // branch handles this case; if a future refactor routes a
+            // median aggregation here by accident, fail loudly rather
+            // than silently producing "MEDIAN([col])".
+            case "median" -> throw new IllegalStateException(
+                    "median aggregation must use the buildGroupedQuery "
+                            + "PERCENTILE_CONT window path, not renderAggExpression");
+            default -> a.func().toUpperCase(java.util.Locale.ROOT)
+                    + "([" + a.field() + "])";
         };
     }
 

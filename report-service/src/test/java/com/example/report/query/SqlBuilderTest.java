@@ -614,10 +614,12 @@ class SqlBuilderTest {
                     () -> new SqlBuilder.GroupedAggregation("", "sum"));
         }
 
-        // ── PR-0.4z extended aggregate funcs (Codex thread 019e2695) ─────
-        // distinctcount → COUNT(DISTINCT [col]); stddev → STDEV([col]);
-        // stddevp → STDEVP([col]). median + percentile remain rejected;
-        // they ship in PR #6a/#6b with their own query-shape decisions.
+        // ── Extended aggregate funcs (Codex thread 019e2695) ─────────────
+        // PR-0.4z: distinctcount → COUNT(DISTINCT [col]); stddev → STDEV;
+        // stddevp → STDEVP.
+        // PR #6a: median → PERCENTILE_CONT window + outer MAX collapse.
+        // percentile (PR #6b, aggParams contract) and weightedAvg
+        // (PR-0.4) remain on the roadmap and stay rejected here.
 
         @Test
         void appliesStddevAggregation() {
@@ -758,6 +760,11 @@ class SqlBuilderTest {
                     .contains("FROM (")
                     .contains(") AS _med")
                     .contains("GROUP BY [category]");
+            // Codex 019e2695 iter-6: defensive assertion that median
+            // does NOT travel through the simple-aggregate render path.
+            // `MEDIAN([col])` would be invalid T-SQL — the inner
+            // subquery + outer MAX collapse is the only valid shape.
+            assertThat(q.sql()).doesNotContain("MEDIAN([");
         }
 
         @Test

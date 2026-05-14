@@ -26,9 +26,13 @@ package com.example.report.registry;
  *                       the column appears in {@code valueCols} without
  *                       an explicit {@code aggFunc}. One of
  *                       {@code sum / avg / min / max / count / stddev /
- *                       stddevp / distinctcount} (PR-0.4z extended);
- *                       null → defaults to {@code sum} for numeric
- *                       columns and {@code count} for everything else.
+ *                       stddevp / distinctcount / median} (PR-0.4z + PR #6a
+ *                       extended); null → defaults to {@code sum} for
+ *                       numeric columns and {@code count} for everything
+ *                       else. {@code percentile} (PR #6b with
+ *                       {@code aggParams} contract) and
+ *                       {@code weightedAvg} (PR-0.4 with value+weight pair)
+ *                       remain on the roadmap.
  */
 public record ColumnDefinition(
         String field,
