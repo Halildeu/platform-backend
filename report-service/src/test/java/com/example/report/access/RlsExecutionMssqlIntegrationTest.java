@@ -11,6 +11,7 @@ import com.example.report.registry.ReportDefinition;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -91,7 +92,7 @@ class RlsExecutionMssqlIntegrationTest {
                 "CREATE TABLE [" + TEST_SCHEMA + "].[tx_rls] ("
                         + "id INT NOT NULL PRIMARY KEY, "
                         + "owner_id INT NOT NULL, "
-                        + "category NVARCHAR(20) NOT NULL, "
+                        + "category NVARCHAR(20) NULL, "  // PR #4: nullable so the IS NULL bucket test can seed a null row
                         + "amount DECIMAL(18,2) NOT NULL)");
         List<String> seeds = List.of(
                 "INSERT INTO [" + TEST_SCHEMA + "].[tx_rls] VALUES (1, 100, 'FIN', 10.00)",
@@ -290,8 +291,18 @@ class RlsExecutionMssqlIntegrationTest {
         assertThat(rows.get(0).get("id")).isEqualTo(7);
         assertThat(rows.get(0).get("category")).isNull();
 
-        // Cleanup so subsequent test runs against the shared
-        // container start from the canonical 6-row fixture.
+    }
+
+    /**
+     * Codex 019e2695 review iter-3 absorb: the null-bucket scenario
+     * is the first mutating case in an otherwise read-only shared
+     * fixture. {@link AfterEach} keeps the canonical 6-row baseline
+     * intact unconditionally — including the case where the test
+     * body fails before reaching its inline cleanup, which would
+     * otherwise cascade into the next test.
+     */
+    @AfterEach
+    void resetMutatingFixtureRow() {
         jdbc.getJdbcTemplate().execute(
                 "DELETE FROM [" + TEST_SCHEMA + "].[tx_rls] WHERE id = 7");
     }
