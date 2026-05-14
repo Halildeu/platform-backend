@@ -12,12 +12,10 @@ import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
-import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.HandlerMapping;
 
@@ -61,8 +59,6 @@ import org.springframework.web.servlet.HandlerMapping;
  *       writes a request attribute only.</li>
  * </ul>
  */
-@Component
-@ConditionalOnBean(PermissionResolver.class)
 public class TenantBoundaryGuard implements HandlerInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(TenantBoundaryGuard.class);
