@@ -58,6 +58,8 @@ class WorkcubeReportExecutionServiceTest {
     private ColumnFilter columnFilter;
     private RowFilterInjector rowFilterInjector;
     private ReportAuditClient auditClient;
+    private YearlySchemaResolver yearlySchemaResolver;
+    private CurrentTenantSchemaResolver currentTenantSchemaResolver;
 
     @BeforeEach
     void setUp() {
@@ -69,6 +71,8 @@ class WorkcubeReportExecutionServiceTest {
         columnFilter = mock(ColumnFilter.class);
         rowFilterInjector = mock(RowFilterInjector.class);
         auditClient = mock(ReportAuditClient.class);
+        yearlySchemaResolver = mock(YearlySchemaResolver.class);
+        currentTenantSchemaResolver = mock(CurrentTenantSchemaResolver.class);
         // Sensible defaults: allow access, expose all columns, no RLS clause
         when(accessEvaluator.evaluate(org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any())).thenReturn(AccessResult.ALLOWED);
@@ -81,7 +85,7 @@ class WorkcubeReportExecutionServiceTest {
 
         service = new WorkcubeReportExecutionService(
                 registry, permissionResolver, narrower, adapter,
-                mock(YearlySchemaResolver.class), mock(CurrentTenantSchemaResolver.class),
+                yearlySchemaResolver, currentTenantSchemaResolver,
                 accessEvaluator, columnFilter, rowFilterInjector, auditClient,
                 new ObjectMapper());
     }
@@ -332,6 +336,56 @@ class WorkcubeReportExecutionServiceTest {
         assertThat(result.items()).hasSize(1);
         org.mockito.Mockito.verify(auditClient).logReportAccess(
                 org.mockito.ArgumentMatchers.eq("workcube-inv"), any(), any());
+    }
+
+    @Test
+    void executeData_multiCompanyNoHeader_yearly_throwsTenantSelectionRequired() {
+        // Codex iter-35 Blocker 2: multi-company scoped user, yearly report,
+        // no X-Company-Id header → YearlySchemaResolver throws
+        // TenantSelectionRequiredException via Workcube pipeline.
+        ReportDefinition yearlyDef = new ReportDefinition(
+                "workcube-yearly", "1.0", "Yearly", "test", "test",
+                "INVOICE", null, "yearly", "year", null,
+                List.of(new ColumnDefinition("INVOICE_ID", "ID", "number", 50, false)),
+                "INVOICE_ID", "ASC", null);
+        when(registry.get("workcube-yearly")).thenReturn(Optional.of(yearlyDef));
+        when(permissionResolver.getAuthzMe(any()))
+                .thenReturn(scopedUser("35", "99"));
+        // schemaResolver throws TenantSelectionRequiredException for multi-company no header
+        when(yearlySchemaResolver.resolve(any(), any(), anyMap()))
+                .thenThrow(new com.example.report.query.TenantSelectionRequiredException(
+                        "workcube-yearly",
+                        "Multi-company user must provide X-Company-Id"));
+
+        assertThatThrownBy(() -> service.executeData(
+                "workcube-yearly", 1, 50, null, null, null, mock(Jwt.class)))
+                .isInstanceOf(com.example.report.query.TenantSelectionRequiredException.class);
+
+        // Verify adapter NOT called (fail before SQL)
+        org.mockito.Mockito.verify(adapter, org.mockito.Mockito.never())
+                .executeData(any(), any(), anyList(), anyMap(), anyList(),
+                        anyString(), any(), anyInt(), anyInt());
+    }
+
+    @Test
+    void executeData_superAdminNoHeader_yearly_throwsTenantSelectionRequired() {
+        // Codex iter-35 Blocker 2 part 2: super-admin no scope/no header
+        // on yearly report → resolver demands X-Company-Id picker.
+        ReportDefinition yearlyDef = new ReportDefinition(
+                "workcube-yearly", "1.0", "Yearly", "test", "test",
+                "INVOICE", null, "yearly", "year", null,
+                List.of(new ColumnDefinition("INVOICE_ID", "ID", "number", 50, false)),
+                "INVOICE_ID", "ASC", null);
+        when(registry.get("workcube-yearly")).thenReturn(Optional.of(yearlyDef));
+        when(permissionResolver.getAuthzMe(any())).thenReturn(superAdmin());
+        when(yearlySchemaResolver.resolve(any(), any(), anyMap()))
+                .thenThrow(new com.example.report.query.TenantSelectionRequiredException(
+                        "workcube-yearly",
+                        "Super-admin must use X-Company-Id picker for yearly reports"));
+
+        assertThatThrownBy(() -> service.executeData(
+                "workcube-yearly", 1, 50, null, null, null, mock(Jwt.class)))
+                .isInstanceOf(com.example.report.query.TenantSelectionRequiredException.class);
     }
 
     @Test
