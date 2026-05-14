@@ -264,6 +264,55 @@ class FilterTranslatorTest {
     }
 
     @Test
+    void translate_simpleFilterWithStrayOperatorMetadata_stillUsesSimplePath() {
+        // Codex 019e2695 iter-3 absorb: an `operator` key alone must
+        // not divert a simple filter into the compound branch. The
+        // dispatch requires `operator` AND at least one compound child
+        // slot (conditions[], condition1, condition2); otherwise the
+        // simple-filter switch runs as before. A regression here would
+        // silently drop every simple filter on AG Grid versions that
+        // always emit `operator` metadata.
+        var filterWithStrayOperator = new java.util.HashMap<String, Object>();
+        filterWithStrayOperator.put("type", "equals");
+        filterWithStrayOperator.put("filter", "FIN");
+        filterWithStrayOperator.put("operator", "AND"); // stray; no condition1/2/conditions
+
+        var result = translator.translate(
+                Map.of("name", filterWithStrayOperator), allowed);
+
+        assertTrue(result.whereClause().contains("[name] = :"),
+                "simple filter must keep working when operator key is "
+                        + "present but no compound child slot is provided");
+        assertFalse(result.whereClause().contains("("),
+                "no parenthesised compound output for the simple-path case");
+    }
+
+    @Test
+    void translate_compoundDepthCapExceeded_dropsClauseSilently() {
+        // Codex 019e2695 iter-3 absorb: a request-controlled payload
+        // cannot push the parser past MAX_COMPOUND_DEPTH (16). Build
+        // a 20-level single-child nested chain so each level has no
+        // sibling simple clause to fall back to — once the cap fires
+        // the innermost null cascades all the way up and the whole
+        // entry is skipped from the top-level join.
+        Map<String, Object> nested = Map.of("type", "equals", "filter", "X");
+        for (int i = 0; i < 20; i++) {
+            nested = Map.of(
+                    "operator", "AND",
+                    "conditions", List.of(nested));
+        }
+
+        var result = translator.translate(Map.of("name", nested), allowed);
+
+        // No simple-clause siblings → depth cap nullifies the whole
+        // entry. Stack overflow proof: this loop completes without a
+        // StackOverflowError because the parser bails out at depth 16
+        // rather than walking the full 20-level chain.
+        assertEquals("", result.whereClause(),
+                "depth cap must drop the entire over-nested compound entry");
+    }
+
+    @Test
     void translate_compoundConditionsArray_filtersInvalidEntriesSilently() {
         // If one of the conditions is malformed (e.g. unknown type),
         // the recursive parser drops it but the rest are still joined.

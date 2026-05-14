@@ -8,6 +8,16 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 
 public class FilterTranslator {
 
+    /**
+     * PR #5a (Codex 019e2695 review iter-3): cap on recursive compound
+     * filter nesting depth so a malicious payload cannot exhaust the
+     * stack. AG Grid UI typically produces 2-3 nested levels at most;
+     * 16 leaves comfortable headroom while protecting the parser.
+     * Mirrors the PR-0.3 {@code MAX_ROW_GROUP_DEPTH = 8} discipline
+     * on the controller side.
+     */
+    private static final int MAX_COMPOUND_DEPTH = 16;
+
     private int paramCounter = 0;
 
     public record FilterResult(String whereClause, MapSqlParameterSource params) {}
@@ -28,7 +38,7 @@ public class FilterTranslator {
 
             Object filterModel = entry.getValue();
             if (filterModel instanceof Map<?, ?> filterMap) {
-                String clause = translateSingleFilter(column, filterMap, params);
+                String clause = translateSingleFilter(column, filterMap, params, 0);
                 if (clause != null && !clause.isBlank()) {
                     clauses.add(clause);
                 }
@@ -40,16 +50,20 @@ public class FilterTranslator {
     }
 
     @SuppressWarnings("unchecked")
-    private String translateSingleFilter(String column, Map<?, ?> filterMap, MapSqlParameterSource params) {
-        // PR #5a (Codex thread 019e2695): if the filter entry carries an
-        // `operator`, dispatch to the compound parser. This is what AG
-        // Grid SSRM emits when the user stacks two filter chips on the
-        // same column, and what PR #5b's compound ancestor merge will
-        // produce when an ancestor groupKey lands on a column that also
-        // has a user filter. Compound parsing is recursive so a nested
-        // OR inside an outer AND keeps its own parentheses.
-        if (filterMap.containsKey("operator")) {
-            return translateCompoundFilter(column, filterMap, params);
+    private String translateSingleFilter(String column, Map<?, ?> filterMap, MapSqlParameterSource params, int depth) {
+        // PR #5a (Codex thread 019e2695): if the filter entry has both
+        // an `operator` AND at least one compound child slot
+        // (`conditions[]`, `condition1`, or `condition2`), dispatch to
+        // the recursive compound parser. The double check is intentional:
+        // a simple filter that happens to carry a stray `operator`
+        // metadata key (e.g. an AG Grid version that always emits the
+        // field) must still hit the simple-filter path below, not
+        // disappear into the compound branch.
+        if (filterMap.containsKey("operator")
+                && (filterMap.containsKey("conditions")
+                        || filterMap.containsKey("condition1")
+                        || filterMap.containsKey("condition2"))) {
+            return translateCompoundFilter(column, filterMap, params, depth);
         }
 
         String filterType = (String) filterMap.get("filterType");
@@ -160,7 +174,15 @@ public class FilterTranslator {
      * silently; the surviving siblings are still joined.
      */
     @SuppressWarnings("unchecked")
-    private String translateCompoundFilter(String column, Map<?, ?> filterMap, MapSqlParameterSource params) {
+    private String translateCompoundFilter(String column, Map<?, ?> filterMap, MapSqlParameterSource params, int depth) {
+        // PR #5a (Codex 019e2695 review iter-3): depth cap. AG Grid UI
+        // typically produces 2-3 nested levels; anything deeper than
+        // MAX_COMPOUND_DEPTH is dropped to null so a request-controlled
+        // payload cannot exhaust the JVM stack.
+        if (depth >= MAX_COMPOUND_DEPTH) {
+            return null;
+        }
+
         Object opObj = filterMap.get("operator");
         if (!(opObj instanceof String opStr)) {
             return null;
@@ -188,7 +210,7 @@ public class FilterTranslator {
 
         List<String> clauses = new ArrayList<>();
         for (Map<?, ?> child : childConditions) {
-            String clause = translateSingleFilter(column, child, params);
+            String clause = translateSingleFilter(column, child, params, depth + 1);
             if (clause != null && !clause.isBlank()) {
                 clauses.add(clause);
             }
