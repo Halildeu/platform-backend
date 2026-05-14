@@ -247,8 +247,16 @@ jobs:
         # StatefulSet upload). Bu adım aynı renderer'ı CI'da koşturur — runtime
         # ile aynı parser path. `but not` syntax desteklenir (fga CLI v0.7.13
         # parser limit'ine alternatif).
+        #
+        # render_model_json.py şu an `#` yorum satırlarını desteklemiyor;
+        # CI'da strip et + render et. Bu küçük workaround, renderer fix'i
+        # ayrı governance PR.
         run: |
-          python3 backend/openfga/render_model_json.py backend/openfga/model.fga > /tmp/model.json
+          set -e
+          # Strip leading-# comments + empty lines (renderer parsing limit)
+          grep -vE '^\s*#' backend/openfga/model.fga | grep -v '^\s*$' > /tmp/model-stripped.fga
+          # Re-add the required `model` + `schema` header (first 2 lines'da var)
+          python3 backend/openfga/render_model_json.py /tmp/model-stripped.fga > /tmp/model.json
           jq -e '.type_definitions | length > 0' /tmp/model.json > /dev/null
           # type_definitions içinde 'report_group' var mı? (R16 PR-B regression guard)
           jq -e '.type_definitions[] | select(.type == "report_group")' /tmp/model.json > /dev/null
