@@ -244,7 +244,10 @@ jobs:
       - name: Install fga CLI (R16 PR-B fga test framework)
         run: |
           # fga CLI v0.7+ ile 'but not' compat; Faz 19.3 incompat çözüldü.
-          FGA_VERSION="0.7.6"
+          # Latest tag fetch (dynamic) — pinned v0.7.13+ pattern.
+          FGA_VERSION=$(curl -sL "https://api.github.com/repos/openfga/cli/releases/latest" \
+            | grep '"tag_name"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+          echo "fga CLI version (latest): ${FGA_VERSION}"
           curl -sSL -o /tmp/fga.tar.gz \
             "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz"
           tar -xzf /tmp/fga.tar.gz -C /tmp
