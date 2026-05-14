@@ -15,10 +15,15 @@ import java.util.List;
  * inclusion of tables that haven't been catalogued / had type mapping
  * resolved.
  *
- * <p><b>Scope (PR-1)</b>: only the {@code source} field is checked.
- * {@code sourceQuery}-style reports (yearly partitioned, custom SQL) are
- * scanned in Adım 11.2 (WorkcubeQueryAdapter) where SQL parsing surfaces
- * the actual tables referenced.
+ * <p><b>Scope (PR-1, named acceptance boundary)</b>: this rule validates
+ * {@code ReportDefinition.source} ONLY. {@code sourceQuery}-only reports
+ * (e.g. {@code hr-compensation-detay}, yearly partitioned reports with
+ * custom SQL) are <b>not</b> claimed covered by this gate — they bypass
+ * RC-011 entirely. SQL parsing + table-ref extraction + allowlist
+ * enforcement for {@code sourceQuery} is the responsibility of Adım 11.2
+ * (WorkcubeQueryAdapter parser/runtime allowlist). Until that lands the
+ * "Workcube SQL universe fully allowlisted" claim is intentionally not
+ * made.
  *
  * <p><b>Why a separate rule</b> (vs piggy-backing on {@code
  * SchemaTruthLookupPolicy.BUILD_DETERMINISTIC}): the policy enum encodes

@@ -28,7 +28,8 @@ import java.util.List;
  *   <li><strong>NOT</strong> {@code @Component} / {@code @Configuration} —
  *       production runtime'da component scan'de aktive olmaz; CI'da
  *       {@code mvn test} {@code @ParameterizedTest} registry sweep'inde çağrılır.</li>
- *   <li>11 RC rules (RC-000..RC-010) wired in fixed order.</li>
+ *   <li>12 RC rules (RC-000..RC-011) wired in fixed order — RC-011 added
+ *       2026-05-14 (Adım 11.1) for Workcube source-table allowlist gating.</li>
  *   <li>{@link ContractRule#validate(ReportDefinition)} sequencing: each rule
  *       independent; rules don't see each other's output.</li>
  * </ul>
