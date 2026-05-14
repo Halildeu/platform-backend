@@ -97,10 +97,27 @@ class WorkcubeQueryAdapterTest {
     }
 
     @Test
-    void enforceRendered_emptyRenderedSql_passesNoOp() {
-        // Empty SQL surfaces no refs → no violation (caller's job to
-        // ensure SqlBuilder produced something sensible)
-        adapter.enforceRendered(def("empty"), "");
+    void enforceRendered_emptySql_failsClosed() {
+        // Codex iter-23 REVISE-1: blank rendered SQL is not safe — it
+        // could be a SqlBuilder bug producing an empty payload.
+        assertThatThrownBy(() -> adapter.enforceRendered(def("empty"), ""))
+                .isInstanceOf(WorkcubeQuerySecurityException.class)
+                .hasMessageContaining("empty");
+    }
+
+    @Test
+    void enforceRendered_nullSql_failsClosed() {
+        assertThatThrownBy(() -> adapter.enforceRendered(def("null"), null))
+                .isInstanceOf(WorkcubeQuerySecurityException.class);
+    }
+
+    @Test
+    void enforceRendered_sqlWithNoTableRef_failsClosed() {
+        // SELECT 1 produces no scanner table refs — must fail-closed
+        // (parser miss or non-Workcube payload).
+        assertThatThrownBy(() -> adapter.enforceRendered(def("noref"), "SELECT 1 AS x"))
+                .isInstanceOf(WorkcubeQuerySecurityException.class)
+                .hasMessageContaining("no detectable");
     }
 
     // ---- executeData (full pipeline) --------------------------------------

@@ -118,7 +118,24 @@ public class WorkcubeQueryAdapter {
      * a full SqlBuilder render.
      */
     void enforceRendered(ReportDefinition def, String renderedSql) {
-        for (TableRef ref : WorkcubeSqlTableRefScanner.scan(renderedSql)) {
+        // Codex iter-23 REVISE-1 blocker 1: blank/no-ref rendered SQL must
+        // fail-closed. "Scanner found nothing" is not a safe success: it
+        // could mean an unsupported syntax slipped past the scanner, a
+        // SqlBuilder bug produced an empty payload, or a SELECT-without-FROM
+        // surface that has no business reaching MSSQL.
+        if (renderedSql == null || renderedSql.isBlank()) {
+            throw new WorkcubeQuerySecurityException(def.key(),
+                    "Rendered Workcube SQL is empty for report '" + def.key()
+                            + "' — refusing to execute (template render bug suspected).");
+        }
+        List<TableRef> refs = WorkcubeSqlTableRefScanner.scan(renderedSql);
+        if (refs.isEmpty()) {
+            throw new WorkcubeQuerySecurityException(def.key(),
+                    "Rendered Workcube SQL contains no detectable allowlisted "
+                            + "table refs for report '" + def.key()
+                            + "' — refusing to execute (parser miss or non-Workcube payload).");
+        }
+        for (TableRef ref : refs) {
             if (ref.schemaKind() == TableRef.SchemaKind.UNKNOWN
                     || ref.schemaKind() == TableRef.SchemaKind.UNQUALIFIED) {
                 throw new WorkcubeQuerySecurityException(def.key(),
