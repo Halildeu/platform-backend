@@ -39,26 +39,28 @@ import org.springframework.web.server.ResponseStatusException;
  * <ol>
  *   <li>{@link ReportRegistry#get} — 404 if unknown</li>
  *   <li>{@link PermissionResolver#getAuthzMe} — authz snapshot</li>
+ *   <li>{@link ReportAccessEvaluator#evaluate} — DENIED → audit + 403 BEFORE
+ *       narrow (report-level permission is tenant-independent)</li>
  *   <li>{@link CompanyHeaderScopeNarrower#narrow} — singleton COMPANY scope</li>
+ *   <li>{@link ColumnFilter#getVisibleColumns} — column-level RLS</li>
+ *   <li>{@link RowFilterInjector#buildRlsClause} — row-level RLS clause + params</li>
+ *   <li>{@link YearlySchemaResolver}/{@link CurrentTenantSchemaResolver} — schema target</li>
  *   <li>AG Grid filter + sort JSON parse</li>
  *   <li>{@link WorkcubeQueryAdapter#executeData} — rendered SQL + V1 +
  *       composite tenant boundary + JDBC</li>
+ *   <li>{@link ReportAuditClient#logReportAccess} — success audit</li>
  * </ol>
  *
- * <h2>Adım 11.3 minimum scope</h2>
- * Interim {@code @PreAuthorize} on {@link WorkcubeReportController} guards
- * non-admin (Adım 1.5 interim gate). This service does NOT yet add
- * {@code ReportAccessEvaluator}, {@code ColumnFilter}, {@code RowFilterInjector},
- * or schema resolution — those land in Adım 11.4 when the interim gate
- * is removed and the full authz pipeline takes over.
- *
- * <p>Visible columns are derived directly from
- * {@link ReportDefinition#columns()} (no column-level RLS yet). This is
- * safe under the interim super-admin gate: only super-admins reach this
- * service in Adım 11.3.
+ * <h2>Adım 11.4 — interim gate REMOVED</h2>
+ * Class-level {@code @PreAuthorize} on {@link WorkcubeReportController}
+ * REMOVED. Non-admin denial now happens at service level via
+ * {@link ReportAccessEvaluator}{@code .evaluate(def, authz) == DENIED} branch.
+ * Full authz pipeline (access evaluator + column filter + row filter +
+ * audit) takes over the role previously held by the interim super-admin gate.
  *
  * @see WorkcubeQueryAdapter
  * @see WorkcubeReportController
+ * @see WorkcubeAccessGuard (deprecated; legacy /views/* only)
  */
 @Service
 @ConditionalOnBean(name = "workcubeMssqlDataSource")

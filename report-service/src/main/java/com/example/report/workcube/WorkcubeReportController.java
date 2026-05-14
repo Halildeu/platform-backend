@@ -163,15 +163,21 @@ public class WorkcubeReportController {
     // ---- Adım 11.3: adapter-backed report endpoints (Codex iter-29 absorb) ----
 
     /**
-     * Adapter-backed report execution endpoint (Adım 11.3).
+     * Adapter-backed report execution endpoint (Adım 11.3 + 11.4 full authz).
      *
      * <p>Path: {@code GET /api/v1/workcube/reports/{key}/data}
      *
-     * <p>Pipeline: registry → permission resolver → company narrower →
-     * {@link WorkcubeQueryAdapter#executeData} → {@link PagedResultDto}.
+     * <p>Pipeline (Adım 11.4): registry → permission resolver →
+     * {@code ReportAccessEvaluator.evaluate} (DENIED → audit + 403 BEFORE
+     * narrow; report-level permission is tenant-independent) → company narrower
+     * → {@code ColumnFilter} → {@code RowFilterInjector} → schema resolver →
+     * {@link WorkcubeQueryAdapter#executeData} → {@link PagedResultDto} →
+     * success audit.
      *
-     * <p>Interim {@code @PreAuthorize} class-level gate still applies:
-     * non-admin → 403 (Adım 1.5 gate; Adım 11.4 removes it).
+     * <p>Adım 11.4: class-level {@code @PreAuthorize} interim gate REMOVED;
+     * non-admin denial now happens at service level via
+     * {@link WorkcubeReportExecutionService} accessEvaluator branch. Legacy
+     * {@code /views/*} retains method-level guard until Adım 11.5 cutover.
      */
     @GetMapping(value = "/reports/{key}/data", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> reportData(
