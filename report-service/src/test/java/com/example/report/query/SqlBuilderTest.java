@@ -474,6 +474,124 @@ class SqlBuilderTest {
                     IllegalArgumentException.class,
                     () -> new SqlBuilder.GroupedAggregation("", "sum"));
         }
+
+        // ── PR-0.4z extended aggregate funcs (Codex thread 019e2695) ─────
+        // distinctcount → COUNT(DISTINCT [col]); stddev → STDEV([col]);
+        // stddevp → STDEVP([col]). median + percentile remain rejected;
+        // they ship in PR #6a/#6b with their own query-shape decisions.
+
+        @Test
+        void appliesStddevAggregation() {
+            ReportDefinition def = new ReportDefinition(
+                    "test-report", "v1", "Test", "desc", "cat",
+                    "ORDERS", "dbo", "static", null, null,
+                    List.of(new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("amount", "Amount", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "amount"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation("amount", "stddev")),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            assertThat(q.sql())
+                    .contains("STDEV([amount]) AS [amount]")
+                    .contains("GROUP BY [category]");
+        }
+
+        @Test
+        void appliesStddevpAggregation() {
+            ReportDefinition def = new ReportDefinition(
+                    "test-report", "v1", "Test", "desc", "cat",
+                    "ORDERS", "dbo", "static", null, null,
+                    List.of(new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("amount", "Amount", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "amount"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation("amount", "stddevp")),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            assertThat(q.sql())
+                    .contains("STDEVP([amount]) AS [amount]")
+                    .contains("GROUP BY [category]");
+        }
+
+        @Test
+        void appliesDistinctCountAggregation() {
+            ReportDefinition def = new ReportDefinition(
+                    "test-report", "v1", "Test", "desc", "cat",
+                    "ORDERS", "dbo", "static", null, null,
+                    List.of(new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("user_id", "User", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "user_id"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation("user_id", "distinctcount")),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            assertThat(q.sql())
+                    .contains("COUNT(DISTINCT [user_id]) AS [user_id]")
+                    .contains("GROUP BY [category]")
+                    .doesNotContain("DISTINCTCOUNT(");
+        }
+
+        @Test
+        void distinctCountAggregationRespectsRlsClause() {
+            // Codex 019e2695 review note: every SQL-shape changing PR
+            // must include at least one RLS parity assertion to guard
+            // against future regressions where an aggregation render
+            // bypasses the RLS WHERE injection path.
+            ReportDefinition def = new ReportDefinition(
+                    "test-report", "v1", "Test", "desc", "cat",
+                    "ORDERS", "dbo", "static", null, null,
+                    List.of(new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("user_id", "User", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            MapSqlParameterSource rlsParams = new MapSqlParameterSource()
+                    .addValue("_rlsIds", List.of(1L, 2L));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "user_id"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation("user_id", "distinctcount")),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    "[OWNER_ID] IN (:_rlsIds)", rlsParams, 1, 50);
+
+            // Codex 019e2695 review iter-2: tighten the parity assertion
+            // from a substring contains() to an exact "WHERE 1=1 AND ..."
+            // join so a future refactor that drops the RLS append from
+            // buildFromClause is caught at the SQL-shape boundary, not
+            // just at the textual substring level.
+            assertThat(q.sql())
+                    .contains("COUNT(DISTINCT [user_id]) AS [user_id]")
+                    .contains("WHERE 1=1 AND [OWNER_ID] IN (:_rlsIds)");
+            assertThat(q.params().getValue("_rlsIds"))
+                    .isEqualTo(List.of(1L, 2L));
+        }
+
+        @Test
+        void stddevFunctionNormalizedToLowerCase() {
+            // Mixed-case input ("STDEV") must canonicalise to "stddev" so
+            // SQL generation stays deterministic regardless of how the
+            // request payload or registry default is cased.
+            SqlBuilder.GroupedAggregation a =
+                    new SqlBuilder.GroupedAggregation("amount", "STDDEV");
+            assertThat(a.func()).isEqualTo("stddev");
+        }
     }
 
     /**

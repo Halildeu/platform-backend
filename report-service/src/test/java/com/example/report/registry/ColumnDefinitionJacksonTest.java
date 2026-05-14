@@ -122,6 +122,69 @@ class ColumnDefinitionJacksonTest {
                 () -> mapper.readValue(json, ColumnDefinition.class));
     }
 
+    // ── PR-0.4z extended aggregate funcs (Codex thread 019e2695) ────────
+    // Registry-side opt-in for distinctcount / stddev / stddevp. median +
+    // percentile remain rejected (PR #6a / #6b follow-ups).
+
+    @Test
+    void defaultAggFuncDistinctCountAccepted() throws Exception {
+        String json = """
+                {
+                  "field": "USER_ID",
+                  "headerName": "User",
+                  "type": "number",
+                  "width": 120,
+                  "sensitive": false,
+                  "aggregatable": true,
+                  "defaultAggFunc": "distinctcount"
+                }
+                """;
+
+        ColumnDefinition cd = mapper.readValue(json, ColumnDefinition.class);
+
+        assertEquals("distinctcount", cd.defaultAggFunc());
+        assertTrue(cd.aggregatable());
+    }
+
+    @Test
+    void defaultAggFuncStddevAccepted() throws Exception {
+        String json = """
+                {
+                  "field": "AMOUNT",
+                  "headerName": "Amount",
+                  "type": "number",
+                  "width": 120,
+                  "sensitive": false,
+                  "aggregatable": true,
+                  "defaultAggFunc": "stddev"
+                }
+                """;
+
+        ColumnDefinition cd = mapper.readValue(json, ColumnDefinition.class);
+
+        assertEquals("stddev", cd.defaultAggFunc());
+    }
+
+    @Test
+    void defaultAggFuncStddevpAccepted() throws Exception {
+        String json = """
+                {
+                  "field": "AMOUNT",
+                  "headerName": "Amount",
+                  "type": "number",
+                  "width": 120,
+                  "sensitive": false,
+                  "aggregatable": true,
+                  "defaultAggFunc": "STDDEVP"
+                }
+                """;
+
+        ColumnDefinition cd = mapper.readValue(json, ColumnDefinition.class);
+
+        // Mixed-case input normalizes to canonical lower-case form.
+        assertEquals("stddevp", cd.defaultAggFunc());
+    }
+
     @Test
     void backwardCompatConstructor5ArgEqualsLegacyDeserialization() throws Exception {
         // The 5-arg secondary constructor is what most existing

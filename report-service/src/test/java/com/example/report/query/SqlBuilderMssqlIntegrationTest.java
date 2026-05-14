@@ -2,6 +2,7 @@ package com.example.report.query;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 import com.example.report.registry.AccessConfig;
 import com.example.report.registry.ColumnDefinition;
@@ -266,6 +267,78 @@ class SqlBuilderMssqlIntegrationTest {
         assertThat(maxRows).hasSize(1);
         assertThat(((BigDecimal) maxRows.get(0).get("amount")))
                 .isEqualByComparingTo(new BigDecimal("300.00"));
+    }
+
+    /**
+     * PR-0.4z (Codex 019e2695 review iter-2) — end-to-end dialect proof
+     * for the three new aggregate mappings against a real MSSQL 2022
+     * instance.
+     *
+     * <ul>
+     *   <li>{@code distinctcount} → {@code COUNT(DISTINCT [user_id])}</li>
+     *   <li>{@code stddev} → {@code STDEV([amount])} sample, n-1 denom</li>
+     *   <li>{@code stddevp} → {@code STDEVP([amount])} population, n denom</li>
+     * </ul>
+     *
+     * <p>Fixture: amounts 10/20/30/40 (avg = 25, Σ(x-μ)² = 500). Expected
+     * sample variance = 500/3 ≈ 166.667 → STDEV ≈ 12.910; population
+     * variance = 500/4 = 125 → STDEVP ≈ 11.180. Asserted with a 0.01
+     * tolerance to absorb MSSQL float rounding.
+     */
+    @Test
+    void buildGroupedQuery_distinctCountStddevStddevp_overRealMssql() {
+        ReportDefinition def = scratch(
+                "tx_pr04z",
+                List.of(
+                        new ColumnDefinition("region", "R", "text", 100, false),
+                        new ColumnDefinition("user_id", "U", "number", 100, false),
+                        new ColumnDefinition("amount", "A", "number", 100, false)),
+                "CREATE TABLE [{schema}].[tx_pr04z] "
+                        + "(region NVARCHAR(20) NOT NULL, user_id INT NOT NULL, "
+                        + "amount DECIMAL(18,2) NOT NULL)",
+                List.of(
+                        "INSERT INTO [{schema}].[tx_pr04z] VALUES ('EU', 1, 10.00)",
+                        "INSERT INTO [{schema}].[tx_pr04z] VALUES ('EU', 2, 20.00)",
+                        "INSERT INTO [{schema}].[tx_pr04z] VALUES ('EU', 2, 30.00)",
+                        "INSERT INTO [{schema}].[tx_pr04z] VALUES ('EU', 3, 40.00)"));
+
+        // distinctcount → 3 (user_ids 1, 2, 3)
+        SqlBuilder.BuiltQuery dcQ = builder.buildGroupedQuery(
+                def, null, List.of("region", "user_id"),
+                "region",
+                List.of(new SqlBuilder.GroupedAggregation("user_id", "distinctcount")),
+                Collections.emptyMap(), Collections.emptyList(),
+                null, null, 1, 50);
+        List<Map<String, Object>> dcRows = jdbc.queryForList(dcQ.sql(), dcQ.params());
+        assertThat(dcRows).hasSize(1);
+        assertThat(((Number) dcRows.get(0).get("user_id")).intValue()).isEqualTo(3);
+        assertThat(dcQ.sql()).contains("COUNT(DISTINCT [user_id])");
+
+        // stddev (sample) → √(500/3) ≈ 12.910
+        SqlBuilder.BuiltQuery sdQ = builder.buildGroupedQuery(
+                def, null, List.of("region", "amount"),
+                "region",
+                List.of(new SqlBuilder.GroupedAggregation("amount", "stddev")),
+                Collections.emptyMap(), Collections.emptyList(),
+                null, null, 1, 50);
+        List<Map<String, Object>> sdRows = jdbc.queryForList(sdQ.sql(), sdQ.params());
+        assertThat(sdRows).hasSize(1);
+        assertThat(((Number) sdRows.get(0).get("amount")).doubleValue())
+                .isCloseTo(12.910, within(0.01));
+        assertThat(sdQ.sql()).contains("STDEV([amount])");
+
+        // stddevp (population) → √125 ≈ 11.180
+        SqlBuilder.BuiltQuery sdpQ = builder.buildGroupedQuery(
+                def, null, List.of("region", "amount"),
+                "region",
+                List.of(new SqlBuilder.GroupedAggregation("amount", "stddevp")),
+                Collections.emptyMap(), Collections.emptyList(),
+                null, null, 1, 50);
+        List<Map<String, Object>> sdpRows = jdbc.queryForList(sdpQ.sql(), sdpQ.params());
+        assertThat(sdpRows).hasSize(1);
+        assertThat(((Number) sdpRows.get(0).get("amount")).doubleValue())
+                .isCloseTo(11.180, within(0.01));
+        assertThat(sdpQ.sql()).contains("STDEVP([amount])");
     }
 
     @Test
