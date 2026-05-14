@@ -194,11 +194,15 @@ jobs:
   openfga-dsl-check:
     name: OpenFGA DSL presence + line check (basic)
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     # Faz 19.3 — fga CLI v0.6 'but not' syntax incompat; full DSL validate
     # 19.8+'da newer fga CLI ile yeniden eklenecek. Şimdilik basic presence check.
     # Authoritative validation: K8s OpenFGA StatefulSet runtime (Vault kv/platform/openfga).
+    #
+    # R16 PR-B (Codex 019e27f5 Option 3): fga test framework introduce —
+    # `openfga/tests/*.fga.yaml` deklaratif test seti; type report_group +
+    # relation semantik kilitlendi. fga CLI v0.7+ ile 'but not' compat.
 
     steps:
       - name: Checkout
@@ -219,3 +223,41 @@ jobs:
           grep -q "^  schema" openfga/model.fga
           grep -cE "^type " openfga/model.fga
           echo "DSL structural check PASS"
+
+      - name: Check required types present (R16 PR-B regression guard)
+        run: |
+          # R16 PR-B: type report_group artık zorunlu (Faz 2 Program 1c spec).
+          # Bu check, model'den silinmesini engeller (close-out discipline).
+          for required in "type user" "type organization" "type company" \
+                          "type module" "type action" "type report" \
+                          "type report_group"; do
+            if ! grep -qE "^${required}$" openfga/model.fga; then
+              echo "::error::Required OpenFGA type missing: ${required}"
+              exit 1
+            fi
+            echo "✓ ${required} present"
+          done
+
+      - name: Install fga CLI (R16 PR-B fga test framework)
+        run: |
+          # fga CLI v0.7+ ile 'but not' compat; Faz 19.3 incompat çözüldü.
+          FGA_VERSION="0.7.6"
+          curl -sSL -o /tmp/fga.tar.gz \
+            "https://github.com/openfga/cli/releases/download/v${FGA_VERSION}/fga_${FGA_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/fga.tar.gz -C /tmp
+          sudo mv /tmp/fga /usr/local/bin/fga
+          chmod +x /usr/local/bin/fga
+          fga version
+
+      - name: Run fga test (model + tuples + assertions)
+        # R16 PR-B Option 3: deklaratif OpenFGA test framework — report_group
+        # authz contract semantik kilidi. R15 regression guard.
+        run: |
+          set -e
+          # Mevcut tüm test dosyalarını koş; model_file path yaml içinde relatif.
+          for test_file in openfga/tests/*.fga.yaml; do
+            echo "::group::fga test ${test_file}"
+            fga model test --tests "${test_file}"
+            echo "::endgroup::"
+          done
+          echo "✓ All OpenFGA tests PASS"

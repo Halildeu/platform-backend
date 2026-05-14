@@ -56,3 +56,16 @@ type report
     define can_edit: [user] but not blocked
     define can_view: [user] or can_edit but not blocked
     define blocked: [user]
+
+# R16 PR-B (Codex 019e27f5 Option 3) — report_group authz contract repair.
+# Faz 2 Program 1c spec'te yazılı ama model'e eklenmedi; bu PR ile ekleniyor.
+# ReportDefinition.access.reportGroup ("FINANCE_REPORTS", "HR_REPORTS",
+# "SALES_REPORTS", "ANALYTICS_REPORTS") → bu type üzerinden authz check.
+# Reverse-mapping permission-service tarafında `reports.<GROUP>` granule
+# olarak zaten tanımlı (PermissionDataInitializer); bu OpenFGA katmanı
+# tuple-level allow path sağlar (Authz/me.reports map kaynağı).
+type report_group
+  relations
+    define can_edit: [user] but not blocked
+    define can_view: [user] or can_edit but not blocked
+    define blocked: [user]
