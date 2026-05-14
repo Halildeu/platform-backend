@@ -424,13 +424,18 @@ public class ImpersonationController {
         try {
             session = sessionClient.startSession(internalRequest);
         } catch (ActiveSessionExistsException e) {
+            // Codex 019e2022 REVISE-3 absorb (BUG #1 regression fix on the
+            // 409 branch): use resolvedTargetEmail (KC-claims-first, request
+            // fallback) so concurrent-session audit rows carry the actual
+            // target email even when the operator omitted it from the body.
+            // Same pattern as PR #165 for the SELF/UNRESOLVABLE branches.
             auditClient.writeBlocked(ImpersonationAuditClient.AuditPayload.builder()
                     .impersonatorUserId(impersonatorUserId)
                     .impersonatorSubject(impersonatorSubject)
                     .impersonatorEmail(impersonatorEmail)
                     .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
-                    .targetEmail(request.targetEmail())
+                    .targetEmail(resolvedTargetEmail)
                     .reason(request.reason())
                     .correlationId(correlationId)
                     .errorCode(e.errorCode())
@@ -444,6 +449,7 @@ public class ImpersonationController {
             // Codex iter-27 P0 absorb: downstream session create failures
             // (timeout/500/network) must produce IMPERSONATION_FAILED audit
             // before bubbling 502/503 to the caller.
+            // Codex 019e2022 REVISE-3 absorb: same resolved-email fix here.
             log.warn("permission-service session create failed for target={}: {}",
                     resolvedTargetSubject, e.getMessage());
             auditClient.writeFailed(ImpersonationAuditClient.AuditPayload.builder()
@@ -452,7 +458,7 @@ public class ImpersonationController {
                     .impersonatorEmail(impersonatorEmail)
                     .targetSubject(resolvedTargetSubject)
                     .targetUserId(request.targetUserId())
-                    .targetEmail(request.targetEmail())
+                    .targetEmail(resolvedTargetEmail)
                     .reason(request.reason())
                     .correlationId(correlationId)
                     .errorCode("SESSION_PERSIST_FAILED")
