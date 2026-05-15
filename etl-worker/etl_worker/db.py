@@ -28,6 +28,9 @@ Exit-code mapping (CLI layer):
 
 * ``ReportsDbWriteError`` → ``EX_TEMPFAIL=75`` (operational failure;
   caller may retry the whole job)
+* ``ReportsDbSchemaError`` (PR-3a) → ``EX_SOFTWARE=70`` (DBA migration
+  missing / wrong target schema; outer scheduler retry would loop
+  forever, so this is terminal)
 * :class:`~etl_worker.checkpoint.CheckpointError` is wired in CLI as
   ``EX_SOFTWARE=70`` because malformed local state is terminal,
   not retryable.
@@ -53,6 +56,23 @@ class ReportsDbWriteError(Exception):
     can decide whether to re-queue the job. The runner never
     swallows this; it bubbles up after emitting
     ``db_upsert_failed``.
+    """
+
+
+class ReportsDbSchemaError(Exception):
+    """Reports_db schema mismatch (PR-3a — Codex 019e2a5c plan-time AGREE).
+
+    Surfaced as ``EX_SOFTWARE=70`` because retrying the same job
+    against the same broken target schema cannot succeed. Common
+    triggers: missing target table (``UndefinedTable``), missing
+    column (``UndefinedColumn``), or invalid schema namespace
+    (``InvalidSchemaName``). The operator must apply the missing DBA
+    migration before re-queuing.
+
+    A real :class:`ReportsDbWriter` adapter (e.g.
+    :class:`~etl_worker.pg_writer.PgReportsDbWriter`) is responsible
+    for translating driver-specific exceptions to this typed boundary
+    so the runner / CLI never imports a driver directly.
     """
 
 

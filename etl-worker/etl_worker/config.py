@@ -29,6 +29,32 @@ Environment variables consumed:
   :data:`etl_worker.schema_service_client.SUPPORTED_CONTRACT_VERSION`.
   Whitespace around each entry is trimmed; empty values reject.
 
+reports_db (PR-3a) — when the operator opts into ``--reports-db postgres``
+the CLI requires a full :class:`ReportsDbConfig`. All five core fields
+(``REPORTS_DB_HOST`` / ``REPORTS_DB_PORT`` / ``REPORTS_DB_DATABASE`` /
+``REPORTS_DB_USER`` / ``REPORTS_DB_PASSWORD``) must be set together;
+partial configuration is fail-closed at :meth:`Config.from_env` time so
+the CLI never silently degrades to a no-op DB writer:
+
+* ``REPORTS_DB_HOST`` — PostgreSQL hostname (non-empty).
+* ``REPORTS_DB_PORT`` — positive integer (1-65535).
+* ``REPORTS_DB_DATABASE`` — PostgreSQL database name (non-empty).
+* ``REPORTS_DB_USER`` — PostgreSQL role (non-empty, secret).
+* ``REPORTS_DB_PASSWORD`` — secret. Validated as non-empty so an
+  unbound ``ExternalSecret`` cannot pass the fail-closed gate.
+* ``REPORTS_DB_SSLMODE`` — optional. Forwarded to ``psycopg.connect``
+  as the ``sslmode`` keyword (``disable`` / ``require`` / ``verify-ca``
+  / ``verify-full``). Absent means driver default.
+* ``REPORTS_DB_CONNECT_TIMEOUT_SECONDS`` — optional positive finite
+  float, forwarded as ``connect_timeout``. Default unset = driver
+  default.
+
+When none of the five core fields are set the resulting
+:class:`Config` carries ``reports_db = None`` and the CLI defaults to
+the byte-compat no-DB-writer path. When some-but-not-all are set the
+config rejects with :class:`ConfigError` so the operator notices the
+partial wiring before it ships.
+
 All validation errors raise :class:`ConfigError`; the CLI layer is
 responsible for translating those to exit code ``64`` (``EX_USAGE``)
 without leaking secret-bearing values to stderr.
@@ -56,6 +82,26 @@ class ConfigError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class ReportsDbConfig:
+    """Immutable PostgreSQL reports_db connection profile (PR-3a).
+
+    Codex ``019e2a5c`` PR-3 plan-time AGREE: keep secret and non-secret
+    fields explicitly separate (ConfigMap vs Secret in K8s), do not
+    accept a single ``REPORTS_DB_URL`` DSN string. The CLI layer
+    instantiates :class:`~etl_worker.pg_writer.PgReportsDbWriter` from
+    these fields when ``--reports-db postgres`` is selected.
+    """
+
+    host: str
+    port: int
+    database: str
+    user: str
+    password: str
+    sslmode: str | None = None
+    connect_timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Immutable resolved configuration for one CLI invocation."""
 
@@ -64,6 +110,7 @@ class Config:
     schema_service_timeout_seconds: float
     schema_service_schema: str | None
     schema_service_contract_versions: tuple[str, ...]
+    reports_db: ReportsDbConfig | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Config:
@@ -105,12 +152,15 @@ class Config:
 
         versions = _parse_contract_versions(source.get("SCHEMA_SERVICE_CONTRACT_VERSIONS"))
 
+        reports_db = _parse_reports_db(source)
+
         return cls(
             schema_service_url=url,
             schema_service_internal_api_key=internal_api_key,
             schema_service_timeout_seconds=timeout,
             schema_service_schema=schema,
             schema_service_contract_versions=versions,
+            reports_db=reports_db,
         )
 
 
@@ -178,6 +228,122 @@ def _parse_timeout(raw: str | None) -> float:
     if not math.isfinite(value) or value <= 0:
         raise ConfigError(
             "SCHEMA_SERVICE_TIMEOUT_SECONDS must be a positive finite number"
+        )
+    return value
+
+
+_REPORTS_DB_CORE_FIELDS: tuple[str, ...] = (
+    "REPORTS_DB_HOST",
+    "REPORTS_DB_PORT",
+    "REPORTS_DB_DATABASE",
+    "REPORTS_DB_USER",
+    "REPORTS_DB_PASSWORD",
+)
+"""Five envs that together define a reports_db profile.
+
+If *all five* are unset, the runner stays on the byte-compat
+no-DB-writer path. If *any* are set, *all five* must be set —
+otherwise :func:`_parse_reports_db` raises :class:`ConfigError` so
+the CLI fails closed instead of silently degrading to no-op DB writes.
+"""
+
+
+def _parse_reports_db(source: Mapping[str, str]) -> ReportsDbConfig | None:
+    """Parse the five core ``REPORTS_DB_*`` envs plus two optional knobs.
+
+    Codex ``019e2a5c`` PR-3 plan-time AGREE: partial wiring is a
+    fail-closed condition. Either zero of the five core fields are set
+    (returns ``None``) or all five are set and validate (returns a
+    fully populated :class:`ReportsDbConfig`); anything in between
+    raises :class:`ConfigError`.
+
+    ``sslmode`` and ``connect_timeout_seconds`` are independently
+    optional: they only validate when the core profile is non-empty,
+    so an operator can choose ``REPORTS_DB_SSLMODE`` without forcing a
+    connect-timeout override.
+    """
+    presence = {name: source.get(name, "").strip() for name in _REPORTS_DB_CORE_FIELDS}
+    set_fields = [name for name, value in presence.items() if value]
+    if not set_fields:
+        return None
+    if len(set_fields) != len(_REPORTS_DB_CORE_FIELDS):
+        missing = sorted(set(_REPORTS_DB_CORE_FIELDS) - set(set_fields))
+        raise ConfigError(
+            "reports_db configuration is partial — missing "
+            + ", ".join(missing)
+            + " (all of "
+            + ", ".join(_REPORTS_DB_CORE_FIELDS)
+            + " must be set together)"
+        )
+
+    host = presence["REPORTS_DB_HOST"]
+    port = _parse_port(presence["REPORTS_DB_PORT"])
+    database = presence["REPORTS_DB_DATABASE"]
+    user = presence["REPORTS_DB_USER"]
+    password = presence["REPORTS_DB_PASSWORD"]
+
+    raw_sslmode = source.get("REPORTS_DB_SSLMODE")
+    sslmode: str | None
+    if raw_sslmode is None:
+        sslmode = None
+    else:
+        stripped = raw_sslmode.strip()
+        if stripped == "":
+            sslmode = None
+        elif stripped not in {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}:
+            raise ConfigError(
+                "REPORTS_DB_SSLMODE must be one of disable / allow / prefer / "
+                "require / verify-ca / verify-full"
+            )
+        else:
+            sslmode = stripped
+
+    connect_timeout = _parse_optional_connect_timeout(
+        source.get("REPORTS_DB_CONNECT_TIMEOUT_SECONDS")
+    )
+
+    return ReportsDbConfig(
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password,
+        sslmode=sslmode,
+        connect_timeout_seconds=connect_timeout,
+    )
+
+
+def _parse_port(raw: str) -> int:
+    """Parse ``REPORTS_DB_PORT`` (positive integer in TCP range)."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            "REPORTS_DB_PORT must be an integer between 1 and 65535"
+        ) from exc
+    if value < 1 or value > 65535:
+        raise ConfigError(
+            "REPORTS_DB_PORT must be an integer between 1 and 65535"
+        )
+    return value
+
+
+def _parse_optional_connect_timeout(raw: str | None) -> float | None:
+    """Parse ``REPORTS_DB_CONNECT_TIMEOUT_SECONDS`` (positive finite float)."""
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if stripped == "":
+        return None
+    try:
+        value = float(stripped)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            "REPORTS_DB_CONNECT_TIMEOUT_SECONDS must be a positive finite number"
+        ) from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(
+            "REPORTS_DB_CONNECT_TIMEOUT_SECONDS must be a positive finite number"
         )
     return value
 

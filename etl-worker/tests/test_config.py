@@ -12,7 +12,19 @@ from etl_worker.config import (
     DEFAULT_TIMEOUT_SECONDS,
     Config,
     ConfigError,
+    ReportsDbConfig,
 )
+
+
+def _full_reports_db_env() -> dict[str, str]:
+    """All five core REPORTS_DB_* envs set to plausible test values."""
+    return {
+        "REPORTS_DB_HOST": "postgres.platform-test",
+        "REPORTS_DB_PORT": "5432",
+        "REPORTS_DB_DATABASE": "reports_db",
+        "REPORTS_DB_USER": "etl_writer",
+        "REPORTS_DB_PASSWORD": "s3cret",
+    }
 
 
 def _env(**overrides: str) -> dict[str, str]:
@@ -191,3 +203,122 @@ def test_from_env_falls_back_to_os_environ_when_env_none(monkeypatch: pytest.Mon
     config = Config.from_env()
 
     assert config.schema_service_url == "https://from-os-environ:9000"
+
+
+# ---- reports_db (PR-3a) ---------------------------------------------------
+
+
+def test_reports_db_none_when_all_envs_unset() -> None:
+    """No REPORTS_DB_* envs at all → ``Config.reports_db is None`` (byte-compat)."""
+    config = Config.from_env(_env())
+    assert config.reports_db is None
+
+
+def test_reports_db_full_profile_parses() -> None:
+    config = Config.from_env(_env(**_full_reports_db_env()))
+    assert config.reports_db == ReportsDbConfig(
+        host="postgres.platform-test",
+        port=5432,
+        database="reports_db",
+        user="etl_writer",
+        password="s3cret",
+        sslmode=None,
+        connect_timeout_seconds=None,
+    )
+
+
+def test_reports_db_with_optional_sslmode_and_connect_timeout() -> None:
+    extras = {
+        "REPORTS_DB_SSLMODE": "require",
+        "REPORTS_DB_CONNECT_TIMEOUT_SECONDS": "7.5",
+    }
+    config = Config.from_env(_env(**_full_reports_db_env(), **extras))
+    assert config.reports_db is not None
+    assert config.reports_db.sslmode == "require"
+    assert config.reports_db.connect_timeout_seconds == 7.5
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "REPORTS_DB_HOST",
+        "REPORTS_DB_PORT",
+        "REPORTS_DB_DATABASE",
+        "REPORTS_DB_USER",
+        "REPORTS_DB_PASSWORD",
+    ],
+)
+def test_reports_db_partial_wiring_fails_closed(missing_field: str) -> None:
+    profile = _full_reports_db_env()
+    profile.pop(missing_field)
+    with pytest.raises(ConfigError, match="reports_db configuration is partial"):
+        Config.from_env(_env(**profile))
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "REPORTS_DB_HOST",
+        "REPORTS_DB_PORT",
+        "REPORTS_DB_DATABASE",
+        "REPORTS_DB_USER",
+        "REPORTS_DB_PASSWORD",
+    ],
+)
+def test_reports_db_blank_value_counts_as_missing(missing_field: str) -> None:
+    profile = _full_reports_db_env()
+    profile[missing_field] = "   "
+    with pytest.raises(ConfigError, match="reports_db configuration is partial"):
+        Config.from_env(_env(**profile))
+
+
+@pytest.mark.parametrize("bad_port", ["0", "65536", "abc", "-5", "3.14"])
+def test_reports_db_port_must_be_in_tcp_range(bad_port: str) -> None:
+    profile = _full_reports_db_env()
+    profile["REPORTS_DB_PORT"] = bad_port
+    with pytest.raises(ConfigError, match="REPORTS_DB_PORT must be"):
+        Config.from_env(_env(**profile))
+
+
+@pytest.mark.parametrize(
+    "good_sslmode",
+    ["disable", "allow", "prefer", "require", "verify-ca", "verify-full"],
+)
+def test_reports_db_accepts_valid_sslmode(good_sslmode: str) -> None:
+    profile = _full_reports_db_env()
+    config = Config.from_env(_env(**profile, REPORTS_DB_SSLMODE=good_sslmode))
+    assert config.reports_db is not None
+    assert config.reports_db.sslmode == good_sslmode
+
+
+def test_reports_db_rejects_unknown_sslmode() -> None:
+    profile = _full_reports_db_env()
+    with pytest.raises(ConfigError, match="REPORTS_DB_SSLMODE"):
+        Config.from_env(_env(**profile, REPORTS_DB_SSLMODE="off"))
+
+
+@pytest.mark.parametrize("bad_timeout", ["0", "-1", "nan", "inf", "abc"])
+def test_reports_db_rejects_non_positive_or_non_finite_connect_timeout(
+    bad_timeout: str,
+) -> None:
+    profile = _full_reports_db_env()
+    with pytest.raises(ConfigError, match="REPORTS_DB_CONNECT_TIMEOUT_SECONDS"):
+        Config.from_env(
+            _env(**profile, REPORTS_DB_CONNECT_TIMEOUT_SECONDS=bad_timeout)
+        )
+
+
+def test_reports_db_blank_sslmode_treated_as_unset() -> None:
+    profile = _full_reports_db_env()
+    config = Config.from_env(_env(**profile, REPORTS_DB_SSLMODE="   "))
+    assert config.reports_db is not None
+    assert config.reports_db.sslmode is None
+
+
+def test_reports_db_blank_connect_timeout_treated_as_unset() -> None:
+    profile = _full_reports_db_env()
+    config = Config.from_env(
+        _env(**profile, REPORTS_DB_CONNECT_TIMEOUT_SECONDS=" ")
+    )
+    assert config.reports_db is not None
+    assert config.reports_db.connect_timeout_seconds is None

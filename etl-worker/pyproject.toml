@@ -4,15 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "etl-worker"
-version = "0.5.0"
+version = "0.6.0"
 description = "Workcube reporting ETL worker — schema-service contract consumer. Adım 12 (reporting refactor plan)."
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [{ name = "Platform team" }]
-# Runtime stays stdlib-only for PR-1 and PR-2a (CLI scaffold). New
-# runtime dependencies arrive only when the runner / live ETL slices
-# land (Adım 12 PR-2b onwards).
-dependencies = []
+# Runtime adds psycopg in PR-3a (reports_db PostgreSQL adapter).
+# psycopg[binary] bundles a wheel-shipped libpq so the Docker base
+# image does not need a separate libpq runtime layer; the Codex
+# 019e2a5c PR-3 plan-time AGREE flagged the wheel-vs-system tradeoff
+# as acceptable for the first slice. Reassess if prod policy bans
+# binary wheels.
+dependencies = [
+    "psycopg[binary]>=3.1,<4",
+]
 
 [project.scripts]
 etl-worker = "etl_worker.cli:main"
@@ -64,6 +69,7 @@ select = [
 "etl_worker/config.py" = ["RUF001", "RUF002"]
 "etl_worker/contracts.py" = ["RUF001", "RUF002"]
 "etl_worker/db.py" = ["RUF001", "RUF002"]
+"etl_worker/pg_writer.py" = ["RUF001", "RUF002"]
 "etl_worker/retry.py" = ["RUF001", "RUF002"]
 "etl_worker/runner.py" = ["RUF001", "RUF002"]
 "etl_worker/schema_service_client.py" = ["RUF001", "RUF002"]
@@ -73,6 +79,7 @@ select = [
 "tests/test_cli_run.py" = ["RUF001", "RUF002"]
 "tests/test_config.py" = ["RUF001", "RUF002"]
 "tests/test_db.py" = ["RUF001", "RUF002"]
+"tests/test_pg_writer.py" = ["RUF001", "RUF002"]
 "tests/test_retry.py" = ["RUF001", "RUF002"]
 "tests/test_runner.py" = ["RUF001", "RUF002"]
 "tests/test_schema_service_client.py" = ["RUF001", "RUF002"]

@@ -30,9 +30,9 @@ from typing import Protocol, TextIO
 
 from .audit import AuditWriter, JsonLinesAuditWriter
 from .checkpoint import CheckpointError, CheckpointFile
-from .config import Config, ConfigError
+from .config import Config, ConfigError, ReportsDbConfig
 from .contracts import SchemaSnapshot
-from .db import ReportsDbWriteError, ReportsDbWriter
+from .db import ReportsDbSchemaError, ReportsDbWriteError, ReportsDbWriter
 from .retry import RetryPolicy, Sleeper, SystemSleeper
 from .runner import RunResult, run_fetch
 from .schema_service_client import (
@@ -254,6 +254,17 @@ def _build_parser() -> _NonExitingParser:
             "deferred to a later slice once a real DB driver lands."
         ),
     )
+    run.add_argument(
+        "--reports-db",
+        choices=("none", "postgres"),
+        default="none",
+        help=(
+            "Reports_db writer mode. ``none`` (default) preserves the "
+            "PR-2b1/2b2 byte-compat no-DB-writer path. ``postgres`` "
+            "instantiates the real psycopg adapter from REPORTS_DB_* "
+            "envs (fail-closed if any are unset)."
+        ),
+    )
     return parser
 
 
@@ -305,6 +316,39 @@ def _parse_multiplier_float(raw: str) -> float:
     return value
 
 
+class _PgWriterFactory(Protocol):
+    """Factory contract for the production PostgreSQL writer.
+
+    Production: imports :class:`~etl_worker.pg_writer.PgReportsDbWriter`.
+    Tests: pass a stub that returns a fake :class:`ReportsDbWriter`
+    so no psycopg / network is exercised. The factory accepts the
+    fully populated :class:`ReportsDbConfig` rather than individual
+    keyword arguments so the boundary stays narrow.
+    """
+
+    def __call__(self, profile: ReportsDbConfig) -> ReportsDbWriter:  # pragma: no cover
+        ...
+
+
+def _default_pg_writer_factory(profile: ReportsDbConfig) -> ReportsDbWriter:
+    """Default production factory — lazy import of :mod:`pg_writer`.
+
+    Lazy so the import cost is paid only when ``--reports-db postgres``
+    is requested; PR-1 / PR-2 CLI runs never touch psycopg.
+    """
+    from .pg_writer import PgReportsDbWriter
+
+    return PgReportsDbWriter(
+        host=profile.host,
+        port=profile.port,
+        database=profile.database,
+        user=profile.user,
+        password=profile.password,
+        sslmode=profile.sslmode,
+        connect_timeout_seconds=profile.connect_timeout_seconds,
+    )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -316,6 +360,7 @@ def main(
     audit_factory: Callable[[str], AuditWriter] | None = None,
     checkpoint_factory: Callable[[str], CheckpointFile] | None = None,
     db_writer: ReportsDbWriter | None = None,
+    pg_writer_factory: _PgWriterFactory = _default_pg_writer_factory,
 ) -> int:
     """Resolve config, parse CLI, fetch a snapshot, emit the JSON summary.
 
@@ -385,6 +430,8 @@ def main(
             audit_factory,
             checkpoint_factory,
             db_writer,
+            config,
+            pg_writer_factory,
         )
     # ``argparse`` with ``required=True`` should make this branch
     # unreachable; treat any other command as a usage failure.
@@ -425,6 +472,8 @@ def _handle_run(
     audit_factory: Callable[[str], AuditWriter] | None = None,
     checkpoint_factory: Callable[[str], CheckpointFile] | None = None,
     db_writer: ReportsDbWriter | None = None,
+    config: Config | None = None,
+    pg_writer_factory: _PgWriterFactory = _default_pg_writer_factory,
 ) -> int:
     try:
         policy = RetryPolicy(
@@ -486,6 +535,28 @@ def _handle_run(
             print(f"etl-worker: checkpoint error: {exc}", file=err)
             return EX_SOFTWARE
 
+    # Codex 019e2a5c PR-3 plan-time AGREE: ``--reports-db postgres``
+    # is a fail-closed switch. When the operator opts in the live DB
+    # writer, the REPORTS_DB_* envs must already be a complete profile
+    # (Config.from_env enforces all-or-nothing). If they were
+    # unwired, surface ``EX_USAGE`` so the K8s Job pod fails fast
+    # instead of silently writing nothing.
+    #
+    # ``db_writer`` passed explicitly by a caller (tests, future
+    # alternate adapters) wins over ``--reports-db`` to keep the
+    # injection seam non-leaky.
+    if db_writer is None and args.reports_db == "postgres":
+        if config is None or config.reports_db is None:
+            print(
+                "etl-worker: usage: --reports-db postgres requires the "
+                "five REPORTS_DB_HOST / REPORTS_DB_PORT / "
+                "REPORTS_DB_DATABASE / REPORTS_DB_USER / "
+                "REPORTS_DB_PASSWORD envs",
+                file=err,
+            )
+            return EX_USAGE
+        db_writer = pg_writer_factory(config.reports_db)
+
     active_sleeper: Sleeper = sleeper if sleeper is not None else SystemSleeper()
     try:
         result: RunResult = run_fetch(
@@ -511,6 +582,15 @@ def _handle_run(
         return EX_PROTOCOL
     except SchemaServiceMalformedResponse as exc:
         print(f"etl-worker: malformed response: {exc}", file=err)
+        return EX_SOFTWARE
+    except ReportsDbSchemaError as exc:
+        # Codex 019e2a5c PR-3a plan-time AGREE: target schema mismatch
+        # (UndefinedTable / UndefinedColumn / InvalidSchemaName) is
+        # terminal — an outer scheduler retrying the same job against
+        # the same broken target would loop forever. Surface
+        # ``EX_SOFTWARE`` so it gates on the DBA migration, not on
+        # transient infra.
+        print(f"etl-worker: reports_db schema error: {exc}", file=err)
         return EX_SOFTWARE
     except ReportsDbWriteError as exc:
         # DB upsert failure is an operational failure: surface as

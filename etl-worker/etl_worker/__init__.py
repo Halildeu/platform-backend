@@ -28,14 +28,16 @@ from .checkpoint import (
     CheckpointFile,
     build_checkpoint,
 )
-from .config import Config, ConfigError
+from .config import Config, ConfigError, ReportsDbConfig
 from .contracts import ColumnSpec, SchemaSnapshot, TableSpec
 from .db import (
     NoopReportsDbWriter,
+    ReportsDbSchemaError,
     ReportsDbWriteError,
     ReportsDbWriter,
     ReportsDbWriteResult,
 )
+from .pg_writer import PgReportsDbWriter
 from .retry import RetryPolicy, Sleeper, SystemSleeper, call_with_retry
 from .runner import RunResult, run_fetch
 from .schema_service_client import (
@@ -58,6 +60,9 @@ __all__ = [
     "ConfigError",
     "JsonLinesAuditWriter",
     "NoopReportsDbWriter",
+    "PgReportsDbWriter",
+    "ReportsDbConfig",
+    "ReportsDbSchemaError",
     "ReportsDbWriteError",
     "ReportsDbWriteResult",
     "ReportsDbWriter",
