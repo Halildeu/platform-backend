@@ -19,7 +19,9 @@ subsequent PRs.
 | PR-2b1 | Runner **retry foundation** (`run` subcommand, bounded backoff, injectable sleeper) | this PR |
 | PR-2b2 | Audit log + checkpoint / resume | pending |
 | PR-2b3 | reports_db writer stub interface + DB lifecycle boundaries | pending |
-| PR-3 | Dockerfile + K8s Job manifest + test cluster wiring | pending |
+| PR-3a | `PgReportsDbWriter` (psycopg) + `REPORTS_DB_*` config + `--reports-db` CLI fail-closed switch | ✅ merged ([#212](https://github.com/Halildeu/platform-backend/pull/212)) |
+| PR-3b | Dockerfile (multi-stage Python 3.12 slim) + GHCR image build/push workflow + container smoke gates | this PR |
+| PR-3c | platform-k8s-gitops manifest update with immutable digest pin from PR-3b output | pending |
 | PR-4 | Live smoke against testai schema-service + reports DB writes | pending (operator gate) |
 
 ## PR-2a — CLI usage (this slice)
