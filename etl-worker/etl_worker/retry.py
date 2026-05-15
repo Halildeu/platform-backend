@@ -34,6 +34,7 @@ reports_db writer (PR-2b3) without rewriting retry semantics.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -90,20 +91,31 @@ class RetryPolicy:
     def __post_init__(self) -> None:
         if self.max_attempts < 1:
             raise ValueError("RetryPolicy.max_attempts must be >= 1")
-        if self.initial_seconds < 0:
-            raise ValueError("RetryPolicy.initial_seconds must be >= 0")
-        if self.multiplier < 1.0:
-            raise ValueError("RetryPolicy.multiplier must be >= 1.0")
-        if self.cap_seconds < self.initial_seconds:
+        # ``math.isfinite`` guards against ``nan`` / ``inf`` slipping
+        # past the plain comparisons below — those comparisons are
+        # false for ``nan`` so a NaN value would otherwise pass.
+        if not math.isfinite(self.initial_seconds) or self.initial_seconds < 0:
             raise ValueError(
-                "RetryPolicy.cap_seconds must be >= initial_seconds"
+                "RetryPolicy.initial_seconds must be a non-negative finite number"
+            )
+        if not math.isfinite(self.multiplier) or self.multiplier < 1.0:
+            raise ValueError(
+                "RetryPolicy.multiplier must be a finite number >= 1.0"
+            )
+        if not math.isfinite(self.cap_seconds) or self.cap_seconds < self.initial_seconds:
+            raise ValueError(
+                "RetryPolicy.cap_seconds must be a finite number >= initial_seconds"
             )
 
     def delay_for_attempt(self, attempt: int) -> float:
         """Compute the sleep delay *before* ``attempt`` (1-indexed).
 
         ``attempt == 1`` returns ``0.0`` because the first try never
-        sleeps. Subsequent attempts grow exponentially up to
+        sleeps. For ``attempt >= 2`` the delay is
+        ``min(initial_seconds * (multiplier ** (attempt - 2)), cap_seconds)``
+        — i.e. attempt 2 sleeps ``initial``, attempt 3 sleeps
+        ``initial * multiplier``, attempt 4 sleeps
+        ``initial * multiplier ** 2``, and so on, capped at
         :attr:`cap_seconds`.
         """
         if attempt <= 1:

@@ -38,18 +38,47 @@ def test_policy_rejects_zero_max_attempts() -> None:
 
 
 def test_policy_rejects_negative_initial_seconds() -> None:
-    with pytest.raises(ValueError, match=r"initial_seconds must be >= 0"):
+    with pytest.raises(ValueError, match=r"initial_seconds must be a non-negative finite number"):
         RetryPolicy(initial_seconds=-1)
 
 
 def test_policy_rejects_sub_unit_multiplier() -> None:
-    with pytest.raises(ValueError, match=r"multiplier must be >= 1\.0"):
+    with pytest.raises(ValueError, match=r"multiplier must be a finite number >= 1\.0"):
         RetryPolicy(multiplier=0.5)
 
 
 def test_policy_rejects_cap_smaller_than_initial() -> None:
-    with pytest.raises(ValueError, match=r"cap_seconds must be >= initial_seconds"):
+    with pytest.raises(ValueError, match=r"cap_seconds must be a finite number >= initial_seconds"):
         RetryPolicy(initial_seconds=5.0, cap_seconds=1.0)
+
+
+@pytest.mark.parametrize(
+    "non_finite",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_policy_rejects_non_finite_initial_seconds(non_finite: float) -> None:
+    """Codex 019e2a5c REVISE absorb: ``nan`` / ``inf`` slip past the
+    ``value < 0`` comparison because NaN comparisons are always false."""
+    with pytest.raises(ValueError, match=r"initial_seconds must be a non-negative finite number"):
+        RetryPolicy(initial_seconds=non_finite)
+
+
+@pytest.mark.parametrize(
+    "non_finite",
+    [float("nan"), float("inf")],
+)
+def test_policy_rejects_non_finite_multiplier(non_finite: float) -> None:
+    with pytest.raises(ValueError, match=r"multiplier must be a finite number >= 1\.0"):
+        RetryPolicy(multiplier=non_finite)
+
+
+@pytest.mark.parametrize(
+    "non_finite",
+    [float("nan"), float("inf")],
+)
+def test_policy_rejects_non_finite_cap_seconds(non_finite: float) -> None:
+    with pytest.raises(ValueError, match=r"cap_seconds must be a finite number >= initial_seconds"):
+        RetryPolicy(cap_seconds=non_finite)
 
 
 # ---- delay schedule ------------------------------------------------------

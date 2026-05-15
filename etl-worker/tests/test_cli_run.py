@@ -9,6 +9,8 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
+
 from etl_worker.cli import (
     EX_OK,
     EX_PROTOCOL,
@@ -343,6 +345,37 @@ def test_run_negative_initial_seconds_maps_to_64_usage() -> None:
     assert code == EX_USAGE
 
 
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--timeout", "nan"),
+        ("--timeout", "inf"),
+        ("--retry-initial-seconds", "nan"),
+        ("--retry-initial-seconds", "inf"),
+        ("--retry-multiplier", "nan"),
+        ("--retry-multiplier", "inf"),
+        ("--retry-cap-seconds", "nan"),
+        ("--retry-cap-seconds", "inf"),
+    ],
+)
+def test_run_non_finite_numeric_flags_map_to_64_usage(flag: str, value: str) -> None:
+    """Codex 019e2a5c REVISE absorb: ``nan`` / ``inf`` numeric flags must
+    surface as ``EX_USAGE`` (64), not silently pass validation and then
+    be misclassified as a retryable upstream failure (75)."""
+    _, factory = _factory([_good_snapshot()])
+
+    code = main(
+        ["run", flag, value],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+    )
+
+    assert code == EX_USAGE
+
+
 def test_run_cap_smaller_than_initial_maps_to_64_usage() -> None:
     """``RetryPolicy.__post_init__`` cross-field validation surfaces as EX_USAGE."""
     _, factory = _factory([_good_snapshot()])
@@ -365,7 +398,7 @@ def test_run_cap_smaller_than_initial_maps_to_64_usage() -> None:
 
     assert code == EX_USAGE
     assert "retry policy" in err.getvalue()
-    assert "cap_seconds must be >= initial_seconds" in err.getvalue()
+    assert "cap_seconds must be a finite number >= initial_seconds" in err.getvalue()
 
 
 # ---- config errors propagate to EX_USAGE in run path ---------------------

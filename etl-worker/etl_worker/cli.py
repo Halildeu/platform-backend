@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -214,15 +215,20 @@ def _build_parser() -> _NonExitingParser:
 
 
 def _parse_cli_timeout(raw: str) -> float:
-    """argparse type-converter that funnels through the same contract as env parsing."""
+    """argparse type-converter that funnels through the same contract as env parsing.
+
+    Like :func:`config._parse_timeout`, ``nan`` / ``inf`` are rejected
+    via :func:`math.isfinite` so a malformed numeric flag cannot
+    silently pass and later be misclassified as an upstream failure.
+    """
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
         raise argparse.ArgumentTypeError(
-            "--timeout must be a positive number"
+            "--timeout must be a positive finite number"
         ) from exc
-    if value <= 0:
-        raise argparse.ArgumentTypeError("--timeout must be a positive number")
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("--timeout must be a positive finite number")
     return value
 
 
@@ -240,9 +246,9 @@ def _parse_non_negative_float(raw: str) -> float:
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError("must be a non-negative number") from exc
-    if value < 0:
-        raise argparse.ArgumentTypeError("must be a non-negative number")
+        raise argparse.ArgumentTypeError("must be a non-negative finite number") from exc
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative finite number")
     return value
 
 
@@ -250,9 +256,9 @@ def _parse_multiplier_float(raw: str) -> float:
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError("must be a number >= 1.0") from exc
-    if value < 1.0:
-        raise argparse.ArgumentTypeError("must be a number >= 1.0")
+        raise argparse.ArgumentTypeError("must be a finite number >= 1.0") from exc
+    if not math.isfinite(value) or value < 1.0:
+        raise argparse.ArgumentTypeError("must be a finite number >= 1.0")
     return value
 
 
