@@ -37,4 +37,3 @@ public record FilterValuesResponseDto(
                         new java.util.ArrayList<>(values));
     }
 }
-

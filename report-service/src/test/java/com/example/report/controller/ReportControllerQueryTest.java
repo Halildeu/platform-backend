@@ -2307,7 +2307,8 @@ class ReportControllerQueryTest {
             when(queryEngine.getVisibleColumns(any(), any()))
                     .thenReturn(List.of("col1"));
             when(queryEngine.executeFilterValues(any(), any(), eq("col1"), any(), eq(1001)))
-                    .thenReturn(java.util.Arrays.asList("Istanbul", "Ankara", null));
+                    .thenReturn(new QueryEngine.FilterValuesResult(
+                            java.util.Arrays.asList("Istanbul", "Ankara", null), List.of()));
 
             var response = controller.getFilterValues(
                     "any", "col1", null, null, null, testJwt("admin"));
@@ -2361,7 +2362,7 @@ class ReportControllerQueryTest {
             when(queryEngine.getVisibleColumns(any(), any()))
                     .thenReturn(List.of("col1"));
             when(queryEngine.executeFilterValues(any(), any(), eq("col1"), any(), eq(1001)))
-                    .thenReturn(List.of("a", "b"));
+                    .thenReturn(new QueryEngine.FilterValuesResult(List.of("a", "b"), List.of()));
 
             var response = controller.getFilterValues(
                     "any", "col1", null, 999999, null, testJwt("admin"));
@@ -2384,7 +2385,8 @@ class ReportControllerQueryTest {
                     .thenReturn(List.of("col1"));
             // limit defaults to cap=3; controller asks for 3+1=4
             when(queryEngine.executeFilterValues(any(), any(), eq("col1"), any(), eq(4)))
-                    .thenReturn(List.of("a", "b", "c", "d"));
+                    .thenReturn(new QueryEngine.FilterValuesResult(
+                            List.of("a", "b", "c", "d"), List.of()));
 
             var response = controller.getFilterValues(
                     "any", "col1", null, null, null, testJwt("admin"));
@@ -2404,13 +2406,38 @@ class ReportControllerQueryTest {
             when(queryEngine.getVisibleColumns(any(), any()))
                     .thenReturn(List.of("col1"));
             when(queryEngine.executeFilterValues(any(), any(), eq("col1"), eq("ist"), eq(1001)))
-                    .thenReturn(List.of("Istanbul"));
+                    .thenReturn(new QueryEngine.FilterValuesResult(List.of("Istanbul"), List.of()));
 
             var response = controller.getFilterValues(
                     "any", "col1", "ist", null, null, testJwt("admin"));
 
             assertEquals(200, response.getStatusCode().value());
             verify(queryEngine).executeFilterValues(any(), any(), eq("col1"), eq("ist"), eq(1001));
+        }
+
+        @Test
+        void degradationWarningsPropagatedToHeader() {
+            // Codex iter-2 §Medium: filter-values must surface
+            // X-Report-Degraded just like /data and /export. A warning
+            // on the FilterValuesResult must reach the response header.
+            stubAuthz(true, List.of());
+            when(registry.get("any")).thenReturn(Optional.of(report("any")));
+            when(queryEngine.getMaxFilterValues()).thenReturn(1000);
+            when(queryEngine.getVisibleColumns(any(), any()))
+                    .thenReturn(List.of("col1"));
+            when(queryEngine.executeFilterValues(any(), any(), eq("col1"), any(), eq(1001)))
+                    .thenReturn(new QueryEngine.FilterValuesResult(
+                            List.of("a"),
+                            List.of(new com.example.report.query.DegradationWarning(
+                                    "tenant_lookup_unavailable", "35", "any",
+                                    "SETUP_PROCESS_CAT", "1 of 2 year schemas resolved"))));
+
+            var response = controller.getFilterValues(
+                    "any", "col1", null, null, null, testJwt("admin"));
+
+            assertEquals(200, response.getStatusCode().value());
+            assertNotNull(response.getHeaders().getFirst("X-Report-Degraded"),
+                    "degradation warning must surface on X-Report-Degraded header");
         }
     }
 

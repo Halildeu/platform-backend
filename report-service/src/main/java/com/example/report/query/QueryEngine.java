@@ -383,6 +383,29 @@ public class QueryEngine {
     }
 
     /**
+     * PR-0.5c (Codex thread 019e2d54 iter-2 §Medium): result envelope
+     * for {@link #executeFilterValues}. Carries the degradation
+     * warnings alongside the values so the controller can lift them
+     * onto the {@code X-Report-Degraded} header — the same warning
+     * propagation contract {@code /data} and {@code /export} honour.
+     */
+    public record FilterValuesResult(
+            List<Object> values,
+            List<DegradationWarning> warnings) {
+
+        public FilterValuesResult {
+            // Null-preserving: a column's distinct set legitimately
+            // includes null. unmodifiableList(new ArrayList<>(..))
+            // tolerates nulls where List.copyOf would not.
+            values = values == null
+                    ? List.of()
+                    : java.util.Collections.unmodifiableList(
+                            new java.util.ArrayList<>(values));
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        }
+    }
+
+    /**
      * PR-0.5c (Codex thread 019e2d54): execute the distinct-values
      * query for a set filter dropdown. Returns up to {@code limit + 1}
      * rows so the caller can detect truncation; values are raw column
@@ -392,12 +415,17 @@ public class QueryEngine {
      * <p>The query runs through the same {@code visibleColumns + RLS +
      * schema resolver} chain as {@link #executeQuery} so the dropdown
      * cannot surface a value the row reader would have filtered out.
+     *
+     * <p>Codex iter-2 §Medium: the result carries the built query's
+     * degradation warnings so the controller can propagate
+     * {@code X-Report-Degraded} — without this the filter-values
+     * path would silently drop warnings the row path surfaces.
      */
-    public List<Object> executeFilterValues(ReportDefinition def,
-                                             AuthzMeResponse authz,
-                                             String column,
-                                             String searchText,
-                                             int limit) {
+    public FilterValuesResult executeFilterValues(ReportDefinition def,
+                                                   AuthzMeResponse authz,
+                                                   String column,
+                                                   String searchText,
+                                                   int limit) {
         List<String> visibleColumns = columnFilter.getVisibleColumns(def, authz);
         RowFilterInjector.RlsResult rls = rowFilterInjector.buildRlsClause(def, authz);
         YearlySchemaResolver.ResolvedSchemas schemas = resolveSchemas(def, authz, null);
@@ -417,7 +445,7 @@ public class QueryEngine {
             // Single-column DISTINCT — the map has exactly one entry.
             values.add(row.isEmpty() ? null : row.values().iterator().next());
         }
-        return values;
+        return new FilterValuesResult(values, query.warnings());
     }
 
     private YearlySchemaResolver.ResolvedSchemas resolveSchemas(ReportDefinition def,

@@ -305,7 +305,11 @@ public class ReportController {
     @GetMapping("/{key}/filter-values")
     public ResponseEntity<?> getFilterValues(
             @PathVariable String key,
-            @RequestParam String column,
+            // Codex iter-2 §Low #3: column is required=false so a
+            // missing column flows through the visible-column check
+            // below and returns the structured INVALID_COLUMN 400
+            // rather than Spring's default missing-param envelope.
+            @RequestParam(required = false) String column,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Integer limit,
             @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
@@ -341,17 +345,18 @@ public class ReportController {
                     "column must be one of the report's visible columns, got: " + column));
         }
 
-        List<Object> values;
+        QueryEngine.FilterValuesResult result;
         try {
             // Fetch limit + 1 so we can detect truncation without a
             // separate COUNT(DISTINCT) round-trip.
-            values = queryEngine.executeFilterValues(
+            result = queryEngine.executeFilterValues(
                     def, scopedAuthz, column, search, effectiveLimit + 1);
         } catch (IllegalArgumentException iae) {
             return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
                     "INVALID_COLUMN", iae.getMessage()));
         }
 
+        List<Object> values = result.values();
         boolean truncated = values.size() > effectiveLimit;
         if (truncated) {
             values = values.subList(0, effectiveLimit);
@@ -360,8 +365,11 @@ public class ReportController {
         auditClient.logReportAccess(key, authz.getUserId(),
                 JwtClaimExtractor.extractAuditUsername(jwt));
 
-        return ResponseEntity.ok(new FilterValuesResponseDto(
-                values, effectiveLimit, truncated));
+        // Codex iter-2 §Medium: propagate degradation warnings on the
+        // X-Report-Degraded header — same contract as /data + /export.
+        return ResponseEntity.ok()
+                .headers(com.example.report.query.DegradationHeaders.of(result.warnings()))
+                .body(new FilterValuesResponseDto(values, effectiveLimit, truncated));
     }
 
     /**
