@@ -7,6 +7,8 @@ import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.ColumnVO;
 import com.example.report.dto.ReportExportRequestDto;
+import com.example.report.dto.ReportQueryErrorDto;
+import com.example.report.dto.ReportQueryRequestDto;
 import com.example.report.export.CsvStreamingExporter;
 import com.example.report.export.ExcelStreamingExporter;
 import com.example.report.export.ExportColumn;
@@ -134,16 +136,23 @@ public class ReportExportController {
     }
 
     /**
-     * PR-0.5b (Codex thread 019e2cd7): POST /export. Accepts the AG
-     * Grid grid-state snapshot (rowGroupCols + valueCols + pivotCols
-     * + pivotMode + filterModel + sortModel) and dispatches to the
-     * appropriate {@code SqlBuilder} export-query builder. Flat
-     * payloads (no grouping intent) fall through to the same flat
-     * builder the legacy GET path uses, so the contract surfaces the
-     * three real shapes without code duplication.
+     * PR-0.5b (Codex thread 019e2cd7, post-impl REVISE absorb): POST
+     * /export. Accepts the AG Grid grid-state snapshot (rowGroupCols
+     * + valueCols + pivotCols + pivotMode + filterModel + sortModel)
+     * and dispatches to the appropriate {@code SqlBuilder}
+     * export-query builder. Shares the validation/classifier
+     * contracts with {@link ReportController}'s live {@code /query}
+     * path so the exported view is identical to what the user sees
+     * on screen — same fail-closed semantics, structured error
+     * codes, and aggregation sanitisation.
+     *
+     * <p>Returns a {@link ResponseEntity} of {@code Object} so the
+     * happy-path streams a binary body while error paths return
+     * structured JSON {@link ReportQueryErrorDto}, matching the
+     * live query path's error envelope.
      */
     @PostMapping("/{key}/export")
-    public ResponseEntity<StreamingResponseBody> exportReportPost(
+    public ResponseEntity<?> exportReportPost(
             @PathVariable String key,
             @RequestBody(required = false) ReportExportRequestDto requestBody,
             @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
@@ -172,32 +181,68 @@ public class ReportExportController {
         Map<String, Object> filterModel = safeRequest.filterModel();
         List<Map<String, String>> sortModel = safeRequest.sortModel();
 
-        // Look up column definition map once — used for friendly headers
-        // in grouped/pivot export. ColumnDefinition.headerName() carries
-        // the user-facing label registered in the report definition.
+        // Resolve registry capability sets from visible columns —
+        // same derivation the metadata endpoint uses so the export
+        // contract stays in lockstep with the user-visible UI gates.
+        List<ColumnDefinition> visibleColDefs = new ArrayList<>();
         Map<String, ColumnDefinition> columnDefByField = new HashMap<>();
+        java.util.Set<String> visibleFieldSet = new java.util.HashSet<>(
+                queryEngine.getVisibleColumns(def, scopedAuthz));
         for (ColumnDefinition cd : def.columns()) {
-            columnDefByField.put(cd.field(), cd);
+            if (visibleFieldSet.contains(cd.field())) {
+                visibleColDefs.add(cd);
+                columnDefByField.put(cd.field(), cd);
+            }
         }
+        java.util.Set<String> groupableFields = visibleColDefs.stream()
+                .filter(ColumnDefinition::groupable)
+                .map(ColumnDefinition::field)
+                .collect(java.util.stream.Collectors.toSet());
+        java.util.Set<String> aggregatableFields = visibleColDefs.stream()
+                .filter(ColumnDefinition::aggregatable)
+                .map(ColumnDefinition::field)
+                .collect(java.util.stream.Collectors.toSet());
+        java.util.Set<String> pivotableFields = visibleColDefs.stream()
+                .filter(ColumnDefinition::pivotable)
+                .map(ColumnDefinition::field)
+                .collect(java.util.stream.Collectors.toSet());
+
+        boolean pivotRequest = isPivotRequest(safeRequest, groupableFields, pivotableFields);
+        boolean groupedRequest = !pivotRequest && isGroupedRequest(safeRequest, groupableFields);
 
         SqlBuilder.BuiltQuery exportQuery;
         List<ExportColumn> exportColumns;
         try {
-            if (safeRequest.requestsPivot()) {
-                // PR-0.5b pivot export: single-level row group +
-                // single pivot col + non-empty value cols.
-                if (safeRequest.rowGroupCols().size() != 1
-                        || safeRequest.pivotCols().size() != 1) {
-                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                            "Pivot export currently supports single rowGroup + single pivotCol "
-                                    + "(got rowGroup=" + safeRequest.rowGroupCols().size()
-                                    + ", pivot=" + safeRequest.pivotCols().size() + ")");
-                }
+            if (pivotRequest) {
                 String groupCol = safeRequest.rowGroupCols().get(0).field();
                 String pivotCol = safeRequest.pivotCols().get(0).field();
-                List<PivotValue> pivotValues = resolvePivotValues(columnDefByField, pivotCol);
-                List<SqlBuilder.GroupedAggregation> aggregations = buildAggregations(
-                        safeRequest.valueCols(), columnDefByField);
+                ColumnDefinition pivotCd = columnDefByField.get(pivotCol);
+                if (pivotCd == null || pivotCd.pivotValues() == null
+                        || pivotCd.pivotValues().isEmpty()) {
+                    return badRequest("PIVOT_NOT_CONFIGURED",
+                            "Pivot export requires the pivot column to declare pivotValues "
+                                    + "in the report registry, got: " + pivotCol);
+                }
+                List<PivotValue> pivotValues = pivotCd.pivotValues();
+                List<SqlBuilder.GroupedAggregation> aggregations;
+                try {
+                    aggregations = ReportController.sanitizeAggregations(
+                            safeRequest.valueCols(), aggregatableFields, visibleColDefs);
+                } catch (IllegalArgumentException iae) {
+                    return badRequest("INVALID_AGGREGATION_REQUEST", iae.getMessage());
+                }
+                // Budget check matches the live query path's
+                // PIVOT_BUDGET_EXCEEDED code (Codex 019e2695).
+                long totalOutputColumns =
+                        (long) pivotValues.size() * aggregations.size();
+                if (totalOutputColumns > SqlBuilder.MAX_PIVOT_OUTPUT_COLUMNS) {
+                    return badRequest("PIVOT_BUDGET_EXCEEDED",
+                            "Pivot output column budget exceeded: pivotValues("
+                                    + pivotValues.size() + ") * valueCols("
+                                    + aggregations.size() + ") = "
+                                    + totalOutputColumns + " > "
+                                    + SqlBuilder.MAX_PIVOT_OUTPUT_COLUMNS);
+                }
 
                 SqlBuilder.PivotedBuiltQuery pivotQuery =
                         queryEngine.buildPivotedGroupedExportQuery(
@@ -206,37 +251,47 @@ public class ReportExportController {
                 exportQuery = new SqlBuilder.BuiltQuery(
                         pivotQuery.sql(), pivotQuery.params(), pivotQuery.warnings());
                 exportColumns = pivotExportColumns(groupCol, columnDefByField, pivotQuery);
-            } else if (safeRequest.requestsGrouping()
-                    && safeRequest.rowGroupCols() != null
-                    && !safeRequest.rowGroupCols().isEmpty()
-                    && safeRequest.valueCols() != null
-                    && !safeRequest.valueCols().isEmpty()) {
-                // PR-0.5b grouped export: multi-level GROUP BY,
-                // leaf-bucket table output.
+            } else if (groupedRequest) {
                 List<String> groupColumns = new ArrayList<>();
                 for (ColumnVO vo : safeRequest.rowGroupCols()) {
                     groupColumns.add(vo.field());
                 }
-                List<SqlBuilder.GroupedAggregation> aggregations = buildAggregations(
-                        safeRequest.valueCols(), columnDefByField);
-
+                List<SqlBuilder.GroupedAggregation> aggregations;
+                try {
+                    aggregations = ReportController.sanitizeAggregations(
+                            safeRequest.valueCols(), aggregatableFields, visibleColDefs);
+                } catch (IllegalArgumentException iae) {
+                    return badRequest("INVALID_AGGREGATION_REQUEST", iae.getMessage());
+                }
+                if (aggregations.isEmpty()) {
+                    return badRequest("INVALID_AGGREGATION_REQUEST",
+                            "Grouped export requires at least one aggregatable value column");
+                }
                 exportQuery = queryEngine.buildGroupedExportQuery(
                         def, scopedAuthz, groupColumns, aggregations,
                         filterModel, sortModel);
                 exportColumns = groupedExportColumns(groupColumns, columnDefByField, aggregations);
+            } else if (safeRequest.requestsGrouping()) {
+                // Grouping/pivot intent present but the shape doesn't
+                // satisfy either classifier: fail-closed with the same
+                // code the live /query path emits so the FE can render
+                // a consistent error message.
+                return badRequest("GROUPING_NOT_SUPPORTED",
+                        "Export request shape is not supported: rowGroupCols/"
+                                + "valueCols/pivotCols/pivotMode combination must "
+                                + "either match the single-level pivot contract "
+                                + "(pivotMode=true + 1 rowGroup + 1 pivotCol + value cols) "
+                                + "or the grouped contract (>=1 rowGroup + >=1 value col, "
+                                + "no pivotMode, no pivotCols)");
             } else {
-                // Flat export — same shape as the legacy GET path so
-                // the request-via-POST contract works uniformly even
-                // for non-grouping payloads (frontend dispatches
-                // grouping intent → POST, flat → GET; but POST flat
-                // stays well-defined for robustness).
+                // Flat export — same shape as the legacy GET path.
                 exportQuery = queryEngine.buildExportQuery(
                         def, scopedAuthz, filterModel, sortModel);
                 List<String> visibleColumns = queryEngine.getVisibleColumns(def, scopedAuthz);
                 exportColumns = flatExportColumns(visibleColumns, columnDefByField);
             }
         } catch (IllegalArgumentException iae) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, iae.getMessage());
+            return badRequest("INVALID_AGGREGATION_REQUEST", iae.getMessage());
         }
 
         String userId = jwt != null ? JwtClaimExtractor.extractAuditUsername(jwt) : authz.getUserId();
@@ -268,54 +323,59 @@ public class ReportExportController {
     }
 
     /**
-     * Map AG Grid {@code valueCols} → SqlBuilder
-     * {@code GroupedAggregation}. Each entry resolves the aggregation
-     * func from (in order) the request's {@code aggFunc}, the column
-     * registry's {@code defaultAggFunc}, or "sum" for numeric / "count"
-     * for any other type.
-     *
-     * <p>{@code defaultAggParams} on the registry side carries the
-     * {@code weightField} (PR-0.4c) which the request may override
-     * via {@code aggParams.weightField}.
+     * Classify the request as a valid single-level pivot export shape.
+     * Reuses the live {@code /query} contract via
+     * {@link ReportController#singleLevelPivotRequest(ReportQueryRequestDto,
+     * java.util.Set, java.util.Set)} so the two paths stay in lockstep.
      */
-    private List<SqlBuilder.GroupedAggregation> buildAggregations(
-            List<ColumnVO> valueCols,
-            Map<String, ColumnDefinition> columnDefByField) {
-        List<SqlBuilder.GroupedAggregation> out = new ArrayList<>();
-        if (valueCols == null) return out;
-        for (ColumnVO vc : valueCols) {
-            String field = vc.field();
-            ColumnDefinition cd = columnDefByField.get(field);
-            String func = vc.aggFunc();
-            if (func == null || func.isBlank()) {
-                if (cd != null && cd.defaultAggFunc() != null && !cd.defaultAggFunc().isBlank()) {
-                    func = cd.defaultAggFunc();
-                } else if (cd != null && "number".equalsIgnoreCase(cd.type())) {
-                    func = "sum";
-                } else {
-                    func = "count";
-                }
-            }
-            func = func.toLowerCase(java.util.Locale.ROOT);
-            // Resolve aggParams: request override > registry default.
-            Map<String, Object> aggParams = null;
-            if (cd != null && cd.defaultAggParams() != null && !cd.defaultAggParams().isEmpty()) {
-                aggParams = new LinkedHashMap<>(cd.defaultAggParams());
-            }
-            out.add(new SqlBuilder.GroupedAggregation(field, func, aggParams));
-        }
-        return out;
+    private boolean isPivotRequest(ReportExportRequestDto req,
+                                    java.util.Set<String> groupableFields,
+                                    java.util.Set<String> pivotableFields) {
+        return ReportController.singleLevelPivotRequest(
+                toQueryRequest(req), groupableFields, pivotableFields);
     }
 
-    private List<PivotValue> resolvePivotValues(
-            Map<String, ColumnDefinition> columnDefByField, String pivotCol) {
-        ColumnDefinition cd = columnDefByField.get(pivotCol);
-        if (cd == null || cd.pivotValues() == null || cd.pivotValues().isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Pivot export requires the pivot column to declare pivotValues in the "
-                            + "report registry, got: " + pivotCol);
+    /**
+     * Grouped export shape: at least one rowGroupCol (all groupable),
+     * at least one valueCol, no pivotMode, no pivotCols, no groupKeys
+     * (export ships every bucket — the user's expansion frontier is
+     * not relevant).
+     */
+    private boolean isGroupedRequest(ReportExportRequestDto req,
+                                      java.util.Set<String> groupableFields) {
+        if (req.rowGroupCols() == null || req.rowGroupCols().isEmpty()) return false;
+        if (req.rowGroupCols().size() > ReportController.MAX_ROW_GROUP_DEPTH) return false;
+        if (req.valueCols() == null || req.valueCols().isEmpty()) return false;
+        if (Boolean.TRUE.equals(req.pivotMode())) return false;
+        if (req.pivotCols() != null && !req.pivotCols().isEmpty()) return false;
+        java.util.Set<String> seenFields = new java.util.HashSet<>();
+        for (ColumnVO vo : req.rowGroupCols()) {
+            if (vo == null || vo.field() == null) return false;
+            if (!groupableFields.contains(vo.field())) return false;
+            if (!seenFields.add(vo.field())) return false;
         }
-        return cd.pivotValues();
+        return true;
+    }
+
+    /**
+     * Adapt the export DTO to the query DTO shape so the live
+     * classifier helper can be reused without duplicating its logic.
+     * groupKeys/startRow/endRow are intentionally absent on export.
+     */
+    private ReportQueryRequestDto toQueryRequest(ReportExportRequestDto req) {
+        return new ReportQueryRequestDto(
+                null, null,
+                req.rowGroupCols(),
+                req.valueCols(),
+                req.pivotCols(),
+                req.pivotMode(),
+                java.util.List.of(),
+                req.filterModel(),
+                req.sortModel());
+    }
+
+    private ResponseEntity<ReportQueryErrorDto> badRequest(String code, String message) {
+        return ResponseEntity.badRequest().body(new ReportQueryErrorDto(code, message));
     }
 
     /**

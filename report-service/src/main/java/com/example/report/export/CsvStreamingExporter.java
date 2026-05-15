@@ -87,7 +87,16 @@ public class CsvStreamingExporter {
                 str = "'" + str;
             }
         }
-        if (str.contains(SEPARATOR) || str.contains("\"") || str.contains("\n")) {
+        // Codex 019e2cd7 post-impl Finding #5: CR inside a value must
+        // be wrapped in quotes too, otherwise the formula-injection
+        // single-quote prefix leaves a CR free to break the record
+        // boundary. Tab is included for safety so a tab-delimited
+        // consumer cannot be confused either.
+        if (str.contains(SEPARATOR)
+                || str.contains("\"")
+                || str.contains("\n")
+                || str.contains("\r")
+                || str.contains("\t")) {
             str = "\"" + str.replace("\"", "\"\"") + "\"";
         }
         return str;
