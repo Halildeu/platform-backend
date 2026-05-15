@@ -1069,6 +1069,102 @@ class SqlBuilderTest {
         }
     }
 
+    // ── PR-0.4c: weightedavg aggregation ──────────────────────────
+
+    @Nested
+    class WeightedAverageAggregation {
+
+        @Test
+        void rendersNullSafeWeightedRatioInGroupedQuery() {
+            // SUM(value * weight) / NULLIF(SUM(CASE WHEN value IS NOT
+            // NULL AND weight IS NOT NULL THEN weight END), 0)
+            // — rows where either operand is null fall out of both
+            // numerator and denominator (MSSQL AVG semantic).
+            ReportDefinition def = new ReportDefinition(
+                    "weighted-report", "v1", "Weighted", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false),
+                            new ColumnDefinition("qty", "Qty", "number", 100, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "price", "qty"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation(
+                            "price", "weightedavg",
+                            Map.of("weightField", "qty"))),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            assertThat(q.sql())
+                    .contains("SUM([price] * [qty]) / NULLIF(SUM(CASE WHEN [price] IS NOT NULL"
+                            + " AND [qty] IS NOT NULL THEN [qty] END), 0) AS [price]")
+                    .contains("GROUP BY [category]");
+        }
+
+        @Test
+        void weightedavgWithoutWeightFieldRejectedByRenderer() {
+            // The SQL builder's weightFieldOf helper throws when the
+            // canonical record reaches the SQL renderer without a
+            // params.weightField key. Defence-in-depth: the controller
+            // sanitizeAggParams already enforces this, but a future
+            // caller path that bypasses the controller (programmatic
+            // test, internal cron) must still fail loudly rather than
+            // produce broken SQL like `SUM([price] * [])`.
+            ReportDefinition def = new ReportDefinition(
+                    "weighted-report", "v1", "Weighted", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+            SqlBuilder.GroupedAggregation a =
+                    new SqlBuilder.GroupedAggregation("price", "weightedavg", null);
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class,
+                    () -> builder.buildGroupedQuery(
+                            def, null, List.of("category", "price"),
+                            "category", List.of(a),
+                            Collections.emptyMap(), Collections.emptyList(),
+                            null, null, 1, 50));
+        }
+
+        @Test
+        void weightedavgMixedWithOtherAggsInSameGroupedQuery() {
+            // Multiple value cols, one weighted, others standard.
+            ReportDefinition def = new ReportDefinition(
+                    "mixed-report", "v1", "Mixed", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false),
+                            new ColumnDefinition("qty", "Qty", "number", 100, false),
+                            new ColumnDefinition("amount", "Amount", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "price", "qty", "amount"),
+                    "category",
+                    List.of(
+                            new SqlBuilder.GroupedAggregation("amount", "sum"),
+                            new SqlBuilder.GroupedAggregation(
+                                    "price", "weightedavg",
+                                    Map.of("weightField", "qty"))),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            assertThat(q.sql())
+                    .contains("SUM([amount]) AS [amount]")
+                    .contains("SUM([price] * [qty]) / NULLIF(")
+                    .contains("AS [price]");
+        }
+    }
+
     // ── buildPivotedGroupedQuery (PR-0.4b) ───────────────────────
 
     @Nested
