@@ -53,6 +53,30 @@ public record ContractGateSummary(
                 .toList();
     }
 
+    /**
+     * R16 PR-C-2 (Codex 019e27f5 P2 absorb) — WARN visibility in gate artifacts.
+     *
+     * <p>Önceki tasarım yalnız FAIL'leri sticky comment + JSON'a yansıtıyordu;
+     * WARN'ler "silent" geçiyor olabiliyordu. R16 close-out discipline gap'inin
+     * son adımı: WARN'ler reviewer'a görünür hale getirilir, "silent drift
+     * imkansızlaşır" iddiası gerçekten enforce edilir.
+     */
+    public List<ContractViolation> unsuppressedWarnings() {
+        return filteredViolations.stream()
+                .filter(v -> v.severity() == ContractViolation.Severity.WARN)
+                .sorted(VIOLATION_ORDER)
+                .toList();
+    }
+
+    /** Per-rule WARN count for summary metrics (JSON artifact). */
+    public Map<String, Long> warningsByRule() {
+        return unsuppressedWarnings().stream()
+                .collect(Collectors.groupingBy(
+                        v -> v.ruleId() == null ? "?" : v.ruleId(),
+                        TreeMap::new,
+                        Collectors.counting()));
+    }
+
     /** Deterministic violation ordering: ruleId, then reportKey, then field. */
     private static final Comparator<ContractViolation> VIOLATION_ORDER =
             Comparator.comparing((ContractViolation v) -> v.ruleId() == null ? "" : v.ruleId())
@@ -119,8 +143,13 @@ public record ContractGateSummary(
         output.put("filteredViolationCount", filteredViolations.size());
         output.put("unsuppressedFailureCount", unsuppressedFailures().size());
         output.put("metaFailureCount", metaFailures().size());
+        // R16 PR-C-2 (Codex 019e27f5 P2): WARN visibility
+        output.put("unsuppressedWarningCount", unsuppressedWarnings().size());
+        output.put("warningsByRule", warningsByRule());
         output.put("suppressedByRule", suppressedByRule());
         output.put("unsuppressedFailures", unsuppressedFailures().stream()
+                .map(ContractGateSummary::violationToMap).toList());
+        output.put("unsuppressedWarnings", unsuppressedWarnings().stream()
                 .map(ContractGateSummary::violationToMap).toList());
         output.put("suppressionEvents", suppressionEvents.stream()
                 .map(e -> {
@@ -156,6 +185,28 @@ public record ContractGateSummary(
             sb.append("| Rule | Report | Field | Message |\n");
             sb.append("|---|---|---|---|\n");
             for (ContractViolation v : unsuppressedFailures()) {
+                sb.append("| `").append(v.ruleId()).append("`")
+                        .append(" | `").append(orEmpty(v.reportKey())).append("`")
+                        .append(" | `").append(orEmpty(v.field())).append("`")
+                        .append(" | ").append(escapePipes(orEmpty(v.message())))
+                        .append(" |\n");
+            }
+            sb.append("\n");
+        }
+
+        // R16 PR-C-2 (Codex 019e27f5 P2 absorb): WARN visibility in sticky comment.
+        // FAIL'lerden sonra WARN listesi — reviewer için close-out discipline guard
+        // sinyali (silent drift imkansızlaşır).
+        if (!unsuppressedWarnings().isEmpty()) {
+            sb.append("## :warning: Unsuppressed Warnings\n\n");
+            sb.append("`").append(unsuppressedWarnings().size())
+                    .append("` warning(s). Bunlar CI'yı kırmaz ama close-out discipline"
+                            + " kapsamında implement edilmesi veya explicit debt registry'ye"
+                            + " (deferred-stub-rules.yaml / authz-reference-debt.yaml) eklenmesi"
+                            + " beklenir.\n\n");
+            sb.append("| Rule | Report | Field | Message |\n");
+            sb.append("|---|---|---|---|\n");
+            for (ContractViolation v : unsuppressedWarnings()) {
                 sb.append("| `").append(v.ruleId()).append("`")
                         .append(" | `").append(orEmpty(v.reportKey())).append("`")
                         .append(" | `").append(orEmpty(v.field())).append("`")
