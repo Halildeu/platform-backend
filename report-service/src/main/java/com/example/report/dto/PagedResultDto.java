@@ -32,15 +32,23 @@ public record PagedResultDto<T>(
         @JsonInclude(JsonInclude.Include.NON_EMPTY)
         List<String> pivotResultFields,
         @JsonInclude(JsonInclude.Include.NON_EMPTY)
-        List<PivotResultColumnDto> pivotResultColumns) {
+        List<PivotResultColumnDto> pivotResultColumns,
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        java.util.Map<String, Object> grandTotalRow) {
 
     public PagedResultDto(List<T> items, long total, int page, int pageSize) {
-        this(items, total, page, pageSize, List.of(), List.of());
+        this(items, total, page, pageSize, List.of(), List.of(), null);
     }
 
     public PagedResultDto(List<T> items, long total, int page, int pageSize,
                           List<String> pivotResultFields) {
-        this(items, total, page, pageSize, pivotResultFields, List.of());
+        this(items, total, page, pageSize, pivotResultFields, List.of(), null);
+    }
+
+    public PagedResultDto(List<T> items, long total, int page, int pageSize,
+                          List<String> pivotResultFields,
+                          List<PivotResultColumnDto> pivotResultColumns) {
+        this(items, total, page, pageSize, pivotResultFields, pivotResultColumns, null);
     }
 
     public PagedResultDto {
@@ -50,5 +58,15 @@ public record PagedResultDto<T>(
         pivotResultColumns = pivotResultColumns == null
                 ? List.of()
                 : List.copyOf(pivotResultColumns);
+        // PR-0.5a (Codex thread 019e2c61): grand total row is
+        // controller-gated to root grouped requests; defensive
+        // immutability + empty-collapse-to-null so the
+        // @JsonInclude(NON_NULL) field stays omitted on the
+        // dominant non-grouped / child-store / pivot paths.
+        if (grandTotalRow != null) {
+            grandTotalRow = grandTotalRow.isEmpty()
+                    ? null
+                    : java.util.Map.copyOf(grandTotalRow);
+        }
     }
 }
