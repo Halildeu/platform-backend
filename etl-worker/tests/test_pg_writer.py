@@ -394,21 +394,51 @@ def test_rollback_failure_does_not_mask_original_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_password_does_not_leak_into_exception_message() -> None:
-    """Even if the driver embedded ``password=<value>`` in its error message,
-    the adapter scrubs it before bubbling out."""
+class _LeakyError(Exception):
+    pass
 
-    class _LeakyError(Exception):
-        pass
+
+@pytest.mark.parametrize(
+    "leaky_message",
+    [
+        "connection failed: host=pg.test port=5432 password=sup3r-secret-pw",
+        "connection failed: PASSWORD=sup3r-secret-pw retrying",
+        "connection failed: password = sup3r-secret-pw retrying",
+        "connection failed: {'host': 'pg.test', 'password': 'sup3r-secret-pw'}",
+        "connection failed: {\"host\":\"pg.test\",\"password\":\"sup3r-secret-pw\"}",
+        # Bare-raw substring path — driver dumped the password value
+        # without using the ``password=`` keyword at all (rare but
+        # possible with custom Error subclasses).
+        "auth failure for sup3r-secret-pw on pg.test",
+        # YAML / mapping repr without quotes
+        "config: password: sup3r-secret-pw retrying",
+    ],
+)
+def test_password_does_not_leak_into_exception_message(leaky_message: str) -> None:
+    """Codex 019e2a5c PR-3a REVISE absorb (blocker #2): every common driver
+    error shape that could embed the password must be scrubbed before the
+    exception bubbles to the CLI."""
 
     connection = _FakeConnection()
-    connection.cursor_obj.exception_to_raise = _LeakyError(
-        "connection failed: host=pg.test port=5432 password=sup3r-secret-pw"
-    )
+    connection.cursor_obj.exception_to_raise = _LeakyError(leaky_message)
     writer = _build_writer(connection)
 
     with pytest.raises(ReportsDbWriteError) as caught:
         writer.upsert(_summary())
 
     assert "sup3r-secret-pw" not in str(caught.value)
-    assert "password=***" in str(caught.value)
+    assert "***" in str(caught.value)
+
+
+def test_password_scrub_handles_empty_exception_message() -> None:
+    """Empty driver message falls back to the exception class name so the
+    CLI never prints a bare colon followed by nothing."""
+
+    connection = _FakeConnection()
+    connection.cursor_obj.exception_to_raise = _LeakyError("")
+    writer = _build_writer(connection)
+
+    with pytest.raises(ReportsDbWriteError) as caught:
+        writer.upsert(_summary())
+
+    assert str(caught.value) == "_LeakyError"

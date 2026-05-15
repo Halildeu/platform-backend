@@ -532,3 +532,112 @@ def test_resume_loads_checkpoint_even_without_audit(tmp_path: Path) -> None:
             checkpoint=cp_file,
             resume=True,
         )
+
+
+# ---- PR-3a wiring: real PgReportsDbWriter receives full transaction payload
+
+
+def test_db_writer_call_includes_attempts_and_run_id() -> None:
+    """Codex 019e2a5c PR-3a REVISE absorb (blocker #1): runner must pass
+    ``attempts`` + ``run_id`` to the DB writer in addition to ``snapshot_signature``,
+    otherwise the real :class:`PgReportsDbWriter` rejects the call with
+    ``ReportsDbWriteError`` because its ``REQUIRED_SUMMARY_FIELDS`` covers all
+    three keys."""
+    from etl_worker.db import ReportsDbWriteResult
+
+    class _CapturingWriter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def upsert(self, summary: dict[str, object]) -> ReportsDbWriteResult:
+            self.calls.append(dict(summary))
+            return ReportsDbWriteResult(rows_written=1)
+
+    writer = _CapturingWriter()
+    client = _FakeClient(responses=[_good_snapshot()])
+
+    result = run_fetch(
+        client=client,
+        schema=None,
+        policy=RetryPolicy(max_attempts=1),
+        sleeper=_FakeSleeper(),
+        run_id="runner-test-id",
+        db_writer=writer,
+    )
+
+    assert result.attempts == 1
+    assert len(writer.calls) == 1
+    call = writer.calls[0]
+    # The three keys that real PgReportsDbWriter requires beyond
+    # the base contract summary keys.
+    assert call["snapshot_signature"]  # non-empty hash
+    assert call["attempts"] == 1
+    assert call["run_id"] == "runner-test-id"
+    # And the canonical content-only summary fields.
+    for key in ("contract_version", "allowlist_name", "table_count", "column_count"):
+        assert key in call
+
+
+def test_db_writer_call_with_real_pg_writer_against_fake_connection() -> None:
+    """End-to-end runner ⇄ real PgReportsDbWriter, using a fake connection.
+
+    This catches the contract mismatch Codex called out in the post-impl
+    review: even with the real adapter, the runner's payload must satisfy
+    ``REQUIRED_SUMMARY_FIELDS`` (including ``attempts`` and ``run_id``)."""
+    from etl_worker.pg_writer import PgReportsDbWriter
+
+    executed_params: list[tuple[object, ...]] = []
+
+    class _FakeCursor:
+        def execute(self, _sql: str, params: tuple[object, ...]) -> None:
+            executed_params.append(params)
+
+        def __enter__(self) -> _FakeCursor:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    class _FakeConn:
+        def cursor(self) -> _FakeCursor:
+            return _FakeCursor()
+
+        def commit(self) -> None:  # pragma: no cover - trivial
+            return None
+
+        def rollback(self) -> None:  # pragma: no cover - trivial
+            return None
+
+        def close(self) -> None:  # pragma: no cover - trivial
+            return None
+
+    def factory(**_kwargs: object) -> _FakeConn:
+        return _FakeConn()
+
+    writer = PgReportsDbWriter(
+        host="pg.test",
+        port=5432,
+        database="reports_db",
+        user="writer",
+        password="pw",
+        connect_factory=factory,  # type: ignore[arg-type]
+    )
+
+    client = _FakeClient(responses=[_good_snapshot()])
+    result = run_fetch(
+        client=client,
+        schema=None,
+        policy=RetryPolicy(max_attempts=1),
+        sleeper=_FakeSleeper(),
+        run_id="runner-pg-id",
+        db_writer=writer,
+    )
+
+    assert result.attempts == 1
+    assert len(executed_params) == 1
+    params = executed_params[0]
+    # UPSERT_SQL parameter order:
+    #   (signature, contract_version, allowlist_name, allowlist_version,
+    #    table_count, column_count, attempts, run_id)
+    assert params[6] == 1  # attempts
+    assert params[7] == "runner-pg-id"  # run_id

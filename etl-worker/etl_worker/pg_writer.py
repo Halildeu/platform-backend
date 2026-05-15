@@ -54,6 +54,7 @@ read once at construction.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
@@ -255,11 +256,17 @@ class PgReportsDbWriter:
                 connect_timeout=self._connect_timeout_seconds,
             )
         except _SchemaErrorMarker as exc:
-            raise ReportsDbSchemaError(str(exc)) from exc
+            raise ReportsDbSchemaError(
+                _safe_message(exc, password=self._password)
+            ) from exc
         except Exception as exc:
             if _is_schema_error(exc):
-                raise ReportsDbSchemaError(_safe_message(exc)) from exc
-            raise ReportsDbWriteError(_safe_message(exc)) from exc
+                raise ReportsDbSchemaError(
+                    _safe_message(exc, password=self._password)
+                ) from exc
+            raise ReportsDbWriteError(
+                _safe_message(exc, password=self._password)
+            ) from exc
 
         try:
             try:
@@ -269,8 +276,12 @@ class PgReportsDbWriter:
             except Exception as exc:
                 _try_rollback(connection)
                 if _is_schema_error(exc):
-                    raise ReportsDbSchemaError(_safe_message(exc)) from exc
-                raise ReportsDbWriteError(_safe_message(exc)) from exc
+                    raise ReportsDbSchemaError(
+                        _safe_message(exc, password=self._password)
+                    ) from exc
+                raise ReportsDbWriteError(
+                    _safe_message(exc, password=self._password)
+                ) from exc
         finally:
             _try_close(connection)
 
@@ -330,32 +341,56 @@ def _is_schema_error(exc: BaseException) -> bool:
     return False
 
 
-def _safe_message(exc: BaseException) -> str:
+# Codex 019e2a5c PR-3a REVISE absorb (blocker #2): cover every common
+# shape a driver might use to embed the password in an exception
+# message. Order matters: scrub the explicit ``password=`` keyword
+# variants first so the longer pattern is consumed before the bare
+# raw substring replacement runs.
+_PASSWORD_KEYWORD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # ``password=<value>`` / ``PASSWORD=<value>`` — unquoted, whitespace
+    # or end-of-string terminated. ``\S`` is greedy enough to swallow
+    # adjacent ``port=`` style tokens but the negative-lookahead would
+    # bloat the regex; the bare-substring scrub catches that case.
+    re.compile(r"(?i)\bpassword\s*=\s*(?P<value>[^\s,;'\"}]+)"),
+    # Mapping / dict-repr forms: ``'password': 'secret'`` /
+    # ``"password":"secret"`` / ``password: secret``.
+    re.compile(r"""(?i)['"]?\bpassword['"]?\s*:\s*['"]?(?P<value>[^'",}\s]+)['"]?"""),
+)
+_PASSWORD_PLACEHOLDER = "***"
+
+
+def _safe_message(exc: BaseException, *, password: str | None = None) -> str:
     """Return a stderr-safe message that never includes the password.
 
     psycopg surfaces connect errors with the full kwargs dict embedded
-    in ``str(exc)``, which would leak the password. Strip anything
-    that looks like a password keyword argument before handing the
-    message to the CLI.
+    in ``str(exc)``. The adapter cannot trust that the driver scrubs
+    secrets, so this function is responsible for three independent
+    scrub passes:
+
+    1. **Bare raw password** — if the literal password string appears
+       anywhere in the message, replace every occurrence with
+       :data:`_PASSWORD_PLACEHOLDER`. Catches accidental ``str(kwargs)``
+       dumps that don't even use the ``password=`` keyword.
+    2. **Keyword form** — case-insensitive ``password=<value>`` and
+       ``password = <value>`` variants get their value replaced with
+       :data:`_PASSWORD_PLACEHOLDER`. Survives extra whitespace.
+    3. **Mapping form** — ``'password': '<value>'`` / ``"password":
+       "<value>"`` / ``password: <value>`` (dict-repr / YAML-ish).
+
+    Empty exception messages fall back to the exception class name so
+    the CLI never prints a bare colon.
     """
     message = str(exc)
-    # Defence in depth: scrub the literal keyword if present. The
-    # adapter never substitutes the raw password into SQL or logs.
-    if "password=" in message:
-        message = message.replace(getattr(exc, "_password_redacted_placeholder", ""), "")
-        message = _scrub_password(message)
+    if password:
+        message = message.replace(password, _PASSWORD_PLACEHOLDER)
+    for pattern in _PASSWORD_KEYWORD_PATTERNS:
+        message = pattern.sub(_replace_value_with_placeholder, message)
     return message or type(exc).__name__
 
 
-def _scrub_password(message: str) -> str:
-    """Remove ``password=<value>`` tokens from a free-form exception message."""
-    result_parts: list[str] = []
-    for piece in message.split():
-        if piece.startswith("password="):
-            result_parts.append("password=***")
-        else:
-            result_parts.append(piece)
-    return " ".join(result_parts)
+def _replace_value_with_placeholder(match: re.Match[str]) -> str:
+    """Substitute the captured ``value`` group in a regex match with the placeholder."""
+    return match.group(0).replace(match.group("value"), _PASSWORD_PLACEHOLDER)
 
 
 def _try_rollback(connection: _Connection) -> None:
