@@ -1106,14 +1106,14 @@ class SqlBuilderTest {
         }
 
         @Test
-        void weightedavgWithoutWeightFieldRejectedByRenderer() {
-            // The SQL builder's weightFieldOf helper throws when the
-            // canonical record reaches the SQL renderer without a
-            // params.weightField key. Defence-in-depth: the controller
-            // sanitizeAggParams already enforces this, but a future
-            // caller path that bypasses the controller (programmatic
-            // test, internal cron) must still fail loudly rather than
-            // produce broken SQL like `SUM([price] * [])`.
+        void weightedavgWithoutWeightFieldRejectedByBuilder() {
+            // Codex 019e2acc iter-2: the SQL builder's projection
+            // loop now eagerly validates the weight reference
+            // (defence in depth — the controller sanitizeAggParams
+            // also enforces this). A future caller that bypasses
+            // the controller must still fail loudly with a structured
+            // IAE rather than producing broken SQL like
+            // `SUM([price] * [])`.
             ReportDefinition def = new ReportDefinition(
                     "weighted-report", "v1", "Weighted", "desc", "cat",
                     "TXN", "dbo", "static", null, null,
@@ -1125,10 +1125,139 @@ class SqlBuilderTest {
             SqlBuilder.GroupedAggregation a =
                     new SqlBuilder.GroupedAggregation("price", "weightedavg", null);
             org.junit.jupiter.api.Assertions.assertThrows(
-                    IllegalStateException.class,
+                    IllegalArgumentException.class,
                     () -> builder.buildGroupedQuery(
                             def, null, List.of("category", "price"),
                             "category", List.of(a),
+                            Collections.emptyMap(), Collections.emptyList(),
+                            null, null, 1, 50));
+        }
+
+        @Test
+        void weightedavgWeightColumnAddedToFromClauseProjection() {
+            // Codex 019e2acc iter-2 blocker absorb. The outer SQL
+            // references SUM([price] * [qty]); the inner FROM clause
+            // (single-schema OR UNION ALL multi-year) must SELECT [qty]
+            // alongside the group column + value field. Without the
+            // projection fix multi-schema branches emit SELECT
+            // [category], [price] while outer SUM references absent
+            // [qty] → MSSQL "Invalid column name".
+            ReportDefinition def = new ReportDefinition(
+                    "weighted-report", "v1", "Weighted", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false),
+                            new ColumnDefinition("qty", "Qty", "number", 100, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, null, List.of("category", "price", "qty"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation(
+                            "price", "weightedavg",
+                            Map.of("weightField", "qty"))),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            // Single-schema path emits the full table with all columns
+            // (no inner SELECT), but multi-schema UNION ALL needs the
+            // weight column explicitly in each arm's SELECT — covered
+            // by the next test. Single-schema still must reference
+            // [qty] in the outer aggregate expression.
+            assertThat(q.sql())
+                    .contains("[dbo].[TXN]")
+                    .contains("SUM([price] * [qty])");
+        }
+
+        @Test
+        void weightedavgWeightInMultiSchemaUnionAllProjection() {
+            // Yearly schemaMode → multi-schema UNION ALL FROM clause.
+            // Each UNION arm SELECTs the projected column set; the
+            // weight column must appear there so the outer aggregate
+            // on _u alias can dereference it.
+            ReportDefinition def = new ReportDefinition(
+                    "yearly-weighted", "v1", "Yearly Weighted", "desc", "cat",
+                    "TXN", "dbo", "yearly", "txnDate", null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false),
+                            new ColumnDefinition("qty", "Qty", "number", 100, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            YearlySchemaResolver.ResolvedSchemas multiYear =
+                    new YearlySchemaResolver.ResolvedSchemas(
+                            List.of(branch("workcube_mikrolink_2025"),
+                                    branch("workcube_mikrolink_2026")));
+
+            SqlBuilder.BuiltQuery q = builder.buildGroupedQuery(
+                    def, multiYear, List.of("category", "price", "qty"),
+                    "category",
+                    List.of(new SqlBuilder.GroupedAggregation(
+                            "price", "weightedavg",
+                            Map.of("weightField", "qty"))),
+                    Collections.emptyMap(), Collections.emptyList(),
+                    null, null, 1, 50);
+
+            // Both UNION arms must include [qty] in the SELECT.
+            // Count [qty] occurrences — expect ≥ 3 (2 SELECT slots
+            // in UNION arms + ≥ 1 outer aggregate reference).
+            int qtyCount = q.sql().split("\\[qty\\]").length - 1;
+            assertThat(qtyCount).isGreaterThanOrEqualTo(3);
+            assertThat(q.sql())
+                    .contains("SUM([price] * [qty])")
+                    .contains("workcube_mikrolink_2025")
+                    .contains("workcube_mikrolink_2026");
+        }
+
+        @Test
+        void weightedavgWeightFieldNotVisibleRejected() {
+            // Builder-level visibility check (defence-in-depth — the
+            // controller layer also validates). A future caller that
+            // bypasses sanitizeAggregations must still fail closed
+            // here before broken SQL hits MSSQL.
+            ReportDefinition def = new ReportDefinition(
+                    "weighted-report", "v1", "Weighted", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> builder.buildGroupedQuery(
+                            def, null, List.of("category", "price"),
+                            "category",
+                            List.of(new SqlBuilder.GroupedAggregation(
+                                    "price", "weightedavg",
+                                    Map.of("weightField", "qty"))), // 'qty' not visible
+                            Collections.emptyMap(), Collections.emptyList(),
+                            null, null, 1, 50));
+        }
+
+        @Test
+        void weightedavgWeightFieldSameAsValueFieldRejected() {
+            ReportDefinition def = new ReportDefinition(
+                    "weighted-report", "v1", "Weighted", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("price", "Price", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> builder.buildGroupedQuery(
+                            def, null, List.of("category", "price"),
+                            "category",
+                            List.of(new SqlBuilder.GroupedAggregation(
+                                    "price", "weightedavg",
+                                    Map.of("weightField", "price"))),
                             Collections.emptyMap(), Collections.emptyList(),
                             null, null, 1, 50));
         }

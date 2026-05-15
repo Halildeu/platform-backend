@@ -560,6 +560,37 @@ public class SqlBuilder {
             if (!allowedCols.contains(a.field())) continue;
             if (a.field().equals(groupColumn)) continue; // tautological
             projected.add(a.field());
+            // PR-0.4c iter-2 (Codex 019e2acc absorb): weightedavg's
+            // weight column must also be carried through the
+            // FROM-clause projection so the outer SUM(value * weight)
+            // can resolve it. Otherwise multi-schema UNION ALL
+            // (yearly) and percentile-wrapper inner SELECTs would
+            // emit "SELECT [category], [price]" while the outer
+            // aggregate references [qty] → MSSQL "Invalid column"
+            // error at execute time. Defence-in-depth: weight column
+            // visibility + distinctness re-validated here so a
+            // future caller that bypasses the controller still fails
+            // closed with a clear error before the SQL builder
+            // emits broken DDL.
+            if ("weightedavg".equals(a.func())) {
+                Object weightRef = a.params() != null ? a.params().get("weightField") : null;
+                if (!(weightRef instanceof String weight) || weight.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "weightedavg aggregation requires params.weightField on field '"
+                                    + a.field() + "'");
+                }
+                if (!allowedCols.contains(weight)) {
+                    throw new IllegalArgumentException(
+                            "weightedavg params.weightField must be one of the visible "
+                                    + "columns, got: " + weight);
+                }
+                if (weight.equals(a.field())) {
+                    throw new IllegalArgumentException(
+                            "weightedavg params.weightField must differ from value field, "
+                                    + "got: " + weight + " for both on '" + a.field() + "'");
+                }
+                projected.add(weight);
+            }
             sanitized.add(a);
         }
 
