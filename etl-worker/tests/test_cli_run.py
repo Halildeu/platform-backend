@@ -761,3 +761,140 @@ def test_run_db_writer_write_error_maps_to_75_tempfail(tmp_path: object) -> None
     assert "db write error" in text
     assert "db connection lost" in text
     assert "Traceback" not in text
+
+
+# ---- --reports-db (PR-3a) ------------------------------------------------
+
+
+def _reports_db_env_full() -> dict[str, str]:
+    return {
+        "SCHEMA_SERVICE_URL": "http://schema-service.test:8096",
+        "REPORTS_DB_HOST": "pg.platform-test",
+        "REPORTS_DB_PORT": "5432",
+        "REPORTS_DB_DATABASE": "reports_db",
+        "REPORTS_DB_USER": "etl_writer",
+        "REPORTS_DB_PASSWORD": "test-pw",
+    }
+
+
+def test_reports_db_postgres_without_envs_maps_to_64_usage() -> None:
+    """``--reports-db postgres`` without REPORTS_DB_* envs is a fail-closed
+    misinvocation (Codex 019e2a5c plan-time AGREE)."""
+    _, factory = _factory([_good_snapshot()])
+    err = io.StringIO()
+
+    code = main(
+        ["run", "--reports-db", "postgres"],
+        env=_good_env(),  # no REPORTS_DB_* keys
+        stdout=io.StringIO(),
+        stderr=err,
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+    )
+
+    assert code == EX_USAGE
+    text = err.getvalue()
+    assert "REPORTS_DB_HOST" in text
+    assert "Traceback" not in text
+
+
+def test_reports_db_postgres_invokes_factory_with_profile() -> None:
+    """Happy path: factory is called with the resolved ``ReportsDbConfig``."""
+    from etl_worker.config import ReportsDbConfig as _Profile
+    from etl_worker.db import ReportsDbWriteResult as _Result
+
+    captured: list[_Profile] = []
+
+    class _FakeWriter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def upsert(self, summary: dict[str, object]) -> _Result:
+            self.calls.append(dict(summary))
+            return _Result(rows_written=1)
+
+    fake_writer = _FakeWriter()
+
+    def fake_factory(profile: _Profile) -> _FakeWriter:
+        captured.append(profile)
+        return fake_writer
+
+    _, factory = _factory([_good_snapshot()])
+    out = io.StringIO()
+    err = io.StringIO()
+
+    code = main(
+        ["run", "--reports-db", "postgres"],
+        env=_reports_db_env_full(),
+        stdout=out,
+        stderr=err,
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+        pg_writer_factory=fake_factory,  # type: ignore[arg-type]
+    )
+
+    assert code == EX_OK, err.getvalue()
+    assert len(captured) == 1
+    assert captured[0].host == "pg.platform-test"
+    assert captured[0].port == 5432
+    assert captured[0].database == "reports_db"
+    assert captured[0].user == "etl_writer"
+    assert captured[0].password == "test-pw"
+    # Writer was actually invoked (no silent no-op fallthrough).
+    assert len(fake_writer.calls) == 1
+    assert "snapshot_signature" in fake_writer.calls[0]
+
+
+def test_reports_db_postgres_schema_error_maps_to_70_software() -> None:
+    """``ReportsDbSchemaError`` is terminal — surfaces as ``EX_SOFTWARE`` so an
+    outer scheduler does not loop forever against a broken DB schema."""
+    from etl_worker.db import ReportsDbSchemaError as _SchemaError
+
+    class _SchemaErrorWriter:
+        def upsert(self, _summary: dict[str, object]) -> object:
+            raise _SchemaError("relation etl_snapshot_runs does not exist")
+
+    _, factory = _factory([_good_snapshot()])
+    err = io.StringIO()
+
+    code = main(
+        ["run"],
+        env=_reports_db_env_full(),
+        stdout=io.StringIO(),
+        stderr=err,
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+        db_writer=_SchemaErrorWriter(),  # type: ignore[arg-type]
+    )
+
+    assert code == EX_SOFTWARE
+    text = err.getvalue()
+    assert "reports_db schema error" in text
+    assert "relation etl_snapshot_runs does not exist" in text
+    assert "Traceback" not in text
+
+
+def test_reports_db_none_default_does_not_instantiate_pg_writer() -> None:
+    """Without ``--reports-db postgres`` the factory is never called, even if
+    REPORTS_DB_* envs are present (operator opt-in is required)."""
+
+    factory_calls: list[object] = []
+
+    def fake_factory(profile: object) -> object:
+        factory_calls.append(profile)
+        return None  # pragma: no cover - should not be called
+
+    _, factory = _factory([_good_snapshot()])
+
+    code = main(
+        ["run"],
+        env=_reports_db_env_full(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+        pg_writer_factory=fake_factory,  # type: ignore[arg-type]
+    )
+
+    assert code == EX_OK
+    assert factory_calls == []

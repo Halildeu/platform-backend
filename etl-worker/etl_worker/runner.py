@@ -225,7 +225,19 @@ def run_fetch(
     # NOT computed inside ``build_checkpoint`` from the full summary
     # because that would mix retry telemetry into the hash.
     signature = snapshot_signature_for_summary(summary)
-    db_request_summary = {**summary, "snapshot_signature": signature}
+    # Codex 019e2a5c PR-3a REVISE absorb (blocker #1): real
+    # :class:`PgReportsDbWriter` REQUIRED_SUMMARY_FIELDS includes
+    # ``attempts`` and ``run_id``. Without them every successful fetch
+    # would hit ``ReportsDbWriteError`` → ``EX_TEMPFAIL`` for the live
+    # postgres path even though the upstream call succeeded. Wire the
+    # whole transactional payload here so adapter receives the full
+    # idempotency key + telemetry envelope.
+    db_request_summary: dict[str, object] = {
+        **summary,
+        "snapshot_signature": signature,
+        "attempts": attempts,
+        "run_id": rid,
+    }
 
     # PR-2b2b/2b3 transaction boundary: DB upsert happens BEFORE the
     # checkpoint write so we never persist "applied through this point"
