@@ -417,3 +417,169 @@ def test_run_missing_url_env_maps_to_64_usage() -> None:
     )
 
     assert code == EX_USAGE
+
+
+# ---- PR-2b2a — audit trail integration -----------------------------------
+
+
+def test_run_stdout_summary_includes_run_id() -> None:
+    """PR-2b2a adds ``run_id`` to the stdout JSON summary even when no audit path is provided."""
+    _, factory = _factory([_good_snapshot()])
+    out = io.StringIO()
+
+    code = main(
+        ["run", "--run-id", "operator-supplied-1"],
+        env=_good_env(),
+        stdout=out,
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+    )
+
+    assert code == EX_OK
+    summary = json.loads(out.getvalue())
+    assert summary["run_id"] == "operator-supplied-1"
+    assert summary["attempts"] == 1
+
+
+def test_run_stdout_summary_autogenerates_run_id_when_omitted() -> None:
+    _, factory = _factory([_good_snapshot()])
+    out = io.StringIO()
+
+    main(
+        ["run"],
+        env=_good_env(),
+        stdout=out,
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+    )
+
+    summary = json.loads(out.getvalue())
+    assert isinstance(summary["run_id"], str)
+    assert len(summary["run_id"]) >= 16  # uuid4 hex is 32 chars
+
+
+def test_run_with_audit_path_invokes_audit_factory() -> None:
+    """``--audit-path`` flag wires an :class:`AuditWriter` into the runner."""
+    captured_paths: list[str] = []
+    events: list[object] = []
+
+    class _RecordingWriter:
+        def __init__(self, path: str) -> None:
+            captured_paths.append(path)
+
+        def write(self, event: object) -> None:
+            events.append(event)
+
+    _, factory = _factory([_good_snapshot()])
+
+    code = main(
+        ["run", "--audit-path", "/tmp/etl-worker-test-audit.jsonl"],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+        audit_factory=_RecordingWriter,
+    )
+
+    assert code == EX_OK
+    # Factory was invoked exactly once with the CLI-supplied path.
+    assert captured_paths == ["/tmp/etl-worker-test-audit.jsonl"]
+    # The runner emitted the expected event sequence onto our writer.
+    event_names = [event.event for event in events]  # type: ignore[attr-defined]
+    assert event_names == [
+        "run_started",
+        "attempt_started",
+        "attempt_succeeded",
+        "run_succeeded",
+    ]
+
+
+def test_run_without_audit_path_does_not_invoke_audit_factory() -> None:
+    """Absence of ``--audit-path`` leaves PR-2b1 behaviour intact."""
+    invocations: list[str] = []
+
+    def factory(path: str) -> object:
+        invocations.append(path)
+        raise AssertionError("audit_factory must NOT be called without --audit-path")
+
+    _, client_factory = _factory([_good_snapshot()])
+
+    code = main(
+        ["run"],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=client_factory,
+        sleeper=_FakeSleeper(),
+        audit_factory=factory,
+    )
+
+    assert code == EX_OK
+    assert invocations == []
+
+
+def test_run_audit_path_creates_jsonl_file_with_event_lines(tmp_path: object) -> None:
+    """End-to-end smoke: CLI ``--audit-path`` flag persists JSON Lines to disk."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    audit_file = _Path(str(tmp_path)) / "audit.jsonl"
+    _, factory = _factory([_good_snapshot()])
+
+    code = main(
+        ["run", "--audit-path", str(audit_file), "--run-id", "smoke-1"],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+    )
+
+    assert code == EX_OK
+    assert audit_file.exists()
+    lines = [_json.loads(line) for line in audit_file.read_text().splitlines()]
+    assert [line["event"] for line in lines] == [
+        "run_started",
+        "attempt_started",
+        "attempt_succeeded",
+        "run_succeeded",
+    ]
+    assert all(line["run_id"] == "smoke-1" for line in lines)
+
+
+def test_run_audit_on_transient_exhausted_writes_run_failed(tmp_path: object) -> None:
+    """Audit log captures the retry-exhausted run_failed event with retryable_exhausted outcome."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    audit_file = _Path(str(tmp_path)) / "audit.jsonl"
+    _, factory = _factory(
+        [SchemaServiceUnavailable("503-1"), SchemaServiceUnavailable("503-2")]
+    )
+
+    code = main(
+        [
+            "run",
+            "--retry-attempts",
+            "2",
+            "--retry-initial-seconds",
+            "0.1",
+            "--audit-path",
+            str(audit_file),
+        ],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+    )
+
+    assert code == EX_TEMPFAIL
+    lines = [_json.loads(line) for line in audit_file.read_text().splitlines()]
+    names = [line["event"] for line in lines]
+    assert names[-1] == "run_failed"
+    assert lines[-1]["outcome"] == "retryable_exhausted"
+    assert lines[-1]["error_class"] == "SchemaServiceUnavailable"

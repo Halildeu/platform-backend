@@ -10,6 +10,13 @@ future ADR moves this to a standalone repo (``Halildeu/etl-worker``),
 ``git filter-repo`` preserves history. See ``README.md``.
 """
 
+from .audit import (
+    SCHEMA_VERSION,
+    AuditEvent,
+    AuditWriter,
+    JsonLinesAuditWriter,
+    build_event,
+)
 from .config import Config, ConfigError
 from .contracts import ColumnSpec, SchemaSnapshot, TableSpec
 from .retry import RetryPolicy, Sleeper, SystemSleeper, call_with_retry
@@ -22,9 +29,13 @@ from .schema_service_client import (
 )
 
 __all__ = [
+    "AUDIT_SCHEMA_VERSION",
+    "AuditEvent",
+    "AuditWriter",
     "ColumnSpec",
     "Config",
     "ConfigError",
+    "JsonLinesAuditWriter",
     "RetryPolicy",
     "RunResult",
     "SchemaContractVersionMismatch",
@@ -35,6 +46,10 @@ __all__ = [
     "Sleeper",
     "SystemSleeper",
     "TableSpec",
+    "build_event",
     "call_with_retry",
     "run_fetch",
 ]
+
+AUDIT_SCHEMA_VERSION = SCHEMA_VERSION
+"""Public alias for the audit event schema version constant."""

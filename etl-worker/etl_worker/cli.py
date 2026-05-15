@@ -25,9 +25,10 @@ import json
 import math
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol, TextIO
 
+from .audit import AuditWriter, JsonLinesAuditWriter
 from .config import Config, ConfigError
 from .contracts import SchemaSnapshot
 from .retry import RetryPolicy, Sleeper, SystemSleeper
@@ -211,6 +212,25 @@ def _build_parser() -> _NonExitingParser:
             "Must be >= --retry-initial-seconds."
         ),
     )
+    run.add_argument(
+        "--audit-path",
+        default=None,
+        help=(
+            "Path to a JSON Lines audit file. When provided the runner "
+            "emits run_started / attempt_* / run_* events. Absent (default) "
+            "= no audit side effect (PR-2b1 behaviour preserved)."
+        ),
+    )
+    run.add_argument(
+        "--run-id",
+        default=None,
+        help=(
+            "Optional caller-supplied run identifier. Forwarded to the "
+            "audit events and surfaced in the stdout JSON summary so "
+            "operators can correlate stdout / stderr / audit log lines. "
+            "Defaults to a freshly generated uuid4 hex."
+        ),
+    )
     return parser
 
 
@@ -270,6 +290,7 @@ def main(
     stderr: TextIO | None = None,
     client_factory: _ClientFactory = _default_client_factory,
     sleeper: Sleeper | None = None,
+    audit_factory: Callable[[str], AuditWriter] | None = None,
 ) -> int:
     """Resolve config, parse CLI, fetch a snapshot, emit the JSON summary.
 
@@ -329,7 +350,9 @@ def main(
     if args.command == "fetch-snapshot":
         return _handle_fetch_snapshot(client, schema_override, out, err)
     if args.command == "run":
-        return _handle_run(client, schema_override, args, sleeper, out, err)
+        return _handle_run(
+            client, schema_override, args, sleeper, out, err, audit_factory
+        )
     # ``argparse`` with ``required=True`` should make this branch
     # unreachable; treat any other command as a usage failure.
     print(f"etl-worker: usage: unknown command '{args.command}'", file=err)
@@ -366,6 +389,7 @@ def _handle_run(
     sleeper: Sleeper | None,
     out: TextIO,
     err: TextIO,
+    audit_factory: Callable[[str], AuditWriter] | None = None,
 ) -> int:
     try:
         policy = RetryPolicy(
@@ -380,6 +404,17 @@ def _handle_run(
         print(f"etl-worker: usage: retry policy: {exc}", file=err)
         return EX_USAGE
 
+    # Build the audit writer when the operator asks for one. The
+    # ``audit_factory`` parameter is for tests that want to inject an
+    # in-memory writer without hitting the filesystem; production
+    # code defaults to :class:`JsonLinesAuditWriter`.
+    audit: AuditWriter | None = None
+    if args.audit_path is not None:
+        if audit_factory is not None:
+            audit = audit_factory(args.audit_path)
+        else:
+            audit = JsonLinesAuditWriter(args.audit_path)
+
     active_sleeper: Sleeper = sleeper if sleeper is not None else SystemSleeper()
     try:
         result: RunResult = run_fetch(
@@ -387,6 +422,8 @@ def _handle_run(
             schema=schema,
             policy=policy,
             sleeper=active_sleeper,
+            audit=audit,
+            run_id=args.run_id,
         )
     except SchemaServiceUnavailable as exc:
         print(
@@ -404,6 +441,7 @@ def _handle_run(
 
     summary = dict(result.summary)
     summary["attempts"] = result.attempts
+    summary["run_id"] = result.run_id
     print(json.dumps(summary, separators=(",", ":")), file=out)
     return EX_OK
 
