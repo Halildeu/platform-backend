@@ -78,8 +78,44 @@ public class PermissionCatalogService {
             new ReportCatalogItem("FIN_RECONCILIATION", "Tutar Mutabakat Kontrolü", "REPORT", "Finans")
     );
 
+    /**
+     * R16 PR-D full (Codex 019e2a5d/019e2a83 absorb) — report_group catalog.
+     *
+     * <p>FE rol permission UI "Rapor Yetki Grupları" alt-bölümünde render edilir.
+     * Backend permission catalog'da {@code reports.<GROUP>} key formatında
+     * tutulan 4 coarse-grained report group. Bu liste R16 PR-B-2 ile eklenen
+     * {@code DEFAULT_REPORT_GROUP_KEYS} ile senkron olmalı:
+     * {@link com.example.permission.config.PermissionDataInitializer#DEFAULT_REPORT_GROUP_KEYS}
+     *
+     * <p>Naming/namespace karar (Codex 019e2a5d): dashboard listesi
+     * ({@link #REPORTS}) ile karışmaz; ayrı section. {@code HR_ANALYTICS}
+     * dashboard ≠ {@code HR_REPORTS} group (collision yok).
+     */
+    private static final List<PermissionCatalogDto.ReportGroupCatalogItem> REPORT_GROUPS = List.of(
+            new PermissionCatalogDto.ReportGroupCatalogItem(
+                    "reports.FINANCE_REPORTS",
+                    "FINANCE_REPORTS",
+                    "Finans Raporları",
+                    "Finance report group (bank, cash, invoices, cheque, accounts)"),
+            new PermissionCatalogDto.ReportGroupCatalogItem(
+                    "reports.HR_REPORTS",
+                    "HR_REPORTS",
+                    "İnsan Kaynakları Raporları",
+                    "HR report group (personnel, salary, attendance, leave, payroll)"),
+            new PermissionCatalogDto.ReportGroupCatalogItem(
+                    "reports.SALES_REPORTS",
+                    "SALES_REPORTS",
+                    "Satış Raporları",
+                    "Sales report group (sales summary, stock status)"),
+            new PermissionCatalogDto.ReportGroupCatalogItem(
+                    "reports.ANALYTICS_REPORTS",
+                    "ANALYTICS_REPORTS",
+                    "Analitik Raporlar",
+                    "Analytics dashboards (HR, finance analytics)")
+    );
+
     public PermissionCatalogDto getCatalog() {
-        return new PermissionCatalogDto(MODULES, ACTIONS, REPORTS);
+        return new PermissionCatalogDto(MODULES, ACTIONS, REPORTS, REPORT_GROUPS);
     }
 
     public List<String> getModuleKeys() {

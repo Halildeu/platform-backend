@@ -5,8 +5,21 @@ import java.util.List;
 public record PermissionCatalogDto(
         List<ModuleCatalogItem> modules,
         List<ActionCatalogItem> actions,
-        List<ReportCatalogItem> reports
+        List<ReportCatalogItem> reports,
+        List<ReportGroupCatalogItem> reportGroups
 ) {
+    /**
+     * R16 PR-D full (Codex 019e2a5d/019e2a83 absorb) — backward-compat
+     * constructor; reportGroups null → empty list.
+     */
+    public PermissionCatalogDto(
+            List<ModuleCatalogItem> modules,
+            List<ActionCatalogItem> actions,
+            List<ReportCatalogItem> reports
+    ) {
+        this(modules, actions, reports, List.of());
+    }
+
     public record ModuleCatalogItem(String key, String label, List<String> levels) {}
     public record ActionCatalogItem(String key, String label, String module, boolean deniable) {}
 
@@ -38,4 +51,27 @@ public record PermissionCatalogDto(
             this(key, label, module, module);
         }
     }
+
+    /**
+     * R16 PR-D full (Codex 019e2a5d/019e2a83 absorb) — report_group catalog item.
+     *
+     * <p>FE rol permission UI "Rapor Yetki Grupları" alt-bölümünde render edilir.
+     * {@code reports.<GROUP>} permission key'leri dashboard granule'ları (HR_*,
+     * FIN_*) ile aynı listede karışmaz — ayrı section.
+     *
+     * <p>{@code key} — backend permission key (örn. {@code reports.FINANCE_REPORTS}).
+     * RoleDrawer save payload'da bu key olduğu gibi gider; backend
+     * TupleSyncService key-aware mapping ile OpenFGA {@code report_group:<KEY>}
+     * tuple'a çevirir.
+     *
+     * <p>{@code objectId} — OpenFGA object instance id (örn. {@code FINANCE_REPORTS}).
+     * {@code key.substring("reports.".length())} eşittir.
+     *
+     * <p>{@code label} — Turkish display name (örn. "Finans Raporları").
+     */
+    public record ReportGroupCatalogItem(
+            String key,
+            String objectId,
+            String label,
+            String description) {}
 }
