@@ -190,7 +190,8 @@ def main() -> int:
                 print(f"  - {table}")
         print(
             "Fix: keep report-service ReportingAllowlist.V1 and "
-            "schema-service SchemaReportingAllowlist.V1 byte-identical."
+            "schema-service SchemaReportingAllowlist.V1 set-identical "
+            "(same table set; order / comments are not enforced)."
         )
         return 1
 
