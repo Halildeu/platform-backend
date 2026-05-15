@@ -73,7 +73,7 @@ public class ReportingContractService {
             if (!SchemaReportingAllowlist.containsV1(table.name())) {
                 continue;
             }
-            tables.add(toContractTable(table));
+            tables.add(toContractTable(table, schema));
         }
 
         // Deterministic ordering — Codex 019e2d64 S2 trap: Set / Map
@@ -98,7 +98,8 @@ public class ReportingContractService {
         );
     }
 
-    private static ReportingContractTable toContractTable(TableInfo table) {
+    private static ReportingContractTable toContractTable(
+            TableInfo table, String targetSchema) {
         List<ColumnInfo> sourceColumns = table.columns();
         List<ReportingContractColumn> columns = new ArrayList<>(sourceColumns.size());
         // Preserve the extracted column order (ordinal). Sort defensively
@@ -110,18 +111,27 @@ public class ReportingContractService {
                 new ReportingContractColumn(c.name(), c.dataType(), c.nullable())
             ));
         return new ReportingContractTable(
-            normaliseSchema(table.schema()),
+            normaliseSchema(table.schema(), targetSchema),
             table.name(),
             columns
         );
     }
 
     /**
-     * Pass the extracted schema name through unchanged. A {@code null}
-     * schema (legacy extraction edge case) maps to an empty string so
-     * the JSON field is always a string for the consumer's type check.
+     * Resolve the table's schema name for the wire contract.
+     *
+     * <p>Codex {@code 019e2d64} post-impl P2: the extraction path
+     * normally fills {@link TableInfo#schema()} with the requested
+     * target schema, so {@code null} / blank is only a legacy edge
+     * case. When it does occur, fall back to the {@code targetSchema}
+     * the caller asked for — that is the correct answer (the table
+     * was extracted from that schema) and keeps the JSON field a
+     * non-empty string, which the etl-worker parser requires.
      */
-    private static String normaliseSchema(String schema) {
-        return schema == null ? "" : schema;
+    private static String normaliseSchema(String schema, String targetSchema) {
+        if (schema != null && !schema.isBlank()) {
+            return schema;
+        }
+        return targetSchema == null ? "" : targetSchema;
     }
 }

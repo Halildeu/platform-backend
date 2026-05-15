@@ -163,7 +163,11 @@ class ReportingContractServiceTest {
     }
 
     @Test
-    void buildContract_null_schema_becomes_empty_string() {
+    void buildContract_null_schema_falls_back_to_target_schema() {
+        // Codex 019e2d64 post-impl P2: a null TableInfo.schema (legacy
+        // extraction edge case) resolves to the target schema the
+        // caller requested — that is the schema the table came from,
+        // and it keeps the wire field a non-empty string.
         Map<String, TableInfo> tables = new LinkedHashMap<>();
         tables.put("INVOICE", new TableInfo("INVOICE", null,
             List.of(col("ID", "int", false, 1))));
@@ -171,7 +175,19 @@ class ReportingContractServiceTest {
         ReportingContractSnapshot contract = serviceReturning(tables)
             .buildContract("workcube_mikrolink");
 
-        assertThat(contract.tables().get(0).schema()).isEqualTo("");
+        assertThat(contract.tables().get(0).schema()).isEqualTo("workcube_mikrolink");
+    }
+
+    @Test
+    void buildContract_blank_schema_falls_back_to_target_schema() {
+        Map<String, TableInfo> tables = new LinkedHashMap<>();
+        tables.put("INVOICE", new TableInfo("INVOICE", "   ",
+            List.of(col("ID", "int", false, 1))));
+
+        ReportingContractSnapshot contract = serviceReturning(tables)
+            .buildContract("workcube_mikrolink_2025");
+
+        assertThat(contract.tables().get(0).schema()).isEqualTo("workcube_mikrolink_2025");
     }
 
     @Test

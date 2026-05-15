@@ -1,5 +1,8 @@
 package com.example.schema.model;
 
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
+
 /**
  * One column inside a {@link ReportingContractTable} (Adım 12).
  *
@@ -16,7 +19,12 @@ package com.example.schema.model;
  * {@link ColumnInfo} fields ({@code maxLength}, {@code identity},
  * {@code pk}, {@code ordinal}) are intentionally NOT projected to keep
  * the contract minimal.
+ *
+ * <p>{@code @JsonNaming} is applied defensively (Codex {@code 019e2d64}
+ * S1) — see {@link ReportingContractTable} for the rationale; a nested
+ * record does not inherit the parent's naming strategy.
  */
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public record ReportingContractColumn(
     String name,
     String type,
