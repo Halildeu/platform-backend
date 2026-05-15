@@ -62,6 +62,19 @@ schema:
     # ekleyince listeye eklenir (örn. "eta_%,logo_%,workcube_mikrolink%,dbo").
     # '%' içeren değer LIKE pattern, içermeyen exact match.
     patterns: ${SCHEMA_DISCOVERY_PATTERNS:workcube_mikrolink%,dbo}
+  yearly:
+    # Phase 1 portability (Codex 019e2d14 §8 — quick win 2/5): yearly
+    # partition schema discovery (workcube_mikrolink_<year>_<companyId>).
+    # like-pattern → SQL LIKE ön-filtre. regex → Java normalizasyon;
+    # SÖZLEŞME: en az 2 capture group (group(1) numeric year,
+    # group(2) companyId). regex boş bırakılırsa kod Workcube
+    # default'unu kullanır: ^workcube_mikrolink_(\d{4})_(\d+)$.
+    # Spring placeholder default'u regex {n} quantifier ile çakıştığı
+    # için varsayılan YAML'da değil kodda (DEFAULT_REGEX). Geçersiz
+    # regex (syntax veya <2 group) → Workcube default'a düşer, startup
+    # fail etmez. Yeni ERP eklenince override edilir.
+    like-pattern: ${SCHEMA_YEARLY_LIKE_PATTERN:workcube_mikrolink_%_%}
+    regex: ${SCHEMA_YEARLY_REGEX:}
   ai:
     enabled: ${SCHEMA_AI_ENABLED:false}
     api-key: ${SCHEMA_AI_API_KEY:}
