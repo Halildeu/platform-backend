@@ -162,11 +162,32 @@ public class QueryEngine {
             // child-store request shapes. Defensive immutability —
             // copy on construction so a later caller mutation can't
             // poison the response.
-            if (grandTotalRow != null) {
-                grandTotalRow = grandTotalRow.isEmpty()
-                        ? null
-                        : Map.copyOf(grandTotalRow);
+            //
+            // Codex iter post-impl §High (thread 019e2c61): JDBC
+            // aggregate rows legitimately carry NULL values (empty
+            // filter set → SUM/AVG/STDEV null; weightedavg denominator
+            // zero → null; percentile over empty set → null). Map.copyOf
+            // rejects null values → NPE in canonical constructor would
+            // break the dominant grouped flow. Use null-preserving
+            // immutable wrapper instead.
+            grandTotalRow = immutableNullableValueMap(grandTotalRow);
+        }
+
+        /**
+         * Null-preserving immutable view: {@link Map#copyOf} rejects
+         * null values, but JDBC aggregate rows legitimately carry
+         * nulls (empty filter set, weightedavg denominator zero,
+         * percentile over empty set, etc.). We need an immutable
+         * wrapper that tolerates nulls so the canonical constructor
+         * cannot NPE on grand-total responses. Empty maps collapse
+         * to {@code null} so the {@code @JsonInclude(NON_NULL)} DTO
+         * path can omit the field entirely.
+         */
+        private static Map<String, Object> immutableNullableValueMap(Map<String, Object> in) {
+            if (in == null || in.isEmpty()) {
+                return null;
             }
+            return java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(in));
         }
     }
 

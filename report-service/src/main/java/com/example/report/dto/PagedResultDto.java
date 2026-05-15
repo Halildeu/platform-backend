@@ -63,10 +63,32 @@ public record PagedResultDto<T>(
         // immutability + empty-collapse-to-null so the
         // @JsonInclude(NON_NULL) field stays omitted on the
         // dominant non-grouped / child-store / pivot paths.
-        if (grandTotalRow != null) {
-            grandTotalRow = grandTotalRow.isEmpty()
-                    ? null
-                    : java.util.Map.copyOf(grandTotalRow);
+        //
+        // Codex iter post-impl §High (thread 019e2c61): JDBC
+        // aggregate rows legitimately carry NULL values (empty
+        // filter set → SUM/AVG/STDEV null; weightedavg denominator
+        // zero → null; percentile over empty set → null). Map.copyOf
+        // rejects null values → NPE in canonical constructor would
+        // break the dominant grouped flow. Use null-preserving
+        // immutable wrapper instead.
+        grandTotalRow = immutableNullableValueMap(grandTotalRow);
+    }
+
+    /**
+     * Null-preserving immutable view: {@link java.util.Map#copyOf}
+     * rejects null values, but JDBC aggregate rows legitimately
+     * carry nulls (empty filter set, weightedavg denominator zero,
+     * percentile over empty set, etc.). We need an immutable
+     * wrapper that tolerates nulls so the canonical constructor
+     * cannot NPE on grand-total responses. Empty maps collapse to
+     * {@code null} so the {@code @JsonInclude(NON_NULL)} annotation
+     * can omit the field entirely.
+     */
+    private static java.util.Map<String, Object> immutableNullableValueMap(
+            java.util.Map<String, Object> in) {
+        if (in == null || in.isEmpty()) {
+            return null;
         }
+        return java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(in));
     }
 }
