@@ -455,7 +455,6 @@ def _handle_run(
         # creation path so the CLI never leaks a traceback.
         print(f"etl-worker: audit error: {exc}", file=err)
         return EX_SOFTWARE
-        return EX_SOFTWARE
 
     summary = dict(result.summary)
     summary["attempts"] = result.attempts
