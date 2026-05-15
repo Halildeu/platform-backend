@@ -213,4 +213,40 @@ class YearlySchemaDiscoveryServiceTest {
 
         assertThat(result).isEmpty();
     }
+
+    @Test
+    void discover_invalidRegexWithCustomLike_keepsCustomLikeAndDefaultRegex() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        // The custom LIKE pattern is independent of the regex fallback:
+        // an invalid regex resets ONLY the regex to the Workcube default;
+        // the custom LIKE pattern is still bound as the SQL parameter.
+        when(jdbc.queryForList(SQL, String.class, "acme_erp_%_%"))
+                .thenReturn(List.of(
+                        "acme_erp_2026_5",             // foreign → default regex misses
+                        "workcube_mikrolink_2026_3")); // matches the fallback default regex
+
+        YearlySchemaDiscoveryService svc = new YearlySchemaDiscoveryService(
+                jdbc, "acme_erp_%_%", "^workcube_(((unclosed");
+        List<YearlySchemaDiscoveryService.DiscoveredSchema> result =
+                svc.discover(List.of(), List.of());
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).name()).isEqualTo("workcube_mikrolink_2026_3");
+    }
+
+    @Test
+    void discover_customRegexEmptyCompanyGroup_skipsSchemaSafely() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(SQL, String.class, "weird_%_%"))
+                .thenReturn(List.of("weird_2026_"));
+
+        // Regex satisfies the 2-group contract but group(2) (companyId)
+        // matches empty → schema skipped defensively, no malformed record.
+        YearlySchemaDiscoveryService svc = new YearlySchemaDiscoveryService(
+                jdbc, "weird_%_%", "^weird_(\\d{4})_(\\d*)$");
+        List<YearlySchemaDiscoveryService.DiscoveredSchema> result =
+                svc.discover(List.of(), List.of());
+
+        assertThat(result).isEmpty();
+    }
 }

@@ -31,11 +31,14 @@ import org.springframework.stereotype.Service;
  *
  * <p><strong>Regex contract:</strong> the configured regex MUST expose
  * at least two capture groups — {@code group(1)} a numeric year,
- * {@code group(2)} the companyId. An invalid regex (syntax error or
- * fewer than two groups) falls back to the Workcube default with a
- * warning rather than failing startup. A custom regex whose year group
- * yields a non-numeric value causes that individual schema to be
- * skipped (logged), never an exception.
+ * {@code group(2)} a non-empty companyId. Use non-capturing groups
+ * {@code (?:...)} for any prefix segments so {@code group(1)} /
+ * {@code group(2)} stay aligned to year / companyId. An invalid regex
+ * (syntax error or fewer than two groups) falls back to the Workcube
+ * default with a warning rather than failing startup. A custom regex
+ * whose year group yields a non-numeric value — or whose companyId
+ * group is empty — causes that individual schema to be skipped
+ * (logged), never an exception.
  *
  * <p>Build-time/CLI use only — exposed as Spring Service so the
  * {@code YearlySchemaCoverageExporter} runner can invoke it; no
@@ -129,6 +132,11 @@ public class YearlySchemaDiscoveryService {
                 continue;
             }
             String companyId = m.group(2);
+            if (companyId == null || companyId.isBlank()) {
+                log.warn("Schema '{}' matched the regex but its companyId group is empty; "
+                        + "skipped.", name);
+                continue;
+            }
 
             if (!yearFilter.isEmpty() && !yearFilter.contains(year)) {
                 continue;
