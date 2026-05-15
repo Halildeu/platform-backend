@@ -48,7 +48,8 @@ class MasterDataReadServiceTest {
     private final NamedParameterJdbcTemplate jdbc = mock(NamedParameterJdbcTemplate.class);
 
     private MasterDataReadService newService() {
-        return new MasterDataReadService(jdbc, "workcube_mikrolink", 50000);
+        return new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "companies,projects,branches,departments");
     }
 
     @Test
@@ -240,7 +241,8 @@ class MasterDataReadServiceTest {
         NamedParameterJdbcTemplate jdbc2 = mock(NamedParameterJdbcTemplate.class);
         when(jdbc2.query(anyString(), anyMap(), any(RowMapper.class)))
                 .thenAnswer(inv -> List.of());
-        var service2 = new MasterDataReadService(jdbc2, "workcube_mikrolink", 50000);
+        var service2 = new MasterDataReadService(
+                jdbc2, "workcube_mikrolink", 50000, "companies,projects,branches,departments");
         service2.list("branches");
         ArgumentCaptor<String> branchesSql = ArgumentCaptor.forClass(String.class);
         verify(jdbc2).query(branchesSql.capture(), anyMap(), any(RowMapper.class));
@@ -297,5 +299,90 @@ class MasterDataReadServiceTest {
         // column above).
         assertThat(s).contains("LEFT JOIN [workcube_mikrolink].[SETUP_DEPARTMENT_NAME]");
         assertThat(s).doesNotContain("[OUR_COMPANY] oc");
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 1 portability — master-data kind enablement (quick win 5/5)
+    // ---------------------------------------------------------------
+
+    @Test
+    void disabledKind_throwsDistinctMessageFromUnknown() {
+        // 'branches' is a valid KIND_MAP kind but excluded from enabled-kinds.
+        var service = new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "companies,projects");
+
+        assertThatThrownBy(() -> service.list("branches"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("disabled")
+                .hasMessageNotContaining("Unknown");
+
+        // A kind absent from KIND_MAP altogether → distinct "unknown" message.
+        assertThatThrownBy(() -> service.list("warehouses"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unknown master-data kind");
+    }
+
+    @Test
+    void blankEnabledKinds_defaultsToAllFourKinds() {
+        // Codex 019e2d7d note 9: a blank config must NOT silently disable
+        // every kind — it falls back to all four.
+        var service = new MasterDataReadService(jdbc, "workcube_mikrolink", 50000, "  ");
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        for (String kind : List.of("companies", "projects", "branches", "departments")) {
+            assertThat(service.list(kind))
+                    .as("kind '%s' must stay enabled under blank config", kind)
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    void enabledKindsSubset_onlyListedKindAllowed() {
+        // Only 'companies' enabled — the rest become 'disabled'.
+        var service = new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "companies");
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        assertThat(service.list("companies")).isEmpty();   // enabled → SQL runs
+
+        assertThatThrownBy(() -> service.list("departments"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("disabled");
+    }
+
+    @Test
+    void enabledKindsUnknownOnly_defaultsToAllFourKinds() {
+        // Codex 019e2d7d REVISE: a typo-only value must not disable every
+        // kind — unknown tokens are filtered, leaving nothing, so the
+        // service falls back to all four defaults.
+        var service = new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "warehouses,foobar");
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        for (String kind : List.of("companies", "projects", "branches", "departments")) {
+            assertThat(service.list(kind))
+                    .as("typo-only enabled-kinds must fall back to default; kind '%s'", kind)
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    void enabledKindsMixedUnknown_filtersUnknownKeepsValid() {
+        // 'warehouses' is unknown and dropped; 'companies' survives as the
+        // only effective enabled kind.
+        var service = new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "companies,warehouses");
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        assertThat(service.list("companies")).isEmpty();   // valid + enabled
+
+        assertThatThrownBy(() -> service.list("departments"))
+                .as("departments not in enabled-kinds → disabled")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("disabled");
     }
 }

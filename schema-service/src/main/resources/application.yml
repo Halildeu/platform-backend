@@ -86,6 +86,15 @@ schema:
     # (packaging bug). Geçerli boş JSON {} → o heuristic kapatılır.
     alias-path: ${SCHEMA_FK_ALIAS_PATH:classpath:fk-heuristics/aliases-workcube.json}
     common-fk-path: ${SCHEMA_FK_COMMON_PATH:classpath:fk-heuristics/common-fk-workcube.json}
+  master-data:
+    # Phase 1 portability (Codex 019e2d7d AGREE — quick win 5/5):
+    # master-data kind enablement — subset gate. KIND_MAP kapalı
+    # SQL-template allowlist (injection guard) olarak kalır; bu yalnız
+    # ek enable/disable katmanı — yüzeyi genişletemez, sadece daraltır.
+    # Boş bırakılırsa dört kind'in tümü açık (boş değer typo tuzağı
+    # sayılır, sessizce master-data'yı kapatmaz). Bilinmeyen kind
+    # log'lanıp yok sayılır.
+    enabled-kinds: ${SCHEMA_MD_ENABLED_KINDS:companies,projects,branches,departments}
   ai:
     enabled: ${SCHEMA_AI_ENABLED:false}
     api-key: ${SCHEMA_AI_API_KEY:}
