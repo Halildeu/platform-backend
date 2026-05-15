@@ -8,6 +8,7 @@ import com.example.report.authz.CompanyHeaderScopeNarrower;
 import com.example.report.authz.PermissionResolver;
 import com.example.report.dto.CategoryDto;
 import com.example.report.dto.ColumnVO;
+import com.example.report.dto.FilterValuesResponseDto;
 import com.example.report.dto.PagedResultDto;
 import com.example.report.dto.ReportCapabilitiesDto;
 import com.example.report.dto.ReportListItemDto;
@@ -278,6 +279,89 @@ public class ReportController {
         return ResponseEntity.ok()
                 .headers(com.example.report.query.DegradationHeaders.of(result.warnings()))
                 .body(new PagedResultDto<>(result.items(), result.total(), result.page(), result.pageSize()));
+    }
+
+    /**
+     * PR-0.5c (Codex thread 019e2d54): distinct column values for the
+     * AG Grid set filter dropdown. {@code GET /{key}/filter-values?
+     * column={field}&search={text}&limit={n}}.
+     *
+     * <p>The endpoint runs through the same {@code visibleColumns +
+     * RLS + schema resolver + company-header narrow} chain as
+     * {@code /data} so the dropdown can never surface a value the row
+     * reader would have hidden. It is registered on the
+     * {@code TenantBoundaryGuard} path matrix (Codex blocker — the
+     * values are row-derived, not schema-only metadata).
+     *
+     * <p>Response: {@link FilterValuesResponseDto} with the sorted
+     * distinct values (null preserved → AG Grid "(Blanks)"), the
+     * effective {@code limit}, and a {@code truncated} flag set when
+     * the column has more than {@code limit} distinct values.
+     *
+     * <p>Structured 400 codes: {@code INVALID_COLUMN} (column not in
+     * the visible-column allowlist), {@code INVALID_LIMIT} (limit
+     * &lt;= 0).
+     */
+    @GetMapping("/{key}/filter-values")
+    public ResponseEntity<?> getFilterValues(
+            @PathVariable String key,
+            @RequestParam String column,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) Integer limit,
+            @RequestHeader(value = CompanyHeaderScopeNarrower.HEADER_NAME, required = false) String companyHeader,
+            @AuthenticationPrincipal Jwt jwt) {
+
+        ReportDefinition def = findReportOrThrow(key);
+        AuthzMeResponse authz = resolveAndCheckAccess(def, jwt);
+        AuthzMeResponse scopedAuthz = companyHeaderNarrower.narrow(authz, companyHeader);
+
+        // Clamp the request limit into [1, maxFilterValues]. A null or
+        // out-of-range limit silently snaps to the configured cap
+        // rather than 400 — only a non-positive explicit limit is a
+        // hard error (the AG Grid callback never sends one, but a
+        // hand-crafted request might).
+        int cap = queryEngine.getMaxFilterValues();
+        int effectiveLimit;
+        if (limit == null) {
+            effectiveLimit = cap;
+        } else if (limit <= 0) {
+            return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                    "INVALID_LIMIT", "limit must be a positive integer, got: " + limit));
+        } else {
+            effectiveLimit = Math.min(limit, cap);
+        }
+
+        // Validate the column against the visible-column allowlist
+        // before touching the DB so a hidden / unknown column fails
+        // closed with a structured 400 instead of a SQL error.
+        List<String> visibleColumns = queryEngine.getVisibleColumns(def, scopedAuthz);
+        if (column == null || !visibleColumns.contains(column)) {
+            return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                    "INVALID_COLUMN",
+                    "column must be one of the report's visible columns, got: " + column));
+        }
+
+        List<Object> values;
+        try {
+            // Fetch limit + 1 so we can detect truncation without a
+            // separate COUNT(DISTINCT) round-trip.
+            values = queryEngine.executeFilterValues(
+                    def, scopedAuthz, column, search, effectiveLimit + 1);
+        } catch (IllegalArgumentException iae) {
+            return ResponseEntity.badRequest().body(new ReportQueryErrorDto(
+                    "INVALID_COLUMN", iae.getMessage()));
+        }
+
+        boolean truncated = values.size() > effectiveLimit;
+        if (truncated) {
+            values = values.subList(0, effectiveLimit);
+        }
+
+        auditClient.logReportAccess(key, authz.getUserId(),
+                JwtClaimExtractor.extractAuditUsername(jwt));
+
+        return ResponseEntity.ok(new FilterValuesResponseDto(
+                values, effectiveLimit, truncated));
     }
 
     /**

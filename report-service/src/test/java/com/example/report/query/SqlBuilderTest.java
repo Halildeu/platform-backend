@@ -2041,4 +2041,95 @@ class SqlBuilderTest {
                             null, null, 100));
         }
     }
+
+    // ── PR-0.5c: buildDistinctValuesQuery ────────────────────────────
+
+    @Nested
+    class BuildDistinctValuesQuery {
+
+        private ReportDefinition fvDef() {
+            return new ReportDefinition(
+                    "fv-report", "v1", "FilterValues", "desc", "cat",
+                    "TXN", "dbo", "static", null, null,
+                    List.of(
+                            new ColumnDefinition("category", "Category", "text", 100, false),
+                            new ColumnDefinition("region", "Region", "text", 100, false),
+                            new ColumnDefinition("amount", "Amount", "number", 120, false)),
+                    "category", "ASC",
+                    new AccessConfig(null, null, null, null));
+        }
+
+        @Test
+        void emitsDistinctOrderByAndFetchCap() {
+            SqlBuilder.BuiltQuery q = builder.buildDistinctValuesQuery(
+                    fvDef(), null, List.of("category", "region", "amount"),
+                    "category", null, null, null, 1001);
+
+            assertThat(q.sql())
+                    .contains("SELECT DISTINCT [category]")
+                    .contains("[dbo].[TXN]")
+                    .contains("ORDER BY [category] ASC")
+                    .contains("OFFSET 0 ROWS FETCH NEXT :_limit ROWS ONLY")
+                    .doesNotContain("GROUP BY");
+            assertThat(q.params().getValue("_limit")).isEqualTo(1001);
+        }
+
+        @Test
+        void searchPredicateEscapesLikeWildcards() {
+            // A search containing % and _ must be escaped so it matches
+            // literally — the user is searching for the text, not a
+            // wildcard pattern.
+            SqlBuilder.BuiltQuery q = builder.buildDistinctValuesQuery(
+                    fvDef(), null, List.of("category", "amount"),
+                    "category", "50%_off", null, null, 100);
+
+            assertThat(q.sql())
+                    .contains("LIKE :_filterSearch ESCAPE '\\'");
+            // % and _ inside the search text are backslash-escaped;
+            // the surrounding %…% are the LIKE wildcards we want.
+            assertThat(q.params().getValue("_filterSearch"))
+                    .isEqualTo("%50\\%\\_off%");
+        }
+
+        @Test
+        void noSearchOmitsLikePredicate() {
+            SqlBuilder.BuiltQuery q = builder.buildDistinctValuesQuery(
+                    fvDef(), null, List.of("category", "amount"),
+                    "category", "  ", null, null, 100);
+
+            assertThat(q.sql()).doesNotContain("LIKE :_filterSearch");
+        }
+
+        @Test
+        void columnOutsideVisibleSetRejected() {
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> builder.buildDistinctValuesQuery(
+                            fvDef(), null, List.of("category"),
+                            "hidden_col", null, null, null, 100));
+        }
+
+        @Test
+        void nonPositiveLimitRejected() {
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> builder.buildDistinctValuesQuery(
+                            fvDef(), null, List.of("category"),
+                            "category", null, null, null, 0));
+        }
+
+        @Test
+        void searchTextCappedAt200Chars() {
+            // A 500-char search must be truncated so the bound param
+            // stays bounded. After truncation + %…% wrap the param is
+            // at most 200 + 2 chars (no escaped wildcards in this input).
+            String longSearch = "x".repeat(500);
+            SqlBuilder.BuiltQuery q = builder.buildDistinctValuesQuery(
+                    fvDef(), null, List.of("category", "amount"),
+                    "category", longSearch, null, null, 100);
+
+            String param = (String) q.params().getValue("_filterSearch");
+            assertThat(param).hasSize(202); // 200 chars + leading/trailing %
+        }
+    }
 }

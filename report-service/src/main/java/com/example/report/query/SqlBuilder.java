@@ -254,6 +254,116 @@ public class SqlBuilder {
         return new BuiltQuery(sql.toString(), params, fromResult.warnings());
     }
 
+    // ── Filter values (PR-0.5c set filter dynamic values) ──────────────
+
+    /**
+     * PR-0.5c (Codex thread 019e2d54): distinct values for a single
+     * column, used by the AG Grid set filter dropdown. Same RLS +
+     * visibility allowlist + schema resolver chain as the live data
+     * path so the dropdown can never surface a value the row reader
+     * would have filtered out.
+     *
+     * <p>SQL shape:
+     * <pre>
+     *   SELECT DISTINCT [column]
+     *   FROM &lt;fromClause with RLS + optional search predicate&gt;
+     *   ORDER BY [column] ASC
+     *   OFFSET 0 ROWS FETCH NEXT :_limit ROWS ONLY
+     * </pre>
+     *
+     * <p>The caller passes {@code limit + 1} so the controller layer
+     * can detect truncation ({@code returned.size() > limit} →
+     * {@code truncated = true}). Search is bound as a parameter with
+     * MSSQL LIKE wildcards already wrapped (see
+     * {@link #escapeLikePattern}) so a search containing {@code %},
+     * {@code _}, {@code [}, {@code ]} or the escape character is
+     * treated as a literal.
+     */
+    public BuiltQuery buildDistinctValuesQuery(
+            ReportDefinition def,
+            YearlySchemaResolver.ResolvedSchemas resolvedSchemas,
+            List<String> visibleColumns,
+            String column,
+            String searchText,
+            String rlsWhereClause,
+            MapSqlParameterSource rlsParams,
+            int limit) {
+        Set<String> allowedCols = Set.copyOf(visibleColumns);
+        if (column == null || !allowedCols.contains(column)) {
+            throw new IllegalArgumentException(
+                    "filter-values: column must be one of the visible columns, got: " + column);
+        }
+        if (limit <= 0) {
+            throw new IllegalArgumentException(
+                    "filter-values: limit must be > 0, got: " + limit);
+        }
+
+        String selectCols = "[" + column + "]";
+
+        MapSqlParameterSource params = new MapSqlParameterSource();
+        // The filter-values endpoint does not honour the AG Grid
+        // filterModel — it returns the full distinct set for the
+        // column (capped). Search is the only WHERE narrowing.
+        FilterTranslator.FilterResult emptyFilter =
+                new FilterTranslator.FilterResult("", new MapSqlParameterSource());
+        FromClauseResult fromResult = buildFromClause(def, resolvedSchemas,
+                selectCols, rlsWhereClause, rlsParams, emptyFilter, params);
+
+        // Wrapper shape: the inner SELECT carries the RLS-narrowed
+        // FROM clause (single-schema → `[schema].[table] WHERE 1=1
+        // AND rls`; multi-schema → `(UNION ALL ...) AS _u`). The
+        // outer SELECT applies DISTINCT + search + ORDER BY + paging.
+        // Wrapping is mandatory because the multi-schema fromClause
+        // has no trailing WHERE — appending `AND <search>` directly
+        // would emit invalid SQL on yearly reports.
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT DISTINCT [").append(column).append("]");
+        sql.append(" FROM (SELECT [").append(column).append("] FROM ")
+           .append(fromResult.sql()).append(") AS _fv");
+        sql.append(" WHERE 1=1");
+        // Codex iter-1 §1: search wildcards escaped via escapeLikePattern
+        // so a user search containing `%` / `_` / `[` / `]` matches
+        // literally. Bound as a parameter — never string-concatenated.
+        if (searchText != null && !searchText.isBlank()) {
+            String trimmed = searchText.trim();
+            if (trimmed.length() > MAX_FILTER_SEARCH_LENGTH) {
+                trimmed = trimmed.substring(0, MAX_FILTER_SEARCH_LENGTH);
+            }
+            String escaped = escapeLikePattern(trimmed);
+            sql.append(" AND CONVERT(nvarchar(4000), [").append(column).append("])")
+               .append(" LIKE :_filterSearch ESCAPE '").append(LIKE_ESCAPE_CHAR).append("'");
+            params.addValue("_filterSearch", "%" + escaped + "%");
+        }
+        sql.append(" ORDER BY [").append(column).append("] ASC");
+        sql.append(" OFFSET 0 ROWS FETCH NEXT :_limit ROWS ONLY");
+        params.addValue("_limit", limit);
+
+        return new BuiltQuery(sql.toString(), params, fromResult.warnings());
+    }
+
+    /** Maximum length of the user-supplied search text on filter-values. */
+    private static final int MAX_FILTER_SEARCH_LENGTH = 200;
+
+    /** Backslash character used as LIKE ESCAPE in {@link #buildDistinctValuesQuery}. */
+    private static final char LIKE_ESCAPE_CHAR = '\\';
+
+    /**
+     * Escape MSSQL LIKE wildcards so user-supplied search text matches
+     * literally. The escape character is {@code \\} (configured in the
+     * generated SQL via {@code ESCAPE '\\'}).
+     */
+    private static String escapeLikePattern(String raw) {
+        StringBuilder out = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            if (c == LIKE_ESCAPE_CHAR || c == '%' || c == '_' || c == '[' || c == ']') {
+                out.append(LIKE_ESCAPE_CHAR);
+            }
+            out.append(c);
+        }
+        return out.toString();
+    }
+
     // ── Grouping queries (PR-0.2 single-level GROUP BY) ────────────────
 
     /**

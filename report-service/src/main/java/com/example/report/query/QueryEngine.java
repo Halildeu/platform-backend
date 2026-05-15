@@ -28,6 +28,14 @@ public class QueryEngine {
     @Value("${report.query.max-export-rows:500000}")
     private int maxExportRows;
 
+    /**
+     * PR-0.5c (Codex thread 019e2d54): hard cap on the distinct
+     * values returned by the set-filter endpoint. The controller
+     * clamps any request {@code limit} to this ceiling.
+     */
+    @Value("${report.query.max-filter-values:1000}")
+    private int maxFilterValues;
+
     public QueryEngine(NamedParameterJdbcTemplate jdbc,
                        ColumnFilter columnFilter,
                        RowFilterInjector rowFilterInjector,
@@ -367,6 +375,49 @@ public class QueryEngine {
 
     public List<String> getVisibleColumns(ReportDefinition def, AuthzMeResponse authz) {
         return columnFilter.getVisibleColumns(def, authz);
+    }
+
+    /** Effective filter-values cap (config {@code report.query.max-filter-values}). */
+    public int getMaxFilterValues() {
+        return maxFilterValues;
+    }
+
+    /**
+     * PR-0.5c (Codex thread 019e2d54): execute the distinct-values
+     * query for a set filter dropdown. Returns up to {@code limit + 1}
+     * rows so the caller can detect truncation; values are raw column
+     * objects (null preserved — the frontend renders the AG Grid
+     * "(Blanks)" entry, the backend never substitutes a sentinel).
+     *
+     * <p>The query runs through the same {@code visibleColumns + RLS +
+     * schema resolver} chain as {@link #executeQuery} so the dropdown
+     * cannot surface a value the row reader would have filtered out.
+     */
+    public List<Object> executeFilterValues(ReportDefinition def,
+                                             AuthzMeResponse authz,
+                                             String column,
+                                             String searchText,
+                                             int limit) {
+        List<String> visibleColumns = columnFilter.getVisibleColumns(def, authz);
+        RowFilterInjector.RlsResult rls = rowFilterInjector.buildRlsClause(def, authz);
+        YearlySchemaResolver.ResolvedSchemas schemas = resolveSchemas(def, authz, null);
+
+        SqlBuilder.BuiltQuery query = sqlBuilder.buildDistinctValuesQuery(
+                def, schemas, visibleColumns, column, searchText,
+                rls.whereClause(), rls.params(), limit);
+
+        log.debug("Filter-values query [{} column={}]: {}",
+                def.key(), column, query.sql());
+
+        // queryForList returns a single-column result set; pull the
+        // first (only) column value out of each row map.
+        List<Map<String, Object>> rows = jdbc.queryForList(query.sql(), query.params());
+        List<Object> values = new java.util.ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            // Single-column DISTINCT — the map has exactly one entry.
+            values.add(row.isEmpty() ? null : row.values().iterator().next());
+        }
+        return values;
     }
 
     private YearlySchemaResolver.ResolvedSchemas resolveSchemas(ReportDefinition def,
