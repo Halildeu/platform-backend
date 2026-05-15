@@ -16,9 +16,11 @@ Design contract:
   ``attempt`` (or ``null`` for run-level), ``outcome``, ``summary``
   (or ``null``), ``error_class``, ``error_message`` (sanitized, max
   500 chars).
-* **Secret-safe** — payload is built by the runner; the writer never
-  reads environment / config; the error message is truncated to
-  bound exposure if upstream surfaces unexpected content.
+* **Bounded error payload** — the error message is *truncated* (not
+  redacted) at :data:`MAX_ERROR_MESSAGE_LENGTH` so an oversize
+  upstream string cannot bloat a log line or leak surprise content.
+  Active secret redaction is out of scope for this slice; callers
+  control what they pass via ``error_message``.
 * **No fsync per event** — line-buffered append is enough for
   operator log analysis. Durability knobs (``--fsync-audit``) belong
   to a later slice if/when operator workflow demands it.
@@ -95,18 +97,26 @@ class AuditWriter(Protocol):
 class JsonLinesAuditWriter:
     """Append :class:`AuditEvent` records as JSON Lines to a file path.
 
-    The writer opens the file in append mode on each write so multiple
-    runs (or multiple processes) can share the same audit file without
-    corrupting each other's lines. POSIX guarantees ``write()`` of a
-    single line ``<= PIPE_BUF`` (4 KiB) is atomic in ``O_APPEND``
-    mode; events stay well under that bound thanks to
-    :data:`MAX_ERROR_MESSAGE_LENGTH`.
+    Each :meth:`write` performs **one** ``write(2)`` system call on a
+    handle opened with ``O_APPEND``; this is the strongest single-
+    process atomicity guarantee POSIX makes for regular files. The
+    JSON payload + trailing newline are pre-encoded as a single bytes
+    object so the line cannot be split across system calls.
+
+    .. note::
+       The traditional ``PIPE_BUF`` (4 KiB) atomicity rule applies to
+       pipes / FIFOs only, **not** regular files. Cross-process
+       guarantees on regular files vary by filesystem (local ext4 /
+       APFS are well-behaved; NFS and other network filesystems are
+       not promised). We therefore do not claim cross-process line
+       atomicity here — the writer is designed for the single-process
+       runner today, with the threading lock below covering
+       in-process concurrency.
 
     Threading:
         Within a single process, an internal :class:`threading.Lock`
         serialises writes so concurrent emissions from the runner +
-        future async retry / DB writer slices stay line-coherent. The
-        cross-process safety relies on ``O_APPEND`` atomicity above.
+        future async retry / DB writer slices stay line-coherent.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
@@ -124,10 +134,23 @@ class JsonLinesAuditWriter:
     def write(self, event: AuditEvent) -> None:
         payload = self._payload(event)
         line = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        # Encode the JSON line + trailing newline as a single bytes
+        # buffer so a single ``write(2)`` system call emits the whole
+        # record. Splitting JSON and ``"\n"`` across two ``handle.write``
+        # calls (the previous implementation) created a tiny window
+        # where an interleaving in-process or cross-process writer
+        # could corrupt line framing.
+        encoded = (line + "\n").encode("utf-8")
         with self._lock:
-            with self._path.open("a", encoding="utf-8") as handle:
-                handle.write(line)
-                handle.write("\n")
+            fd = os.open(
+                self._path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o644,
+            )
+            try:
+                os.write(fd, encoded)
+            finally:
+                os.close(fd)
 
     def _payload(self, event: AuditEvent) -> dict[str, object]:
         data: dict[str, object] = {

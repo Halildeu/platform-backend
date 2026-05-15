@@ -583,3 +583,69 @@ def test_run_audit_on_transient_exhausted_writes_run_failed(tmp_path: object) ->
     assert names[-1] == "run_failed"
     assert lines[-1]["outcome"] == "retryable_exhausted"
     assert lines[-1]["error_class"] == "SchemaServiceUnavailable"
+
+
+# ---- Codex 019e2a5c REVISE absorb — audit sink OSError handling ----------
+
+
+def test_run_audit_factory_oserror_maps_to_70_software() -> None:
+    """Codex 019e2a5c REVISE absorb: an audit sink that fails to instantiate
+    must surface as ``EX_SOFTWARE`` (70) with a one-line stderr message,
+    *not* a Python traceback. Pins the typed exit-code contract through
+    the audit path."""
+
+    def explosive_factory(path: str) -> object:
+        raise OSError("permission denied")
+
+    _, factory = _factory([_good_snapshot()])
+    err = io.StringIO()
+
+    code = main(
+        ["run", "--audit-path", "/tmp/never-created-audit.jsonl"],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=err,
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+        audit_factory=explosive_factory,
+    )
+
+    assert code == EX_SOFTWARE
+    text = err.getvalue()
+    assert "audit error" in text
+    assert "permission denied" in text
+    # Never leak the underlying Python traceback into stderr.
+    assert "Traceback" not in text
+    assert "OSError(" not in text
+
+
+def test_run_audit_write_oserror_maps_to_70_software() -> None:
+    """An ``OSError`` from a successful audit writer's ``write()`` call
+    (e.g. disk full mid-run) also surfaces as ``EX_SOFTWARE`` rather
+    than leaking out as a traceback."""
+
+    class _BrokenWriter:
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def write(self, _event: object) -> None:
+            raise OSError("no space left on device")
+
+    _, factory = _factory([_good_snapshot()])
+    err = io.StringIO()
+
+    code = main(
+        ["run", "--audit-path", "/tmp/disk-full-audit.jsonl"],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=err,
+        client_factory=factory,
+        sleeper=_FakeSleeper(),
+        audit_factory=_BrokenWriter,
+    )
+
+    assert code == EX_SOFTWARE
+    text = err.getvalue()
+    assert "audit error" in text
+    assert "no space left on device" in text
+    assert "Traceback" not in text

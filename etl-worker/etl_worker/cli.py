@@ -408,12 +408,23 @@ def _handle_run(
     # ``audit_factory`` parameter is for tests that want to inject an
     # in-memory writer without hitting the filesystem; production
     # code defaults to :class:`JsonLinesAuditWriter`.
+    #
+    # Audit sink creation can fail with ``OSError`` (missing
+    # directory it cannot create, permission denied, etc.). Codex
+    # 019e2a5c REVISE absorb: trap that here so an unwritable audit
+    # path surfaces as a clean ``EX_SOFTWARE`` with a one-line
+    # stderr message rather than a Python traceback escaping the
+    # CLI exit-code contract.
     audit: AuditWriter | None = None
     if args.audit_path is not None:
-        if audit_factory is not None:
-            audit = audit_factory(args.audit_path)
-        else:
-            audit = JsonLinesAuditWriter(args.audit_path)
+        try:
+            if audit_factory is not None:
+                audit = audit_factory(args.audit_path)
+            else:
+                audit = JsonLinesAuditWriter(args.audit_path)
+        except OSError as exc:
+            print(f"etl-worker: audit error: {exc}", file=err)
+            return EX_SOFTWARE
 
     active_sleeper: Sleeper = sleeper if sleeper is not None else SystemSleeper()
     try:
@@ -437,6 +448,13 @@ def _handle_run(
         return EX_PROTOCOL
     except SchemaServiceMalformedResponse as exc:
         print(f"etl-worker: malformed response: {exc}", file=err)
+        return EX_SOFTWARE
+    except OSError as exc:
+        # Audit sink failure during a write surfaces as ``OSError``;
+        # trap with the same ``EX_SOFTWARE`` exit contract as the
+        # creation path so the CLI never leaks a traceback.
+        print(f"etl-worker: audit error: {exc}", file=err)
+        return EX_SOFTWARE
         return EX_SOFTWARE
 
     summary = dict(result.summary)
