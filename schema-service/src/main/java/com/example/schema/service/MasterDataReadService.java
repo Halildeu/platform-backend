@@ -9,9 +9,11 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Codex 019dda1c iter-29: master-data live MSSQL reader. Picks the same
@@ -37,11 +39,17 @@ public class MasterDataReadService {
     private final NamedParameterJdbcTemplate jdbc;
     private final String schemaName;
     private final int rowLimit;
+    private final Set<String> enabledKinds;
+
+    /** Workcube-compatible default — all four master-data kinds enabled. */
+    static final Set<String> DEFAULT_ENABLED_KINDS =
+            Set.of("companies", "projects", "branches", "departments");
 
     public MasterDataReadService(
             NamedParameterJdbcTemplate jdbc,
             @Value("${schema.master-data.schema:${schema.default-schema:workcube_mikrolink}}") String schemaName,
-            @Value("${schema.master-data.limit:50000}") int rowLimit) {
+            @Value("${schema.master-data.limit:50000}") int rowLimit,
+            @Value("${schema.master-data.enabled-kinds:}") String enabledKindsCsv) {
         this.jdbc = jdbc;
         this.schemaName = schemaName;
         // Codex 019dda1c iter-30f: cap raised from 5000 → 100000 because the
@@ -51,6 +59,44 @@ public class MasterDataReadService {
         // not a paging boundary; the public default in @Value above is 50k
         // which covers every observed table on testai.
         this.rowLimit = Math.min(Math.max(rowLimit, 1), 100000);
+        this.enabledKinds = parseEnabledKinds(enabledKindsCsv);
+        log.info("MasterDataReadService initialized: schema='{}' enabledKinds={}",
+                schemaName, enabledKinds);
+    }
+
+    /**
+     * Phase 1 portability (Codex 019e2d7d AGREE — quick win 5/5): parse the
+     * enabled-kinds subset gate. {@link #KIND_MAP} stays the closed
+     * SQL-template allowlist (the SQL-injection guard); this is only an
+     * additional enable/disable layer on top of it — it cannot widen the
+     * surface, only narrow it.
+     *
+     * <p>A blank or all-empty value falls back to all four kinds (Codex
+     * 019e2d7d note 9: an empty config must not silently disable every
+     * master-data kind — that is a typo trap in production). Unknown kinds
+     * in the value are logged and ignored.
+     */
+    private static Set<String> parseEnabledKinds(String csv) {
+        if (csv == null || csv.isBlank()) {
+            return DEFAULT_ENABLED_KINDS;
+        }
+        Set<String> parsed = new LinkedHashSet<>();
+        for (String s : csv.split(",")) {
+            String t = s.trim().toLowerCase(Locale.ROOT);
+            if (!t.isEmpty()) {
+                parsed.add(t);
+            }
+        }
+        if (parsed.isEmpty()) {
+            return DEFAULT_ENABLED_KINDS;
+        }
+        Set<String> unknown = new LinkedHashSet<>(parsed);
+        unknown.removeAll(KIND_MAP.keySet());
+        if (!unknown.isEmpty()) {
+            log.warn("schema.master-data.enabled-kinds contains unknown kind(s) {}; "
+                    + "ignored (valid kinds: {}).", unknown, KIND_MAP.keySet());
+        }
+        return Set.copyOf(parsed);
     }
 
     /**
@@ -191,6 +237,12 @@ public class MasterDataReadService {
         TableMapping mapping = KIND_MAP.get(normalized);
         if (mapping == null) {
             throw new IllegalArgumentException("Unknown master-data kind: " + kind);
+        }
+        // Phase 1 portability (Codex 019e2d7d 5/5): subset gate on top of
+        // the KIND_MAP allowlist. Distinct message from "unknown" so ops
+        // can tell a typo apart from a deliberately disabled kind.
+        if (!enabledKinds.contains(normalized)) {
+            throw new IllegalArgumentException("Master-data kind disabled: " + kind);
         }
 
         // Schema name + limit interpolated from server-side allowlist/config —
