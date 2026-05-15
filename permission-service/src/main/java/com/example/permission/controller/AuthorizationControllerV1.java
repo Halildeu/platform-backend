@@ -532,15 +532,22 @@ public class AuthorizationControllerV1 {
                 case MODULE -> modules.put(key, grantStr);
                 case ACTION -> actions.put(key, grantStr);
                 case REPORT -> {
-                    // R16 PR-B-2 (Codex 019e27f5): reports.<GROUP> permission
-                    // key'lerini reports map'ine GROUP suffix only olarak yaz.
-                    // FE ReportingHub.tsx:99 canViewReport(reportGroup)
-                    // `authz.reports[reportGroup]` ile arıyor; reportGroup =
-                    // "FINANCE_REPORTS" olduğu için key prefix'siz olmalı.
-                    // Dashboard keys (HR_ANALYTICS, FIN_RATIOS, vb.) prefix'siz
-                    // gelir ve aynı map'te kalır — namespace collision yok.
+                    // R16 PR-B-2 (Codex 019e2a13 REVISE P0/P1 absorb):
+                    // - Key suffix-only (reports.GROUP → GROUP) — FE
+                    //   canViewReport(reportGroup) prefix'siz arıyor
+                    // - Grant canonicalization: FE PermissionProvider
+                    //   `canViewReport()` SADECE "ALLOW" kabul ediyor
+                    //   (Record<string, 'ALLOW' | 'DENY'> kontratı);
+                    //   raw VIEW/MANAGE değerleri filter'dan geçmez.
+                    //   ALLOW|VIEW|MANAGE → "ALLOW"; DENY → "DENY"
+                    // - Deny-wins merge: raw `FINANCE_REPORTS` + prefixed
+                    //   `reports.FINANCE_REPORTS` aynı suffix'e düşerse,
+                    //   DENY > ALLOW pattern korunur (deterministic)
                     String reportsKey = TupleSyncService.normalizeReportGroupKey(key);
-                    reports.put(reportsKey, grantStr);
+                    String canonicalGrant = canonicalizeReportGrantForFe(
+                            entry.getValue().grantType());
+                    reports.merge(reportsKey, canonicalGrant,
+                            AuthorizationControllerV1::mergeReportGrantDenyWins);
                 }
                 // PAGE, FIELD removed in V10 migration (TB-21)
             }
@@ -549,6 +556,32 @@ public class AuthorizationControllerV1 {
         dto.setModules(modules);
         dto.setActions(actions);
         dto.setReports(reports);
+    }
+
+    /**
+     * R16 PR-B-2 (Codex 019e2a13 REVISE P0 absorb): FE
+     * {@code PermissionProvider.canViewReport()} SADECE {@code "ALLOW"} kabul
+     * ediyor (kontrat: {@code Record<string, 'ALLOW' | 'DENY'>}). Backend
+     * GrantType enum {@code VIEW/MANAGE/ALLOW/DENY} değerleri raw döndürürse
+     * FE filter pozitif grant'leri tanımaz ve report silent filter olur.
+     */
+    private static String canonicalizeReportGrantForFe(com.example.permission.model.GrantType grant) {
+        return switch (grant) {
+            case DENY -> "DENY";
+            // ALLOW + VIEW + MANAGE hepsi positive (model.fga `can_view:
+            // [user] or can_edit` ile aligned) → FE için tek değer "ALLOW"
+            case ALLOW, VIEW, MANAGE -> "ALLOW";
+        };
+    }
+
+    /**
+     * R16 PR-B-2 (Codex 019e2a13 REVISE P1 absorb): raw {@code FINANCE_REPORTS}
+     * + prefixed {@code reports.FINANCE_REPORTS} aynı suffix'e düşebilir
+     * (V18 migration coexistence). Deny-wins deterministic merge: bir taraf
+     * "DENY" ise sonuç "DENY"; aksi halde "ALLOW".
+     */
+    private static String mergeReportGrantDenyWins(String existing, String incoming) {
+        return "DENY".equals(existing) || "DENY".equals(incoming) ? "DENY" : "ALLOW";
     }
 
     private Map<String, List<Long>> buildScopeMap(Long userId) {

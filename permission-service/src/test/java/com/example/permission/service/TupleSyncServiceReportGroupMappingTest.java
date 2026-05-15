@@ -76,4 +76,19 @@ class TupleSyncServiceReportGroupMappingTest {
         assertThat(TupleSyncService.REPORT_GROUP_KEYS).containsExactlyInAnyOrder(
                 "FINANCE_REPORTS", "HR_REPORTS", "SALES_REPORTS", "ANALYTICS_REPORTS");
     }
+
+    // --- R16 PR-B-2 Codex 019e2a13 REVISE P1 absorb tests ---
+
+    @Test
+    void isReportGroupKey_rawAndPrefixed_bothTrue_logicalEquivalence() {
+        // Raw `FINANCE_REPORTS` (V18 migration legacy) ve prefixed
+        // `reports.FINANCE_REPORTS` (PR-B-2 yeni) aynı logical group.
+        // İkisi de aynı OpenFGA `report_group:FINANCE_REPORTS` tuple'a
+        // yazılmalı (deny-wins merge AuthorizationControllerV1'da).
+        assertThat(TupleSyncService.isReportGroupKey("FINANCE_REPORTS")).isTrue();
+        assertThat(TupleSyncService.isReportGroupKey("reports.FINANCE_REPORTS")).isTrue();
+        // Normalize identical
+        assertThat(TupleSyncService.normalizeReportGroupKey("FINANCE_REPORTS"))
+                .isEqualTo(TupleSyncService.normalizeReportGroupKey("reports.FINANCE_REPORTS"));
+    }
 }
