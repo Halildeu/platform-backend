@@ -361,6 +361,29 @@ def test_bad_timeout_flag_maps_to_64_usage() -> None:
     assert code == EX_USAGE
 
 
+def test_malformed_env_url_maps_to_64_usage_without_stack_trace() -> None:
+    """Codex 019e2a5c REVISE absorb: malformed URLs that ``urlparse`` /
+    ``.port`` rejects with ``ValueError`` flow through ``ConfigError``
+    and surface as ``EX_USAGE``, with stderr carrying only the safe
+    error message (no Python traceback)."""
+    _, factory = _factory(snapshot=_good_snapshot())
+    err = io.StringIO()
+
+    code = main(
+        ["fetch-snapshot"],
+        env={"SCHEMA_SERVICE_URL": "http://schema-service:badport"},
+        stdout=io.StringIO(),
+        stderr=err,
+        client_factory=factory,
+    )
+
+    assert code == EX_USAGE
+    assert "config error" in err.getvalue()
+    # Never leak the underlying stdlib stack trace into stderr
+    assert "Traceback" not in err.getvalue()
+    assert "ValueError" not in err.getvalue()
+
+
 def test_bad_env_timeout_maps_to_64_usage() -> None:
     _, factory = _factory(snapshot=_good_snapshot())
     err = io.StringIO()

@@ -123,6 +123,26 @@ def test_from_env_rejects_url_with_credentials() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        # Unbracketed IPv6 — urlparse() raises ValueError
+        "http://[::1",
+        # Non-numeric port — parsed.port raises ValueError on access
+        "http://schema-service:badport",
+        # Out-of-range port (>65535) — parsed.port raises ValueError on access
+        "http://schema-service:99999",
+    ],
+)
+def test_from_env_traps_malformed_url_parse_errors(malformed_url: str) -> None:
+    """Codex 019e2a5c REVISE absorb: ``urlparse`` / ``.port`` ``ValueError``s
+    must surface as :class:`ConfigError`, not leak raw stdlib exceptions
+    that would break the CLI's ``EX_USAGE=64`` contract.
+    """
+    with pytest.raises(ConfigError):
+        Config.from_env({"SCHEMA_SERVICE_URL": malformed_url})
+
+
 # ---- timeout validation ---------------------------------------------------
 
 

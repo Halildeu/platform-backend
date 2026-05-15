@@ -118,15 +118,37 @@ def _validate_url(raw: str) -> str:
 
     Accepts ``http://`` / ``https://`` schemes only, rejects embedded
     credentials (those belong in ``SCHEMA_SERVICE_INTERNAL_API_KEY``),
-    requires a non-empty host, and strips a trailing slash so the
-    resulting URL composes cleanly with ``snapshot_path``.
+    requires a non-empty host, validates the port range, and strips a
+    trailing slash so the resulting URL composes cleanly with
+    ``snapshot_path``.
+
+    Codex 019e2a5c REVISE absorb: malformed URLs that
+    :func:`urllib.parse.urlparse` rejects with ``ValueError`` (e.g.
+    unbracketed-IPv6 ``http://[::1`` or non-numeric port
+    ``http://host:badport``) must surface as :class:`ConfigError`
+    rather than leak the raw stdlib exception — otherwise the CLI
+    `EX_USAGE=64` contract is broken.
     """
-    parsed = urlparse(raw)
+    try:
+        parsed = urlparse(raw)
+    except ValueError as exc:
+        raise ConfigError("SCHEMA_SERVICE_URL is not a valid URL") from exc
     if parsed.scheme not in {"http", "https"}:
         raise ConfigError(
             "SCHEMA_SERVICE_URL must be an http:// or https:// URL"
         )
-    if not parsed.hostname:
+    # Touching ``hostname`` and ``port`` after a successful ``urlparse``
+    # can still raise ``ValueError`` for some malformed inputs (e.g.
+    # ``http://host:badport`` only validates the port lazily). Trap
+    # both here so the CLI keeps its typed-error contract.
+    try:
+        hostname = parsed.hostname
+        _ = parsed.port  # property-side validation of numeric / range
+    except ValueError as exc:
+        raise ConfigError(
+            "SCHEMA_SERVICE_URL has an invalid host or port"
+        ) from exc
+    if not hostname:
         raise ConfigError("SCHEMA_SERVICE_URL is missing a host")
     if parsed.username or parsed.password:
         raise ConfigError(
