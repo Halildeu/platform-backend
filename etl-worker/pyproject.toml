@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "etl-worker"
-version = "0.6.0"
+version = "0.7.0"
 description = "Workcube reporting ETL worker — schema-service contract consumer. Adım 12 (reporting refactor plan)."
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
@@ -55,34 +55,36 @@ select = [
     "RUF", # ruff-specific
 ]
 
-# RUF002 — "Ambiguous Latin small letter dotless I (ı)" — applies only
-# to docstrings that cite the Turkish "Adım" plan section markers from
-# docs/plan-reporting-refactor-2026-05-14.md (in platform-k8s-gitops).
-# CLAUDE.md mandates Turkish user-facing prose, and the plan markers
+# RUF001 / RUF002 / RUF003 — "Ambiguous unicode character" in
+# strings / docstrings / comments respectively. These fire on the
+# Turkish dotless-i in the "Adım" plan section markers from
+# docs/plan-reporting-refactor-2026-05-14.md (in platform-k8s-gitops)
+# and on the prime char in Codex verdict labels like "Opt-B prime".
+# CLAUDE.md mandates Turkish user-facing prose and the plan markers
 # are canonical, so per-file scope keeps the linter useful elsewhere
 # without anglicizing plan section names.
 [tool.ruff.lint.per-file-ignores]
-"etl_worker/__init__.py" = ["RUF001", "RUF002"]
-"etl_worker/audit.py" = ["RUF001", "RUF002"]
-"etl_worker/checkpoint.py" = ["RUF001", "RUF002"]
-"etl_worker/cli.py" = ["RUF001", "RUF002"]
-"etl_worker/config.py" = ["RUF001", "RUF002"]
-"etl_worker/contracts.py" = ["RUF001", "RUF002"]
-"etl_worker/db.py" = ["RUF001", "RUF002"]
-"etl_worker/pg_writer.py" = ["RUF001", "RUF002"]
-"etl_worker/retry.py" = ["RUF001", "RUF002"]
-"etl_worker/runner.py" = ["RUF001", "RUF002"]
-"etl_worker/schema_service_client.py" = ["RUF001", "RUF002"]
-"tests/test_audit.py" = ["RUF001", "RUF002"]
-"tests/test_checkpoint.py" = ["RUF001", "RUF002"]
-"tests/test_cli.py" = ["RUF001", "RUF002"]
-"tests/test_cli_run.py" = ["RUF001", "RUF002"]
-"tests/test_config.py" = ["RUF001", "RUF002"]
-"tests/test_db.py" = ["RUF001", "RUF002"]
-"tests/test_pg_writer.py" = ["RUF001", "RUF002"]
-"tests/test_retry.py" = ["RUF001", "RUF002"]
-"tests/test_runner.py" = ["RUF001", "RUF002"]
-"tests/test_schema_service_client.py" = ["RUF001", "RUF002"]
+"etl_worker/__init__.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/audit.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/checkpoint.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/cli.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/config.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/contracts.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/db.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/pg_writer.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/retry.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/runner.py" = ["RUF001", "RUF002", "RUF003"]
+"etl_worker/schema_service_client.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_audit.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_checkpoint.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_cli.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_cli_run.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_config.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_db.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_pg_writer.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_retry.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_runner.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/test_schema_service_client.py" = ["RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.12"

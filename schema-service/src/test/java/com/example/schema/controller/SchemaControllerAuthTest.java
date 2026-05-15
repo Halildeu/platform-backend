@@ -58,7 +58,8 @@ class SchemaControllerAuthTest {
                 mock(com.example.schema.service.PathFinderService.class),
                 mock(com.example.schema.service.SchemaHealthService.class),
                 mock(com.example.schema.service.SchemaDriftService.class),
-                mock(com.example.schema.service.QuerySuggestionService.class));
+                mock(com.example.schema.service.QuerySuggestionService.class),
+                mock(com.example.schema.service.ReportingContractService.class));
         ReflectionTestUtils.setField(controller, "defaultSchema", "workcube_mikrolink");
         ReflectionTestUtils.setField(controller, "cacheTtlMinutes", 60);
     }

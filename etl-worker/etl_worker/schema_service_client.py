@@ -70,7 +70,15 @@ is a deliberate, version-controlled action — see
 :class:`SchemaContractVersionMismatch` for rationale.
 """
 
-DEFAULT_SNAPSHOT_PATH = "/api/v1/schema/snapshot"
+# Adım 12 PR-4a (Codex 019e2d64 plan-time AGREE, Opt-B′): the worker
+# targets the dedicated ``/reporting-contract`` endpoint, NOT the
+# legacy ``/snapshot``. The legacy endpoint still serves the frontend
+# + report-service with the camelCase / tables-map / dataType shape;
+# ``/reporting-contract`` emits the snake_case / tables-list / type
+# allowlist-filtered contract this client parses. Operators can
+# override via ``SCHEMA_SERVICE_SNAPSHOT_PATH`` if a future endpoint
+# rename happens, but the default points at the live target contract.
+DEFAULT_SNAPSHOT_PATH = "/api/v1/schema/reporting-contract"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key"
 """Mirrors ``SchemaController.INTERNAL_API_KEY_HEADER`` on the
@@ -186,7 +194,13 @@ class SchemaServiceClient:
         self._internal_api_key = internal_api_key
 
     def fetch_snapshot(self, *, schema: str | None = None) -> SchemaSnapshot:
-        """Issue ``GET <base_url>/api/v1/schema/snapshot[?schema=…]`` and parse.
+        """Issue ``GET <base_url><snapshot_path>[?schema=…]`` and parse.
+
+        ``snapshot_path`` defaults to
+        :data:`DEFAULT_SNAPSHOT_PATH` (``/api/v1/schema/reporting-contract``)
+        but is overridable via the constructor / the
+        ``SCHEMA_SERVICE_SNAPSHOT_PATH`` env (see
+        :class:`etl_worker.config.Config`).
 
         Parameters
         ----------

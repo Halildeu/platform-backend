@@ -28,6 +28,13 @@ Environment variables consumed:
   versions the worker accepts. Default ``"1"`` matching
   :data:`etl_worker.schema_service_client.SUPPORTED_CONTRACT_VERSION`.
   Whitespace around each entry is trimmed; empty values reject.
+* ``SCHEMA_SERVICE_SNAPSHOT_PATH`` — optional. The HTTP path appended
+  to ``SCHEMA_SERVICE_URL`` for the snapshot fetch. Default
+  :data:`~etl_worker.schema_service_client.DEFAULT_SNAPSHOT_PATH`
+  (``/api/v1/schema/reporting-contract`` — the Adım 12 target-contract
+  endpoint). Must be an absolute path: it has to start with ``/`` and
+  must NOT carry a query string (the ``?schema=`` selector is appended
+  separately by the client). Blank falls back to the default.
 
 reports_db (PR-3a) — when the operator opts into ``--reports-db postgres``
 the CLI requires a full :class:`ReportsDbConfig`. All five core fields
@@ -68,7 +75,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from .schema_service_client import SUPPORTED_CONTRACT_VERSION
+from .schema_service_client import DEFAULT_SNAPSHOT_PATH, SUPPORTED_CONTRACT_VERSION
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
 """CLI default when ``SCHEMA_SERVICE_TIMEOUT_SECONDS`` is unset."""
@@ -110,6 +117,7 @@ class Config:
     schema_service_timeout_seconds: float
     schema_service_schema: str | None
     schema_service_contract_versions: tuple[str, ...]
+    schema_service_snapshot_path: str = DEFAULT_SNAPSHOT_PATH
     reports_db: ReportsDbConfig | None = None
 
     @classmethod
@@ -152,6 +160,8 @@ class Config:
 
         versions = _parse_contract_versions(source.get("SCHEMA_SERVICE_CONTRACT_VERSIONS"))
 
+        snapshot_path = _parse_snapshot_path(source.get("SCHEMA_SERVICE_SNAPSHOT_PATH"))
+
         reports_db = _parse_reports_db(source)
 
         return cls(
@@ -160,6 +170,7 @@ class Config:
             schema_service_timeout_seconds=timeout,
             schema_service_schema=schema,
             schema_service_contract_versions=versions,
+            schema_service_snapshot_path=snapshot_path,
             reports_db=reports_db,
         )
 
@@ -346,6 +357,38 @@ def _parse_optional_connect_timeout(raw: str | None) -> float | None:
             "REPORTS_DB_CONNECT_TIMEOUT_SECONDS must be a positive finite number"
         )
     return value
+
+
+def _parse_snapshot_path(raw: str | None) -> str:
+    """Parse ``SCHEMA_SERVICE_SNAPSHOT_PATH`` (absolute path, no query).
+
+    Codex ``019e2d64`` PR-4a plan-time AGREE: the path must be an
+    absolute path (starts with ``/``) and must NOT carry a query
+    string — the ``?schema=`` selector is appended separately by
+    :meth:`~etl_worker.schema_service_client.SchemaServiceClient.fetch_snapshot`.
+    A query string baked into the path would produce a malformed
+    ``...?schema=...?schema=...`` URL.
+
+    ``None`` (unset) and an empty / whitespace string fall back to
+    :data:`~etl_worker.schema_service_client.DEFAULT_SNAPSHOT_PATH`.
+    """
+    if raw is None:
+        return DEFAULT_SNAPSHOT_PATH
+    stripped = raw.strip()
+    if stripped == "":
+        return DEFAULT_SNAPSHOT_PATH
+    if not stripped.startswith("/"):
+        raise ConfigError(
+            "SCHEMA_SERVICE_SNAPSHOT_PATH must be an absolute path "
+            "starting with '/'"
+        )
+    if "?" in stripped or "#" in stripped:
+        raise ConfigError(
+            "SCHEMA_SERVICE_SNAPSHOT_PATH must not contain a query "
+            "string or fragment — the ?schema= selector is appended "
+            "by the client"
+        )
+    return stripped
 
 
 def _parse_contract_versions(raw: str | None) -> tuple[str, ...]:

@@ -121,7 +121,7 @@ def test_fetch_snapshot_200_parses_full_payload() -> None:
     assert company.columns[0].nullable is False
 
     # URL composed from base_url + default snapshot path
-    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/snapshot"
+    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/reporting-contract"
     assert transport.last_timeout == 2.0
 
 
@@ -134,7 +134,7 @@ def test_fetch_snapshot_base_url_trailing_slash_normalised() -> None:
 
     client.fetch_snapshot()
 
-    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/snapshot"
+    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/reporting-contract"
 
 
 def test_fetch_snapshot_ignores_unknown_top_level_keys() -> None:
@@ -349,7 +349,7 @@ def test_fetch_snapshot_without_schema_omits_query_string() -> None:
 
     _client(transport).fetch_snapshot()
 
-    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/snapshot"
+    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/reporting-contract"
 
 
 def test_fetch_snapshot_with_schema_appends_query_param() -> None:
@@ -359,7 +359,7 @@ def test_fetch_snapshot_with_schema_appends_query_param() -> None:
     _client(transport).fetch_snapshot(schema="workcube_mikrolink_2025")
 
     assert transport.last_url == (
-        "http://schema-service.test:8096/api/v1/schema/snapshot"
+        "http://schema-service.test:8096/api/v1/schema/reporting-contract"
         "?schema=workcube_mikrolink_2025"
     )
 
@@ -371,6 +371,43 @@ def test_fetch_snapshot_with_schema_url_encodes_special_characters() -> None:
     _client(transport).fetch_snapshot(schema="schema with spaces")
 
     assert transport.last_url == (
-        "http://schema-service.test:8096/api/v1/schema/snapshot"
+        "http://schema-service.test:8096/api/v1/schema/reporting-contract"
         "?schema=schema+with+spaces"
+    )
+
+
+# ---- snapshot_path override (PR-4a) -------------------------------------
+
+
+def test_fetch_snapshot_honours_explicit_snapshot_path() -> None:
+    """An explicit ``snapshot_path`` constructor argument overrides the
+    default ``/api/v1/schema/reporting-contract`` — used by the CLI to
+    forward ``SCHEMA_SERVICE_SNAPSHOT_PATH``."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+    client = SchemaServiceClient(
+        base_url="http://schema-service.test:8096",
+        transport=transport,
+        snapshot_path="/api/v1/schema/snapshot",
+    )
+
+    client.fetch_snapshot()
+
+    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/snapshot"
+
+
+def test_fetch_snapshot_explicit_path_still_appends_schema_query() -> None:
+    """The ``?schema=`` selector is appended to whatever ``snapshot_path``
+    is configured."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+    client = SchemaServiceClient(
+        base_url="http://schema-service.test:8096",
+        transport=transport,
+        snapshot_path="/custom/reporting/path",
+    )
+
+    client.fetch_snapshot(schema="workcube_mikrolink_2025")
+
+    assert transport.last_url == (
+        "http://schema-service.test:8096/custom/reporting/path"
+        "?schema=workcube_mikrolink_2025"
     )
