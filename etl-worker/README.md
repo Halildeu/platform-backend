@@ -118,7 +118,6 @@ etl-worker/
 │   ├── contracts.py             # SchemaSnapshot / TableSpec / ColumnSpec dataclasses
 │   └── schema_service_client.py # SchemaServiceClient + typed exceptions
 └── tests/
-    ├── __init__.py
     └── test_schema_service_client.py
 ```
 
