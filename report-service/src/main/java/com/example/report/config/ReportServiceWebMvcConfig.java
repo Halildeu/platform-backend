@@ -18,6 +18,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *   <tr><td>{@code /api/v1/reports/&#42;/data}</td><td>YES</td><td>Row execution</td></tr>
  *   <tr><td>{@code /api/v1/reports/&#42;/query}</td><td>YES</td><td>Ad-hoc execution</td></tr>
  *   <tr><td>{@code /api/v1/reports/&#42;/export}</td><td>YES</td><td>Bulk row export</td></tr>
+ *   <tr><td>{@code /api/v1/reports/&#42;/filter-values}</td><td>YES</td><td>PR-0.5c distinct values (row-derived)</td></tr>
  *   <tr><td>{@code /api/v1/reports}</td><td>NO</td><td>Catalog list</td></tr>
  *   <tr><td>{@code /api/v1/reports/&#42;/metadata}</td><td>NO</td><td>Schema-only metadata</td></tr>
  *   <tr><td>{@code /api/v1/reports/&#42;/history}</td><td>NO</td><td>Definition history</td></tr>
@@ -49,7 +50,13 @@ public class ReportServiceWebMvcConfig implements WebMvcConfigurer {
                 .addPathPatterns(
                         "/api/v1/reports/*/data",
                         "/api/v1/reports/*/query",
-                        "/api/v1/reports/*/export"
+                        "/api/v1/reports/*/export",
+                        // PR-0.5c (Codex thread 019e2d54): distinct values
+                        // are row-derived; the same tenant/RLS/auth chain
+                        // that protects /data and /query must guard this
+                        // path. Codex blocker — endpoint cannot ship as a
+                        // metadata-class bypass.
+                        "/api/v1/reports/*/filter-values"
                 );
     }
 }

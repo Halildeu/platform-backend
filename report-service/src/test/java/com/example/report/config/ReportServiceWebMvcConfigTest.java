@@ -37,7 +37,10 @@ class ReportServiceWebMvcConfigTest {
         assertThat(patterns).containsExactlyInAnyOrder(
                 "/api/v1/reports/*/data",
                 "/api/v1/reports/*/query",
-                "/api/v1/reports/*/export"
+                "/api/v1/reports/*/export",
+                // PR-0.5c (Codex 019e2d54): filter-values is row-derived
+                // → guarded execution path, not metadata-class bypass.
+                "/api/v1/reports/*/filter-values"
         );
     }
 
@@ -46,13 +49,16 @@ class ReportServiceWebMvcConfigTest {
         String[] patterns = {
                 "/api/v1/reports/*/data",
                 "/api/v1/reports/*/query",
-                "/api/v1/reports/*/export"
+                "/api/v1/reports/*/export",
+                "/api/v1/reports/*/filter-values"
         };
         MappedInterceptor mapped = new MappedInterceptor(patterns, mock(TenantBoundaryGuard.class));
 
         assertThat(mapped.matches(req("/api/v1/reports/satis-ozet/data"))).isTrue();
         assertThat(mapped.matches(req("/api/v1/reports/satis-ozet/query"))).isTrue();
         assertThat(mapped.matches(req("/api/v1/reports/satis-ozet/export"))).isTrue();
+        // PR-0.5c: set filter dynamic values endpoint is guarded.
+        assertThat(mapped.matches(req("/api/v1/reports/satis-ozet/filter-values"))).isTrue();
     }
 
     @Test
@@ -60,7 +66,8 @@ class ReportServiceWebMvcConfigTest {
         String[] patterns = {
                 "/api/v1/reports/*/data",
                 "/api/v1/reports/*/query",
-                "/api/v1/reports/*/export"
+                "/api/v1/reports/*/export",
+                "/api/v1/reports/*/filter-values"
         };
         MappedInterceptor mapped = new MappedInterceptor(patterns, mock(TenantBoundaryGuard.class));
 
