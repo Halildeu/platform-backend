@@ -130,6 +130,9 @@ def call_with_retry[T](
     retryable: type[BaseException] | tuple[type[BaseException], ...],
     policy: RetryPolicy,
     sleeper: Sleeper,
+    on_attempt: Callable[[int], None] | None = None,
+    on_failure: Callable[[int, BaseException, bool], None] | None = None,
+    on_success: Callable[[int, T], None] | None = None,
 ) -> tuple[T, int]:
     """Invoke ``operation`` honouring ``policy``; return ``(result, attempts)``.
 
@@ -141,6 +144,20 @@ def call_with_retry[T](
     error. Non-retryable exceptions propagate immediately on the very
     first occurrence.
 
+    Optional callbacks let observers (e.g. the audit trail in
+    :mod:`etl_worker.audit`) react to attempt boundaries without
+    coupling this helper to any specific event vocabulary:
+
+    * ``on_attempt(attempt)`` — fired once per attempt *after* any
+      backoff sleep, *before* invoking ``operation``.
+    * ``on_failure(attempt, error, will_retry)`` — fired when the
+      operation raises. ``will_retry`` is ``True`` if the error is in
+      ``retryable`` *and* attempts remain; ``False`` for terminal
+      failures (non-retryable type) and for the final exhausted
+      retryable failure that will re-raise.
+    * ``on_success(attempt, result)`` — fired exactly once just
+      before returning a successful result.
+
     Tests inject a :class:`FakeSleeper` so this loop never actually
     blocks on ``time.sleep``.
     """
@@ -149,10 +166,24 @@ def call_with_retry[T](
         delay = policy.delay_for_attempt(attempt)
         if delay > 0:
             sleeper.sleep(delay)
+        if on_attempt is not None:
+            on_attempt(attempt)
         try:
-            return operation(), attempt
+            result = operation()
         except retryable as exc:
             last_error = exc
+            will_retry = attempt < policy.max_attempts
+            if on_failure is not None:
+                on_failure(attempt, exc, will_retry)
+            if not will_retry:
+                break
             continue
+        except BaseException as exc:
+            if on_failure is not None:
+                on_failure(attempt, exc, False)
+            raise
+        if on_success is not None:
+            on_success(attempt, result)
+        return result, attempt
     assert last_error is not None  # pragma: no cover - max_attempts >= 1 guarantees a try
     raise last_error
