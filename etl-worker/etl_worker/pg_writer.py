@@ -53,6 +53,7 @@ read once at construction.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import re
 from collections.abc import Callable
@@ -159,14 +160,23 @@ def _default_connect_factory(
 ) -> _Connection:
     """Default production factory backed by :func:`psycopg.connect`.
 
-    Imports psycopg lazily so the package stays importable on
-    machines without ``libpq`` (dev / lint / unit-test environments
-    using only the in-memory fake). Failure to import surfaces as a
-    :class:`ReportsDbWriteError` at construction time of the first
-    real call rather than at module import time.
+    Imports psycopg lazily via :func:`importlib.import_module` so the
+    package stays importable on machines without ``libpq`` (dev / lint
+    environments using only the fake) AND mypy strict mode does not
+    need a ``type: ignore[import-not-found]`` on systems where psycopg
+    *is* installed.
+
+    :func:`importlib.import_module` returns ``ModuleType``; attribute
+    access on it is ``Any`` by design, so neither the lookup of
+    ``psycopg.connect`` nor the return value need a strict-mode
+    suppression.
+
+    Failure to import surfaces as :class:`ReportsDbWriteError` at the
+    first real call (lazy), not at module import time, so the rest of
+    the package stays usable when psycopg is intentionally absent.
     """
     try:
-        import psycopg  # type: ignore[import-not-found]
+        psycopg = importlib.import_module("psycopg")
     except ImportError as exc:  # pragma: no cover - exercised only when psycopg missing
         raise ReportsDbWriteError(
             "psycopg is not installed — reinstall etl-worker with the "
@@ -184,7 +194,8 @@ def _default_connect_factory(
         kwargs["sslmode"] = sslmode
     if connect_timeout is not None:
         kwargs["connect_timeout"] = connect_timeout
-    return psycopg.connect(**kwargs)  # type: ignore[no-any-return]
+    connection: _Connection = psycopg.connect(**kwargs)
+    return connection
 
 
 class PgReportsDbWriter:
