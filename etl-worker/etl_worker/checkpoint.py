@@ -181,6 +181,38 @@ def _parse_checkpoint(payload: dict[str, object], *, source: str) -> Checkpoint:
     )
 
 
+_SIGNATURE_FIELDS = (
+    "contract_version",
+    "allowlist_name",
+    "allowlist_version",
+    "table_count",
+    "column_count",
+)
+"""Whitelist of summary fields that contribute to ``snapshot_signature``.
+
+Codex 019e2a5c REVISE absorb: the signature must be **content-only**
+— a retry-recovered run that ended up with the same fetched data
+should hash identically to a first-attempt-success on the same
+content. Retry telemetry (``attempts``) belongs to
+:attr:`Checkpoint.last_successful_attempt`, not the signature.
+"""
+
+
+def snapshot_signature_for_summary(summary: dict[str, object]) -> str:
+    """Compute the canonical-JSON SHA-256 over the content-only subset.
+
+    Public helper so the runner can compute the signature once and
+    forward it both to the DB writer (idempotency key) and the
+    checkpoint (operator correlation). The :data:`_SIGNATURE_FIELDS`
+    whitelist guarantees retry telemetry never contaminates the hash.
+    """
+    canonical_input = {
+        key: summary[key] for key in _SIGNATURE_FIELDS if key in summary
+    }
+    canonical = json.dumps(canonical_input, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def build_checkpoint(
     *,
     run_id: str,
@@ -189,17 +221,14 @@ def build_checkpoint(
 ) -> Checkpoint:
     """Compose a :class:`Checkpoint` from the runner's success summary.
 
-    ``snapshot_signature`` is a deterministic SHA-256 of the canonical
-    JSON encoding of ``summary``. The canonical form sorts keys, uses
-    compact separators, and omits whitespace so two runs that produced
-    the same summary always emit the same signature.
+    ``snapshot_signature`` is computed via
+    :func:`snapshot_signature_for_summary` — see that helper for the
+    content-only field whitelist.
     """
-    canonical = json.dumps(summary, separators=(",", ":"), sort_keys=True)
-    signature = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return Checkpoint(
         schema_version=SCHEMA_VERSION,
         run_id=run_id,
         last_successful_attempt=last_successful_attempt,
-        snapshot_signature=signature,
+        snapshot_signature=snapshot_signature_for_summary(summary),
         written_at=now_isoformat(),
     )

@@ -41,7 +41,7 @@ import uuid
 from dataclasses import dataclass
 
 from .audit import AuditWriter, build_event
-from .checkpoint import CheckpointFile, build_checkpoint
+from .checkpoint import CheckpointFile, build_checkpoint, snapshot_signature_for_summary
 from .db import ReportsDbWriteError, ReportsDbWriter
 from .retry import RetryPolicy, Sleeper, call_with_retry
 from .schema_service_client import (
@@ -121,12 +121,14 @@ def run_fetch(
         audit.write(build_event(run_id=rid, event="run_started"))
 
     # Resume cursor surface (PR-2b2b): load + emit ``checkpoint_loaded``
-    # but never short-circuit fetch/apply. Codex 019e2a5c explicitly
-    # rejected TTL- and signature-based skip semantics until DB writer
-    # idempotency proves a row has actually been applied.
-    if resume and checkpoint is not None and audit is not None:
+    # but never short-circuit fetch/apply. Codex 019e2a5c REVISE absorb:
+    # load is **not** gated on the audit writer — operators relying on
+    # corrupt-checkpoint detection must see a ``CheckpointError`` even
+    # without ``--audit-path``. The audit event is best-effort
+    # telemetry on top of that.
+    if resume and checkpoint is not None:
         loaded = checkpoint.load()
-        if loaded is not None:
+        if loaded is not None and audit is not None:
             audit.write(
                 build_event(
                     run_id=rid,
@@ -217,6 +219,14 @@ def run_fetch(
         "column_count": column_count,
     }
 
+    # Compute the content-only snapshot signature once: shared by the
+    # DB writer (idempotency key) and the checkpoint (operator
+    # correlation). Codex 019e2a5c REVISE absorb: the signature is
+    # NOT computed inside ``build_checkpoint`` from the full summary
+    # because that would mix retry telemetry into the hash.
+    signature = snapshot_signature_for_summary(summary)
+    db_request_summary = {**summary, "snapshot_signature": signature}
+
     # PR-2b2b/2b3 transaction boundary: DB upsert happens BEFORE the
     # checkpoint write so we never persist "applied through this point"
     # without an actually applied row. ``db_writer=None`` keeps PR-2b1
@@ -228,10 +238,11 @@ def run_fetch(
                     run_id=rid,
                     event="db_upsert_started",
                     attempt=attempts,
+                    extra={"snapshot_signature": signature},
                 )
             )
         try:
-            result = db_writer.upsert(dict(summary))
+            result = db_writer.upsert(db_request_summary)
         except ReportsDbWriteError as exc:
             if audit is not None:
                 audit.write(

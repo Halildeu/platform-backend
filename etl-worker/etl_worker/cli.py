@@ -461,6 +461,17 @@ def _handle_run(
             print(f"etl-worker: audit error: {exc}", file=err)
             return EX_SOFTWARE
 
+    # Codex 019e2a5c REVISE absorb: ``--resume`` without
+    # ``--checkpoint-path`` is a misinvocation; fail-closed with
+    # ``EX_USAGE=64`` so the operator sees the contract drift before
+    # any side effect.
+    if args.resume and args.checkpoint_path is None:
+        print(
+            "etl-worker: usage: --resume requires --checkpoint-path",
+            file=err,
+        )
+        return EX_USAGE
+
     # Build the checkpoint file when the operator asks for one. Same
     # OSError-handling discipline as the audit writer: typed
     # ``EX_SOFTWARE`` exit + one-line stderr on construction failure.
@@ -514,8 +525,11 @@ def _handle_run(
         # Audit/checkpoint sink failure during a write surfaces as
         # ``OSError``; trap with ``EX_SOFTWARE`` so the CLI never leaks
         # a traceback. (The construction-time variant is already
-        # handled above where the sink is built.)
-        print(f"etl-worker: audit error: {exc}", file=err)
+        # handled above where the sink is built.) Codex 019e2a5c
+        # REVISE absorb: use a neutral "persistence error" label rather
+        # than "audit error" so a checkpoint write failure is not
+        # mis-reported as an audit failure to the operator.
+        print(f"etl-worker: persistence error: {exc}", file=err)
         return EX_SOFTWARE
 
     summary = dict(result.summary)
