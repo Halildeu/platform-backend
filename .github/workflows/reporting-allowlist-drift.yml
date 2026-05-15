@@ -1,0 +1,48 @@
+name: Reporting Allowlist Drift Guard
+
+# Adım 12 PR-4a follow-up — Codex `019e2d64` S3 + REVISE.
+#
+# The Workcube reporting source-table allowlist (40-table V1 set)
+# is mirrored across two modules:
+#   - report-service  ReportingAllowlist.V1
+#   - schema-service   SchemaReportingAllowlist.V1
+# schema-service is standalone-built and must NOT depend on
+# report-service, so the mirror is intentional. This gate hard-fails
+# on ANY drift between the two sets (exact two-way equality) plus the
+# schema-service NAME/VERSION contract constants.
+#
+# Deliberately NOT path-filtered (Codex REVISE): the script is
+# milliseconds of work, and a path-filtered *required* check risks the
+# GitHub "missing/pending" merge-block trap on unrelated PRs. Run it
+# on every PR + main push.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reporting-allowlist-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift-guard:
+    name: Reporting allowlist mirror drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check reporting allowlist mirror drift
+        run: python .github/scripts/check_reporting_allowlist_drift.py
