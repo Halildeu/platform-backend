@@ -48,6 +48,13 @@ public class SecurityConfig {
                     // preserves existing JWT-only frontend access. NetworkPolicy
                     // ensures in-cluster only.
                     .requestMatchers(AntPathRequestMatcher.antMatcher("/api/v1/schema/snapshot")).permitAll()
+                    // Adım 12 reporting refactor (2026-05-15): etl-worker
+                    // target-contract endpoint. Same internal-key model as
+                    // /snapshot — the SchemaController applies the
+                    // X-Internal-Api-Key guard (empty-key dev/test
+                    // fallback). NetworkPolicy keeps it in-cluster only.
+                    // Codex 019e2d64 plan-time AGREE (Opt-B′).
+                    .requestMatchers(AntPathRequestMatcher.antMatcher("/api/v1/schema/reporting-contract")).permitAll()
                     .anyRequest().authenticated()
             )
             .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> {}));

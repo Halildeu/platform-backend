@@ -78,6 +78,7 @@ class _ClientFactory(Protocol):
         timeout: float,
         supported_versions: tuple[str, ...],
         internal_api_key: str | None,
+        snapshot_path: str,
     ) -> SchemaServiceClient:  # pragma: no cover - protocol
         ...
 
@@ -88,12 +89,14 @@ def _default_client_factory(
     timeout: float,
     supported_versions: tuple[str, ...],
     internal_api_key: str | None,
+    snapshot_path: str,
 ) -> SchemaServiceClient:
     return SchemaServiceClient(
         base_url=base_url,
         timeout=timeout,
         supported_versions=supported_versions,
         internal_api_key=internal_api_key,
+        snapshot_path=snapshot_path,
     )
 
 
@@ -415,6 +418,7 @@ def main(
         timeout=timeout_override,
         supported_versions=config.schema_service_contract_versions,
         internal_api_key=config.schema_service_internal_api_key,
+        snapshot_path=config.schema_service_snapshot_path,
     )
 
     if args.command == "fetch-snapshot":

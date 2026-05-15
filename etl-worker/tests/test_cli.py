@@ -43,6 +43,7 @@ class _FakeClient:
         timeout: float,
         supported_versions: tuple[str, ...],
         internal_api_key: str | None,
+        snapshot_path: str = "/api/v1/schema/reporting-contract",
         snapshot: SchemaSnapshot | None = None,
         raise_exc: Exception | None = None,
     ) -> None:
@@ -50,6 +51,7 @@ class _FakeClient:
         self.timeout = timeout
         self.supported_versions = supported_versions
         self.internal_api_key = internal_api_key
+        self.snapshot_path = snapshot_path
         self._snapshot = snapshot
         self._raise = raise_exc
         self.last_schema: str | None = None
@@ -75,12 +77,14 @@ def _factory(
         timeout: float,
         supported_versions: tuple[str, ...],
         internal_api_key: str | None,
+        snapshot_path: str,
     ) -> _FakeClient:
         client = _FakeClient(
             base_url,
             timeout=timeout,
             supported_versions=supported_versions,
             internal_api_key=internal_api_key,
+            snapshot_path=snapshot_path,
             snapshot=snapshot,
             raise_exc=raise_exc,
         )
@@ -182,6 +186,57 @@ def test_env_contract_versions_csv_is_propagated() -> None:
     )
 
     assert captured[0].supported_versions == ("1", "2")
+
+
+def test_default_snapshot_path_is_reporting_contract() -> None:
+    """PR-4a: the worker targets /reporting-contract by default, not the
+    legacy /snapshot endpoint."""
+    captured, factory = _factory(snapshot=_good_snapshot())
+
+    code = main(
+        ["fetch-snapshot"],
+        env=_good_env(),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+    )
+
+    assert code == EX_OK
+    assert captured[0].snapshot_path == "/api/v1/schema/reporting-contract"
+
+
+def test_env_snapshot_path_override_is_forwarded_to_client() -> None:
+    """SCHEMA_SERVICE_SNAPSHOT_PATH override flows through Config → factory."""
+    captured, factory = _factory(snapshot=_good_snapshot())
+
+    code = main(
+        ["fetch-snapshot"],
+        env=_good_env(SCHEMA_SERVICE_SNAPSHOT_PATH="/api/v1/schema/snapshot"),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+        client_factory=factory,
+    )
+
+    assert code == EX_OK
+    assert captured[0].snapshot_path == "/api/v1/schema/snapshot"
+
+
+def test_invalid_snapshot_path_maps_to_64_usage() -> None:
+    """A relative SCHEMA_SERVICE_SNAPSHOT_PATH is a config error → EX_USAGE."""
+    captured, factory = _factory(snapshot=_good_snapshot())
+    err = io.StringIO()
+
+    code = main(
+        ["fetch-snapshot"],
+        env=_good_env(SCHEMA_SERVICE_SNAPSHOT_PATH="relative/no/leading/slash"),
+        stdout=io.StringIO(),
+        stderr=err,
+        client_factory=factory,
+    )
+
+    assert code == EX_USAGE
+    assert "config error" in err.getvalue()
+    assert captured == []  # client never constructed
 
 
 # ---- override precedence -------------------------------------------------

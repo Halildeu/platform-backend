@@ -20,8 +20,9 @@ subsequent PRs.
 | PR-2b2a | Audit log foundation (`JsonLinesAuditWriter`, 6-event vocabulary, atomic append) | ✅ merged ([#210](https://github.com/Halildeu/platform-backend/pull/210)) |
 | PR-2b2b / PR-2b3 | Checkpoint file (atomic write + content-only signature) + `ReportsDbWriter` Protocol + transaction boundary | ✅ merged ([#211](https://github.com/Halildeu/platform-backend/pull/211)) |
 | PR-3a | `PgReportsDbWriter` (psycopg) + `REPORTS_DB_*` config + `--reports-db` CLI fail-closed switch | ✅ merged ([#212](https://github.com/Halildeu/platform-backend/pull/212)) |
-| PR-3b | Dockerfile (multi-stage Python 3.12 slim) + GHCR image build/push workflow + container smoke gates | this PR |
-| PR-3c | platform-k8s-gitops manifest update with immutable digest pin from PR-3b output | pending |
+| PR-3b | Dockerfile (multi-stage Python 3.12 slim) + GHCR image build/push workflow + container smoke gates | ✅ merged ([#217](https://github.com/Halildeu/platform-backend/pull/217)) |
+| PR-3c | platform-k8s-gitops manifest update with immutable digest pin | ✅ merged ([platform-k8s-gitops#706](https://github.com/Halildeu/platform-k8s-gitops/pull/706)) |
+| PR-4a | schema-service `/api/v1/schema/reporting-contract` endpoint emits the target contract + etl-worker default snapshot path migration (`SCHEMA_SERVICE_SNAPSHOT_PATH`) | this PR |
 | PR-4 | Live smoke against testai schema-service + reports DB writes | pending (operator gate) |
 
 ## PR-2a — CLI usage (this slice)
@@ -45,6 +46,7 @@ Environment variables (`Config.from_env()`):
 | `SCHEMA_SERVICE_TIMEOUT_SECONDS` | — | `10` | Positive float |
 | `SCHEMA_SERVICE_SCHEMA` | — | unset | Default for `?schema=` selector; `--schema` CLI flag overrides |
 | `SCHEMA_SERVICE_CONTRACT_VERSIONS` | — | `1` | CSV of accepted versions, e.g. `1,2` |
+| `SCHEMA_SERVICE_SNAPSHOT_PATH` | — | `/api/v1/schema/reporting-contract` | Absolute path (must start with `/`, no query string); the Adım 12 target-contract endpoint |
 
 Success output: one-line JSON on stdout
 
@@ -62,11 +64,11 @@ Error output: one-line human-readable message on stderr + sysexits-style exit co
 | `75` | `EX_TEMPFAIL` | 5xx response or transport-level outage | Retry with backoff |
 | `76` | `EX_PROTOCOL` | `contract_version` not in `SCHEMA_SERVICE_CONTRACT_VERSIONS` | Abort — operator must reconcile |
 
-> The command validates the **Adım 12 target contract**; live wiring
-> against the production schema-service shape waits for the
-> schema-service target-shape PR (`version` → `contract_version`,
-> `tables` Map → list, `dataType` → `type`, plus
-> `allowlist_name` / `allowlist_version` emission).
+> The command validates the **Adım 12 target contract**. As of PR-4a
+> schema-service emits that contract from a dedicated endpoint —
+> `GET /api/v1/schema/reporting-contract` — which is now the default
+> `SCHEMA_SERVICE_SNAPSHOT_PATH`. The legacy `/api/v1/schema/snapshot`
+> is untouched (still serves the frontend + report-service).
 
 ## PR-2b1 — `run` subcommand (retry foundation)
 
@@ -105,36 +107,34 @@ Exit codes reuse the PR-2a matrix; `EX_TEMPFAIL` (`75`) signals
 - Dockerfile + K8s Job — PR-3
 - Live smoke against testai — PR-4
 
-## Target contract — *not* the current schema-service response
+## Target contract — `/api/v1/schema/reporting-contract`
 
-> Codex thread `019e2a5c` post-impl review explicitly called this out as
-> a blocker: the consumer side must not pretend it mirrors today's
-> schema-service shape.
+As of **PR-4a** schema-service emits the Adım 12 target contract from
+a dedicated endpoint. Two endpoints now coexist:
 
-Today `GET /api/v1/schema/snapshot` answers with
-([`schema-service/src/main/java/com/example/schema/model/SchemaSnapshot.java`](../schema-service/src/main/java/com/example/schema/model/SchemaSnapshot.java)
-and `ColumnInfo.java`):
+**Legacy** `GET /api/v1/schema/snapshot` — unchanged, still serves the
+frontend schema-explorer + report-service `SchemaTruthService` Tier-1
+client ([`SchemaSnapshot.java`](../schema-service/src/main/java/com/example/schema/model/SchemaSnapshot.java)):
 
 ```jsonc
 {
   "version": "…",                  // free-form string, not contract_version
-  "metadata": { … },               // host / database / schema / extractedAt / counts
-  "tables": {                      // MAP keyed by table name, not list
+  "metadata": { … },
+  "tables": {                      // MAP keyed by table name
     "EMPLOYEES": {
       "columns": [
-        { "name": "…", "dataType": "…", "nullable": true, … }   // dataType, not type
-      ],
-      …
+        { "name": "…", "dataType": "…", "nullable": true, … }   // dataType
+      ]
     }
   },
-  "relationships": [ … ],
-  "domains": { … },
-  "analysis": { … }
+  "relationships": [ … ], "domains": { … }, "analysis": { … }
 }
 ```
 
-The model the etl-worker consumer expects is the Adım 12 **target**
-shape (PR-2+ must land schema-service-side changes before live wiring):
+**Target** `GET /api/v1/schema/reporting-contract` — the etl-worker
+endpoint ([`ReportingContractSnapshot.java`](../schema-service/src/main/java/com/example/schema/model/ReportingContractSnapshot.java)).
+Allowlist-filtered (`ReportingAllowlist` V1, 40-table set), snake_case,
+`tables` LIST, column `type`:
 
 ```jsonc
 {
@@ -153,12 +153,14 @@ shape (PR-2+ must land schema-service-side changes before live wiring):
 }
 ```
 
-PR-1 ships the consumer + unit tests so the schema-service contract
-evolution has a concrete acceptance target. Until schema-service
-emits the target shape, the runner (PR-2b) stays unconfigured against
-live schema-service — the consumer raises
-`SchemaServiceMalformedResponse` on the current production shape,
-which is the intended fail-closed behaviour.
+The endpoint is server-side allowlist-filtered: it returns only the
+intersection of `ReportingAllowlist.V1` and the target schema. An empty
+intersection is a fail-closed `404` → consumer `EX_SOFTWARE=70`
+(terminal), never a deceptive `200` with zero tables.
+
+`contract_version` tracks the wire shape; `allowlist_version` tracks
+the table set. They evolve independently — a V1→V2 allowlist change
+does not bump `contract_version`.
 
 ## Service-to-service auth
 

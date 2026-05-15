@@ -1,8 +1,10 @@
 package com.example.schema.controller;
 
 import com.example.schema.model.Relationship;
+import com.example.schema.model.ReportingContractSnapshot;
 import com.example.schema.model.SchemaSnapshot;
 import com.example.schema.model.TableInfo;
+import com.example.schema.service.ReportingContractService;
 import com.example.schema.service.SchemaExtractService;
 import com.example.schema.service.SchemaSnapshotService;
 import com.example.schema.service.SchemaLookupService;
@@ -34,6 +36,7 @@ public class SchemaController {
     private final SchemaHealthService healthService;
     private final SchemaDriftService driftService;
     private final QuerySuggestionService querySuggestionService;
+    private final ReportingContractService reportingContractService;
 
     @Value("${schema.default-schema:workcube_mikrolink}")
     private String defaultSchema;
@@ -50,7 +53,8 @@ public class SchemaController {
                             PathFinderService pathFinderService,
                             SchemaHealthService healthService,
                             SchemaDriftService driftService,
-                            QuerySuggestionService querySuggestionService) {
+                            QuerySuggestionService querySuggestionService,
+                            ReportingContractService reportingContractService) {
         this.extractService = extractService;
         this.snapshotService = snapshotService;
         this.lookupService = lookupService;
@@ -58,6 +62,7 @@ public class SchemaController {
         this.healthService = healthService;
         this.driftService = driftService;
         this.querySuggestionService = querySuggestionService;
+        this.reportingContractService = reportingContractService;
     }
 
     /**
@@ -101,6 +106,59 @@ public class SchemaController {
         return ResponseEntity.ok()
             .cacheControl(CacheControl.maxAge(cacheTtlMinutes, TimeUnit.MINUTES))
             .body(snapshot);
+    }
+
+    /**
+     * Adım 12 reporting refactor — target contract endpoint for the
+     * etl-worker schema-service consumer.
+     *
+     * <p>Codex {@code 019e2d64} plan-time AGREE (Opt-B′): a NEW endpoint,
+     * deliberately separate from {@code /snapshot}. The legacy endpoint
+     * keeps emitting {@link SchemaSnapshot} (camelCase, {@code tables}
+     * map, column {@code dataType}) for the frontend + report-service;
+     * this one emits the narrow {@link ReportingContractSnapshot}
+     * (snake_case, {@code tables} list, column {@code type}, allowlist
+     * provenance) the etl-worker parser fails closed on.
+     *
+     * <p>Auth: service-to-service internal-key path only. Unlike
+     * {@code /snapshot} this endpoint does NOT accept a browser JWT —
+     * it is a migration/ops contract, not a UI surface. Empty configured
+     * key (test/dev) keeps the existing passthrough.
+     *
+     * <p>Fail-closed: when no {@code ReportingAllowlist} table is present
+     * in the target schema the response is {@code 404}, not a {@code 200}
+     * with an empty {@code tables} list (Codex {@code 019e2d64} S2 trap:
+     * a deceptive empty-but-OK response would let the worker report
+     * {@code EX_OK} having migrated nothing). {@code 404} maps to the
+     * worker's {@code EX_SOFTWARE=70} terminal exit.
+     */
+    @GetMapping("/reporting-contract")
+    public ResponseEntity<ReportingContractSnapshot> getReportingContract(
+            @RequestParam(required = false) String schema,
+            @RequestHeader(value = INTERNAL_API_KEY_HEADER, required = false) String providedKey) {
+
+        // Internal-key only (no JWT branch — see Javadoc). Empty
+        // configured key = passthrough for test/dev profiles.
+        boolean internalOk = snapshotInternalApiKey == null
+                || snapshotInternalApiKey.isBlank()
+                || snapshotInternalApiKey.equals(providedKey);
+        if (!internalOk) {
+            return ResponseEntity.status(401).build();
+        }
+
+        String target = schema != null ? schema : defaultSchema;
+        ReportingContractSnapshot contract = reportingContractService.buildContract(target);
+
+        if (contract.tables().isEmpty()) {
+            // Fail-closed: no allowlisted table in this schema. 404 →
+            // worker EX_SOFTWARE=70 (terminal). The operator must fix
+            // the schema target or the allowlist, not retry.
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok()
+            .cacheControl(CacheControl.maxAge(cacheTtlMinutes, TimeUnit.MINUTES))
+            .body(contract);
     }
 
     /**

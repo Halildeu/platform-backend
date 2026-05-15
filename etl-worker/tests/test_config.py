@@ -322,3 +322,48 @@ def test_reports_db_blank_connect_timeout_treated_as_unset() -> None:
     )
     assert config.reports_db is not None
     assert config.reports_db.connect_timeout_seconds is None
+
+
+# ---- snapshot path (PR-4a) ------------------------------------------------
+
+
+def test_snapshot_path_defaults_to_reporting_contract() -> None:
+    """Unset SCHEMA_SERVICE_SNAPSHOT_PATH → the Adım 12 target endpoint."""
+    config = Config.from_env(_env())
+    assert config.schema_service_snapshot_path == "/api/v1/schema/reporting-contract"
+
+
+def test_snapshot_path_blank_falls_back_to_default() -> None:
+    config = Config.from_env(_env(SCHEMA_SERVICE_SNAPSHOT_PATH="   "))
+    assert config.schema_service_snapshot_path == "/api/v1/schema/reporting-contract"
+
+
+def test_snapshot_path_explicit_override() -> None:
+    config = Config.from_env(
+        _env(SCHEMA_SERVICE_SNAPSHOT_PATH="/api/v1/schema/snapshot")
+    )
+    assert config.schema_service_snapshot_path == "/api/v1/schema/snapshot"
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    ["api/v1/schema/x", "schema/snapshot", "relative/path"],
+)
+def test_snapshot_path_must_be_absolute(bad_path: str) -> None:
+    with pytest.raises(ConfigError, match="absolute path"):
+        Config.from_env(_env(SCHEMA_SERVICE_SNAPSHOT_PATH=bad_path))
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "/api/v1/schema/snapshot?schema=foo",
+        "/api/v1/schema/snapshot#frag",
+        "/path?x=1",
+    ],
+)
+def test_snapshot_path_rejects_query_or_fragment(bad_path: str) -> None:
+    """The ?schema= selector is appended by the client — a query string
+    baked into the path would double up."""
+    with pytest.raises(ConfigError, match="query string or fragment"):
+        Config.from_env(_env(SCHEMA_SERVICE_SNAPSHOT_PATH=bad_path))

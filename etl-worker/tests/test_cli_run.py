@@ -52,11 +52,13 @@ class _ScriptedClient:
         supported_versions: tuple[str, ...],
         internal_api_key: str | None,
         responses: list[SchemaSnapshot | Exception],
+        snapshot_path: str = "/api/v1/schema/reporting-contract",
     ) -> None:
         self.base_url = base_url
         self.timeout = timeout
         self.supported_versions = supported_versions
         self.internal_api_key = internal_api_key
+        self.snapshot_path = snapshot_path
         self._responses = responses
         self.fetch_calls: list[str | None] = []
 
@@ -81,6 +83,7 @@ def _factory(
         timeout: float,
         supported_versions: tuple[str, ...],
         internal_api_key: str | None,
+        snapshot_path: str,
     ) -> _ScriptedClient:
         client = _ScriptedClient(
             base_url,
@@ -88,6 +91,7 @@ def _factory(
             supported_versions=supported_versions,
             internal_api_key=internal_api_key,
             responses=list(responses),
+            snapshot_path=snapshot_path,
         )
         captured.append(client)
         return client
