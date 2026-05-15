@@ -45,12 +45,18 @@ select = [
     "UP",  # pyupgrade
     "RUF", # ruff-specific
 ]
-# RUF002: Docstring "ambiguous" Latin small letter dotless I (ı). The
-# Turkish "Adım" plan terminology in the reporting refactor plan is
-# canonical (docs/plan-reporting-refactor-2026-05-14.md in
-# platform-k8s-gitops); CLAUDE.md mandates Turkish user-facing prose,
-# and these docstrings cite that plan's section markers verbatim.
-ignore = ["RUF002"]
+
+# RUF002 — "Ambiguous Latin small letter dotless I (ı)" — applies only
+# to docstrings that cite the Turkish "Adım" plan section markers from
+# docs/plan-reporting-refactor-2026-05-14.md (in platform-k8s-gitops).
+# CLAUDE.md mandates Turkish user-facing prose, and the plan markers
+# are canonical, so per-file scope keeps the linter useful elsewhere
+# without anglicizing plan section names.
+[tool.ruff.lint.per-file-ignores]
+"etl_worker/__init__.py" = ["RUF001", "RUF002"]
+"etl_worker/contracts.py" = ["RUF001", "RUF002"]
+"etl_worker/schema_service_client.py" = ["RUF001", "RUF002"]
+"tests/test_schema_service_client.py" = ["RUF001", "RUF002"]
 
 [tool.mypy]
 python_version = "3.12"

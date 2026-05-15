@@ -28,10 +28,25 @@ class _FakeTransport:
         self.body = body
         self.last_url: str | None = None
         self.last_timeout: float | None = None
+        self.last_headers: dict[str, str] | None = None
 
-    def get(self, url: str, *, timeout: float) -> tuple[int, bytes]:
+    def get(
+        self,
+        url: str,
+        *,
+        timeout: float,
+        headers: object = None,
+    ) -> tuple[int, bytes]:
         self.last_url = url
         self.last_timeout = timeout
+        # Materialise the mapping eagerly so assertions can compare a
+        # plain dict regardless of whether the caller passed ``None``,
+        # an empty mapping or a populated dict.
+        if headers is None:
+            self.last_headers = None
+        else:
+            assert hasattr(headers, "items")
+            self.last_headers = {str(k): str(v) for k, v in headers.items()}  # type: ignore[attr-defined]
         return self.status, self.body
 
 
@@ -64,12 +79,14 @@ def _client(
     transport: _FakeTransport,
     *,
     supported_versions: tuple[str, ...] = ("1",),
+    internal_api_key: str | None = None,
 ) -> SchemaServiceClient:
     return SchemaServiceClient(
         base_url="http://schema-service.test:8096",
         transport=transport,
         timeout=2.0,
         supported_versions=supported_versions,
+        internal_api_key=internal_api_key,
     )
 
 
@@ -298,3 +315,62 @@ def test_constructor_rejects_empty_base_url() -> None:
 def test_constructor_rejects_empty_supported_versions() -> None:
     with pytest.raises(ValueError, match="supported_versions must contain at least one entry"):
         SchemaServiceClient(base_url="http://x", supported_versions=())
+
+
+# ---- auth header propagation -------------------------------------------
+
+
+def test_fetch_snapshot_without_internal_key_sends_no_headers() -> None:
+    """No-key dev / test passthrough: no ``X-Internal-Api-Key`` header is sent."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+
+    _client(transport).fetch_snapshot()
+
+    # ``last_headers`` is ``None`` when the client passes ``headers=None``
+    # to the transport (no internal key configured).
+    assert transport.last_headers is None
+
+
+def test_fetch_snapshot_with_internal_key_propagates_header() -> None:
+    """Configured ``internal_api_key`` is forwarded as the ``X-Internal-Api-Key`` header."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+
+    _client(transport, internal_api_key="route-test-key").fetch_snapshot()
+
+    assert transport.last_headers == {"X-Internal-Api-Key": "route-test-key"}
+
+
+# ---- ?schema= selector --------------------------------------------------
+
+
+def test_fetch_snapshot_without_schema_omits_query_string() -> None:
+    """No ``?schema=`` query is appended when ``schema`` argument is ``None`` (default)."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+
+    _client(transport).fetch_snapshot()
+
+    assert transport.last_url == "http://schema-service.test:8096/api/v1/schema/snapshot"
+
+
+def test_fetch_snapshot_with_schema_appends_query_param() -> None:
+    """``?schema=`` selector matches schema-service ``SchemaController#getSnapshot`` signature."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+
+    _client(transport).fetch_snapshot(schema="workcube_mikrolink_2025")
+
+    assert transport.last_url == (
+        "http://schema-service.test:8096/api/v1/schema/snapshot"
+        "?schema=workcube_mikrolink_2025"
+    )
+
+
+def test_fetch_snapshot_with_schema_url_encodes_special_characters() -> None:
+    """Selector with reserved URL characters is properly percent-encoded."""
+    transport = _FakeTransport(200, json.dumps(_snapshot_payload()).encode("utf-8"))
+
+    _client(transport).fetch_snapshot(schema="schema with spaces")
+
+    assert transport.last_url == (
+        "http://schema-service.test:8096/api/v1/schema/snapshot"
+        "?schema=schema+with+spaces"
+    )

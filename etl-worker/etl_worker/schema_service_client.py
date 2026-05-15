@@ -1,10 +1,23 @@
-"""HTTP client for the report-service schema-service contract endpoint.
+"""HTTP client for the etl-worker → schema-service **target** contract.
 
 Adım 12 PR-1 (reporting refactor plan §400 — etl-worker → schema-service
 contract consumer). The client is deliberately small: it owns the
 HTTP request shape, the response parse, and the three typed failure
 modes the worker has to react to. Runner / scheduling / live ETL DB
 writes are out of scope here.
+
+.. important::
+   **This is the Adım 12 *target* contract, not the shape schema-service
+   currently returns.** Today ``GET /api/v1/schema/snapshot`` answers with
+   ``version`` (not ``contract_version``), ``metadata``, a ``tables``
+   *map* keyed by table name, and a column ``dataType`` field — see
+   ``schema-service/src/main/java/com/example/schema/model/SchemaSnapshot.java``
+   and ``ColumnInfo.java``. The fields modelled here
+   (``contract_version``, ``allowlist_name``, ``allowlist_version``,
+   ``tables`` *list* with column ``type``) are what Adım 12 PR-2+ needs
+   schema-service to start emitting before the runner can be wired
+   live. PR-1 ships the consumer side under unit tests so the
+   schema-service contract evolution has a concrete acceptance target.
 
 Design notes:
 
@@ -13,6 +26,17 @@ Design notes:
   the first slice. A pluggable :class:`_Transport` protocol leaves the
   door open for a richer HTTP library (e.g. ``httpx``) without rewriting
   the parse layer.
+* **Service-to-service auth carried.** Schema-service's
+  ``SchemaController`` accepts either ``X-Internal-Api-Key`` or a valid
+  JWT (Codex iter-2 §1 in that controller's history). The client takes
+  an optional ``internal_api_key`` constructor argument and propagates
+  it on every request; absence keeps the dev / test passthrough path
+  open.
+* **Schema selector.** Schema-service accepts an optional
+  ``?schema=`` query parameter to disambiguate yearly / parametric
+  ``workcube_mikrolink_<year>`` schemas from the canonical
+  ``workcube_mikrolink``. PR-1 carries this through; the runner will
+  set it per-ETL-cycle.
 * **Fail-closed on contract drift.** ``contract_version`` is validated
   against a caller-supplied set. Mismatch raises
   :class:`SchemaContractVersionMismatch` so an out-of-band schema-service
@@ -30,13 +54,15 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from typing import Protocol
 
 from .contracts import ColumnSpec, SchemaSnapshot, TableSpec
 
 SUPPORTED_CONTRACT_VERSION = "1"
-"""Default schema-service contract version the worker understands.
+"""Default Adım 12 target contract version the worker understands.
 
 Caller code may pass a wider tuple via
 ``SchemaServiceClient(supported_versions=...)``. Bumping this constant
@@ -46,6 +72,9 @@ is a deliberate, version-controlled action — see
 
 DEFAULT_SNAPSHOT_PATH = "/api/v1/schema/snapshot"
 DEFAULT_TIMEOUT_SECONDS = 10.0
+INTERNAL_API_KEY_HEADER = "X-Internal-Api-Key"
+"""Mirrors ``SchemaController.INTERNAL_API_KEY_HEADER`` on the
+service side."""
 
 
 class SchemaServiceUnavailable(Exception):
@@ -76,14 +105,20 @@ class SchemaServiceMalformedResponse(Exception):
 class _Transport(Protocol):
     """Minimal HTTP transport interface used by :class:`SchemaServiceClient`.
 
-    The contract is intentionally narrow: a single ``GET`` returning
-    ``(status_code, body_bytes)``. ``status_code == 0`` is reserved for
-    "transport-level failure, treat as retryable upstream outage" so
-    timeouts / DNS / connection-refused all surface as
-    :class:`SchemaServiceUnavailable`.
+    The contract is intentionally narrow: a single ``GET`` carrying an
+    optional header map and returning ``(status_code, body_bytes)``.
+    ``status_code == 0`` is reserved for "transport-level failure, treat
+    as retryable upstream outage" so timeouts / DNS / connection-refused
+    all surface as :class:`SchemaServiceUnavailable`.
     """
 
-    def get(self, url: str, *, timeout: float) -> tuple[int, bytes]:  # pragma: no cover
+    def get(  # pragma: no cover
+        self,
+        url: str,
+        *,
+        timeout: float,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[int, bytes]:
         ...
 
 
@@ -96,14 +131,24 @@ class _UrllibTransport:
     through the public API.
     """
 
-    def get(self, url: str, *, timeout: float) -> tuple[int, bytes]:
+    def get(
+        self,
+        url: str,
+        *,
+        timeout: float,
+        headers: Mapping[str, str] | None = None,
+    ) -> tuple[int, bytes]:
         request = urllib.request.Request(url, method="GET")
+        if headers:
+            for name, value in headers.items():
+                request.add_header(name, value)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return int(response.status), response.read()
         except urllib.error.HTTPError as exc:
-            payload = exc.read() if exc.fp is not None else b""
-            return int(exc.code), payload
+            # ``HTTPError`` is also a ``HTTPResponse``; ``.read()`` is
+            # always safe to call here.
+            return int(exc.code), exc.read()
         except urllib.error.URLError:
             # Network-level failure (DNS, refused, timeout). Sentinel
             # status 0 signals "treat as retryable upstream outage".
@@ -127,6 +172,7 @@ class SchemaServiceClient:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         supported_versions: tuple[str, ...] = (SUPPORTED_CONTRACT_VERSION,),
         snapshot_path: str = DEFAULT_SNAPSHOT_PATH,
+        internal_api_key: str | None = None,
     ) -> None:
         if not base_url:
             raise ValueError("base_url must be non-empty")
@@ -137,9 +183,20 @@ class SchemaServiceClient:
         self._timeout = timeout
         self._supported_versions = supported_versions
         self._snapshot_path = snapshot_path
+        self._internal_api_key = internal_api_key
 
-    def fetch_snapshot(self) -> SchemaSnapshot:
-        """Issue ``GET <base_url>/api/v1/schema/snapshot`` and parse the body.
+    def fetch_snapshot(self, *, schema: str | None = None) -> SchemaSnapshot:
+        """Issue ``GET <base_url>/api/v1/schema/snapshot[?schema=…]`` and parse.
+
+        Parameters
+        ----------
+        schema:
+            Optional schema selector forwarded as ``?schema=`` query
+            parameter — mirrors the schema-service ``SchemaController``
+            signature so the runner can pick parametric / yearly
+            ``workcube_mikrolink_<year>`` shards explicitly. ``None``
+            (the default) lets schema-service fall back to its
+            configured default schema.
 
         Raises
         ------
@@ -153,7 +210,12 @@ class SchemaServiceClient:
             set. Terminal.
         """
         url = f"{self._base_url}{self._snapshot_path}"
-        status, body = self._transport.get(url, timeout=self._timeout)
+        if schema:
+            url = f"{url}?{urllib.parse.urlencode({'schema': schema})}"
+        headers: dict[str, str] = {}
+        if self._internal_api_key:
+            headers[INTERNAL_API_KEY_HEADER] = self._internal_api_key
+        status, body = self._transport.get(url, timeout=self._timeout, headers=headers or None)
         if status == 0 or 500 <= status < 600:
             raise SchemaServiceUnavailable(
                 f"schema-service unavailable at {url} (status={status})"

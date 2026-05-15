@@ -1,9 +1,21 @@
-"""Typed contract models for the schema-service snapshot consumer.
+"""Typed contract models for the etl-worker → schema-service **target** consumer.
 
-The shape mirrors the schema-service ``GET /api/v1/schema/snapshot``
-response. Only fields that the ETL worker actually consumes are
-modelled here; unknown JSON keys are silently ignored so additive
-backend changes do not break the worker.
+.. important::
+   **These models describe the Adım 12 *target* contract, not the
+   shape schema-service currently emits.** Today ``GET /api/v1/schema/snapshot``
+   returns ``version`` (not ``contract_version``), a ``metadata`` block,
+   a ``tables`` *map* keyed by table name, and a column ``dataType``
+   (see ``schema-service`` ``SchemaSnapshot.java`` / ``ColumnInfo.java``).
+   The model below is what Adım 12 PR-2+ needs schema-service to start
+   emitting (``contract_version`` + ``allowlist_name`` /
+   ``allowlist_version`` + ``tables`` as a list with ``type`` columns)
+   before the runner can be wired live. PR-1 ships the consumer side
+   under unit tests so the schema-service contract evolution has a
+   concrete acceptance target.
+
+Only fields that the ETL worker actually consumes are modelled here;
+unknown JSON keys are silently ignored so additive backend changes do
+not break the worker.
 
 Adım 12 PR-1 scope keeps the model deliberately minimal:
 
