@@ -87,14 +87,22 @@ public class MasterDataReadService {
                 parsed.add(t);
             }
         }
-        if (parsed.isEmpty()) {
-            return DEFAULT_ENABLED_KINDS;
-        }
+        // Codex 019e2d7d REVISE: unknown kinds must be *filtered out*, not
+        // merely logged — otherwise a typo-only value (e.g. "companeis")
+        // would survive into enabledKinds and disable every valid kind.
         Set<String> unknown = new LinkedHashSet<>(parsed);
         unknown.removeAll(KIND_MAP.keySet());
         if (!unknown.isEmpty()) {
             log.warn("schema.master-data.enabled-kinds contains unknown kind(s) {}; "
                     + "ignored (valid kinds: {}).", unknown, KIND_MAP.keySet());
+            parsed.removeAll(unknown);
+        }
+        // Blank, all-empty, or typo-only → fall back to defaults rather
+        // than leaving every kind disabled (Codex 019e2d7d note 9).
+        if (parsed.isEmpty()) {
+            log.warn("schema.master-data.enabled-kinds resolved to no valid kind; "
+                    + "falling back to defaults {}.", DEFAULT_ENABLED_KINDS);
+            return DEFAULT_ENABLED_KINDS;
         }
         return Set.copyOf(parsed);
     }

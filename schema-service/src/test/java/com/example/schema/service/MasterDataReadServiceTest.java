@@ -351,4 +351,38 @@ class MasterDataReadServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("disabled");
     }
+
+    @Test
+    void enabledKindsUnknownOnly_defaultsToAllFourKinds() {
+        // Codex 019e2d7d REVISE: a typo-only value must not disable every
+        // kind — unknown tokens are filtered, leaving nothing, so the
+        // service falls back to all four defaults.
+        var service = new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "warehouses,foobar");
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        for (String kind : List.of("companies", "projects", "branches", "departments")) {
+            assertThat(service.list(kind))
+                    .as("typo-only enabled-kinds must fall back to default; kind '%s'", kind)
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    void enabledKindsMixedUnknown_filtersUnknownKeepsValid() {
+        // 'warehouses' is unknown and dropped; 'companies' survives as the
+        // only effective enabled kind.
+        var service = new MasterDataReadService(
+                jdbc, "workcube_mikrolink", 50000, "companies,warehouses");
+        when(jdbc.query(anyString(), anyMap(), any(RowMapper.class)))
+                .thenAnswer(inv -> List.of());
+
+        assertThat(service.list("companies")).isEmpty();   // valid + enabled
+
+        assertThatThrownBy(() -> service.list("departments"))
+                .as("departments not in enabled-kinds → disabled")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("disabled");
+    }
 }
