@@ -531,7 +531,17 @@ public class AuthorizationControllerV1 {
             switch (type) {
                 case MODULE -> modules.put(key, grantStr);
                 case ACTION -> actions.put(key, grantStr);
-                case REPORT -> reports.put(key, grantStr);
+                case REPORT -> {
+                    // R16 PR-B-2 (Codex 019e27f5): reports.<GROUP> permission
+                    // key'lerini reports map'ine GROUP suffix only olarak yaz.
+                    // FE ReportingHub.tsx:99 canViewReport(reportGroup)
+                    // `authz.reports[reportGroup]` ile arıyor; reportGroup =
+                    // "FINANCE_REPORTS" olduğu için key prefix'siz olmalı.
+                    // Dashboard keys (HR_ANALYTICS, FIN_RATIOS, vb.) prefix'siz
+                    // gelir ve aynı map'te kalır — namespace collision yok.
+                    String reportsKey = TupleSyncService.normalizeReportGroupKey(key);
+                    reports.put(reportsKey, grantStr);
+                }
                 // PAGE, FIELD removed in V10 migration (TB-21)
             }
         }
