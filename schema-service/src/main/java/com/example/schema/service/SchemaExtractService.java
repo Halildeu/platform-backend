@@ -6,6 +6,7 @@ import com.example.schema.model.DefaultConstraintInfo;
 import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.IndexInfo;
 import com.example.schema.model.ObjectInfo;
+import com.example.schema.model.StorageInfo;
 import com.example.schema.model.TableInfo;
 import com.example.schema.model.UniqueConstraintInfo;
 import com.example.schema.model.UniqueConstraintType;
@@ -572,6 +573,62 @@ public class SchemaExtractService {
     private static LocalDateTime toLocalDateTime(ResultSet rs, String column) throws SQLException {
         Timestamp ts = rs.getTimestamp(column);
         return ts != null ? ts.toLocalDateTime() : null;
+    }
+
+    /**
+     * Phase B1-6 (capability M6 — Codex 019e329a, ADR-0020 §2.3): authoritative
+     * per-table storage footprint from {@code sys.dm_db_partition_stats}. One
+     * {@link StorageInfo} per table — page counts aggregated over all
+     * partitions / indexes, converted to KB (page = 8 KB). {@code rowCount}
+     * and {@code dataKb} count only the base heap / clustered index
+     * ({@code index_id IN (0,1)}); nonclustered-index in-row pages fall into
+     * {@code indexKb}. {@code lobKb} and {@code rowOverflowKb} stay distinct.
+     *
+     * <p>{@code sys.dm_db_partition_stats} is a DMV requiring {@code VIEW
+     * DATABASE STATE}; without that grant the read fails and the caller's
+     * non-fatal catch yields an empty inventory (source-ready, not live-ready).
+     */
+    @Cacheable(value = "storage", key = "#schema")
+    public List<StorageInfo> extractStorage(String schema) {
+        String targetSchema = schema != null ? schema : defaultSchema;
+        String sql = """
+            SELECT t.name AS table_name, sch.name AS schema_name,
+                   SUM(CASE WHEN ps.index_id IN (0, 1)
+                            THEN ps.row_count ELSE 0 END) AS row_count,
+                   SUM(ps.reserved_page_count) * 8 AS reserved_kb,
+                   SUM(ps.used_page_count) * 8 AS used_kb,
+                   SUM(CASE WHEN ps.index_id IN (0, 1)
+                            THEN ps.in_row_data_page_count ELSE 0 END) * 8 AS data_kb,
+                   SUM(ps.lob_used_page_count) * 8 AS lob_kb,
+                   SUM(ps.row_overflow_used_page_count) * 8 AS row_overflow_kb,
+                   (SUM(ps.used_page_count)
+                      - SUM(CASE WHEN ps.index_id IN (0, 1)
+                                 THEN ps.in_row_data_page_count ELSE 0 END)
+                      - SUM(ps.lob_used_page_count)
+                      - SUM(ps.row_overflow_used_page_count)) * 8 AS index_kb
+            FROM sys.dm_db_partition_stats ps
+            JOIN sys.tables t ON t.object_id = ps.object_id
+            JOIN sys.schemas sch ON sch.schema_id = t.schema_id
+            WHERE sch.name = :schema
+            GROUP BY t.name, sch.name
+            ORDER BY t.name
+            """;
+
+        List<StorageInfo> result = new ArrayList<>();
+        jdbc.query(sql, Map.of("schema", targetSchema), rs -> {
+            result.add(new StorageInfo(
+                rs.getString("table_name"),
+                rs.getString("schema_name"),
+                rs.getLong("row_count"),
+                rs.getLong("reserved_kb"),
+                rs.getLong("used_kb"),
+                rs.getLong("data_kb"),
+                rs.getLong("index_kb"),
+                rs.getLong("lob_kb"),
+                rs.getLong("row_overflow_kb")));
+        });
+        log.info("Extracted storage for {} tables from schema '{}'", result.size(), targetSchema);
+        return result;
     }
 
     /** Mutable accumulator — groups multi-column FK rows by constraint name. */

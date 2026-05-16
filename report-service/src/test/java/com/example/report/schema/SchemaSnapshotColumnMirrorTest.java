@@ -80,11 +80,11 @@ class SchemaSnapshotColumnMirrorTest {
 
     @Test
     void b1TopLevelInventoryFields_ignoredByMirror() throws Exception {
-        // schema-service B1-2/B1-3/B1-4/B1-5 add top-level `foreignKeys` /
+        // schema-service B1-2..B1-6 add top-level `foreignKeys` /
         // `uniqueConstraints` / `checkConstraints` / `defaultConstraints` /
-        // `indexes` / `objects`. The mirror only reads `tables`, so these new
-        // top-level fields must be silently ignored — no mirror code change
-        // required (@JsonIgnoreProperties(ignoreUnknown=true)).
+        // `indexes` / `objects` / `storage`. The mirror only reads `tables`,
+        // so these new top-level fields must be silently ignored — no mirror
+        // code change required (@JsonIgnoreProperties(ignoreUnknown=true)).
         String json = """
             {"version":"1.1",
              "tables":{"ORDERS":{"name":"ORDERS","schema":"workcube_mikrolink",
@@ -112,6 +112,9 @@ class SchemaSnapshotColumnMirrorTest {
                "objectId":245,"owner":"dbo","createDate":"2020-01-01T10:00:00",
                "modifyDate":"2021-06-15T14:30:00",
                "extendedProperties":{"MS_Description":"Invoice header"}}],
+             "storage":[{"table":"ORDERS","schema":"dbo","rowCount":9000,
+               "reservedKb":2048,"usedKb":1900,"dataKb":1500,"indexKb":300,
+               "lobKb":80,"rowOverflowKb":20}],
              "domains":{}}
             """;
 

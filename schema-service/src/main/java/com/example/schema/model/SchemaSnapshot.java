@@ -14,12 +14,13 @@ import java.util.Map;
  * defaults to empty, so a new B1 capability inventory can be added as a record
  * component + one builder field without churning existing call sites.
  *
- * <p>B1 authoritative inventories (Codex 019e2d7d / 019e325a / 019e3270,
- * ADR-0020): {@code foreignKeys} / {@code uniqueConstraints} (B1-2),
+ * <p>B1 authoritative inventories (Codex 019e2d7d / 019e325a / 019e3270 /
+ * 019e329a, ADR-0020): {@code foreignKeys} / {@code uniqueConstraints} (B1-2),
  * {@code checkConstraints} / {@code defaultConstraints} (B1-3), {@code indexes}
- * (B1-4), {@code objects} (B1-5 — object catalog). Earlier callers used a chain
- * of legacy positional constructors; that chain was replaced by {@link Builder}
- * once it reached four overloads (refactor — Codex 019e3270).
+ * (B1-4), {@code objects} (B1-5 — object catalog), {@code storage} (B1-6 —
+ * per-table storage footprint). Earlier callers used a chain of legacy
+ * positional constructors; that chain was replaced by {@link Builder} once it
+ * reached four overloads (refactor — Codex 019e3270).
  */
 public record SchemaSnapshot(
     String version,
@@ -32,6 +33,7 @@ public record SchemaSnapshot(
     List<DefaultConstraintInfo> defaultConstraints,
     List<IndexInfo> indexes,
     List<ObjectInfo> objects,
+    List<StorageInfo> storage,
     Map<String, List<String>> domains,
     Analysis analysis
 ) {
@@ -55,6 +57,7 @@ public record SchemaSnapshot(
         private List<DefaultConstraintInfo> defaultConstraints = List.of();
         private List<IndexInfo> indexes = List.of();
         private List<ObjectInfo> objects = List.of();
+        private List<StorageInfo> storage = List.of();
         private Map<String, List<String>> domains = Map.of();
         private Analysis analysis;
 
@@ -110,6 +113,11 @@ public record SchemaSnapshot(
             return this;
         }
 
+        public Builder storage(List<StorageInfo> storage) {
+            this.storage = storage;
+            return this;
+        }
+
         public Builder domains(Map<String, List<String>> domains) {
             this.domains = domains;
             return this;
@@ -123,7 +131,7 @@ public record SchemaSnapshot(
         public SchemaSnapshot build() {
             return new SchemaSnapshot(version, metadata, tables, relationships,
                 foreignKeys, uniqueConstraints, checkConstraints, defaultConstraints,
-                indexes, objects, domains, analysis);
+                indexes, objects, storage, domains, analysis);
         }
     }
 
