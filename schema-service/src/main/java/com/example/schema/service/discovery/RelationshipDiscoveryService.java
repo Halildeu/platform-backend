@@ -1,6 +1,7 @@
 package com.example.schema.service.discovery;
 
 import com.example.schema.model.ColumnInfo;
+import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.Relationship;
 import com.example.schema.model.TableInfo;
 import org.slf4j.Logger;
@@ -64,6 +65,20 @@ public class RelationshipDiscoveryService {
 
     public List<Relationship> discoverAll(Map<String, TableInfo> tables,
                                           Map<String, String> viewDefinitions) {
+        return discoverAll(tables, viewDefinitions, List.of());
+    }
+
+    /**
+     * Phase B1-2 (Codex 019e2d7d, ADR-0020 §2.4): authoritative-FK compat
+     * overload. Single-column foreign keys are mirrored into the heuristic
+     * relationship list as {@code source="fk_constraint"},
+     * {@code confidence=1.0}; composite FKs are NOT flattened here (the
+     * dedup key carries no {@code toColumn}) — they stay in the
+     * {@code ForeignKeyInfo} authoritative inventory only.
+     */
+    public List<Relationship> discoverAll(Map<String, TableInfo> tables,
+                                          Map<String, String> viewDefinitions,
+                                          List<ForeignKeyInfo> authoritativeForeignKeys) {
         Set<String> tableNames = tables.keySet();
         List<Relationship> all = new ArrayList<>();
 
@@ -81,8 +96,37 @@ public class RelationshipDiscoveryService {
             all.addAll(discoverFromViewDefinitions(viewDefinitions, tableNames));
         }
 
+        // B1-2: authoritative single-column FK compatibility layer
+        all.addAll(toCompatRelationships(authoritativeForeignKeys));
+
         // Deduplicate and score
         return deduplicateAndScore(all);
+    }
+
+    /**
+     * Converts single-column authoritative FKs into compatibility
+     * {@link Relationship}s ({@code source="fk_constraint"},
+     * {@code confidence=1.0}). Composite FKs are skipped — they remain in
+     * the authoritative {@code ForeignKeyInfo} inventory only, because the
+     * dedup key ({@code fromTable|fromColumn|toTable}) cannot represent a
+     * multi-column join.
+     */
+    private List<Relationship> toCompatRelationships(List<ForeignKeyInfo> foreignKeys) {
+        List<Relationship> rels = new ArrayList<>();
+        if (foreignKeys == null) {
+            return rels;
+        }
+        for (ForeignKeyInfo fk : foreignKeys) {
+            if (fk.isComposite() || fk.fromColumns().isEmpty() || fk.toColumns().isEmpty()) {
+                continue;
+            }
+            rels.add(new Relationship(
+                fk.fromTable(), fk.fromColumns().get(0),
+                fk.toTable(), fk.toColumns().get(0),
+                1.0, "fk_constraint"));
+        }
+        log.info("Authoritative FK compat: {} single-column relationships", rels.size());
+        return rels;
     }
 
     private List<Relationship> discoverByNameMatch(Map<String, TableInfo> tables, Set<String> tableNames) {
@@ -186,9 +230,11 @@ public class RelationshipDiscoveryService {
                 .max(Comparator.comparingDouble(Relationship::confidence))
                 .orElse(rels.getFirst());
 
+            // B1-2 (Codex 019e2d7d guardrail): TreeSet → deterministic
+            // source ordering for the String.join below.
             Set<String> sources = rels.stream()
                 .map(r -> r.source().split(":")[0])
-                .collect(Collectors.toSet());
+                .collect(Collectors.toCollection(TreeSet::new));
 
             double conf = best.confidence();
             boolean multi = sources.size() > 1;
