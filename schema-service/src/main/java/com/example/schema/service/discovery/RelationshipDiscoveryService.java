@@ -97,7 +97,7 @@ public class RelationshipDiscoveryService {
         }
 
         // B1-2: authoritative single-column FK compatibility layer
-        all.addAll(toCompatRelationships(authoritativeForeignKeys));
+        all.addAll(toCompatRelationships(authoritativeForeignKeys, tableNames));
 
         // Deduplicate and score
         return deduplicateAndScore(all);
@@ -106,12 +106,20 @@ public class RelationshipDiscoveryService {
     /**
      * Converts single-column authoritative FKs into compatibility
      * {@link Relationship}s ({@code source="fk_constraint"},
-     * {@code confidence=1.0}). Composite FKs are skipped — they remain in
-     * the authoritative {@code ForeignKeyInfo} inventory only, because the
-     * dedup key ({@code fromTable|fromColumn|toTable}) cannot represent a
-     * multi-column join.
+     * {@code confidence=1.0}). Skipped (kept in the {@code ForeignKeyInfo}
+     * inventory only):
+     * <ul>
+     *   <li>composite FKs — the dedup key ({@code fromTable|fromColumn|
+     *       toTable}) cannot represent a multi-column join;</li>
+     *   <li>FKs whose {@code fromTable} or {@code toTable} is not in this
+     *       snapshot's {@code tables} (Codex 019e2d7d REVISE) — a
+     *       cross-schema FK target would otherwise inject a node outside
+     *       the relationship graph, skewing impact BFS / path finder /
+     *       health orphan counts.</li>
+     * </ul>
      */
-    private List<Relationship> toCompatRelationships(List<ForeignKeyInfo> foreignKeys) {
+    private List<Relationship> toCompatRelationships(List<ForeignKeyInfo> foreignKeys,
+                                                     Set<String> tableNames) {
         List<Relationship> rels = new ArrayList<>();
         if (foreignKeys == null) {
             return rels;
@@ -120,12 +128,15 @@ public class RelationshipDiscoveryService {
             if (fk.isComposite() || fk.fromColumns().isEmpty() || fk.toColumns().isEmpty()) {
                 continue;
             }
+            if (!tableNames.contains(fk.fromTable()) || !tableNames.contains(fk.toTable())) {
+                continue;
+            }
             rels.add(new Relationship(
                 fk.fromTable(), fk.fromColumns().get(0),
                 fk.toTable(), fk.toColumns().get(0),
                 1.0, "fk_constraint"));
         }
-        log.info("Authoritative FK compat: {} single-column relationships", rels.size());
+        log.info("Authoritative FK compat: {} single-column in-snapshot relationships", rels.size());
         return rels;
     }
 

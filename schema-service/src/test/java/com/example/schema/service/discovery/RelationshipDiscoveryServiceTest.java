@@ -176,6 +176,28 @@ class RelationshipDiscoveryServiceTest {
     }
 
     @Test
+    void crossSchemaForeignKey_staysInventoryOnly_notCompatRelationship() {
+        // Codex 019e2d7d REVISE: the FK target COMPANY is NOT in this
+        // snapshot's tables (cross-schema). The single-column FK must NOT
+        // become a compat relationship — that would inject a graph node
+        // outside the snapshot.
+        var tables = Map.of(
+            "ORDERS", new TableInfo("ORDERS", "dbo", List.of(
+                new ColumnInfo("ORDER_ID", "int", 4, false, true, true, 1),
+                new ColumnInfo("OUR_COMPANY_REF", "int", 4, false, false, false, 2))));
+        ForeignKeyInfo crossSchemaFk = new ForeignKeyInfo("FK_ORDERS_SHARED_COMPANY",
+            "dbo", "ORDERS", List.of("OUR_COMPANY_REF"),
+            "shared", "COMPANY", List.of("ID"),   // COMPANY absent from `tables`
+            false, false, "NO_ACTION", "NO_ACTION");
+
+        List<Relationship> rels = service.discoverAll(tables, Map.of(), List.of(crossSchemaFk));
+
+        assertTrue(rels.stream().noneMatch(r -> "fk_constraint".equals(r.source())),
+            "FK to a table outside the snapshot must stay inventory-only, "
+                + "not become a compat relationship");
+    }
+
+    @Test
     void heuristicAndAuthoritativeFk_dedupedWithMultiSource() {
         // COMPANY_ID → COMPANY: found by name_match + common_fk heuristic
         // AND the authoritative FK → must dedup to one multi-source rel.
