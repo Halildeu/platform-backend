@@ -2,6 +2,7 @@ package com.example.schema.service;
 
 import com.example.schema.model.ChangeDataInfo;
 import com.example.schema.model.CheckConstraintInfo;
+import com.example.schema.model.DatabaseOptionsInfo;
 import com.example.schema.model.DefaultConstraintInfo;
 import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.IndexInfo;
@@ -113,6 +114,14 @@ public class SchemaSnapshotService {
         } catch (Exception e) {
             log.warn("Change-data extraction failed: {}", e.getMessage());
         }
+        // Authoritative database-level options (B1-8 — M15). Non-fatal — a
+        // failed read leaves databaseOptions null (degraded snapshot).
+        DatabaseOptionsInfo databaseOptions = null;
+        try {
+            databaseOptions = extractService.extractDatabaseOptions();
+        } catch (Exception e) {
+            log.warn("Database options extraction failed: {}", e.getMessage());
+        }
 
         // 3. Discover relationships (heuristic + authoritative FK compat layer)
         List<Relationship> relationships = discoveryService.discoverAll(tables, viewDefs, foreignKeys);
@@ -178,6 +187,7 @@ public class SchemaSnapshotService {
             .objects(objects)
             .storage(storage)
             .changeData(changeData)
+            .databaseOptions(databaseOptions)
             .domains(domains)
             .analysis(new SchemaSnapshot.Analysis(deadTables, hubTables))
             .build();

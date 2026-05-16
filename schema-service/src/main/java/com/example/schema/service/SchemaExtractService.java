@@ -3,6 +3,7 @@ package com.example.schema.service;
 import com.example.schema.model.ChangeDataInfo;
 import com.example.schema.model.CheckConstraintInfo;
 import com.example.schema.model.ColumnInfo;
+import com.example.schema.model.DatabaseOptionsInfo;
 import com.example.schema.model.DefaultConstraintInfo;
 import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.IndexInfo;
@@ -724,6 +725,98 @@ public class SchemaExtractService {
         return result;
     }
 
+    /**
+     * Phase B1-8 (capability M15 — Codex 019e32bc, ADR-0020 §2.3): authoritative
+     * database-level options from {@code sys.databases} (recovery model,
+     * compatibility level, collation, snapshot isolation / RCSI, page verify,
+     * auto-options and the ANSI / session option defaults) plus a
+     * {@code sys.database_files} size aggregate. Database-scope — no schema
+     * parameter; {@code WHERE database_id = DB_ID()} binds it to the connected
+     * database. Returns {@code null} when no row is visible (rather than raising
+     * on an empty result); a genuine SQL / permission error still propagates to
+     * the caller's non-fatal catch.
+     */
+    @Cacheable("databaseOptions")
+    public DatabaseOptionsInfo extractDatabaseOptions() {
+        DatabaseOptionsAccumulator acc = new DatabaseOptionsAccumulator();
+
+        String optionsSql = """
+            SELECT d.name AS database_name, d.collation_name,
+                   d.compatibility_level, d.recovery_model_desc,
+                   d.is_read_committed_snapshot_on, d.snapshot_isolation_state_desc,
+                   d.page_verify_option_desc,
+                   d.is_auto_create_stats_on, d.is_auto_update_stats_on,
+                   d.is_auto_update_stats_async_on, d.is_auto_shrink_on,
+                   d.is_auto_close_on,
+                   d.is_ansi_nulls_on, d.is_ansi_padding_on, d.is_ansi_warnings_on,
+                   d.is_ansi_null_default_on, d.is_arithabort_on,
+                   d.is_quoted_identifier_on, d.is_concat_null_yields_null_on,
+                   d.is_numeric_roundabort_on
+            FROM sys.databases d
+            WHERE d.database_id = DB_ID()
+            """;
+        jdbc.query(optionsSql, Map.of(), rs -> {
+            acc.databaseName = rs.getString("database_name");
+            acc.collation = rs.getString("collation_name");
+            acc.compatibilityLevel = rs.getInt("compatibility_level");
+            acc.recoveryModel = rs.getString("recovery_model_desc");
+            acc.readCommittedSnapshotEnabled = rs.getBoolean("is_read_committed_snapshot_on");
+            acc.snapshotIsolationState = rs.getString("snapshot_isolation_state_desc");
+            acc.pageVerifyOption = rs.getString("page_verify_option_desc");
+            acc.autoCreateStatisticsEnabled = rs.getBoolean("is_auto_create_stats_on");
+            acc.autoUpdateStatisticsEnabled = rs.getBoolean("is_auto_update_stats_on");
+            acc.autoUpdateStatisticsAsyncEnabled = rs.getBoolean("is_auto_update_stats_async_on");
+            acc.autoShrinkEnabled = rs.getBoolean("is_auto_shrink_on");
+            acc.autoCloseEnabled = rs.getBoolean("is_auto_close_on");
+            acc.ansiNullsEnabled = rs.getBoolean("is_ansi_nulls_on");
+            acc.ansiPaddingEnabled = rs.getBoolean("is_ansi_padding_on");
+            acc.ansiWarningsEnabled = rs.getBoolean("is_ansi_warnings_on");
+            acc.ansiNullDefaultEnabled = rs.getBoolean("is_ansi_null_default_on");
+            acc.arithAbortEnabled = rs.getBoolean("is_arithabort_on");
+            acc.quotedIdentifierEnabled = rs.getBoolean("is_quoted_identifier_on");
+            acc.concatNullYieldsNull = rs.getBoolean("is_concat_null_yields_null_on");
+            acc.numericRoundAbortEnabled = rs.getBoolean("is_numeric_roundabort_on");
+            acc.optionsFound = true;
+        });
+
+        if (!acc.optionsFound) {
+            log.warn("Database options: sys.databases returned no row for DB_ID()");
+            return null;
+        }
+
+        // sys.database_files size aggregate (type 0 = ROWS data, 1 = LOG).
+        // CAST size to bigint before SUM — a large database overflows int pages.
+        String filesSql = """
+            SELECT SUM(CASE WHEN type = 0 THEN 1 ELSE 0 END) AS data_file_count,
+                   SUM(CASE WHEN type = 1 THEN 1 ELSE 0 END) AS log_file_count,
+                   SUM(CASE WHEN type = 0 THEN CAST(size AS bigint) ELSE 0 END) * 8
+                       AS data_file_size_kb,
+                   SUM(CASE WHEN type = 1 THEN CAST(size AS bigint) ELSE 0 END) * 8
+                       AS log_file_size_kb
+            FROM sys.database_files
+            """;
+        jdbc.query(filesSql, Map.of(), rs -> {
+            acc.dataFileCount = rs.getInt("data_file_count");
+            acc.logFileCount = rs.getInt("log_file_count");
+            acc.dataFileSizeKb = rs.getLong("data_file_size_kb");
+            acc.logFileSizeKb = rs.getLong("log_file_size_kb");
+        });
+
+        DatabaseOptionsInfo result = new DatabaseOptionsInfo(
+            acc.databaseName, acc.collation, acc.compatibilityLevel, acc.recoveryModel,
+            acc.readCommittedSnapshotEnabled, acc.snapshotIsolationState, acc.pageVerifyOption,
+            acc.autoCreateStatisticsEnabled, acc.autoUpdateStatisticsEnabled,
+            acc.autoUpdateStatisticsAsyncEnabled, acc.autoShrinkEnabled, acc.autoCloseEnabled,
+            acc.ansiNullsEnabled, acc.ansiPaddingEnabled, acc.ansiWarningsEnabled,
+            acc.ansiNullDefaultEnabled, acc.arithAbortEnabled, acc.quotedIdentifierEnabled,
+            acc.concatNullYieldsNull, acc.numericRoundAbortEnabled,
+            acc.dataFileCount, acc.logFileCount, acc.dataFileSizeKb, acc.logFileSizeKb);
+        log.info("Extracted database options for '{}' (compat {}, recovery {}, "
+            + "{} data + {} log files)", result.databaseName(), result.compatibilityLevel(),
+            result.recoveryModel(), result.dataFileCount(), result.logFileCount());
+        return result;
+    }
+
     /** Mutable accumulator — groups multi-column FK rows by constraint name. */
     private static final class FkAccumulator {
         final String name;
@@ -860,5 +953,37 @@ public class SchemaExtractService {
                 || transactionalReplicationEnabled || mergePublished
                 || replicationFilterEnabled || syncTranSubscribed;
         }
+    }
+
+    /**
+     * Mutable accumulator — merges the {@code sys.databases} option row with the
+     * {@code sys.database_files} size aggregate into one {@link DatabaseOptionsInfo}.
+     */
+    private static final class DatabaseOptionsAccumulator {
+        boolean optionsFound;
+        String databaseName;
+        String collation;
+        int compatibilityLevel;
+        String recoveryModel;
+        boolean readCommittedSnapshotEnabled;
+        String snapshotIsolationState;
+        String pageVerifyOption;
+        boolean autoCreateStatisticsEnabled;
+        boolean autoUpdateStatisticsEnabled;
+        boolean autoUpdateStatisticsAsyncEnabled;
+        boolean autoShrinkEnabled;
+        boolean autoCloseEnabled;
+        boolean ansiNullsEnabled;
+        boolean ansiPaddingEnabled;
+        boolean ansiWarningsEnabled;
+        boolean ansiNullDefaultEnabled;
+        boolean arithAbortEnabled;
+        boolean quotedIdentifierEnabled;
+        boolean concatNullYieldsNull;
+        boolean numericRoundAbortEnabled;
+        int dataFileCount;
+        int logFileCount;
+        long dataFileSizeKb;
+        long logFileSizeKb;
     }
 }

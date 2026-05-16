@@ -80,11 +80,11 @@ class SchemaSnapshotColumnMirrorTest {
 
     @Test
     void b1TopLevelInventoryFields_ignoredByMirror() throws Exception {
-        // schema-service B1-2..B1-7 add top-level `foreignKeys` /
+        // schema-service B1-2..B1-8 add top-level `foreignKeys` /
         // `uniqueConstraints` / `checkConstraints` / `defaultConstraints` /
-        // `indexes` / `objects` / `storage` / `changeData`. The mirror only
-        // reads `tables`, so these new top-level fields must be silently
-        // ignored — no mirror code change required (@JsonIgnoreProperties).
+        // `indexes` / `objects` / `storage` / `changeData` / `databaseOptions`.
+        // The mirror only reads `tables`, so these new top-level fields must be
+        // silently ignored — no mirror code change required (@JsonIgnoreProperties).
         String json = """
             {"version":"1.1",
              "tables":{"ORDERS":{"name":"ORDERS","schema":"workcube_mikrolink",
@@ -122,6 +122,18 @@ class SchemaSnapshotColumnMirrorTest {
                "historyTable":null,"transactionalReplicationEnabled":false,
                "mergePublished":false,"replicationFilterEnabled":false,
                "syncTranSubscribed":false}],
+             "databaseOptions":{"databaseName":"workcube",
+               "collation":"SQL_Latin1_General_CP1_CI_AS","compatibilityLevel":150,
+               "recoveryModel":"SIMPLE","readCommittedSnapshotEnabled":true,
+               "snapshotIsolationState":"ON","pageVerifyOption":"CHECKSUM",
+               "autoCreateStatisticsEnabled":true,"autoUpdateStatisticsEnabled":true,
+               "autoUpdateStatisticsAsyncEnabled":false,"autoShrinkEnabled":false,
+               "autoCloseEnabled":false,"ansiNullsEnabled":true,
+               "ansiPaddingEnabled":true,"ansiWarningsEnabled":true,
+               "ansiNullDefaultEnabled":false,"arithAbortEnabled":true,
+               "quotedIdentifierEnabled":true,"concatNullYieldsNull":false,
+               "numericRoundAbortEnabled":false,"dataFileCount":3,"logFileCount":1,
+               "dataFileSizeKb":5242880,"logFileSizeKb":1048576},
              "domains":{}}
             """;
 
