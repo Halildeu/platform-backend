@@ -8,6 +8,8 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.schema.model.CheckConstraintInfo;
+import com.example.schema.model.DefaultConstraintInfo;
 import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.UniqueConstraintInfo;
 import com.example.schema.model.UniqueConstraintType;
@@ -161,5 +163,82 @@ class SchemaExtractServiceConstraintExtractionTest {
 
         assertThat(uc.isFiltered()).isTrue();
         assertThat(uc.filterDefinition()).isEqualTo("([EXTERNAL_REF] IS NOT NULL)");
+    }
+
+    // --- check constraints (B1-3 / M3) ---
+
+    private static ResultSet ccRow(String name, String column, String definition,
+                                   boolean disabled, boolean notTrusted) throws SQLException {
+        ResultSet r = mock(ResultSet.class);
+        when(r.getString("cc_name")).thenReturn(name);
+        when(r.getString("schema_name")).thenReturn("dbo");
+        when(r.getString("table_name")).thenReturn("INVOICE");
+        when(r.getString("column_name")).thenReturn(column);
+        when(r.getString("definition")).thenReturn(definition);
+        when(r.getBoolean("is_disabled")).thenReturn(disabled);
+        when(r.getBoolean("is_not_trusted")).thenReturn(notTrusted);
+        return r;
+    }
+
+    @Test
+    void checkConstraint_tableLevelHasNullColumnName() throws SQLException {
+        // parent_column_id = 0 → LEFT JOIN yields null column_name
+        stubQuery(List.of(ccRow("CK_TABLE_LEVEL", null, "([START_DATE]<[END_DATE])",
+                false, false)));
+
+        CheckConstraintInfo cc = service.extractCheckConstraints("workcube_mikrolink").get(0);
+
+        assertThat(cc.columnName()).isNull();
+        assertThat(cc.isTableLevel()).isTrue();
+        assertThat(cc.definition()).isEqualTo("([START_DATE]<[END_DATE])");
+    }
+
+    @Test
+    void checkConstraint_columnLevelCarriesColumnName() throws SQLException {
+        stubQuery(List.of(ccRow("CK_AMOUNT", "AMOUNT", "([AMOUNT]>=(0))", false, false)));
+
+        CheckConstraintInfo cc = service.extractCheckConstraints("workcube_mikrolink").get(0);
+
+        assertThat(cc.columnName()).isEqualTo("AMOUNT");
+        assertThat(cc.isTableLevel()).isFalse();
+    }
+
+    @Test
+    void checkConstraint_disabledAndUntrustedFlagsCarried() throws SQLException {
+        stubQuery(List.of(ccRow("CK_FLAGS", "X", "([X]>(0))", true, true)));
+
+        CheckConstraintInfo cc = service.extractCheckConstraints("workcube_mikrolink").get(0);
+
+        assertThat(cc.isDisabled()).isTrue();
+        assertThat(cc.isNotTrusted()).isTrue();
+    }
+
+    // --- default constraints (B1-3 / M3) ---
+
+    private static ResultSet dcRow(String name, String column, String definition)
+            throws SQLException {
+        ResultSet r = mock(ResultSet.class);
+        when(r.getString("dc_name")).thenReturn(name);
+        when(r.getString("schema_name")).thenReturn("dbo");
+        when(r.getString("table_name")).thenReturn("INVOICE");
+        when(r.getString("column_name")).thenReturn(column);
+        when(r.getString("definition")).thenReturn(definition);
+        return r;
+    }
+
+    @Test
+    void defaultConstraint_carriesNameColumnAndRawDefinition() throws SQLException {
+        // The constraint NAME is what ColumnInfo.defaultExpression lacks —
+        // it is required for migration DROP CONSTRAINT. definition is the
+        // same raw sys.default_constraints.definition string that B1-1
+        // surfaces on ColumnInfo.defaultExpression (consistent source).
+        stubQuery(List.of(dcRow("DF_INVOICE_STATUS", "STATUS", "((1))")));
+
+        DefaultConstraintInfo dc = service.extractDefaultConstraints("workcube_mikrolink").get(0);
+
+        assertThat(dc.name()).isEqualTo("DF_INVOICE_STATUS");
+        assertThat(dc.columnName()).isEqualTo("STATUS");
+        assertThat(dc.definition()).isEqualTo("((1))");
+        assertThat(dc.table()).isEqualTo("INVOICE");
     }
 }
