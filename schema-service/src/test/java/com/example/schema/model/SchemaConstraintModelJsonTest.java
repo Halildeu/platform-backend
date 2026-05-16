@@ -17,8 +17,8 @@ import org.junit.jupiter.api.Test;
  *       round-trip incl. composite column order;</li>
  *   <li>derived {@code isComposite()} / {@code isFiltered()} stay out of
  *       the JSON ({@code @JsonIgnore});</li>
- *   <li>{@link SchemaSnapshot} legacy 6-arg constructor → empty inventory;</li>
- *   <li>8-arg snapshot serializes the inventory additively.</li>
+ *   <li>{@link SchemaSnapshot.Builder} defaults → empty inventory;</li>
+ *   <li>a builder-set snapshot serializes the inventory additively.</li>
  * </ul>
  */
 class SchemaConstraintModelJsonTest {

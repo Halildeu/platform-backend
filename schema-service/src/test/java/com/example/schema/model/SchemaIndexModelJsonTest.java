@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Test;
  *       JSON ({@code @JsonIgnore});</li>
  *   <li>{@code has_filter=true} with a {@code null} predicate still round-trips
  *       as filtered;</li>
- *   <li>{@link SchemaSnapshot} 11-arg constructor serializes {@code indexes}
- *       additively; the new legacy 10-arg constructor yields an empty list.</li>
+ *   <li>a builder-set {@link SchemaSnapshot} serializes {@code indexes}
+ *       additively; {@link SchemaSnapshot.Builder} defaults yield an empty list.</li>
  * </ul>
  */
 class SchemaIndexModelJsonTest {
