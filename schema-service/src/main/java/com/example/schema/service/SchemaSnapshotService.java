@@ -7,6 +7,7 @@ import com.example.schema.model.IndexInfo;
 import com.example.schema.model.ObjectInfo;
 import com.example.schema.model.Relationship;
 import com.example.schema.model.SchemaSnapshot;
+import com.example.schema.model.StorageInfo;
 import com.example.schema.model.TableInfo;
 import com.example.schema.model.UniqueConstraintInfo;
 import com.example.schema.service.discovery.RelationshipDiscoveryService;
@@ -93,6 +94,15 @@ public class SchemaSnapshotService {
         } catch (Exception e) {
             log.warn("Object extraction failed: {}", e.getMessage());
         }
+        // Authoritative per-table storage footprint (B1-6 — M6). sys.dm_db_
+        // partition_stats is a DMV; if the account lacks VIEW DATABASE STATE
+        // the read fails and storage stays empty (source-ready, not live-ready).
+        List<StorageInfo> storage = List.of();
+        try {
+            storage = extractService.extractStorage(schema);
+        } catch (Exception e) {
+            log.warn("Storage extraction failed: {}", e.getMessage());
+        }
 
         // 3. Discover relationships (heuristic + authoritative FK compat layer)
         List<Relationship> relationships = discoveryService.discoverAll(tables, viewDefs, foreignKeys);
@@ -143,23 +153,23 @@ public class SchemaSnapshotService {
 
         int totalCols = tables.values().stream().mapToInt(t -> t.columns().size()).sum();
 
-        SchemaSnapshot snapshot = new SchemaSnapshot(
-            "1.1",
-            new SchemaSnapshot.Metadata(
+        SchemaSnapshot snapshot = SchemaSnapshot.builder()
+            .version("1.1")
+            .metadata(new SchemaSnapshot.Metadata(
                 "mssql", "", "", schema, Instant.now(),
-                tables.size(), totalCols, relationships.size(), domains.size()
-            ),
-            tables,
-            relationships,
-            foreignKeys,
-            uniqueConstraints,
-            checkConstraints,
-            defaultConstraints,
-            indexes,
-            objects,
-            domains,
-            new SchemaSnapshot.Analysis(deadTables, hubTables)
-        );
+                tables.size(), totalCols, relationships.size(), domains.size()))
+            .tables(tables)
+            .relationships(relationships)
+            .foreignKeys(foreignKeys)
+            .uniqueConstraints(uniqueConstraints)
+            .checkConstraints(checkConstraints)
+            .defaultConstraints(defaultConstraints)
+            .indexes(indexes)
+            .objects(objects)
+            .storage(storage)
+            .domains(domains)
+            .analysis(new SchemaSnapshot.Analysis(deadTables, hubTables))
+            .build();
 
         long elapsed = System.currentTimeMillis() - start;
         log.info("Snapshot built in {}ms: {} tables, {} columns, {} relationships, {} domains",
