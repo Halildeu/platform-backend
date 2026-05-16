@@ -104,12 +104,12 @@ class SchemaIndexModelJsonTest {
                 "IX_1", "dbo", "ORDERS", "NONCLUSTERED",
                 List.of(new IndexInfo.KeyColumn("ORDER_DATE", 1, false)),
                 List.of(), false, false, false, false, null, 0, false, false);
-        SchemaSnapshot snap = new SchemaSnapshot(
-                "1.1",
-                new SchemaSnapshot.Metadata("mssql", "", "", "s", Instant.now(), 0, 0, 0, 0),
-                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-                List.of(idx), Map.of(),
-                new SchemaSnapshot.Analysis(List.of(), List.of()));
+        SchemaSnapshot snap = SchemaSnapshot.builder()
+                .version("1.1")
+                .metadata(new SchemaSnapshot.Metadata("mssql", "", "", "s", Instant.now(), 0, 0, 0, 0))
+                .indexes(List.of(idx))
+                .analysis(new SchemaSnapshot.Analysis(List.of(), List.of()))
+                .build();
 
         String json = mapper.writeValueAsString(snap);
         assertThat(json).contains("\"indexes\"");
@@ -121,12 +121,12 @@ class SchemaIndexModelJsonTest {
     }
 
     @Test
-    void schemaSnapshot_legacy10ArgConstructor_yieldsEmptyIndexes() {
-        SchemaSnapshot snap = new SchemaSnapshot(
-                "1.1",
-                new SchemaSnapshot.Metadata("mssql", "", "", "s", Instant.now(), 0, 0, 0, 0),
-                Map.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-                Map.of(), new SchemaSnapshot.Analysis(List.of(), List.of()));
+    void schemaSnapshot_builderDefaults_yieldEmptyIndexes() {
+        SchemaSnapshot snap = SchemaSnapshot.builder()
+                .version("1.1")
+                .metadata(new SchemaSnapshot.Metadata("mssql", "", "", "s", Instant.now(), 0, 0, 0, 0))
+                .analysis(new SchemaSnapshot.Analysis(List.of(), List.of()))
+                .build();
 
         assertThat(snap.indexes()).isEmpty();
     }
