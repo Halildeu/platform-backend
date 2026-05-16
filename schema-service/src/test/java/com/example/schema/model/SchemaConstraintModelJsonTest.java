@@ -69,6 +69,8 @@ class SchemaConstraintModelJsonTest {
 
         assertThat(snap.foreignKeys()).isEmpty();
         assertThat(snap.uniqueConstraints()).isEmpty();
+        assertThat(snap.checkConstraints()).isEmpty();
+        assertThat(snap.defaultConstraints()).isEmpty();
     }
 
     @Test
@@ -95,5 +97,59 @@ class SchemaConstraintModelJsonTest {
         assertThat(back.foreignKeys().get(0).name()).isEqualTo("FK_1");
         assertThat(back.uniqueConstraints().get(0).constraintType())
                 .isEqualTo(UniqueConstraintType.UNIQUE_CONSTRAINT);
+    }
+
+    // --- B1-3 / M3: check + default constraint inventory ---
+
+    @Test
+    void checkConstraintInfo_roundTripPreservesTableLevelNull() throws Exception {
+        CheckConstraintInfo tableLevel = new CheckConstraintInfo(
+                "CK_DATES", "dbo", "INVOICE", null,
+                "([START_DATE]<[END_DATE])", false, true);
+
+        String json = mapper.writeValueAsString(tableLevel);
+        CheckConstraintInfo back = mapper.readValue(json, CheckConstraintInfo.class);
+
+        assertThat(back).isEqualTo(tableLevel);
+        assertThat(back.columnName()).isNull();
+        assertThat(back.isTableLevel()).isTrue();
+        // derived isTableLevel() must NOT leak into the wire contract
+        assertThat(json).doesNotContain("\"tableLevel\"");
+    }
+
+    @Test
+    void defaultConstraintInfo_roundTrip() throws Exception {
+        DefaultConstraintInfo dc = new DefaultConstraintInfo(
+                "DF_INVOICE_STATUS", "dbo", "INVOICE", "STATUS", "((1))");
+
+        String json = mapper.writeValueAsString(dc);
+        DefaultConstraintInfo back = mapper.readValue(json, DefaultConstraintInfo.class);
+
+        assertThat(back).isEqualTo(dc);
+        assertThat(back.name()).isEqualTo("DF_INVOICE_STATUS");
+        assertThat(back.definition()).isEqualTo("((1))");
+    }
+
+    @Test
+    void schemaSnapshot_serializesCheckAndDefaultInventoryAdditively() throws Exception {
+        CheckConstraintInfo cc = new CheckConstraintInfo(
+                "CK_AMOUNT", "dbo", "INVOICE", "AMOUNT", "([AMOUNT]>=(0))", false, false);
+        DefaultConstraintInfo dc = new DefaultConstraintInfo(
+                "DF_STATUS", "dbo", "INVOICE", "STATUS", "((1))");
+        SchemaSnapshot snap = new SchemaSnapshot(
+                "1.1",
+                new SchemaSnapshot.Metadata("mssql", "", "", "s", Instant.now(), 0, 0, 0, 0),
+                Map.of(), List.of(), List.of(), List.of(),
+                List.of(cc), List.of(dc), Map.of(),
+                new SchemaSnapshot.Analysis(List.of(), List.of()));
+
+        String json = mapper.writeValueAsString(snap);
+        assertThat(json).contains("\"checkConstraints\"").contains("\"defaultConstraints\"");
+
+        SchemaSnapshot back = mapper.readValue(json, SchemaSnapshot.class);
+        assertThat(back.checkConstraints()).hasSize(1);
+        assertThat(back.defaultConstraints()).hasSize(1);
+        assertThat(back.checkConstraints().get(0).name()).isEqualTo("CK_AMOUNT");
+        assertThat(back.defaultConstraints().get(0).columnName()).isEqualTo("STATUS");
     }
 }

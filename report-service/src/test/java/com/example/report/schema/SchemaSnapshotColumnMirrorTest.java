@@ -79,11 +79,12 @@ class SchemaSnapshotColumnMirrorTest {
     }
 
     @Test
-    void b1_2TopLevelInventoryFields_ignoredByMirror() throws Exception {
-        // schema-service B1-2 adds top-level `foreignKeys` /
-        // `uniqueConstraints`. The mirror only reads `tables`, so these
-        // new top-level fields must be silently ignored — no mirror
-        // code change required (@JsonIgnoreProperties(ignoreUnknown=true)).
+    void b1TopLevelInventoryFields_ignoredByMirror() throws Exception {
+        // schema-service B1-2/B1-3 add top-level `foreignKeys` /
+        // `uniqueConstraints` / `checkConstraints` / `defaultConstraints`.
+        // The mirror only reads `tables`, so these new top-level fields
+        // must be silently ignored — no mirror code change required
+        // (@JsonIgnoreProperties(ignoreUnknown=true)).
         String json = """
             {"version":"1.1",
              "tables":{"ORDERS":{"name":"ORDERS","schema":"workcube_mikrolink",
@@ -96,6 +97,11 @@ class SchemaSnapshotColumnMirrorTest {
                "deleteAction":"NO_ACTION","updateAction":"NO_ACTION"}],
              "uniqueConstraints":[{"name":"UQ_1","schema":"dbo","table":"COMPANY",
                "columns":["CODE"],"constraintType":"UNIQUE_INDEX","filterDefinition":null}],
+             "checkConstraints":[{"name":"CK_1","schema":"dbo","table":"ORDERS",
+               "columnName":"AMOUNT","definition":"([AMOUNT]>=(0))",
+               "isDisabled":false,"isNotTrusted":false}],
+             "defaultConstraints":[{"name":"DF_1","schema":"dbo","table":"ORDERS",
+               "columnName":"STATUS","definition":"((1))"}],
              "domains":{}}
             """;
 

@@ -1,6 +1,8 @@
 package com.example.schema.service;
 
+import com.example.schema.model.CheckConstraintInfo;
 import com.example.schema.model.ColumnInfo;
+import com.example.schema.model.DefaultConstraintInfo;
 import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.TableInfo;
 import com.example.schema.model.UniqueConstraintInfo;
@@ -334,6 +336,79 @@ public class SchemaExtractService {
             a.name, a.schema, a.table, List.copyOf(a.columns),
             a.constraintType, a.filterDefinition)));
         log.info("Extracted {} unique constraints from schema '{}'", result.size(), targetSchema);
+        return result;
+    }
+
+    /**
+     * Phase B1-3 (capability M3 — Codex 019e2d7d, ADR-0020 §2.3):
+     * authoritative {@code CHECK} constraint extraction from
+     * {@code sys.check_constraints}. {@code parent_column_id = 0} →
+     * table-level check ({@code columnName} null via the LEFT JOIN);
+     * {@code definition} is the raw CHECK SQL, not parsed.
+     */
+    @Cacheable(value = "checkConstraints", key = "#schema")
+    public List<CheckConstraintInfo> extractCheckConstraints(String schema) {
+        String targetSchema = schema != null ? schema : defaultSchema;
+        String sql = """
+            SELECT cc.name AS cc_name, sch.name AS schema_name, t.name AS table_name,
+                   col.name AS column_name, cc.definition,
+                   cc.is_disabled, cc.is_not_trusted
+            FROM sys.check_constraints cc
+            JOIN sys.tables t ON t.object_id = cc.parent_object_id
+            JOIN sys.schemas sch ON sch.schema_id = t.schema_id
+            LEFT JOIN sys.columns col ON col.object_id = cc.parent_object_id
+                AND col.column_id = cc.parent_column_id
+            WHERE sch.name = :schema
+            ORDER BY t.name, cc.name
+            """;
+
+        List<CheckConstraintInfo> result = new ArrayList<>();
+        jdbc.query(sql, Map.of("schema", targetSchema), rs -> {
+            result.add(new CheckConstraintInfo(
+                rs.getString("cc_name"),
+                rs.getString("schema_name"),
+                rs.getString("table_name"),
+                rs.getString("column_name"),
+                rs.getString("definition"),
+                rs.getBoolean("is_disabled"),
+                rs.getBoolean("is_not_trusted")));
+        });
+        log.info("Extracted {} check constraints from schema '{}'", result.size(), targetSchema);
+        return result;
+    }
+
+    /**
+     * Phase B1-3 (capability M3 — Codex 019e2d7d, ADR-0020 §2.3):
+     * authoritative {@code DEFAULT} constraint extraction from
+     * {@code sys.default_constraints}. Carries the constraint name (needed
+     * for migration {@code DROP}) — distinct from the column-ergonomic
+     * {@link ColumnInfo#defaultExpression()}.
+     */
+    @Cacheable(value = "defaultConstraints", key = "#schema")
+    public List<DefaultConstraintInfo> extractDefaultConstraints(String schema) {
+        String targetSchema = schema != null ? schema : defaultSchema;
+        String sql = """
+            SELECT dc.name AS dc_name, sch.name AS schema_name, t.name AS table_name,
+                   col.name AS column_name, dc.definition
+            FROM sys.default_constraints dc
+            JOIN sys.tables t ON t.object_id = dc.parent_object_id
+            JOIN sys.schemas sch ON sch.schema_id = t.schema_id
+            JOIN sys.columns col ON col.object_id = dc.parent_object_id
+                AND col.column_id = dc.parent_column_id
+            WHERE sch.name = :schema
+            ORDER BY t.name, dc.name
+            """;
+
+        List<DefaultConstraintInfo> result = new ArrayList<>();
+        jdbc.query(sql, Map.of("schema", targetSchema), rs -> {
+            result.add(new DefaultConstraintInfo(
+                rs.getString("dc_name"),
+                rs.getString("schema_name"),
+                rs.getString("table_name"),
+                rs.getString("column_name"),
+                rs.getString("definition")));
+        });
+        log.info("Extracted {} default constraints from schema '{}'", result.size(), targetSchema);
         return result;
     }
 

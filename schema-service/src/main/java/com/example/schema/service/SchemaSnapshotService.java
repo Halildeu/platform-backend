@@ -1,5 +1,7 @@
 package com.example.schema.service;
 
+import com.example.schema.model.CheckConstraintInfo;
+import com.example.schema.model.DefaultConstraintInfo;
 import com.example.schema.model.ForeignKeyInfo;
 import com.example.schema.model.Relationship;
 import com.example.schema.model.SchemaSnapshot;
@@ -62,6 +64,19 @@ public class SchemaSnapshotService {
         } catch (Exception e) {
             log.warn("Unique constraint extraction failed: {}", e.getMessage());
         }
+        // Authoritative check + default constraint inventory (B1-3 — M3).
+        List<CheckConstraintInfo> checkConstraints = List.of();
+        try {
+            checkConstraints = extractService.extractCheckConstraints(schema);
+        } catch (Exception e) {
+            log.warn("Check constraint extraction failed: {}", e.getMessage());
+        }
+        List<DefaultConstraintInfo> defaultConstraints = List.of();
+        try {
+            defaultConstraints = extractService.extractDefaultConstraints(schema);
+        } catch (Exception e) {
+            log.warn("Default constraint extraction failed: {}", e.getMessage());
+        }
 
         // 3. Discover relationships (heuristic + authoritative FK compat layer)
         List<Relationship> relationships = discoveryService.discoverAll(tables, viewDefs, foreignKeys);
@@ -122,6 +137,8 @@ public class SchemaSnapshotService {
             relationships,
             foreignKeys,
             uniqueConstraints,
+            checkConstraints,
+            defaultConstraints,
             domains,
             new SchemaSnapshot.Analysis(deadTables, hubTables)
         );
