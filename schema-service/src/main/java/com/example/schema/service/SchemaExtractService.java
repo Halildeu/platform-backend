@@ -505,8 +505,9 @@ public class SchemaExtractService {
      * ({@code is_ms_shipped = 0}) — metadata only; programmability bodies are
      * capability M8 (B2). The object owner falls back to the schema owner when
      * {@code sys.objects.principal_id} is null (the common case). ALL
-     * object-level extended properties are collected, not only
-     * {@code MS_Description}.
+     * object-level extended properties are collected (key-sorted for a
+     * deterministic snapshot; a {@code NULL} property value is preserved),
+     * not only {@code MS_Description}.
      */
     @Cacheable(value = "objects", key = "#schema")
     public List<ObjectInfo> extractObjects(String schema) {
@@ -557,7 +558,12 @@ public class SchemaExtractService {
         List<ObjectInfo> result = new ArrayList<>();
         acc.values().forEach(a -> result.add(new ObjectInfo(
             a.name, a.schema, a.objectType, a.objectId, a.owner,
-            a.createDate, a.modifyDate, Map.copyOf(a.extendedProperties))));
+            a.createDate, a.modifyDate,
+            // Unmodifiable TreeMap: deterministic key order for stable
+            // snapshot artifacts, and tolerates a null extended-property
+            // value (sql_variant NULL) — Map.copyOf would reject it and
+            // collapse the whole object inventory via the non-fatal catch.
+            Collections.unmodifiableMap(new TreeMap<>(a.extendedProperties)))));
         log.info("Extracted {} objects from schema '{}'", result.size(), targetSchema);
         return result;
     }

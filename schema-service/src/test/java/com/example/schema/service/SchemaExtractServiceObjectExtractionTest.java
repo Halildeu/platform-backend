@@ -162,8 +162,10 @@ class SchemaExtractServiceObjectExtractionTest {
     }
 
     @Test
-    void multipleExtendedProperties_allCollectedIntoMap() throws SQLException {
-        // Two rows, same object, distinct extended properties.
+    void multipleExtendedProperties_allCollectedKeySorted() throws SQLException {
+        // Two rows, same object, distinct extended properties. The map is
+        // key-sorted so snapshot artifacts stay deterministic regardless of
+        // the order sys.extended_properties returns the rows.
         ObjectInfo o = extract(
                 new Row().object("ORDERS").extProp("MS_Description", "Order header"),
                 new Row().object("ORDERS").extProp("Custom_Tag", "audit-critical")).get(0);
@@ -172,6 +174,8 @@ class SchemaExtractServiceObjectExtractionTest {
                 .containsEntry("MS_Description", "Order header")
                 .containsEntry("Custom_Tag", "audit-critical")
                 .hasSize(2);
+        assertThat(o.extendedProperties().keySet())
+                .containsExactly("Custom_Tag", "MS_Description");
         assertThat(o.description()).isEqualTo("Order header");
     }
 
@@ -182,6 +186,20 @@ class SchemaExtractServiceObjectExtractionTest {
 
         assertThat(o.description()).isNull();
         assertThat(o.extendedProperties()).containsEntry("Custom_Tag", "audit-critical");
+    }
+
+    @Test
+    void extendedPropertyWithNullValue_doesNotCollapseInventory() throws SQLException {
+        // sys.extended_properties.value is sql_variant — it can be NULL.
+        // A null value must reach the map, not NPE the extraction:
+        // Map.copyOf rejects null values, so the inventory uses an
+        // unmodifiable TreeMap instead.
+        List<ObjectInfo> objects = extract(new Row().object("ORDERS")
+                .extProp("Audit_Flag", null));
+
+        assertThat(objects).hasSize(1);
+        assertThat(objects.get(0).extendedProperties()).containsKey("Audit_Flag");
+        assertThat(objects.get(0).extendedProperties().get("Audit_Flag")).isNull();
     }
 
     // --- grouping ---
