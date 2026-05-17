@@ -153,6 +153,51 @@ class OpenFgaAuthzMeBuilderTest {
         assertTrue(r.getPermissions().contains("dashboards.satis-ozet.view"));
     }
 
+    // ---- Codex 019e34df: report_group gate-3 contract ---------------------
+
+    @Test
+    void nonAdmin_reportGroupListObjectsPopulatesGroupKeysInReportsMap() {
+        // ReportAccessEvaluator gate-3 looks up the report-GROUP key
+        // ("HR_REPORTS" …) in the reports map; the builder must populate
+        // those group keys from the report_group OpenFGA type, alongside
+        // the individual report object ids from block (5).
+        Jwt jwt = stubLookup("1205");
+        when(versionProvider.getCurrentVersion()).thenReturn(1L);
+        when(openFga.check(any(), any(), any(), any())).thenReturn(false);
+        when(openFga.listObjects(eq("1205"), eq("can_view"), eq("report")))
+                .thenReturn(List.of("HR_ANALYTICS"));
+        when(openFga.listObjects(eq("1205"), eq("can_view"), eq("report_group")))
+                .thenReturn(List.of("HR_REPORTS", "FINANCE_REPORTS"));
+
+        AuthzMeResponse r = builder.getAuthzMe(jwt);
+
+        // individual report id from block (5)
+        assertTrue(r.getReports().containsKey("HR_ANALYTICS"));
+        // report-GROUP keys from block (5b) — required for gate-3 to pass
+        assertEquals("ALLOW", r.getReports().get("HR_REPORTS"),
+                "report_group grant must surface in the reports map so "
+                        + "ReportAccessEvaluator gate-3 canViewReport() matches");
+        assertEquals("ALLOW", r.getReports().get("FINANCE_REPORTS"));
+    }
+
+    @Test
+    void nonAdmin_noReportGroupGrants_leavesReportsMapWithoutGroupKeys() {
+        // Deploy-safety: pre-migration the model has no report_group type;
+        // listObjects degrades to empty and the builder simply adds nothing.
+        Jwt jwt = stubLookup("1206");
+        when(versionProvider.getCurrentVersion()).thenReturn(1L);
+        when(openFga.check(any(), any(), any(), any())).thenReturn(false);
+        when(openFga.listObjects(eq("1206"), eq("can_view"), eq("report")))
+                .thenReturn(List.of("HR_ANALYTICS"));
+        when(openFga.listObjects(eq("1206"), eq("can_view"), eq("report_group")))
+                .thenReturn(List.of());
+
+        AuthzMeResponse r = builder.getAuthzMe(jwt);
+
+        assertTrue(r.getReports().containsKey("HR_ANALYTICS"));
+        assertFalse(r.getReports().containsKey("HR_REPORTS"));
+    }
+
     @Test
     void nonAdmin_scopeMarkerProbed() {
         Jwt jwt = stubLookup("55");
