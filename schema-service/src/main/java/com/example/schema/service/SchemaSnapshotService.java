@@ -1,5 +1,6 @@
 package com.example.schema.service;
 
+import com.example.schema.exception.SnapshotUnavailableException;
 import com.example.schema.model.ChangeDataInfo;
 import com.example.schema.model.CheckConstraintInfo;
 import com.example.schema.model.DatabaseOptionsInfo;
@@ -44,8 +45,20 @@ public class SchemaSnapshotService {
         log.info("Building schema snapshot for '{}'...", schema);
         long start = System.currentTimeMillis();
 
-        // 1. Extract tables
-        Map<String, TableInfo> tables = extractService.extractTables(schema);
+        // 1. Extract tables — MANDATORY base extraction. Q3 (Codex 019e335c):
+        // after P1, extractTables = extractBaseTables (fatal) + enrichTables
+        // (non-fatal). A base-extraction failure genuinely blocks the snapshot;
+        // wrap it in a domain exception so the web layer (SchemaExceptionHandler)
+        // answers a controlled HTTP 503 instead of a generic 500. The eight B1
+        // inventory reads below stay non-fatal — they degrade in place.
+        Map<String, TableInfo> tables;
+        try {
+            tables = extractService.extractTables(schema);
+        } catch (Exception e) {
+            log.error("Base table extraction failed for schema '{}' — "
+                + "snapshot cannot be built", schema, e);
+            throw new SnapshotUnavailableException(schema, e);
+        }
 
         // 2. Extract view definitions for parsing
         Map<String, String> viewDefs = Collections.emptyMap();
