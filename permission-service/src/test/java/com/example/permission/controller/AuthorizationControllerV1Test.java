@@ -402,4 +402,167 @@ class AuthorizationControllerV1Test {
             assertTrue(ex.getReason() != null && ex.getReason().contains("scopeRefId"));
         }
     }
+
+    // ---- 2026-05-17 (Codex thread 019e34df): /authz/me REPORT projection invariant ----
+    //
+    // Regression guard for the multi-layer authz inconsistency found via
+    // browser impersonation of the `d35-granted` persona: REPORT_VIEWER seeds
+    // only PermissionType.REPORT granules, so `/authz/me.reports` was full of
+    // ALLOW entries while `modules` had no REPORT key (FE hid the nav) and the
+    // legacy `permissions` set had no REPORT_VIEW (report-service denied all
+    // reports → /api/v1/reports = 0). The three surfaces must now agree.
+
+    @org.junit.jupiter.api.Nested
+    @org.junit.jupiter.api.DisplayName("Codex 019e34df: /authz/me REPORT module/permission invariant")
+    class ReportModuleInvariant {
+
+        private Jwt jwt(String subject) {
+            return Jwt.withTokenValue("token")
+                    .header("alg", "none")
+                    .subject(subject)
+                    .claim("permissions", List.of())
+                    .issuedAt(Instant.now())
+                    .expiresAt(Instant.now().plusSeconds(300))
+                    .build();
+        }
+
+        private com.example.permission.model.UserRoleAssignment assignment(long roleId, String roleName) {
+            var role = new com.example.permission.model.Role();
+            role.setId(roleId);
+            role.setName(roleName);
+            var a = new com.example.permission.model.UserRoleAssignment();
+            a.setRole(role);
+            return a;
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("positive REPORT grant surfaces modules.REPORT=VIEW + permissions REPORT_VIEW even when no MODULE:REPORT granule exists")
+        void reportGrant_surfacesModuleAndPermission() {
+            Jwt token = jwt("1205");
+            when(authenticatedUserLookupService.resolve(token))
+                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                            1205L, "1205", "d35-granted@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(1205L)).thenReturn(Map.of());
+            // resolvePermissions: USER_MANAGEMENT module tuple resolved; the DB
+            // legacy permissions deliberately omit REPORT_VIEW so the assertion
+            // proves the projection invariant *injected* it.
+            when(catalogService.getModuleKeys()).thenReturn(List.of("USER_MANAGEMENT", "REPORT"));
+            when(authzService.check("1205", "can_manage", "module", "USER_MANAGEMENT")).thenReturn(false);
+            when(authzService.check("1205", "can_view", "module", "USER_MANAGEMENT")).thenReturn(true);
+            when(authzService.check("1205", "can_manage", "module", "REPORT")).thenReturn(false);
+            when(authzService.check("1205", "can_view", "module", "REPORT")).thenReturn(false);
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("VIEW_USERS"));
+            when(permissionService.getAssignments(1205L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            // granule path: REPORT_VIEWER role → REPORT-type grant only, no MODULE:REPORT
+            when(assignmentRepository.findActiveAssignments(1205L))
+                    .thenReturn(List.of(assignment(50L, "REPORT_VIEWER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(Map.of("REPORT:FINANCE_REPORTS",
+                            new TupleSyncService.ResolvedGrant(
+                                    com.example.permission.model.GrantType.VIEW, "REPORT_VIEWER")));
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("ALLOW", body.getReports().get("FINANCE_REPORTS"));
+            assertEquals("VIEW", body.getModules().get("REPORT"),
+                    "positive REPORT grant must surface modules.REPORT");
+            assertTrue(body.getPermissions().contains("REPORT_VIEW"),
+                    "positive REPORT grant must surface REPORT_VIEW so report-service grants reports");
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("MANAGE REPORT grant surfaces modules.REPORT=MANAGE + REPORT_EXPORT/REPORT_MANAGE")
+        void reportManageGrant_surfacesManage() {
+            Jwt token = jwt("1206");
+            when(authenticatedUserLookupService.resolve(token))
+                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                            1206L, "1206", "report-mgr@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(1206L)).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of());
+            when(permissionService.getAssignments(1206L, null, null, null)).thenReturn(List.of());
+            when(assignmentRepository.findActiveAssignments(1206L))
+                    .thenReturn(List.of(assignment(51L, "REPORT_MANAGER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(Map.of("REPORT:HR_REPORTS",
+                            new TupleSyncService.ResolvedGrant(
+                                    com.example.permission.model.GrantType.MANAGE, "REPORT_MANAGER")));
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("MANAGE", body.getModules().get("REPORT"));
+            assertTrue(body.getPermissions().contains("REPORT_VIEW"));
+            assertTrue(body.getPermissions().contains("REPORT_EXPORT"));
+            assertTrue(body.getPermissions().contains("REPORT_MANAGE"));
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("explicit MODULE:REPORT DENY granule wins — module stays DENY, REPORT_VIEW not injected")
+        void reportModuleDeny_winsOverReportGrant() {
+            Jwt token = jwt("1207");
+            when(authenticatedUserLookupService.resolve(token))
+                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                            1207L, "1207", "report-denied@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(1207L)).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of());
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("VIEW_USERS"));
+            when(permissionService.getAssignments(1207L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            when(assignmentRepository.findActiveAssignments(1207L))
+                    .thenReturn(List.of(assignment(52L, "REPORT_VIEWER")));
+            when(rolePermissionRepository.findByRoleIdIn(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(List.of());
+            java.util.Map<String, TupleSyncService.ResolvedGrant> effective = new java.util.LinkedHashMap<>();
+            effective.put("REPORT:FINANCE_REPORTS", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.VIEW, "REPORT_VIEWER"));
+            effective.put("MODULE:REPORT", new TupleSyncService.ResolvedGrant(
+                    com.example.permission.model.GrantType.DENY, "RESTRICTED"));
+            when(tupleSyncService.resolveEffectiveGrants(org.mockito.ArgumentMatchers.anyList()))
+                    .thenReturn(effective);
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            assertEquals("DENY", body.getModules().get("REPORT"),
+                    "explicit MODULE:REPORT DENY must not be overwritten by the invariant");
+            org.junit.jupiter.api.Assertions.assertFalse(body.getPermissions().contains("REPORT_VIEW"),
+                    "REPORT_VIEW must not be injected when the REPORT module is explicitly denied");
+        }
+
+        @Test
+        @org.junit.jupiter.api.DisplayName("resolvePermissions merges OpenFGA module grants with legacy DB permissions instead of short-circuiting")
+        void resolvePermissions_mergesOpenFgaAndDbPermissions() {
+            Jwt token = jwt("1208");
+            when(authenticatedUserLookupService.resolve(token))
+                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                            1208L, "1208", "merge@example.com"));
+            when(authorizationQueryService.getUserScopeSummary(1208L)).thenReturn(Map.of());
+            when(catalogService.getModuleKeys()).thenReturn(List.of("USER_MANAGEMENT"));
+            when(authzService.check("1208", "can_manage", "module", "USER_MANAGEMENT")).thenReturn(false);
+            when(authzService.check("1208", "can_view", "module", "USER_MANAGEMENT")).thenReturn(true);
+            PermissionResponse dbAssignment = new PermissionResponse();
+            dbAssignment.setPermissions(Set.of("REPORT_VIEW", "scope.all-companies-fin"));
+            when(permissionService.getAssignments(1208L, null, null, null))
+                    .thenReturn(List.of(dbAssignment));
+            when(assignmentRepository.findActiveAssignments(1208L)).thenReturn(List.of());
+
+            AuthzMeResponseDto body = controller.getMe(token).getBody();
+
+            assertNotNull(body);
+            // Pre-fix: a non-empty OpenFGA result short-circuited and returned
+            // only {USER_MANAGEMENT}, dropping REPORT_VIEW + scope.* — so
+            // report-service denied every report.
+            assertTrue(body.getPermissions().contains("USER_MANAGEMENT"));
+            assertTrue(body.getPermissions().contains("REPORT_VIEW"));
+            assertTrue(body.getPermissions().contains("scope.all-companies-fin"));
+        }
+    }
 }

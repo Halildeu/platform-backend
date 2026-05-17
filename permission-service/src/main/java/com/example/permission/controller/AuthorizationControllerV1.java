@@ -522,6 +522,13 @@ public class AuthorizationControllerV1 {
         Map<String, String> actions = new LinkedHashMap<>();
         Map<String, String> reports = new LinkedHashMap<>();
 
+        // 2026-05-17 (Codex thread 019e34df REVISE): track whether the user
+        // owns any positive REPORT-type grant so the projection invariant
+        // below can surface a matching REPORT *module* + REPORT_VIEW
+        // permission (see applyReportModuleInvariant).
+        boolean anyReportPositive = false;
+        boolean anyReportManage = false;
+
         for (var entry : effective.entrySet()) {
             String[] parts = entry.getKey().split(":", 2);
             PermissionType type = PermissionType.valueOf(parts[0]);
@@ -532,6 +539,14 @@ public class AuthorizationControllerV1 {
                 case MODULE -> modules.put(key, grantStr);
                 case ACTION -> actions.put(key, grantStr);
                 case REPORT -> {
+                    com.example.permission.model.GrantType reportGrant =
+                            entry.getValue().grantType();
+                    if (reportGrant != com.example.permission.model.GrantType.DENY) {
+                        anyReportPositive = true;
+                        if (reportGrant == com.example.permission.model.GrantType.MANAGE) {
+                            anyReportManage = true;
+                        }
+                    }
                     // R16 PR-B-2 (Codex 019e2a13 REVISE P0/P1 absorb):
                     // - Key suffix-only (reports.GROUP → GROUP) — FE
                     //   canViewReport(reportGroup) prefix'siz arıyor
@@ -556,6 +571,55 @@ public class AuthorizationControllerV1 {
         dto.setModules(modules);
         dto.setActions(actions);
         dto.setReports(reports);
+
+        applyReportModuleInvariant(dto, modules, anyReportPositive, anyReportManage);
+    }
+
+    /**
+     * /authz/me projection invariant (Codex thread {@code 019e34df} REVISE).
+     *
+     * <p>A user who owns a positive {@code REPORT}-type grant gets a populated
+     * {@code reports} map, but {@code REPORT_VIEWER} (and the {@code FINANCE_*}
+     * roles) seed <i>only</i> {@link PermissionType#REPORT} granules — there is
+     * no {@code MODULE:REPORT} granule. Without this invariant the response is
+     * self-contradictory: {@code reports} is full of {@code ALLOW} entries, yet
+     * {@code modules} has no {@code REPORT} key (so the frontend hides the
+     * "Raporlar" nav) and the legacy {@code permissions} set has no
+     * {@code REPORT_VIEW} (so {@code report-service}'s
+     * {@code ReportAccessEvaluator.hasPermission("REPORT_VIEW")} gate denies
+     * every report → {@code /api/v1/reports} returns 0).
+     *
+     * <p>The fix mirrors the legacy {@code registerModuleGrant} REPORT mapping
+     * onto the granule path so all three surfaces ({@code reports},
+     * {@code modules}, {@code permissions}) agree for one persona.
+     *
+     * <p>An explicit {@code MODULE:REPORT} {@code DENY} granule wins: the
+     * module stays {@code DENY} and {@code REPORT_VIEW} is <i>not</i> injected.
+     */
+    private void applyReportModuleInvariant(AuthzMeResponseDto dto,
+                                            Map<String, String> modules,
+                                            boolean anyReportPositive,
+                                            boolean anyReportManage) {
+        if (!anyReportPositive) {
+            return;
+        }
+        String explicitReportModule = modules.get("REPORT");
+        if ("DENY".equals(explicitReportModule)) {
+            // explicit module DENY wins — surface neither module nor permission
+            return;
+        }
+        if (explicitReportModule == null) {
+            modules.put("REPORT", anyReportManage ? "MANAGE" : "VIEW");
+            dto.setModules(modules);
+        }
+        Set<String> permissions = new LinkedHashSet<>(
+                dto.getPermissions() == null ? Set.of() : dto.getPermissions());
+        permissions.add("REPORT_VIEW");
+        if (anyReportManage) {
+            permissions.add("REPORT_EXPORT");
+            permissions.add("REPORT_MANAGE");
+        }
+        dto.setPermissions(permissions);
     }
 
     /**
@@ -596,7 +660,7 @@ public class AuthorizationControllerV1 {
             return jwtPermissions(jwt);
         }
 
-        // OpenFGA-first: check each module from catalog
+        // OpenFGA-resolved module grants from the catalog.
         String userId = String.valueOf(numericUserId);
         Set<String> resolved = new LinkedHashSet<>();
 
@@ -608,18 +672,22 @@ public class AuthorizationControllerV1 {
             }
         }
 
-        if (!resolved.isEmpty()) {
-            return resolved;
-        }
-
-        // Fallback: DB-based resolution (legacy)
+        // 2026-05-17 (Codex thread 019e34df REVISE): OpenFGA module tuples and
+        // legacy DB permission strings are *different projection surfaces*, not
+        // a primary/fallback pair. The previous `if (!resolved.isEmpty()) return
+        // resolved;` short-circuit dropped every legacy permission (REPORT_VIEW,
+        // scope.*, ...) whenever the user owned any module tuple — e.g. a
+        // REPORT_VIEWER who also holds USER_MANAGEMENT lost REPORT_VIEW, so
+        // report-service's `hasPermission("REPORT_VIEW")` gate denied all
+        // reports. Merge both surfaces instead of letting one mask the other.
         Set<String> dbPermissions = permissionService.getAssignments(numericUserId, null, null, null).stream()
                 .flatMap(assignment -> assignment.getPermissions() == null
                         ? java.util.stream.Stream.empty()
                         : assignment.getPermissions().stream())
                 .filter(permission -> permission != null && !permission.isBlank())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        return dbPermissions;
+        resolved.addAll(dbPermissions);
+        return resolved;
     }
 
     private AuthenticatedUserLookupService.ResolvedAuthenticatedUser resolveAuthenticatedUser(Jwt jwt) {
