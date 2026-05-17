@@ -1,10 +1,12 @@
 package com.example.schema.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.schema.exception.SnapshotUnavailableException;
 import com.example.schema.model.ObjectInfo;
 import com.example.schema.model.SchemaSnapshot;
 import com.example.schema.service.discovery.RelationshipDiscoveryService;
@@ -88,5 +90,21 @@ class SchemaSnapshotServiceTest {
 
         assertThat(snap).isNotNull();
         assertThat(snap.databaseOptions()).isNull();
+    }
+
+    @Test
+    void extractTablesBaseFailure_throwsSnapshotUnavailable() {
+        // Q3 (Codex 019e335c): step-1 base extraction is the ONE fatal path.
+        // After P1, extractTables throws only on base-extraction failure
+        // (enrichment is non-fatal). buildSnapshot must surface that as the
+        // domain exception SchemaExceptionHandler maps to HTTP 503 — never a
+        // silent degrade and never a generic 500.
+        when(extract.extractTables(anyString()))
+                .thenThrow(new RuntimeException("base extraction down"));
+
+        assertThatThrownBy(() -> service.buildSnapshot("workcube_mikrolink"))
+                .isInstanceOf(SnapshotUnavailableException.class)
+                .hasMessageContaining("workcube_mikrolink")
+                .cause().hasMessageContaining("base extraction down");
     }
 }
