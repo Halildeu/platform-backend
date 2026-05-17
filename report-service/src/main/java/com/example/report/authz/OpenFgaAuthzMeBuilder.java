@@ -162,7 +162,7 @@ public class OpenFgaAuthzMeBuilder implements PermissionResolver {
             permissions.add("dashboards." + legacySlug + ".view");
         }
 
-        // (5b) Report-GROUP level (Codex thread 019e34df). ReportAccessEvaluator
+        // (5b) Report-GROUP level. ReportAccessEvaluator
         //      gate-3 resolves a report definition's category — the
         //      ReportDefinition.access.reportGroup key ("HR_REPORTS",
         //      "FINANCE_REPORTS", "SALES_REPORTS", "ANALYTICS_REPORTS") — by

@@ -153,7 +153,7 @@ class OpenFgaAuthzMeBuilderTest {
         assertTrue(r.getPermissions().contains("dashboards.satis-ozet.view"));
     }
 
-    // ---- Codex 019e34df: report_group gate-3 contract ---------------------
+    // ---- report_group gate-3 contract -------------------------------------
 
     @Test
     void nonAdmin_reportGroupListObjectsPopulatesGroupKeysInReportsMap() {
