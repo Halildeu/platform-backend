@@ -162,6 +162,27 @@ public class OpenFgaAuthzMeBuilder implements PermissionResolver {
             permissions.add("dashboards." + legacySlug + ".view");
         }
 
+        // (5b) Report-GROUP level. ReportAccessEvaluator
+        //      gate-3 resolves a report definition's category — the
+        //      ReportDefinition.access.reportGroup key ("HR_REPORTS",
+        //      "FINANCE_REPORTS", "SALES_REPORTS", "ANALYTICS_REPORTS") — by
+        //      looking it up in this same `reports` map via canViewReport().
+        //      Block (5) only ever populated *individual* report object ids,
+        //      so a non-super-admin's gate-3 lookup never matched and every
+        //      report fell to DENIED_REPORT_GROUP (the bug was latent because
+        //      super-admins short-circuit gate evaluation entirely). Populate
+        //      the report-GROUP grants from the dedicated `report_group`
+        //      OpenFGA type so OpenFgaAuthzMeBuilder and ReportAccessEvaluator
+        //      agree on what the `reports` map is keyed by.
+        //
+        //      safeListObjects degrades to an empty list if the live OpenFGA
+        //      model has no `report_group` type yet (pre-migration), so this
+        //      block is deploy-safe ahead of the model migration — it simply
+        //      adds nothing until the type exists.
+        for (String groupId : safeListObjects(userId, "can_view", "report_group")) {
+            reportsMap.put(groupId, "ALLOW");
+        }
+
         response.setPermissions(permissions);
         response.setReports(reportsMap);
 
