@@ -26,15 +26,15 @@ import org.springframework.core.io.Resource;
  * <p>Acceptance criteria:
  * <ul>
  *   <li>Default {@code mvn test} run completes deterministically.</li>
- *   <li>All known RC-001 + RC-004 governance debt is suppressed by the
- *       7 exception entries (2d cleaned 12 RC-005 by removing redundant
- *       yearly+rowFilter pairs; 2e/BRANCH migrated 2 RC-004 reports to
- *       scopeType=BRANCH).</li>
+ *   <li>RC-004 governance debt is suppressed by the 4 exception entries
+ *       (HR reports with no company-boundary column; tracked #247). RC-001
+ *       debt closed via the RC001 COMPANY_REMAINDER carve-out (Codex
+ *       019e3f5c).</li>
  *   <li>{@code hr-personel-listesi} (legitimate {@code OUR_COMPANY_ID})
  *       is NOT in the exception list.</li>
  *   <li>No unsuppressed FAILs remain in the gate output.</li>
- *   <li>Exception inventory exact: 7 entries (2× RC-001, 5× RC-004);
- *       RC-005 eliminated by 2d, 2 BRANCH-able RC-004 migrated by 2e.</li>
+ *   <li>Exception inventory exact: 4 entries (4× RC-004); RC-001 closed
+ *       via carve-out, RC-005 eliminated by 2d.</li>
  * </ul>
  */
 class ReportContractGateTest {
@@ -48,8 +48,9 @@ class ReportContractGateTest {
                 .isEqualTo(32);
 
         // Codex iter-4 §1d-AGREE: gate must produce zero unsuppressed FAILs.
-        // Exception entries cover known RC-004 + RC-001 debt. Anything beyond
-        // that signals new tech debt or regression.
+        // Exception entries cover known RC-004 debt only; RC-001 COMPANY_REMAINDER
+        // snapshots pass by the RC001 rule carve-out. Anything beyond that
+        // signals new tech debt or regression.
         assertThat(report.failures())
                 .as("Unsuppressed failures: %s",
                         report.failures().stream().limit(10).toList())
@@ -57,17 +58,19 @@ class ReportContractGateTest {
     }
 
     @Test
-    void gate_knownRC004ExceptionsCoverHRandStokDurum() {
-        // 7 RC-004 governance debt entries (Codex iter-4 §1d-AGREE list)
+    void gate_currentRC004ExceptionsAreSuppressed() {
+        // 4 RC-004 governance debt entries (HR reports with no company-boundary
+        // column; tracked Halildeu/platform-backend#247). hr-giris-cikis +
+        // hr-puantaj (2e/BRANCH) and stok-durum (current-resolver fix) were
+        // closed earlier and are no longer exception entries.
         ContractReport report = ReportContractGate.create().gate();
         List<String> knownDebtKeys = List.of(
-                "hr-bordro-detay", "hr-giris-cikis", "hr-izin-raporu",
-                "hr-maas-gecmisi", "hr-maas-raporu", "hr-puantaj",
-                "stok-durum");
+                "hr-bordro-detay", "hr-izin-raporu",
+                "hr-maas-gecmisi", "hr-maas-raporu");
 
         // None of these should appear as failures.
         assertThat(report.failures())
-                .as("Known RC-004 governance debt must be exception-suppressed")
+                .as("Current RC-004 governance debt must be exception-suppressed")
                 .noneMatch(v -> knownDebtKeys.contains(v.reportKey())
                         && "RC-004".equals(v.ruleId()));
     }
@@ -100,14 +103,16 @@ class ReportContractGateTest {
     }
 
     @Test
-    void gate_ambiguousYearColumnReports_haveActiveExceptions() {
-        // 2 RC-001 governance debt entries (yearColumn ambiguous)
+    void gate_companyRemainderSnapshotReports_passRC001ViaCarveout() {
+        // Codex 019e3f5c absorb: fin-alacak-yaslandirma + fin-borc-yaslandirma
+        // are COMPANY_REMAINDER schema-encoded balance snapshots — RC-001 now
+        // passes them via the carve-out, so no exception entry is needed.
         ContractReport report = ReportContractGate.create().gate();
-        List<String> debtKeys = List.of("fin-alacak-yaslandirma", "fin-borc-yaslandirma");
+        List<String> snapshotKeys = List.of("fin-alacak-yaslandirma", "fin-borc-yaslandirma");
 
         assertThat(report.failures())
-                .as("Ambiguous yearColumn reports must be RC-001 exception-suppressed")
-                .noneMatch(v -> debtKeys.contains(v.reportKey()) && "RC-001".equals(v.ruleId()));
+                .as("COMPANY_REMAINDER snapshot reports must not raise RC-001")
+                .noneMatch(v -> snapshotKeys.contains(v.reportKey()) && "RC-001".equals(v.ruleId()));
     }
 
     @Test
@@ -115,22 +120,26 @@ class ReportContractGateTest {
         // Codex iter-5 §1d-AGREE absorb: lock the production exception inventory
         // shape so accidental drift (e.g. someone adding an RC-007 90d entry
         // without review) is caught at gate-test time.
+        // Codex 019e3f5c absorb: RC-001 debt (×2) closed via the RC001
+        // COMPANY_REMAINDER schema-encoded-snapshot carve-out; only 4 RC-004
+        // entries remain (HR reports lacking a company-boundary column —
+        // tracked Halildeu/platform-backend#247).
         ContractExceptionEntry[] entries = loadExceptions();
 
         assertThat(entries)
-                .as("Total governance debt entries (Codex 019e0d06 iter-2: stok-durum RC-004 closed via current-resolver fix)")
-                .hasSize(6);
+                .as("Governance debt entries: 4 RC-004 (RC-001 closed via carve-out)")
+                .hasSize(4);
 
         Map<String, Long> byRule = Arrays.stream(entries)
                 .flatMap(e -> e.ruleIds().stream())
                 .collect(Collectors.groupingBy(r -> r, Collectors.counting()));
 
-        assertThat(byRule.get("RC-001"))
-                .as("RC-001 debt: yearColumn ambiguous reports")
-                .isEqualTo(2L);
         assertThat(byRule.get("RC-004"))
-                .as("RC-004 debt: HR scopeType=COMPANY misclassified (-1 from stok-durum 019e0d06 absorb)")
+                .as("RC-004 debt: HR reports with no company-boundary column")
                 .isEqualTo(4L);
+        assertThat(byRule.get("RC-001"))
+                .as("RC-001 debt closed via RC001 COMPANY_REMAINDER carve-out")
+                .isNull();
         // RC-005 eliminated by Phase 2 Program 2d (rowFilter removed from 12
         // yearly reports; 2a runtime tenant guard hardening provides the
         // fail-closed precondition).
@@ -140,7 +149,7 @@ class ReportContractGateTest {
 
         // No other rule namespace should creep in without review.
         assertThat(byRule.keySet())
-                .containsExactlyInAnyOrder("RC-001", "RC-004");
+                .containsExactly("RC-004");
     }
 
     @Test

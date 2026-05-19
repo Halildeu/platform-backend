@@ -62,6 +62,64 @@ class ContractValidatorTest {
     }
 
     @Test
+    void RC001_passesForCompanyRemainderSnapshotWithoutYearColumn() {
+        // Codex 019e3f5c carve-out: COMPANY_REMAINDER balance snapshot — the
+        // year is encoded in the partition schema name, there is no in-row
+        // date column, so a blank yearColumn is conceptually N/A.
+        ReportDefinition def = new ReportDefinition(
+                "test-balance", "1", "Test", "test", "test",
+                "COMPANY_REMAINDER", "workcube_mikrolink_1", "yearly",
+                null, null,
+                List.of(new ColumnDefinition("COMPANY_ID", "Cari", "number", 90, false),
+                        new ColumnDefinition("BAKIYE", "Bakiye", "number", 150, false)),
+                "BAKIYE", "DESC",
+                new AccessConfig(null, null, null, null));
+
+        List<ContractViolation> violations = validator.validate(def);
+
+        assertThat(violations).noneMatch(v -> "RC-001".equals(v.ruleId()));
+    }
+
+    @Test
+    void RC001_failsForCompanyRemainderSnapshotWithDateColumn() {
+        // Carve-out denied when a date-typed column exists — a year picker is
+        // then meaningful and yearColumn must be declared.
+        ReportDefinition def = new ReportDefinition(
+                "test-balance-dated", "1", "Test", "test", "test",
+                "COMPANY_REMAINDER", "workcube_mikrolink_1", "yearly",
+                null, null,
+                List.of(new ColumnDefinition("COMPANY_ID", "Cari", "number", 90, false),
+                        new ColumnDefinition("RECORD_DATE", "Tarih", "date", 130, false)),
+                null, "ASC",
+                new AccessConfig(null, null, null, null));
+
+        List<ContractViolation> violations = validator.validate(def);
+
+        assertThat(violations).anyMatch(v -> "RC-001".equals(v.ruleId())
+                && v.severity() == ContractViolation.Severity.FAIL);
+    }
+
+    @Test
+    void RC001_failsForCompanyRemainderSnapshotWithSourceQuery() {
+        // Carve-out denied for sourceQuery reports — a custom SQL surface must
+        // declare yearColumn explicitly.
+        ReportDefinition def = new ReportDefinition(
+                "test-balance-sq", "1", "Test", "test", "test",
+                "COMPANY_REMAINDER", "workcube_mikrolink_1", "yearly",
+                null,
+                "SELECT COMPANY_ID, BAKIYE FROM [{schema}].[COMPANY_REMAINDER]",
+                List.of(new ColumnDefinition("COMPANY_ID", "Cari", "number", 90, false),
+                        new ColumnDefinition("BAKIYE", "Bakiye", "number", 150, false)),
+                null, "ASC",
+                new AccessConfig(null, null, null, null));
+
+        List<ContractViolation> violations = validator.validate(def);
+
+        assertThat(violations).anyMatch(v -> "RC-001".equals(v.ruleId())
+                && v.severity() == ContractViolation.Severity.FAIL);
+    }
+
+    @Test
     void RC002_failsWhenYearlySourceQueryMissesPlaceholder() {
         ReportDefinition def = new ReportDefinition(
                 "test", "1", "Test", "test", "test",

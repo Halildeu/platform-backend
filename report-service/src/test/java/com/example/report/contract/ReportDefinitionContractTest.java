@@ -80,20 +80,17 @@ class ReportDefinitionContractTest {
     }
 
     @Test
-    @DisplayName("Aggregate: suppressed counts match exception inventory (post-2d + 2e/BRANCH)")
+    @DisplayName("Aggregate: suppressed counts match exception inventory (RC-004 debt only)")
     void aggregate_suppressedCountsMatchInventory() {
         // Phase 2 Program 2d cleaned RC-005×12 (rowFilter removed from 12 yearly
         // reports; 2a runtime tenant guard provides fail-closed precondition).
-        // Phase 2 Program 2e/BRANCH migrated 2 reports (hr-giris-cikis +
-        // hr-puantaj) from scopeType=COMPANY to scopeType=BRANCH (legitimate
-        // BRANCH boundary; permission-service vocabulary already supports it).
-        // Codex 019e0d06 iter-2 absorb: stok-durum RC-004 entry closed via
-        // current-resolver fix (rowFilter removed; ORDER_ID was order-level,
-        // not tenant; schema-level isolation now via current resolver).
-        // Remaining: RC-001×2 (yearColumn ambiguous), RC-004×4 (DEPT/EMPLOYEE debt).
+        // Codex 019e3f5c absorb: RC-001×2 closed via the RC001 COMPANY_REMAINDER
+        // schema-encoded-snapshot carve-out — no raw violation, nothing to
+        // suppress. Remaining suppressed: RC-004×4 (HR reports with no
+        // company-boundary column; tracked Halildeu/platform-backend#247).
         assertThat(CACHED.suppressedByRule())
-                .containsEntry("RC-001", 2L)
                 .containsEntry("RC-004", 4L)
+                .doesNotContainKey("RC-001")
                 .doesNotContainKey("RC-005");
     }
 

@@ -5,7 +5,7 @@
       "RC-004"
     ],
     "reportKey": "hr-bordro-detay",
-    "reason": "rowFilter scopeType=COMPANY but column DEPARTMENT_ID is department-level (EMPLOYEES_PUANTAJ_ROWS); semantic fix scopeType=DEPARTMENT review pending — Phase 2 Program 1d governance debt",
+    "reason": "RC-004 debt: source EMPLOYEES_PUANTAJ_ROWS has no company-boundary column, so a COMPANY-scoped rowFilter is structurally impossible. rowFilter.column=DEPARTMENT_ID is department-level; scopeType=DEPARTMENT is not an authz-produced axis (verified: no permission-service seed / OpenFGA type / assignment path). Closure needs a first-class department scope end-to-end OR RC-004 v2 sourceQuery boundary support with a company-projecting join. Tracked: Halildeu/platform-backend#247.",
     "owner": "halil@platform.local",
     "expiresAt": "2026-08-05T00:00:00Z"
   },
@@ -15,7 +15,7 @@
       "RC-004"
     ],
     "reportKey": "hr-izin-raporu",
-    "reason": "rowFilter scopeType=COMPANY but column EMPLOYEE_ID is employee-level (OFFTIME); semantic fix scopeType=EMPLOYEE review pending — Phase 2 Program 1d governance debt",
+    "reason": "RC-004 debt: source OFFTIME has no company-boundary column, so a COMPANY-scoped rowFilter is structurally impossible. rowFilter.column=EMPLOYEE_ID is employee-level; scopeType=EMPLOYEE is not an authz-produced axis (verified: no permission-service seed / OpenFGA type / assignment path). Closure needs a first-class employee scope end-to-end OR RC-004 v2 sourceQuery boundary support with a company-projecting join. Tracked: Halildeu/platform-backend#247.",
     "owner": "halil@platform.local",
     "expiresAt": "2026-08-05T00:00:00Z"
   },
@@ -25,7 +25,7 @@
       "RC-004"
     ],
     "reportKey": "hr-maas-gecmisi",
-    "reason": "rowFilter scopeType=COMPANY but column EMPLOYEE_ID is employee-level (EMPLOYEES_SALARY_HISTORY); semantic fix scopeType=EMPLOYEE review pending — Phase 2 Program 1d governance debt",
+    "reason": "RC-004 debt: source EMPLOYEES_SALARY_HISTORY has no company-boundary column, so a COMPANY-scoped rowFilter is structurally impossible. rowFilter.column=EMPLOYEE_ID is employee-level; scopeType=EMPLOYEE is not an authz-produced axis (verified: no permission-service seed / OpenFGA type / assignment path). Closure needs a first-class employee scope end-to-end OR RC-004 v2 sourceQuery boundary support with a company-projecting join. Tracked: Halildeu/platform-backend#247.",
     "owner": "halil@platform.local",
     "expiresAt": "2026-08-05T00:00:00Z"
   },
@@ -35,27 +35,7 @@
       "RC-004"
     ],
     "reportKey": "hr-maas-raporu",
-    "reason": "rowFilter scopeType=COMPANY but column EMPLOYEE_ID is employee-level (EMPLOYEES_SALARY); semantic fix scopeType=EMPLOYEE review pending — Phase 2 Program 1d governance debt",
-    "owner": "halil@platform.local",
-    "expiresAt": "2026-08-05T00:00:00Z"
-  },
-  {
-    "id": "EXC-1d-008-RC001-fin-alacak-yaslandirma",
-    "ruleIds": [
-      "RC-001"
-    ],
-    "reportKey": "fin-alacak-yaslandirma",
-    "reason": "schemaMode=yearly but no obvious year column in registry (source=COMPANY_REMAINDER, columns=COMPANY_ID/BAKIYE only); domain SQL review required to assign yearColumn — Phase 2 Program 1d governance debt",
-    "owner": "halil@platform.local",
-    "expiresAt": "2026-08-05T00:00:00Z"
-  },
-  {
-    "id": "EXC-1d-009-RC001-fin-borc-yaslandirma",
-    "ruleIds": [
-      "RC-001"
-    ],
-    "reportKey": "fin-borc-yaslandirma",
-    "reason": "schemaMode=yearly but no obvious year column in registry (source=COMPANY_REMAINDER, columns=COMPANY_ID/BAKIYE only); domain SQL review required to assign yearColumn — Phase 2 Program 1d governance debt",
+    "reason": "RC-004 debt: source EMPLOYEES_SALARY has no company-boundary column, so a COMPANY-scoped rowFilter is structurally impossible. rowFilter.column=EMPLOYEE_ID is employee-level; scopeType=EMPLOYEE is not an authz-produced axis (verified: no permission-service seed / OpenFGA type / assignment path). Closure needs a first-class employee scope end-to-end OR RC-004 v2 sourceQuery boundary support with a company-projecting join. Tracked: Halildeu/platform-backend#247.",
     "owner": "halil@platform.local",
     "expiresAt": "2026-08-05T00:00:00Z"
   }
