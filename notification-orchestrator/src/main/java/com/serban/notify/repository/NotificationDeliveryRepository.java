@@ -197,6 +197,36 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
     );
 
     /**
+     * JetSMS DLR poll terminal bookkeeping — Faz 23.3 PR-3 (Codex `019e3ff7`
+     * P2 absorb).
+     *
+     * <p>Generic DLR core ({@code dlrTerminalize}) provider-agnostik —
+     * status/timestamps/lease günceller ama JetSMS-özel poll kolonlarına
+     * ({@code claim_token}, {@code dlr_*}) dokunmaz. Terminal poll sonrası
+     * {@code JetSmsDlrPollingWorker} bu method'u çağırır: claim_token temizlenir
+     * (terminal row'da poll claim_token leak'i engellenir), dlr_last_poll_at +
+     * dlr_poll_count kaydedilir (observability), dlr_next_poll_at NULL (terminal
+     * — yeni poll yok).
+     *
+     * <p>Status guard YOK: row {@code ingestTerminal} sonrası zaten terminal,
+     * bu yalnızca poll-state housekeeping (forward-only invariant bozulmaz).
+     */
+    @Modifying
+    @Query(value = """
+        UPDATE notify.notification_delivery
+        SET dlr_last_poll_at = :pollAt,
+            dlr_poll_count = dlr_poll_count + 1,
+            dlr_next_poll_at = NULL,
+            claim_token = NULL,
+            updated_at = :pollAt
+        WHERE id = :id
+        """, nativeQuery = true)
+    int markJetsmsDlrPollTerminal(
+        @Param("id") Long id,
+        @Param("pollAt") OffsetDateTime pollAt
+    );
+
+    /**
      * Find RETRY deliveries that exceeded max attempts (DLQ candidates).
      */
     @Query("""

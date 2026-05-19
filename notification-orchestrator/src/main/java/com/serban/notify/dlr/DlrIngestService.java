@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -159,7 +160,6 @@ public class DlrIngestService {
             return new DlrResult(DlrAction.NOT_FOUND, providerMsgId, null);
         }
         NotificationDelivery delivery = opt.get();
-        NotificationDelivery.Status priorStatus = delivery.getStatus();
 
         // Atomic UPDATE WHERE status='ACCEPTED' — multi-pod race safe.
         String failureReason = (terminalStatus == NotificationDelivery.Status.FAILED)
@@ -168,13 +168,24 @@ public class DlrIngestService {
             providerMsgId, terminalStatus.name(), providerTerminalAt, failureReason);
 
         if (affected == 0) {
-            // Terminal-conflict: row prior status ≠ ACCEPTED (late duplicate
-            // DLR / already-terminal / unexpected state). Forensic audit, no mutation.
-            log.info("dlr {} terminal-conflict (no mutation): code={} prior={} delivery_id={}",
-                providerKey, providerCode, priorStatus, delivery.getId());
-            emitAudit(providerKey, delivery, "DELIVERY_DLR_TERMINAL_CONFLICT",
-                providerCode, false, "prior_status_" + priorStatus.name().toLowerCase());
-            return new DlrResult(DlrAction.NOOP, providerMsgId, priorStatus);
+            // Terminal-conflict: row status ≠ ACCEPTED (late duplicate DLR /
+            // already-terminal / unexpected state). Forensic audit, no mutation.
+            // findFirstByProviderMsgId yukarıda UPDATE'ten ÖNCE okundu — multi-pod
+            // race'te paralel bir pod row'u terminal yapmışsa o snapshot stale
+            // olur (Codex `019e3ff7` P2). Re-fetch ile gerçek current status
+            // audit'lenir; stale "prior_status_accepted" basılmaz.
+            NotificationDelivery current = deliveryRepo.findById(delivery.getId())
+                .orElse(delivery);
+            NotificationDelivery.Status conflictStatus = current.getStatus();
+            log.info("dlr {} terminal-conflict (no mutation): code={} current={} delivery_id={}",
+                providerKey, providerCode, conflictStatus, current.getId());
+            // Locale.ROOT — Turkish-i bug guard: tr-TR JVM'de "DELIVERED"
+            // .toLowerCase() → "delıvered" (noktasız ı); audit string locale'e
+            // bağımlı olmamalı (forensic query'ler kararlı eşleşme bekler).
+            emitAudit(providerKey, current, "DELIVERY_DLR_TERMINAL_CONFLICT",
+                providerCode, false,
+                "prior_status_" + conflictStatus.name().toLowerCase(Locale.ROOT));
+            return new DlrResult(DlrAction.NOOP, providerMsgId, conflictStatus);
         }
 
         // Mutation succeeded — re-fetch for accurate post-state.

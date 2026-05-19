@@ -48,6 +48,10 @@ class JetSmsDlrPollingWorkerTest {
         worker = new JetSmsDlrPollingWorker(
             deliveryRepo, jetSmsProvider, dlrIngestService,
             100, 60000L, 120000L, 72L, false);
+        // Codex `019e3ff7` P1: @Transactional self-proxy boundary. Testte gerçek
+        // Spring proxy yok — self=worker (transaction no-op; mock repo zaten
+        // transaction-agnostik). Prod'da @Lazy proxy gerçek tx açar.
+        worker.setSelf(worker);
     }
 
     private static NotificationDelivery delivery(long id, String providerMsgId,
@@ -89,6 +93,8 @@ class JetSmsDlrPollingWorkerTest {
             eq("jetsms"), eq("jetsms-756"),
             eq(NotificationDelivery.Status.DELIVERED), eq("1"), any());
         verify(deliveryRepo, never()).rescheduleDlrPoll(anyLong(), any(), any());
+        // Codex `019e3ff7` P2: terminal sonrası poll-state housekeeping
+        verify(deliveryRepo).markJetsmsDlrPollTerminal(eq(1L), any());
     }
 
     @Test
@@ -105,6 +111,7 @@ class JetSmsDlrPollingWorkerTest {
         verify(dlrIngestService).ingestTerminal(
             eq("jetsms"), eq("jetsms-900"),
             eq(NotificationDelivery.Status.FAILED), eq("3"), any());
+        verify(deliveryRepo).markJetsmsDlrPollTerminal(eq(2L), any());
     }
 
     @Test
@@ -121,6 +128,8 @@ class JetSmsDlrPollingWorkerTest {
         // pending + maxAge içinde → reschedule, ingestTerminal YOK
         verify(deliveryRepo).rescheduleDlrPoll(eq(3L), any(), any());
         verify(dlrIngestService, never()).ingestTerminal(any(), any(), any(), any(), any());
+        // pending → terminal housekeeping ÇAĞRILMAZ
+        verify(deliveryRepo, never()).markJetsmsDlrPollTerminal(anyLong(), any());
     }
 
     @Test
@@ -142,6 +151,8 @@ class JetSmsDlrPollingWorkerTest {
             eq(NotificationDelivery.Status.FAILED), codeCaptor.capture(), any());
         assertThat(codeCaptor.getValue()).contains("timeout");
         verify(deliveryRepo, never()).rescheduleDlrPoll(anyLong(), any(), any());
+        // max-age timeout da terminal → housekeeping çağrılır
+        verify(deliveryRepo).markJetsmsDlrPollTerminal(eq(4L), any());
     }
 
     @Test
@@ -165,6 +176,8 @@ class JetSmsDlrPollingWorkerTest {
             eq(NotificationDelivery.Status.DELIVERED), any(), any());
         verify(dlrIngestService).ingestTerminal(eq("jetsms"), eq("jetsms-B"),
             eq(NotificationDelivery.Status.FAILED), any(), any());
+        verify(deliveryRepo).markJetsmsDlrPollTerminal(eq(10L), any());
+        verify(deliveryRepo).markJetsmsDlrPollTerminal(eq(11L), any());
     }
 
     @Test

@@ -7,9 +7,13 @@ import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.repository.NotificationDeliveryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -20,7 +24,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * JetSMS DLR polling worker — Faz 23.3 PR-3 (Codex `019e3f82` AGREE).
+ * JetSMS DLR polling worker — Faz 23.3 PR-3 (Codex `019e3f82` AGREE,
+ * `019e3ff7` REVISE absorb).
  *
  * <p>NetGSM DLR'yi webhook PUSH ile bildirir ({@code DlrController}); JetSMS
  * DLR webhook GÖNDERMEZ — backend {@code HttpSmsReport} endpoint'ini periyodik
@@ -32,6 +37,19 @@ import java.util.UUID;
  * <p><b>Multi-pod safe</b>: {@code claimJetsmsDlrPollBatch} CTE + FOR UPDATE
  * SKIP LOCKED + lease + claim_token (OutboxPoller/RetryWorker pattern).
  *
+ * <p><b>Transaction boundary</b> (Codex `019e3ff7` P1 absorb): native
+ * {@code @Modifying} claim/reschedule/terminal-housekeeping query'leri aktif
+ * transaction gerektirir. {@code @Scheduled tick()} → {@link #runCycle()}
+ * transaction-sız; bu yüzden her native UPDATE {@code @Transactional} public
+ * method'a sarılır ({@link #claimAtomic} / {@link #rescheduleAtomic} /
+ * {@link #markPollTerminalAtomic}) ve {@code self} proxy üzerinden çağrılır
+ * (RetryWorker/OutboxPoller {@code claimAtomic} pattern'i).
+ *
+ * <p><b>Activation</b> (Codex `019e3ff7` P2 absorb): yalnız
+ * {@code notify.dispatch.enabled=true} iken bean oluşur
+ * ({@code @ConditionalOnProperty} — OutboxPoller/RetryWorker ile tutarlı).
+ * Dispatch kapalıyken JetSMS dispatch de yok → poll edilecek ACCEPTED row yok.
+ *
  * <p><b>Pending reschedule</b>: JetSMS hâlâ pending bildirdiğinde
  * ({@code MessageState 0/2/6/7/8}) {@code dlr_next_poll_at} ileri alınır
  * ({@code rescheduleDlrPoll}); her cycle aynı row'u tekrar tekrar poll etmez.
@@ -41,6 +59,7 @@ import java.util.UUID;
  * Nh") — JetSMS {@code MessageState 4} (timeout) ile aynı terminal aileye düşer.
  */
 @Component
+@ConditionalOnProperty(name = "notify.dispatch.enabled", havingValue = "true")
 public class JetSmsDlrPollingWorker {
 
     private static final Logger log = LoggerFactory.getLogger(JetSmsDlrPollingWorker.class);
@@ -55,6 +74,9 @@ public class JetSmsDlrPollingWorker {
     private final Duration leaseDuration;
     private final Duration maxAge;
     private final boolean schedulingEnabled;
+
+    /** Self-injection — {@code @Transactional} proxy boundary (RetryWorker pattern). */
+    private JetSmsDlrPollingWorker self;
 
     public JetSmsDlrPollingWorker(
         NotificationDeliveryRepository deliveryRepo,
@@ -80,6 +102,15 @@ public class JetSmsDlrPollingWorker {
     }
 
     /**
+     * Self-injection for {@code @Transactional} proxy boundary (Codex
+     * `019e3ff7` P1). {@code @Lazy} — circular bean ref'i kırar.
+     */
+    @Autowired
+    void setSelf(@Lazy JetSmsDlrPollingWorker self) {
+        this.self = self;
+    }
+
+    /**
      * Scheduled poll cycle. Default fixedDelay 60s, initialDelay 30s
      * (config: {@code notify.adapters.sms.jetsms.dlr-poll-delay-ms} /
      * {@code dlr-initial-delay-ms}).
@@ -95,59 +126,74 @@ public class JetSmsDlrPollingWorker {
     /**
      * Public cycle entry — {@code @Scheduled} tick() VEYA test direkt çağırır.
      *
-     * <p>Transaction-sız: claim ({@code claimJetsmsDlrPollBatch}) kendi tx;
-     * her {@code ingestTerminal} kendi {@code @Transactional}; reschedule
-     * native UPDATE kendi tx. Uzun döngü tek büyük tx'e sarılmaz.
+     * <p>Transaction-sız orchestration: claim/reschedule/terminal-housekeeping
+     * native UPDATE'leri {@code self.*Atomic()} {@code @Transactional} method'lar
+     * üzerinden; her {@code ingestTerminal} kendi {@code @Transactional}.
+     * Cycle-level + per-delivery hata izolasyonu (RetryWorker pattern): claim/
+     * poll hatası ya da tek bir poison delivery batch'in geri kalanını bloklamaz.
      *
      * @return işlenen delivery sayısı
      */
     public int runCycle() {
         OffsetDateTime now = OffsetDateTime.now();
         String claimToken = UUID.randomUUID().toString();
-
-        int claimed = deliveryRepo.claimJetsmsDlrPollBatch(
-            now, now.plus(leaseDuration), claimToken, batchSize);
-        if (claimed == 0) {
-            return 0;
-        }
-
-        List<NotificationDelivery> batch = deliveryRepo.findByClaimToken(claimToken);
-        if (batch.isEmpty()) {
-            return 0;
-        }
-
-        // raw JetSMS message id (prefix çıkarılmış) ↔ delivery eşleme.
-        Map<String, NotificationDelivery> byRawId = new HashMap<>(batch.size());
-        List<String> rawIds = new ArrayList<>(batch.size());
-        for (NotificationDelivery d : batch) {
-            String raw = stripPrefix(d.getProviderMsgId());
-            if (raw == null) {
-                // Beklenmedik: jetsms claim'lendi ama providerMsgId prefix'siz.
-                // Lease'i bırak, bir sonraki cycle yeniden değerlendirilir.
-                log.warn("jetsms DLR poll: delivery {} providerMsgId prefix-siz '{}' — skip",
-                    d.getId(), d.getProviderMsgId());
-                continue;
+        try {
+            int claimed = self.claimAtomic(
+                now, now.plus(leaseDuration), claimToken, batchSize);
+            if (claimed == 0) {
+                return 0;
             }
-            byRawId.put(raw, d);
-            rawIds.add(raw);
-        }
-        if (rawIds.isEmpty()) {
+
+            List<NotificationDelivery> batch = deliveryRepo.findByClaimToken(claimToken);
+            if (batch.isEmpty()) {
+                return 0;
+            }
+
+            // raw JetSMS message id (prefix çıkarılmış) ↔ delivery eşleme.
+            Map<String, NotificationDelivery> byRawId = new HashMap<>(batch.size());
+            List<String> rawIds = new ArrayList<>(batch.size());
+            for (NotificationDelivery d : batch) {
+                String raw = stripPrefix(d.getProviderMsgId());
+                if (raw == null) {
+                    // Beklenmedik: jetsms claim'lendi ama providerMsgId prefix'siz.
+                    // Lease'i bırak, bir sonraki cycle yeniden değerlendirilir.
+                    log.warn("jetsms DLR poll: delivery {} providerMsgId prefix-siz '{}' — skip",
+                        d.getId(), d.getProviderMsgId());
+                    continue;
+                }
+                byRawId.put(raw, d);
+                rawIds.add(raw);
+            }
+            if (rawIds.isEmpty()) {
+                return 0;
+            }
+
+            // Tek HttpSmsReport çağrısı — batch (| separated MessageIDs).
+            List<SmsDlrPollResult> results = jetSmsProvider.pollDelivery(rawIds);
+
+            int processed = 0;
+            for (SmsDlrPollResult result : results) {
+                NotificationDelivery d = byRawId.get(result.rawProviderMsgId());
+                if (d == null) continue;
+                try {
+                    processOne(d, result, now);
+                    processed++;
+                } catch (RuntimeException e) {
+                    // Tek delivery hatası batch'in geri kalanını bloklamaz.
+                    log.warn("jetsms DLR poll: delivery {} işlenemedi: {}",
+                        d.getId(), e.getMessage(), e);
+                }
+            }
+            log.info("JetSmsDlrPollingWorker cycle: claimed={} polled={} processed={}",
+                claimed, rawIds.size(), processed);
+            return processed;
+        } catch (RuntimeException e) {
+            // Claim / pollDelivery / fetch hatası — claimed row lease'leri
+            // dolunca bir sonraki cycle yeniden claim eder (orphan yok).
+            // Scheduled cycle düşmez.
+            log.warn("JetSmsDlrPollingWorker cycle error: {}", e.getMessage(), e);
             return 0;
         }
-
-        // Tek HttpSmsReport çağrısı — batch (| separated MessageIDs).
-        List<SmsDlrPollResult> results = jetSmsProvider.pollDelivery(rawIds);
-
-        int processed = 0;
-        for (SmsDlrPollResult result : results) {
-            NotificationDelivery d = byRawId.get(result.rawProviderMsgId());
-            if (d == null) continue;
-            processOne(d, result, now);
-            processed++;
-        }
-        log.info("JetSmsDlrPollingWorker cycle: claimed={} polled={} processed={}",
-            claimed, rawIds.size(), processed);
-        return processed;
     }
 
     /** Tek DLR poll sonucunu işle — terminal ingest veya reschedule. */
@@ -155,11 +201,9 @@ public class JetSmsDlrPollingWorker {
                             OffsetDateTime now) {
         String providerMsgId = delivery.getProviderMsgId();
         switch (result.deliveryStatus()) {
-            case DELIVERED -> dlrIngestService.ingestTerminal(
-                JetSmsProvider.PROVIDER_KEY, providerMsgId,
+            case DELIVERED -> terminalize(delivery, providerMsgId,
                 NotificationDelivery.Status.DELIVERED, result.providerStateCode(), now);
-            case FAILED -> dlrIngestService.ingestTerminal(
-                JetSmsProvider.PROVIDER_KEY, providerMsgId,
+            case FAILED -> terminalize(delivery, providerMsgId,
                 NotificationDelivery.Status.FAILED, result.providerStateCode(), now);
             case PENDING -> {
                 // Max-age timeout: created_at + maxAge geçtiyse FAILED.
@@ -168,17 +212,60 @@ public class JetSmsDlrPollingWorker {
                     log.warn("jetsms DLR poll max-age timeout: delivery_id={} created={} "
                             + "maxAge={} → FAILED", delivery.getId(),
                         delivery.getCreatedAt(), maxAge);
-                    dlrIngestService.ingestTerminal(
-                        JetSmsProvider.PROVIDER_KEY, providerMsgId,
+                    terminalize(delivery, providerMsgId,
                         NotificationDelivery.Status.FAILED,
                         "timeout-" + maxAge.toHours() + "h", now);
                 } else {
                     // Hâlâ pending — bir sonraki poll'e reschedule.
-                    deliveryRepo.rescheduleDlrPoll(
-                        delivery.getId(), now.plus(pollInterval), now);
+                    self.rescheduleAtomic(delivery.getId(), now.plus(pollInterval), now);
                 }
             }
         }
+    }
+
+    /**
+     * Terminal DLR ingest + JetSMS poll-state housekeeping.
+     *
+     * <p>Generic {@link DlrIngestService#ingestTerminal} core status'u terminal
+     * yapar (atomik {@code UPDATE WHERE status='ACCEPTED'}); ardından
+     * {@code markJetsmsDlrPollTerminal} JetSMS-özel poll kolonlarını temizler —
+     * generic core claim_token / dlr_* metadata'ya dokunmaz (Codex `019e3ff7`
+     * P2). Housekeeping {@code ingestTerminal} sonrası ayrı tx; başarısız olsa
+     * bile row terminal kalır (claim query {@code status='ACCEPTED'} → re-claim
+     * yok), yalnız claim_token stale kalır — fonksiyonel risk yok.
+     */
+    private void terminalize(NotificationDelivery delivery, String providerMsgId,
+                             NotificationDelivery.Status status, String code,
+                             OffsetDateTime now) {
+        dlrIngestService.ingestTerminal(
+            JetSmsProvider.PROVIDER_KEY, providerMsgId, status, code, now);
+        self.markPollTerminalAtomic(delivery.getId(), now);
+    }
+
+    // ─── @Transactional proxy boundary (Codex `019e3ff7` P1) ─────────────────
+
+    /**
+     * Atomic batch claim — kendi transaction. {@code claimJetsmsDlrPollBatch}
+     * {@code @Modifying} native CTE UPDATE aktif transaction gerektirir;
+     * {@code self} proxy üzerinden çağrılınca {@code @Transactional} devreye girer.
+     */
+    @Transactional
+    public int claimAtomic(OffsetDateTime now, OffsetDateTime leaseUntil,
+                           String claimToken, int limit) {
+        return deliveryRepo.claimJetsmsDlrPollBatch(now, leaseUntil, claimToken, limit);
+    }
+
+    /** Pending reschedule — kendi transaction ({@code @Modifying} native UPDATE). */
+    @Transactional
+    public void rescheduleAtomic(Long deliveryId, OffsetDateTime nextPollAt,
+                                 OffsetDateTime now) {
+        deliveryRepo.rescheduleDlrPoll(deliveryId, nextPollAt, now);
+    }
+
+    /** Terminal poll housekeeping — kendi transaction ({@code @Modifying} native UPDATE). */
+    @Transactional
+    public void markPollTerminalAtomic(Long deliveryId, OffsetDateTime pollAt) {
+        deliveryRepo.markJetsmsDlrPollTerminal(deliveryId, pollAt);
     }
 
     /** {@code "jetsms-756"} → {@code "756"}; prefix yoksa null. */
