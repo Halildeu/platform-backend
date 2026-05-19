@@ -262,12 +262,19 @@ public class UserControllerV1 {
 
     @GetMapping("/{id}")
     public ResponseEntity<UserDetailDto> getUser(@PathVariable Long id) {
+        // Resolve the caller first — applies the 401/403 gate, including the
+        // ACCOUNT_DISABLED activation gate, so a passive (enabled=false)
+        // account cannot read user detail via this endpoint.
+        requireCurrentUser();
         User user = userService.findRequiredById(id);
         return ResponseEntity.ok(UserDtoMapper.toDetail(user));
     }
 
     @GetMapping("/by-email")
     public ResponseEntity<UserDetailDto> getUserByEmail(@RequestParam("email") String email) {
+        // Caller gate (incl. ACCOUNT_DISABLED) — a passive account cannot
+        // read user detail via this endpoint either.
+        requireCurrentUser();
         return userService.findByEmail(email)
                 .map(UserDtoMapper::toDetail)
                 .map(ResponseEntity::ok)

@@ -387,25 +387,31 @@ class UserControllerV1Test {
     }
 
     /**
-     * Activation gate, positive path: once an admin activates the passive
-     * M365-provisioned profile, the same M365 token transacts normally —
-     * the {@code 403 ACCOUNT_DISABLED} gate is the only thing that was
-     * blocking it.
+     * Activation gate, full positive path through the real endpoints: an
+     * M365 first-login is gated {@code 403 ACCOUNT_DISABLED}; a separate
+     * enabled admin activates the passive row via {@code PUT /activation};
+     * the same M365 token then transacts {@code 200}.
      */
     @Test
-    void listUsers_m365User_afterActivation_returns200() throws Exception {
+    void listUsers_m365User_afterAdminActivation_returns200() throws Exception {
         String email = "m365-activated@example.com";
         String token = issueM365Token(email, "77777777-7777-7777-7777-777777777777");
 
         // First login — auto-provisioned passive, request gated.
         mockMvc.perform(get("/api/v1/users?page=1&pageSize=10")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(content().string(containsString("ACCOUNT_DISABLED")));
+        Long m365UserId = userRepository.findByEmail(email).orElseThrow().getId();
 
-        // Admin activates the row (the updateActivation path).
-        User provisioned = userRepository.findByEmail(email).orElseThrow();
-        provisioned.setEnabled(true);
-        userRepository.save(provisioned);
+        // A separate enabled admin activates the passive row via the real
+        // PUT /activation endpoint.
+        User admin = ensureUserExists("m365-activation-admin@example.com");
+        mockMvc.perform(put("/api/v1/users/{id}/activation", m365UserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(admin.getEmail()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of("active", true))))
+                .andExpect(status().isOk());
 
         // The same M365 token now transacts.
         mockMvc.perform(get("/api/v1/users?page=1&pageSize=10")

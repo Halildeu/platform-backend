@@ -137,6 +137,18 @@ class AuthzMeAutoProvisionIntegrationTest {
      * must create the row before {@code ScopeContextFilter} runs, so the
      * response carries the new numeric {@code users.id} — not the
      * {@code kc-sub-*} subject.
+     *
+     * <p>Note — {@code /authz/me} is deliberately NOT activation-gated.
+     * The user / notification transaction endpoints reject a passive
+     * ({@code enabled=false}) account with {@code 403 ACCOUNT_DISABLED}
+     * via {@code CurrentUserResolver}; {@code /authz/me} is exempt because
+     * it is the identity-bootstrap endpoint — the SPA must be able to call
+     * it on first login to discover "you exist but are pending admin
+     * activation". A freshly auto-provisioned passive user is
+     * {@code role=USER} with no company / modules / scopes / OpenFGA
+     * tuples, so this response carries identity only — no effective
+     * authority. The numeric-identity assertions below stand; the absence
+     * of grants follows from the empty profile.
      */
     @Test
     void authzMe_m365FirstLogin_filterCreatesRowBeforeScopeContext_userIdIsNumeric() throws Exception {
