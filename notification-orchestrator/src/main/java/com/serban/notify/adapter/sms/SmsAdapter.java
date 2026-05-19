@@ -54,9 +54,19 @@ public class SmsAdapter implements ChannelAdapter {
         @Value("${notify.adapters.sms.primary-provider:netgsm}") String primaryKey,
         @Value("${notify.adapters.sms.secondary-provider:}") String secondaryKey
     ) {
+        // Codex `019e3f82` PR-1 review P2 absorb: duplicate providerKey
+        // fail-fast (ChannelAdapterRegistry duplicate-channel disiplini ile
+        // paralel). Aynı providerKey iki bean'den gelirse sessiz overwrite
+        // yerine startup'ta IllegalStateException — JetSMS bean/profile
+        // koşulları arttıkça yanlış provider seçim riskini önler.
         Map<String, SmsProvider> index = new HashMap<>();
         for (SmsProvider p : providers) {
-            index.put(p.providerKey(), p);
+            SmsProvider prev = index.putIfAbsent(p.providerKey(), p);
+            if (prev != null) {
+                throw new IllegalStateException(
+                    "Duplicate SmsProvider key '" + p.providerKey() + "': "
+                        + prev.getClass().getName() + " vs " + p.getClass().getName());
+            }
         }
         this.providersByKey = Map.copyOf(index);
         this.primaryKey = primaryKey == null ? "" : primaryKey.trim();
