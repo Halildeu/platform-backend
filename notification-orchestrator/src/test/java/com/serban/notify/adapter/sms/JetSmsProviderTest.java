@@ -15,11 +15,14 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMoc
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * JetSMS SMS provider test (Faz 23.3 multi-provider — PR-2).
+ * JetSMS SMS provider test (Faz 23.3 multi-provider — PR-2; Faz 23.4 PR-5 SOAP cutover).
+ *
+ * <p>Bu sınıf HTTP transport davranışını test eder (transport=http açıkça
+ * set). SOAP transport için ayrı sınıf: {@link JetSmsProviderSoapTest}.
  *
  * <p>JetSMS HTTP API: send (Status/MessageIDs plain-text parse) + ISO-8859-9
  * encoding + custom URL-encode + failover taxonomy mapping. DLR polling
- * PR-3 (bu PR'da pollDelivery default UnsupportedOperationException).
+ * PR-3 (HttpSmsReport batched).
  */
 class JetSmsProviderTest {
 
@@ -33,8 +36,11 @@ class JetSmsProviderTest {
     @BeforeEach
     void setUp() {
         provider = new JetSmsProvider();
+        // HTTP transport — Faz 23.3 PR-2/3 davranışını byte-for-behavior korur.
+        ReflectionTestUtils.setField(provider, "transport", "http");
         ReflectionTestUtils.setField(provider, "apiUrl", jetsms.url("/SMS-Web/HttpSmsSend"));
         ReflectionTestUtils.setField(provider, "reportUrl", jetsms.url("/SMS-Web/HttpSmsReport"));
+        ReflectionTestUtils.setField(provider, "soapUrl", jetsms.url("/ws/soapSMS.asmx"));
         ReflectionTestUtils.setField(provider, "username", "test-user");
         ReflectionTestUtils.setField(provider, "password", "test-pass");
         ReflectionTestUtils.setField(provider, "originator", "Notify");

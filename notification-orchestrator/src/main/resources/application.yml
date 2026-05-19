@@ -155,6 +155,18 @@ notify:
         # via kv/platform/notify/sms/netgsm dlr_token property. Empty default
         # → DlrController fail-closed (any DLR request rejected with 401).
         dlr-token: ${NOTIFY_ADAPTERS_SMS_NETGSM_DLR_TOKEN:}
+      # Faz 23.4 JetSMS — SOAP cutover. mikrolink2 hesabı SOAP servisi için
+      # provisioned; HTTP API yüzeyi Biotekno provisioning sonrası
+      # transport=http ile aktive edilebilir (additive, byte-for-behavior
+      # korunur). Credentials production: Vault/ESO kv/platform/notify/sms/jetsms.
+      jetsms:
+        transport: ${NOTIFY_ADAPTERS_SMS_JETSMS_TRANSPORT:soap}
+        api-url: ${NOTIFY_ADAPTERS_SMS_JETSMS_API_URL:https://api.jetsms.com.tr/SMS-Web/HttpSmsSend}
+        report-url: ${NOTIFY_ADAPTERS_SMS_JETSMS_REPORT_URL:https://api.jetsms.com.tr/SMS-Web/HttpSmsReport}
+        soap-url: ${NOTIFY_ADAPTERS_SMS_JETSMS_SOAP_URL:https://api.jetsms.com.tr/ws/soapSMS.asmx}
+        username: ${NOTIFY_ADAPTERS_SMS_JETSMS_USERNAME:}
+        password: ${NOTIFY_ADAPTERS_SMS_JETSMS_PASSWORD:}
+        originator: ${NOTIFY_ADAPTERS_SMS_JETSMS_ORIGINATOR:}
 
   # PR5 preference + authz feature flags (Codex 019dfaaa absorb)
   # Production default: both enabled. Test profile: false (override per test class).
