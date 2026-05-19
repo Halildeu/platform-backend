@@ -34,12 +34,16 @@ import java.util.regex.Pattern;
  *       {@code true}: TIMEOUT/HTTP_5XX/PROVIDER_SYSTEM/RATE_LIMIT/
  *       QUOTA_OR_CREDIT/NO_CORRELATOR/UNKNOWN_TRANSIENT) → secondary denenir</li>
  *   <li><b>failover-NOT-eligible kalıcı</b> (INVALID_PHONE/INVALID_TEXT/
- *       MESSAGE_TOO_LONG/IYS_OPT_OUT/POLICY_BLOCK/EMPTY_MESSAGE) → secondary
- *       denenmez (secondary'de de aynı sonuç)</li>
+ *       IYS_OPT_OUT/POLICY_BLOCK/EMPTY_MESSAGE) → secondary denenmez
+ *       (secondary'de de aynı sonuç)</li>
  *   <li><b>UNSUPPORTED_CHARSET</b> → charset-capability pre-route: secondary
  *       {@link SmsProvider#supportsUnicode()} ise denenir (örn. JetSMS
  *       ISO-8859-9 fail → NetGSM UCS-2 secondary). Hiçbiri desteklemezse
  *       primary FAILED kalır. Silent transliteration YOK.</li>
+ *   <li><b>MESSAGE_TOO_LONG</b> → uzunluk-capability route: secondary
+ *       {@link SmsProvider#maxMessageLength()} mesajı kaldırabiliyorsa
+ *       denenir (örn. JetSMS 160 fail → NetGSM concat 670 secondary).
+ *       Secondary de kaldıramazsa primary FAILED kalır.</li>
  *   <li><b>PROVIDER_CONFIG</b> → high-severity alert metric
  *       ({@code notify_sms_provider_config_error_total}); default sessiz
  *       failover YOK. Operator opt-in
