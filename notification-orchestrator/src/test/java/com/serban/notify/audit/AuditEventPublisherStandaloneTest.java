@@ -117,4 +117,31 @@ class AuditEventPublisherStandaloneTest extends AbstractPostgresTest {
         assertThat(rows).extracting(AuditEvent::getIntentId)
             .doesNotHaveDuplicates();
     }
+
+    @Test
+    @Transactional
+    void actualProviderDetailPassesPiiRedactorWhitelist() {
+        // Faz 23.3 multi-provider (Codex `019e3fc5` PR-1 review P1 absorb):
+        // SMS failover sonrası `actual_provider` audit detail PiiRedactor
+        // whitelist'ten geçmeli — aksi halde AuditEventPublisher whitelist
+        // filtresi alanı sessizce düşürür ve "gerçek provider audit'te
+        // görünür" P1 fix'i fiilen sağlanmaz.
+        Map<String, Object> details = Map.of(
+            "delivery_status", "ACCEPTED",
+            "provider_msg_id", "netgsm-fb-1",
+            "actual_provider", "netgsm",
+            "user_phone", "+905321234567"  // PII — filtrelenmelidir
+        );
+
+        publisher.publishStandalone("DELIVERY_ACCEPTED", "acme", null, details);
+
+        AuditEvent saved = repository.findAll().get(0);
+        Map<String, Object> filtered = saved.getDetails();
+        // Whitelisted detail korundu
+        assertThat(filtered).containsEntry("actual_provider", "netgsm");
+        assertThat(filtered).containsEntry("delivery_status", "ACCEPTED");
+        assertThat(filtered).containsEntry("provider_msg_id", "netgsm-fb-1");
+        // PII filtrelendi
+        assertThat(filtered).doesNotContainKey("user_phone");
+    }
 }

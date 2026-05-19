@@ -501,6 +501,13 @@ public class DeliveryDispatchService {
         if (result.providerMessageId() != null) details.put("provider_msg_id", result.providerMessageId());
         if (result.failureReason() != null) details.put("failure_reason", result.failureReason());
         if (result.providerResponseCode() != null) details.put("provider_response_code", result.providerResponseCode());
+        // Faz 23.3 multi-provider (Codex `019e3fc5` PR-1 review P1 absorb):
+        // SMS failover sonrası gerçek dispatch eden provider outcome audit'inde
+        // görünür (RetryWorker outcome audit ile paritede). SMS dışı kanallar
+        // actualProviderKey=null → detail eklenmez.
+        if (result.actualProviderKey() != null) {
+            details.put("actual_provider", result.actualProviderKey());
+        }
         return details;
     }
 }
