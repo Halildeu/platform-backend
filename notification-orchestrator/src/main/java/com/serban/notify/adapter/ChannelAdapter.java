@@ -65,14 +65,29 @@ public interface ChannelAdapter {
         Status status,
         String providerMessageId,
         String failureReason,
-        Integer providerResponseCode
+        Integer providerResponseCode,
+        String actualProviderKey
     ) {
         public enum Status {
             DELIVERED, ACCEPTED, FAILED, RETRY, BOUNCED
         }
 
+        // Faz 23.3 multi-provider (Codex `019e3f82` absorb #2): actualProviderKey
+        // SMS channel gerçek dispatch eden provider'ı ("jetsms"|"netgsm") taşır;
+        // DeliveryDispatchService non-null ise notification_delivery.provider
+        // kolonuna yazar (failover sonrası secondary kabul ettiyse gerçek provider
+        // persist). SMS dışı kanallar (email/slack/webhook/in-app) null bırakır —
+        // bu kanallarda provider plan-time DeliveryTarget'tan gelir (behavior-neutral).
+
         public static DeliveryAttemptResult delivered(String providerMsgId) {
-            return new DeliveryAttemptResult(Status.DELIVERED, providerMsgId, null, null);
+            return new DeliveryAttemptResult(Status.DELIVERED, providerMsgId, null, null, null);
+        }
+
+        /** Faz 23.3 SMS-channel variant — gerçek provider key taşır. */
+        public static DeliveryAttemptResult delivered(String providerMsgId,
+                                                      String actualProviderKey) {
+            return new DeliveryAttemptResult(
+                Status.DELIVERED, providerMsgId, null, null, actualProviderKey);
         }
 
         /**
@@ -84,24 +99,45 @@ public interface ChannelAdapter {
          * @throws IllegalArgumentException if providerMsgId is null or blank
          */
         public static DeliveryAttemptResult accepted(String providerMsgId) {
+            return accepted(providerMsgId, null);
+        }
+
+        /** Faz 23.3 SMS-channel variant — gerçek provider key taşır. */
+        public static DeliveryAttemptResult accepted(String providerMsgId,
+                                                     String actualProviderKey) {
             if (providerMsgId == null || providerMsgId.isBlank()) {
                 throw new IllegalArgumentException(
                     "ACCEPTED requires non-blank providerMessageId for DLR correlation; "
                         + "use retry() if provider did not return a correlator");
             }
-            return new DeliveryAttemptResult(Status.ACCEPTED, providerMsgId, null, null);
+            return new DeliveryAttemptResult(
+                Status.ACCEPTED, providerMsgId, null, null, actualProviderKey);
         }
 
         public static DeliveryAttemptResult failed(String reason, Integer code) {
-            return new DeliveryAttemptResult(Status.FAILED, null, reason, code);
+            return new DeliveryAttemptResult(Status.FAILED, null, reason, code, null);
+        }
+
+        /** Faz 23.3 SMS-channel variant — gerçek provider key taşır. */
+        public static DeliveryAttemptResult failed(String reason, Integer code,
+                                                   String actualProviderKey) {
+            return new DeliveryAttemptResult(
+                Status.FAILED, null, reason, code, actualProviderKey);
         }
 
         public static DeliveryAttemptResult retry(String reason, Integer code) {
-            return new DeliveryAttemptResult(Status.RETRY, null, reason, code);
+            return new DeliveryAttemptResult(Status.RETRY, null, reason, code, null);
+        }
+
+        /** Faz 23.3 SMS-channel variant — gerçek provider key taşır. */
+        public static DeliveryAttemptResult retry(String reason, Integer code,
+                                                  String actualProviderKey) {
+            return new DeliveryAttemptResult(
+                Status.RETRY, null, reason, code, actualProviderKey);
         }
 
         public static DeliveryAttemptResult bounced(String reason) {
-            return new DeliveryAttemptResult(Status.BOUNCED, null, reason, null);
+            return new DeliveryAttemptResult(Status.BOUNCED, null, reason, null, null);
         }
     }
 }

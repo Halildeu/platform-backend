@@ -347,7 +347,7 @@ class DlrIngestServiceTest {
         d.setRecipientType(NotificationDelivery.RecipientType.SUBSCRIBER);
         d.setRecipientId("sub-1");
         d.setRecipientHash("hash-x");
-        d.setProvider("netgsm-default");
+        d.setProvider("netgsm");  // Faz 23.3: gerçek provider key (plan-time "sms" placeholder runtime'da actualProviderKey ile çözülür)
         d.setProviderMsgId("netgsm-abc-1");
         d.setStatus(status);
         return d;
