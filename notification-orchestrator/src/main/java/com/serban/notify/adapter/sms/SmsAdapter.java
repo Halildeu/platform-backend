@@ -126,9 +126,14 @@ public class SmsAdapter implements ChannelAdapter {
             primaryKey, primaryResult.status(), primaryResult.failureClass(),
             target.recipientHash());
 
-        // 3. Failover decision matrix (PR-2 — Codex absorb).
+        // 3. PROVIDER_CONFIG alert — Codex `019e3fd9` P1 absorb: metric emit
+        //    failover kararından ve secondary varlığından BAĞIMSIZ. Credential/
+        //    originator hatası secondary olmasa da high-severity alert üretir.
+        maybeEmitProviderConfigAlert(primaryResult);
+
+        // 4. Failover decision matrix (PR-2 — Codex absorb).
         if (primaryResult.status() != SmsSendResult.SmsSendStatus.ACCEPTED
-            && shouldFailover(primaryResult)) {
+            && shouldFailover(primaryResult, text.length())) {
 
             SmsProvider secondary = providersByKey.get(secondaryKey);
             if (secondary != null) {
@@ -138,6 +143,7 @@ public class SmsAdapter implements ChannelAdapter {
                 log.info("sms secondary={} result status={} class={} hash={}",
                     secondaryKey, secondaryResult.status(), secondaryResult.failureClass(),
                     target.recipientHash());
+                maybeEmitProviderConfigAlert(secondaryResult);
                 return toAttemptResult(secondaryResult);
             }
             log.warn("sms failover skipped: secondary '{}' not registered", secondaryKey);
@@ -147,19 +153,51 @@ public class SmsAdapter implements ChannelAdapter {
     }
 
     /**
+     * {@link SmsFailureClass#PROVIDER_CONFIG} sonucunda high-severity alert
+     * metric emit eder ({@code notify_sms_provider_config_error_total}).
+     *
+     * <p>Codex `019e3fd9` P1 absorb: bu emit failover kararından ve secondary
+     * varlığından bağımsızdır — source default {@code secondary=} boş olsa
+     * bile primary credential/originator hatası alert'e düşmelidir.
+     */
+    private void maybeEmitProviderConfigAlert(SmsSendResult result) {
+        if (result.failureClass() != SmsFailureClass.PROVIDER_CONFIG) {
+            return;
+        }
+        String provider = result.actualProviderKey() != null
+            ? result.actualProviderKey() : primaryKey;
+        if (meterRegistry != null) {
+            meterRegistry.counter("notify_sms_provider_config_error_total",
+                "provider", provider,
+                "code", result.providerCode() != null ? result.providerCode() : "unknown")
+                .increment();
+        }
+        log.error("sms PROVIDER_CONFIG error: provider={} code={} — high-severity "
+                + "alert emitted (notify_sms_provider_config_error_total)",
+            provider, result.providerCode());
+    }
+
+    /**
      * Primary provider sonucundan sonra secondary denenmeli mi?
      *
-     * <p>Failover matrisi (Codex `019e3f82` absorb):
+     * <p>Failover matrisi (Codex `019e3f82` + `019e3fd9` absorb):
      * <ul>
      *   <li>secondary yok → her zaman false</li>
      *   <li>failover-eligible transient class → true</li>
      *   <li>{@code UNSUPPORTED_CHARSET} → secondary {@code supportsUnicode()}
      *       ise true (charset-capability pre-route)</li>
-     *   <li>{@code PROVIDER_CONFIG} → alert metric emit + opt-in flag'e bağlı</li>
+     *   <li>{@code MESSAGE_TOO_LONG} → secondary {@code maxMessageLength()}
+     *       mesajı kaldırabiliyorsa true (uzunluk-capability route — JetSMS
+     *       160 fail → NetGSM concat secondary)</li>
+     *   <li>{@code PROVIDER_CONFIG} → opt-in flag'e bağlı (alert ayrı
+     *       {@link #maybeEmitProviderConfigAlert} ile emit edilir)</li>
      *   <li>diğer kalıcı class → false</li>
      * </ul>
+     *
+     * @param textLength gönderilen mesaj uzunluğu (MESSAGE_TOO_LONG capability
+     *                   route kararı için)
      */
-    private boolean shouldFailover(SmsSendResult primaryResult) {
+    private boolean shouldFailover(SmsSendResult primaryResult, int textLength) {
         if (secondaryKey.isEmpty()) {
             return false;
         }
@@ -177,21 +215,18 @@ public class SmsAdapter implements ChannelAdapter {
             return route;
         }
 
+        if (fc == SmsFailureClass.MESSAGE_TOO_LONG) {
+            SmsProvider secondary = providersByKey.get(secondaryKey);
+            boolean route = secondary != null && secondary.maxMessageLength() >= textLength;
+            log.info("sms MESSAGE_TOO_LONG: textLength={} secondary={} maxLength={} → route={}",
+                textLength, secondaryKey,
+                secondary != null ? secondary.maxMessageLength() : "(none)", route);
+            return route;
+        }
+
         if (fc == SmsFailureClass.PROVIDER_CONFIG) {
-            // High-severity alert — credential/originator hatası sessiz
-            // failed row'lara gömülmemeli (Codex absorb).
-            if (meterRegistry != null) {
-                meterRegistry.counter("notify_sms_provider_config_error_total",
-                    "provider", primaryResult.actualProviderKey() != null
-                        ? primaryResult.actualProviderKey() : primaryKey,
-                    "code", primaryResult.providerCode() != null
-                        ? primaryResult.providerCode() : "unknown")
-                    .increment();
-            }
-            log.error("sms PROVIDER_CONFIG error: provider={} code={} — "
-                    + "alert emitted; failover {}",
-                primaryKey, primaryResult.providerCode(),
-                failoverOnProviderConfigError ? "ENABLED (opt-in)" : "disabled (default)");
+            // Alert maybeEmitProviderConfigAlert ile zaten emit edildi —
+            // burada yalnız failover kararı (default sessiz failover YOK).
             return failoverOnProviderConfigError;
         }
 

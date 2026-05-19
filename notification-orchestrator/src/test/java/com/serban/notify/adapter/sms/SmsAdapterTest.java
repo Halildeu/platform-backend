@@ -24,22 +24,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class SmsAdapterTest {
 
-    /** Test-only SmsProvider — providerKey + send + unicode configurable. */
+    /** Test-only SmsProvider — providerKey + send + unicode + maxLen configurable. */
     private static final class FakeProvider implements SmsProvider {
         private final String key;
         private final boolean unicode;
+        private final int maxLen;
         private final Function<String, SmsSendResult> sendFn;
         int sendCallCount = 0;
 
+        /** 3-arg: maxMessageLength default 670 (concat-capable failover-target rolü). */
         FakeProvider(String key, boolean unicode, Function<String, SmsSendResult> sendFn) {
+            this(key, unicode, 670, sendFn);
+        }
+
+        FakeProvider(String key, boolean unicode, int maxLen,
+                     Function<String, SmsSendResult> sendFn) {
             this.key = key;
             this.unicode = unicode;
+            this.maxLen = maxLen;
             this.sendFn = sendFn;
         }
 
         @Override public String providerKey() { return key; }
         @Override public SmsDlrMode dlrMode() { return SmsDlrMode.PUSH; }
         @Override public boolean supportsUnicode() { return unicode; }
+        @Override public int maxMessageLength() { return maxLen; }
         @Override public SmsSendResult send(String e164Phone, String text) {
             sendCallCount++;
             return sendFn.apply(text);
@@ -281,6 +290,64 @@ class SmsAdapterTest {
         // alert metric emit edildi
         assertThat(registry.counter("notify_sms_provider_config_error_total",
             "provider", "jetsms", "code", "-5").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void providerConfigErrorEmitsMetricEvenWithoutSecondary() {
+        // Codex `019e3fd9` P1 absorb: PROVIDER_CONFIG alert metric, secondary
+        // boş olsa bile emit edilmeli (source default secondary="" — primary
+        // credential hatası sessiz failed row'a gömülmemeli).
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        FakeProvider jetsms = new FakeProvider("jetsms", false,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.PROVIDER_CONFIG, "-5"));
+        SmsAdapter a = adapter(List.of(jetsms), "jetsms", "", false, registry);
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", "x"));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
+        // secondary YOK ama metric yine emit edildi
+        assertThat(registry.counter("notify_sms_provider_config_error_total",
+            "provider", "jetsms", "code", "-5").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void messageTooLongRoutesToConcatCapableSecondary() {
+        // Codex `019e3fd9` P1 absorb: MESSAGE_TOO_LONG capability route —
+        // JetSMS 160 limit fail → NetGSM concat secondary (maxMessageLength
+        // 670) mesajı kaldırabiliyorsa route.
+        String text161 = "x".repeat(161);
+        FakeProvider jetsms = new FakeProvider("jetsms", false, 160,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.MESSAGE_TOO_LONG, "len161"));
+        FakeProvider netgsm = new FakeProvider("netgsm", true, 670,
+            t -> SmsSendResult.accepted("netgsm", "netgsm-long"));
+        SmsAdapter a = adapter(List.of(jetsms, netgsm), "jetsms", "netgsm");
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", text161));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
+        assertThat(r.actualProviderKey()).isEqualTo("netgsm");  // concat-capable secondary
+        assertThat(netgsm.sendCallCount).isEqualTo(1);
+    }
+
+    @Test
+    void messageTooLongNoCapableSecondaryStaysFailed() {
+        // secondary de mesajı kaldıramıyorsa (maxMessageLength < textLength) →
+        // primary FAILED kalır, route YOK.
+        String text500 = "x".repeat(500);
+        FakeProvider jetsms = new FakeProvider("jetsms", false, 160,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.MESSAGE_TOO_LONG, "len500"));
+        FakeProvider shortSecondary = new FakeProvider("other", true, 160,
+            t -> SmsSendResult.accepted("other", "other-1"));
+        SmsAdapter a = adapter(List.of(jetsms, shortSecondary), "jetsms", "other");
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", text500));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
+        assertThat(r.actualProviderKey()).isEqualTo("jetsms");
+        assertThat(shortSecondary.sendCallCount).isZero();
     }
 
     @Test
