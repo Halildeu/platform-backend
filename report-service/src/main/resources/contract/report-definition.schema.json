@@ -67,12 +67,12 @@
       "maxLength": 80
     },
     "schemaMode": {
-      "description": "Schema resolution mode. 'yearly' triggers yearly partition rotation (yearColumn required); 'static' uses sourceSchema literally; 'current'/'canonical' reserved for Phase 2 Program 8 schema-truth integration.",
+      "description": "Schema resolution mode. 'yearly' triggers yearly partition rotation (yearColumn required — see RC-001 carve-out for COMPANY_REMAINDER schema-encoded snapshots); 'static' uses sourceSchema literally; 'current'/'canonical' reserved for Phase 2 Program 8 schema-truth integration.",
       "type": "string",
       "enum": ["yearly", "current", "canonical", "static"]
     },
     "yearColumn": {
-      "description": "Column used for yearly partition routing (required when schemaMode=yearly).",
+      "description": "Column used for yearly partition routing (required when schemaMode=yearly, except the RC-001 COMPANY_REMAINDER schema-encoded-snapshot carve-out).",
       "type": "string",
       "minLength": 1,
       "maxLength": 80
