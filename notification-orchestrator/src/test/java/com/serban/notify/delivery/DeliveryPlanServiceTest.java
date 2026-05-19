@@ -282,8 +282,11 @@ class DeliveryPlanServiceTest {
             .containsExactly("+905321111111", "+905322222222");
         assertThat(targets).extracting(DeliveryTarget::recipientType)
             .containsExactly("subscriber", "external");
+        // Faz 23.3 multi-provider (Codex `019e3f82` absorb #2): SMS plan-time
+        // providerKey "sms" placeholder — gerçek provider SmsAdapter failover
+        // sonucu DeliveryAttemptResult.actualProviderKey ile runtime'da yazılır.
         assertThat(targets).extracting(DeliveryTarget::providerKey)
-            .containsExactly("netgsm-default", "netgsm-default");
+            .containsExactly("sms", "sms");
     }
 
     @Test

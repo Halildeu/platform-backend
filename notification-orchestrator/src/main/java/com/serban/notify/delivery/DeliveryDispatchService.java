@@ -431,6 +431,18 @@ public class DeliveryDispatchService {
         delivery.setStatus(newStatus);
         delivery.setLastAttemptAt(now);
 
+        // Faz 23.3 multi-provider (Codex `019e3f82` absorb #1): SMS channel
+        // failover sonrası gerçek dispatch eden provider'ı persist et. Plan-time
+        // DeliveryTarget.providerKey() SMS için "sms" placeholder; SmsAdapter
+        // failover sonucu DeliveryAttemptResult.actualProviderKey ile gerçek
+        // provider'ı (jetsms|netgsm) taşır. INSERT + UPDATE path ikisinde de
+        // uygulanır — RETRY sonrası secondary kabul ederse provider güncellenir.
+        // SMS dışı kanallar actualProviderKey=null → setProvider çağrılmaz
+        // (plan-time provider korunur, behavior-neutral).
+        if (result.actualProviderKey() != null && !result.actualProviderKey().isBlank()) {
+            delivery.setProvider(result.actualProviderKey());
+        }
+
         if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED) {
             delivery.setProviderMsgId(result.providerMessageId());
             delivery.setDeliveredAt(now);
@@ -489,6 +501,13 @@ public class DeliveryDispatchService {
         if (result.providerMessageId() != null) details.put("provider_msg_id", result.providerMessageId());
         if (result.failureReason() != null) details.put("failure_reason", result.failureReason());
         if (result.providerResponseCode() != null) details.put("provider_response_code", result.providerResponseCode());
+        // Faz 23.3 multi-provider (Codex `019e3fc5` PR-1 review P1 absorb):
+        // SMS failover sonrası gerçek dispatch eden provider outcome audit'inde
+        // görünür (RetryWorker outcome audit ile paritede). SMS dışı kanallar
+        // actualProviderKey=null → detail eklenmez.
+        if (result.actualProviderKey() != null) {
+            details.put("actual_provider", result.actualProviderKey());
+        }
         return details;
     }
 }

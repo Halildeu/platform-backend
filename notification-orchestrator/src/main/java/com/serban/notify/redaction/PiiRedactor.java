@@ -78,6 +78,7 @@ public class PiiRedactor {
         "last_failure_reason",       // PR4 absorb: provider error string
         "provider",                  // PR3 absorb: provider key
         "provider_response_code",    // PR3 absorb: HTTP / SMTP code
+        "actual_provider",           // Faz 23.3 multi-provider: SMS failover sonrası gerçek dispatch eden provider (jetsms|netgsm)
         "expire_at",                 // PR4 absorb: intent expiration
         "deleted_count",             // Faz 23.6 PR-A1: PREFERENCE_RESTORE_DEFAULTS audit detail
         "deleted_override_count",    // Faz 23.6 PR-A2: PREFERENCE_MUTE_CHANNEL audit detail

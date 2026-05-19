@@ -117,8 +117,8 @@ public class DeliveryPlanService {
      * SMS: recipient-addressed; one target per eligible recipient
      * (Faz 23.3.1 — Production MVP geniş scope).
      *
-     * <p>Target ref: E.164 phone number (e.g. +905321234567); NetGsmSmsAdapter
-     * strips leading "+" before sending to provider REST v2 endpoint.
+     * <p>Target ref: E.164 phone number (e.g. +905321234567); SMS provider
+     * adapter strips leading "+" before sending to provider endpoint.
      *
      * <p>Subscriber type: phone resolved from {@link SubscriberContact} (PR5
      * projection). Optional explicit {@code ref.phone()} fallback (test fixture
@@ -179,8 +179,12 @@ public class DeliveryPlanService {
                 );
             }
             String hash = piiRedactor.hashRecipient(intent.getOrgId(), type, hashInput);
+            // Faz 23.3 multi-provider (Codex `019e3f82` absorb #2): plan-time
+            // providerKey "sms" (failover-aware placeholder) — gerçek provider
+            // SmsAdapter failover sonucu DeliveryAttemptResult.actualProviderKey
+            // ile runtime'da belirlenir, DeliveryDispatchService persist eder.
             result.add(new DeliveryTarget(
-                "sms", type, ref.subscriberId(), hash, phone, "netgsm-default"
+                "sms", type, ref.subscriberId(), hash, phone, "sms"
             ));
         }
         return result;

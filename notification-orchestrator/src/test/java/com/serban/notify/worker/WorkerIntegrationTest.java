@@ -83,12 +83,15 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
     @MockBean SmtpAdapter smtpAdapter;
     @MockBean SlackWebhookAdapter slackAdapter;
     @MockBean WebhookEgressAdapter webhookAdapter;
+    // Faz 23.3 multi-provider: SMS channel adapter facade mock'u
+    @MockBean com.serban.notify.adapter.sms.SmsAdapter smsAdapter;
 
     @BeforeEach
     void seed() {
         when(smtpAdapter.channelKey()).thenReturn("email");
         when(slackAdapter.channelKey()).thenReturn("slack");
         when(webhookAdapter.channelKey()).thenReturn("webhook");
+        when(smsAdapter.channelKey()).thenReturn("sms");
 
         // Faz 23.4 PR-F V12 UNIQUE(provider_msg_id) absorb: clean dependent
         // rows before each test to prevent hard-coded msg-id collision
@@ -316,7 +319,7 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         assertThat(secondClaim).isEqualTo(0);
     }
 
-    private NotificationIntent saveIntent(String channel, String externalEmail) {
+    private NotificationIntent saveIntent(String channel, String recipient) {
         NotificationIntent intent = new NotificationIntent();
         intent.setIntentId(UUID.randomUUID().toString());
         intent.setCorrelationId("trace-" + UUID.randomUUID().toString().substring(0, 8));
@@ -330,11 +333,51 @@ class WorkerIntegrationTest extends AbstractPostgresTest {
         intent.setLocale("tr-TR");
         intent.setChannels(new String[] { channel });
         intent.setStatus(NotificationIntent.Status.PENDING);
-        intent.setRecipientsSnapshot(List.of(
-            new java.util.LinkedHashMap<>(Map.of(
-                "type", "external", "email", externalEmail, "locale", "tr-TR"
-            ))
-        ));
+        // Faz 23.3: SMS channel recipient phone, diğer kanallar email
+        // (DeliveryPlanService SMS için recipientsSnapshot "phone" field bekler).
+        java.util.Map<String, Object> snapshot = "sms".equals(channel)
+            ? Map.of("type", "external", "phone", recipient, "locale", "tr-TR")
+            : Map.of("type", "external", "email", recipient, "locale", "tr-TR");
+        intent.setRecipientsSnapshot(List.of(new java.util.LinkedHashMap<>(snapshot)));
         return intentRepo.save(intent);
+    }
+
+    @Test
+    void retryWorkerSmsFailoverPersistsActualProvider() {
+        // Codex `019e3f82` PR-1 review P1 absorb: RetryWorker
+        // DeliveryDispatchService.upsertDelivery'i çağırmaz — kendi update
+        // path'i var. SMS failover sonrası gerçek provider persist edilmeli.
+        //
+        // Senaryo: delivery JetSMS primary ile dispatch edildi, timeout aldı,
+        // RETRY'de provider="jetsms" ile bekliyor. RetryWorker yeniden dener,
+        // SmsAdapter facade secondary NetGSM'e failover eder ve
+        // actualProviderKey="netgsm" ACCEPTED döner. processDelivery sonrası
+        // delivery.provider="netgsm" olmalı (admin log / metric / DLR routing
+        // gerçek provider'ı görsün).
+        NotificationIntent intent = saveIntent("sms", "+905321234567");
+        intent.setStatus(NotificationIntent.Status.PROCESSING);
+        intentRepo.save(intent);
+
+        DeliveryTarget plannedTarget = planService.plan(intent, null).get(0);
+        NotificationDelivery delivery = createRetryDelivery(intent, plannedTarget,
+            1, "sms jetsms TIMEOUT", OffsetDateTime.now().minus(Duration.ofSeconds(10)));
+        // Önceki JetSMS primary dispatch'i simüle et (plan-time "sms" placeholder
+        // yerine gerçek başarısız primary).
+        delivery.setProvider("jetsms");
+        deliveryRepo.save(delivery);
+
+        // SmsAdapter facade failover sonucu: secondary NetGSM ACCEPTED.
+        when(smsAdapter.send(any(), any())).thenReturn(
+            ChannelAdapter.DeliveryAttemptResult.accepted("netgsm-fb-1", "netgsm")
+        );
+
+        retryWorker.runCycle();
+
+        NotificationDelivery reloaded = deliveryRepo.findById(delivery.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(NotificationDelivery.Status.ACCEPTED);
+        assertThat(reloaded.getProviderMsgId()).isEqualTo("netgsm-fb-1");
+        // P1 fix kanıtı: failover sonrası gerçek provider persist edildi
+        assertThat(reloaded.getProvider()).isEqualTo("netgsm");
+        assertThat(reloaded.getAttemptCount()).isEqualTo(2);
     }
 }

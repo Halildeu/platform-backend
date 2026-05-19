@@ -264,6 +264,15 @@ public class RetryWorker {
         delivery.setStatus(NotificationDelivery.Status.valueOf(result.status().name()));
         delivery.setProcessingLeaseUntil(null);
 
+        // Faz 23.3 multi-provider (Codex `019e3f82` PR-1 review P1 absorb):
+        // RetryWorker DeliveryDispatchService.upsertDelivery'i çağırmaz — kendi
+        // update path'i var. SMS failover sonrası secondary kabul ederse gerçek
+        // provider'ı burada da persist et (initial dispatch path ile paritede).
+        // SMS dışı kanallar actualProviderKey=null → setProvider çağrılmaz.
+        if (result.actualProviderKey() != null && !result.actualProviderKey().isBlank()) {
+            delivery.setProvider(result.actualProviderKey());
+        }
+
         if (result.status() == ChannelAdapter.DeliveryAttemptResult.Status.DELIVERED) {
             delivery.setProviderMsgId(result.providerMessageId());
             delivery.setDeliveredAt(now);
@@ -300,6 +309,9 @@ public class RetryWorker {
         if (result.providerMessageId() != null) details.put("provider_msg_id", result.providerMessageId());
         if (result.failureReason() != null) details.put("failure_reason", result.failureReason());
         if (result.providerResponseCode() != null) details.put("provider_response_code", result.providerResponseCode());
+        // Faz 23.3 (Codex `019e3f82` PR-1 review P1 absorb): SMS failover sonrası
+        // gerçek dispatch eden provider audit trail'inde görünür.
+        if (result.actualProviderKey() != null) details.put("actual_provider", result.actualProviderKey());
         switch (result.status()) {
             case DELIVERED -> audit.publish("DELIVERY_SUCCEEDED", intent,
                 delivery.getRecipientHash(), delivery.getChannel(), details);
