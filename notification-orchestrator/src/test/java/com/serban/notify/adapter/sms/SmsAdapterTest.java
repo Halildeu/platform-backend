@@ -3,6 +3,8 @@ package com.serban.notify.adapter.sms;
 import com.serban.notify.adapter.ChannelAdapter;
 import com.serban.notify.delivery.DeliveryTarget;
 import com.serban.notify.template.RenderedMessage;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -11,21 +13,18 @@ import java.util.function.Function;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * SMS channel adapter facade test (Faz 23.3 multi-provider — PR-1).
+ * SMS channel adapter facade test (Faz 23.3 multi-provider — PR-1 + PR-2).
  *
  * <p>{@link SmsAdapter} provider-agnostic facade davranışı: channel-level
- * validation (E.164, empty message), provider seçimi, failover orchestration,
- * {@link SmsSendResult} → {@code DeliveryAttemptResult} map. Provider HTTP
- * logic {@code NetGsmProviderTest}'te (fake provider burada).
- *
- * <p>PR-1 behavior-neutral: source-default {@code primary=netgsm secondary=}
- * (boş) — failover path fake provider'larla doğrulanır, ama prod source
- * default'ta secondary yok → primary-only davranış eski NetGsmSmsAdapter ile
- * semantik aynı.
+ * validation, provider seçimi, failover matrisi (failover-eligible /
+ * UNSUPPORTED_CHARSET pre-route / PROVIDER_CONFIG alert), {@link SmsSendResult}
+ * → {@code DeliveryAttemptResult} map. Provider HTTP logic
+ * {@code NetGsmProviderTest} / {@code JetSmsProviderTest}'te (fake provider
+ * burada).
  */
 class SmsAdapterTest {
 
-    /** Test-only SmsProvider — providerKey + send davranışı configurable. */
+    /** Test-only SmsProvider — providerKey + send + unicode configurable. */
     private static final class FakeProvider implements SmsProvider {
         private final String key;
         private final boolean unicode;
@@ -55,14 +54,35 @@ class SmsAdapterTest {
         return new RenderedMessage(subject, null, bodyText, "tr-TR");
     }
 
+    /** SmsAdapter — meterRegistry SimpleMeterRegistry, failoverOnProviderConfigError=false. */
+    private static SmsAdapter adapter(List<SmsProvider> providers,
+                                      String primary, String secondary) {
+        return new SmsAdapter(providers, primary, secondary, false, new SimpleMeterRegistry());
+    }
+
+    private static SmsAdapter adapter(List<SmsProvider> providers, String primary,
+                                      String secondary, boolean failoverOnConfig,
+                                      MeterRegistry registry) {
+        return new SmsAdapter(providers, primary, secondary, failoverOnConfig, registry);
+    }
+
     // ─── Channel metadata ────────────────────────────────────────────────
 
     @Test
     void channelKeyIsSms() {
-        SmsAdapter adapter = new SmsAdapter(
+        SmsAdapter a = adapter(
             List.of(new FakeProvider("netgsm", true, t -> SmsSendResult.accepted("netgsm", "netgsm-1"))),
             "netgsm", "");
-        assertThat(adapter.channelKey()).isEqualTo("sms");
+        assertThat(a.channelKey()).isEqualTo("sms");
+    }
+
+    @Test
+    void duplicateProviderKeyFailsFast() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () ->
+            adapter(List.of(
+                new FakeProvider("netgsm", true, t -> SmsSendResult.accepted("netgsm", "netgsm-1")),
+                new FakeProvider("netgsm", true, t -> SmsSendResult.accepted("netgsm", "netgsm-2"))),
+                "netgsm", ""));
     }
 
     // ─── Validation (facade-level) ───────────────────────────────────────
@@ -71,26 +91,24 @@ class SmsAdapterTest {
     void invalidPhoneFormatFailsBeforeProvider() {
         FakeProvider netgsm = new FakeProvider("netgsm", true,
             t -> SmsSendResult.accepted("netgsm", "netgsm-1"));
-        SmsAdapter adapter = new SmsAdapter(List.of(netgsm), "netgsm", "");
+        SmsAdapter a = adapter(List.of(netgsm), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
-            target("905321234567"),  // missing leading "+"
-            msg("S", "x"));
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("905321234567"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
         assertThat(r.failureReason()).contains("E.164");
-        // PII discipline: raw phone never in failureReason
         assertThat(r.failureReason()).doesNotContain("905321234567");
-        assertThat(netgsm.sendCallCount).isZero();  // provider never called
+        assertThat(netgsm.sendCallCount).isZero();
     }
 
     @Test
     void emptyMessageFailsBeforeProvider() {
         FakeProvider netgsm = new FakeProvider("netgsm", true,
             t -> SmsSendResult.accepted("netgsm", "netgsm-1"));
-        SmsAdapter adapter = new SmsAdapter(List.of(netgsm), "netgsm", "");
+        SmsAdapter a = adapter(List.of(netgsm), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321234567"), msg(null, null));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
@@ -101,12 +119,12 @@ class SmsAdapterTest {
     @Test
     void fallbackToSubjectWhenBodyNull() {
         FakeProvider netgsm = new FakeProvider("netgsm", true, text -> {
-            assertThat(text).isEqualTo("Subject only");  // subject used as text
+            assertThat(text).isEqualTo("Subject only");
             return SmsSendResult.accepted("netgsm", "netgsm-sub");
         });
-        SmsAdapter adapter = new SmsAdapter(List.of(netgsm), "netgsm", "");
+        SmsAdapter a = adapter(List.of(netgsm), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321234567"), msg("Subject only", null));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
@@ -119,9 +137,9 @@ class SmsAdapterTest {
     void primaryProviderAcceptedMapsWithActualProviderKey() {
         FakeProvider netgsm = new FakeProvider("netgsm", true,
             t -> SmsSendResult.accepted("netgsm", "netgsm-abc"));
-        SmsAdapter adapter = new SmsAdapter(List.of(netgsm), "netgsm", "");
+        SmsAdapter a = adapter(List.of(netgsm), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "Hello"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
@@ -133,9 +151,9 @@ class SmsAdapterTest {
     void primaryNotRegisteredFails() {
         FakeProvider netgsm = new FakeProvider("netgsm", true,
             t -> SmsSendResult.accepted("netgsm", "netgsm-1"));
-        SmsAdapter adapter = new SmsAdapter(List.of(netgsm), "jetsms", "");  // primary not registered
+        SmsAdapter a = adapter(List.of(netgsm), "jetsms", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
@@ -143,35 +161,50 @@ class SmsAdapterTest {
     }
 
     @Test
-    void providerFailedMapsToFailedWithProviderKey() {
+    void providerFailedMapsToFailedWithProviderKeyAndNumericCode() {
+        // Codex `019e3fc5` P2: numeric providerCode → providerResponseCode
         FakeProvider netgsm = new FakeProvider("netgsm", true,
             t -> SmsSendResult.failed("netgsm", SmsFailureClass.INVALID_PHONE, "50"));
-        SmsAdapter adapter = new SmsAdapter(List.of(netgsm), "netgsm", "");
+        SmsAdapter a = adapter(List.of(netgsm), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
         assertThat(r.actualProviderKey()).isEqualTo("netgsm");
         assertThat(r.failureReason()).contains("INVALID_PHONE");
+        assertThat(r.providerResponseCode()).isEqualTo(50);  // numeric code structured
     }
 
-    // ─── Failover (PR-1 temel) ───────────────────────────────────────────
+    @Test
+    void nonNumericProviderCodeLeavesResponseCodeNull() {
+        FakeProvider netgsm = new FakeProvider("netgsm", true,
+            t -> SmsSendResult.retry("netgsm", SmsFailureClass.HTTP_5XX, "http503"));
+        SmsAdapter a = adapter(List.of(netgsm), "netgsm", "");
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", "x"));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
+        assertThat(r.providerResponseCode()).isNull();  // "http503" non-numeric
+        assertThat(r.failureReason()).contains("http503");  // korunur string'de
+    }
+
+    // ─── Failover matrisi ────────────────────────────────────────────────
 
     @Test
     void failoverEligibleRetriesSecondary() {
-        // primary RETRY (TIMEOUT — failover-eligible) → secondary denenir
         FakeProvider primary = new FakeProvider("jetsms", false,
             t -> SmsSendResult.retry("jetsms", SmsFailureClass.TIMEOUT, "io"));
         FakeProvider secondary = new FakeProvider("netgsm", true,
             t -> SmsSendResult.accepted("netgsm", "netgsm-fb"));
-        SmsAdapter adapter = new SmsAdapter(List.of(primary, secondary), "jetsms", "netgsm");
+        SmsAdapter a = adapter(List.of(primary, secondary), "jetsms", "netgsm");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
-        assertThat(r.actualProviderKey()).isEqualTo("netgsm");  // secondary dispatched
+        assertThat(r.actualProviderKey()).isEqualTo("netgsm");
         assertThat(r.providerMessageId()).isEqualTo("netgsm-fb");
         assertThat(primary.sendCallCount).isEqualTo(1);
         assertThat(secondary.sendCallCount).isEqualTo(1);
@@ -179,30 +212,104 @@ class SmsAdapterTest {
 
     @Test
     void failoverNotEligibleDoesNotRetrySecondary() {
-        // primary FAILED (INVALID_PHONE — failover-NOT-eligible) → secondary
-        // denenmez (secondary'de de aynı sonuç olur — gereksiz çağrı)
         FakeProvider primary = new FakeProvider("jetsms", false,
             t -> SmsSendResult.failed("jetsms", SmsFailureClass.INVALID_PHONE, "x"));
         FakeProvider secondary = new FakeProvider("netgsm", true,
             t -> SmsSendResult.accepted("netgsm", "netgsm-fb"));
-        SmsAdapter adapter = new SmsAdapter(List.of(primary, secondary), "jetsms", "netgsm");
+        SmsAdapter a = adapter(List.of(primary, secondary), "jetsms", "netgsm");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
-        assertThat(r.actualProviderKey()).isEqualTo("jetsms");  // primary stays
-        assertThat(secondary.sendCallCount).isZero();  // secondary never called
+        assertThat(r.actualProviderKey()).isEqualTo("jetsms");
+        assertThat(secondary.sendCallCount).isZero();
+    }
+
+    @Test
+    void unsupportedCharsetPreRoutesToUnicodeSecondary() {
+        // Codex absorb: JetSMS ISO-8859-9 UNSUPPORTED_CHARSET → NetGSM UCS-2
+        // secondary (supportsUnicode=true) charset-capability pre-route.
+        FakeProvider jetsms = new FakeProvider("jetsms", false,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.UNSUPPORTED_CHARSET, "charset"));
+        FakeProvider netgsm = new FakeProvider("netgsm", true,
+            t -> SmsSendResult.accepted("netgsm", "netgsm-uc"));
+        SmsAdapter a = adapter(List.of(jetsms, netgsm), "jetsms", "netgsm");
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", "emoji 🎉 text"));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
+        assertThat(r.actualProviderKey()).isEqualTo("netgsm");  // Unicode secondary
+        assertThat(netgsm.sendCallCount).isEqualTo(1);
+    }
+
+    @Test
+    void unsupportedCharsetNoUnicodeSecondaryStaysFailed() {
+        // secondary de Unicode desteklemiyorsa pre-route YOK — primary FAILED kalır
+        FakeProvider jetsms = new FakeProvider("jetsms", false,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.UNSUPPORTED_CHARSET, "charset"));
+        FakeProvider other = new FakeProvider("other", false,
+            t -> SmsSendResult.accepted("other", "other-1"));
+        SmsAdapter a = adapter(List.of(jetsms, other), "jetsms", "other");
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", "emoji 🎉"));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
+        assertThat(r.actualProviderKey()).isEqualTo("jetsms");
+        assertThat(other.sendCallCount).isZero();
+    }
+
+    @Test
+    void providerConfigErrorEmitsAlertMetricNoFailoverByDefault() {
+        // PROVIDER_CONFIG → alert metric emit; default failover YOK
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        FakeProvider jetsms = new FakeProvider("jetsms", false,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.PROVIDER_CONFIG, "-5"));
+        FakeProvider netgsm = new FakeProvider("netgsm", true,
+            t -> SmsSendResult.accepted("netgsm", "netgsm-1"));
+        SmsAdapter a = adapter(List.of(jetsms, netgsm), "jetsms", "netgsm", false, registry);
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", "x"));
+
+        // default: failover YOK — primary FAILED kalır
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.FAILED);
+        assertThat(r.actualProviderKey()).isEqualTo("jetsms");
+        assertThat(netgsm.sendCallCount).isZero();
+        // alert metric emit edildi
+        assertThat(registry.counter("notify_sms_provider_config_error_total",
+            "provider", "jetsms", "code", "-5").count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void providerConfigErrorOptInEnablesFailover() {
+        // failover-on-provider-config-error=true → secondary denenir + alert yine emit
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        FakeProvider jetsms = new FakeProvider("jetsms", false,
+            t -> SmsSendResult.failed("jetsms", SmsFailureClass.PROVIDER_CONFIG, "-5"));
+        FakeProvider netgsm = new FakeProvider("netgsm", true,
+            t -> SmsSendResult.accepted("netgsm", "netgsm-cfg-fb"));
+        SmsAdapter a = adapter(List.of(jetsms, netgsm), "jetsms", "netgsm", true, registry);
+
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
+            target("+905321111111"), msg("S", "x"));
+
+        assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.ACCEPTED);
+        assertThat(r.actualProviderKey()).isEqualTo("netgsm");
+        assertThat(netgsm.sendCallCount).isEqualTo(1);
+        assertThat(registry.counter("notify_sms_provider_config_error_total",
+            "provider", "jetsms", "code", "-5").count()).isEqualTo(1.0);
     }
 
     @Test
     void noSecondaryConfiguredPrimaryOnly() {
-        // PR-1 source-default: secondary boş → primary-only (behavior-neutral)
         FakeProvider primary = new FakeProvider("netgsm", true,
             t -> SmsSendResult.retry("netgsm", SmsFailureClass.HTTP_5XX, "503"));
-        SmsAdapter adapter = new SmsAdapter(List.of(primary), "netgsm", "");
+        SmsAdapter a = adapter(List.of(primary), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
@@ -215,9 +322,9 @@ class SmsAdapterTest {
         FakeProvider primary = new FakeProvider("netgsm", true, t -> {
             throw new RuntimeException("unexpected");
         });
-        SmsAdapter adapter = new SmsAdapter(List.of(primary), "netgsm", "");
+        SmsAdapter a = adapter(List.of(primary), "netgsm", "");
 
-        ChannelAdapter.DeliveryAttemptResult r = adapter.send(
+        ChannelAdapter.DeliveryAttemptResult r = a.send(
             target("+905321111111"), msg("S", "x"));
 
         assertThat(r.status()).isEqualTo(ChannelAdapter.DeliveryAttemptResult.Status.RETRY);
