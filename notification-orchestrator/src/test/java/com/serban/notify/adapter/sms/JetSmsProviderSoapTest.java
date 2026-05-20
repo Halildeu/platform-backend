@@ -478,9 +478,10 @@ class JetSmsProviderSoapTest {
     }
 
     @Test
-    void soapPollMultiStatusInOneGroupTakesMostAdvanced() {
-        // Bir grup içinde paket bölünmüşse birden fazla <Status> dönebilir;
-        // DELIVERED > FAILED > PENDING önceliğine göre seçilir.
+    void soapPollMultipartDeliveredPlusPendingStaysPending() {
+        // Codex 019e4514 PR-A2.0 absorb: multipart segment aggregate. Önceki
+        // "DELIVERED-baskın" yanlıştı — 2 segmentten biri pending ise tüm
+        // mesaj henüz teslim edilmedi, sonraki poll cycle bekle (pending).
         String response =
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
             + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
@@ -494,7 +495,10 @@ class JetSmsProviderSoapTest {
 
         java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
 
-        assertThat(r.get(0).deliveryStatus()).isEqualTo(SmsDlrPollResult.DeliveryStatus.DELIVERED);
+        assertThat(r.get(0).deliveryStatus())
+            .as("multipart aggregate: 1 delivered + 1 pending → henüz tam teslim "
+                + "edilmedi; sonraki poll cycle bekle")
+            .isEqualTo(SmsDlrPollResult.DeliveryStatus.PENDING);
     }
 
     @Test
@@ -660,11 +664,10 @@ class JetSmsProviderSoapTest {
     }
 
     @Test
-    void soapPollMultiStatusReportsWinningBucketCode() {
-        // Codex iter-1 P3: aggregation kararı (terminal class) ve reported
-        // providerStateCode TUTARLI olmalı — Status=2,1 sıralamasında bile
-        // sonuç DELIVERED + providerStateCode="1" (winning bucket'ın ilk
-        // kodu), "2" (last-seen) DEĞİL.
+    void soapPollMultipartPendingReportsWinningBucketCode() {
+        // Codex 019e4514 PR-A2.0 multipart hardening: Status=2,1 sıralamasında
+        // aggregate PENDING (delivered+pending karışım → pending) + reported
+        // providerStateCode "2" (ilk pending kodu — winning bucket).
         String response =
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
             + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
@@ -679,8 +682,116 @@ class JetSmsProviderSoapTest {
         java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
 
         assertThat(r).hasSize(1);
+        assertThat(r.get(0).deliveryStatus()).isEqualTo(SmsDlrPollResult.DeliveryStatus.PENDING);
+        assertThat(r.get(0).providerStateCode()).isEqualTo("2");
+    }
+
+    /* ─── Multipart aggregate matrix (Codex 019e4514 PR-A2.0 absorb) ──── */
+
+    @Test
+    void soapPollMultipartAllSegmentsDeliveredReturnsDelivered() {
+        // 2 segment, ikisi de delivered (Status=1) → terminal DELIVERED.
+        String response =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+            + "<soap:Body><ReportSMSResponse xmlns=\"http://tempuri.org/\">"
+            + "<ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>1</Status></ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>1</Status></ReportSMSResult>"
+            + "</ReportSMSResult></ReportSMSResponse></soap:Body></soap:Envelope>";
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse().withStatus(200).withBody(response)));
+
+        java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
+
         assertThat(r.get(0).deliveryStatus()).isEqualTo(SmsDlrPollResult.DeliveryStatus.DELIVERED);
         assertThat(r.get(0).providerStateCode()).isEqualTo("1");
+    }
+
+    @Test
+    void soapPollMultipartAnyFailedReturnsFailed() {
+        // 2 segment: 1 delivered + 1 failed (Status=3) → terminal FAILED.
+        // Önceki "DELIVERED-baskın" yanlıştı; failed segment user'a eksik
+        // mesaj gösterir (multipart birleştirme bozulur).
+        String response =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+            + "<soap:Body><ReportSMSResponse xmlns=\"http://tempuri.org/\">"
+            + "<ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>1</Status></ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>3</Status></ReportSMSResult>"
+            + "</ReportSMSResult></ReportSMSResponse></soap:Body></soap:Envelope>";
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse().withStatus(200).withBody(response)));
+
+        java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
+
+        assertThat(r.get(0).deliveryStatus())
+            .as("multipart aggregate: 1 delivered + 1 failed → FAILED (önceki "
+                + "DELIVERED-baskın pattern false-positive üretirdi)")
+            .isEqualTo(SmsDlrPollResult.DeliveryStatus.FAILED);
+        assertThat(r.get(0).providerStateCode()).isEqualTo("3");
+    }
+
+    @Test
+    void soapPollMultipartFailedPlusPendingReturnsFailed() {
+        // 1 failed + 1 pending → terminal FAILED (any failed → failed).
+        String response =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+            + "<soap:Body><ReportSMSResponse xmlns=\"http://tempuri.org/\">"
+            + "<ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>4</Status></ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>0</Status></ReportSMSResult>"
+            + "</ReportSMSResult></ReportSMSResponse></soap:Body></soap:Envelope>";
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse().withStatus(200).withBody(response)));
+
+        java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
+
+        assertThat(r.get(0).deliveryStatus()).isEqualTo(SmsDlrPollResult.DeliveryStatus.FAILED);
+        assertThat(r.get(0).providerStateCode()).isEqualTo("4");
+    }
+
+    @Test
+    void soapPollMultipartAllPendingReturnsPending() {
+        // Tüm segmentler pending → terminal PENDING (sonraki cycle).
+        String response =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+            + "<soap:Body><ReportSMSResponse xmlns=\"http://tempuri.org/\">"
+            + "<ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>0</Status></ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>2</Status></ReportSMSResult>"
+            + "</ReportSMSResult></ReportSMSResponse></soap:Body></soap:Envelope>";
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse().withStatus(200).withBody(response)));
+
+        java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
+
+        assertThat(r.get(0).deliveryStatus()).isEqualTo(SmsDlrPollResult.DeliveryStatus.PENDING);
+        assertThat(r.get(0).providerStateCode()).isEqualTo("0");
+    }
+
+    @Test
+    void soapPollMultipartFailedWinsOverDeliveredAndPending() {
+        // 3 segment: delivered + failed + pending → FAILED (any failed wins).
+        String response =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+            + "<soap:Body><ReportSMSResponse xmlns=\"http://tempuri.org/\">"
+            + "<ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>1</Status></ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>9</Status></ReportSMSResult>"
+            + "<ReportSMSResult><ID>100</ID><Status>2</Status></ReportSMSResult>"
+            + "</ReportSMSResult></ReportSMSResponse></soap:Body></soap:Envelope>";
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse().withStatus(200).withBody(response)));
+
+        java.util.List<SmsDlrPollResult> r = provider.pollDelivery(java.util.List.of("100"));
+
+        assertThat(r.get(0).deliveryStatus()).isEqualTo(SmsDlrPollResult.DeliveryStatus.FAILED);
+        assertThat(r.get(0).providerStateCode()).isEqualTo("9");
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────
