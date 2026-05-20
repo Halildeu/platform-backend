@@ -520,6 +520,14 @@ public class DeliveryDispatchService {
         if (result.actualProviderKey() != null) {
             details.put("actual_provider", result.actualProviderKey());
         }
+        // Faz 23.3.2 PR-A1.1 (Codex thread `019e4514` absorb): channel-specific
+        // provider metadata merge — SMS için segment_count + encoding;
+        // PiiRedactor whitelist'inde olmayan key'ler ayrıca filter'lanır.
+        // putIfAbsent: framework-level details (delivery_status, provider_msg_id,
+        // vb.) provider metadata tarafından override edilmez.
+        if (result.providerMetadata() != null && !result.providerMetadata().isEmpty()) {
+            result.providerMetadata().forEach(details::putIfAbsent);
+        }
         return details;
     }
 }

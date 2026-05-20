@@ -88,7 +88,10 @@ public class PiiRedactor {
         "limit",                     // RATE_LIMITED window limit
         "window_ms",                 // RATE_LIMITED window duration
         "webhook_count",             // WEBHOOK_FANOUT_CAPPED actual count
-        "cap"                        // WEBHOOK_FANOUT_CAPPED limit
+        "cap",                       // WEBHOOK_FANOUT_CAPPED limit
+        // Faz 23.3.2 SMS multipart metadata (Codex `019e4514` PR-A1.1 absorb)
+        "segment_count",             // SMS billed segment sayısı (JetSMS multipart, NetGSM concat)
+        "encoding"                   // SMS provider encoding label (ISO-8859-9, UCS-2, GSM-7)
     );
 
     private final NotifyConfig.RedactionConfig redactionConfig;
