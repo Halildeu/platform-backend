@@ -997,39 +997,68 @@ public class JetSmsProvider implements SmsProvider {
             // Henüz hiçbir result yok (operator raporu gelmemiş) — pending.
             return SmsDlrPollResult.pending(groupId, "no-result");
         }
-        // Aggregate: any DELIVERED → delivered; else any FAILED → failed; else pending.
-        // Codex 019e421f iter-1 P3 absorb: winning bucket'in providerStateCode'unu
-        // döner — aggregation kararı (terminal class) ve reported status code
-        // TUTARLI olmalı; aksi halde audit/DLR-ingest yanıltıcı kod görür (örn.
-        // Status=1,2 → DELIVERED ama providerStateCode=2 yazılırdı). Her bucket
-        // için İLK eşleşen kodu winning kabul ederiz.
-        String deliveredCode = null;
-        String failedCode = null;
-        String pendingCode = null;
+        // Aggregate (Codex thread 019e4514 PR-A2.0 multipart hardening):
+        // Önceki "any DELIVERED → delivered" pattern multipart için yanlış —
+        // 2 segmentten biri delivered, biri failed/pending ise tüm mesaj
+        // delivered SAYILMAMALI (D29 evidence false-positive riski).
+        //
+        // Doğru aggregate matrisi:
+        //   - any FAILED   → FAILED   (terminal — herhangi segment kaybolduysa
+        //                                 user mesajı eksik aldı; failed)
+        //   - all DELIVERED → DELIVERED (terminal — bütün segmentler iletildi)
+        //   - any PENDING/unparseable + diğerleri delivered → PENDING
+        //                                 (sonraki cycle yeniden poll)
+        //
+        // Winning bucket'in providerStateCode'unu döner — failure path için
+        // İLK failed segment kodu (3/4/9 öncelik); delivered path için
+        // herhangi 1 kodu; pending path için ilk pending kod.
+        boolean anyFailed = false;
+        boolean anyDelivered = false;
+        boolean anyPending = false;
+        boolean anyUnparseable = false;
+        String firstDeliveredCode = null;
+        String firstFailedCode = null;
+        String firstPendingCode = null;
         for (String s : statuses) {
             String t = s.trim();
             int v;
             try {
                 v = Integer.parseInt(t);
             } catch (NumberFormatException nfe) {
-                continue;  // unparseable — skip
+                anyUnparseable = true;
+                if (firstPendingCode == null) firstPendingCode = "bad-status:" + t;
+                continue;
             }
             if (v == 1) {
-                if (deliveredCode == null) deliveredCode = t;
+                anyDelivered = true;
+                if (firstDeliveredCode == null) firstDeliveredCode = t;
             } else if (v == 3 || v == 4 || v == 9) {
-                if (failedCode == null) failedCode = t;
+                anyFailed = true;
+                if (firstFailedCode == null) firstFailedCode = t;
             } else {
-                // 0, 2, 6, 7, 8 → pending
-                if (pendingCode == null) pendingCode = t;
+                // 0, 2, 6, 7, 8 → pending (segment henüz operatöre ulaşmadı
+                // veya operator ack bekleniyor)
+                anyPending = true;
+                if (firstPendingCode == null) firstPendingCode = t;
             }
         }
-        if (deliveredCode != null) {
-            return SmsDlrPollResult.delivered(groupId, deliveredCode);
+        // Failed bucket en yüksek öncelikli — herhangi segment kaybolduysa
+        // bütün mesaj kaybedildi sayılır (kullanıcı tarafında multipart
+        // birleştirme bozulur).
+        if (anyFailed) {
+            return SmsDlrPollResult.failed(groupId, firstFailedCode);
         }
-        if (failedCode != null) {
-            return SmsDlrPollResult.failed(groupId, failedCode);
+        // Tüm segmentler delivered (anyDelivered && !anyPending && !anyUnparseable)
+        // → terminal delivered.
+        if (anyDelivered && !anyPending && !anyUnparseable) {
+            return SmsDlrPollResult.delivered(groupId, firstDeliveredCode);
         }
-        return SmsDlrPollResult.pending(groupId, pendingCode);
+        // Karışım (delivered + pending) veya yalnız pending → pending; sonraki
+        // poll cycle'da segmentlerin terminal duruma geçmesi beklenir.
+        String code = firstPendingCode != null ? firstPendingCode
+                    : (firstDeliveredCode != null ? "mixed:delivered+pending"
+                                                  : null);
+        return SmsDlrPollResult.pending(groupId, code);
     }
 
     /**
