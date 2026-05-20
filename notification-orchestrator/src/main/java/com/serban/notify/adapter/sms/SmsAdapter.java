@@ -271,7 +271,7 @@ public class SmsAdapter implements ChannelAdapter {
         Integer responseCode = parseNumericCode(r.providerCode());
         return switch (r.status()) {
             case ACCEPTED -> DeliveryAttemptResult.accepted(
-                r.providerMsgId(), r.actualProviderKey());
+                r.providerMsgId(), r.actualProviderKey(), smsMetadata(r));
             case FAILED -> DeliveryAttemptResult.failed(
                 "sms " + r.actualProviderKey() + " " + r.failureClass()
                     + (r.providerCode() != null ? " (" + r.providerCode() + ")" : ""),
@@ -281,6 +281,27 @@ public class SmsAdapter implements ChannelAdapter {
                     + (r.providerCode() != null ? " (" + r.providerCode() + ")" : ""),
                 responseCode, r.actualProviderKey());
         };
+    }
+
+    /**
+     * SMS-specific provider metadata extract — Faz 23.3.2 PR-A1.1 (Codex
+     * thread {@code 019e4514}). Yalnız ACCEPTED sonuçlardaki billed segment
+     * sayısı + provider encoding taşınır.
+     *
+     * <p>FAILED/RETRY için metadata boş — "billed segment" anlamı vermemeli;
+     * `MESSAGE_TOO_LONG` failure diagnostic zaten {@code providerCode}
+     * içinde ({@code "segments7"}). İleride failure estimate gerekirse ayrı
+     * key ({@code estimated_segment_count}), {@code segment_count} değil.
+     */
+    private static java.util.Map<String, Object> smsMetadata(SmsSendResult r) {
+        java.util.Map<String, Object> metadata = new java.util.HashMap<>();
+        if (r.segmentCount() > 0) {
+            metadata.put("segment_count", r.segmentCount());
+        }
+        if (r.encoding() != null && !r.encoding().isBlank()) {
+            metadata.put("encoding", r.encoding());
+        }
+        return metadata;
     }
 
     /** providerCode numeric ise Integer, değilse null. */

@@ -192,8 +192,9 @@ public class NetGsmProvider implements SmsProvider {
                             SmsFailureClass.NO_CORRELATOR, "00-no-jobid");
                     }
                     String correlator = PROVIDER_KEY + "-" + netgsmJobid;
-                    log.info("netgsm ACCEPTED (awaits DLR): msg_id={}", correlator);
-                    return SmsSendResult.accepted(PROVIDER_KEY, correlator);
+                    log.info("netgsm ACCEPTED (awaits DLR): msg_id={} segments={} encoding={}",
+                        correlator, segments, encoding);
+                    return SmsSendResult.accepted(PROVIDER_KEY, correlator, segments, encoding);
                 }
 
                 // 5d. Provider error code → failureClass.

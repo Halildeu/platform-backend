@@ -312,6 +312,12 @@ public class RetryWorker {
         // Faz 23.3 (Codex `019e3f82` PR-1 review P1 absorb): SMS failover sonrası
         // gerçek dispatch eden provider audit trail'inde görünür.
         if (result.actualProviderKey() != null) details.put("actual_provider", result.actualProviderKey());
+        // Faz 23.3.2 PR-A1.1 (Codex `019e4514` absorb): channel provider metadata
+        // (SMS segment_count + encoding) outcome audit'e merge. putIfAbsent ile
+        // framework details (delivery_status, attempt_count, vb.) korunur.
+        if (result.providerMetadata() != null && !result.providerMetadata().isEmpty()) {
+            result.providerMetadata().forEach(details::putIfAbsent);
+        }
         switch (result.status()) {
             case DELIVERED -> audit.publish("DELIVERY_SUCCEEDED", intent,
                 delivery.getRecipientHash(), delivery.getChannel(), details);

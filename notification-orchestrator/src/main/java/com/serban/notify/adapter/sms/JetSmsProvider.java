@@ -387,7 +387,8 @@ public class JetSmsProvider implements SmsProvider {
                     return SmsSendResult.retry(PROVIDER_KEY,
                         SmsFailureClass.UNKNOWN_TRANSIENT, "empty-body");
                 }
-                return parseResponse(respBody);
+                int segments = isOperationalMultipart() ? estimateLatin5Segments(text) : 1;
+                return parseResponse(respBody, segments, ENCODING_LABEL_LATIN5);
             });
         } catch (IOException e) {
             log.warn("jetsms HTTP transport IOException (RETRY): {}",
@@ -444,7 +445,8 @@ public class JetSmsProvider implements SmsProvider {
                     return SmsSendResult.retry(PROVIDER_KEY,
                         SmsFailureClass.UNKNOWN_TRANSIENT, "empty-body");
                 }
-                return parseSoapSendResponse(respBody);
+                int segments = isOperationalMultipart() ? estimateLatin5Segments(text) : 1;
+                return parseSoapSendResponse(respBody, segments, ENCODING_LABEL_LATIN5);
             });
         } catch (IOException e) {
             log.warn("jetsms SOAP transport IOException (RETRY): {}",
@@ -652,7 +654,21 @@ public class JetSmsProvider implements SmsProvider {
      * <p>Status 0 + MessageID positive → ACCEPTED. Status/MessageID negatif →
      * {@link SmsFailureClass} mapping.
      */
+    /**
+     * Backward-compatible parse — default segmentCount=1, encoding=null
+     * (legacy testler bu signature ile çağırır).
+     */
     static SmsSendResult parseResponse(String body) {
+        return parseResponse(body, 1, null);
+    }
+
+    /**
+     * Parse with multipart metadata (Faz 23.3.2 PR-A1.1 absorb): ACCEPTED
+     * sonuçta {@code segmentCount} + {@code encoding} {@link SmsSendResult}'a
+     * propagate edilir. {@code RETRY}/{@code FAILED} sonuç metadata taşımaz
+     * (record constructor zorlar).
+     */
+    static SmsSendResult parseResponse(String body, int segmentCount, String encoding) {
         String statusRaw = extractField(body, "Status");
         String messageIdRaw = extractField(body, "MessageIDs");
 
@@ -702,8 +718,9 @@ public class JetSmsProvider implements SmsProvider {
         }
         // Geçerli MessageID → ACCEPTED (terminal durum DLR polling ile gelir).
         String correlator = PROVIDER_KEY + "-" + messageId;
-        log.info("jetsms ACCEPTED (awaits DLR poll): msg_id={}", correlator);
-        return SmsSendResult.accepted(PROVIDER_KEY, correlator);
+        log.info("jetsms ACCEPTED (awaits DLR poll): msg_id={} segments={} encoding={}",
+            correlator, segmentCount, encoding);
+        return SmsSendResult.accepted(PROVIDER_KEY, correlator, segmentCount, encoding);
     }
 
     /**
@@ -857,7 +874,18 @@ public class JetSmsProvider implements SmsProvider {
      * {@code 10}, {@code 28}) {@link SmsFailureClass} mapping'i ile fail
      * döndürür.
      */
+    /**
+     * Backward-compatible — default segmentCount=1, encoding=null.
+     */
     static SmsSendResult parseSoapSendResponse(String body) {
+        return parseSoapSendResponse(body, 1, null);
+    }
+
+    /**
+     * Faz 23.3.2 PR-A1.1 — parse with multipart metadata.
+     * ACCEPTED sonuç metadata propagate eder.
+     */
+    static SmsSendResult parseSoapSendResponse(String body, int segmentCount, String encoding) {
         // soap:Fault — provider tarafı 2xx ile fault dönerse (gözlenmeden,
         // ama defansif): faultcode/faultstring varsa transient retry.
         if (body.contains("<soap:Fault") || body.contains("<faultcode")) {
@@ -908,8 +936,9 @@ public class JetSmsProvider implements SmsProvider {
             log.warn("jetsms SOAP send non-numeric ID accepted: {}", trimmedId);
         }
         String correlator = PROVIDER_KEY + "-" + trimmedId;
-        log.info("jetsms SOAP ACCEPTED (awaits DLR poll): msg_id={}", correlator);
-        return SmsSendResult.accepted(PROVIDER_KEY, correlator);
+        log.info("jetsms SOAP ACCEPTED (awaits DLR poll): msg_id={} segments={} encoding={}",
+            correlator, segmentCount, encoding);
+        return SmsSendResult.accepted(PROVIDER_KEY, correlator, segmentCount, encoding);
     }
 
     /**
