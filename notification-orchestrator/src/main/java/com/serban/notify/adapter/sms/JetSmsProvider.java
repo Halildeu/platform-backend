@@ -81,19 +81,36 @@ public class JetSmsProvider implements SmsProvider {
     private static final String RESERVED_CHARS = "!*'();:@&=+$,/?%#[]";
     /** JetSMS HTTP body charset — Türkçe Latin-5. */
     static final Charset ISO_8859_9 = Charset.forName("ISO-8859-9");
-    /** JetSMS tek mesaj uzunluk limiti (dokümandan). */
-    private static final int MAX_MESSAGE_LENGTH = 160;
+    /** JetSMS tek-segment SMS char limit (ISO-8859-9 Latin-5, GSM-7 değil). */
+    static final int SINGLE_SEGMENT_LIMIT = 160;
+
+    /** ISO-8859-9 concatenated SMS segment char limit (UDH overhead). */
+    static final int CONCATENATED_SEGMENT_SIZE = 153;
 
     /** Transport seçimi — {@code soap} (default) ya da {@code http}. */
     static final String TRANSPORT_SOAP = "soap";
     static final String TRANSPORT_HTTP = "http";
     /** SOAP servis namespace — {@code soapSMS.asmx} ASP.NET (tempuri.org). */
     private static final String SOAP_NS = "http://tempuri.org/";
-    /** {@code onlengthproblem} — REQUIRED (WSDL minOccurs=1); HTTP davranışıyla
-     *  paritede tüm paketi reddet (mesaj zaten 160-char preflight'tan geçti). */
-    private static final String SOAP_ON_LENGTH_PROBLEM = "RejectAllPackage";
     /** {@code ReportSMS} status param: {@code 5} = tüm durum kodları. */
     private static final String SOAP_REPORT_STATUS_ALL = "5";
+
+    /**
+     * {@code onlengthproblem} default — provider-side reject. Multipart feature
+     * flag açıkken operator overlay'inde {@code SplitMessage} (veya provider-
+     * confirmed başka değer) ile override edilmesi gerekir. Codex thread
+     * {@code 019e4514} REVISE absorb: PR-A1 scope feature flag scaffold +
+     * configurable {@code onlengthproblem}; provider-confirmed split değeri
+     * canary kanıtı (PR-A2) sonrası operator overlay'de set edilir.
+     */
+    static final String SOAP_ON_LENGTH_PROBLEM_DEFAULT = "RejectAllPackage";
+
+    /** Multipart feature flag — JetSMS-specific (NetGSM secondary'den ayrı). */
+    static final String CFG_MULTIPART_ENABLED = "multipartEnabled";
+    /** Maksimum concatenated segment sayısı (operator-tunable; default 6). */
+    static final String CFG_MAX_SEGMENTS = "maxSegments";
+    /** JetSMS Latin-5 encoding label (audit + segment estimator hint). */
+    static final String ENCODING_LABEL_LATIN5 = "ISO-8859-9";
 
     @Value("${notify.adapters.sms.jetsms.api-url:https://api.jetsms.com.tr/SMS-Web/HttpSmsSend}")
     private String apiUrl;
@@ -124,6 +141,43 @@ public class JetSmsProvider implements SmsProvider {
     @Value("${notify.adapters.sms.jetsms.originator:}")
     private String originator;
 
+    /**
+     * Multipart concatenated SMS feature flag (Faz 23.3.2 — Codex thread
+     * {@code 019e4514} REVISE absorb). Default {@code false}: legacy 160-char
+     * single-segment hard guard korunur (mevcut behavior). Flag {@code true}
+     * iken JetSMS-specific Latin-5 segment estimator devreye girer ve max
+     * {@link #maxSegments} ile sınırlanmış multipart mesaj kabul edilir.
+     *
+     * <p><b>PR-A1 scope</b>: infrastructure only — flag açılması provider
+     * canary kanıtı (PR-A2) sonrası operator kararıyla yapılır. SOAP envelope
+     * tarafında {@link #onLengthProblem} configurable; flag açılırken
+     * operator overlay'inde provider-confirmed split değeri set edilmeli
+     * (default hâlâ {@code RejectAllPackage} — uzun mesaj provider reject).
+     */
+    @Value("${notify.adapters.sms.jetsms.multipart-enabled:false}")
+    private boolean multipartEnabled;
+
+    /**
+     * Maksimum concatenated SMS segment sayısı. Hard upper bound; bu sayıyı
+     * aşan mesajlar {@link SmsFailureClass#MESSAGE_TOO_LONG} ile fail-closed.
+     * Default 6 ≈ ISO-8859-9 multipart için 918 char (6×153).
+     *
+     * <p>Codex absorb: silent billing surprise önlemek için cap zorunlu;
+     * uzun template'lerin shape regression'ları multi-segment threshold'tan
+     * önce yakalanır.
+     */
+    @Value("${notify.adapters.sms.jetsms.max-segments:6}")
+    private int maxSegments;
+
+    /**
+     * SOAP {@code onlengthproblem} parametre değeri. Default
+     * {@code RejectAllPackage} (provider uzun mesaj reddet — mevcut davranış).
+     * Provider-confirmed split değeri (örn. {@code SplitMessage}) canary
+     * kanıtı sonrası operator overlay'de override edilir.
+     */
+    @Value("${notify.adapters.sms.jetsms.on-length-problem:RejectAllPackage}")
+    private String onLengthProblem;
+
     @Override
     public String providerKey() {
         return PROVIDER_KEY;
@@ -137,6 +191,83 @@ public class JetSmsProvider implements SmsProvider {
     @Override
     public boolean supportsUnicode() {
         return false;  // JetSMS ISO-8859-9 — Unicode (emoji/CJK) desteklemez
+    }
+
+    /**
+     * Provider'ın kabul ettiği maksimum karakter sayısı — multipart feature
+     * flag <b>VE</b> provider-confirmed {@code onLengthProblem} override
+     * durumuna göre dinamik.
+     *
+     * <p><b>Operational multipart guard</b> (Codex thread {@code 019e4514}
+     * iter-2 P1 absorb): flag {@code true} olsa bile {@code onLengthProblem}
+     * hâlâ default {@code RejectAllPackage} ise uzun mesaj provider'a
+     * gönderilirse {@code Status=80} (INVALID_TEXT) ile fail eder ve
+     * {@code MESSAGE_TOO_LONG} failover route'unu kaybeder. Bu yüzden:
+     *
+     * <ul>
+     *   <li>Flag kapalı veya {@code onLengthProblem} default {@code RejectAllPackage}
+     *       → legacy 160 char hard limit (capability route NetGSM secondary'ye akar)</li>
+     *   <li>Flag açık <b>ve</b> {@code onLengthProblem} provider-confirmed override
+     *       ({@code SplitMessage} vb.) → {@code maxSegments × 153}</li>
+     * </ul>
+     *
+     * <p>{@link SmsAdapter} bu değeri provider-capability route'unda kullanır
+     * ({@code MESSAGE_TOO_LONG} sonucu sonrası secondary'nin uzun mesajı
+     * kaldırıp kaldıramadığı check'i).
+     */
+    @Override
+    public int maxMessageLength() {
+        return isOperationalMultipart() ? (maxSegments * CONCATENATED_SEGMENT_SIZE)
+                                         : SINGLE_SEGMENT_LIMIT;
+    }
+
+    /**
+     * Multipart gerçekten <b>operasyonel olarak</b> aktif mi?
+     *
+     * <p>Codex 019e4514 iter-2 P1 absorb fail-closed guard: feature flag
+     * tek başına yetmez; SOAP {@code onlengthproblem} parametresi de
+     * provider-confirmed non-default değere set edilmiş olmalı. Aksi halde
+     * uzun mesaj provider'a {@code RejectAllPackage} ile gider ve
+     * {@code Status=80 INVALID_TEXT} dönerek {@code MESSAGE_TOO_LONG}
+     * failover taxonomy'sini bypass eder.
+     *
+     * <p>Operator overlay'inde {@code NOTIFY_ADAPTERS_SMS_JETSMS_MULTIPART_ENABLED=true}
+     * VE {@code NOTIFY_ADAPTERS_SMS_JETSMS_ON_LENGTH_PROBLEM=<split-value>}
+     * birlikte set edilmediği sürece fail-closed legacy davranış.
+     */
+    boolean isOperationalMultipart() {
+        if (!multipartEnabled || onLengthProblem == null) {
+            return false;
+        }
+        String trimmed = onLengthProblem.trim();
+        // Blank trim sonrası default'a düşer (SOAP envelope tarafında); fail-closed.
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        return !SOAP_ON_LENGTH_PROBLEM_DEFAULT.equalsIgnoreCase(trimmed);
+    }
+
+    /**
+     * JetSMS-specific Latin-5 segment estimator. ISO-8859-9 baz; Türkçe
+     * karakterler (ç ğ ı İ ö ş ü) tek septet sayar (GSM-7 değil — JetSMS
+     * UCS-2 desteklemediği için Latin-5 baz alınır). Codex thread
+     * {@code 019e4514} P3 absorb: {@link SmsSegmentEncoder} GSM-7 baz alır,
+     * Türkçe karakterleri UCS-2'ye yönlendirir; JetSMS'te bu yanlış —
+     * JetSMS için ayrı estimator.
+     *
+     * <p><b>Limitler</b>:
+     * <ul>
+     *   <li>1 segment: {@code text.length() ≤ 160}</li>
+     *   <li>N segment: {@code text.length() ≤ N × 153} (UDH 7-byte overhead)</li>
+     * </ul>
+     *
+     * @return segment count (≥ 1 for non-empty text)
+     */
+    static int estimateLatin5Segments(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int len = text.length();
+        if (len <= SINGLE_SEGMENT_LIMIT) return 1;
+        return (int) Math.ceil((double) len / CONCATENATED_SEGMENT_SIZE);
     }
 
     @Override
@@ -155,11 +286,36 @@ public class JetSmsProvider implements SmsProvider {
         if (text == null || text.isBlank()) {
             return SmsSendResult.failed(PROVIDER_KEY, SmsFailureClass.EMPTY_MESSAGE, null);
         }
-        // 3. Message length guard (JetSMS 160 char limit).
-        if (text.length() > MAX_MESSAGE_LENGTH) {
-            log.warn("jetsms message too long: len={} max={}", text.length(), MAX_MESSAGE_LENGTH);
-            return SmsSendResult.failed(PROVIDER_KEY, SmsFailureClass.MESSAGE_TOO_LONG,
-                "len" + text.length());
+        // 3. Message length guard (Codex thread 019e4514 iter-2 P1 absorb).
+        //    Operational multipart koşulu = multipartEnabled VE onLengthProblem
+        //    provider-confirmed non-default. Yalnız flag true ama
+        //    onLengthProblem default RejectAllPackage ise legacy 160 hard
+        //    limit (fail-closed; provider uzun mesajı RejectAllPackage ile
+        //    Status=80 INVALID_TEXT döndürür → MESSAGE_TOO_LONG failover
+        //    taxonomy bypass'lanır).
+        if (!isOperationalMultipart()) {
+            if (text.length() > SINGLE_SEGMENT_LIMIT) {
+                String reason = multipartEnabled && (onLengthProblem == null
+                    || SOAP_ON_LENGTH_PROBLEM_DEFAULT.equalsIgnoreCase(onLengthProblem.trim()))
+                    ? "multipart-flag-without-split-override"
+                    : "multipart-disabled";
+                log.warn("jetsms message too long ({}): len={} max={}",
+                    reason, text.length(), SINGLE_SEGMENT_LIMIT);
+                return SmsSendResult.failed(PROVIDER_KEY, SmsFailureClass.MESSAGE_TOO_LONG,
+                    "len" + text.length());
+            }
+        } else {
+            int segments = estimateLatin5Segments(text);
+            if (segments > maxSegments) {
+                log.warn("jetsms multipart exceeds max segments: len={} segments={} max={}",
+                    text.length(), segments, maxSegments);
+                return SmsSendResult.failed(PROVIDER_KEY, SmsFailureClass.MESSAGE_TOO_LONG,
+                    "segments" + segments);
+            }
+            if (segments > 1) {
+                log.info("jetsms multipart accepted: len={} segments={} encoding={} onLengthProblem={}",
+                    text.length(), segments, ENCODING_LABEL_LATIN5, onLengthProblem);
+            }
         }
         // 4. Charset preflight — ISO-8859-9 encode edilemiyorsa UNSUPPORTED_CHARSET
         //    (Codex absorb: silent transliteration YOK; SmsAdapter Unicode
@@ -252,7 +408,8 @@ public class JetSmsProvider implements SmsProvider {
      * ({@code ReportSMS.groupid}) — correlator {@code "jetsms-<ID>"}.
      */
     private SmsSendResult sendViaSoap(String phone, String text) {
-        String envelope = buildSendSoapEnvelope(username, password, originator, phone, text);
+        String envelope = buildSendSoapEnvelope(
+            username, password, originator, phone, text, onLengthProblem);
 
         try (CloseableHttpClient client = newClient()) {
             HttpPost post = new HttpPost(soapUrl);
@@ -629,15 +786,21 @@ public class JetSmsProvider implements SmsProvider {
     }
 
     /**
-     * {@code SendSMS} SOAP 1.1 zarfı oluşturur — tek alıcı + tek mesaj.
-     *
-     * <p>Tüm metin değerleri {@link #xmlEscape} ile XML-escape edilir.
-     * {@code onlengthproblem} WSDL'de {@code minOccurs=1} (REQUIRED); pre-flight
-     * 160-char guard zaten varken {@code RejectAllPackage} (HTTP davranışıyla
-     * paritede).
+     * Backward-compatible overload — default {@code onlengthproblem}
+     * ({@link #SOAP_ON_LENGTH_PROBLEM_DEFAULT}) kullanır. Existing tests +
+     * caller paths bu signature ile çağırır; behavior değişmez.
      */
     static String buildSendSoapEnvelope(String user, String pass, String originator,
                                         String phone, String text) {
+        return buildSendSoapEnvelope(user, pass, originator, phone, text,
+            SOAP_ON_LENGTH_PROBLEM_DEFAULT);
+    }
+
+    static String buildSendSoapEnvelope(String user, String pass, String originator,
+                                        String phone, String text,
+                                        String onLengthProblem) {
+        String onLength = (onLengthProblem == null || onLengthProblem.isBlank())
+            ? SOAP_ON_LENGTH_PROBLEM_DEFAULT : onLengthProblem;
         StringBuilder sb = new StringBuilder(512);
         sb.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
         sb.append("<soap:Envelope")
@@ -654,7 +817,7 @@ public class JetSmsProvider implements SmsProvider {
         sb.append("<expiredate></expiredate>");
         sb.append("<messages><string>").append(xmlEscape(text)).append("</string></messages>");
         sb.append("<receipents><string>").append(xmlEscape(phone)).append("</string></receipents>");
-        sb.append("<onlengthproblem>").append(SOAP_ON_LENGTH_PROBLEM).append("</onlengthproblem>");
+        sb.append("<onlengthproblem>").append(xmlEscape(onLength)).append("</onlengthproblem>");
         sb.append("</SendSMS>");
         sb.append("</soap:Body>");
         sb.append("</soap:Envelope>");
