@@ -12,6 +12,12 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -23,14 +29,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * decision logic in pure Java. This IT exercises the SAME contract through
  * a real Spring Boot context + Testcontainers Postgres + JPA repository,
  * so the JPA derived-query SQL ({@code findByOrgIdAndSubscriberIdAndTopicKeyAndChannel}
- * + the three NULL-fallback variants) and the {@code bypass_for_critical}
- * column mapping are verified end-to-end against real Postgres NULL
- * semantics. The {@code jsonb quiet_hours} column and the frequency
- * limit branch are left to the unit test (clock injection there) and to
- * future T1.1.6 / T1.1.7 acceptance work; this IT keeps scope to the
- * must-have #8 contract.
+ * + the three NULL-fallback variants), the {@code bypass_for_critical}
+ * column mapping, the {@code jsonb quiet_hours} column round-trip, and the
+ * {@code FrequencyLimitService} in-memory window are verified end-to-end
+ * against real Postgres NULL semantics. M3 T1.1.6 (quiet hours) and
+ * T1.1.7 (frequency limit) acceptance — including critical-severity
+ * bypass under both — land in this IT (Codex thread {@code 019e4469}
+ * PARTIAL absorb).
  *
- * <p>Eight scenarios:
+ * <p>Twelve scenarios:
  * <ol>
  *   <li>No preference row → ALLOWED (default no_preference_set)</li>
  *   <li>Channel+topic row, enabled=true → ALLOWED</li>
@@ -51,6 +58,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannelIsNull}.
  *       Codex 019e0c28 iter P1 regression guard: must not silently
  *       fall through to no_preference_set.</li>
+ *   <li><b>T1.1.6 quiet hours deny (non-critical)</b>: enabled pref +
+ *       quietHours {@code {start:"22:00",end:"07:00",tz:"Europe/Istanbul"}}
+ *       + fixed clock at 20:30 UTC (= 23:30 Istanbul, within window) +
+ *       severity=info → DENIED ({@code quiet_hours}). Exercises the
+ *       full {@code jsonb} round-trip + timezone path.</li>
+ *   <li><b>T1.1.6 quiet hours bypass (critical)</b>: same window + same
+ *       fixed clock + bypassForCritical=true + severity=critical →
+ *       ALLOWED ({@code critical_bypass_quiet_hours}).</li>
+ *   <li><b>T1.1.7 frequency limit deny (non-critical, over limit)</b>:
+ *       enabled pref + frequencyLimitPerDay=1; first non-critical send
+ *       ALLOWED (window fills), second non-critical send DENIED
+ *       ({@code frequency_limit}). Exercises real
+ *       {@code FrequencyLimitService} bean — no @TestConfiguration mock.</li>
+ *   <li><b>T1.1.7 frequency limit bypass (critical) + window
+ *       conservation</b>: enabled pref + bypassForCritical=true +
+ *       frequencyLimitPerDay=1; first non-critical fills window,
+ *       critical send ALLOWED ({@code critical_bypass_frequency}),
+ *       then a follow-up non-critical send STILL DENIED — proves the
+ *       critical bypass did NOT consume a slot in the rolling window.</li>
  * </ol>
  *
  * <p>Each scenario seeds a row through the repository, then evaluates a
@@ -68,10 +94,21 @@ class SubscriberPreferenceServiceIntegrationTest extends AbstractPostgresTest {
 
     @Autowired SubscriberPreferenceService service;
     @Autowired SubscriberPreferenceRepository prefRepo;
+    @Autowired FrequencyLimitService frequencyLimitService;
 
     @BeforeEach
     void cleanPrefRows() {
         prefRepo.deleteAll();
+        // FrequencyLimitService holds an in-memory ConcurrentHashMap of rolling
+        // windows keyed by (orgId, subscriberId). Clear it between tests so a
+        // window seeded in one frequency-limit scenario cannot leak into the
+        // next. The repository wipe + unique TestKey already isolate DB state;
+        // clearAll() extends that isolation to the service's runtime cache.
+        frequencyLimitService.clearAll();
+        // Re-arm default system clock at the start of each test in case a
+        // previous quiet-hours scenario injected a fixed clock — the service
+        // is a singleton, the setter mutates shared state.
+        service.setClock(Clock.systemDefaultZone());
     }
 
     @Test
@@ -230,6 +267,183 @@ class SubscriberPreferenceServiceIntegrationTest extends AbstractPostgresTest {
         assertThat(decision.reason()).isEqualTo("preference_disabled");
     }
 
+    /* ----- T1.1.6 quiet hours (Codex 019e4469 PARTIAL absorb) -------- */
+
+    /**
+     * Quiet hours deny path for non-critical severity.
+     *
+     * <p>Seeds an enabled preference with a real quiet-hours JSON contract
+     * ({@code {"start":"22:00","end":"07:00","tz":"Europe/Istanbul"}}) and
+     * pins the service clock to {@code 2026-05-10T20:30:00Z} — that is
+     * {@code 23:30 Europe/Istanbul}, squarely inside the cross-day window.
+     * Codex 019e4469 absorb: use the real {@code Clock.fixed} injection
+     * rather than a degenerate {@code 00:00-23:59} window so the timezone
+     * arithmetic and cross-day window logic are actually exercised.
+     */
+    @Test
+    void quietHoursWindowDeniesNonCritical() {
+        TestKey k = testKey("quietHoursWindowDeniesNonCritical");
+        seedPreferenceFull(
+            k.subscriberId(), k.topic(), k.channel(),
+            /*enabled=*/ true, /*bypassForCritical=*/ false,
+            quietHoursIstanbulNight(),
+            /*frequencyLimitPerDay=*/ null
+        );
+        service.setClock(Clock.fixed(
+            Instant.parse("2026-05-10T20:30:00Z"),  // 23:30 Europe/Istanbul
+            ZoneOffset.UTC
+        ));
+
+        var decision = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(decision.allowed())
+            .as("a non-critical send INSIDE the subscriber's quiet hours "
+                + "window must be denied with reason quiet_hours — T1.1.6 "
+                + "acceptance gate; tz=Europe/Istanbul cross-day window")
+            .isFalse();
+        assertThat(decision.reason()).isEqualTo("quiet_hours");
+    }
+
+    /**
+     * Quiet hours critical bypass: severity=critical + bypassForCritical=true
+     * → ALLOWED inside the same window, with reason
+     * {@code critical_bypass_quiet_hours}. Confirms the bypass is BOTH
+     * gate-conditional (bypassForCritical) AND severity-conditional
+     * (critical) — neither alone should bypass.
+     */
+    @Test
+    void quietHoursWindowBypassesForCritical() {
+        TestKey k = testKey("quietHoursWindowBypassesForCritical");
+        seedPreferenceFull(
+            k.subscriberId(), k.topic(), k.channel(),
+            /*enabled=*/ true, /*bypassForCritical=*/ true,
+            quietHoursIstanbulNight(),
+            /*frequencyLimitPerDay=*/ null
+        );
+        service.setClock(Clock.fixed(
+            Instant.parse("2026-05-10T20:30:00Z"),
+            ZoneOffset.UTC
+        ));
+
+        var decision = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.critical),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(decision.allowed())
+            .as("critical severity + bypassForCritical=true must override "
+                + "quiet hours suppression — T1.1.6 bypass gate")
+            .isTrue();
+        assertThat(decision.reason()).isEqualTo("critical_bypass_quiet_hours");
+    }
+
+    /* ----- T1.1.7 frequency limit (Codex 019e4469 PARTIAL absorb) ---- */
+
+    /**
+     * Frequency limit deny path for non-critical severity.
+     *
+     * <p>Seeds an enabled preference with {@code frequency_limit_per_day=1}
+     * and exercises the real {@code FrequencyLimitService} singleton — no
+     * {@code @TestConfiguration} mock. The first non-critical send fills
+     * the rolling window (ALLOWED, reason {@code preference_enabled}); the
+     * second non-critical send is suppressed (DENIED, reason
+     * {@code frequency_limit}).
+     */
+    @Test
+    void frequencyLimitDeniesNonCriticalWhenOverLimit() {
+        TestKey k = testKey("frequencyLimitDeniesNonCriticalWhenOverLimit");
+        seedPreferenceFull(
+            k.subscriberId(), k.topic(), k.channel(),
+            /*enabled=*/ true, /*bypassForCritical=*/ false,
+            /*quietHours=*/ null,
+            /*frequencyLimitPerDay=*/ 1
+        );
+
+        var first = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+        var second = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(first.allowed()).isTrue();
+        assertThat(first.reason()).isEqualTo("preference_enabled");
+        assertThat(second.allowed())
+            .as("the second non-critical send within the rolling window "
+                + "must be denied with reason frequency_limit when "
+                + "frequency_limit_per_day=1 — T1.1.7 acceptance gate")
+            .isFalse();
+        assertThat(second.reason()).isEqualTo("frequency_limit");
+    }
+
+    /**
+     * Frequency limit critical bypass + window conservation.
+     *
+     * <p>Seeds {@code frequency_limit_per_day=1} + {@code bypassForCritical=true}.
+     * Sequence:
+     * <ol>
+     *   <li>1st non-critical → ALLOWED ({@code preference_enabled}); window
+     *       count=1 (full).</li>
+     *   <li>Critical → ALLOWED ({@code critical_bypass_frequency}); MUST
+     *       NOT consume a slot.</li>
+     *   <li>2nd non-critical → DENIED ({@code frequency_limit}); proves
+     *       the critical bypass did not extend the window — Codex
+     *       019e4469 strong assertion.</li>
+     * </ol>
+     */
+    @Test
+    void frequencyLimitBypassesForCriticalAndDoesNotConsumeWindow() {
+        TestKey k = testKey("frequencyLimitBypassesForCriticalAndDoesNotConsumeWindow");
+        seedPreferenceFull(
+            k.subscriberId(), k.topic(), k.channel(),
+            /*enabled=*/ true, /*bypassForCritical=*/ true,
+            /*quietHours=*/ null,
+            /*frequencyLimitPerDay=*/ 1
+        );
+
+        var first = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+        var critical = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.critical),
+            k.channel(),
+            k.subscriberId()
+        );
+        var third = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(first.allowed()).isTrue();
+        assertThat(first.reason()).isEqualTo("preference_enabled");
+        assertThat(critical.allowed())
+            .as("critical severity + bypassForCritical=true must override "
+                + "frequency suppression — T1.1.7 bypass gate")
+            .isTrue();
+        assertThat(critical.reason()).isEqualTo("critical_bypass_frequency");
+        assertThat(third.allowed())
+            .as("a follow-up non-critical send must still be denied — "
+                + "the critical bypass branch returns BEFORE calling "
+                + "frequencyLimitService.checkAndRecord(), so the rolling "
+                + "window is unchanged. Codex 019e4469 strong assertion: "
+                + "without this, critical traffic could silently reset "
+                + "the user's frequency budget.")
+            .isFalse();
+        assertThat(third.reason()).isEqualTo("frequency_limit");
+    }
+
     /* ----- Helpers --------------------------------------------------- */
 
     /**
@@ -265,6 +479,23 @@ class SubscriberPreferenceServiceIntegrationTest extends AbstractPostgresTest {
         String subscriberId, String topic, String channel,
         boolean enabled, boolean bypassForCritical
     ) {
+        seedPreferenceFull(subscriberId, topic, channel, enabled, bypassForCritical,
+            /*quietHours=*/ null, /*frequencyLimitPerDay=*/ null);
+    }
+
+    /**
+     * Full-control seeder — adds optional {@code quietHours} JSON and
+     * {@code frequencyLimitPerDay} so the T1.1.6 / T1.1.7 scenarios can
+     * install preferences that exercise the jsonb column round-trip and
+     * the FrequencyLimitService bridge. Other fields default to the same
+     * values used by the must-have #8 scenarios.
+     */
+    private void seedPreferenceFull(
+        String subscriberId, String topic, String channel,
+        boolean enabled, boolean bypassForCritical,
+        Map<String, Object> quietHours,
+        Integer frequencyLimitPerDay
+    ) {
         SubscriberPreference p = new SubscriberPreference();
         p.setOrgId("default");
         p.setSubscriberId(subscriberId);
@@ -272,7 +503,24 @@ class SubscriberPreferenceServiceIntegrationTest extends AbstractPostgresTest {
         p.setChannel(channel);
         p.setEnabled(enabled);
         p.setBypassForCritical(bypassForCritical);
+        p.setQuietHours(quietHours);
+        p.setFrequencyLimitPerDay(frequencyLimitPerDay);
         prefRepo.save(p);
+    }
+
+    /**
+     * Canonical Europe/Istanbul night-window contract used by T1.1.6
+     * scenarios: cross-day window 22:00 → 07:00 in Istanbul tz. Combined
+     * with a fixed clock at 20:30 UTC (= 23:30 Istanbul) this lands the
+     * evaluation squarely inside the window and exercises the timezone
+     * + cross-day arithmetic.
+     */
+    private static Map<String, Object> quietHoursIstanbulNight() {
+        Map<String, Object> q = new LinkedHashMap<>();
+        q.put("start", "22:00");
+        q.put("end", "07:00");
+        q.put("tz", "Europe/Istanbul");
+        return q;
     }
 
     private NotificationIntent makeIntent(String topic, NotificationIntent.Severity severity) {
