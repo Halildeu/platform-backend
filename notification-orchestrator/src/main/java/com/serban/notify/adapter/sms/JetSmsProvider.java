@@ -344,6 +344,19 @@ public class JetSmsProvider implements SmsProvider {
 
     @Override
     public SmsSendResult send(String e164Phone, String text) {
+        return send(e164Phone, text, SmsSendContext.empty());
+    }
+
+    /**
+     * Faz 23.3.2 PR-A3.1.1 (Codex thread {@code 019e4514}): context-aware
+     * send override. {@link SmsSendContext} topicKey/templateId allowlist
+     * baz alarak channel resolve (VFO OTP vs VF BULK). Overlength guard
+     * VFO match olsa bile text >{@code otpMaxLength} ise default channel'a
+     * (VF) fallback (Codex absorb: yanlış sınıflandırılmış uzun mesaj
+     * BULK kanaldan giderek operasyonel risk azaltır).
+     */
+    @Override
+    public SmsSendResult send(String e164Phone, String text, SmsSendContext context) {
         // 1. Config gate — username/originator boşsa fail-closed (PROVIDER_CONFIG).
         // Codex 019e421f iter-1 P2 absorb: password de required (SOAP envelope
         // ve HTTP form body ikisi de password gönderiyor; default boş — eksikse
@@ -404,11 +417,76 @@ public class JetSmsProvider implements SmsProvider {
         String phone = (e164Phone != null && e164Phone.startsWith("+"))
             ? e164Phone.substring(1) : e164Phone;
 
-        // 6. Transport dispatch — soap (default, Faz 23.4) | http (additive).
+        // 6. Channel resolution (Faz 23.3.2 PR-A3.1.1 — Codex thread 019e4514).
+        //    SendSMSSingle operasyonu için context-aware channel select.
+        //    SendSMS legacy path channel kullanmaz; context resolution NO-OP.
+        String resolvedChannel = resolveChannel(context, text);
+
+        // 7. Transport dispatch — soap (default, Faz 23.4) | http (additive).
         if (isHttpTransport()) {
             return sendViaHttp(phone, text);
         }
-        return sendViaSoap(phone, text);
+        return sendViaSoap(phone, text, resolvedChannel);
+    }
+
+    /**
+     * JetSMS channel resolution — Faz 23.3.2 PR-A3.1.1 (Codex thread
+     * {@code 019e4514}).
+     *
+     * <p>Karar matrisi:
+     * <ol>
+     *   <li>{@code context.topicKey} OTP allowlist'inde → {@code VFO}</li>
+     *   <li>{@code context.templateId} OTP allowlist'inde → {@code VFO}</li>
+     *   <li>Aksi halde → config default {@link #channel} ({@code VF})</li>
+     * </ol>
+     *
+     * <p><b>Overlength guard</b> (Codex absorb): VFO match olsa bile
+     * {@code text.length() > otpMaxLength} ise default channel'a fallback
+     * + warn log. Yanlış sınıflandırılmış uzun mesaj OTP yerine BULK
+     * kanaldan gider (operasyonel risk azaltılır).
+     *
+     * <p><b>Severity</b> bu method'da KULLANILMAZ — VFO OTP-only kanal,
+     * kritik+uzun mesaj otomatik VFO'ya route edilmez.
+     */
+    String resolveChannel(SmsSendContext context, String text) {
+        if (context == null) {
+            return channel;  // null context → config default
+        }
+        boolean otpMatch = false;
+        String matchReason = null;
+        if (context.hasTopicKey() && isInCsvSet(otpTopicKeysCsv, context.topicKey())) {
+            otpMatch = true;
+            matchReason = "topic_key=" + context.topicKey();
+        } else if (context.hasTemplateId() && isInCsvSet(otpTemplateIdsCsv, context.templateId())) {
+            otpMatch = true;
+            matchReason = "template_id=" + context.templateId();
+        }
+        if (!otpMatch) {
+            return channel;
+        }
+        // Overlength guard: VFO OTP-only kanal kısa mesaj bekler
+        int textLen = text != null ? text.length() : 0;
+        if (textLen > otpMaxLength) {
+            log.warn("jetsms VFO overlength fallback: {} matched but len={} > otpMaxLength={} → VF",
+                matchReason, textLen, otpMaxLength);
+            return channel;  // default VF
+        }
+        log.info("jetsms channel resolved VFO: {} (len={})", matchReason, textLen);
+        return CHANNEL_VFO;
+    }
+
+    /** CSV set member check — trim + case-insensitive. */
+    static boolean isInCsvSet(String csv, String value) {
+        if (csv == null || csv.isBlank() || value == null || value.isBlank()) {
+            return false;
+        }
+        String target = value.trim();
+        for (String item : csv.split(",")) {
+            if (item.trim().equalsIgnoreCase(target)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -481,6 +559,20 @@ public class JetSmsProvider implements SmsProvider {
      * ({@code ReportSMS.groupid}) — correlator {@code "jetsms-<ID>"}.
      */
     private SmsSendResult sendViaSoap(String phone, String text) {
+        // Backward-compat: legacy 2-arg overload (PR-A3.0 öncesi pattern) —
+        // resolvedChannel field default kullan. PR-A3.1.1'de send(3-arg)
+        // override resolvedChannel'ı dinamik geçiyor.
+        return sendViaSoap(phone, text, channel);
+    }
+
+    /**
+     * Faz 23.3.2 PR-A3.1.1 (Codex thread {@code 019e4514}) — resolvedChannel
+     * parametre genişlemesi. send(3-arg) override context-aware
+     * resolveChannel(context, text) sonucunu burada geçiriyor.
+     * SendSMSSingle operasyonu için runtime'da seçilen channel; SendSMS
+     * legacy path channel kullanmaz.
+     */
+    private SmsSendResult sendViaSoap(String phone, String text, String resolvedChannel) {
         // Faz 23.3.2 PR-A3.0 (Codex thread 019e4514): SOAP operation
         // branching. Default sendSMS (BULK array, behavior-neutral); operator
         // overlay sendSMSSingle ile channel-aware path açar.
@@ -488,9 +580,9 @@ public class JetSmsProvider implements SmsProvider {
 
         if (useSingleOp) {
             // Channel preflight — config invalid ise outbound atılmaz.
-            if (!isChannelAllowed(channel)) {
+            if (!isChannelAllowed(resolvedChannel)) {
                 log.warn("jetsms SOAP single config: channel='{}' not in allowed set ({}) — fail-closed",
-                    channel, channelAllowedCsv);
+                    resolvedChannel, channelAllowedCsv);
                 return SmsSendResult.failed(PROVIDER_KEY, SmsFailureClass.PROVIDER_CONFIG,
                     "channel-invalid");
             }
@@ -498,7 +590,7 @@ public class JetSmsProvider implements SmsProvider {
 
         String envelope = useSingleOp
             ? buildSendSMSSingleSoapEnvelope(
-                username, password, originator, phone, text, channel, onLengthProblem)
+                username, password, originator, phone, text, resolvedChannel, onLengthProblem)
             : buildSendSoapEnvelope(
                 username, password, originator, phone, text, onLengthProblem);
         String soapAction = useSingleOp ? "SendSMSSingle" : "SendSMS";
