@@ -222,7 +222,90 @@ class JetSmsProviderContextRoutingTest {
             .withRequestBody(containing("<channel>VF</channel>")));
     }
 
+    /* ─── PR-A3.1.1 Codex absorb (P2 + P3) ──────────────────────────────── */
+
+    @Test
+    void overlengthFallbackReturnsExplicitVF_NotConfigDefault() {
+        // Codex P3 absorb: operator yanlışlıkla channel=VFO set ederse, overlength
+        // guard yine de explicit "VF" döndürmeli (config drift hardening).
+        // Bu test config'i intentionally misconfigured ediyor (channel=VFO) ve
+        // overlength path'inin yine de "VF" döndürdüğünü doğruluyor.
+        ReflectionTestUtils.setField(provider, "channel", "VFO");  // misconfigured default
+        ReflectionTestUtils.setField(provider, "otpTopicKeysCsv", "auth.mfa-otp");
+        ReflectionTestUtils.setField(provider, "otpMaxLength", 160);
+        SmsSendContext ctx = new SmsSendContext("info", "auth.mfa-otp", null);
+        String longText = "x".repeat(161);
+
+        assertThat(provider.resolveChannel(ctx, longText))
+            .as("overlength fallback explicit VF, config drift'e direnir")
+            .isEqualTo("VF");
+    }
+
+    @Test
+    void sendWithVFOContextPropagatesActualChannelInAcceptedResult() {
+        // Codex P2 absorb: SOAP accepted sonucunda actualChannel=VFO taşınır
+        // → SmsAdapter audit metadata DELIVERY_ACCEPTED event'inde görünür.
+        ReflectionTestUtils.setField(provider, "otpTopicKeysCsv", "auth.mfa-otp");
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse()
+                .withHeader("Content-Type", "text/xml; charset=utf-8")
+                .withBody(soapAcceptedEnvelope("00", "200000010"))));
+        SmsSendContext ctx = new SmsSendContext("info", "auth.mfa-otp", null);
+
+        SmsSendResult result = provider.send("+905321234567", "OTP 999999", ctx);
+
+        assertThat(result.status()).isEqualTo(SmsSendResult.SmsSendStatus.ACCEPTED);
+        assertThat(result.actualChannel())
+            .as("VFO routing audit kanıtı SmsSendResult'a propagate")
+            .isEqualTo("VFO");
+    }
+
+    @Test
+    void sendWithDefaultContextPropagatesVFActualChannel() {
+        // Allowlist boş → default channel (VF) → actualChannel=VF propagate
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse()
+                .withHeader("Content-Type", "text/xml; charset=utf-8")
+                .withBody(soapAcceptedEnvelope("00", "200000011"))));
+        SmsSendContext ctx = new SmsSendContext("info", "marketing.campaign", null);
+
+        SmsSendResult result = provider.send("+905321234567", "Bulk msg", ctx);
+
+        assertThat(result.actualChannel()).isEqualTo("VF");
+    }
+
+    @Test
+    void sendWithLegacySendSMSOpReturnsNullActualChannel() {
+        // SendSMS (BULK array, channel-agnostic) → actualChannel=null
+        ReflectionTestUtils.setField(provider, "soapOperation", "sendSMS");
+        jetsms.stubFor(post(urlEqualTo("/ws/soapSMS.asmx"))
+            .willReturn(aResponse()
+                .withHeader("Content-Type", "text/xml; charset=utf-8")
+                .withBody(soapAcceptedEnvelopeSendSMS("00", "200000012"))));
+
+        SmsSendResult result = provider.send("+905321234567", "Legacy SendSMS path");
+
+        assertThat(result.status()).isEqualTo(SmsSendResult.SmsSendStatus.ACCEPTED);
+        assertThat(result.actualChannel())
+            .as("Legacy SendSMS path channel-agnostic, actualChannel=null")
+            .isNull();
+    }
+
     /* ─── Helpers ────────────────────────────────────────────────────────── */
+
+    private static String soapAcceptedEnvelopeSendSMS(String errorCode, String id) {
+        return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+            + "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">"
+            + "<soap:Body>"
+            + "<SendSMSResponse xmlns=\"http://tempuri.org/\">"
+            + "<SendSMSResult>"
+            + "<ErrorCode>" + errorCode + "</ErrorCode>"
+            + "<ID>" + id + "</ID>"
+            + "</SendSMSResult>"
+            + "</SendSMSResponse>"
+            + "</soap:Body>"
+            + "</soap:Envelope>";
+    }
 
     private static String soapAcceptedEnvelope(String errorCode, String id) {
         return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"

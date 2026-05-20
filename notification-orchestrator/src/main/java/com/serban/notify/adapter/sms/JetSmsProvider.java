@@ -467,9 +467,13 @@ public class JetSmsProvider implements SmsProvider {
         // Overlength guard: VFO OTP-only kanal kısa mesaj bekler
         int textLen = text != null ? text.length() : 0;
         if (textLen > otpMaxLength) {
-            log.warn("jetsms VFO overlength fallback: {} matched but len={} > otpMaxLength={} → VF",
+            // Codex P3 absorb (PR-A3.1.1): explicit CHANNEL_VF, config drift'e
+            // karşı hardening — operator yanlışlıkla `channel=VFO` set ederse
+            // guard amacını kaçırmasın; overlength fallback her zaman bulk
+            // kanaldan gider.
+            log.warn("jetsms VFO overlength fallback: {} matched but len={} > otpMaxLength={} → VF (explicit)",
                 matchReason, textLen, otpMaxLength);
-            return channel;  // default VF
+            return CHANNEL_VF;
         }
         log.info("jetsms channel resolved VFO: {} (len={})", matchReason, textLen);
         return CHANNEL_VFO;
@@ -632,7 +636,10 @@ public class JetSmsProvider implements SmsProvider {
                 int segments = isOperationalMultipart() ? estimateLatin5Segments(text) : 1;
                 // SendSMSSingleResponse + SendSMSResponse aynı SendSMSResult shape
                 // döndürür (ErrorCode + ID); aynı parse re-use.
-                return parseSoapSendResponse(respBody, segments, ENCODING_LABEL_LATIN5);
+                // PR-A3.1.1 Codex P2 absorb: actualChannel propagation, single-op
+                // path'te resolvedChannel; legacy SendSMS path'te null (channel-agnostic).
+                String acceptedChannel = useSingleOp ? resolvedChannel : null;
+                return parseSoapSendResponse(respBody, segments, ENCODING_LABEL_LATIN5, acceptedChannel);
             });
         } catch (IOException e) {
             log.warn("jetsms SOAP transport IOException (RETRY): op={} err={}",
@@ -1132,17 +1139,28 @@ public class JetSmsProvider implements SmsProvider {
      * döndürür.
      */
     /**
-     * Backward-compatible — default segmentCount=1, encoding=null.
+     * Backward-compatible — default segmentCount=1, encoding=null, actualChannel=null.
      */
     static SmsSendResult parseSoapSendResponse(String body) {
-        return parseSoapSendResponse(body, 1, null);
+        return parseSoapSendResponse(body, 1, null, null);
     }
 
     /**
-     * Faz 23.3.2 PR-A1.1 — parse with multipart metadata.
-     * ACCEPTED sonuç metadata propagate eder.
+     * Backward-compatible (PR-A1.1) — default actualChannel=null.
      */
     static SmsSendResult parseSoapSendResponse(String body, int segmentCount, String encoding) {
+        return parseSoapSendResponse(body, segmentCount, encoding, null);
+    }
+
+    /**
+     * Faz 23.3.2 PR-A1.1 + PR-A3.1.1 — parse with multipart metadata
+     * + actual channel (Codex P2 absorb). ACCEPTED sonuç metadata propagate eder.
+     *
+     * @param actualChannel SendSMSSingle outbound'ta kullanılan kanal kodu;
+     *                      SendSMS legacy path için null.
+     */
+    static SmsSendResult parseSoapSendResponse(String body, int segmentCount, String encoding,
+                                               String actualChannel) {
         // soap:Fault — provider tarafı 2xx ile fault dönerse (gözlenmeden,
         // ama defansif): faultcode/faultstring varsa transient retry.
         if (body.contains("<soap:Fault") || body.contains("<faultcode")) {
@@ -1193,9 +1211,9 @@ public class JetSmsProvider implements SmsProvider {
             log.warn("jetsms SOAP send non-numeric ID accepted: {}", trimmedId);
         }
         String correlator = PROVIDER_KEY + "-" + trimmedId;
-        log.info("jetsms SOAP ACCEPTED (awaits DLR poll): msg_id={} segments={} encoding={}",
-            correlator, segmentCount, encoding);
-        return SmsSendResult.accepted(PROVIDER_KEY, correlator, segmentCount, encoding);
+        log.info("jetsms SOAP ACCEPTED (awaits DLR poll): msg_id={} segments={} encoding={} channel={}",
+            correlator, segmentCount, encoding, actualChannel);
+        return SmsSendResult.accepted(PROVIDER_KEY, correlator, segmentCount, encoding, actualChannel);
     }
 
     /**
