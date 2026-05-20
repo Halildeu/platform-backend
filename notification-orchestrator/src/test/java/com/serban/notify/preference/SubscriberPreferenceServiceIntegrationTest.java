@@ -22,12 +22,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * repository and exercises the precedence + critical-bypass + quiet-hours
  * decision logic in pure Java. This IT exercises the SAME contract through
  * a real Spring Boot context + Testcontainers Postgres + JPA repository,
- * so the JPA mapping (jsonb quiet_hours column, channel/topicKey nullable
- * keys for fallback rows, bypass_for_critical column) and the SQL
- * fallback queries used by the service are also verified end-to-end.
+ * so the JPA derived-query SQL ({@code findByOrgIdAndSubscriberIdAndTopicKeyAndChannel}
+ * + the three NULL-fallback variants) and the {@code bypass_for_critical}
+ * column mapping are verified end-to-end against real Postgres NULL
+ * semantics. The {@code jsonb quiet_hours} column and the frequency
+ * limit branch are left to the unit test (clock injection there) and to
+ * future T1.1.6 / T1.1.7 acceptance work; this IT keeps scope to the
+ * must-have #8 contract.
  *
- * <p>Five scenarios cover the must-have #8 contract (preference +
- * critical bypass) from the M3 acceptance gate:
+ * <p>Eight scenarios:
  * <ol>
  *   <li>No preference row → ALLOWED (default no_preference_set)</li>
  *   <li>Channel+topic row, enabled=true → ALLOWED</li>
@@ -36,6 +39,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       ALLOWED (critical_bypass)</li>
  *   <li>enabled=false + severity=critical + bypass_for_critical=false →
  *       DENIED (preference_disabled, bypass not honored)</li>
+ *   <li>Channel-null wildcard row (topic-specific, all channels)
+ *       enabled=false → DENIED — precedence-2 fallback hits the JPA
+ *       {@code findByOrgIdAndSubscriberIdAndTopicKeyAndChannelIsNull}
+ *       derived query.</li>
+ *   <li>Topic-null wildcard row (all topics, channel-specific)
+ *       enabled=false → DENIED — precedence-3 fallback hits
+ *       {@code findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannel}.</li>
+ *   <li>Both-null wildcard ("mute all") row enabled=false → DENIED —
+ *       precedence-4 fallback hits
+ *       {@code findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannelIsNull}.
+ *       Codex 019e0c28 iter P1 regression guard: must not silently
+ *       fall through to no_preference_set.</li>
  * </ol>
  *
  * <p>Each scenario seeds a row through the repository, then evaluates a
@@ -144,6 +159,77 @@ class SubscriberPreferenceServiceIntegrationTest extends AbstractPostgresTest {
         assertThat(decision.reason()).isEqualTo("preference_disabled");
     }
 
+    /* ----- Fallback precedence (Codex iter-1 P2 absorb) ----- */
+
+    /**
+     * Precedence-2 fallback: when no exact (topic, channel) row exists
+     * but a (topic, channel=null) row does, the service must honor the
+     * channel-null row. This verifies the JPA derived query
+     * {@code findByOrgIdAndSubscriberIdAndTopicKeyAndChannelIsNull}
+     * against real Postgres NULL semantics — mocked unit tests do not
+     * exercise the SQL emitted for {@code IS NULL} predicates.
+     */
+    @Test
+    void channelWildcardFallbackDeniesWhenNoExactRow() {
+        TestKey k = testKey("channelWildcardFallbackDeniesWhenNoExactRow");
+        seedPreferenceWithKeys(k.subscriberId(), k.topic(), /*channel=*/ null,
+            /*enabled=*/ false, /*bypassForCritical=*/ false);
+
+        var decision = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.reason()).isEqualTo("preference_disabled");
+    }
+
+    /**
+     * Precedence-3 fallback: when neither exact nor channel-null row
+     * exists but a (topic=null, channel) row does (the subscriber has
+     * disabled a channel across all topics), the service must honor it.
+     * Verifies {@code findByOrgIdAndSubscriberIdAndTopicKeyIsNullAndChannel}.
+     */
+    @Test
+    void topicWildcardFallbackDeniesWhenNoExactOrChannelWildcardRow() {
+        TestKey k = testKey("topicWildcardFallbackDeniesWhenNoExactOrChannelWildcardRow");
+        seedPreferenceWithKeys(k.subscriberId(), /*topic=*/ null, k.channel(),
+            /*enabled=*/ false, /*bypassForCritical=*/ false);
+
+        var decision = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.reason()).isEqualTo("preference_disabled");
+    }
+
+    /**
+     * Precedence-4 (both-null) fallback: a "mute all topics + channels"
+     * row must be honored as the last fallback. Without this branch the
+     * service would silently fall through to {@code no_preference_set}
+     * → ALLOW, mis-honoring the subscriber's intent to mute every
+     * notification. Codex 019e0c28 iter P1 regression guard.
+     */
+    @Test
+    void bothNullWildcardFallbackDeniesAsLastResort() {
+        TestKey k = testKey("bothNullWildcardFallbackDeniesAsLastResort");
+        seedPreferenceWithKeys(k.subscriberId(), /*topic=*/ null, /*channel=*/ null,
+            /*enabled=*/ false, /*bypassForCritical=*/ false);
+
+        var decision = service.evaluate(
+            makeIntent(k.topic(), NotificationIntent.Severity.info),
+            k.channel(),
+            k.subscriberId()
+        );
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.reason()).isEqualTo("preference_disabled");
+    }
+
     /* ----- Helpers --------------------------------------------------- */
 
     /**
@@ -166,11 +252,24 @@ class SubscriberPreferenceServiceIntegrationTest extends AbstractPostgresTest {
     }
 
     private void seedPreference(TestKey k, boolean enabled, boolean bypassForCritical) {
+        seedPreferenceWithKeys(k.subscriberId(), k.topic(), k.channel(),
+            enabled, bypassForCritical);
+    }
+
+    /**
+     * Wildcard-aware seeder — accepts nullable {@code topic} and
+     * {@code channel} so the fallback IT cases can install rows that
+     * exercise the JPA derived queries with {@code IS NULL} predicates.
+     */
+    private void seedPreferenceWithKeys(
+        String subscriberId, String topic, String channel,
+        boolean enabled, boolean bypassForCritical
+    ) {
         SubscriberPreference p = new SubscriberPreference();
         p.setOrgId("default");
-        p.setSubscriberId(k.subscriberId());
-        p.setTopicKey(k.topic());
-        p.setChannel(k.channel());
+        p.setSubscriberId(subscriberId);
+        p.setTopicKey(topic);
+        p.setChannel(channel);
         p.setEnabled(enabled);
         p.setBypassForCritical(bypassForCritical);
         prefRepo.save(p);
