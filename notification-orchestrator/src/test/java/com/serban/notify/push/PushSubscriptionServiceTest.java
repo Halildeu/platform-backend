@@ -8,7 +8,6 @@ import com.serban.notify.exception.InvalidRequestException;
 import com.serban.notify.repository.SubscriberPushEndpointRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.OffsetDateTime;
 import java.util.Base64;
@@ -19,6 +18,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -72,16 +72,14 @@ class PushSubscriptionServiceTest {
 
     @Test
     void subscribeCreatesNewEndpointWhenNotExisting() {
+        UUID newId = UUID.randomUUID();
+        // Pre-check: no existing → "created" status
+        // After upsert: row exists with new UUID
         when(repo.findByOrgIdAndSubscriberIdAndEndpointUrl(eq(ORG), eq(SUB), any()))
-            .thenReturn(Optional.empty());
-        when(repo.saveAndFlush(any(SubscriberPushEndpoint.class)))
-            .thenAnswer(inv -> {
-                SubscriberPushEndpoint e = inv.getArgument(0);
-                if (e.getEndpointId() == null) {
-                    e.setEndpointId(UUID.randomUUID());
-                }
-                return e;
-            });
+            .thenReturn(Optional.empty())  // pre-check
+            .thenReturn(Optional.of(stubEndpoint(newId, null)));  // post-upsert
+        when(repo.upsertAtomic(anyString(), anyString(), anyString(), anyString(),
+                               anyString(), any(), any())).thenReturn(1);
 
         PushSubscribeRequest req = validRequest(
             "https://fcm.googleapis.com/fcm/send/token", "Mozilla/5.0 Chrome"
@@ -90,25 +88,19 @@ class PushSubscriptionServiceTest {
         PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
 
         assertThat(response.status()).isEqualTo("created");
-        assertThat(response.endpointId()).isNotNull();
-        verify(repo).saveAndFlush(any(SubscriberPushEndpoint.class));
+        assertThat(response.endpointId()).isEqualTo(newId);
+        verify(repo).upsertAtomic(anyString(), anyString(), anyString(), anyString(),
+                                  anyString(), any(), any());
     }
 
     @Test
     void subscribeUpdatesKeysWhenEndpointExists() {
-        SubscriberPushEndpoint existing = new SubscriberPushEndpoint();
         UUID id = UUID.randomUUID();
-        existing.setEndpointId(id);
-        existing.setOrgId(ORG);
-        existing.setSubscriberId(SUB);
-        existing.setEndpointUrl("https://fcm.googleapis.com/fcm/send/token");
-        existing.setP256dhKey("old-p256dh");
-        existing.setAuthSecret("old-auth");
-        existing.setDeletedAt(null);
+        SubscriberPushEndpoint existing = stubEndpoint(id, null);  // active
         when(repo.findByOrgIdAndSubscriberIdAndEndpointUrl(eq(ORG), eq(SUB), any()))
             .thenReturn(Optional.of(existing));
-        when(repo.save(any(SubscriberPushEndpoint.class)))
-            .thenAnswer(inv -> inv.getArgument(0));
+        when(repo.upsertAtomic(anyString(), anyString(), anyString(), anyString(),
+                               anyString(), any(), any())).thenReturn(1);
 
         PushSubscribeRequest req = validRequest(
             "https://fcm.googleapis.com/fcm/send/token", null
@@ -118,26 +110,20 @@ class PushSubscriptionServiceTest {
 
         assertThat(response.status()).isEqualTo("updated");
         assertThat(response.endpointId()).isEqualTo(id);
-        assertThat(existing.getP256dhKey()).isEqualTo(VALID_P256DH);
-        assertThat(existing.getAuthSecret()).isEqualTo(VALID_AUTH_SECRET);
-        assertThat(existing.getDeletedAt()).isNull();
+        verify(repo).upsertAtomic(eq(ORG), eq(SUB), anyString(),
+                                  eq(VALID_P256DH), eq(VALID_AUTH_SECRET),
+                                  any(), any());
     }
 
     @Test
     void subscribeReactivatesSoftDeletedEndpoint() {
-        SubscriberPushEndpoint deleted = new SubscriberPushEndpoint();
         UUID id = UUID.randomUUID();
-        deleted.setEndpointId(id);
-        deleted.setOrgId(ORG);
-        deleted.setSubscriberId(SUB);
-        deleted.setEndpointUrl("https://fcm.googleapis.com/fcm/send/token");
-        deleted.setDeletedAt(OffsetDateTime.now().minusHours(2));
-        deleted.setFailureCount(5);
-        deleted.setLastFailureReason("410_GONE");
+        SubscriberPushEndpoint deleted = stubEndpoint(id,
+            OffsetDateTime.now().minusHours(2));  // soft-deleted
         when(repo.findByOrgIdAndSubscriberIdAndEndpointUrl(eq(ORG), eq(SUB), any()))
             .thenReturn(Optional.of(deleted));
-        when(repo.save(any(SubscriberPushEndpoint.class)))
-            .thenAnswer(inv -> inv.getArgument(0));
+        when(repo.upsertAtomic(anyString(), anyString(), anyString(), anyString(),
+                               anyString(), any(), any())).thenReturn(1);
 
         PushSubscribeRequest req = validRequest(
             "https://fcm.googleapis.com/fcm/send/token", null
@@ -146,45 +132,19 @@ class PushSubscriptionServiceTest {
         PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
 
         assertThat(response.status()).isEqualTo("reactivated");
-        assertThat(deleted.getDeletedAt()).isNull();
-        assertThat(deleted.getFailureCount()).isZero();
-        assertThat(deleted.getLastFailureReason()).isNull();
+        assertThat(response.endpointId()).isEqualTo(id);
     }
 
-    @Test
-    void subscribeRaceRecoveryReReadsAndUpdates() {
-        // Codex 019e4a57 P1 absorb: paralel iki ilk subscribe race,
-        // saveAndFlush DataIntegrityViolationException atar; service
-        // re-read + update path'e düşer.
-        when(repo.findByOrgIdAndSubscriberIdAndEndpointUrl(eq(ORG), eq(SUB), any()))
-            .thenReturn(Optional.empty())  // initial empty (race start)
-            .thenAnswer(inv -> {
-                // Race winner inserted; we see the row now
-                SubscriberPushEndpoint winner = new SubscriberPushEndpoint();
-                winner.setEndpointId(UUID.fromString(
-                    "99999999-aaaa-bbbb-cccc-dddddddddddd"));
-                winner.setOrgId(ORG);
-                winner.setSubscriberId(SUB);
-                winner.setEndpointUrl(inv.getArgument(2));
-                winner.setP256dhKey("race-winner-p");
-                winner.setAuthSecret("race-winner-a");
-                winner.setDeletedAt(null);
-                return Optional.of(winner);
-            });
-        when(repo.saveAndFlush(any(SubscriberPushEndpoint.class)))
-            .thenThrow(new DataIntegrityViolationException("unique violation"));
-        when(repo.save(any(SubscriberPushEndpoint.class)))
-            .thenAnswer(inv -> inv.getArgument(0));
-
-        PushSubscribeRequest req = validRequest(
-            "https://fcm.googleapis.com/fcm/send/race", null
-        );
-
-        PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
-
-        assertThat(response.status()).isEqualTo("updated");
-        assertThat(response.endpointId()).isEqualTo(
-            UUID.fromString("99999999-aaaa-bbbb-cccc-dddddddddddd"));
+    private SubscriberPushEndpoint stubEndpoint(UUID id, OffsetDateTime deletedAt) {
+        SubscriberPushEndpoint e = new SubscriberPushEndpoint();
+        e.setEndpointId(id);
+        e.setOrgId(ORG);
+        e.setSubscriberId(SUB);
+        e.setEndpointUrl("https://fcm.googleapis.com/fcm/send/token");
+        e.setP256dhKey(VALID_P256DH);
+        e.setAuthSecret(VALID_AUTH_SECRET);
+        e.setDeletedAt(deletedAt);
+        return e;
     }
 
     @Test

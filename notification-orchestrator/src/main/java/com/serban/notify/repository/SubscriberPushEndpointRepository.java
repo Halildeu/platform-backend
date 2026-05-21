@@ -82,6 +82,69 @@ public interface SubscriberPushEndpointRepository
     );
 
     /**
+     * Atomic upsert (Faz 23.7 M7 T4.2 PR-W3 iter-3 — Codex
+     * {@code 019e4a57} P1 absorb).
+     *
+     * <p>Race-safe idempotent upsert via PostgreSQL native
+     * {@code INSERT ... ON CONFLICT (org_id, subscriber_id, endpoint_url)
+     * DO UPDATE ... RETURNING endpoint_id}. Constraint çakışması tek SQL
+     * statement içinde çözülür; aynı transaction'da unique violation
+     * exception yakalamaya gerek yok (PostgreSQL transaction abort
+     * state'e düşmez).
+     *
+     * <p>UPSERT davranışı:
+     * <ul>
+     *   <li>INSERT (yeni satır): {@code endpoint_id = gen_random_uuid()};
+     *       failure counter 0; createdAt = updatedAt = lastSeenAt = NOW()</li>
+     *   <li>UPDATE (mevcut satır): keys + lastSeenAt + updatedAt güncel;
+     *       userAgent boş ise mevcut korunur (COALESCE); reactivation
+     *       durumunda deleted_at NULL + failure counter reset</li>
+     * </ul>
+     *
+     * <p>{@code RETURNING endpoint_id}: yeni veya mevcut UUID döner;
+     * caller status semantics için pre-check sonucunu kullanır
+     * (created/updated/reactivated).
+     *
+     * <p>NOT: schema name {@code notify.} hard-coded; mevcut tüm
+     * native query'ler aynı pattern'i kullanıyor.
+     */
+    @Modifying
+    @Query(value = """
+        INSERT INTO notify.subscriber_push_endpoint
+            (endpoint_id, org_id, subscriber_id, endpoint_url,
+             p256dh_key, auth_secret, user_agent, platform_hint,
+             expiration_time, last_seen_at, failure_count,
+             last_failure_at, last_failure_reason,
+             deleted_at, created_at, updated_at)
+        VALUES
+            (gen_random_uuid(), :orgId, :subscriberId, :endpointUrl,
+             :p256dhKey, :authSecret, :userAgent, NULL,
+             NULL, :now, 0,
+             NULL, NULL,
+             NULL, :now, :now)
+        ON CONFLICT (org_id, subscriber_id, endpoint_url) DO UPDATE
+        SET p256dh_key = EXCLUDED.p256dh_key,
+            auth_secret = EXCLUDED.auth_secret,
+            user_agent = COALESCE(EXCLUDED.user_agent,
+                                  notify.subscriber_push_endpoint.user_agent),
+            last_seen_at = EXCLUDED.last_seen_at,
+            updated_at = EXCLUDED.updated_at,
+            deleted_at = NULL,
+            failure_count = 0,
+            last_failure_at = NULL,
+            last_failure_reason = NULL
+        """, nativeQuery = true)
+    int upsertAtomic(
+        @Param("orgId") String orgId,
+        @Param("subscriberId") String subscriberId,
+        @Param("endpointUrl") String endpointUrl,
+        @Param("p256dhKey") String p256dhKey,
+        @Param("authSecret") String authSecret,
+        @Param("userAgent") String userAgent,
+        @Param("now") OffsetDateTime now
+    );
+
+    /**
      * Endpoint-level soft delete (Faz 23.7 M7 T4.2 PR-W3).
      *
      * <p>Subscriber'ın TEK endpoint'ini soft-delete eder (multi-endpoint

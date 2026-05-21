@@ -162,6 +162,112 @@ class SubscriberPushEndpointRepositoryTest extends AbstractPostgresTest {
         assertThat(deleted).isZero();
     }
 
+    // Faz 23.7 M7 T4.2 PR-W3 iter-3 — Atomic upsert PG IT (Codex 019e4a57 iter-2 P1)
+    @Test
+    void upsertAtomicInsertsNewRow() {
+        OffsetDateTime now = OffsetDateTime.now();
+        int rows = repo.upsertAtomic(
+            "acme", "1204", "https://fcm.googleapis.com/upsert-new",
+            "p256dh-new", "auth-new", "Mozilla/5.0",
+            now
+        );
+        em.flush();
+        em.clear();
+
+        assertThat(rows).isEqualTo(1);
+        Optional<SubscriberPushEndpoint> saved = repo.findByOrgIdAndSubscriberIdAndEndpointUrl(
+            "acme", "1204", "https://fcm.googleapis.com/upsert-new"
+        );
+        assertThat(saved).isPresent();
+        assertThat(saved.get().getP256dhKey()).isEqualTo("p256dh-new");
+        assertThat(saved.get().getAuthSecret()).isEqualTo("auth-new");
+        assertThat(saved.get().getUserAgent()).isEqualTo("Mozilla/5.0");
+        assertThat(saved.get().getDeletedAt()).isNull();
+        assertThat(saved.get().getFailureCount()).isZero();
+    }
+
+    @Test
+    void upsertAtomicUpdatesKeysOnConflict() {
+        // İlk insert
+        repo.upsertAtomic("acme", "1204", "https://fcm.googleapis.com/upsert-conflict",
+            "old-p", "old-a", "Old/UA",
+            OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        // İkinci çağrı: aynı (orgId, subscriberId, endpointUrl) → keys güncel
+        repo.upsertAtomic("acme", "1204", "https://fcm.googleapis.com/upsert-conflict",
+            "new-p", "new-a", "New/UA",
+            OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        SubscriberPushEndpoint refetched = repo.findByOrgIdAndSubscriberIdAndEndpointUrl(
+            "acme", "1204", "https://fcm.googleapis.com/upsert-conflict"
+        ).orElseThrow();
+        assertThat(refetched.getP256dhKey()).isEqualTo("new-p");
+        assertThat(refetched.getAuthSecret()).isEqualTo("new-a");
+        assertThat(refetched.getUserAgent()).isEqualTo("New/UA");
+    }
+
+    @Test
+    void upsertAtomicReactivatesSoftDeletedRow() {
+        // İlk insert
+        repo.upsertAtomic("acme", "1204", "https://fcm.googleapis.com/upsert-reactivate",
+            "p1", "a1", "UA1",
+            OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        // Soft delete + failure counter increment (gerçek runtime simülasyonu)
+        SubscriberPushEndpoint row = repo.findByOrgIdAndSubscriberIdAndEndpointUrl(
+            "acme", "1204", "https://fcm.googleapis.com/upsert-reactivate"
+        ).orElseThrow();
+        repo.incrementFailure(row.getEndpointId(), OffsetDateTime.now(), "410_GONE");
+        repo.softDeleteByEndpointId(row.getEndpointId(), OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        // Upsert tekrar: deleted_at NULL, failure_count 0, keys güncel
+        repo.upsertAtomic("acme", "1204", "https://fcm.googleapis.com/upsert-reactivate",
+            "p2", "a2", "UA2",
+            OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        SubscriberPushEndpoint refetched = repo.findByOrgIdAndSubscriberIdAndEndpointUrl(
+            "acme", "1204", "https://fcm.googleapis.com/upsert-reactivate"
+        ).orElseThrow();
+        assertThat(refetched.getDeletedAt()).isNull();
+        assertThat(refetched.getFailureCount()).isZero();
+        assertThat(refetched.getLastFailureReason()).isNull();
+        assertThat(refetched.getP256dhKey()).isEqualTo("p2");
+    }
+
+    @Test
+    void upsertAtomicPreservesUserAgentWhenNullInputCoalesce() {
+        // İlk insert: userAgent="UA1"
+        repo.upsertAtomic("acme", "1204", "https://fcm.googleapis.com/coalesce",
+            "p1", "a1", "UA1",
+            OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        // İkinci çağrı: userAgent=NULL → COALESCE ile mevcut "UA1" korunmalı
+        repo.upsertAtomic("acme", "1204", "https://fcm.googleapis.com/coalesce",
+            "p2", "a2", null,
+            OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        SubscriberPushEndpoint refetched = repo.findByOrgIdAndSubscriberIdAndEndpointUrl(
+            "acme", "1204", "https://fcm.googleapis.com/coalesce"
+        ).orElseThrow();
+        // COALESCE EXCLUDED.user_agent (NULL) → mevcut "UA1" korundu
+        assertThat(refetched.getUserAgent()).isEqualTo("UA1");
+        assertThat(refetched.getP256dhKey()).isEqualTo("p2");
+    }
+
     private SubscriberPushEndpoint fixture(String orgId, String subscriberId, String endpointUrl) {
         SubscriberPushEndpoint e = new SubscriberPushEndpoint();
         e.setOrgId(orgId);
