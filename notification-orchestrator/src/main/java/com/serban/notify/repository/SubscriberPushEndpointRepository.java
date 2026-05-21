@@ -80,4 +80,93 @@ public interface SubscriberPushEndpointRepository
         @Param("now") OffsetDateTime now,
         @Param("reason") String reason
     );
+
+    /**
+     * Atomic upsert (Faz 23.7 M7 T4.2 PR-W3 iter-3 — Codex
+     * {@code 019e4a57} P1 absorb).
+     *
+     * <p>Race-safe idempotent upsert via PostgreSQL native
+     * {@code INSERT ... ON CONFLICT (org_id, subscriber_id, endpoint_url)
+     * DO UPDATE ...}. Constraint çakışması tek SQL statement içinde
+     * çözülür; aynı transaction'da unique violation exception yakalamaya
+     * gerek yok (PostgreSQL transaction abort state'e düşmez).
+     *
+     * <p>UPSERT davranışı:
+     * <ul>
+     *   <li>INSERT (yeni satır): {@code endpoint_id = gen_random_uuid()};
+     *       failure counter 0; createdAt = updatedAt = lastSeenAt = NOW()</li>
+     *   <li>UPDATE (mevcut satır): keys + lastSeenAt + updatedAt güncel;
+     *       userAgent boş ise mevcut korunur (COALESCE); reactivation
+     *       durumunda deleted_at NULL + failure counter reset</li>
+     * </ul>
+     *
+     * <p>Return: row count (always 1 — INSERT veya UPDATE biri başarılı).
+     * {@code endpoint_id} caller tarafından upsert sonrası
+     * {@link #findByOrgIdAndSubscriberIdAndEndpointUrl} ile fetch edilir.
+     * Status semantics (created/updated/reactivated) caller'ın upsert
+     * öncesi pre-check sonucundan türetilir.
+     *
+     * <p>NOT: schema name {@code notify.} hard-coded; mevcut tüm
+     * native query'ler aynı pattern'i kullanıyor.
+     */
+    @Modifying
+    @Query(value = """
+        INSERT INTO notify.subscriber_push_endpoint
+            (endpoint_id, org_id, subscriber_id, endpoint_url,
+             p256dh_key, auth_secret, user_agent, platform_hint,
+             expiration_time, last_seen_at, failure_count,
+             last_failure_at, last_failure_reason,
+             deleted_at, created_at, updated_at)
+        VALUES
+            (gen_random_uuid(), :orgId, :subscriberId, :endpointUrl,
+             :p256dhKey, :authSecret, :userAgent, NULL,
+             NULL, :now, 0,
+             NULL, NULL,
+             NULL, :now, :now)
+        ON CONFLICT (org_id, subscriber_id, endpoint_url) DO UPDATE
+        SET p256dh_key = EXCLUDED.p256dh_key,
+            auth_secret = EXCLUDED.auth_secret,
+            user_agent = COALESCE(EXCLUDED.user_agent,
+                                  notify.subscriber_push_endpoint.user_agent),
+            last_seen_at = EXCLUDED.last_seen_at,
+            updated_at = EXCLUDED.updated_at,
+            deleted_at = NULL,
+            failure_count = 0,
+            last_failure_at = NULL,
+            last_failure_reason = NULL
+        """, nativeQuery = true)
+    int upsertAtomic(
+        @Param("orgId") String orgId,
+        @Param("subscriberId") String subscriberId,
+        @Param("endpointUrl") String endpointUrl,
+        @Param("p256dhKey") String p256dhKey,
+        @Param("authSecret") String authSecret,
+        @Param("userAgent") String userAgent,
+        @Param("now") OffsetDateTime now
+    );
+
+    /**
+     * Endpoint-level soft delete (Faz 23.7 M7 T4.2 PR-W3).
+     *
+     * <p>Subscriber'ın TEK endpoint'ini soft-delete eder (multi-endpoint
+     * subscriber için cihaz boundary korunur). User self-service DELETE
+     * /api/v1/notify/push/subscribe/{endpointId} bu metodu çağırır.
+     *
+     * <p>{@link #softDeleteBySubscriber} subscriber'ın TÜM endpoint'lerini
+     * siler (KVKK §11 erasure); bu metod TEK endpoint için.
+     *
+     * @return 0 if endpoint already deleted or not found; 1 if soft-deleted
+     */
+    @Modifying
+    @Query("""
+        UPDATE SubscriberPushEndpoint e
+        SET e.deletedAt = :now,
+            e.updatedAt = :now
+        WHERE e.endpointId = :endpointId
+          AND e.deletedAt IS NULL
+        """)
+    int softDeleteByEndpointId(
+        @Param("endpointId") UUID endpointId,
+        @Param("now") OffsetDateTime now
+    );
 }
