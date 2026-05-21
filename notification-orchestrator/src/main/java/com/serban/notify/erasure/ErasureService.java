@@ -1,6 +1,7 @@
 package com.serban.notify.erasure;
 
 import com.serban.notify.audit.AuditEventPublisher;
+import com.serban.notify.domain.ErasureRequestLedger;
 import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.repository.NotificationDeliveryRepository;
@@ -61,17 +62,20 @@ public class ErasureService {
     private final NotificationDeliveryRepository deliveryRepo;
     private final NotificationInboxRepository inboxRepo;
     private final AuditEventPublisher audit;
+    private final ErasureRequestLedgerService ledgerService;
 
     public ErasureService(
         NotificationIntentRepository intentRepo,
         NotificationDeliveryRepository deliveryRepo,
         NotificationInboxRepository inboxRepo,
-        AuditEventPublisher audit
+        AuditEventPublisher audit,
+        ErasureRequestLedgerService ledgerService
     ) {
         this.intentRepo = intentRepo;
         this.deliveryRepo = deliveryRepo;
         this.inboxRepo = inboxRepo;
         this.audit = audit;
+        this.ledgerService = ledgerService;
     }
 
     /**
@@ -118,6 +122,19 @@ public class ErasureService {
         // riski kapatılır).
         log.info("KVKK erasure start: orgId={} subjectRef=<hmac-redacted> eventType={}",
             request.orgId(), eventType);
+
+        // Codex `019e4950` P0 #1 absorb: KVKK Madde 13.2 30-gün SLA ledger.
+        // Erasure işlemleri başlamadan ÖNCE ledger row açılır (happen-before
+        // audit chain). Idempotent: aynı (orgId, idempotencyKey) ikinci
+        // çağrı mevcut row döner. Caller idempotencyKey vermezse
+        // service-side auto-derive (self-service: günlük key; admin: ref).
+        ErasureRequestLedger ledgerEntry = ledgerService.openRequest(
+            request.orgId(),
+            request.subscriberId(),
+            request.evidenceRef(),
+            request.idempotencyKey()
+        );
+        ledgerService.markProcessing(ledgerEntry.getRequestId());
 
         // Find all intents that have this subscriber in recipients_snapshot
         List<NotificationIntent> intents = intentRepo.findIntentsBySubscriber(
@@ -180,6 +197,10 @@ public class ErasureService {
                 details.put("evidence_ref", request.evidenceRef());
                 details.put("subscriber_id", request.subscriberId());  // NOT email/phone
                 details.put("deliveries_anonymized", deliveriesAnonymized);
+                // Codex 019e4950 P0 #1 absorb: ledger correlation
+                details.put("ledger_request_id", ledgerEntry.getRequestId().toString());
+                details.put("request_source", ledgerEntry.getRequestSource().name());
+                details.put("due_at", ledgerEntry.getDueAt().toString());
                 audit.publish(eventType, intent, null, null, details);
             }
         }
@@ -202,6 +223,10 @@ public class ErasureService {
             inboxDetails.put("evidence_ref", request.evidenceRef());
             inboxDetails.put("subscriber_id", request.subscriberId());
             inboxDetails.put("inbox_rows_deleted", inboxRowsDeleted);
+            // Codex 019e4950 P0 #1 absorb: ledger correlation
+            inboxDetails.put("ledger_request_id", ledgerEntry.getRequestId().toString());
+            inboxDetails.put("request_source", ledgerEntry.getRequestSource().name());
+            inboxDetails.put("due_at", ledgerEntry.getDueAt().toString());
             audit.publishStandalone(
                 "SUBSCRIBER_INBOX_ERASURE",
                 request.orgId(),
@@ -210,27 +235,47 @@ public class ErasureService {
             );
         }
 
-        // Codex `019e4950` P1 absorb: subscriberId leak guard.
-        log.info("KVKK erasure complete: orgId={} subjectRef=<hmac-redacted> intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
-            request.orgId(), intentsErased, deliveriesAnonymized, inboxRowsDeleted);
+        // Codex `019e4950` P0 #1 absorb: ledger close — KVKK Madde 13.2
+        // SLA completion. Audit event id null bağlama (audit publisher
+        // event_id döndürmüyor şu an; follow-up'ta audit_event_v2 row id
+        // wire'lanır). Status terminal (COMPLETED) → ErasureSlaWatchdog
+        // bu row'u artık scan etmez.
+        ledgerService.completeRequest(ledgerEntry.getRequestId(), null);
 
-        return new EraseResult(intentsErased, deliveriesAnonymized, inboxRowsDeleted);
+        // Codex `019e4950` P1 absorb: subscriberId leak guard.
+        log.info("KVKK erasure complete: orgId={} subjectRef=<hmac-redacted> ledgerId={} intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
+            request.orgId(), ledgerEntry.getRequestId(), intentsErased, deliveriesAnonymized, inboxRowsDeleted);
+
+        return new EraseResult(
+            intentsErased, deliveriesAnonymized, inboxRowsDeleted,
+            ledgerEntry.getRequestId(), ledgerEntry.getDueAt()
+        );
     }
 
     /**
-     * Erasure request — KVKK admin trigger.
+     * Erasure request — KVKK admin / self-service trigger.
      *
      * @param orgId tenant boundary
      * @param subscriberId subscriber to erase
      * @param reason KVKK §11 reason (e.g., "subject_request", "expired_consent")
      * @param evidenceRef ticket/letter/audit reference (operator runbook)
+     * @param idempotencyKey optional ledger dedup key (Codex 019e4950 P0 #1);
+     *                       null geçilirse service-side auto-derive
      */
     public record EraseRequest(
         String orgId,
         String subscriberId,
         String reason,
-        String evidenceRef
-    ) {}
+        String evidenceRef,
+        String idempotencyKey
+    ) {
+        /**
+         * Backward-compatible 4-arg ctor — ledger idempotency_key auto-derive.
+         */
+        public EraseRequest(String orgId, String subscriberId, String reason, String evidenceRef) {
+            this(orgId, subscriberId, reason, evidenceRef, null);
+        }
+    }
 
     /**
      * Erasure result.
@@ -238,10 +283,22 @@ public class ErasureService {
      * @param intentsErased intents whose PII (payload, snapshot, metadata, preference) cleared
      * @param deliveriesAnonymized delivery rows where recipient_id null'lanan
      * @param inboxRowsDeleted in-app inbox rows hard-deleted (Faz 23.3 PR-E.1)
+     * @param ledgerRequestId KVKK Madde 13.2 ledger request id (Codex 019e4950 P0 #1)
+     * @param dueAt KVKK Madde 13.2 30-gün SLA hedef tarihi
      */
     public record EraseResult(
         int intentsErased,
         int deliveriesAnonymized,
-        int inboxRowsDeleted
-    ) {}
+        int inboxRowsDeleted,
+        java.util.UUID ledgerRequestId,
+        java.time.OffsetDateTime dueAt
+    ) {
+        /**
+         * Backward-compatible 3-arg ctor — ledger fields null (legacy
+         * test fixture'ları için). Production path her zaman 5-arg.
+         */
+        public EraseResult(int intentsErased, int deliveriesAnonymized, int inboxRowsDeleted) {
+            this(intentsErased, deliveriesAnonymized, inboxRowsDeleted, null, null);
+        }
+    }
 }

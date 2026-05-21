@@ -1,6 +1,7 @@
 package com.serban.notify.erasure;
 
 import com.serban.notify.audit.AuditEventPublisher;
+import com.serban.notify.domain.ErasureRequestLedger;
 import com.serban.notify.domain.NotificationDelivery;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.repository.NotificationDeliveryRepository;
@@ -9,8 +10,10 @@ import com.serban.notify.repository.NotificationIntentRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -41,6 +44,7 @@ class ErasureServiceTest {
     private NotificationDeliveryRepository deliveryRepo;
     private NotificationInboxRepository inboxRepo;
     private AuditEventPublisher audit;
+    private ErasureRequestLedgerService ledgerService;
     private ErasureService service;
 
     @BeforeEach
@@ -49,7 +53,26 @@ class ErasureServiceTest {
         deliveryRepo = mock(NotificationDeliveryRepository.class);
         inboxRepo = mock(NotificationInboxRepository.class);
         audit = mock(AuditEventPublisher.class);
-        service = new ErasureService(intentRepo, deliveryRepo, inboxRepo, audit);
+        ledgerService = mock(ErasureRequestLedgerService.class);
+
+        // Default ledger stub — every openRequest returns a fresh entry
+        // with synthetic UUID + due_at (KVKK 30-day SLA). Tests can
+        // override by re-stubbing when needed.
+        ErasureRequestLedger stub = new ErasureRequestLedger();
+        stub.setRequestId(UUID.fromString("00000000-0000-0000-0000-000000001204"));
+        stub.setOrgId("acme");
+        stub.setSubjectRefHmac("hmac-redacted");
+        stub.setRequestSource(ErasureRequestLedger.RequestSource.ADMIN);
+        stub.setStatus(ErasureRequestLedger.Status.RECEIVED);
+        stub.setReceivedAt(OffsetDateTime.now());
+        stub.setDueAt(OffsetDateTime.now().plusDays(30));
+        stub.setIdempotencyKey("admin-acme-test");
+        when(ledgerService.openRequest(anyString(), anyString(), anyString(), any()))
+            .thenReturn(stub);
+        when(ledgerService.openRequest(anyString(), anyString(), any(), any()))
+            .thenReturn(stub);
+
+        service = new ErasureService(intentRepo, deliveryRepo, inboxRepo, audit, ledgerService);
     }
 
     @Test

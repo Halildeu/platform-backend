@@ -1,0 +1,120 @@
+-- Faz 23.2 M3 R2 PR-K1 — KVKK Madde 13.2 erasure request ledger
+-- (Codex 019e4950 P0 #1 absorb).
+--
+-- Hukuki dayanak: KVKK Madde 13.2 — "Veri sorumlusu, başvuruyu
+-- talebin niteliğine göre en kısa sürede ve en geç **otuz gün**
+-- içinde ücretsiz olarak sonuçlandırır."
+--
+-- Tablo amacı:
+--   1. Her KVKK silme başvurusunun received_at + due_at (30 gün) takibi
+--   2. Idempotency_key ile cross-request deduplication
+--   3. Legal_hold reason (mahkeme kararı / aktif soruşturma) görünür
+--   4. ErasureSlaWatchdog scheduled scan → due_at <= NOW() warning
+--
+-- Bu tablo Madde 13.2 audit kanıtı için **append-only saklanır**;
+-- 90-gün retention purge buna dokunmaz (KVKK denetim sorumluluğu).
+--
+-- KVKK Madde 12 (data minimization) uyumu:
+--   - subject_ref_hmac VARCHAR(128): PiiRedactor.hashRecipient
+--     (HMAC-SHA256 with org-namespaced Vault pepper); raw email/phone
+--     YASAK
+--   - legal_hold_reason VARCHAR(256): operator metni; sadece DPO/legal
+--     erişimi (audit row ayrı izinli)
+--
+-- Codex 019e4950 P0 verdict: "30-gün takip için per-request ledger
+-- şart. audit_event tek başına SLA monitor yapmaz; received_at →
+-- due_at delta hesabı dedicated tabloda olmalı."
+
+-- ============================================================================
+-- 1) erasure_request_ledger — KVKK Madde 13.2 başvuru takibi
+-- ============================================================================
+
+CREATE TABLE notify.erasure_request_ledger (
+    request_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id              VARCHAR(64)  NOT NULL,
+    subject_ref_hmac    VARCHAR(128) NOT NULL,
+    request_source      VARCHAR(32)  NOT NULL,
+    received_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    due_at              TIMESTAMPTZ  NOT NULL,
+    status              VARCHAR(32)  NOT NULL,
+    closed_at           TIMESTAMPTZ,
+    legal_hold_reason   VARCHAR(256),
+    idempotency_key     VARCHAR(128) NOT NULL,
+    last_audit_event_id UUID,
+    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT erasure_ledger_idemp_unique
+        UNIQUE (org_id, idempotency_key),
+    CONSTRAINT erasure_ledger_source_check
+        CHECK (request_source IN ('SELF_SERVICE', 'ADMIN', 'LEGAL', 'DPO', 'COMPLIANCE_AUDIT')),
+    CONSTRAINT erasure_ledger_status_check
+        CHECK (status IN ('RECEIVED', 'PROCESSING', 'COMPLETED', 'LEGAL_HOLD', 'FAILED')),
+    CONSTRAINT erasure_ledger_due_at_check
+        CHECK (due_at > received_at),
+    CONSTRAINT erasure_ledger_closed_consistency
+        CHECK ((status IN ('COMPLETED', 'FAILED') AND closed_at IS NOT NULL)
+            OR (status IN ('RECEIVED', 'PROCESSING', 'LEGAL_HOLD') AND closed_at IS NULL))
+);
+
+COMMENT ON TABLE notify.erasure_request_ledger IS
+    'Faz 23.2 M3 R2 PR-K1 (Codex 019e4950 P0 #1) — KVKK Madde 13.2 '
+    'erasure request 30-gün SLA ledger. Append-only saklanır (denetim '
+    'kanıtı). 90-gün retention purge buna dokunmaz.';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.subject_ref_hmac IS
+    'HMAC-SHA256 with org-namespaced Vault pepper (PiiRedactor). '
+    'Pseudonymous; raw email/phone YASAK (KVKK Madde 12).';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.due_at IS
+    'KVKK Madde 13.2 SLA: received_at + 30 gün. ErasureSlaWatchdog '
+    'scheduled scan due_at <= NOW() AND status NOT IN '
+    '(COMPLETED, FAILED) → Slack alert.';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.idempotency_key IS
+    'Cross-request deduplication. Aynı (org_id, idempotency_key) '
+    'ikinci başvuru ledger insert UNIQUE violation → service-side '
+    'no-op (request_id mevcut row döner).';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.legal_hold_reason IS
+    'KVKK Madde 28 istisna (mahkeme kararı, aktif soruşturma vb.) '
+    'sebebiyle erasure ertelenirse operator açıklaması. Sadece '
+    'DPO/legal erişimi (RBAC ayrı).';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.last_audit_event_id IS
+    'Bağlı audit_event_v2 row referansı (audit chain integrity). '
+    'COMPLETED durumunda SUBSCRIBER_ERASURE_REQUEST / '
+    'SUBSCRIBER_SELF_ERASURE_REQUEST event_id.';
+
+-- ============================================================================
+-- 2) İndeksler — SLA scan + idempotency check + reporting
+-- ============================================================================
+
+-- SLA Watchdog: due_at <= NOW() AND status NOT IN (COMPLETED, FAILED)
+CREATE INDEX idx_erasure_ledger_sla_scan
+    ON notify.erasure_request_ledger (due_at)
+    WHERE status IN ('RECEIVED', 'PROCESSING', 'LEGAL_HOLD');
+
+-- Subject reverse lookup (DPO audit query)
+CREATE INDEX idx_erasure_ledger_subject_lookup
+    ON notify.erasure_request_ledger (org_id, subject_ref_hmac, received_at DESC);
+
+-- Reporting: monthly KVKK denetim raporu
+CREATE INDEX idx_erasure_ledger_received_at
+    ON notify.erasure_request_ledger (received_at DESC);
+
+-- ============================================================================
+-- 3) updated_at trigger — append-only ama status update audit edilir
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION notify.erasure_ledger_touch_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_erasure_ledger_touch_updated_at
+    BEFORE UPDATE ON notify.erasure_request_ledger
+    FOR EACH ROW
+    EXECUTE FUNCTION notify.erasure_ledger_touch_updated_at();
