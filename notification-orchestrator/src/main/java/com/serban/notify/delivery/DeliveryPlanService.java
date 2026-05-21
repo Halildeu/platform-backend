@@ -4,9 +4,11 @@ import com.serban.notify.adapter.ChannelAdapterRegistry;
 import com.serban.notify.api.dto.SubmitIntentRequest;
 import com.serban.notify.domain.NotificationIntent;
 import com.serban.notify.domain.SubscriberContact;
+import com.serban.notify.domain.SubscriberPushEndpoint;
 import com.serban.notify.exception.InvalidRequestException;
 import com.serban.notify.preference.SubscriberPreferenceService;
 import com.serban.notify.redaction.PiiRedactor;
+import com.serban.notify.repository.SubscriberPushEndpointRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,6 +43,7 @@ public class DeliveryPlanService {
     private final PiiRedactor piiRedactor;
     private final ChannelAdapterRegistry adapterRegistry;
     private final SubscriberPreferenceService preferenceService;
+    private final SubscriberPushEndpointRepository pushEndpointRepo;
 
     /**
      * Default Slack webhook URL (PR3 dev/test). Production Faz 23.2'da
@@ -70,11 +73,13 @@ public class DeliveryPlanService {
     public DeliveryPlanService(
         PiiRedactor piiRedactor,
         ChannelAdapterRegistry adapterRegistry,
-        SubscriberPreferenceService preferenceService
+        SubscriberPreferenceService preferenceService,
+        SubscriberPushEndpointRepository pushEndpointRepo
     ) {
         this.piiRedactor = piiRedactor;
         this.adapterRegistry = adapterRegistry;
         this.preferenceService = preferenceService;
+        this.pushEndpointRepo = pushEndpointRepo;
     }
 
     /**
@@ -108,6 +113,7 @@ public class DeliveryPlanService {
                 case "email"  -> targets.addAll(planEmailTargets(intent, recipients));
                 case "sms"    -> targets.addAll(planSmsTargets(intent, recipients));
                 case "in-app" -> targets.addAll(planInAppTargets(intent, recipients));
+                case "push"   -> targets.addAll(planPushTargets(intent, recipients));
                 case "slack"  -> targets.add(planSlackTarget(intent));
                 case "teams"  -> targets.add(planTeamsTarget(intent));
                 case "webhook" -> targets.add(planWebhookTarget(intent));
@@ -258,6 +264,88 @@ public class DeliveryPlanService {
                 "in-app", ref.type().name(), ref.subscriberId(), hash, targetRef, "inapp-default"
             ));
         }
+        return result;
+    }
+
+    /**
+     * Push: recipient-addressed, subscriber-only, multi-endpoint fan-out
+     * (Faz 23.7 M7 T4.2 PR-W2.5 — Codex {@code 019e49e7} P5 AGREE).
+     *
+     * <p>Pattern: subscriber → 1..N active push endpoints (browser/device
+     * başına ayrı endpoint kayıtı). Endpoint başına ayrı
+     * {@link DeliveryTarget} emit edilir; her endpoint için ayrı
+     * NotificationDelivery row (PR4 worker bağımsız retry/backoff state'i
+     * tutar). Şu an scope: browser-only (Web Push Protocol RFC 8030);
+     * mobile FCM/APNS Faz 22.2 dep, scope dışı.
+     *
+     * <p>External recipient type rejected at submit gate
+     * ({@code IntentSubmissionService.validateRecipientsAndChannels}) —
+     * push subscription browser-side {@code PushManager.subscribe()} ile
+     * üretilir, account-bound. Planning-time fallback guard burada da
+     * tutuluyor (defense-in-depth).
+     *
+     * <p>Endpoint yokluğu (subscriber Web Push subscribe etmemiş) PR-W2.6
+     * scope: {@link DeliveryEligibilityService} BLOCKED_NO_PUSH_ENDPOINT
+     * status üretir. Bu noktada subscriber'ın 0 endpoint'i varsa target
+     * üretilmez (boş liste döner); eligibility guard ileride bunu yakalar.
+     *
+     * <p>Target ref: endpoint UUID string. WebPushAdapter bu ref'i parse
+     * eder, repository'den endpoint row fetch eder, p256dh + auth_secret +
+     * endpoint_url çıkarır.
+     *
+     * <p>Recipient hash: endpoint-level
+     * ({@code orgId + "push" + subscriberId + endpoint_id}) — multi-endpoint
+     * subscriber için per-device delivery row'larını audit'te ayrıştırmak
+     * için. Subscriber-level hash (sadece subscriber_id) tüm endpoint'leri
+     * aynı hash'e indirir → audit join'de cihaz ayrımı kaybolur.
+     */
+    private List<DeliveryTarget> planPushTargets(
+        NotificationIntent intent, List<SubmitIntentRequest.RecipientRef> recipients
+    ) {
+        List<DeliveryTarget> result = new ArrayList<>();
+        for (SubmitIntentRequest.RecipientRef ref : recipients) {
+            if (ref.type() != SubmitIntentRequest.RecipientRef.Type.subscriber) {
+                throw new InvalidRequestException(
+                    "push channel requires subscriber recipient type "
+                        + "(external recipients have no push subscription)"
+                );
+            }
+            if (ref.subscriberId() == null || ref.subscriberId().isBlank()) {
+                throw new InvalidRequestException(
+                    "push channel: subscriberId required (was null/blank)"
+                );
+            }
+            List<SubscriberPushEndpoint> endpoints =
+                pushEndpointRepo.findActiveBySubscriber(intent.getOrgId(), ref.subscriberId());
+            if (endpoints.isEmpty()) {
+                // PR-W2.6 scope: DeliveryEligibilityService bu durumu
+                // BLOCKED_NO_PUSH_ENDPOINT status'una çevirecek. Şu an
+                // sessizce skip ediyoruz — target üretilmez. Çoklu-channel
+                // intent'te (örn. push + email) email tarafı yine devam
+                // eder (graceful fallback).
+                log.info("push plan: subscriber {} has no active endpoints; skip "
+                    + "(eligibility guard will BLOCKED)", ref.subscriberId());
+                continue;
+            }
+            for (SubscriberPushEndpoint endpoint : endpoints) {
+                // Endpoint-level recipient hash (per-device audit ayrımı için):
+                // hashInput = subscriberId + "|" + endpoint_id
+                String hashInput = ref.subscriberId() + "|" + endpoint.getEndpointId();
+                String hash = piiRedactor.hashRecipient(
+                    intent.getOrgId(), ref.type().name(), hashInput
+                );
+                result.add(new DeliveryTarget(
+                    "push",
+                    ref.type().name(),
+                    ref.subscriberId(),
+                    hash,
+                    endpoint.getEndpointId().toString(),
+                    "webpush"
+                ));
+            }
+        }
+        log.debug("push plan: intentId={} recipient_count={} target_count={}",
+            intent.getIntentId(), recipients.size(), result.size());
         return result;
     }
 
