@@ -77,8 +77,12 @@ public class AdminErasureController {
             description = "Validation failed")
     })
     public ResponseEntity<Map<String, Object>> erase(@Valid @RequestBody EraseRequest request) {
-        log.info("KVKK erasure admin request: orgId={} subscriberId={} reason={}",
-            request.orgId(), request.subscriberId(), request.reason());
+        // Codex 019e4950 P1 absorb: PII leakage guard. subscriber_id ve
+        // free-form reason INFO log'da görünür → KVKK Madde 12 (data
+        // minimization) ihlali. subscriber_id HMAC mask + reason short
+        // enum label (free-form audit_event details'te kalır).
+        log.info("KVKK erasure admin request: orgId={} subjectRef=<hmac-redacted> reasonClass={}",
+            request.orgId(), classifyErasureReason(request.reason()));
 
         ErasureService.EraseResult result = erasureService.eraseSubscriber(
             new ErasureService.EraseRequest(
@@ -126,4 +130,40 @@ public class AdminErasureController {
         @Size(max = 255)
         String evidenceRef
     ) {}
+
+    /**
+     * Codex {@code 019e4950} P1 absorb — log redaction whitelist.
+     *
+     * <p>Free-form {@code reason} field contains operator narrative
+     * (e.g. "user requested via legal ticket #LK-2026-451"). This text
+     * MUST NOT appear in INFO logs (Loki retention 7-14 gün +
+     * developer dashboard surface). Audit trail retention is the
+     * canonical record — {@code audit_event} table preserves the full
+     * reason via PiiRedactor-controlled audit details. INFO log gets
+     * a coarse classification enum instead.
+     *
+     * <p>Returns one of: SELF_SERVICE, LEGAL_REQUEST, COMPLIANCE_AUDIT,
+     * ADMIN_INITIATED, UNKNOWN. Mapping is intentionally lossy.
+     */
+    static String classifyErasureReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "UNKNOWN";
+        }
+        String lower = reason.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("self-service") || lower.contains("self_service")
+            || lower.contains("kvkk-art-11")) {
+            return "SELF_SERVICE";
+        }
+        if (lower.contains("legal") || lower.contains("ticket") || lower.contains("court")) {
+            return "LEGAL_REQUEST";
+        }
+        if (lower.contains("compliance") || lower.contains("audit")
+            || lower.contains("dpo") || lower.contains("kvkk")) {
+            return "COMPLIANCE_AUDIT";
+        }
+        if (lower.contains("admin") || lower.contains("operator")) {
+            return "ADMIN_INITIATED";
+        }
+        return "OTHER";
+    }
 }

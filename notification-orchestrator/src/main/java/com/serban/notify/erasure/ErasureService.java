@@ -111,8 +111,13 @@ public class ErasureService {
      */
     @Transactional
     public EraseResult eraseSubscriber(EraseRequest request, String eventType) {
-        log.info("KVKK erasure start: orgId={} subscriberId={} eventType={} evidence={}",
-            request.orgId(), request.subscriberId(), eventType, request.evidenceRef());
+        // Codex `019e4950` P1 absorb: subscriberId + evidence_ref direct
+        // log YASAK (KVKK Madde 12 data minimization). audit_event details
+        // PiiRedactor whitelist'i ile canonical record sağlanır; INFO log
+        // sadece HMAC subject ref + eventType (Loki retention 7-14 gün
+        // riski kapatılır).
+        log.info("KVKK erasure start: orgId={} subjectRef=<hmac-redacted> eventType={}",
+            request.orgId(), eventType);
 
         // Find all intents that have this subscriber in recipients_snapshot
         List<NotificationIntent> intents = intentRepo.findIntentsBySubscriber(
@@ -205,8 +210,9 @@ public class ErasureService {
             );
         }
 
-        log.info("KVKK erasure complete: orgId={} subscriberId={} intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
-            request.orgId(), request.subscriberId(), intentsErased, deliveriesAnonymized, inboxRowsDeleted);
+        // Codex `019e4950` P1 absorb: subscriberId leak guard.
+        log.info("KVKK erasure complete: orgId={} subjectRef=<hmac-redacted> intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
+            request.orgId(), intentsErased, deliveriesAnonymized, inboxRowsDeleted);
 
         return new EraseResult(intentsErased, deliveriesAnonymized, inboxRowsDeleted);
     }
