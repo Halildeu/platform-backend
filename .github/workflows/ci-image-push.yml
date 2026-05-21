@@ -27,6 +27,7 @@ on:
           - permission-service
           - api-gateway
           - discovery-server
+          - notification-orchestrator
 
 permissions:
   contents: read
@@ -112,6 +113,7 @@ jobs:
       # gitops deploy-backend-testai.yml digest-pin mode ile @sha256:
       # direct pin yapar (D30 immutable cutover-ready).
       - name: Save digest as artifact (B.3 dispatch payload prep)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
         run: |
           mkdir -p /tmp/digests
           DIGEST_RAW="${{ steps.build.outputs.digest }}"
@@ -123,7 +125,9 @@ jobs:
             exit 1
           fi
           echo "${DIGEST_HEX}" > "/tmp/digests/${{ matrix.service }}"
-      - uses: actions/upload-artifact@v4
+      - name: Upload digest artifact
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
+        uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.service }}
           path: /tmp/digests/${{ matrix.service }}
@@ -140,6 +144,12 @@ jobs:
   dispatch:
     name: Dispatch backend-testai-deploy to gitops
     needs: build-and-push
+    # Codex 019e4c81 post-impl REVISE absorb: only dispatch on push to main
+    # or workflow_dispatch with service=all. Targeted single-service rebuild
+    # produces partial digest map; gitops digest-pin deploy workflow expects
+    # full N-service map and would fail-by-missing-service. Build-only dry-run
+    # remains supported (matrix step runs); deploy dispatch skipped.
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.service == 'all') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
