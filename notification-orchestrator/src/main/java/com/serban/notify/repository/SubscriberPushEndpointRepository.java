@@ -87,10 +87,9 @@ public interface SubscriberPushEndpointRepository
      *
      * <p>Race-safe idempotent upsert via PostgreSQL native
      * {@code INSERT ... ON CONFLICT (org_id, subscriber_id, endpoint_url)
-     * DO UPDATE ... RETURNING endpoint_id}. Constraint çakışması tek SQL
-     * statement içinde çözülür; aynı transaction'da unique violation
-     * exception yakalamaya gerek yok (PostgreSQL transaction abort
-     * state'e düşmez).
+     * DO UPDATE ...}. Constraint çakışması tek SQL statement içinde
+     * çözülür; aynı transaction'da unique violation exception yakalamaya
+     * gerek yok (PostgreSQL transaction abort state'e düşmez).
      *
      * <p>UPSERT davranışı:
      * <ul>
@@ -101,9 +100,11 @@ public interface SubscriberPushEndpointRepository
      *       durumunda deleted_at NULL + failure counter reset</li>
      * </ul>
      *
-     * <p>{@code RETURNING endpoint_id}: yeni veya mevcut UUID döner;
-     * caller status semantics için pre-check sonucunu kullanır
-     * (created/updated/reactivated).
+     * <p>Return: row count (always 1 — INSERT veya UPDATE biri başarılı).
+     * {@code endpoint_id} caller tarafından upsert sonrası
+     * {@link #findByOrgIdAndSubscriberIdAndEndpointUrl} ile fetch edilir.
+     * Status semantics (created/updated/reactivated) caller'ın upsert
+     * öncesi pre-check sonucundan türetilir.
      *
      * <p>NOT: schema name {@code notify.} hard-coded; mevcut tüm
      * native query'ler aynı pattern'i kullanıyor.
