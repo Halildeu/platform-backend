@@ -163,8 +163,11 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
     }
 
     @Test
-    void markFailedRecordsCategoryAndTerminalState() {
-        // Codex 019e499c REVISE P0 #1 absorb: durable failure tracking
+    void markFailedRecordsCategoryButKeepsStatusNonTerminal() {
+        // Codex 019e499c iter-3 REVISE P0 absorb: failure non-terminal
+        // — KVKK Madde 13.2 SLA scan unresolved teknik hatayı görmeye
+        // devam eder. Status PROCESSING kalır, closed_at NULL kalır,
+        // failure_reason yazılır.
         ErasureRequestLedger entry = fixture("acme", "mark-fail", ErasureRequestLedger.RequestSource.ADMIN);
         entry.setStatus(ErasureRequestLedger.Status.PROCESSING);
         ErasureRequestLedger saved = repo.save(entry);
@@ -173,9 +176,34 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
 
         assertThat(updated).isEqualTo(1);
         ErasureRequestLedger refetched = repo.findById(saved.getRequestId()).orElseThrow();
-        assertThat(refetched.getStatus()).isEqualTo(ErasureRequestLedger.Status.FAILED);
+        assertThat(refetched.getStatus()).isEqualTo(ErasureRequestLedger.Status.PROCESSING);
         assertThat(refetched.getFailureReason()).isEqualTo("TRANSACTION_ROLLBACK");
-        assertThat(refetched.getClosedAt()).isNotNull();
+        // closed_at NULL kalır (non-terminal); CHECK constraint uyumlu
+        assertThat(refetched.getClosedAt()).isNull();
+    }
+
+    @Test
+    void markFailedRowRemainsVisibleToSlaWatchdog() {
+        // Codex 019e499c iter-3 REVISE P0 absorb: KVKK Madde 13.2
+        // unresolved teknik hata 30-gün dolduğunda watchdog tarafından
+        // görünür kalmalı.
+        ErasureRequestLedger entry = fixture("acme", "fail-sla", ErasureRequestLedger.RequestSource.ADMIN);
+        entry.setStatus(ErasureRequestLedger.Status.PROCESSING);
+        // due_at past — overdue
+        entry.setDueAt(OffsetDateTime.now().minusHours(1));
+        ErasureRequestLedger saved = repo.save(entry);
+
+        repo.markFailed(saved.getRequestId(), OffsetDateTime.now(), "TRANSACTION_ROLLBACK");
+
+        List<ErasureRequestLedger> overdueList = repo.findOverdueRequests(OffsetDateTime.now());
+        assertThat(overdueList)
+            .extracting(ErasureRequestLedger::getRequestId)
+            .contains(saved.getRequestId());
+        // Failure reason de görünür
+        ErasureRequestLedger overdueRow = overdueList.stream()
+            .filter(o -> o.getRequestId().equals(saved.getRequestId()))
+            .findFirst().orElseThrow();
+        assertThat(overdueRow.getFailureReason()).isEqualTo("TRANSACTION_ROLLBACK");
     }
 
     @Test

@@ -201,15 +201,26 @@ public class ErasureRequestLedgerService {
     }
 
     /**
-     * Erasure runtime hatası → FAILED + closed_at + failure_reason.
+     * Erasure runtime hatası → failure_reason kaydı (status non-terminal).
+     *
+     * <p>Codex 019e499c iter-3 REVISE P0 absorb: terminal FAILED state
+     * SLA breach scan'den row'u düşürdüğü için kullanılmaz. Bunun
+     * yerine status PROCESSING (mevcut) kalır, failure_reason yazılır,
+     * closed_at NULL kalır → 30-gün SLA scan unresolved teknik hatayı
+     * görmeye devam eder.
      *
      * <p>Codex 019e499c REVISE P0 #1: REQUIRES_NEW propagation —
-     * outer transaction rollback olsa bile FAILED row commit edilir;
-     * Madde 13.2 audit visibility için kritik.
+     * outer transaction rollback olsa bile failure_reason row'a
+     * yazılır; Madde 13.2 audit visibility için kritik.
+     *
+     * <p>Status enum {@code FAILED} terminal state DPO/legal formal
+     * <em>denial</em> closure için reserve edilir (manuel operator
+     * action — PR-K-DPO follow-up scope).
      *
      * @param failureReason kategori (TRANSACTION_ROLLBACK /
-     *                      AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / UNKNOWN);
-     *                      stack trace ASLA — PII sızması riski.
+     *                      AUDIT_PUBLISH_ERROR / DB_CONSTRAINT /
+     *                      UNKNOWN); stack trace ASLA — PII sızması
+     *                      riski.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markFailed(UUID requestId, String failureReason) {
@@ -217,10 +228,10 @@ public class ErasureRequestLedgerService {
             requestId, OffsetDateTime.now(), failureReason
         );
         if (updated > 0) {
-            log.warn("KVKK ledger: marked FAILED requestId={} reason={}",
-                requestId, failureReason);
+            log.warn("KVKK ledger: erasure error logged (non-terminal, SLA scan visible) "
+                + "requestId={} reason={}", requestId, failureReason);
         } else {
-            log.debug("KVKK ledger: failed transition no-op (terminal/legal-hold) requestId={}",
+            log.debug("KVKK ledger: markFailed no-op (terminal/legal-hold) requestId={}",
                 requestId);
         }
     }

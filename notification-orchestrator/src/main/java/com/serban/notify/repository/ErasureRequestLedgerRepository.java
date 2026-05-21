@@ -92,17 +92,23 @@ public interface ErasureRequestLedgerRepository
     );
 
     /**
-     * Status transition FAILED — KVKK Madde 13.2 audit kanıtı için
-     * runtime hatasında ledger row görünür kalmalı. Codex 019e499c
-     * REVISE P0 #1 absorb: durable failure tracking.
+     * Status transition — runtime erasure hatası.
+     *
+     * <p>Codex 019e499c iter-3 REVISE P0 absorb: terminal {@code FAILED}
+     * yerine non-terminal {@code PROCESSING} kalır + {@code failure_reason}
+     * yazılır + {@code closed_at} NULL kalır. Böylece KVKK Madde 13.2
+     * 30-gün SLA breach scan bu row'u <em>görmeye devam eder</em> →
+     * unresolved teknik hata DPO/operator'a görünür kalır.
+     *
+     * <p>Status enum'daki {@code FAILED} terminal state DPO/legal formal
+     * <em>denial</em> closure için reserve edilir (manuel operator action;
+     * follow-up PR-K-DPO scope).
      */
     @Modifying
     @Query("""
         UPDATE ErasureRequestLedger l
-        SET l.status = com.serban.notify.domain.ErasureRequestLedger.Status.FAILED,
-            l.closedAt = :closedAt,
-            l.failureReason = :failureReason,
-            l.updatedAt = :closedAt
+        SET l.failureReason = :failureReason,
+            l.updatedAt = :updatedAt
         WHERE l.requestId = :requestId
           AND l.status IN (
               com.serban.notify.domain.ErasureRequestLedger.Status.RECEIVED,
@@ -111,7 +117,7 @@ public interface ErasureRequestLedgerRepository
         """)
     int markFailed(
         @Param("requestId") UUID requestId,
-        @Param("closedAt") OffsetDateTime closedAt,
+        @Param("updatedAt") OffsetDateTime updatedAt,
         @Param("failureReason") String failureReason
     );
 

@@ -18,8 +18,18 @@
 --   - subject_ref_hmac VARCHAR(128): PiiRedactor.hashRecipient
 --     (HMAC-SHA256 with org-namespaced Vault pepper); raw email/phone
 --     YASAK
---   - legal_hold_reason VARCHAR(256): operator metni; sadece DPO/legal
---     erişimi (audit row ayrı izinli)
+--   - legal_hold_reason_code VARCHAR(64): enum-like sabit kategori
+--     (COURT_ORDER / ACTIVE_INVESTIGATION / REGULATORY_RETENTION /
+--     TAX_AUDIT_5Y / OTHER); operator serbest metin YASAK (Codex
+--     019e499c REVISE P1 #5 absorb)
+--   - legal_hold_external_reference VARCHAR(128): kısa external
+--     ticket/mahkeme no — açıklama DEĞİL
+--   - idempotency_key VARCHAR(128): subject HMAC + evidence HMAC
+--     digest birleşimi (Codex 019e499c REVISE P0 #2 + P1 #5 absorb);
+--     ham evidence_ref ASLA key materyali değil
+--   - failure_reason VARCHAR(256): exception kategori sabiti
+--     (TRANSACTION_ROLLBACK / AUDIT_PUBLISH_ERROR / DB_CONSTRAINT /
+--     UNKNOWN); stack trace YASAK
 --
 -- Codex 019e4950 P0 verdict: "30-gün takip için per-request ledger
 -- şart. audit_event tek başına SLA monitor yapmaz; received_at →
@@ -67,7 +77,18 @@ CREATE TABLE notify.erasure_request_ledger (
     -- yazamaz.
     CONSTRAINT erasure_ledger_audit_chain_consistency
         CHECK ((last_audit_event_id IS NULL AND last_audit_event_occurred_at IS NULL)
-            OR (last_audit_event_id IS NOT NULL AND last_audit_event_occurred_at IS NOT NULL))
+            OR (last_audit_event_id IS NOT NULL AND last_audit_event_occurred_at IS NOT NULL)),
+    -- Codex 019e499c iter-3 REVISE P2 absorb: legal_hold_reason_code
+    -- enum CHECK (operator serbest metin YASAK).
+    CONSTRAINT erasure_ledger_legal_hold_reason_code_check
+        CHECK (legal_hold_reason_code IS NULL
+            OR legal_hold_reason_code IN (
+                'COURT_ORDER',
+                'ACTIVE_INVESTIGATION',
+                'REGULATORY_RETENTION',
+                'TAX_AUDIT_5Y',
+                'OTHER'
+            ))
 );
 
 COMMENT ON TABLE notify.erasure_request_ledger IS
