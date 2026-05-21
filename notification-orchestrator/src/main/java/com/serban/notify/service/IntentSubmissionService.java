@@ -79,12 +79,14 @@ public class IntentSubmissionService {
     /**
      * PR2 Kernel allowed channels (Codex post-impl bulgu #4 absorb).
      * PR3+'da SMTP/Slack/Webhook adapter'lar geldikçe set genişletilir.
-     * push-fcm, push-apns, web-push, teams, whatsapp, voice PR3-23.X
-     * tier'larında. Faz 23.3.1: sms (NetGSM) eklendi.
+     * push-fcm, push-apns, web-push, whatsapp, voice PR3-23.X tier'larında.
+     * Faz 23.3.1: sms (NetGSM) eklendi.
      * Faz 23.3 PR-E.2: in-app (inbox) eklendi.
+     * Faz 23.6 M7 T4.1.2 (Codex `019e496d` AGREE): teams (Power Automate
+     * flow webhook adapter — TeamsPowerAutomateAdapter) eklendi.
      */
     private static final java.util.Set<String> PR2_ALLOWED_CHANNELS =
-        java.util.Set.of("email", "sms", "in-app", "slack", "webhook");
+        java.util.Set.of("email", "sms", "in-app", "slack", "teams", "webhook");
 
     @Transactional
     public SubmitIntentResponse submit(SubmitIntentRequest request) {

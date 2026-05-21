@@ -128,14 +128,14 @@ notify:
       - topicKey: auth.admin-invite
         label: "Yönetici Daveti"
         category: auth
-        supportedChannels: [EMAIL, SLACK]
+        supportedChannels: [EMAIL, SLACK, TEAMS]
         criticalEligible: false
         description: "Sistem yöneticisi tarafından gönderilen davet bildirimleri."
         defaultFrequencyHint: null
       - topicKey: audit.security
         label: "Güvenlik Olayları"
         category: audit
-        supportedChannels: [EMAIL, SLACK, IN_APP]
+        supportedChannels: [EMAIL, SLACK, TEAMS, IN_APP]
         criticalEligible: true
         description: "Hesabınızla ilgili güvenlik olayları (yeni cihaz girişi, şifre değişikliği, vb.)."
         defaultFrequencyHint: null
@@ -149,14 +149,14 @@ notify:
       - topicKey: ops.drift-alarm
         label: "Sistem Drift Alarmları"
         category: system
-        supportedChannels: [SLACK, EMAIL]
+        supportedChannels: [SLACK, TEAMS, EMAIL]
         criticalEligible: true
         description: "Operasyon ekibi için gerçek-zamanlı drift uyarıları."
         defaultFrequencyHint: null
       - topicKey: ops.break-glass
         label: "Break-Glass Audit"
         category: system
-        supportedChannels: [SLACK, EMAIL]
+        supportedChannels: [SLACK, TEAMS, EMAIL]
         criticalEligible: true
         description: "Olağanüstü durum erişim kayıtları."
         defaultFrequencyHint: null
@@ -177,7 +177,7 @@ notify:
       - topicKey: system.notification
         label: "Sistem Bildirimleri"
         category: system
-        supportedChannels: [EMAIL, IN_APP, SLACK]
+        supportedChannels: [EMAIL, IN_APP, SLACK, TEAMS]
         criticalEligible: false
         description: "Genel sistem bildirimleri (planlı bakım, yeni özellik, vb.)."
         defaultFrequencyHint: 10
@@ -241,6 +241,13 @@ notify:
     # @Value("${notify.adapters.slack.default-webhook-url:}").
     slack:
       payload-mode: ${NOTIFY_ADAPTERS_SLACK_PAYLOAD_MODE:text}
+    # Faz 23.6 M7 T4.1.2 — Microsoft Teams Power Automate flow webhook
+    # (Codex 019e496d AGREE). Müşteri/admin Power Automate'te flow
+    # üretir; URL Vault'a seedlenir; intent body channelRouting.teams.flowUrl
+    # ile per-tenant override edilebilir. Office 365 Connectors deprecated;
+    # Graph API path future-only (separate sprint, threading + interactive).
+    teams:
+      default-flow-url: ${NOTIFY_ADAPTERS_TEAMS_DEFAULT_FLOW_URL:}
     webhook:
       # Q3 PARTIAL: kid-aware HMAC registry (active + next; rotation)
       hmac-registry:

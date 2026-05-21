@@ -56,6 +56,17 @@ public class DeliveryPlanService {
     @Value("${notify.adapters.webhook.default-target-url:}")
     private String defaultWebhookTargetUrl;
 
+    /**
+     * Default Microsoft Teams Power Automate flow URL (Faz 23.6 M7
+     * T4.1.2 — Codex {@code 019e496d} AGREE). Müşteri/admin Power
+     * Automate'te flow oluşturup webhook URL'i üretir; Vault'a
+     * {@code kv/platform/notification-orchestrator/teams_power_automate_flow_url}
+     * yolundan seedlenir; per-tenant override için
+     * {@code channel_routing.teams.flowUrl} intent body.
+     */
+    @Value("${notify.adapters.teams.default-flow-url:}")
+    private String defaultTeamsFlowUrl;
+
     public DeliveryPlanService(
         PiiRedactor piiRedactor,
         ChannelAdapterRegistry adapterRegistry,
@@ -98,6 +109,7 @@ public class DeliveryPlanService {
                 case "sms"    -> targets.addAll(planSmsTargets(intent, recipients));
                 case "in-app" -> targets.addAll(planInAppTargets(intent, recipients));
                 case "slack"  -> targets.add(planSlackTarget(intent));
+                case "teams"  -> targets.add(planTeamsTarget(intent));
                 case "webhook" -> targets.add(planWebhookTarget(intent));
                 default -> throw new InvalidRequestException(
                     "channel '" + channel + "' planning not implemented"
@@ -310,6 +322,25 @@ public class DeliveryPlanService {
         // Slack target opaque (no recipient identifier); audit hash org-namespaced channel
         String hash = piiRedactor.hashRecipient(intent.getOrgId(), "channel", "slack");
         return new DeliveryTarget("slack", "channel", null, hash, url, "slack-default");
+    }
+
+    /**
+     * Microsoft Teams: target-addressed via Power Automate flow webhook
+     * (Faz 23.6 M7 T4.1.2 — Codex {@code 019e496d} AGREE).
+     * Single target per intent — same channel-addressed pattern as
+     * Slack/webhook. Threading + Graph API path deferred.
+     */
+    private DeliveryTarget planTeamsTarget(NotificationIntent intent) {
+        Map<String, Object> routing = intent.getChannelRouting();
+        String url = routingString(routing, "teams.flowUrl", defaultTeamsFlowUrl);
+        if (url == null || url.isBlank()) {
+            throw new InvalidRequestException(
+                "teams channel requires channel_routing.teams.flowUrl or "
+                    + "notify.adapters.teams.default-flow-url config"
+            );
+        }
+        String hash = piiRedactor.hashRecipient(intent.getOrgId(), "channel", "teams");
+        return new DeliveryTarget("teams", "channel", null, hash, url, "teams-default");
     }
 
     /** Webhook: target-addressed. */

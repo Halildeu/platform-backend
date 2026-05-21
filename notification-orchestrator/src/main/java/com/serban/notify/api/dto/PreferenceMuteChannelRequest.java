@@ -18,17 +18,19 @@ import jakarta.validation.constraints.Size;
  * precedence.
  *
  * <p>Channel pattern follows the same whitelist the eligibility service
- * recognises ({@code email}, {@code sms}, {@code slack}, {@code webhook},
- * {@code in-app}); a 400 surfaces unknown channel names instead of letting
- * them write a rule that never fires.
+ * recognises ({@code email}, {@code sms}, {@code slack}, {@code teams},
+ * {@code webhook}, {@code in-app}); a 400 surfaces unknown channel names
+ * instead of letting them write a rule that never fires.
+ *
+ * <p>Faz 23.6 M7 T4.1.2 (Codex `019e496d` AGREE): `teams` channel added.
  */
 public record PreferenceMuteChannelRequest(
     @JsonProperty("channel")
     @NotBlank(message = "channel is required")
     @Size(max = 32)
     @Pattern(
-        regexp = "email|sms|slack|webhook|in-app",
-        message = "channel must be one of email, sms, slack, webhook, in-app"
+        regexp = "email|sms|slack|teams|webhook|in-app",
+        message = "channel must be one of email, sms, slack, teams, webhook, in-app"
     )
     String channel
 ) {}
