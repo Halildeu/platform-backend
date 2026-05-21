@@ -268,8 +268,23 @@ public class DeliveryPlanService {
     }
 
     /**
+     * Marker target ref kullanılan no-endpoint planı için
+     * (Faz 23.7 M7 T4.2 PR-W2.5+W2.6 — Codex {@code 019e4a3d} P1 absorb).
+     *
+     * <p>Subscriber'ın aktif endpoint kayıtı yokken push channel hâlâ
+     * intent.channels içinde olduğunda zombie state'e (PROCESSING + lease
+     * null + boş delivery list) düşmesin diye plan-time'da bu sabit
+     * targetRef ile bir DeliveryTarget üretilir. {@code DeliveryEligibilityService}
+     * bunu yakalar → {@code BLOCKED_NO_PUSH_ENDPOINT} terminal delivery
+     * row + audit event. Adapter çağrılmaz; raw endpoint detayı audit'e
+     * girmez.
+     */
+    public static final String PUSH_NO_ENDPOINT_TARGET_REF = "no-endpoint";
+
+    /**
      * Push: recipient-addressed, subscriber-only, multi-endpoint fan-out
-     * (Faz 23.7 M7 T4.2 PR-W2.5 — Codex {@code 019e49e7} P5 AGREE).
+     * (Faz 23.7 M7 T4.2 PR-W2.5+W2.6 — Codex {@code 019e49e7} P5 plan
+     * AGREE + {@code 019e4a3d} P1 absorb).
      *
      * <p>Pattern: subscriber → 1..N active push endpoints (browser/device
      * başına ayrı endpoint kayıtı). Endpoint başına ayrı
@@ -284,20 +299,26 @@ public class DeliveryPlanService {
      * üretilir, account-bound. Planning-time fallback guard burada da
      * tutuluyor (defense-in-depth).
      *
-     * <p>Endpoint yokluğu (subscriber Web Push subscribe etmemiş) PR-W2.6
-     * scope: {@link DeliveryEligibilityService} BLOCKED_NO_PUSH_ENDPOINT
-     * status üretir. Bu noktada subscriber'ın 0 endpoint'i varsa target
-     * üretilmez (boş liste döner); eligibility guard ileride bunu yakalar.
+     * <p>0-endpoint subscriber (Codex 019e4a3d P1 absorb): zombie intent
+     * state'i (push-only intent + 0 endpoint → PROCESSING limbo) önlemek
+     * için marker target üretilir ({@code targetRef =
+     * PUSH_NO_ENDPOINT_TARGET_REF}). {@link
+     * com.serban.notify.eligibility.DeliveryEligibilityService} bu marker'ı
+     * yakalar → {@code BLOCKED_NO_PUSH_ENDPOINT} terminal delivery row.
+     * Multi-channel intent'te (push + email) email tarafı normal akar.
      *
-     * <p>Target ref: endpoint UUID string. WebPushAdapter bu ref'i parse
-     * eder, repository'den endpoint row fetch eder, p256dh + auth_secret +
-     * endpoint_url çıkarır.
+     * <p>Target ref: endpoint UUID string (active path) veya
+     * {@code PUSH_NO_ENDPOINT_TARGET_REF} (no-endpoint marker). WebPushAdapter
+     * UUID parse hatası fırlatır ama oraya hiç gelmemeli — Eligibility
+     * guard adapter öncesi yakalar.
      *
      * <p>Recipient hash: endpoint-level
-     * ({@code orgId + "push" + subscriberId + endpoint_id}) — multi-endpoint
-     * subscriber için per-device delivery row'larını audit'te ayrıştırmak
-     * için. Subscriber-level hash (sadece subscriber_id) tüm endpoint'leri
-     * aynı hash'e indirir → audit join'de cihaz ayrımı kaybolur.
+     * ({@code orgId + "push_endpoint" + subscriberId + "|" + endpoint_id}) —
+     * multi-endpoint subscriber için per-device delivery row'larını
+     * audit'te ayrıştırmak için. Codex 019e4a3d P2 absorb: hashRecipient'a
+     * geçen kategori adı {@code "push_endpoint"} (önceki "subscriber"
+     * domain yorum/kod mismatch'i düzeltildi). No-endpoint marker
+     * subscriber-level hash kullanır ({@code "push" + subscriberId}).
      */
     private List<DeliveryTarget> planPushTargets(
         NotificationIntent intent, List<SubmitIntentRequest.RecipientRef> recipients
@@ -318,21 +339,30 @@ public class DeliveryPlanService {
             List<SubscriberPushEndpoint> endpoints =
                 pushEndpointRepo.findActiveBySubscriber(intent.getOrgId(), ref.subscriberId());
             if (endpoints.isEmpty()) {
-                // PR-W2.6 scope: DeliveryEligibilityService bu durumu
-                // BLOCKED_NO_PUSH_ENDPOINT status'una çevirecek. Şu an
-                // sessizce skip ediyoruz — target üretilmez. Çoklu-channel
-                // intent'te (örn. push + email) email tarafı yine devam
-                // eder (graceful fallback).
-                log.info("push plan: subscriber {} has no active endpoints; skip "
-                    + "(eligibility guard will BLOCKED)", ref.subscriberId());
+                // Codex 019e4a3d P1 absorb: marker target ile zombie
+                // state'i önle. Eligibility guard
+                // BLOCKED_NO_PUSH_ENDPOINT'e çevirir + audit row.
+                String hash = piiRedactor.hashRecipient(
+                    intent.getOrgId(), "push", ref.subscriberId()
+                );
+                result.add(new DeliveryTarget(
+                    "push",
+                    ref.type().name(),
+                    ref.subscriberId(),
+                    hash,
+                    PUSH_NO_ENDPOINT_TARGET_REF,
+                    "webpush"
+                ));
+                log.debug("push plan: subscriber has no active endpoints; emit "
+                    + "no-endpoint marker (eligibility guard will BLOCKED)");
                 continue;
             }
             for (SubscriberPushEndpoint endpoint : endpoints) {
-                // Endpoint-level recipient hash (per-device audit ayrımı için):
-                // hashInput = subscriberId + "|" + endpoint_id
+                // Codex 019e4a3d P2 absorb: hash domain "push_endpoint"
+                // (subscriber-level "push" marker ile ayrışır)
                 String hashInput = ref.subscriberId() + "|" + endpoint.getEndpointId();
                 String hash = piiRedactor.hashRecipient(
-                    intent.getOrgId(), ref.type().name(), hashInput
+                    intent.getOrgId(), "push_endpoint", hashInput
                 );
                 result.add(new DeliveryTarget(
                     "push",

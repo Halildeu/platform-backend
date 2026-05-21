@@ -547,10 +547,11 @@ class DeliveryPlanServiceTest {
     }
 
     @Test
-    void planPushNoActiveEndpointSkipsSilently() {
-        // PR-W2.6 scope: DeliveryEligibilityService BLOCKED_NO_PUSH_ENDPOINT
-        // status üretecek. Plan layer'ında sessizce skip (multi-channel
-        // intent'te diğer kanallar etkilenmesin).
+    void planPushNoActiveEndpointEmitsMarkerTarget() {
+        // Codex 019e4a3d P1 absorb: 0-endpoint sessiz skip pattern push-only
+        // intent zombie state'e düşürüyordu. Yerine marker target üretilir
+        // (PUSH_NO_ENDPOINT_TARGET_REF), DeliveryEligibilityService bunu
+        // BLOCKED_NO_PUSH_ENDPOINT terminal delivery row'a çevirir.
         NotificationIntent intent = intent(new String[] { "push" }, null);
         intent.setIntentId("intent-push-empty");
         when(pushEndpointRepo.findActiveBySubscriber("default", "sub-X"))
@@ -565,7 +566,12 @@ class DeliveryPlanServiceTest {
 
         List<DeliveryTarget> targets = service.plan(intent, recipients);
 
-        assertThat(targets).isEmpty();
+        assertThat(targets).hasSize(1);
+        assertThat(targets.get(0).channel()).isEqualTo("push");
+        assertThat(targets.get(0).recipientId()).isEqualTo("sub-X");
+        assertThat(targets.get(0).targetRef())
+            .isEqualTo(DeliveryPlanService.PUSH_NO_ENDPOINT_TARGET_REF);
+        assertThat(targets.get(0).providerKey()).isEqualTo("webpush");
     }
 
     @Test
