@@ -4,16 +4,20 @@ import com.serban.notify.api.dto.PushEndpointListResponse;
 import com.serban.notify.api.dto.PushSubscribeRequest;
 import com.serban.notify.api.dto.PushSubscribeResponse;
 import com.serban.notify.domain.SubscriberPushEndpoint;
+import com.serban.notify.exception.InvalidRequestException;
 import com.serban.notify.repository.SubscriberPushEndpointRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.OffsetDateTime;
+import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -34,6 +38,32 @@ class PushSubscriptionServiceTest {
     private static final String ORG = "acme";
     private static final String SUB = "1204";
 
+    /** Valid uncompressed P-256 public key (65 bytes; first byte 0x04). */
+    private static final String VALID_P256DH;
+    /** Valid 16-byte auth secret. */
+    private static final String VALID_AUTH_SECRET;
+
+    static {
+        byte[] pub = new byte[65];
+        pub[0] = 0x04;
+        // X, Y coordinates: deterministic but non-trivial test values
+        // (validator only checks length + prefix; not curve membership).
+        for (int i = 1; i < 65; i++) {
+            pub[i] = (byte) (i & 0xFF);
+        }
+        VALID_P256DH = Base64.getUrlEncoder().withoutPadding().encodeToString(pub);
+
+        byte[] auth = new byte[16];
+        for (int i = 0; i < 16; i++) {
+            auth[i] = (byte) (0x10 + i);
+        }
+        VALID_AUTH_SECRET = Base64.getUrlEncoder().withoutPadding().encodeToString(auth);
+    }
+
+    private static PushSubscribeRequest validRequest(String endpointUrl, String userAgent) {
+        return new PushSubscribeRequest(endpointUrl, VALID_P256DH, VALID_AUTH_SECRET, userAgent);
+    }
+
     @BeforeEach
     void setUp() {
         repo = mock(SubscriberPushEndpointRepository.class);
@@ -44,7 +74,7 @@ class PushSubscriptionServiceTest {
     void subscribeCreatesNewEndpointWhenNotExisting() {
         when(repo.findByOrgIdAndSubscriberIdAndEndpointUrl(eq(ORG), eq(SUB), any()))
             .thenReturn(Optional.empty());
-        when(repo.save(any(SubscriberPushEndpoint.class)))
+        when(repo.saveAndFlush(any(SubscriberPushEndpoint.class)))
             .thenAnswer(inv -> {
                 SubscriberPushEndpoint e = inv.getArgument(0);
                 if (e.getEndpointId() == null) {
@@ -53,16 +83,15 @@ class PushSubscriptionServiceTest {
                 return e;
             });
 
-        PushSubscribeRequest req = new PushSubscribeRequest(
-            "https://fcm.googleapis.com/fcm/send/token",
-            "p256dh-key", "auth-secret", "Mozilla/5.0 Chrome"
+        PushSubscribeRequest req = validRequest(
+            "https://fcm.googleapis.com/fcm/send/token", "Mozilla/5.0 Chrome"
         );
 
         PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
 
         assertThat(response.status()).isEqualTo("created");
         assertThat(response.endpointId()).isNotNull();
-        verify(repo).save(any(SubscriberPushEndpoint.class));
+        verify(repo).saveAndFlush(any(SubscriberPushEndpoint.class));
     }
 
     @Test
@@ -81,17 +110,16 @@ class PushSubscriptionServiceTest {
         when(repo.save(any(SubscriberPushEndpoint.class)))
             .thenAnswer(inv -> inv.getArgument(0));
 
-        PushSubscribeRequest req = new PushSubscribeRequest(
-            "https://fcm.googleapis.com/fcm/send/token",
-            "new-p256dh", "new-auth", null
+        PushSubscribeRequest req = validRequest(
+            "https://fcm.googleapis.com/fcm/send/token", null
         );
 
         PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
 
         assertThat(response.status()).isEqualTo("updated");
         assertThat(response.endpointId()).isEqualTo(id);
-        assertThat(existing.getP256dhKey()).isEqualTo("new-p256dh");
-        assertThat(existing.getAuthSecret()).isEqualTo("new-auth");
+        assertThat(existing.getP256dhKey()).isEqualTo(VALID_P256DH);
+        assertThat(existing.getAuthSecret()).isEqualTo(VALID_AUTH_SECRET);
         assertThat(existing.getDeletedAt()).isNull();
     }
 
@@ -111,9 +139,8 @@ class PushSubscriptionServiceTest {
         when(repo.save(any(SubscriberPushEndpoint.class)))
             .thenAnswer(inv -> inv.getArgument(0));
 
-        PushSubscribeRequest req = new PushSubscribeRequest(
-            "https://fcm.googleapis.com/fcm/send/token",
-            "p", "a", null
+        PushSubscribeRequest req = validRequest(
+            "https://fcm.googleapis.com/fcm/send/token", null
         );
 
         PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
@@ -122,6 +149,105 @@ class PushSubscriptionServiceTest {
         assertThat(deleted.getDeletedAt()).isNull();
         assertThat(deleted.getFailureCount()).isZero();
         assertThat(deleted.getLastFailureReason()).isNull();
+    }
+
+    @Test
+    void subscribeRaceRecoveryReReadsAndUpdates() {
+        // Codex 019e4a57 P1 absorb: paralel iki ilk subscribe race,
+        // saveAndFlush DataIntegrityViolationException atar; service
+        // re-read + update path'e düşer.
+        when(repo.findByOrgIdAndSubscriberIdAndEndpointUrl(eq(ORG), eq(SUB), any()))
+            .thenReturn(Optional.empty())  // initial empty (race start)
+            .thenAnswer(inv -> {
+                // Race winner inserted; we see the row now
+                SubscriberPushEndpoint winner = new SubscriberPushEndpoint();
+                winner.setEndpointId(UUID.fromString(
+                    "99999999-aaaa-bbbb-cccc-dddddddddddd"));
+                winner.setOrgId(ORG);
+                winner.setSubscriberId(SUB);
+                winner.setEndpointUrl(inv.getArgument(2));
+                winner.setP256dhKey("race-winner-p");
+                winner.setAuthSecret("race-winner-a");
+                winner.setDeletedAt(null);
+                return Optional.of(winner);
+            });
+        when(repo.saveAndFlush(any(SubscriberPushEndpoint.class)))
+            .thenThrow(new DataIntegrityViolationException("unique violation"));
+        when(repo.save(any(SubscriberPushEndpoint.class)))
+            .thenAnswer(inv -> inv.getArgument(0));
+
+        PushSubscribeRequest req = validRequest(
+            "https://fcm.googleapis.com/fcm/send/race", null
+        );
+
+        PushSubscribeResponse response = service.subscribe(ORG, SUB, req);
+
+        assertThat(response.status()).isEqualTo("updated");
+        assertThat(response.endpointId()).isEqualTo(
+            UUID.fromString("99999999-aaaa-bbbb-cccc-dddddddddddd"));
+    }
+
+    @Test
+    void subscribeRejectsHttpScheme() {
+        PushSubscribeRequest req = new PushSubscribeRequest(
+            "http://insecure.example/push", VALID_P256DH, VALID_AUTH_SECRET, null
+        );
+        // DTO @Pattern would reject http:// at the controller layer
+        // before reaching service; but PushSubscriptionMaterialValidator
+        // also guards here (defense-in-depth + non-controller callers).
+        assertThatThrownBy(() -> service.subscribe(ORG, SUB, req))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("https");
+    }
+
+    @Test
+    void subscribeRejectsInvalidP256dhLength() {
+        // 32 bytes (compressed-ish length) instead of 65 — invalid
+        byte[] shortKey = new byte[32];
+        shortKey[0] = 0x04;
+        String shortB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(shortKey);
+
+        PushSubscribeRequest req = new PushSubscribeRequest(
+            "https://fcm.googleapis.com/fcm/send/x",
+            shortB64, VALID_AUTH_SECRET, null
+        );
+
+        assertThatThrownBy(() -> service.subscribe(ORG, SUB, req))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("p256dhKey");
+    }
+
+    @Test
+    void subscribeRejectsInvalidP256dhPrefix() {
+        // 65 bytes but first byte != 0x04 — invalid uncompressed prefix
+        byte[] badPrefix = new byte[65];
+        badPrefix[0] = 0x02;  // compressed prefix — Web Push expects uncompressed
+        String badPrefixB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(badPrefix);
+
+        PushSubscribeRequest req = new PushSubscribeRequest(
+            "https://fcm.googleapis.com/fcm/send/x",
+            badPrefixB64, VALID_AUTH_SECRET, null
+        );
+
+        assertThatThrownBy(() -> service.subscribe(ORG, SUB, req))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("0x04");
+    }
+
+    @Test
+    void subscribeRejectsInvalidAuthSecretLength() {
+        // 8 bytes instead of 16 — invalid
+        byte[] shortAuth = new byte[8];
+        String shortB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(shortAuth);
+
+        PushSubscribeRequest req = new PushSubscribeRequest(
+            "https://fcm.googleapis.com/fcm/send/x",
+            VALID_P256DH, shortB64, null
+        );
+
+        assertThatThrownBy(() -> service.subscribe(ORG, SUB, req))
+            .isInstanceOf(InvalidRequestException.class)
+            .hasMessageContaining("authSecret");
     }
 
     @Test

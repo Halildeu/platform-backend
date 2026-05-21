@@ -117,6 +117,51 @@ class SubscriberPushEndpointRepositoryTest extends AbstractPostgresTest {
         assertThat(found.get().getEndpointUrl()).isEqualTo("https://lookup-endpoint");
     }
 
+    // Faz 23.7 M7 T4.2 PR-W3 — endpoint-level soft delete (Codex 019e4a57 P5)
+    @Test
+    void softDeleteByEndpointIdSoftDeletesSingleEndpoint() {
+        SubscriberPushEndpoint ep1 = repo.save(fixture("acme", "1204", "https://ep-chrome"));
+        SubscriberPushEndpoint ep2 = repo.save(fixture("acme", "1204", "https://ep-firefox"));
+        SubscriberPushEndpoint ep3 = repo.save(fixture("acme", "5678", "https://ep-other"));
+
+        int deleted = repo.softDeleteByEndpointId(ep1.getEndpointId(), OffsetDateTime.now());
+        em.flush();
+        em.clear();
+
+        assertThat(deleted).isEqualTo(1);
+        // Aynı subscriber'ın diğer endpoint'i etkilenmedi (multi-endpoint cihaz boundary)
+        List<SubscriberPushEndpoint> active = repo.findActiveBySubscriber("acme", "1204");
+        assertThat(active).hasSize(1);
+        assertThat(active.get(0).getEndpointId()).isEqualTo(ep2.getEndpointId());
+        // Farklı subscriber'ın endpoint'i de etkilenmedi
+        assertThat(repo.findActiveBySubscriber("acme", "5678")).hasSize(1);
+    }
+
+    @Test
+    void softDeleteByEndpointIdIdempotent() {
+        SubscriberPushEndpoint ep = repo.save(fixture("acme", "1204", "https://ep-idempotent"));
+
+        int first = repo.softDeleteByEndpointId(ep.getEndpointId(), OffsetDateTime.now());
+        em.flush();
+        em.clear();
+        assertThat(first).isEqualTo(1);
+
+        // İkinci çağrı: zaten silindi → 0 row affected
+        int second = repo.softDeleteByEndpointId(ep.getEndpointId(), OffsetDateTime.now());
+        em.flush();
+        em.clear();
+        assertThat(second).isZero();
+    }
+
+    @Test
+    void softDeleteByEndpointIdNoOpWhenNotFound() {
+        java.util.UUID unknownId = java.util.UUID.randomUUID();
+
+        int deleted = repo.softDeleteByEndpointId(unknownId, OffsetDateTime.now());
+
+        assertThat(deleted).isZero();
+    }
+
     private SubscriberPushEndpoint fixture(String orgId, String subscriberId, String endpointUrl) {
         SubscriberPushEndpoint e = new SubscriberPushEndpoint();
         e.setOrgId(orgId);

@@ -7,6 +7,7 @@ import com.serban.notify.domain.SubscriberPushEndpoint;
 import com.serban.notify.repository.SubscriberPushEndpointRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,39 +53,35 @@ public class PushSubscriptionService {
      * <p>Idempotency key: (orgId, subscriberId, endpointUrl). Aynı browser
      * tekrar subscribe ederse aynı row update edilir (keys değişebilir,
      * deletedAt null'lanır).
+     *
+     * <p>Race-safe (Codex 019e4a57 P1 absorb): paralel iki ilk subscribe
+     * aynı endpointUrl için race yapsa V19 unique constraint nedeniyle
+     * biri DataIntegrityViolationException alır. Burada
+     * try-insert + catch + re-read pattern kullanılır:
+     * insert fail → conflicting row mevcuttur → re-read + update path.
+     *
+     * <p>Web Push subscription material validation
+     * (Codex 019e4a57 P2 absorb): URI parse + decode-length check
+     * {@link PushSubscriptionMaterialValidator} tarafından.
      */
     @Transactional
     public PushSubscribeResponse subscribe(
         String orgId, String subscriberId, PushSubscribeRequest request
     ) {
-        OffsetDateTime now = OffsetDateTime.now();
+        // Plan-time material validation (URI + base64url decode-length).
+        // Codex P2: DTO pattern syntax tek başına yeterli değil; bozuk
+        // key DefaultWebPushSender send'inde patlardı.
+        PushSubscriptionMaterialValidator.validate(request);
+
         Optional<SubscriberPushEndpoint> existing =
             repo.findByOrgIdAndSubscriberIdAndEndpointUrl(
                 orgId, subscriberId, request.endpointUrl()
             );
-
         if (existing.isPresent()) {
-            SubscriberPushEndpoint endpoint = existing.get();
-            boolean wasDeleted = endpoint.getDeletedAt() != null;
-            endpoint.setP256dhKey(request.p256dhKey());
-            endpoint.setAuthSecret(request.authSecret());
-            if (request.userAgent() != null && !request.userAgent().isBlank()) {
-                endpoint.setUserAgent(request.userAgent());
-            }
-            endpoint.setLastSeenAt(now);
-            endpoint.setUpdatedAt(now);
-            if (wasDeleted) {
-                endpoint.setDeletedAt(null);
-                endpoint.setFailureCount(0);
-                endpoint.setLastFailureAt(null);
-                endpoint.setLastFailureReason(null);
-            }
-            SubscriberPushEndpoint saved = repo.save(endpoint);
-            String status = wasDeleted ? "reactivated" : "updated";
-            log.info("push subscribe {}: endpointId={}", status, saved.getEndpointId());
-            return new PushSubscribeResponse(saved.getEndpointId(), status);
+            return updateExisting(existing.get(), request);
         }
 
+        // Race-safe insert path (Codex 019e4a57 P1 absorb).
         SubscriberPushEndpoint endpoint = new SubscriberPushEndpoint();
         endpoint.setOrgId(orgId);
         endpoint.setSubscriberId(subscriberId);
@@ -92,10 +89,52 @@ public class PushSubscriptionService {
         endpoint.setP256dhKey(request.p256dhKey());
         endpoint.setAuthSecret(request.authSecret());
         endpoint.setUserAgent(request.userAgent());
+        endpoint.setLastSeenAt(OffsetDateTime.now());
+        try {
+            SubscriberPushEndpoint saved = repo.saveAndFlush(endpoint);
+            log.info("push subscribe created: endpointId={}", saved.getEndpointId());
+            return new PushSubscribeResponse(saved.getEndpointId(), "created");
+        } catch (DataIntegrityViolationException e) {
+            // Concurrent subscribe race: another transaction inserted the
+            // same (orgId, subscriberId, endpointUrl) row. Re-read and
+            // update path to honor idempotent contract.
+            log.info("push subscribe race detected; re-read + update path");
+            SubscriberPushEndpoint conflict = repo
+                .findByOrgIdAndSubscriberIdAndEndpointUrl(
+                    orgId, subscriberId, request.endpointUrl()
+                )
+                .orElseThrow(() -> e);
+            return updateExisting(conflict, request);
+        }
+    }
+
+    /**
+     * Update path — used both by direct find-existing and race-recovery
+     * branches. Preserves idempotency: deletedAt → null + counters reset
+     * for reactivated rows.
+     */
+    private PushSubscribeResponse updateExisting(
+        SubscriberPushEndpoint endpoint, PushSubscribeRequest request
+    ) {
+        OffsetDateTime now = OffsetDateTime.now();
+        boolean wasDeleted = endpoint.getDeletedAt() != null;
+        endpoint.setP256dhKey(request.p256dhKey());
+        endpoint.setAuthSecret(request.authSecret());
+        if (request.userAgent() != null && !request.userAgent().isBlank()) {
+            endpoint.setUserAgent(request.userAgent());
+        }
         endpoint.setLastSeenAt(now);
+        endpoint.setUpdatedAt(now);
+        if (wasDeleted) {
+            endpoint.setDeletedAt(null);
+            endpoint.setFailureCount(0);
+            endpoint.setLastFailureAt(null);
+            endpoint.setLastFailureReason(null);
+        }
         SubscriberPushEndpoint saved = repo.save(endpoint);
-        log.info("push subscribe created: endpointId={}", saved.getEndpointId());
-        return new PushSubscribeResponse(saved.getEndpointId(), "created");
+        String status = wasDeleted ? "reactivated" : "updated";
+        log.info("push subscribe {}: endpointId={}", status, saved.getEndpointId());
+        return new PushSubscribeResponse(saved.getEndpointId(), status);
     }
 
     /**

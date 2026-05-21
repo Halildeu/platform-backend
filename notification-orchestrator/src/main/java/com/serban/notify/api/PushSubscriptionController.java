@@ -131,13 +131,16 @@ public class PushSubscriptionController {
     @Operation(
         summary = "Unsubscribe (soft delete) an endpoint",
         description = "Endpoint-level soft-delete: multi-endpoint subscriber için "
-            + "diğer cihazlar etkilenmez. Idempotent (ikinci çağrı no-op)."
+            + "diğer cihazlar etkilenmez. Idempotent + privacy-safe: not-found, "
+            + "already-deleted ve cross-subscriber denial hepsi 200 'no_op' "
+            + "döner (endpoint enumeration koruması — Codex 019e4a57 P3 absorb)."
     )
     @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Endpoint soft-deleted or already deleted"),
+        @ApiResponse(responseCode = "200",
+            description = "Endpoint soft-deleted ('deleted') or no-op "
+                + "('no_op' — not found, already deleted, or cross-subscriber)"),
         @ApiResponse(responseCode = "401", description = "Authentication required"),
-        @ApiResponse(responseCode = "403", description = "Identity mismatch"),
-        @ApiResponse(responseCode = "404", description = "Endpoint not found")
+        @ApiResponse(responseCode = "403", description = "Identity mismatch")
     })
     public ResponseEntity<Map<String, Object>> unsubscribe(
         @RequestHeader(name = "X-Org-Id", required = true) @NotBlank String callerOrgId,
