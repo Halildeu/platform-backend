@@ -178,8 +178,11 @@ public class SubscriberErasureController {
         // Codex `019e0c28` P1 absorb: free-form `reason` kabul edilmez (PII
         // leakage riski). Reason ve evidence_ref sabit
         // `self-service-kvkk-art-11`; log surface minimal.
-        log.info("KVKK self-service erasure request: orgId={} subscriberId={}",
-            callerOrgId, subscriberId);
+        // Codex `019e4950` P1 absorb: subscriberId direct log YASAK
+        // (KVKK Madde 12 data minimization). HMAC subject ref + org
+        // namespace audit_event details'te kalır.
+        log.info("KVKK self-service erasure request: orgId={} subjectRef=<hmac-redacted>",
+            callerOrgId);
 
         ErasureService.EraseResult result = subscriberErasureService.eraseMyAudit(
             callerOrgId, subscriberId

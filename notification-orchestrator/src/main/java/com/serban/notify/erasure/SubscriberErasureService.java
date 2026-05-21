@@ -154,8 +154,8 @@ public class SubscriberErasureService {
     public ErasureService.EraseResult eraseMyAudit(String orgId, String subscriberId) {
         // Free-form reason kabul edilmez (Codex P1 absorb): PII risk.
         // Reason ve evidence_ref ikisi de sabit constant.
-        log.info("KVKK self-service erasure invoke: orgId={} subscriberId={}",
-            orgId, subscriberId);
+        // Codex `019e4950` P1 absorb: subscriberId direct log YASAK.
+        log.info("KVKK self-service erasure invoke: orgId={} subjectRef=<hmac-redacted>", orgId);
 
         return erasureService.eraseSubscriber(
             new ErasureService.EraseRequest(
