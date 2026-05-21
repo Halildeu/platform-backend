@@ -7,21 +7,9 @@ docs/deploy/env/.env.*
 !docs/deploy/env/.env.*.example
 docs/deploy/env/*.local
 .DS_Store
+target/
+**/target/
 
 # Dev Vault artifacts (do not commit)
 .vault-dev/
 .vault-dev/**
-**/__pycache__/
-
-# Maven build output
-target/
-/.claude/
-
-# Python (etl-worker)
-**/.venv/
-**/.pytest_cache/
-**/.mypy_cache/
-**/.ruff_cache/
-**/*.egg-info/
-**/.coverage
-**/htmlcov/
