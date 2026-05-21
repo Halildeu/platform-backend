@@ -17,33 +17,41 @@ import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.matching;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
-import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * DefaultWebPushSender WireMock IT (Faz 23.7 M7 T4.2 PR-W2.4 — Codex
- * {@code 019e49e7} P4 sub-task).
+ * DefaultWebPushSender HTTP integration test (Faz 23.7 M7 T4.2 PR-W2.4 —
+ * Codex {@code 019e49e7} P4 + {@code 019e4a2e} P1+P2 absorb).
  *
- * <p>End-to-end HTTP integration: lib (nl.martijndwars:web-push) Apache
- * HC 4.x internal client real POST to WireMock-stubbed push service
- * endpoint. VAPID JWT signing + ECDH payload encryption pipeline lib
- * tarafında çalışır; WireMock sadece push service response code (201 /
- * 410 / 429) simüle eder.
+ * <p>Codex {@code 019e4a2e} P1 absorb: sınıf adı Surefire default
+ * {@code **&#47;*Test.java} include pattern'i için "Test" suffix'i ile
+ * bitirildi (önceki ad {@code DefaultWebPushSenderIT.java} default
+ * lane'de skip ediliyordu — `*IT.java` Failsafe gerektirir).
+ *
+ * <p>End-to-end HTTP integration: lib (nl.martijndwars:web-push 5.1.1)
+ * Apache HC 4.x internal client real POST to WireMock-stubbed push
+ * service endpoint. VAPID JWT signing + ECDH payload encryption pipeline
+ * lib tarafında çalışır; WireMock sadece push service response code
+ * (201 / 204 / 410 / 429) simüle eder.
  *
  * <p>Verifies:
  * <ul>
- *   <li>201 Created → SendResult.statusCode=201, reason="Created"</li>
+ *   <li>201 Created → SendResult.statusCode=201</li>
  *   <li>204 No Content → SendResult.statusCode=204</li>
  *   <li>410 Gone → SendResult.statusCode=410 (subscription expired)</li>
  *   <li>429 Too Many Requests → SendResult.statusCode=429 (rate limit)</li>
- *   <li>VAPID Authorization header present (JWT bearer)</li>
+ *   <li>VAPID Authorization header {@code WebPush <jwt>} (RFC 8292
+ *       draft-04 öncesi format; nl.martijndwars 5.1.1 default)</li>
  *   <li>TTL header present (RFC 8030)</li>
- *   <li>Content-Encoding header present (aes128gcm)</li>
+ *   <li>Content-Encoding header exact {@code aesgcm} (RFC 8291 draft-04
+ *       öncesi format; lib 5.1.1 final {@code aes128gcm} desteklemiyor —
+ *       Codex P2 absorb: contract-lock için strict assertion)</li>
  * </ul>
  *
  * <p>Test fixture:
@@ -55,7 +63,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       browser üretir)</li>
  * </ul>
  */
-class DefaultWebPushSenderIT {
+class DefaultWebPushSenderHttpIntegrationTest {
 
     @RegisterExtension
     static WireMockExtension pushService = WireMockExtension.newInstance()
@@ -136,9 +144,13 @@ class DefaultWebPushSenderIT {
         return new DefaultWebPushSender(config);
     }
 
+    // Codex 019e4a2e P1 absorb: urlPathMatching catch-all yerine her
+    // test kendi exact endpoint'inde stub yapar. Method-level parallel
+    // execution açılırsa shared WireMock üzerinde race güvenliği artar.
+
     @Test
     void push201CreatedReturnsStatusCode201() throws Exception {
-        pushService.stubFor(post(urlPathMatching("/push/.*"))
+        pushService.stubFor(post(urlEqualTo("/push/abc123"))
             .willReturn(aResponse().withStatus(201)));
 
         DefaultWebPushSender sender = newSender();
@@ -157,17 +169,18 @@ class DefaultWebPushSenderIT {
         // VAPID + TTL + Content-Encoding header'ları lib tarafından
         // RFC 8030 + RFC 8292 uyumunda set edilir. nl.martijndwars:web-push
         // 5.1.1 eski draft formatını kullanıyor: "WebPush <jwt>" +
-        // aesgcm (RFC 8291 draft-04 öncesi). Yeni RFC 8291 final formatı
-        // "vapid t=, k=" + aes128gcm bu lib sürümünde DESTEKLENMİYOR.
+        // aesgcm (RFC 8291 draft-04 öncesi). Codex 019e4a2e P2 absorb:
+        // contract lock için Content-Encoding exact "aesgcm" assertion
+        // (lib 5.1.1 final aes128gcm desteklemiyor).
         pushService.verify(postRequestedFor(urlEqualTo("/push/abc123"))
             .withHeader("Authorization", matching("WebPush .+"))
             .withHeader("TTL", matching("\\d+"))
-            .withHeader("Content-Encoding", matching("aesgcm|aes128gcm")));
+            .withHeader("Content-Encoding", equalTo("aesgcm")));
     }
 
     @Test
     void push204NoContentReturnsStatusCode204() throws Exception {
-        pushService.stubFor(post(urlPathMatching("/push/.*"))
+        pushService.stubFor(post(urlEqualTo("/push/edge-204"))
             .willReturn(aResponse().withStatus(204)));
 
         DefaultWebPushSender sender = newSender();
@@ -189,7 +202,7 @@ class DefaultWebPushSenderIT {
         // RFC 8030: 410 = subscription expired (browser uninstalled SW or
         // permission revoked). Adapter mapper bu kodu FAILED +
         // subscription_expired + endpoint soft-delete'e mapler.
-        pushService.stubFor(post(urlPathMatching("/push/.*"))
+        pushService.stubFor(post(urlEqualTo("/push/expired"))
             .willReturn(aResponse().withStatus(410).withBody("Gone")));
 
         DefaultWebPushSender sender = newSender();
@@ -210,7 +223,7 @@ class DefaultWebPushSenderIT {
     void push429TooManyRequestsReturnsStatusCode429() throws Exception {
         // Push service rate limit; adapter mapper bu kodu RETRY'a mapler
         // (PR4 worker backoff).
-        pushService.stubFor(post(urlPathMatching("/push/.*"))
+        pushService.stubFor(post(urlEqualTo("/push/throttled"))
             .willReturn(aResponse().withStatus(429).withBody("Too Many Requests")));
 
         DefaultWebPushSender sender = newSender();
