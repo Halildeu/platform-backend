@@ -88,10 +88,15 @@ public class ErasureRequestLedger {
     private OffsetDateTime closedAt;
 
     /**
-     * COMPLETED → FAILED transition'a yol açan exception kategorisi
-     * (Codex 019e499c P0 #1 absorb): TRANSACTION_ROLLBACK /
-     * AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / UNKNOWN. PII sızması
-     * olmayacak şekilde sadece kategori; stack trace YASAK.
+     * Erasure runtime hatası kategorisi (Codex 019e499c P0 #1 +
+     * iter-3 P0 absorb): TRANSACTION_ROLLBACK / AUDIT_PUBLISH_ERROR /
+     * DB_CONSTRAINT / UNKNOWN. PII sızması olmayacak şekilde sadece
+     * kategori; stack trace YASAK.
+     *
+     * <p>Status NON-terminal kalır (PROCESSING); failure_reason
+     * yazılır; closed_at NULL kalır → KVKK Madde 13.2 SLA scan
+     * unresolved teknik hatayı görmeye devam eder. Terminal FAILED
+     * state DPO/legal formal "denied" closure için reserve.
      */
     @Column(name = "failure_reason", length = 256)
     private String failureReason;

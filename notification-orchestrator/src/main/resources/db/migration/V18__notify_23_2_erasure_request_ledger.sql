@@ -120,10 +120,12 @@ COMMENT ON COLUMN notify.erasure_request_ledger.legal_hold_external_reference IS
     'referans kodu; insan okunabilir açıklama DEĞİL.';
 
 COMMENT ON COLUMN notify.erasure_request_ledger.failure_reason IS
-    'COMPLETED → FAILED transition'' a yol açan exception kategorisi '
-    '(Codex 019e499c P0 #1 absorb): TRANSACTION_ROLLBACK / '
-    'AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / UNKNOWN. PII sızması '
-    'olmayacak şekilde sadece kategori; stack trace YASAK.';
+    'Erasure runtime hatası kategorisi (Codex 019e499c P0 #1 + iter-3 P0 '
+    'absorb): TRANSACTION_ROLLBACK / AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / '
+    'UNKNOWN. Status non-terminal kalır (PROCESSING) → KVKK Madde 13.2 '
+    'SLA scan unresolved teknik hatayı görmeye devam eder. Terminal '
+    'FAILED state DPO/legal formal denied closure için reserve. Stack '
+    'trace YASAK.';
 
 COMMENT ON COLUMN notify.erasure_request_ledger.last_audit_event_id IS
     'Bağlı audit_event_v2 row BIGINT id (Codex 019e499c P1 #4 absorb: '
