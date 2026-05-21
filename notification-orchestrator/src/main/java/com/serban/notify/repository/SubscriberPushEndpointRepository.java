@@ -80,4 +80,29 @@ public interface SubscriberPushEndpointRepository
         @Param("now") OffsetDateTime now,
         @Param("reason") String reason
     );
+
+    /**
+     * Endpoint-level soft delete (Faz 23.7 M7 T4.2 PR-W3).
+     *
+     * <p>Subscriber'ın TEK endpoint'ini soft-delete eder (multi-endpoint
+     * subscriber için cihaz boundary korunur). User self-service DELETE
+     * /api/v1/notify/push/subscribe/{endpointId} bu metodu çağırır.
+     *
+     * <p>{@link #softDeleteBySubscriber} subscriber'ın TÜM endpoint'lerini
+     * siler (KVKK §11 erasure); bu metod TEK endpoint için.
+     *
+     * @return 0 if endpoint already deleted or not found; 1 if soft-deleted
+     */
+    @Modifying
+    @Query("""
+        UPDATE SubscriberPushEndpoint e
+        SET e.deletedAt = :now,
+            e.updatedAt = :now
+        WHERE e.endpointId = :endpointId
+          AND e.deletedAt IS NULL
+        """)
+    int softDeleteByEndpointId(
+        @Param("endpointId") UUID endpointId,
+        @Param("now") OffsetDateTime now
+    );
 }
