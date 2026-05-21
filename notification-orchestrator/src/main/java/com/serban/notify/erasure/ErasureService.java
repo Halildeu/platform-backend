@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * ErasureService — KVKK §11 / GDPR Art 17 right-to-erasure (Faz 23.2 PR-B —
@@ -113,29 +114,72 @@ public class ErasureService {
      * details içine girer; PiiRedactor whitelist'i bunu zaten korur, ama
      * minimal log surface için INFO level'da yalnız orgId+subscriberId.
      */
-    @Transactional
     public EraseResult eraseSubscriber(EraseRequest request, String eventType) {
         // Codex `019e4950` P1 absorb: subscriberId + evidence_ref direct
-        // log YASAK (KVKK Madde 12 data minimization). audit_event details
-        // PiiRedactor whitelist'i ile canonical record sağlanır; INFO log
-        // sadece HMAC subject ref + eventType (Loki retention 7-14 gün
-        // riski kapatılır).
+        // log YASAK (KVKK Madde 12 data minimization).
         log.info("KVKK erasure start: orgId={} subjectRef=<hmac-redacted> eventType={}",
             request.orgId(), eventType);
 
-        // Codex `019e4950` P0 #1 absorb: KVKK Madde 13.2 30-gün SLA ledger.
-        // Erasure işlemleri başlamadan ÖNCE ledger row açılır (happen-before
-        // audit chain). Idempotent: aynı (orgId, idempotencyKey) ikinci
-        // çağrı mevcut row döner. Caller idempotencyKey vermezse
-        // service-side auto-derive (self-service: günlük key; admin: ref).
+        // Codex `019e4950` P0 #1 + `019e499c` REVISE P0 #1 absorb:
+        // KVKK Madde 13.2 30-gün SLA ledger. Ledger
+        // open/markProcessing/markCompleted/markFailed REQUIRES_NEW
+        // propagation (LedgerService tarafında) — outer erasure
+        // transaction rollback olsa bile ledger row görünür kalır.
         ErasureRequestLedger ledgerEntry = ledgerService.openRequest(
             request.orgId(),
             request.subscriberId(),
             request.evidenceRef(),
             request.idempotencyKey()
         );
+
+        // Codex 019e499c REVISE P1 #3 absorb: LEGAL_HOLD guard.
+        // KVKK Madde 28 istisna (mahkeme kararı / aktif soruşturma vb.)
+        // sebebiyle hold edilen ledger row üzerinde erasure çalıştırılamaz.
+        // Sadece DPO/legal manuel hold release sonrası devam edilebilir.
+        if (ledgerEntry.getStatus() == ErasureRequestLedger.Status.LEGAL_HOLD) {
+            log.warn("KVKK erasure blocked LEGAL_HOLD: orgId={} ledgerId={} reasonCode={}",
+                request.orgId(), ledgerEntry.getRequestId(),
+                ledgerEntry.getLegalHoldReasonCode());
+            throw new LegalHoldException(
+                "Erasure blocked: ledger entry is on LEGAL_HOLD (Madde 28 istisna). "
+                    + "DPO/legal must release hold before erasure proceeds.",
+                ledgerEntry.getRequestId(),
+                ledgerEntry.getLegalHoldReasonCode()
+            );
+        }
+
+        // Eğer COMPLETED ise (idempotent ikinci çağrı): zaten yapıldı; no-op.
+        if (ledgerEntry.getStatus() == ErasureRequestLedger.Status.COMPLETED) {
+            log.info("KVKK erasure idempotent no-op (COMPLETED): orgId={} ledgerId={}",
+                request.orgId(), ledgerEntry.getRequestId());
+            return new EraseResult(0, 0, 0,
+                ledgerEntry.getRequestId(), ledgerEntry.getDueAt());
+        }
+
         ledgerService.markProcessing(ledgerEntry.getRequestId());
 
+        try {
+            return performErasure(request, eventType, ledgerEntry);
+        } catch (RuntimeException e) {
+            // Codex 019e499c REVISE P0 #1 absorb: durable failure tracking.
+            // Outer erasure tx rollback ediyor ama ledger ayrı tx →
+            // markFailed REQUIRES_NEW olarak commit edilir → audit
+            // visibility korunur.
+            log.warn("KVKK erasure failed: orgId={} ledgerId={} error={}",
+                request.orgId(), ledgerEntry.getRequestId(), e.getClass().getSimpleName());
+            ledgerService.markFailed(ledgerEntry.getRequestId(), classifyFailure(e));
+            throw e;
+        }
+    }
+
+    /**
+     * Erasure performer — outer try/catch'ten ayrılmış; @Transactional
+     * uygulanır.
+     */
+    @Transactional
+    protected EraseResult performErasure(
+        EraseRequest request, String eventType, ErasureRequestLedger ledgerEntry
+    ) {
         // Find all intents that have this subscriber in recipients_snapshot
         List<NotificationIntent> intents = intentRepo.findIntentsBySubscriber(
             request.orgId(), request.subscriberId()
@@ -235,14 +279,31 @@ public class ErasureService {
             );
         }
 
-        // Codex `019e4950` P0 #1 absorb: ledger close — KVKK Madde 13.2
-        // SLA completion. Audit event id null bağlama (audit publisher
-        // event_id döndürmüyor şu an; follow-up'ta audit_event_v2 row id
-        // wire'lanır). Status terminal (COMPLETED) → ErasureSlaWatchdog
-        // bu row'u artık scan etmez.
-        ledgerService.completeRequest(ledgerEntry.getRequestId(), null);
+        // Codex 019e499c REVISE P0 #1 absorb: completeRequest outer
+        // transaction commit'inden SONRA çağrılmalı (afterCommit hook).
+        // Aksi halde outer tx fail ederse ledger yanlış COMPLETED yazardı.
+        // Test contexts (no active synchronization) için direct call
+        // fallback — best-effort; production tx context'inde afterCommit.
+        final UUID ledgerRequestId = ledgerEntry.getRequestId();
+        if (org.springframework.transaction.support.TransactionSynchronizationManager
+                .isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager
+                .registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            // Codex 019e499c REVISE P1 #4 absorb: audit_event_v2
+                            // BIGINT id + occurred_at composite (audit publisher
+                            // event_id döndürene kadar null wire).
+                            ledgerService.completeRequest(ledgerRequestId, null, null);
+                        }
+                    }
+                );
+        } else {
+            // Unit-test edge — no Spring tx context; direct call OK.
+            ledgerService.completeRequest(ledgerRequestId, null, null);
+        }
 
-        // Codex `019e4950` P1 absorb: subscriberId leak guard.
         log.info("KVKK erasure complete: orgId={} subjectRef=<hmac-redacted> ledgerId={} intents_erased={} deliveries_anonymized={} inbox_rows_deleted={}",
             request.orgId(), ledgerEntry.getRequestId(), intentsErased, deliveriesAnonymized, inboxRowsDeleted);
 
@@ -250,6 +311,45 @@ public class ErasureService {
             intentsErased, deliveriesAnonymized, inboxRowsDeleted,
             ledgerEntry.getRequestId(), ledgerEntry.getDueAt()
         );
+    }
+
+    /**
+     * Failure category classification — PII sızması olmayacak şekilde
+     * sadece exception class adı veya bilinen kategoriler.
+     * Codex 019e499c REVISE P0 #1 absorb.
+     */
+    static String classifyFailure(Throwable e) {
+        if (e == null) return "UNKNOWN";
+        String name = e.getClass().getSimpleName();
+        // Spring / JPA bilinen kategoriler — stack trace metni YASAK
+        if (name.contains("DataIntegrity") || name.contains("Constraint")) {
+            return "DB_CONSTRAINT";
+        }
+        if (name.contains("Transaction") || name.contains("Rollback")) {
+            return "TRANSACTION_ROLLBACK";
+        }
+        if (name.contains("Audit") || name.contains("Publish")) {
+            return "AUDIT_PUBLISH_ERROR";
+        }
+        return "UNKNOWN";
+    }
+
+    /**
+     * KVKK Madde 28 LEGAL_HOLD exception — erasure operasyonu fiilen
+     * yapılamaz; DPO/legal manuel release gerek.
+     */
+    public static class LegalHoldException extends RuntimeException {
+        private final UUID ledgerRequestId;
+        private final String reasonCode;
+
+        public LegalHoldException(String message, UUID ledgerRequestId, String reasonCode) {
+            super(message);
+            this.ledgerRequestId = ledgerRequestId;
+            this.reasonCode = reasonCode;
+        }
+
+        public UUID getLedgerRequestId() { return ledgerRequestId; }
+        public String getReasonCode() { return reasonCode; }
     }
 
     /**

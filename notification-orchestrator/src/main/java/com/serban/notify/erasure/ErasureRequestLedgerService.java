@@ -7,38 +7,39 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
  * KVKK Madde 13.2 erasure request ledger orchestrator (Faz 23.2 M3 R2
- * PR-K1 — Codex {@code 019e4950} P0 #1 absorb).
+ * PR-K1 — Codex {@code 019e4950} P0 #1 absorb + iter-2 {@code 019e499c}
+ * REVISE absorb).
  *
- * <p>Açılış (open) — silme başvurusu kayda alınır:
+ * <p>Codex 019e499c REVISE absorb summary:
  * <ul>
- *   <li>{@code received_at = NOW()}</li>
- *   <li>{@code due_at = received_at + 30 gün} (KVKK Madde 13.2)</li>
- *   <li>{@code status = RECEIVED}</li>
- *   <li>{@code subject_ref_hmac} PiiRedactor ile hesaplanır</li>
- *   <li>Idempotent: aynı (orgId, idempotencyKey) ikinci başvuru
- *       mevcut row döner (insert tekrarı yok)</li>
- * </ul>
- *
- * <p>Kapanış (close) — erasure işlemleri tamamlandığında:
- * <ul>
- *   <li>{@code status = COMPLETED}</li>
- *   <li>{@code closed_at = NOW()}</li>
- *   <li>{@code last_audit_event_id} bağlı audit row</li>
+ *   <li><strong>P0 #1 durable ledger</strong>: open/processing/complete/
+ *       fail transitions {@code REQUIRES_NEW} propagation — erasure
+ *       outer transaction rollback olsa bile ledger row görünür kalır.
+ *       Madde 13.2 garanti: "başvuru alındı, 30-gün SLA başladı"
+ *       kanıtı failure'da kaybolmaz.</li>
+ *   <li><strong>P0 #2 subject-scoped idempotency</strong>: tüm source'lar
+ *       için key'de subject HMAC zorunlu — iki farklı subscriber aynı
+ *       evidence_ref ile tek ledger row'a çökemez. Existing row dönerken
+ *       subject_ref_hmac eşleşmesi guard.</li>
+ *   <li><strong>P1 #3 LEGAL_HOLD guard</strong>: hold edilmiş ledger'a
+ *       sonraki erasure çağrısı IllegalStateException; erasure işlemi
+ *       fiilen yapılamaz (DPO/legal manuel açar).</li>
+ *   <li><strong>P1 #5 PII minimization</strong>: key materyalinde ham
+ *       evidence_ref YASAK; HMAC digest (PiiRedactor pepper ile)
+ *       kullanılır — operator e-posta/dilekçe metni ledger'a sızmaz.</li>
  * </ul>
  *
  * <p>Append-only saklanır; 90-gün retention purge buna dokunmaz.
- *
- * <p>Source derivation: caller {@code evidenceRef} string'inden
- * mantıklı tahmin yapılır (Locale.ROOT defensive — Turkish dotless-I
- * guard). Ambiguous → ADMIN default.
  */
 @Service
 public class ErasureRequestLedgerService {
@@ -65,22 +66,25 @@ public class ErasureRequestLedgerService {
     /**
      * Open or fetch ledger entry — idempotent.
      *
-     * <p>Eğer aynı (orgId, idempotencyKey) önceden açıldıysa mevcut
-     * row döner; yeni insert yapılmaz. Bu davranış idempotent
-     * erasure (ikinci API çağrısı no-op) ile uyumlu — ledger entry
-     * de tek bir hukuki başvuru olarak kalır.
+     * <p>Codex 019e499c REVISE P0 #1 absorb: {@link Propagation#REQUIRES_NEW}.
+     * Outer erasure transaction rollback olsa bile ledger row commit edilir
+     * (Madde 13.2 başvuru kanıtı durability).
      *
-     * <p>Açılış MUST happen-before erasure işlemleri (audit chain
-     * integrity — başvuru kanıtı erasure'dan önce yazılır).
+     * <p>Codex 019e499c REVISE P0 #2 absorb: existing row check artık
+     * subject HMAC eşleşmesi de yapar. İki farklı subscriber aynı
+     * idempotency_key'e çökerse {@link IllegalStateException} fırlatılır
+     * (collision detection — schema corruption alarm).
      *
      * @param orgId          tenant boundary
      * @param subscriberId   subscriber to erase (raw; HMAC içeride)
-     * @param evidenceRef    operator/runbook reference (PiiRedactor
-     *                       whitelist'te audit'e girer)
-     * @param idempotencyKey caller-provided veya null (auto-derive)
+     * @param evidenceRef    operator/runbook reference (HMAC'lenir,
+     *                       ham metin ledger'da YASAK)
+     * @param idempotencyKey caller-provided veya null (auto-derive
+     *                       subject-scoped — P0 #2 absorb)
      * @return ledger row (yeni veya mevcut)
+     * @throws IllegalStateException subject HMAC mismatch on existing row
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public ErasureRequestLedger openRequest(
         String orgId,
         String subscriberId,
@@ -91,29 +95,42 @@ public class ErasureRequestLedgerService {
             throw new IllegalArgumentException("openRequest: orgId/subscriberId required");
         }
 
+        // Codex 019e499c REVISE P0 #2 absorb: subject HMAC her zaman
+        // önceden hesaplanır; existing row collision guard'ı için gerek.
+        String subjectRefHmac = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
+
         String resolvedKey = (idempotencyKey != null && !idempotencyKey.isBlank())
             ? idempotencyKey
             : deriveIdempotencyKey(orgId, subscriberId, evidenceRef);
 
-        // Idempotent check — aynı (orgId, key) ikinci başvuru mevcut row
-        var existing = ledgerRepo.findByOrgIdAndIdempotencyKey(orgId, resolvedKey);
+        Optional<ErasureRequestLedger> existing = ledgerRepo.findByOrgIdAndIdempotencyKey(orgId, resolvedKey);
         if (existing.isPresent()) {
+            ErasureRequestLedger existingEntry = existing.get();
+            // Subject mismatch guard — P0 #2 fix
+            if (!subjectRefHmac.equals(existingEntry.getSubjectRefHmac())) {
+                log.warn(
+                    "KVKK ledger: subject HMAC mismatch on existing idempotency_key — "
+                        + "orgId={} existingHmac=<redacted> attemptedHmac=<redacted>",
+                    orgId
+                );
+                throw new IllegalStateException(
+                    "Idempotency key collision with different subject — caller must"
+                        + " provide unique idempotency_key or service-side derive must"
+                        + " include subject HMAC."
+                );
+            }
             log.info("KVKK ledger: idempotent open hit orgId={} requestId={} status={}",
-                orgId, existing.get().getRequestId(), existing.get().getStatus());
-            return existing.get();
+                orgId, existingEntry.getRequestId(), existingEntry.getStatus());
+            return existingEntry;
         }
 
-        // PiiRedactor.hashRecipient — subscriber type (pseudonymous)
-        String subjectRefHmac = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
         ErasureRequestLedger.RequestSource source = classifySource(evidenceRef);
-
         ErasureRequestLedger entry = new ErasureRequestLedger();
         entry.setOrgId(orgId);
         entry.setSubjectRefHmac(subjectRefHmac);
         entry.setRequestSource(source);
         entry.setStatus(ErasureRequestLedger.Status.RECEIVED);
         entry.setIdempotencyKey(resolvedKey);
-        // received_at + due_at + created_at + updated_at @PrePersist'te
 
         try {
             ErasureRequestLedger saved = ledgerRepo.save(entry);
@@ -121,24 +138,29 @@ public class ErasureRequestLedgerService {
                 orgId, saved.getRequestId(), source, saved.getDueAt());
             return saved;
         } catch (DataIntegrityViolationException e) {
-            // Concurrent insert race — aynı idempotency key ikinci
-            // istek aynı anda geldi. Mevcut row'u tekrar fetch et.
-            log.warn("KVKK ledger: concurrent insert race orgId={} key=<redacted>",
-                orgId);
-            return ledgerRepo.findByOrgIdAndIdempotencyKey(orgId, resolvedKey)
+            log.warn("KVKK ledger: concurrent insert race orgId={} key=<redacted>", orgId);
+            ErasureRequestLedger refetched = ledgerRepo.findByOrgIdAndIdempotencyKey(orgId, resolvedKey)
                 .orElseThrow(() -> new IllegalStateException(
                     "Ledger unique violation but row missing — schema corruption?", e
                 ));
+            // Race ile gelen row da subject mismatch guard'ından geçmeli
+            if (!subjectRefHmac.equals(refetched.getSubjectRefHmac())) {
+                throw new IllegalStateException(
+                    "Idempotency key race resolved to different subject — collision."
+                );
+            }
+            return refetched;
         }
     }
 
     /**
-     * Status PROCESSING → mark before erasure işlemleri başlar.
-     * RECEIVED → PROCESSING transition.
+     * RECEIVED → PROCESSING transition. Codex 019e499c REVISE P0 #1:
+     * REQUIRES_NEW propagation.
      *
-     * <p>Idempotent: zaten PROCESSING / COMPLETED / FAILED ise no-op.
+     * <p>Idempotent: zaten PROCESSING / COMPLETED / FAILED / LEGAL_HOLD
+     * ise no-op.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markProcessing(UUID requestId) {
         ledgerRepo.findById(requestId).ifPresent(entry -> {
             if (entry.getStatus() == ErasureRequestLedger.Status.RECEIVED) {
@@ -150,24 +172,55 @@ public class ErasureRequestLedgerService {
     }
 
     /**
-     * Close request — erasure işlemleri başarıyla tamamlandı.
+     * Erasure başarıyla tamamlandı → COMPLETED + closed_at + audit chain.
      *
-     * <p>Status → COMPLETED, closed_at = NOW(), last_audit_event_id
-     * bağlı audit row. Idempotent: zaten COMPLETED ise no-op.
+     * <p>Codex 019e499c REVISE P0 #1: REQUIRES_NEW propagation —
+     * outer transaction commit garantisi gerek.
+     * Codex 019e499c REVISE P1 #4: audit_event_v2 BIGINT id + composite
+     * PK occurred_at uyumu.
      *
-     * <p>Audit event ID null geçilebilir (legacy path veya audit
-     * publish henüz event_id döndüremiyorsa).
+     * <p>Caller, outer transaction commit'ten sonra çağırmalı (örn.
+     * TransactionSynchronizationManager afterCommit hook).
      */
-    @Transactional
-    public void completeRequest(UUID requestId, UUID auditEventId) {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void completeRequest(
+        UUID requestId,
+        Long auditEventId,
+        OffsetDateTime auditEventOccurredAt
+    ) {
         int updated = ledgerRepo.markCompleted(
-            requestId, OffsetDateTime.now(), auditEventId
+            requestId, OffsetDateTime.now(), auditEventId, auditEventOccurredAt
         );
         if (updated > 0) {
             log.info("KVKK ledger: completed requestId={} auditEventId={}",
                 requestId, auditEventId);
         } else {
-            log.debug("KVKK ledger: complete no-op (terminal state) requestId={}",
+            log.debug("KVKK ledger: complete no-op (terminal/legal-hold) requestId={}",
+                requestId);
+        }
+    }
+
+    /**
+     * Erasure runtime hatası → FAILED + closed_at + failure_reason.
+     *
+     * <p>Codex 019e499c REVISE P0 #1: REQUIRES_NEW propagation —
+     * outer transaction rollback olsa bile FAILED row commit edilir;
+     * Madde 13.2 audit visibility için kritik.
+     *
+     * @param failureReason kategori (TRANSACTION_ROLLBACK /
+     *                      AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / UNKNOWN);
+     *                      stack trace ASLA — PII sızması riski.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markFailed(UUID requestId, String failureReason) {
+        int updated = ledgerRepo.markFailed(
+            requestId, OffsetDateTime.now(), failureReason
+        );
+        if (updated > 0) {
+            log.warn("KVKK ledger: marked FAILED requestId={} reason={}",
+                requestId, failureReason);
+        } else {
+            log.debug("KVKK ledger: failed transition no-op (terminal/legal-hold) requestId={}",
                 requestId);
         }
     }
@@ -187,9 +240,6 @@ public class ErasureRequestLedgerService {
     /**
      * DPO subject lookup — KVKK Madde 13 right-to-information: bir
      * subscriber için tüm geçmiş erasure başvuruları (newest-first).
-     *
-     * <p>Input subscriberId raw; içeride HMAC hesaplanır → reverse
-     * lookup.
      */
     @Transactional(readOnly = true)
     public java.util.List<ErasureRequestLedger> findBySubject(
@@ -200,16 +250,9 @@ public class ErasureRequestLedgerService {
     }
 
     // ========================================================================
-    // Source classification — Locale.ROOT defensive
+    // Source classification — Locale.ROOT defensive (Turkish dotless-I)
     // ========================================================================
 
-    /**
-     * Evidence_ref string'inden source classification yap. Locale.ROOT
-     * defensive (Turkish dotless-I I/i edge case guard).
-     *
-     * <p>Match order: SELF_SERVICE sentinel → keyword scan → ADMIN
-     * default.
-     */
     static ErasureRequestLedger.RequestSource classifySource(String evidenceRef) {
         if (evidenceRef == null || evidenceRef.isBlank()) {
             return ErasureRequestLedger.RequestSource.ADMIN;
@@ -232,32 +275,42 @@ public class ErasureRequestLedgerService {
     }
 
     /**
-     * Auto-derive idempotency_key when caller doesn't provide one.
+     * Auto-derive idempotency_key — Codex 019e499c REVISE P0 #2 + P1 #5
+     * absorb.
      *
-     * <p>Pattern: {@code <source-prefix>-<orgId>-<subscriberHashShort>-<date>}
-     * for self-service (günlük dedup); admin/legal evidence_ref'i
-     * dedup key olarak kullanır (zaten benzersiz operator metni).
+     * <p>ALL source'lar için subject HMAC zorunlu (P0 #2 — iki farklı
+     * subscriber aynı evidence_ref ile tek ledger row'a çökemez).
      *
-     * <p>Self-service için subscriberHashShort = HMAC'in ilk 16 char'ı
-     * (privacy — raw subscriberId key'de görünmez).
+     * <p>Evidence_ref ham metin ASLA key materyali değil; HMAC digest
+     * kullanılır (P1 #5 — operator dilekçe/email/phone yazsa bile
+     * ledger'da ham metin görünmez).
+     *
+     * <p>Pattern:
+     * <ul>
+     *   <li>SELF_SERVICE: {@code self-{org}-{subjectHash16}-{YYYY-MM-DD}}
+     *       (günlük dedup, idempotent retry suppression)</li>
+     *   <li>ADMIN/LEGAL/DPO/COMPLIANCE_AUDIT: {@code
+     *       {source}-{org}-{subjectHash16}-{evidenceHash16}}</li>
+     * </ul>
      */
     String deriveIdempotencyKey(String orgId, String subscriberId, String evidenceRef) {
         var source = classifySource(evidenceRef);
+
+        // Subject HMAC her source için zorunlu — P0 #2 fix
+        String subjectHash = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
+        String subjectHash16 = subjectHash.substring(0, 16);
+
         if (source == ErasureRequestLedger.RequestSource.SELF_SERVICE) {
-            String hash = piiRedactor.hashRecipient(orgId, "subscriber", subscriberId);
-            String today = java.time.LocalDate.now().toString(); // ISO-8601 YYYY-MM-DD
-            return "self-" + orgId + "-" + hash.substring(0, 16) + "-" + today;
+            String today = java.time.LocalDate.now().toString();
+            return "self-" + orgId + "-" + subjectHash16 + "-" + today;
         }
-        // Admin/legal/dpo — evidence_ref ya da fallback hash
-        if (evidenceRef != null && !evidenceRef.isBlank()) {
-            String prefix = source.name().toLowerCase(Locale.ROOT);
-            // Truncate to fit VARCHAR(128) with prefix + separators
-            String safeRef = evidenceRef.length() > 96
-                ? evidenceRef.substring(0, 96)
-                : evidenceRef;
-            return prefix + "-" + orgId + "-" + safeRef;
-        }
-        // Last resort — UUID
-        return "admin-" + orgId + "-" + UUID.randomUUID();
+
+        // ADMIN/LEGAL/DPO/COMPLIANCE_AUDIT — evidenceRef HMAC digest
+        // (P1 #5 fix — ham metin YASAK).
+        String prefix = source.name().toLowerCase(Locale.ROOT);
+        String evidenceHash16 = (evidenceRef != null && !evidenceRef.isBlank())
+            ? piiRedactor.hashRecipient(orgId, "subscriber", "evidence:" + evidenceRef).substring(0, 16)
+            : UUID.randomUUID().toString().substring(0, 16);
+        return prefix + "-" + orgId + "-" + subjectHash16 + "-" + evidenceHash16;
     }
 }

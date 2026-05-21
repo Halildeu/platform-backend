@@ -104,6 +104,10 @@ class ErasureRequestLedgerServiceTest {
         existing.setOrgId("acme");
         existing.setStatus(ErasureRequestLedger.Status.PROCESSING);
         existing.setIdempotencyKey("test-key");
+        // Codex 019e499c REVISE P0 #2: subject HMAC eşleşmesi zorunlu
+        existing.setSubjectRefHmac(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
 
         when(repo.findByOrgIdAndIdempotencyKey("acme", "test-key"))
             .thenReturn(Optional.of(existing));
@@ -118,12 +122,35 @@ class ErasureRequestLedgerServiceTest {
     }
 
     @Test
+    void openRequestSubjectMismatchThrowsCollision() {
+        // Codex 019e499c REVISE P0 #2 absorb: aynı idempotency_key
+        // farklı subscriber'ın HMAC'i ile gelirse → IllegalStateException
+        UUID existingId = UUID.randomUUID();
+        ErasureRequestLedger existing = new ErasureRequestLedger();
+        existing.setRequestId(existingId);
+        existing.setOrgId("acme");
+        existing.setIdempotencyKey("collision-key");
+        existing.setSubjectRefHmac("different-subject-hmac");
+
+        when(repo.findByOrgIdAndIdempotencyKey("acme", "collision-key"))
+            .thenReturn(Optional.of(existing));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+            service.openRequest("acme", "1204", "ticket-X", "collision-key")
+        ).isInstanceOf(IllegalStateException.class)
+         .hasMessageContaining("collision");
+    }
+
+    @Test
     void openRequestRaceFallbackRefetchesExistingRow() {
         UUID existingId = UUID.randomUUID();
         ErasureRequestLedger existing = new ErasureRequestLedger();
         existing.setRequestId(existingId);
         existing.setOrgId("acme");
         existing.setIdempotencyKey("race-key");
+        existing.setSubjectRefHmac(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
 
         // First lookup empty; concurrent insert race throws on save;
         // re-fetch returns row from competing transaction.
@@ -171,13 +198,28 @@ class ErasureRequestLedgerServiceTest {
 
     @Test
     void completeRequestDelegatesToRepo() {
+        // Codex 019e499c REVISE P1 #4 absorb: audit_event_v2 BIGINT + occurred_at composite
         UUID id = UUID.randomUUID();
-        UUID auditEventId = UUID.randomUUID();
-        when(repo.markCompleted(any(), any(), any())).thenReturn(1);
+        Long auditEventId = 12345L;
+        OffsetDateTime auditOccurredAt = OffsetDateTime.now();
+        when(repo.markCompleted(any(), any(), any(), any())).thenReturn(1);
 
-        service.completeRequest(id, auditEventId);
+        service.completeRequest(id, auditEventId, auditOccurredAt);
 
-        verify(repo).markCompleted(any(UUID.class), any(OffsetDateTime.class), any(UUID.class));
+        verify(repo).markCompleted(any(UUID.class), any(OffsetDateTime.class),
+            any(Long.class), any(OffsetDateTime.class));
+    }
+
+    @Test
+    void markFailedDelegatesToRepo() {
+        // Codex 019e499c REVISE P0 #1 absorb: durable failure tracking
+        UUID id = UUID.randomUUID();
+        when(repo.markFailed(any(), any(), any())).thenReturn(1);
+
+        service.markFailed(id, "TRANSACTION_ROLLBACK");
+
+        verify(repo).markFailed(any(UUID.class), any(OffsetDateTime.class),
+            org.mockito.ArgumentMatchers.eq("TRANSACTION_ROLLBACK"));
     }
 
     @Test
@@ -247,25 +289,61 @@ class ErasureRequestLedgerServiceTest {
     void deriveIdempotencyKeySelfServiceUsesHashAndDate() {
         String key = service.deriveIdempotencyKey("acme", "1204", "self-service-kvkk-art-11");
 
-        // self-{orgId}-{hashFirst16}-{YYYY-MM-DD}
+        // self-{orgId}-{subjectHash16}-{YYYY-MM-DD}
         assertThat(key).startsWith("self-acme-");
-        // Hash first 16 chars (privacy — raw subscriberId NOT in key)
+        // Subject hash first 16 chars (privacy — raw subscriberId NOT in key)
         assertThat(key).contains("0123456789abcdef");
         // ISO-8601 date stamp
         assertThat(key).contains(java.time.LocalDate.now().toString());
     }
 
     @Test
-    void deriveIdempotencyKeyAdminUsesEvidenceRef() {
+    void deriveIdempotencyKeyAdminContainsSubjectHashAndEvidenceHmacNotRaw() {
+        // Codex 019e499c REVISE P0 #2 + P1 #5 absorb: subject-scoped +
+        // evidence_ref HMAC digest (ham metin YASAK).
         String key = service.deriveIdempotencyKey("acme", "1204", "ticket-1234");
 
-        assertThat(key).startsWith("admin-acme-ticket-1234");
+        assertThat(key).startsWith("admin-acme-");
+        // Subject hash16 present
+        assertThat(key).contains("0123456789abcdef");
+        // Evidence HMAC digest present (not raw text)
+        assertThat(key).doesNotContain("ticket-1234");
     }
 
     @Test
-    void deriveIdempotencyKeyLegalUsesEvidenceRef() {
-        String key = service.deriveIdempotencyKey("acme", "1204", "Legal ticket LK-2026-451");
+    void deriveIdempotencyKeyLegalContainsSubjectHashAndEvidenceHmacNotRaw() {
+        // Codex 019e499c REVISE P0 #2 + P1 #5 absorb: subject-scoped +
+        // evidence_ref HMAC digest (ham metin YASAK).
+        String key = service.deriveIdempotencyKey(
+            "acme", "1204", "Legal ticket LK-2026-451 user contact alice@example.com"
+        );
 
-        assertThat(key).startsWith("legal-acme-Legal ticket LK-2026-451");
+        assertThat(key).startsWith("legal-acme-");
+        assertThat(key).contains("0123456789abcdef");
+        // PII fragmentleri ASLA ledger key materyalinde olmamalı
+        assertThat(key).doesNotContain("alice@example.com");
+        assertThat(key).doesNotContain("LK-2026-451");
+    }
+
+    @Test
+    void deriveIdempotencyKeyAdminTwoSubscribersSameEvidenceProducesDifferentKeys() {
+        // Codex 019e499c REVISE P0 #2 absorb: aynı evidenceRef farklı
+        // subscriber → ayrı key (collision YASAK).
+        // Override mock hashRecipient: bu testte iki farklı subscriber için
+        // farklı hash döndürmek lazım.
+        when(piiRedactor.hashRecipient("acme", "subscriber", "1204"))
+            .thenReturn("aaaaaaaaaaaaaaaa1111111111111111aaaaaaaaaaaaaaaa2222222222222222");
+        when(piiRedactor.hashRecipient("acme", "subscriber", "5678"))
+            .thenReturn("bbbbbbbbbbbbbbbb3333333333333333bbbbbbbbbbbbbbbb4444444444444444");
+        // Evidence HMAC aynı (her ikisi de aynı evidenceRef ile çağrılır)
+        when(piiRedactor.hashRecipient("acme", "subscriber", "evidence:ticket-1234"))
+            .thenReturn("ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+
+        String key1 = service.deriveIdempotencyKey("acme", "1204", "ticket-1234");
+        String key2 = service.deriveIdempotencyKey("acme", "5678", "ticket-1234");
+
+        assertThat(key1).isNotEqualTo(key2);
+        assertThat(key1).contains("aaaaaaaaaaaaaaaa");
+        assertThat(key2).contains("bbbbbbbbbbbbbbbb");
     }
 }

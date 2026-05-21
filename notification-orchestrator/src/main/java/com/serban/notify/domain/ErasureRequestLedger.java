@@ -88,27 +88,52 @@ public class ErasureRequestLedger {
     private OffsetDateTime closedAt;
 
     /**
-     * KVKK Madde 28 istisna (mahkeme kararı, aktif soruşturma vb.).
-     * Sadece DPO/legal erişimi (RBAC ayrı).
+     * COMPLETED → FAILED transition'a yol açan exception kategorisi
+     * (Codex 019e499c P0 #1 absorb): TRANSACTION_ROLLBACK /
+     * AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / UNKNOWN. PII sızması
+     * olmayacak şekilde sadece kategori; stack trace YASAK.
      */
-    @Column(name = "legal_hold_reason", length = 256)
-    private String legalHoldReason;
+    @Column(name = "failure_reason", length = 256)
+    private String failureReason;
+
+    /**
+     * KVKK Madde 28 istisna kategorisi (Codex 019e499c P1 #5 absorb).
+     * Serbest metin YASAK; sadece enum-like reason code.
+     */
+    @Column(name = "legal_hold_reason_code", length = 64)
+    private String legalHoldReasonCode;
+
+    /**
+     * Kısa external referans (mahkeme kararı no, ticket id) — insan
+     * okunabilir açıklama DEĞİL (Codex 019e499c P1 #5 absorb).
+     */
+    @Column(name = "legal_hold_external_reference", length = 128)
+    private String legalHoldExternalReference;
 
     /**
      * Cross-request deduplication. Aynı {@code (org_id, idempotency_key)}
      * ikinci başvuru ledger insert UNIQUE violation → service-side
-     * no-op (mevcut row döner).
+     * no-op (mevcut row döner). Codex 019e499c P1 #5 absorb: ham
+     * evidence_ref ASLA key materyali değil; HMAC digest kullanılır
+     * (PII minimization).
      */
     @Column(name = "idempotency_key", nullable = false, length = 128)
     private String idempotencyKey;
 
     /**
-     * Bağlı {@code audit_event_v2} row referansı (audit chain integrity).
-     * COMPLETED durumunda SUBSCRIBER_ERASURE_REQUEST /
-     * SUBSCRIBER_SELF_ERASURE_REQUEST event_id.
+     * Bağlı {@code audit_event_v2} row id (Codex 019e499c P1 #4 absorb:
+     * BIGINT, audit schema gerçek tipiyle uyumlu — UUID değildi). Composite
+     * PK (id, occurred_at) gereği {@link #lastAuditEventOccurredAt} ile
+     * birlikte JOIN edilir.
      */
     @Column(name = "last_audit_event_id")
-    private UUID lastAuditEventId;
+    private Long lastAuditEventId;
+
+    /**
+     * audit_event_v2 partition discriminator (Codex 019e499c P1 #4 absorb).
+     */
+    @Column(name = "last_audit_event_occurred_at")
+    private OffsetDateTime lastAuditEventOccurredAt;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -170,14 +195,23 @@ public class ErasureRequestLedger {
     public OffsetDateTime getClosedAt() { return closedAt; }
     public void setClosedAt(OffsetDateTime closedAt) { this.closedAt = closedAt; }
 
-    public String getLegalHoldReason() { return legalHoldReason; }
-    public void setLegalHoldReason(String legalHoldReason) { this.legalHoldReason = legalHoldReason; }
+    public String getFailureReason() { return failureReason; }
+    public void setFailureReason(String failureReason) { this.failureReason = failureReason; }
+
+    public String getLegalHoldReasonCode() { return legalHoldReasonCode; }
+    public void setLegalHoldReasonCode(String legalHoldReasonCode) { this.legalHoldReasonCode = legalHoldReasonCode; }
+
+    public String getLegalHoldExternalReference() { return legalHoldExternalReference; }
+    public void setLegalHoldExternalReference(String s) { this.legalHoldExternalReference = s; }
 
     public String getIdempotencyKey() { return idempotencyKey; }
     public void setIdempotencyKey(String idempotencyKey) { this.idempotencyKey = idempotencyKey; }
 
-    public UUID getLastAuditEventId() { return lastAuditEventId; }
-    public void setLastAuditEventId(UUID lastAuditEventId) { this.lastAuditEventId = lastAuditEventId; }
+    public Long getLastAuditEventId() { return lastAuditEventId; }
+    public void setLastAuditEventId(Long lastAuditEventId) { this.lastAuditEventId = lastAuditEventId; }
+
+    public OffsetDateTime getLastAuditEventOccurredAt() { return lastAuditEventOccurredAt; }
+    public void setLastAuditEventOccurredAt(OffsetDateTime t) { this.lastAuditEventOccurredAt = t; }
 
     public OffsetDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(OffsetDateTime createdAt) { this.createdAt = createdAt; }

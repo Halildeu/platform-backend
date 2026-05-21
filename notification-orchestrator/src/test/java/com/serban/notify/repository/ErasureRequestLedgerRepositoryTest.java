@@ -128,13 +128,15 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
 
     @Test
     void markCompletedSetsTerminalStateAndAuditId() {
+        // Codex 019e499c REVISE P1 #4 absorb: audit_event_v2 BIGINT + occurred_at composite
         ErasureRequestLedger entry = fixture("acme", "mark-cmp", ErasureRequestLedger.RequestSource.SELF_SERVICE);
         entry.setStatus(ErasureRequestLedger.Status.PROCESSING);
         ErasureRequestLedger saved = repo.save(entry);
 
-        UUID auditId = UUID.randomUUID();
+        Long auditId = 99999L;
         OffsetDateTime closedAt = OffsetDateTime.now();
-        int updated = repo.markCompleted(saved.getRequestId(), closedAt, auditId);
+        OffsetDateTime auditOccurredAt = OffsetDateTime.now();
+        int updated = repo.markCompleted(saved.getRequestId(), closedAt, auditId, auditOccurredAt);
 
         assertThat(updated).isEqualTo(1);
         ErasureRequestLedger refetched = repo.findById(saved.getRequestId()).orElseThrow();
@@ -144,6 +146,7 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
             org.assertj.core.api.Assertions.within(1L, java.time.temporal.ChronoUnit.SECONDS)
         );
         assertThat(refetched.getLastAuditEventId()).isEqualTo(auditId);
+        assertThat(refetched.getLastAuditEventOccurredAt()).isNotNull();
     }
 
     @Test
@@ -154,9 +157,39 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
         entry.setClosedAt(OffsetDateTime.now().minusHours(1));
         ErasureRequestLedger saved = repo.save(entry);
 
-        int updated = repo.markCompleted(saved.getRequestId(), OffsetDateTime.now(), UUID.randomUUID());
+        int updated = repo.markCompleted(saved.getRequestId(), OffsetDateTime.now(), 12345L, OffsetDateTime.now());
 
         assertThat(updated).isZero(); // WHERE clause excludes terminal status
+    }
+
+    @Test
+    void markFailedRecordsCategoryAndTerminalState() {
+        // Codex 019e499c REVISE P0 #1 absorb: durable failure tracking
+        ErasureRequestLedger entry = fixture("acme", "mark-fail", ErasureRequestLedger.RequestSource.ADMIN);
+        entry.setStatus(ErasureRequestLedger.Status.PROCESSING);
+        ErasureRequestLedger saved = repo.save(entry);
+
+        int updated = repo.markFailed(saved.getRequestId(), OffsetDateTime.now(), "TRANSACTION_ROLLBACK");
+
+        assertThat(updated).isEqualTo(1);
+        ErasureRequestLedger refetched = repo.findById(saved.getRequestId()).orElseThrow();
+        assertThat(refetched.getStatus()).isEqualTo(ErasureRequestLedger.Status.FAILED);
+        assertThat(refetched.getFailureReason()).isEqualTo("TRANSACTION_ROLLBACK");
+        assertThat(refetched.getClosedAt()).isNotNull();
+    }
+
+    @Test
+    void markFailedNoOpOnLegalHold() {
+        // LEGAL_HOLD durumundaki ledger row markFailed çağrısından korunur
+        // (operator manuel hold release gerekir)
+        ErasureRequestLedger entry = fixture("acme", "hold-row", ErasureRequestLedger.RequestSource.LEGAL);
+        entry.setStatus(ErasureRequestLedger.Status.LEGAL_HOLD);
+        entry.setLegalHoldReasonCode("COURT_ORDER");
+        ErasureRequestLedger saved = repo.save(entry);
+
+        int updated = repo.markFailed(saved.getRequestId(), OffsetDateTime.now(), "TRANSACTION_ROLLBACK");
+
+        assertThat(updated).isZero();
     }
 
     @Test

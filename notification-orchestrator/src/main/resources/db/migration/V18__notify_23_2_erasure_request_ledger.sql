@@ -30,19 +30,22 @@
 -- ============================================================================
 
 CREATE TABLE notify.erasure_request_ledger (
-    request_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id              VARCHAR(64)  NOT NULL,
-    subject_ref_hmac    VARCHAR(128) NOT NULL,
-    request_source      VARCHAR(32)  NOT NULL,
-    received_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    due_at              TIMESTAMPTZ  NOT NULL,
-    status              VARCHAR(32)  NOT NULL,
-    closed_at           TIMESTAMPTZ,
-    legal_hold_reason   VARCHAR(256),
-    idempotency_key     VARCHAR(128) NOT NULL,
-    last_audit_event_id UUID,
-    created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    request_id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id                           VARCHAR(64)  NOT NULL,
+    subject_ref_hmac                 VARCHAR(128) NOT NULL,
+    request_source                   VARCHAR(32)  NOT NULL,
+    received_at                      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    due_at                           TIMESTAMPTZ  NOT NULL,
+    status                           VARCHAR(32)  NOT NULL,
+    closed_at                        TIMESTAMPTZ,
+    failure_reason                   VARCHAR(256),
+    legal_hold_reason_code           VARCHAR(64),
+    legal_hold_external_reference    VARCHAR(128),
+    idempotency_key                  VARCHAR(128) NOT NULL,
+    last_audit_event_id              BIGINT,
+    last_audit_event_occurred_at     TIMESTAMPTZ,
+    created_at                       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at                       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     CONSTRAINT erasure_ledger_idemp_unique
         UNIQUE (org_id, idempotency_key),
     CONSTRAINT erasure_ledger_source_check
@@ -53,7 +56,18 @@ CREATE TABLE notify.erasure_request_ledger (
         CHECK (due_at > received_at),
     CONSTRAINT erasure_ledger_closed_consistency
         CHECK ((status IN ('COMPLETED', 'FAILED') AND closed_at IS NOT NULL)
-            OR (status IN ('RECEIVED', 'PROCESSING', 'LEGAL_HOLD') AND closed_at IS NULL))
+            OR (status IN ('RECEIVED', 'PROCESSING', 'LEGAL_HOLD') AND closed_at IS NULL)),
+    -- Codex 019e499c REVISE P1 #4: audit chain referansı composite PK + occurred_at
+    -- (audit_event_v2 BIGINT + partition discriminator). Şu an
+    -- AuditEventPublisher event_id döndürmüyor → null kalır; follow-up
+    -- (audit-event id capture) sonrası backfill yapılır.
+    -- Codex 019e499c REVISE P1 #5: legal_hold serbest metin → reason_code
+    -- (enum-like) + external_reference (ticket id) ayrı kolonlar; PII
+    -- minimization. Kullanıcı operator dilediği uzun metni buraya
+    -- yazamaz.
+    CONSTRAINT erasure_ledger_audit_chain_consistency
+        CHECK ((last_audit_event_id IS NULL AND last_audit_event_occurred_at IS NULL)
+            OR (last_audit_event_id IS NOT NULL AND last_audit_event_occurred_at IS NOT NULL))
 );
 
 COMMENT ON TABLE notify.erasure_request_ledger IS
@@ -75,15 +89,32 @@ COMMENT ON COLUMN notify.erasure_request_ledger.idempotency_key IS
     'ikinci başvuru ledger insert UNIQUE violation → service-side '
     'no-op (request_id mevcut row döner).';
 
-COMMENT ON COLUMN notify.erasure_request_ledger.legal_hold_reason IS
-    'KVKK Madde 28 istisna (mahkeme kararı, aktif soruşturma vb.) '
-    'sebebiyle erasure ertelenirse operator açıklaması. Sadece '
-    'DPO/legal erişimi (RBAC ayrı).';
+COMMENT ON COLUMN notify.erasure_request_ledger.legal_hold_reason_code IS
+    'KVKK Madde 28 istisna kategorisi (Codex 019e499c P1 #5 absorb): '
+    'COURT_ORDER / ACTIVE_INVESTIGATION / REGULATORY_RETENTION / '
+    'TAX_AUDIT_5Y / OTHER. Serbest metin YASAK (PII sızması riski).';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.legal_hold_external_reference IS
+    'Mahkeme kararı / soruşturma ticket / vergi denetim no — kısa '
+    'referans kodu; insan okunabilir açıklama DEĞİL.';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.failure_reason IS
+    'COMPLETED → FAILED transition'' a yol açan exception kategorisi '
+    '(Codex 019e499c P0 #1 absorb): TRANSACTION_ROLLBACK / '
+    'AUDIT_PUBLISH_ERROR / DB_CONSTRAINT / UNKNOWN. PII sızması '
+    'olmayacak şekilde sadece kategori; stack trace YASAK.';
 
 COMMENT ON COLUMN notify.erasure_request_ledger.last_audit_event_id IS
-    'Bağlı audit_event_v2 row referansı (audit chain integrity). '
-    'COMPLETED durumunda SUBSCRIBER_ERASURE_REQUEST / '
-    'SUBSCRIBER_SELF_ERASURE_REQUEST event_id.';
+    'Bağlı audit_event_v2 row BIGINT id (Codex 019e499c P1 #4 absorb: '
+    'UUID değil, schema gerçek tipiyle uyumlu). Composite PK '
+    '(id, occurred_at) gereği last_audit_event_occurred_at ile '
+    'birlikte JOIN edilir. AuditEventPublisher event_id döndürene '
+    'kadar null kalır.';
+
+COMMENT ON COLUMN notify.erasure_request_ledger.last_audit_event_occurred_at IS
+    'audit_event_v2 partition discriminator (composite PK) — JOIN '
+    'için gerekli. last_audit_event_id ile NULL-NOT NULL atomic '
+    '(CHECK constraint).';
 
 -- ============================================================================
 -- 2) İndeksler — SLA scan + idempotency check + reporting

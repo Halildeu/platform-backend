@@ -61,9 +61,14 @@ public interface ErasureRequestLedgerRepository
     List<ErasureRequestLedger> findOverdueRequests(@Param("now") OffsetDateTime now);
 
     /**
-     * Status transition with timestamp atomicity. PROCESSING → COMPLETED
-     * geçişinde {@code closed_at} ve {@code last_audit_event_id}
-     * birlikte yazılır. Optimistic — caller @Transactional sağlar.
+     * Status transition with timestamp atomicity. PROCESSING/RECEIVED →
+     * COMPLETED geçişinde {@code closed_at}, {@code last_audit_event_id}
+     * ve {@code last_audit_event_occurred_at} birlikte yazılır.
+     * LEGAL_HOLD ve terminal status hariç. Optimistic — caller
+     * @Transactional sağlar.
+     *
+     * <p>Codex 019e499c REVISE P1 #4 absorb: audit_event_v2 schema
+     * uyumlu BIGINT + occurred_at composite (UUID değil).
      */
     @Modifying
     @Query("""
@@ -71,6 +76,7 @@ public interface ErasureRequestLedgerRepository
         SET l.status = com.serban.notify.domain.ErasureRequestLedger.Status.COMPLETED,
             l.closedAt = :closedAt,
             l.lastAuditEventId = :auditEventId,
+            l.lastAuditEventOccurredAt = :auditEventOccurredAt,
             l.updatedAt = :closedAt
         WHERE l.requestId = :requestId
           AND l.status IN (
@@ -81,7 +87,32 @@ public interface ErasureRequestLedgerRepository
     int markCompleted(
         @Param("requestId") UUID requestId,
         @Param("closedAt") OffsetDateTime closedAt,
-        @Param("auditEventId") UUID auditEventId
+        @Param("auditEventId") Long auditEventId,
+        @Param("auditEventOccurredAt") OffsetDateTime auditEventOccurredAt
+    );
+
+    /**
+     * Status transition FAILED — KVKK Madde 13.2 audit kanıtı için
+     * runtime hatasında ledger row görünür kalmalı. Codex 019e499c
+     * REVISE P0 #1 absorb: durable failure tracking.
+     */
+    @Modifying
+    @Query("""
+        UPDATE ErasureRequestLedger l
+        SET l.status = com.serban.notify.domain.ErasureRequestLedger.Status.FAILED,
+            l.closedAt = :closedAt,
+            l.failureReason = :failureReason,
+            l.updatedAt = :closedAt
+        WHERE l.requestId = :requestId
+          AND l.status IN (
+              com.serban.notify.domain.ErasureRequestLedger.Status.RECEIVED,
+              com.serban.notify.domain.ErasureRequestLedger.Status.PROCESSING
+          )
+        """)
+    int markFailed(
+        @Param("requestId") UUID requestId,
+        @Param("closedAt") OffsetDateTime closedAt,
+        @Param("failureReason") String failureReason
     );
 
     /**

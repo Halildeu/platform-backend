@@ -245,6 +245,53 @@ class ErasureServiceTest {
         assertThat(result.inboxRowsDeleted()).isEqualTo(5);
     }
 
+    @Test
+    void legalHoldLedgerThrowsAndBlocksErasure() {
+        // Codex 019e499c REVISE P1 #3 absorb: LEGAL_HOLD durumundaki
+        // ledger row üzerinde erasure çalıştırılamaz.
+        ErasureRequestLedger holdEntry = new ErasureRequestLedger();
+        holdEntry.setRequestId(UUID.fromString("00000000-0000-0000-0000-00000000beef"));
+        holdEntry.setOrgId("acme");
+        holdEntry.setStatus(ErasureRequestLedger.Status.LEGAL_HOLD);
+        holdEntry.setLegalHoldReasonCode("COURT_ORDER");
+        holdEntry.setDueAt(OffsetDateTime.now().plusDays(30));
+        when(ledgerService.openRequest(anyString(), anyString(), any(), any()))
+            .thenReturn(holdEntry);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+            service.eraseSubscriber(new ErasureService.EraseRequest(
+                "acme", "1204", "subject_request", "court-order-ticket"
+            ))
+        ).isInstanceOf(ErasureService.LegalHoldException.class);
+
+        // Erasure işlemleri YAPILMAMALI — intent/delivery/inbox repo
+        // hiç çağrılmamış olmalı.
+        verify(intentRepo, never()).findIntentsBySubscriber(anyString(), anyString());
+        verify(inboxRepo, never()).deleteByOrgIdAndSubscriberId(anyString(), anyString());
+    }
+
+    @Test
+    void completedLedgerReturnsIdempotentNoOpWithoutMutating() {
+        // Idempotent ikinci çağrı — ledger zaten COMPLETED → no-op.
+        ErasureRequestLedger completedEntry = new ErasureRequestLedger();
+        completedEntry.setRequestId(UUID.fromString("00000000-0000-0000-0000-000000003456"));
+        completedEntry.setOrgId("acme");
+        completedEntry.setStatus(ErasureRequestLedger.Status.COMPLETED);
+        completedEntry.setDueAt(OffsetDateTime.now().plusDays(30));
+        completedEntry.setClosedAt(OffsetDateTime.now());
+        when(ledgerService.openRequest(anyString(), anyString(), any(), any()))
+            .thenReturn(completedEntry);
+
+        var result = service.eraseSubscriber(new ErasureService.EraseRequest(
+            "acme", "1204", "subject_request", "ticket-replay"
+        ));
+
+        assertThat(result.intentsErased()).isZero();
+        assertThat(result.inboxRowsDeleted()).isZero();
+        // Hiçbir erasure işlemi yapılmadı
+        verify(intentRepo, never()).findIntentsBySubscriber(anyString(), anyString());
+    }
+
     private NotificationIntent newIntent(String intentId, Map<String, Object> payload) {
         NotificationIntent i = new NotificationIntent();
         i.setIntentId(intentId);
