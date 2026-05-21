@@ -44,6 +44,9 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
     @Autowired
     ErasureRequestLedgerRepository repo;
 
+    @jakarta.persistence.PersistenceContext
+    jakarta.persistence.EntityManager em;
+
     @Test
     void savePersistsAllFieldsAndAutoGeneratesIds() {
         ErasureRequestLedger entry = new ErasureRequestLedger();
@@ -142,6 +145,11 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
         OffsetDateTime auditOccurredAt = OffsetDateTime.now();
         int updated = repo.markCompleted(saved.getRequestId(), closedAt, auditId, auditOccurredAt);
 
+        // @Modifying query bypasses Hibernate L1 cache; em.flush + clear
+        // gerekli refetched row'ın DB'den taze okunması için.
+        em.flush();
+        em.clear();
+
         assertThat(updated).isEqualTo(1);
         ErasureRequestLedger refetched = repo.findById(saved.getRequestId()).orElseThrow();
         assertThat(refetched.getStatus()).isEqualTo(ErasureRequestLedger.Status.COMPLETED);
@@ -178,6 +186,10 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
 
         int updated = repo.markFailed(saved.getRequestId(), OffsetDateTime.now(), "TRANSACTION_ROLLBACK");
 
+        // @Modifying query L1 cache bypass; em.flush + clear refetch için
+        em.flush();
+        em.clear();
+
         assertThat(updated).isEqualTo(1);
         ErasureRequestLedger refetched = repo.findById(saved.getRequestId()).orElseThrow();
         assertThat(refetched.getStatus()).isEqualTo(ErasureRequestLedger.Status.PROCESSING);
@@ -199,8 +211,9 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
         ErasureRequestLedger saved = repo.save(entry);
 
         repo.markFailed(saved.getRequestId(), OffsetDateTime.now(), "TRANSACTION_ROLLBACK");
-        // Force flush to write @Modifying query immediately for re-fetch
-        repo.flush();
+        // @Modifying query L1 cache bypass; em.flush + clear refetch için
+        em.flush();
+        em.clear();
 
         List<ErasureRequestLedger> overdueList = repo.findOverdueRequests(OffsetDateTime.now());
         assertThat(overdueList)
