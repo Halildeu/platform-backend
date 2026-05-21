@@ -38,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 @ContextConfiguration(initializers = AbstractPostgresTest.Initializer.class)
+@org.springframework.transaction.annotation.Transactional
 class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
 
     @Autowired
@@ -101,13 +102,16 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
 
     @Test
     void findOverdueRequestsFiltersByDueAtAndStatus() {
-        // Status RECEIVED + due_at past → overdue
+        // Status RECEIVED + due_at past → overdue. CHECK constraint
+        // due_at > received_at gereği received_at past'ta set edilmeli.
         ErasureRequestLedger overdue = fixture("acme", "ovd-1", ErasureRequestLedger.RequestSource.ADMIN);
+        overdue.setReceivedAt(OffsetDateTime.now().minusDays(31));
         overdue.setDueAt(OffsetDateTime.now().minusHours(2));
         repo.save(overdue);
 
         // Status COMPLETED + due_at past → NOT overdue (terminal)
         ErasureRequestLedger completed = fixture("acme", "cmp-1", ErasureRequestLedger.RequestSource.ADMIN);
+        completed.setReceivedAt(OffsetDateTime.now().minusDays(35));
         completed.setDueAt(OffsetDateTime.now().minusHours(5));
         completed.setStatus(ErasureRequestLedger.Status.COMPLETED);
         completed.setClosedAt(OffsetDateTime.now().minusHours(4));
@@ -186,14 +190,17 @@ class ErasureRequestLedgerRepositoryTest extends AbstractPostgresTest {
     void markFailedRowRemainsVisibleToSlaWatchdog() {
         // Codex 019e499c iter-3 REVISE P0 absorb: KVKK Madde 13.2
         // unresolved teknik hata 30-gün dolduğunda watchdog tarafından
-        // görünür kalmalı.
+        // görünür kalmalı. CHECK constraint due_at > received_at gereği
+        // received_at past'ta set edilmeli.
         ErasureRequestLedger entry = fixture("acme", "fail-sla", ErasureRequestLedger.RequestSource.ADMIN);
         entry.setStatus(ErasureRequestLedger.Status.PROCESSING);
-        // due_at past — overdue
+        entry.setReceivedAt(OffsetDateTime.now().minusDays(31));
         entry.setDueAt(OffsetDateTime.now().minusHours(1));
         ErasureRequestLedger saved = repo.save(entry);
 
         repo.markFailed(saved.getRequestId(), OffsetDateTime.now(), "TRANSACTION_ROLLBACK");
+        // Force flush to write @Modifying query immediately for re-fetch
+        repo.flush();
 
         List<ErasureRequestLedger> overdueList = repo.findOverdueRequests(OffsetDateTime.now());
         assertThat(overdueList)
