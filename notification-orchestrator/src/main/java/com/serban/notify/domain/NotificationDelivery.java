@@ -25,7 +25,17 @@ public class NotificationDelivery {
         ACCEPTED,
         DELIVERED, FAILED, BOUNCED, RETRY,
         BLOCKED_BY_PREFERENCE, BLOCKED_BY_AUTHZ, BLOCKED_BY_IDEMPOTENCY,
-        BLOCKED_EXTERNAL_NOT_ALLOWED
+        BLOCKED_EXTERNAL_NOT_ALLOWED,
+        /**
+         * Faz 23.8 M7 T4.3.b: email recipient suppression list match
+         * (HARD_BOUNCE / SPAM_COMPLAINT / SOFT_BOUNCE_REPEATED / MANUAL).
+         * Send pipeline guard ({@code DeliveryEligibilityService}) rejects
+         * the dispatch before {@code SmtpAdapter.send()}; delivery row
+         * created with this terminal status + audit event. Provider IP
+         * reputation koruma + KVKK 23.2.B sürdürülmüş erasure (raw email
+         * never stored — recipient_hash join only).
+         */
+        BLOCKED_BY_SUPPRESSION
     }
 
     /**

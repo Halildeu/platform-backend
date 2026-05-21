@@ -51,6 +51,11 @@ public class DeliveryEligibilityService {
     private final boolean preferencesEnabled;
     private final boolean authzEnabled;
     private WorkerMetrics workerMetrics;  // optional — Codex Q6 absorb
+    // Faz 23.8 M7 T4.3.b — email suppression guard (Codex 019e492f).
+    // Optional setter injection: nullable in legacy unit tests; Spring
+    // populates in production context. Guard skipped for non-email
+    // channels (SMS suppression is separate scope).
+    private com.serban.notify.suppression.EmailSuppressionService emailSuppressionService;
 
     public DeliveryEligibilityService(
         SubscriberPreferenceService preferenceService,
@@ -64,6 +69,20 @@ public class DeliveryEligibilityService {
         this.authzEnabled = authzEnabled;
         log.info("DeliveryEligibilityService activated: preferences={} authz={}",
             preferencesEnabled, authzEnabled);
+    }
+
+    /**
+     * Optional EmailSuppressionService injection (Faz 23.8 M7 T4.3.b).
+     * Setter injection — null in legacy unit tests; Spring populates in
+     * production context. Guard skipped silently when the service is
+     * absent (suppression feature is additive; existing behavior
+     * preserved).
+     */
+    @Autowired(required = false)
+    public void setEmailSuppressionService(
+        com.serban.notify.suppression.EmailSuppressionService service
+    ) {
+        this.emailSuppressionService = service;
     }
 
     /**
@@ -87,6 +106,32 @@ public class DeliveryEligibilityService {
     public EligibilityDecision evaluate(
         NotificationIntent intent, NotificationTemplate template, DeliveryTarget target
     ) {
+        // Guard 0 (Faz 23.8 M7 T4.3.b): email suppression list match
+        // Provider IP reputation koruma — hard-bounce / spam-complaint /
+        // soft-bounce-repeated alıcılar SMTP edge'e gönderilmez. Critical
+        // bypass YOK (Codex 019e492f Q3 absorb): permanent reasons OTP/
+        // security mesajları için bile bypass edilmez (yanlış adrese
+        // OTP göndermek = reputation tarama; mesaj zaten teslim olmaz).
+        if (emailSuppressionService != null
+            && "email".equals(target.channel())
+            && target.recipientHash() != null) {
+            String orgId = intent.getOrgId();
+            var suppressed = emailSuppressionService.isCurrentlyActive(orgId, target.recipientHash());
+            if (suppressed.isPresent()) {
+                var row = suppressed.get();
+                // Locale.ROOT — Turkish default locale dotless-I rule would
+                // mangle SPAM_COMPLAINT.lowercase() into "spam_complaınt"
+                // (note dotted small letter "ı" instead of "i"), breaking
+                // policy keys + downstream string matching.
+                return EligibilityDecision.blocked(
+                    NotificationDelivery.Status.BLOCKED_BY_SUPPRESSION,
+                    "email_suppression_" + row.getReason().name().toLowerCase(java.util.Locale.ROOT),
+                    "email suppression match: reason=" + row.getReason()
+                        + " bounce_count=" + row.getBounceCount()
+                );
+            }
+        }
+
         // Guard 1: external policy
         if (isExternalRecipient(target) && !template.isExternalAllowed()) {
             return EligibilityDecision.blocked(
