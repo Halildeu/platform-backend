@@ -133,11 +133,29 @@ public class FblService {
             return FblOutcome.UNRESOLVED;
         }
 
+        // Defense-in-depth (Codex 019e4fc6 iter-2 HIGH #1): resolveFbl...
+        // already filters channel='email'; this guard ensures a future query
+        // change can never let a non-email delivery drive an email-channel
+        // suppression (subscriber SMS + email share recipient_hash).
+        if (!"email".equalsIgnoreCase(resolution.getChannel())) {
+            log.warn("FBL unresolved: correlated delivery channel={} not email",
+                resolution.getChannel());
+            metrics.received(FblMetrics.OUTCOME_UNRESOLVED);
+            return FblOutcome.UNRESOLVED;
+        }
+
         String orgId = resolution.getOrgId();
         String recipientHash = resolution.getRecipientHash();
         String provider = normalizeProvider(report.reporter());
+        // Codex 019e4fc6 iter-2 MEDIUM #3: fingerprint correlator falls back
+        // originalMessageId -> xNotifyMessageId -> matchedCandidate. An ARF
+        // missing an original Message-ID (but with a resolved correlator)
+        // still gets a stable, complaint-specific fingerprint instead of
+        // collapsing every complaint from one reporter onto a single hash.
+        String fingerprintCorrelator = firstNonBlank(
+            report.originalMessageId(), report.xNotifyMessageId(), matchedCandidate);
         String fingerprint = FblFingerprint.compute(
-            report.reporter(), report.reportMessageId(), report.originalMessageId());
+            report.reporter(), report.reportMessageId(), fingerprintCorrelator);
 
         // Idempotent ledger insert — rowcount 0 means already processed.
         int inserted = bounceEventRepository.insertIfAbsent(
@@ -198,6 +216,16 @@ public class FblService {
             return EmailSuppression.RecipientType.SUBSCRIBER;
         }
         return EmailSuppression.RecipientType.EXTERNAL;
+    }
+
+    /** First non-blank value, or null when all are blank. */
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return null;
     }
 
     /**

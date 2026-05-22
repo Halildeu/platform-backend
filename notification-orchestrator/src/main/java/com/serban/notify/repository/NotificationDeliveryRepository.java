@@ -44,6 +44,15 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
      *
      * <p>Returns the authoritative {@code recipient_hash} straight from the
      * delivery row — callers MUST NOT recompute it from the ARF address.
+     *
+     * <p>Codex 019e4fc6 iter-2 HIGH #1: the query is restricted to
+     * {@code channel = 'email'}. Subscriber SMS and subscriber email
+     * deliveries both hash the {@code subscriberId} into {@code
+     * recipient_hash}; without the channel filter a forged or coincidental
+     * ARF correlator matching a non-email delivery could write an
+     * email-channel suppression row for that subscriber — permanently
+     * blocking their email. An ARF spam complaint is, by definition,
+     * about an email delivery.
      */
     @Query("""
         SELECT i.orgId AS orgId,
@@ -54,6 +63,7 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
         FROM NotificationDelivery d
         JOIN NotificationIntent i ON i.intentId = d.intentId
         WHERE d.providerMsgId = :providerMsgId
+          AND d.channel = 'email'
         """)
     Optional<FblDeliveryResolution> resolveFblByProviderMsgId(
         @Param("providerMsgId") String providerMsgId

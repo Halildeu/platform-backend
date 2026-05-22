@@ -99,7 +99,11 @@ public class EmailSuppression {
     @Column(name = "last_provider", length = 64)
     private String lastProvider;
 
-    @Column(name = "last_provider_msg_id", length = 128)
+    // V22 widened last_provider_msg_id 128 -> 255 (align with
+    // notification_delivery.provider_msg_id); entity mapping kept in sync so
+    // Hibernate ddl-auto=validate does not fail context startup
+    // (Codex 019e4fc6 iter-2 HIGH #2).
+    @Column(name = "last_provider_msg_id", length = 255)
     private String lastProviderMsgId;
 
     @Column(name = "last_event_fingerprint", length = 128)

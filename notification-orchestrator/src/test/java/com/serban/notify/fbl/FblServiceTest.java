@@ -77,6 +77,10 @@ class FblServiceTest {
      * Mockito UnfinishedStubbing.
      */
     private static FblDeliveryResolution resolution() {
+        return resolutionWithChannel("email");
+    }
+
+    private static FblDeliveryResolution resolutionWithChannel(String channel) {
         return new FblDeliveryResolution() {
             @Override public String getOrgId() { return "org-1"; }
             @Override public String getRecipientHash() { return "recip-hash-abc"; }
@@ -84,7 +88,7 @@ class FblServiceTest {
                 return NotificationDelivery.RecipientType.EXTERNAL;
             }
             @Override public String getIntentId() { return "intent-1"; }
-            @Override public String getChannel() { return "email"; }
+            @Override public String getChannel() { return channel; }
         };
     }
 
@@ -184,6 +188,45 @@ class FblServiceTest {
             .containsEntry("reason", "SPAM_COMPLAINT")
             .containsEntry("feedback_type", "abuse")
             .containsKey("event_fingerprint");
+    }
+
+    @Test
+    void nonEmailChannelResolutionIsSkipped() throws Exception {
+        // Codex 019e4fc6 iter-2 HIGH #1: a non-email correlated delivery must
+        // never drive an email-channel suppression (defense-in-depth guard).
+        when(parser.parse(any())).thenReturn(abuseReport());
+        when(deliveryRepository.resolveFblByProviderMsgId(anyString()))
+            .thenReturn(Optional.of(resolutionWithChannel("sms")));
+
+        FblService.FblOutcome outcome = service.ingest(rawArf);
+
+        assertThat(outcome).isEqualTo(FblService.FblOutcome.UNRESOLVED);
+        verify(metrics).received(FblMetrics.OUTCOME_UNRESOLVED);
+        verify(suppressionService, never()).upsert(any());
+    }
+
+    @Test
+    void originalMessageIdAbsentStillSuppressesViaCorrelatorFallback() throws Exception {
+        // Codex 019e4fc6 iter-2 MEDIUM #3: no original Message-ID, but an
+        // X-Notify-Message-ID correlator is present — fingerprint must still
+        // be computed (fallback) and the complaint suppressed.
+        ArfReport noOrigMsgId = new ArfReport(
+            "Microsoft-Office365-FBL/1.0", "abuse", "<arf-report-002@office365.com>",
+            null, "notify-corr-999", List.of("notify-corr-999"),
+            "complainer@example.com", null,
+            OffsetDateTime.parse("2026-05-22T12:00:00Z"),
+            "feedback_type=abuse; reporter=Microsoft-Office365-FBL/1.0");
+        when(parser.parse(any())).thenReturn(noOrigMsgId);
+        when(deliveryRepository.resolveFblByProviderMsgId(anyString()))
+            .thenReturn(Optional.of(resolution()));
+        when(bounceEventRepository.insertIfAbsent(anyString(), anyString(), anyString(),
+            anyString(), anyString(), anyString(), anyString(), any(), anyString()))
+            .thenReturn(1);
+
+        FblService.FblOutcome outcome = service.ingest(rawArf);
+
+        assertThat(outcome).isEqualTo(FblService.FblOutcome.SUPPRESSED);
+        verify(suppressionService).upsert(any());
     }
 
     @Test
