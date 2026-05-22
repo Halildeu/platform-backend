@@ -15,6 +15,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.Locale;
 import java.util.Properties;
 
 /**
@@ -32,6 +33,20 @@ import java.util.Properties;
  * bean is created only when {@code notify.fbl.mailbox.enabled=true}
  * ({@code @ConditionalOnProperty}). Default off — the operator activates
  * after seeding the IMAP credentials (see RB-fbl-mailbox-activation.md).
+ *
+ * <p><b>Auth contract</b> (Codex 019e4ffd iter-2 MEDIUM): PR-1 implements
+ * <b>basic IMAP auth only</b> ({@code username}/{@code password}). Exchange
+ * Online disables IMAP Basic Auth per-tenant in many tenants, so Office 365
+ * activation MUST be gated on a live "tenant IMAP AUTH succeeds" smoke
+ * (RB-fbl-mailbox-activation.md) — this worker is not unconditionally
+ * "Office 365 ready". {@code notify.fbl.mailbox.auth-mode} accepts only
+ * {@code basic}; an XOAUTH2 token flow is a separate future PR and any
+ * other value fails fast at bean creation.
+ *
+ * <p><b>Bounded I/O</b> (Codex 019e4ffd iter-2 HIGH): the IMAP store is
+ * opened with explicit connect/read/write timeouts + TLS server-identity
+ * verification so a network blackhole can never block the shared
+ * {@code @Scheduled} thread indefinitely.
  *
  * <p><b>Multi-pod safety</b>: no IMAP-level locking is needed. If two pods
  * fetch the same message, {@code FblService} idempotency
@@ -61,6 +76,9 @@ public class FblMailboxPollingWorker {
     private final String password;
     private final String folderName;
     private final int batchSize;
+    private final int connectionTimeoutMs;
+    private final int readTimeoutMs;
+    private final int writeTimeoutMs;
     private final boolean schedulingEnabled;
 
     public FblMailboxPollingWorker(
@@ -72,20 +90,42 @@ public class FblMailboxPollingWorker {
         @Value("${notify.fbl.mailbox.password:}") String password,
         @Value("${notify.fbl.mailbox.folder:INBOX}") String folderName,
         @Value("${notify.fbl.mailbox.batch-size:50}") int batchSize,
+        @Value("${notify.fbl.mailbox.auth-mode:basic}") String authMode,
+        @Value("${notify.fbl.mailbox.connection-timeout-ms:5000}") int connectionTimeoutMs,
+        @Value("${notify.fbl.mailbox.read-timeout-ms:10000}") int readTimeoutMs,
+        @Value("${notify.fbl.mailbox.write-timeout-ms:10000}") int writeTimeoutMs,
         @Value("${notify.fbl.mailbox.scheduling-enabled:true}") boolean schedulingEnabled
     ) {
+        // Codex 019e4ffd iter-2 MEDIUM: auth contract explicit — only basic
+        // IMAP auth is implemented in PR-1; fail fast on any other value so a
+        // misconfigured XOAUTH2 expectation never silently degrades to basic.
+        String normalizedAuthMode = authMode == null
+            ? "basic" : authMode.trim().toLowerCase(Locale.ROOT);
+        if (!"basic".equals(normalizedAuthMode)) {
+            throw new IllegalStateException(
+                "notify.fbl.mailbox.auth-mode='" + authMode + "' unsupported — "
+                + "only 'basic' implemented (XOAUTH2 is a separate future PR)");
+        }
         this.fblService = fblService;
-        this.protocol = protocol;
+        // Codex 019e4ffd iter-2 HIGH: normalise protocol (trim + lowercase)
+        // so property keys (mail.<protocol>.*) are deterministic.
+        this.protocol = (protocol == null || protocol.isBlank())
+            ? "imaps" : protocol.trim().toLowerCase(Locale.ROOT);
         this.host = host;
         this.port = port;
         this.username = username;
         this.password = password;
         this.folderName = folderName;
         this.batchSize = Math.max(batchSize, 1);
+        this.connectionTimeoutMs = Math.max(connectionTimeoutMs, 1000);
+        this.readTimeoutMs = Math.max(readTimeoutMs, 1000);
+        this.writeTimeoutMs = Math.max(writeTimeoutMs, 1000);
         this.schedulingEnabled = schedulingEnabled;
         log.info("FblMailboxPollingWorker activated: protocol={} host={} port={} "
-                + "folder={} batchSize={} scheduling={}",
-            protocol, mask(host), port, folderName, this.batchSize, schedulingEnabled);
+                + "folder={} batchSize={} authMode=basic connectTimeout={}ms "
+                + "readTimeout={}ms scheduling={}",
+            this.protocol, mask(host), port, folderName, this.batchSize,
+            this.connectionTimeoutMs, this.readTimeoutMs, schedulingEnabled);
     }
 
     /**
@@ -138,15 +178,35 @@ public class FblMailboxPollingWorker {
 
     /** Open an IMAP(S) store connection. Package-private for test override. */
     Store connectStore() throws MessagingException {
-        Properties props = new Properties();
-        props.put("mail.store.protocol", protocol);
-        if (protocol.endsWith("s")) {
-            props.put("mail." + protocol + ".ssl.enable", "true");
-        }
-        Session session = Session.getInstance(props);
+        Session session = Session.getInstance(buildMailProperties());
         Store store = session.getStore(protocol);
         store.connect(host, port, username, password);
         return store;
+    }
+
+    /**
+     * Build the JavaMail session properties (Codex 019e4ffd iter-2 HIGH):
+     * bounded connect/read/write timeouts so a network blackhole can never
+     * block the shared {@code @Scheduled} thread indefinitely, and — for an
+     * SSL protocol — TLS server-identity verification.
+     *
+     * <p>Package-private so the property contract is unit-testable without a
+     * live IMAP server.
+     */
+    Properties buildMailProperties() {
+        Properties props = new Properties();
+        props.put("mail.store.protocol", protocol);
+        props.put("mail." + protocol + ".connectiontimeout",
+            String.valueOf(connectionTimeoutMs));
+        props.put("mail." + protocol + ".timeout",
+            String.valueOf(readTimeoutMs));
+        props.put("mail." + protocol + ".writetimeout",
+            String.valueOf(writeTimeoutMs));
+        if (protocol.endsWith("s")) {
+            props.put("mail." + protocol + ".ssl.enable", "true");
+            props.put("mail." + protocol + ".ssl.checkserveridentity", "true");
+        }
+        return props;
     }
 
     /**
