@@ -9,8 +9,12 @@ import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.repository.EndpointAuditEventRepository;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -32,25 +36,31 @@ public class EndpointAuditService {
 
     /**
      * Record an audit event with a tenant-scoped tamper-evident hash-chain
-     * (BE-016, Codex 019e4f8e).
+     * (BE-016, Codex 019e4f8e + post-impl review absorb).
      *
-     * <p>Within the caller transaction this:
+     * <p>{@code @Transactional(MANDATORY)} — this MUST run inside an existing
+     * transaction. The advisory lock is transaction-scoped, so without an outer
+     * transaction the lock would release at statement end and the tail-read +
+     * insert would lose serialization (Codex P1-2). All current callers are
+     * already {@code @Transactional}.
+     *
+     * <p>Ordering (Codex P1-1 — chain order must be deterministic):
      * <ol>
-     *   <li>assigns the row id + a microsecond-normalized {@code occurredAt}
-     *       up-front (both feed the canonical payload, so they must be known
-     *       before hashing);</li>
-     *   <li>acquires the per-tenant {@link AuditChainLock} so concurrent
-     *       writers for the same tenant cannot fork the chain;</li>
-     *   <li>reads the current chain tail (most recent hashed row for the
-     *       tenant; legacy pre-BE-016 null-hash rows are skipped, so the first
-     *       post-deploy row is the tenant GENESIS);</li>
-     *   <li>computes {@code event_hash = SHA-256(domain || prev || canonical)}
-     *       and persists the four hash columns.</li>
+     *   <li>set every non-chain field + {@code event_hash_alg/version};</li>
+     *   <li>acquire the per-tenant {@link AuditChainLock} FIRST — before the
+     *       chain-order timestamp is assigned;</li>
+     *   <li>read the current chain tail under the lock (legacy pre-BE-016
+     *       null-hash rows are skipped, so the first post-deploy row is the
+     *       tenant GENESIS);</li>
+     *   <li>assign {@code occurredAt} as strictly monotonic per tenant:
+     *       {@code max(now, tail.occurredAt + 1µs)} — so chain-write order and
+     *       {@code ORDER BY occurred_at} agree even for same-microsecond or
+     *       lock-reordered concurrent writers;</li>
+     *   <li>compute {@code event_hash = SHA-256(domain || prev || canonical)}
+     *       and persist.</li>
      * </ol>
-     *
-     * <p>MUST run inside an active transaction (the advisory lock is
-     * transaction-scoped). All current callers are {@code @Transactional}.
      */
+    @Transactional(propagation = Propagation.MANDATORY)
     public EndpointAuditEvent record(UUID tenantId,
                                      EndpointDevice device,
                                      EndpointCommand command,
@@ -62,11 +72,7 @@ public class EndpointAuditService {
                                      Map<String, Object> beforeState,
                                      Map<String, Object> afterState) {
         EndpointAuditEvent event = new EndpointAuditEvent();
-        // id + occurredAt assigned up-front: both are part of the canonical
-        // hash payload, so they must be deterministic before the hash is
-        // computed (the @PrePersist occurredAt fallback stays as a safety net).
         event.setId(UUID.randomUUID());
-        event.setOccurredAt(AuditChainSupport.normalizeTimestamp(clock.instant()));
         event.setTenantId(tenantId);
         event.setDevice(device);
         event.setCommand(command);
@@ -77,15 +83,26 @@ public class EndpointAuditService {
         event.setMetadata(metadata);
         event.setBeforeState(beforeState);
         event.setAfterState(afterState);
-
-        // BE-016: serialize the tenant chain, link to the prior hash, hash.
-        auditChainLock.lockTenantChain(tenantId);
-        String prevHash = repository
-                .findTop1ByTenantIdAndEventHashIsNotNullOrderByOccurredAtDescIdDesc(tenantId)
-                .map(EndpointAuditEvent::getEventHash)
-                .orElse(null);
         event.setEventHashAlg(AuditChainSupport.HASH_ALGORITHM);
         event.setEventHashVersion(AuditChainSupport.HASH_VERSION);
+
+        // BE-016: lock the tenant chain BEFORE the chain-order timestamp is
+        // assigned, so the timestamp ordering matches the lock-serialized
+        // write order (Codex P1-1).
+        auditChainLock.lockTenantChain(tenantId);
+        EndpointAuditEvent tail = repository
+                .findTop1ByTenantIdAndEventHashIsNotNullOrderByOccurredAtDescIdDesc(tenantId)
+                .orElse(null);
+        String prevHash = tail == null ? null : tail.getEventHash();
+
+        // Strictly monotonic per-tenant occurredAt: never <= the prior tail.
+        Instant occurredAt = AuditChainSupport.normalizeTimestamp(clock.instant());
+        if (tail != null && tail.getOccurredAt() != null
+                && !occurredAt.isAfter(tail.getOccurredAt())) {
+            occurredAt = tail.getOccurredAt().plus(1, ChronoUnit.MICROS);
+        }
+        event.setOccurredAt(occurredAt);
+
         event.setPrevEventHash(prevHash);
         event.setEventHash(AuditChainSupport.computeEventHash(prevHash, event));
 

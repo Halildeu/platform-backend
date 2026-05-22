@@ -11,11 +11,15 @@ import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabas
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.IllegalTransactionStateException;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * BE-016 — H2 integration tests for {@link AuditIntegrityVerifier} and the
@@ -140,6 +144,17 @@ class AuditIntegrityVerifierTest {
         assertThat(result.valid()).isFalse();
         assertThat(result.firstFailureEventId()).isEqualTo(target.getId());
         assertThat(result.message()).contains("Tamper detected");
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void recordOutsideTransactionIsRejected() {
+        // BE-016 (Codex 019e4f8e P1-2): record() is @Transactional(MANDATORY).
+        // Suspending the @DataJpaTest transaction (NOT_SUPPORTED) means there
+        // is no active transaction — record() must fail fast rather than
+        // silently losing the advisory-lock chain serialization guarantee.
+        assertThatThrownBy(() -> record(TENANT_A, "NO_TX_EVENT", Map.of("k", "v")))
+                .isInstanceOf(IllegalTransactionStateException.class);
     }
 
     @Test

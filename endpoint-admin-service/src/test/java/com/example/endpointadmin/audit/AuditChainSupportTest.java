@@ -28,6 +28,10 @@ class AuditChainSupportTest {
         event.setCorrelationId("corr-1");
         event.setOccurredAt(AuditChainSupport.normalizeTimestamp(
                 Instant.parse("2026-05-22T09:52:15.123456Z")));
+        // BE-016 (Codex 019e4f8e P2-3): alg/version are part of the canonical
+        // payload — read from the event, not constants — so they must be set.
+        event.setEventHashAlg(AuditChainSupport.HASH_ALGORITHM);
+        event.setEventHashVersion(AuditChainSupport.HASH_VERSION);
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("tokenId", "abc");
         metadata.put("action", "STOP_AGENT");
@@ -119,5 +123,25 @@ class AuditChainSupportTest {
         event.setEventHash("deadbeef".repeat(8));
         event.setPrevEventHash("cafebabe".repeat(8));
         assertThat(AuditChainSupport.canonicalPayload(event)).isEqualTo(before);
+    }
+
+    @Test
+    void changedEventHashAlgChangesHash() {
+        // BE-016 (Codex 019e4f8e P2-3): alg is hashed from the STORED value, so
+        // tampering it must change the computed hash (verifier detects it).
+        String baseline = AuditChainSupport.computeEventHash(null, sampleEvent());
+        EndpointAuditEvent mutated = sampleEvent();
+        mutated.setEventHashAlg("SHA-1");
+        assertThat(AuditChainSupport.computeEventHash(null, mutated))
+                .isNotEqualTo(baseline);
+    }
+
+    @Test
+    void changedEventHashVersionChangesHash() {
+        String baseline = AuditChainSupport.computeEventHash(null, sampleEvent());
+        EndpointAuditEvent mutated = sampleEvent();
+        mutated.setEventHashVersion(999);
+        assertThat(AuditChainSupport.computeEventHash(null, mutated))
+                .isNotEqualTo(baseline);
     }
 }

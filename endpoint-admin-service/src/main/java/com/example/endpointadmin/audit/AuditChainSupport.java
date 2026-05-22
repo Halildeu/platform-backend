@@ -91,8 +91,12 @@ public final class AuditChainSupport {
         root.put("command_id", uuidOrNull(event.getCommand() == null ? null : event.getCommand().getId()));
         root.put("correlation_id", event.getCorrelationId());
         root.put("device_id", uuidOrNull(event.getDevice() == null ? null : event.getDevice().getId()));
-        root.put("event_hash_alg", HASH_ALGORITHM);
-        root.put("event_hash_version", HASH_VERSION);
+        // BE-016 (Codex 019e4f8e P2-3): hash the STORED alg/version values, not
+        // the current constants — so a tamper of these columns is detectable
+        // and versioned verification stays sound. record() sets them before
+        // computeEventHash() is called, so they are populated here.
+        root.put("event_hash_alg", event.getEventHashAlg());
+        root.put("event_hash_version", event.getEventHashVersion());
         root.put("event_type", event.getEventType());
         root.put("id", uuidOrNull(event.getId()));
         putJson(root, "metadata", event.getMetadata());

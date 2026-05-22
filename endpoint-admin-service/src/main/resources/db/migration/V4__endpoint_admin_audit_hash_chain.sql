@@ -68,3 +68,31 @@ CREATE TRIGGER trg_endpoint_audit_events_append_only
     BEFORE UPDATE OR DELETE ON endpoint_audit_events
     FOR EACH ROW
     EXECUTE FUNCTION endpoint_audit_events_append_only();
+
+-- --------------------------------------------------------------------------
+-- 4. Insert enforcement (Codex 019e4f8e P2-4). Every row inserted AFTER this
+--    migration MUST carry event_hash + event_hash_alg + event_hash_version.
+--    This closes the gap where a direct SQL insert or an application
+--    regression could create a post-deploy null-hash row that the verifier
+--    silently skips. Legacy pre-V4 rows are unaffected — they were inserted
+--    before this trigger existed and keep their NULL hash columns.
+--    prev_event_hash stays nullable: the per-tenant GENESIS row has none.
+-- --------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION endpoint_audit_events_require_hash()
+    RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.event_hash IS NULL
+        OR NEW.event_hash_alg IS NULL
+        OR NEW.event_hash_version IS NULL THEN
+        RAISE EXCEPTION
+            'endpoint_audit_events insert requires event_hash + event_hash_alg + event_hash_version (BE-016 audit integrity)'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_endpoint_audit_events_require_hash
+    BEFORE INSERT ON endpoint_audit_events
+    FOR EACH ROW
+    EXECUTE FUNCTION endpoint_audit_events_require_hash();
