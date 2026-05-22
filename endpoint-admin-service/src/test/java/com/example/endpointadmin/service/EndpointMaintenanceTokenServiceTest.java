@@ -148,6 +148,11 @@ class EndpointMaintenanceTokenServiceTest {
         ))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("Maintenance token is not pending");
+
+        // BE-014A: re-consume attempt against already-consumed token emits deny audit
+        assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
+                .extracting("eventType")
+                .contains("MAINTENANCE_TOKEN_DENIED_ALREADY_CONSUMED");
     }
 
     @Test
@@ -166,6 +171,68 @@ class EndpointMaintenanceTokenServiceTest {
         ))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("403 FORBIDDEN");
+
+        // BE-014A: device mismatch deny path emits audit event
+        assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
+                .extracting("eventType")
+                .contains("MAINTENANCE_TOKEN_DENIED_DEVICE_MISMATCH");
+    }
+
+    @Test
+    void consumeTokenAfterRevokeEmitsDeniedAudit() {
+        // BE-014A (Codex 019e4ed6): re-consume against a REVOKED token must
+        // deny + emit MAINTENANCE_TOKEN_DENIED_REVOKED audit event.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-001"));
+        CreateMaintenanceTokenResponse created = tokenService.createToken(
+                adminContext(),
+                device.getId(),
+                new CreateMaintenanceTokenRequest(MaintenanceAction.STOP_AGENT, "revoke-then-consume", 60)
+        );
+        tokenService.revokeToken(adminContext(), created.tokenId());
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThatThrownBy(() -> tokenService.consumeToken(
+                principal(device),
+                new ConsumeMaintenanceTokenRequest(created.token(), "0.3.0")
+        ))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("Maintenance token is not pending");
+
+        assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
+                .extracting("eventType")
+                .contains("MAINTENANCE_TOKEN_DENIED_REVOKED");
+    }
+
+    @Test
+    void consumeTokenAfterExpiryReAttemptEmitsDeniedAudit() {
+        // BE-014A (Codex 019e4ed6): the just-expired path emits
+        // MAINTENANCE_TOKEN_EXPIRED via expireIfNeeded(); a *re-attempt*
+        // against an already-EXPIRED status token must emit
+        // MAINTENANCE_TOKEN_DENIED_EXPIRED (not duplicate _EXPIRED).
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-001"));
+        CreateMaintenanceTokenResponse created = tokenService.createToken(
+                adminContext(),
+                device.getId(),
+                new CreateMaintenanceTokenRequest(MaintenanceAction.STOP_AGENT, "expire-then-consume", 60)
+        );
+        // Force EXPIRED status directly (bypass natural expireIfNeeded path
+        // since that emits _EXPIRED, not _DENIED_EXPIRED).
+        var stored = tokenRepository.findByTenantIdAndId(TENANT_ID, created.tokenId()).orElseThrow();
+        stored.setStatus(MaintenanceTokenStatus.EXPIRED);
+        stored.setExpiresAt(Instant.now().minusSeconds(120));
+        tokenRepository.saveAndFlush(stored);
+        entityManager.clear();
+
+        assertThatThrownBy(() -> tokenService.consumeToken(
+                principal(device),
+                new ConsumeMaintenanceTokenRequest(created.token(), "0.3.0")
+        ))
+                .isInstanceOf(ResponseStatusException.class);
+
+        assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
+                .extracting("eventType")
+                .contains("MAINTENANCE_TOKEN_DENIED_EXPIRED");
     }
 
     @Test

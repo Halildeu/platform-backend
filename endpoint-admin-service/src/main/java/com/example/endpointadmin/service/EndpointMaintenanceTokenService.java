@@ -176,11 +176,49 @@ public class EndpointMaintenanceTokenService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid maintenance token."));
 
         if (!token.getDevice().getId().equals(authenticatedDeviceId)) {
+            // BE-014A (Codex 019e4ed6): emit deny audit event before throwing.
+            // Device mismatch — token was issued for a different device.
+            auditService.record(
+                    token.getTenantId(),
+                    token.getDevice(),
+                    null,
+                    "MAINTENANCE_TOKEN_DENIED_DEVICE_MISMATCH",
+                    "CONSUME_MAINTENANCE_TOKEN",
+                    "agent:" + authenticatedDeviceId,
+                    token.getId().toString(),
+                    denyMetadata(token, "device_mismatch", authenticatedDeviceId),
+                    null,
+                    null
+            );
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Maintenance token does not belong to the authenticated device.");
         }
         expireIfNeeded(token, now);
         if (token.getStatus() != MaintenanceTokenStatus.PENDING) {
+            // BE-014A (Codex 019e4ed6): emit deny audit event for misuse paths
+            // (REVOKED / CONSUMED / EXPIRED re-attempt). expireIfNeeded() above
+            // already emits MAINTENANCE_TOKEN_EXPIRED for the just-expired case;
+            // here we cover the deny on re-attempt against an already-non-PENDING
+            // token (revoked-then-consume, consumed-then-consume, expired-then-consume).
+            String denyEventType;
+            switch (token.getStatus()) {
+                case REVOKED -> denyEventType = "MAINTENANCE_TOKEN_DENIED_REVOKED";
+                case CONSUMED -> denyEventType = "MAINTENANCE_TOKEN_DENIED_ALREADY_CONSUMED";
+                case EXPIRED -> denyEventType = "MAINTENANCE_TOKEN_DENIED_EXPIRED";
+                default -> denyEventType = "MAINTENANCE_TOKEN_DENIED_NOT_PENDING";
+            }
+            auditService.record(
+                    token.getTenantId(),
+                    token.getDevice(),
+                    null,
+                    denyEventType,
+                    "CONSUME_MAINTENANCE_TOKEN",
+                    "agent:" + authenticatedDeviceId,
+                    token.getId().toString(),
+                    denyMetadata(token, token.getStatus().name(), authenticatedDeviceId),
+                    null,
+                    null
+            );
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Maintenance token is not pending.");
         }
 
@@ -271,6 +309,30 @@ public class EndpointMaintenanceTokenService {
         String agentVersion = trimToNull(token.getConsumedByAgentVersion());
         if (agentVersion != null) {
             metadata.put("agentVersion", agentVersion);
+        }
+        return metadata;
+    }
+
+    /**
+     * BE-014A (Codex 019e4ed6): Build metadata for deny-path audit events.
+     * Includes token id (hash-side opaque), action, current status, and the
+     * authenticated device that attempted the misuse (so tamper/offline audit
+     * reviewers can correlate misuse against the actual device, not just the
+     * token-owner device). Token plaintext is NEVER included.
+     */
+    private Map<String, Object> denyMetadata(EndpointMaintenanceToken token,
+                                             String denyReason,
+                                             UUID authenticatedDeviceId) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("tokenId", token.getId().toString());
+        metadata.put("action", token.getAction().name());
+        metadata.put("denyReason", denyReason);
+        metadata.put("tokenStatus", token.getStatus().name());
+        metadata.put("tokenOwnerDeviceId", token.getDevice().getId().toString());
+        metadata.put("authenticatedDeviceId", authenticatedDeviceId.toString());
+        String reason = trimToNull(token.getReason());
+        if (reason != null) {
+            metadata.put("issueReason", reason);
         }
         return metadata;
     }
