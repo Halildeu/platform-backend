@@ -72,8 +72,15 @@ class AuditHashChainPostgresIntegrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
+        // Flyway owns the schema on the real Postgres engine.
         registry.add("spring.flyway.enabled", () -> "true");
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        // Schema alignment (CI fix): base application.yml flyway default-schema
+        // defaults to `endpoint_admin_service` while the @DataJpaTest had
+        // Hibernate validating `public` → "missing table" mismatch. Pin BOTH
+        // Flyway and Hibernate to `public` so migrations + validation agree.
+        registry.add("spring.flyway.default-schema", () -> "public");
+        registry.add("spring.flyway.schemas", () -> "public");
         registry.add("spring.jpa.properties.hibernate.default_schema", () -> "public");
     }
 
