@@ -261,6 +261,23 @@ class EndpointAdminCommandDualControlTest {
                 .contains("ENDPOINT_COMMAND_CREATED", "ENDPOINT_COMMAND_APPROVED");
     }
 
+    @Test
+    void destructiveReasonOverridesConflictingPayloadReason() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device("PC-CANON"));
+        // The agent reads its reason from payload.reason; the dedicated `reason`
+        // field is validated/mandatory, so it must win over a conflicting
+        // caller-supplied payload.reason (Codex 019e50e0 P1).
+        CreateEndpointCommandRequest request = new CreateEndpointCommandRequest(
+                CommandType.LOCK_USER_LOGIN, "lock-canon", "authoritative incident reason",
+                Map.of("reason", "caller-supplied stale reason", "targetUser", "corp.local\\jdoe"),
+                null, null, null, null, null);
+
+        EndpointCommandDto created = commandService.createCommand(context(ISSUER), device.getId(), request);
+
+        assertThat(created.payload()).containsEntry("reason", "authoritative incident reason");
+        assertThat(created.payload()).containsEntry("targetUser", "corp.local\\jdoe");
+    }
+
     // --- helpers -----------------------------------------------------------
 
     private void assertResponseStatus(ThrowingCallable callable,

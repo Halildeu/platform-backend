@@ -21,9 +21,12 @@ ALTER TABLE endpoint_commands
     ADD CONSTRAINT ck_endpoint_commands_approval_status
     CHECK (approval_status IN ('NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED'));
 
--- Agent-deliverable partial index: a command is claimable only once its
--- approval gate is cleared. Mirrors the claim-query predicate.
-CREATE INDEX idx_endpoint_commands_deliverable
+-- Per-device agent-claim partial index: a command is claimable only once its
+-- approval gate is cleared. Mirrors the per-device claim-query predicate
+-- (findClaimCandidatesForDevice). Deliberately a DISTINCT name from V2's
+-- global idx_endpoint_commands_deliverable (status,visible_after_at,priority,
+-- issued_at) which serves the batch claim path — the two indexes coexist.
+CREATE INDEX idx_endpoint_commands_device_deliverable
     ON endpoint_commands (device_id, priority, issued_at)
     WHERE status = 'QUEUED' AND approval_status IN ('NOT_REQUIRED', 'APPROVED');
 

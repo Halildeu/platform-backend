@@ -144,7 +144,7 @@ public class EndpointAdminCommandService {
                 "CREATE_COMMAND",
                 subject,
                 idempotencyKey,
-                createAuditMetadata(saved, requiresApproval),
+                createAuditMetadata(saved, requiresApproval, reason),
                 null,
                 Map.of("status", saved.getStatus().name(),
                         "approvalStatus", saved.getApprovalStatus().name())
@@ -346,12 +346,18 @@ public class EndpointAdminCommandService {
         }
         String reason = trimToNull(request.reason());
         if (reason != null) {
-            payload.putIfAbsent("reason", reason);
+            // BE-017: the dedicated `reason` field is authoritative — overwrite
+            // any caller-supplied payload.reason so the validated (and, for a
+            // destructive command, mandatory) justification is the value the
+            // agent actually receives.
+            payload.put("reason", reason);
         }
         return payload;
     }
 
-    private Map<String, Object> createAuditMetadata(EndpointCommand command, boolean requiresApproval) {
+    private Map<String, Object> createAuditMetadata(EndpointCommand command,
+                                                    boolean requiresApproval,
+                                                    String reason) {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("commandType", command.getCommandType().name());
         metadata.put("idempotencyKey", command.getIdempotencyKey());
@@ -360,6 +366,11 @@ public class EndpointAdminCommandService {
         metadata.put("requiresApproval", requiresApproval);
         metadata.put("approvalStatus", command.getApprovalStatus().name());
         metadata.put("issuerSubject", command.getIssuedBySubject());
+        // BE-017 (Codex 019e50e0): keep the justification durable in the audit
+        // trail independently of the payload map.
+        if (reason != null) {
+            metadata.put("reason", reason);
+        }
         return metadata;
     }
 
