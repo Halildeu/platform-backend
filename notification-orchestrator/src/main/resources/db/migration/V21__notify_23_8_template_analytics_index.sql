@@ -14,8 +14,8 @@
 --          COUNT(DISTINCT ae.delivery_id) AS total_count, ...
 --   FROM notify.audit_event_v2 ae
 --   LEFT JOIN notify.notification_delivery nd ON nd.id = ae.delivery_id
---   WHERE ae.org_id = ${tenant}
---     AND ae.occurred_at BETWEEN ${from} AND ${to}
+--   WHERE ae.org_id = :tenant            -- Grafana tenant variable (sqlstring escape)
+--     AND ae.occurred_at BETWEEN :from AND :to   -- Grafana time range macros
 --     AND COALESCE(ae.template_id, ae.details->>'template_id', ae.topic_key)
 --           IS NOT NULL
 --   GROUP BY template_key
