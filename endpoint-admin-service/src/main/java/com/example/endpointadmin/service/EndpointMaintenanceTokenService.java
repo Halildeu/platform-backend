@@ -190,8 +190,9 @@ public class EndpointMaintenanceTokenService {
 
         if (!token.getDevice().getId().equals(authenticatedDeviceId)) {
             // BE-014A (Codex 019e4ed6 + 019e4ee1 REVISE absorb):
-            // emit deny audit event in REQUIRES_NEW transaction so the
-            // 403 rollback does NOT discard the audit row.
+            // emit deny audit event in the SAME transaction; the caller
+            // @Transactional has noRollbackFor=ResponseStatusException
+            // so the 403 throws below do NOT roll back the audit row.
             // Device mismatch — token was issued for a different device.
             auditService.record(
                     token.getTenantId(),
@@ -211,16 +212,16 @@ public class EndpointMaintenanceTokenService {
         expireIfNeeded(token, now);
         if (token.getStatus() != MaintenanceTokenStatus.PENDING) {
             // BE-014A (Codex 019e4ed6 + 019e4ee1 REVISE absorb):
-            // emit deny audit event for misuse paths in REQUIRES_NEW transaction
-            // (rollback-safe). expireIfNeeded() above already emits
-            // MAINTENANCE_TOKEN_EXPIRED for the just-expired case via the
-            // caller transaction (acceptable — that path mutates DB itself
-            // before throwing so the state-flip + audit pair are coherent).
-            // Here we cover deny on re-attempt against an already-non-PENDING
-            // token (revoked-then-consume, consumed-then-consume,
-            // expired-then-consume); those throw without mutating DB so the
-            // caller transaction rollback would discard the audit row if we
-            // used record() (durable hook needed).
+            // emit deny audit event for misuse paths in the SAME transaction.
+            // Caller @Transactional noRollbackFor=ResponseStatusException
+            // keeps the deny audit row even when the 409 throws below.
+            // expireIfNeeded() above already emits MAINTENANCE_TOKEN_EXPIRED
+            // for the just-expired case via the caller transaction (its
+            // status flip + audit pair are coherent). Here we cover deny
+            // on re-attempt against an already-non-PENDING token
+            // (revoked-then-consume, consumed-then-consume,
+            // expired-then-consume); those throw without mutating DB —
+            // the audit row alone documents the misuse attempt.
             String denyEventType;
             String denyReason;
             switch (token.getStatus()) {

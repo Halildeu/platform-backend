@@ -45,14 +45,6 @@ public class EndpointAuditService {
         return repository.save(event);
     }
 
-    // BE-014A (Codex 019e4ee1 REVISE absorb): durable audit publishing
-    // for deny paths (REQUIRES_NEW transaction) was considered, but
-    // adopted noRollbackFor pattern at the caller (consumeToken)
-    // instead — same-transaction audit + caller @Transactional
-    // noRollbackFor=ResponseStatusException keeps the audit row even
-    // when the deny throws 403/409 to the client. Simpler than
-    // managing two transaction propagation paths; tests verify
-    // durability in normal @DataJpaTest tx scope.
 
     public List<EndpointAuditEventDto> listEvents(UUID tenantId,
                                                   UUID deviceId,

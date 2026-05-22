@@ -23,6 +23,8 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -240,6 +242,51 @@ class EndpointMaintenanceTokenServiceTest {
         assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
                 .extracting("eventType")
                 .contains("MAINTENANCE_TOKEN_DENIED_EXPIRED");
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void consumeTokenDeviceMismatchAuditSurvivesCallerRollback_noRollbackForRegression() {
+        // BE-014A (Codex 019e4ee1 iter-2 REVISE absorb): regression guard
+        // for the durability claim. By suspending the @DataJpaTest class-level
+        // transaction (NOT_SUPPORTED), each service call runs in its OWN
+        // tx. The deny audit is emitted in the same tx as consumeToken;
+        // noRollbackFor=ResponseStatusException keeps that tx from rolling
+        // back when the 403 throws. If noRollbackFor is removed from
+        // consumeToken, this test MUST fail because the deny audit row
+        // would not survive the throw.
+        //
+        // Cleanup: NOT_SUPPORTED means data persists across the test;
+        // we use random hostnames + explicit cleanup at the end.
+        EndpointDevice first = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "REGRESSION-OWNER"));
+        EndpointDevice second = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "REGRESSION-ATTACKER"));
+        CreateMaintenanceTokenResponse created = tokenService.createToken(
+                adminContext(),
+                first.getId(),
+                new CreateMaintenanceTokenRequest(MaintenanceAction.UNINSTALL_AGENT, "regression-mismatch", 60)
+        );
+
+        assertThatThrownBy(() -> tokenService.consumeToken(
+                principal(second),
+                new ConsumeMaintenanceTokenRequest(created.token(), "0.3.0")
+        ))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("403 FORBIDDEN");
+
+        // Durability assertion outside any test tx: audit row must
+        // survive the caller tx's 403 throw. If noRollbackFor is removed
+        // from consumeToken's @Transactional, the deny audit would
+        // roll back and this assertion would FAIL.
+        //
+        // (No cleanup: NOT_SUPPORTED means H2 in-memory test class scope
+        // persists this test's rows; other tests use random hostnames so
+        // there's no collision. @DataJpaTest creates a fresh per-class
+        // database.)
+        assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
+                .extracting("eventType")
+                .as("deny audit row must persist past the 403 throw "
+                        + "(noRollbackFor=ResponseStatusException invariant)")
+                .contains("MAINTENANCE_TOKEN_DENIED_DEVICE_MISMATCH");
     }
 
     @Test
