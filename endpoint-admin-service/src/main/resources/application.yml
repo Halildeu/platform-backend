@@ -20,7 +20,10 @@ spring:
   flyway:
     enabled: true
     baseline-on-migrate: true
-    baseline-version: 0
+    # BE-016 transition baseline for existing ddl-auto endpoint_admin schemas;
+    # fresh empty schemas still run V1-V4. Override per-env with
+    # SPRING_FLYWAY_BASELINE_VERSION if a cluster needs a different cut point.
+    baseline-version: 4
     table: endpoint_admin_flyway_history
     default-schema: ${ENDPOINT_ADMIN_DB_SCHEMA:endpoint_admin_service}
     schemas: ${ENDPOINT_ADMIN_DB_SCHEMA:endpoint_admin_service}
