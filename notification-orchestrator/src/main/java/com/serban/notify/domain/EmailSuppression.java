@@ -47,7 +47,11 @@ public class EmailSuppression {
         DSN,
         PROVIDER_WEBHOOK,
         MANUAL_API,
-        SMTP_IMMEDIATE
+        SMTP_IMMEDIATE,
+        /** Faz 23.8 M7 T4.3.5 — Office 365 Postmaster ARF mailbox-pull FBL. */
+        ARF_MAILBOX,
+        /** Faz 23.8 M7 T4.3.5 — forward-compat webhook-push FBL (no PR-1 caller). */
+        POSTMASTER_WEBHOOK
     }
 
     @jakarta.persistence.Id
