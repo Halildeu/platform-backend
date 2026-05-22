@@ -182,8 +182,9 @@ public class EndpointAdminCommandService {
 
         Instant now = Instant.now(clock);
         if (command.getExpiresAt() != null && !command.getExpiresAt().isAfter(now)) {
-            command.setStatus(CommandStatus.EXPIRED);
-            commandRepository.saveAndFlush(command);
+            // The command stays QUEUED/PENDING: the agent claim queries already
+            // filter out an expired command, and this throw would roll back any
+            // eager EXPIRED status write anyway (status sweeping is separate).
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Command has expired and can no longer be approved.");
         }
