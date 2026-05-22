@@ -163,7 +163,20 @@ public class EndpointMaintenanceTokenService {
         return toDto(saved);
     }
 
-    @Transactional(noRollbackFor = MaintenanceTokenExpiredException.class)
+    @Transactional(noRollbackFor = {
+            MaintenanceTokenExpiredException.class,
+            // BE-014A (Codex 019e4ee1 REVISE absorb): deny paths
+            // (device mismatch / REVOKED / ALREADY_CONSUMED / EXPIRED
+            // re-attempt) throw ResponseStatusException to produce 403/409,
+            // but the deny audit event published in the SAME transaction
+            // MUST persist. With noRollbackFor on ResponseStatusException,
+            // the audit row survives the throw and the client still sees
+            // the correct HTTP response. The deny paths never mutate
+            // business state before throwing (only the just-expired path
+            // does, via expireIfNeeded(), and its state flip + audit pair
+            // are coherent — both persist).
+            ResponseStatusException.class
+    })
     public ConsumeMaintenanceTokenResponse consumeToken(DeviceCredentialResult principal,
                                                         ConsumeMaintenanceTokenRequest request) {
         if (request == null) {
@@ -176,7 +189,9 @@ public class EndpointMaintenanceTokenService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid maintenance token."));
 
         if (!token.getDevice().getId().equals(authenticatedDeviceId)) {
-            // BE-014A (Codex 019e4ed6): emit deny audit event before throwing.
+            // BE-014A (Codex 019e4ed6 + 019e4ee1 REVISE absorb):
+            // emit deny audit event in REQUIRES_NEW transaction so the
+            // 403 rollback does NOT discard the audit row.
             // Device mismatch — token was issued for a different device.
             auditService.record(
                     token.getTenantId(),
@@ -186,7 +201,7 @@ public class EndpointMaintenanceTokenService {
                     "CONSUME_MAINTENANCE_TOKEN",
                     "agent:" + authenticatedDeviceId,
                     token.getId().toString(),
-                    denyMetadata(token, "device_mismatch", authenticatedDeviceId),
+                    denyMetadata(token, "DEVICE_MISMATCH", authenticatedDeviceId, request),
                     null,
                     null
             );
@@ -195,17 +210,36 @@ public class EndpointMaintenanceTokenService {
         }
         expireIfNeeded(token, now);
         if (token.getStatus() != MaintenanceTokenStatus.PENDING) {
-            // BE-014A (Codex 019e4ed6): emit deny audit event for misuse paths
-            // (REVOKED / CONSUMED / EXPIRED re-attempt). expireIfNeeded() above
-            // already emits MAINTENANCE_TOKEN_EXPIRED for the just-expired case;
-            // here we cover the deny on re-attempt against an already-non-PENDING
-            // token (revoked-then-consume, consumed-then-consume, expired-then-consume).
+            // BE-014A (Codex 019e4ed6 + 019e4ee1 REVISE absorb):
+            // emit deny audit event for misuse paths in REQUIRES_NEW transaction
+            // (rollback-safe). expireIfNeeded() above already emits
+            // MAINTENANCE_TOKEN_EXPIRED for the just-expired case via the
+            // caller transaction (acceptable — that path mutates DB itself
+            // before throwing so the state-flip + audit pair are coherent).
+            // Here we cover deny on re-attempt against an already-non-PENDING
+            // token (revoked-then-consume, consumed-then-consume,
+            // expired-then-consume); those throw without mutating DB so the
+            // caller transaction rollback would discard the audit row if we
+            // used record() (durable hook needed).
             String denyEventType;
+            String denyReason;
             switch (token.getStatus()) {
-                case REVOKED -> denyEventType = "MAINTENANCE_TOKEN_DENIED_REVOKED";
-                case CONSUMED -> denyEventType = "MAINTENANCE_TOKEN_DENIED_ALREADY_CONSUMED";
-                case EXPIRED -> denyEventType = "MAINTENANCE_TOKEN_DENIED_EXPIRED";
-                default -> denyEventType = "MAINTENANCE_TOKEN_DENIED_NOT_PENDING";
+                case REVOKED -> {
+                    denyEventType = "MAINTENANCE_TOKEN_DENIED_REVOKED";
+                    denyReason = "REVOKED";
+                }
+                case CONSUMED -> {
+                    denyEventType = "MAINTENANCE_TOKEN_DENIED_ALREADY_CONSUMED";
+                    denyReason = "ALREADY_CONSUMED";
+                }
+                case EXPIRED -> {
+                    denyEventType = "MAINTENANCE_TOKEN_DENIED_EXPIRED";
+                    denyReason = "EXPIRED";
+                }
+                default -> {
+                    denyEventType = "MAINTENANCE_TOKEN_DENIED_NOT_PENDING";
+                    denyReason = "NOT_PENDING";
+                }
             }
             auditService.record(
                     token.getTenantId(),
@@ -215,7 +249,7 @@ public class EndpointMaintenanceTokenService {
                     "CONSUME_MAINTENANCE_TOKEN",
                     "agent:" + authenticatedDeviceId,
                     token.getId().toString(),
-                    denyMetadata(token, token.getStatus().name(), authenticatedDeviceId),
+                    denyMetadata(token, denyReason, authenticatedDeviceId, request),
                     null,
                     null
             );
@@ -314,15 +348,27 @@ public class EndpointMaintenanceTokenService {
     }
 
     /**
-     * BE-014A (Codex 019e4ed6): Build metadata for deny-path audit events.
-     * Includes token id (hash-side opaque), action, current status, and the
-     * authenticated device that attempted the misuse (so tamper/offline audit
-     * reviewers can correlate misuse against the actual device, not just the
-     * token-owner device). Token plaintext is NEVER included.
+     * BE-014A (Codex 019e4ed6 + 019e4ee1 REVISE absorb): Build metadata for
+     * deny-path audit events.
+     *
+     * <p>Includes:
+     * <ul>
+     *   <li>tokenId (UUID; opaque DB reference)</li>
+     *   <li>action (STOP_AGENT / UNINSTALL_AGENT)</li>
+     *   <li>denyReason (DEVICE_MISMATCH / REVOKED / ALREADY_CONSUMED / EXPIRED — uppercase normalized)</li>
+     *   <li>tokenStatus (current DB status snapshot)</li>
+     *   <li>tokenOwnerDeviceId (device the token was issued for)</li>
+     *   <li>authenticatedDeviceId (device that attempted the misuse)</li>
+     *   <li>agentVersion (request body field, optional)</li>
+     *   <li>issueReason (admin-supplied reason at issuance, optional)</li>
+     * </ul>
+     *
+     * <p>Token plaintext is NEVER included (hash-only DB discipline preserved).
      */
     private Map<String, Object> denyMetadata(EndpointMaintenanceToken token,
                                              String denyReason,
-                                             UUID authenticatedDeviceId) {
+                                             UUID authenticatedDeviceId,
+                                             ConsumeMaintenanceTokenRequest request) {
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("tokenId", token.getId().toString());
         metadata.put("action", token.getAction().name());
@@ -330,6 +376,12 @@ public class EndpointMaintenanceTokenService {
         metadata.put("tokenStatus", token.getStatus().name());
         metadata.put("tokenOwnerDeviceId", token.getDevice().getId().toString());
         metadata.put("authenticatedDeviceId", authenticatedDeviceId.toString());
+        if (request != null) {
+            String agentVersion = trimToNull(request.agentVersion());
+            if (agentVersion != null) {
+                metadata.put("agentVersion", agentVersion);
+            }
+        }
         String reason = trimToNull(token.getReason());
         if (reason != null) {
             metadata.put("issueReason", reason);

@@ -149,7 +149,10 @@ class EndpointMaintenanceTokenServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("Maintenance token is not pending");
 
-        // BE-014A: re-consume attempt against already-consumed token emits deny audit
+        // BE-014A (Codex 019e4ed6 + 019e4ee1 noRollbackFor pattern):
+        // re-consume attempt against already-consumed token emits deny audit
+        // that PERSISTS even after the 409 throws (noRollbackFor=
+        // ResponseStatusException on consumeToken keeps the audit row).
         assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
                 .extracting("eventType")
                 .contains("MAINTENANCE_TOKEN_DENIED_ALREADY_CONSUMED");
@@ -172,7 +175,9 @@ class EndpointMaintenanceTokenServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("403 FORBIDDEN");
 
-        // BE-014A: device mismatch deny path emits audit event
+        // BE-014A: device mismatch deny path emits audit event (durable via
+        // noRollbackFor=ResponseStatusException — 403 throws but caller tx
+        // NOT rolled back, so audit row persists).
         assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
                 .extracting("eventType")
                 .contains("MAINTENANCE_TOKEN_DENIED_DEVICE_MISMATCH");
@@ -180,8 +185,9 @@ class EndpointMaintenanceTokenServiceTest {
 
     @Test
     void consumeTokenAfterRevokeEmitsDeniedAudit() {
-        // BE-014A (Codex 019e4ed6): re-consume against a REVOKED token must
-        // deny + emit MAINTENANCE_TOKEN_DENIED_REVOKED audit event.
+        // BE-014A (Codex 019e4ed6 + 019e4ee1 noRollbackFor pattern):
+        // re-consume against a REVOKED token must deny + emit
+        // MAINTENANCE_TOKEN_DENIED_REVOKED audit event (durable).
         EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-001"));
         CreateMaintenanceTokenResponse created = tokenService.createToken(
                 adminContext(),
@@ -206,10 +212,11 @@ class EndpointMaintenanceTokenServiceTest {
 
     @Test
     void consumeTokenAfterExpiryReAttemptEmitsDeniedAudit() {
-        // BE-014A (Codex 019e4ed6): the just-expired path emits
-        // MAINTENANCE_TOKEN_EXPIRED via expireIfNeeded(); a *re-attempt*
-        // against an already-EXPIRED status token must emit
-        // MAINTENANCE_TOKEN_DENIED_EXPIRED (not duplicate _EXPIRED).
+        // BE-014A (Codex 019e4ed6 + 019e4ee1 noRollbackFor pattern):
+        // the just-expired path emits MAINTENANCE_TOKEN_EXPIRED via
+        // expireIfNeeded(); a *re-attempt* against an already-EXPIRED
+        // status token must emit MAINTENANCE_TOKEN_DENIED_EXPIRED (durable
+        // via noRollbackFor=ResponseStatusException).
         EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-001"));
         CreateMaintenanceTokenResponse created = tokenService.createToken(
                 adminContext(),
