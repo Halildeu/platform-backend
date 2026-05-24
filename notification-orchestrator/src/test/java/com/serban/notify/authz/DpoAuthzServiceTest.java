@@ -124,6 +124,15 @@ class DpoAuthzServiceTest {
         boolean result = s.canEraseForOrg("1204", "  ");
 
         assertThat(result).isFalse();
+        // Codex post-impl review 019e59ea: symmetry with other null/blank
+        // tests — fail-closed contract must not reach the HTTP client.
+        verify(authzClient, never()).check(
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any()
+        );
     }
 
     @Test
