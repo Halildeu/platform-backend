@@ -211,13 +211,27 @@ public class DeliveryEligibilityService {
             }
         }
         // Channel-addressed recipients (slack/webhook/teams) currently SKIP
-        // Layer-2 OpenFGA authz. Codex 019e59eb REVISE: enforcement deferred —
-        // requires (a) OpenFGA model extension with `notification_channel`
-        // type + `notification_topic.can_receive: [subscriber, notification_channel]`
-        // union; (b) permission-service `principal_type` validation widening;
-        // (c) opaque channel-id pattern (raw webhook URL never enters tuple
-        // store). See `docs/notify/m3-supplement-openfga-model-extension-plan-2026-05-14.md`
-        // Phase 1 follow-up PR chain. Subscriber/external Layer-2 fully enforced.
+        // Layer-2 OpenFGA authz. Codex 019e59eb + 019e59f3 REVISE: enforcement
+        // deferred — requires the following follow-up chain (in order):
+        //   (a) OpenFGA model extension: `notification_channel` type +
+        //       `notification_topic.can_receive: [subscriber, notification_channel]`
+        //       union; gitops repo `platform-k8s-gitops` →
+        //       `docs/notify/m3-supplement-openfga-model-extension-plan-2026-05-14.md`
+        //       (Phase 1 governance authority).
+        //   (b) permission-service `InternalAuthorizationController`
+        //       `principal_type` validation widening (accept
+        //       `notification_channel` or `channel`); platform-backend repo.
+        //   (c) Opaque channel-id pattern: raw webhook URL MUST NOT enter
+        //       OpenFGA tuple store / metric label / log; derive stable
+        //       opaque id from provider-config or routing endpoint record.
+        //   (d) Tuple seed/backfill runbook for existing channel deliveries
+        //       (so first enforce flip doesn't black-out live channels).
+        //   (e) Grafana/PrometheusRule update for
+        //       `notify_authz_denied_total{channel=slack|webhook|teams}`
+        //       canary alerts.
+        //   (f) Cluster canary evidence: enforce flag flip on TEST overlay
+        //       first, observe deny rate, then promote to prod.
+        // Subscriber/external Layer-2 fully enforced as of this PR.
 
         return EligibilityDecision.allow();
     }

@@ -49,6 +49,17 @@ class WorkerMetricsClassifyAuthzReasonTest {
     }
 
     @Test
+    void authzDisabledMappedDistinctClass() {
+        // Codex 019e59f3 REVISE absorb: permission-service controller emits
+        // reason="authz_disabled" when OpenFGA bean is absent (200/deny path).
+        // MUST be a distinct class — security-config regression cannot hide
+        // under "other" or collapse into "no_tuple" (different remediation:
+        // re-enable bean vs. seed missing tuple).
+        assertThat(WorkerMetrics.classifyAuthzReason("authz_disabled"))
+            .isEqualTo("authz_disabled");
+    }
+
+    @Test
     void nullOrBlankMappedToOtherClass() {
         assertThat(WorkerMetrics.classifyAuthzReason(null)).isEqualTo("other");
         assertThat(WorkerMetrics.classifyAuthzReason("")).isEqualTo("other");

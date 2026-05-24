@@ -90,8 +90,9 @@ public class WorkerMetrics {
      *
      * <p>{@code reasonClass} is a normalized whitelist (NOT raw upstream
      * reason): {@code no_tuple}, {@code authz_unreachable},
-     * {@code authz_http_error}, {@code validation_error}, {@code other}.
-     * See {@link #classifyAuthzReason(String)} for mapping.
+     * {@code authz_http_error}, {@code validation_error},
+     * {@code authz_disabled}, {@code other}. See
+     * {@link #classifyAuthzReason(String)} for mapping.
      */
     public void authzDeny(String channel, String reasonClass) {
         Counter.builder("notify.authz.denied")
@@ -103,9 +104,17 @@ public class WorkerMetrics {
      * Normalize raw {@code AuthzDecision.reason()} → bounded label
      * (cardinality safety). Unknown reasons collapse to {@code other}.
      *
-     * <p>Whitelist (Codex 019e59eb REVISE absorb): {@code no_tuple},
-     * {@code authz_unreachable}, {@code authz_http_error},
-     * {@code validation_error}, {@code other}.
+     * <p>Whitelist (Codex 019e59eb + 019e59f3 REVISE absorb):
+     * {@code no_tuple}, {@code authz_unreachable},
+     * {@code authz_http_error}, {@code validation_error},
+     * {@code authz_disabled}, {@code other}.
+     *
+     * <p>{@code authz_disabled} is emitted by permission-service
+     * {@code InternalAuthorizationController} when OpenFGA bean is absent
+     * (200 OK + deny + {@code reason: "authz_disabled"}). Surfaced as a
+     * distinct class — this is a security-config regression that must NOT
+     * collapse into {@code other} or {@code no_tuple} (different
+     * remediation: re-enable bean vs. seed missing tuple).
      */
     public static String classifyAuthzReason(String rawReason) {
         if (rawReason == null || rawReason.isBlank()) {
@@ -119,6 +128,12 @@ public class WorkerMetrics {
         }
         if (rawReason.equals("validation_error")) {
             return "validation_error";
+        }
+        // Security-config regression: permission-service has no OpenFGA bean
+        // (200/deny + reason=authz_disabled). Codex 019e59f3 REVISE: distinct
+        // class so the deny SLO/alert can surface the misconfiguration.
+        if (rawReason.equals("authz_disabled")) {
+            return "authz_disabled";
         }
         // "no_tuple", "tuple_not_found", default permission-service deny
         // reasons → no_tuple class.

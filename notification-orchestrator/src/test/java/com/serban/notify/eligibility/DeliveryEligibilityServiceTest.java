@@ -173,6 +173,46 @@ class DeliveryEligibilityServiceTest {
     }
 
     @Test
+    void externalRecipientAuthzDenyEmitsMetric() {
+        // Codex 019e59f3 review point #4: external path also calls Guard 3
+        // (shared code branch with subscriber). Verify metric emission for
+        // external recipient — locks the PR claim "subscriber + external
+        // Layer-2 deny observability".
+        DeliveryEligibilityService svc = service(true, true);
+        WorkerMetrics metrics = mock(WorkerMetrics.class);
+        svc.setWorkerMetrics(metrics);
+        when(authzClient.check(anyString(), anyString(), anyString(), anyString(), anyString()))
+            .thenReturn(AuthzClient.AuthzDecision.deny("no_tuple"));
+
+        var decision = svc.evaluate(intent(), externalAllowedTemplate(true), externalTarget());
+
+        assertThat(decision.blocked()).isTrue();
+        assertThat(decision.status()).isEqualTo(NotificationDelivery.Status.BLOCKED_BY_AUTHZ);
+        // externalTarget() uses email channel
+        verify(metrics).authzDeny(eq("email"), eq("no_tuple"));
+    }
+
+    @Test
+    void authzDisabledReasonClassEmitted() {
+        // Codex 019e59f3 REVISE absorb: permission-service emits "authz_disabled"
+        // when OpenFGA bean is absent. Verify classifyAuthzReason maps to its
+        // own distinct class so SLO/alert surfaces the security-config
+        // regression instead of hiding under "other" or "no_tuple".
+        DeliveryEligibilityService svc = service(true, true);
+        WorkerMetrics metrics = mock(WorkerMetrics.class);
+        svc.setWorkerMetrics(metrics);
+        when(prefService.evaluate(any(), anyString(), anyString()))
+            .thenReturn(SubscriberPreferenceService.PreferenceDecision.allow("ok"));
+        when(authzClient.check(anyString(), anyString(), anyString(), anyString(), anyString()))
+            .thenReturn(AuthzClient.AuthzDecision.deny("authz_disabled"));
+
+        var decision = svc.evaluate(intent(), externalAllowedTemplate(true), subscriberTarget());
+
+        assertThat(decision.blocked()).isTrue();
+        verify(metrics).authzDeny(eq("email"), eq("authz_disabled"));
+    }
+
+    @Test
     void preferencesDisabledFlagSkipsPreferenceGuard() {
         DeliveryEligibilityService svc = service(false, true);  // preferences off
         when(authzClient.check(anyString(), anyString(), anyString(), anyString(), anyString()))
