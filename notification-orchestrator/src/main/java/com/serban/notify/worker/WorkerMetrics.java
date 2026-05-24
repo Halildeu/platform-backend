@@ -80,6 +80,57 @@ public class WorkerMetrics {
             .register(registry).increment();
     }
 
+    /**
+     * Authz deny counter (Faz 23.2 v2 — Codex 019e59eb REVISE absorb).
+     *
+     * <p>Increment'lenir when permission-service OpenFGA Check returns
+     * deny for `subscriber:&lt;id&gt; # can_receive @ template:&lt;id&gt;`
+     * (Layer-2 enforce). Drives per-channel SLO dashboard +
+     * {@code notify_authz_denied_total{channel,reason_class}}.
+     *
+     * <p>{@code reasonClass} is a normalized whitelist (NOT raw upstream
+     * reason): {@code no_tuple}, {@code authz_unreachable},
+     * {@code authz_http_error}, {@code validation_error}, {@code other}.
+     * See {@link #classifyAuthzReason(String)} for mapping.
+     */
+    public void authzDeny(String channel, String reasonClass) {
+        Counter.builder("notify.authz.denied")
+            .tags(Tags.of("channel", channel, "reason_class", reasonClass))
+            .register(registry).increment();
+    }
+
+    /**
+     * Normalize raw {@code AuthzDecision.reason()} → bounded label
+     * (cardinality safety). Unknown reasons collapse to {@code other}.
+     *
+     * <p>Whitelist (Codex 019e59eb REVISE absorb): {@code no_tuple},
+     * {@code authz_unreachable}, {@code authz_http_error},
+     * {@code validation_error}, {@code other}.
+     */
+    public static String classifyAuthzReason(String rawReason) {
+        if (rawReason == null || rawReason.isBlank()) {
+            return "other";
+        }
+        if (rawReason.equals("authz_unreachable")) {
+            return "authz_unreachable";
+        }
+        if (rawReason.startsWith("authz_http_")) {
+            return "authz_http_error";
+        }
+        if (rawReason.equals("validation_error")) {
+            return "validation_error";
+        }
+        // "no_tuple", "tuple_not_found", default permission-service deny
+        // reasons → no_tuple class.
+        if (rawReason.equals("no_tuple")
+            || rawReason.equals("tuple_not_found")
+            || rawReason.equals("not_authorized")
+            || rawReason.equals("unknown")) {
+            return "no_tuple";
+        }
+        return "other";
+    }
+
     public void cycle(String worker, String outcome) {
         Counter.builder("notify.worker.cycles")
             .tags(Tags.of("worker", worker, "outcome", outcome))

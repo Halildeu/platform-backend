@@ -192,6 +192,17 @@ public class DeliveryEligibilityService {
                 "can_receive", "template", intent.getTemplateId()
             );
             if (!decision.allowed()) {
+                // Faz 23.2 v2 (Codex 019e59eb REVISE absorb): per-channel
+                // authz deny counter (notify.authz.denied{channel,reason_class}).
+                // Layer-2 OpenFGA enforce path observability — drives Grafana
+                // dashboard + per-channel SLO alert. reasonClass normalized
+                // whitelist for cardinality safety.
+                if (workerMetrics != null) {
+                    workerMetrics.authzDeny(
+                        target.channel(),
+                        WorkerMetrics.classifyAuthzReason(decision.reason())
+                    );
+                }
                 return EligibilityDecision.blocked(
                     NotificationDelivery.Status.BLOCKED_BY_AUTHZ,
                     "authz_deny",
@@ -199,6 +210,14 @@ public class DeliveryEligibilityService {
                 );
             }
         }
+        // Channel-addressed recipients (slack/webhook/teams) currently SKIP
+        // Layer-2 OpenFGA authz. Codex 019e59eb REVISE: enforcement deferred —
+        // requires (a) OpenFGA model extension with `notification_channel`
+        // type + `notification_topic.can_receive: [subscriber, notification_channel]`
+        // union; (b) permission-service `principal_type` validation widening;
+        // (c) opaque channel-id pattern (raw webhook URL never enters tuple
+        // store). See `docs/notify/m3-supplement-openfga-model-extension-plan-2026-05-14.md`
+        // Phase 1 follow-up PR chain. Subscriber/external Layer-2 fully enforced.
 
         return EligibilityDecision.allow();
     }
