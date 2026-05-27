@@ -255,6 +255,73 @@ class AdminEndpointSoftwareCatalogControllerTest {
     }
 
     @Test
+    void listCatalogItemsReturns400OnInvalidStatusEnum() throws Exception {
+        // Codex 019e6aa8 iter-1 absorb: ?status=BOGUS must surface as 400
+        // (MethodArgumentTypeMismatchException → INVALID_PARAMETER), not
+        // the generic Exception catch-all 500.
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+
+        mockMvc.perform(get("/api/v1/admin/endpoint-software-catalog")
+                        .param("status", "BOGUS"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void listCatalogItemsReturns400OnNonNumericPage() throws Exception {
+        // Codex 019e6aa8 iter-1 absorb: ?page=abc → 400, not 500.
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+
+        mockMvc.perform(get("/api/v1/admin/endpoint-software-catalog")
+                        .param("page", "abc"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void createCatalogItemReturns400OnInvalidEnumInBody() throws Exception {
+        // Codex 019e6aa8 iter-1 absorb: invalid enum in @RequestBody
+        // (HttpMessageNotReadableException → INVALID_REQUEST_BODY) → 400.
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+
+        String invalidEnumBody = """
+                {
+                  "catalogItemId": "%s",
+                  "provider": "BOGUS_PROVIDER",
+                  "sourceType": "WINGET",
+                  "sourceName": "winget",
+                  "sourceTrust": "WINGET_COMMUNITY_REVIEWED",
+                  "packageId": "7zip.7zip",
+                  "displayName": "7-Zip",
+                  "publisher": "Igor Pavlov",
+                  "versionPolicyType": "LATEST",
+                  "detectionRule": {"type": "WINGET_PACKAGE",
+                                     "wingetPackageId": "7zip.7zip"},
+                  "riskTier": "LOW"
+                }
+                """.formatted(SLUG);
+
+        mockMvc.perform(post("/api/v1/admin/endpoint-software-catalog")
+                        .contentType("application/json")
+                        .content(invalidEnumBody))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void createCatalogItemReturns400OnMalformedJson() throws Exception {
+        // Codex 019e6aa8 iter-1 absorb: malformed JSON request body
+        // (HttpMessageNotReadableException) → 400.
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+
+        mockMvc.perform(post("/api/v1/admin/endpoint-software-catalog")
+                        .contentType("application/json")
+                        .content("{not valid json"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void revokeCatalogItemReturns400WhenReasonMissing() throws Exception {
         AdminTenantContext context = adminContext();
         when(tenantContextResolver.resolveRequired()).thenReturn(context);

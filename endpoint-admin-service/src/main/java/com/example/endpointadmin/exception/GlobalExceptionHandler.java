@@ -10,10 +10,12 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -53,6 +55,37 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ErrorResponse> handleNotFound(NoResourceFoundException ex) {
         return build(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource not found.");
+    }
+
+    /**
+     * BE-020 PR-B (Codex 019e6aa8 iter-1 absorb): {@code @RequestParam} or
+     * {@code @PathVariable} type / enum conversion failures (e.g.
+     * {@code ?status=BOGUS}, {@code ?page=abc}) must surface as 400 with a
+     * named parameter, not the generic {@code Exception} catch-all 500.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleArgumentTypeMismatch(
+            MethodArgumentTypeMismatchException ex) {
+        String paramName = ex.getName();
+        String requiredType = ex.getRequiredType() != null
+                ? ex.getRequiredType().getSimpleName()
+                : "?";
+        String message = "Invalid value for parameter '" + paramName
+                + "' (expected " + requiredType + ").";
+        return build(HttpStatus.BAD_REQUEST, "INVALID_PARAMETER", message);
+    }
+
+    /**
+     * BE-020 PR-B (Codex 019e6aa8 iter-1 absorb): request body JSON parse
+     * failures (malformed JSON, unknown enum values inside {@code @RequestBody})
+     * must surface as 400, not 500. Spring throws
+     * {@link HttpMessageNotReadableException} for both shapes.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleBodyParseError(
+            HttpMessageNotReadableException ex) {
+        return build(HttpStatus.BAD_REQUEST, "INVALID_REQUEST_BODY",
+                "Request body could not be parsed.");
     }
 
     @ExceptionHandler(Exception.class)
