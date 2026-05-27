@@ -153,6 +153,124 @@ class WinGetEgressPayloadPolicyTest {
                 .hasMessageContaining("must be an array");
     }
 
+    // ────────────────────────────────────────────────────────────────
+    // Codex 019e6ba4 iter-1 absorb — required-field + pin tests
+
+    @Test
+    void missingPackageQueryIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        egress.remove("packageQuery");
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("packageQuery");
+    }
+
+    @Test
+    void missingEgressIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        egress.remove("egress");
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("egress");
+    }
+
+    @Test
+    void missingSupportedIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        egress.remove("supported");
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("supported");
+    }
+
+    @Test
+    void supportedAsStringIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        egress.put("supported", "true");
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("supported");
+    }
+
+    @Test
+    void uppercaseKeyIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        egress.put("PackageQuery", egress.remove("packageQuery"));
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unknown wingetEgress field");
+    }
+
+    @Test
+    void packageQueryWrongPackageIdIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        Map<String, Object> pq = new LinkedHashMap<>(asMap(egress.get("packageQuery")));
+        pq.put("packageId", "Notepad.Notepad");
+        egress.put("packageQuery", pq);
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("7zip.7zip");
+    }
+
+    @Test
+    void packageQueryMissingPackageIdIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        Map<String, Object> pq = new LinkedHashMap<>(asMap(egress.get("packageQuery")));
+        pq.remove("packageId");
+        egress.put("packageQuery", pq);
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("packageId");
+    }
+
+    @Test
+    void egressMissingProxyConfiguredIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        Map<String, Object> egressBlock = new LinkedHashMap<>(asMap(egress.get("egress")));
+        egressBlock.remove("proxyConfigured");
+        egress.put("egress", egressBlock);
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("proxyConfigured");
+    }
+
+    @Test
+    void supportedTrueRequiresDnsTcpHttpsArrays() {
+        Map<String, Object> egress = wellFormedEgress();
+        Map<String, Object> egressBlock = new LinkedHashMap<>(asMap(egress.get("egress")));
+        egressBlock.remove("dns");
+        egress.put("egress", egressBlock);
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("dns");
+    }
+
+    @Test
+    void supportedFalseTolerantOfEmptyEgressArrays() {
+        // Non-Windows stub: supported=false, empty arrays — the validator
+        // accepts this even without DNS/TCP/HTTPS check rows. The
+        // install-preflight service still BLOCKs on winget_not_ready
+        // / inventory_unsupported before reaching here.
+        Map<String, Object> egress = wellFormedEgress();
+        egress.put("supported", false);
+        Map<String, Object> egressBlock = new LinkedHashMap<>(asMap(egress.get("egress")));
+        egressBlock.put("dns", List.of());
+        egressBlock.put("tcp", List.of());
+        egressBlock.put("https", List.of());
+        egress.put("egress", egressBlock);
+
+        policy.validate(egress);
+    }
+
     @Test
     void networkCheckUnknownSubKeyIsRejected() {
         Map<String, Object> egress = wellFormedEgress();

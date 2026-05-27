@@ -73,6 +73,15 @@ public class WinGetEgressPayloadPolicy {
      */
     public static final int ACCEPTED_SCHEMA_VERSION = 1;
 
+    /**
+     * AG-026A pilot package id. The agent's
+     * {@code FixedPackageQueryID} is hard-coded to this value; the
+     * backend revalidates the wire field at ingest time so a future
+     * agent build that probes a different package gets a fail-closed
+     * signal here (Codex 019e6ba4 iter-1 absorb).
+     */
+    public static final String ACCEPTED_PACKAGE_ID = "7zip.7zip";
+
     private static final Set<String> WINGET_EGRESS_KEYS = Set.of(
             "supported",
             "schemaVersion",
@@ -128,6 +137,31 @@ public class WinGetEgressPayloadPolicy {
      * the entire {@code details} tree first; this validator focuses
      * on the egress-specific schema invariants.
      *
+     * <p>Codex 019e6ba4 iter-1 absorb — fail-closed required-field
+     * enforcement (the previous "optional everywhere" shape would have
+     * let a malformed AG-026A payload reach the install-preflight
+     * decision matrix with a missing {@code egress} block and still
+     * resolve to PASS):
+     *
+     * <ul>
+     *   <li>Top-level required: {@code supported} (boolean),
+     *       {@code schemaVersion} (int == 1), {@code probeDurationMs}
+     *       (number), {@code timeout} (boolean), {@code packageQuery}
+     *       (object), {@code egress} (object).</li>
+     *   <li>{@code packageQuery} required sub-keys: {@code packageId}
+     *       (== {@link #ACCEPTED_PACKAGE_ID}), {@code found} (boolean),
+     *       {@code exitCode} (int), {@code durationMs} (number),
+     *       {@code timeout} (boolean).</li>
+     *   <li>{@code egress} required sub-keys: {@code proxyConfigured}
+     *       (boolean). DNS / TCP / HTTPS arrays are required when
+     *       {@code supported=true} (a healthy AG-026A run always emits
+     *       them — non-Windows stubs ship {@code supported=false}
+     *       which is BLOCK in the service gate).</li>
+     *   <li>Key matching is case-sensitive verbatim against the
+     *       AG-026A wire shape — no case-insensitive tolerance (Codex
+     *       019e6ba4 iter-1: drift detection beats compatibility).</li>
+     * </ul>
+     *
      * @param wingetEgress the {@code inventory.wingetEgress} sub-map,
      *                     or {@code null} if the agent did not ship the
      *                     block (which is the BE-020I-only legacy path).
@@ -148,8 +182,20 @@ public class WinGetEgressPayloadPolicy {
         softwareInventoryPolicy.validate(root);
 
         assertOnlyKnownKeys(root, WINGET_EGRESS_KEYS, "$.inventory.wingetEgress");
+        // Required + type-pinned top-level fields. Order matters for
+        // clear error messages — schemaVersion is checked first because
+        // a wrong version invalidates every other assumption.
         assertSchemaVersionPinned(root.get("schemaVersion"));
+        requireBoolean(root, "supported", "$.inventory.wingetEgress");
+        requireNumber(root, "probeDurationMs", "$.inventory.wingetEgress");
+        requireBoolean(root, "timeout", "$.inventory.wingetEgress");
 
+        boolean supported = (Boolean) root.get("supported");
+
+        // Sources is OPTIONAL (an empty source list is a legitimate
+        // readiness signal — `BLOCK winget_not_ready` would already
+        // have fired in the service gate). Type pin: must be an array
+        // when present.
         Object sources = root.get("sources");
         if (sources instanceof Iterable<?> iterable) {
             int i = 0;
@@ -167,28 +213,89 @@ public class WinGetEgressPayloadPolicy {
                             + sources.getClass().getSimpleName());
         }
 
+        // packageQuery is REQUIRED. Required sub-keys validated below
+        // so a malformed sub-shape cannot reach the install-preflight
+        // service with PASS-eligible evidence.
         Object packageQuery = root.get("packageQuery");
-        if (packageQuery != null) {
-            if (!(packageQuery instanceof Map<?, ?> pq)) {
-                throw new IllegalArgumentException(
-                        "wingetEgress.packageQuery must be an object, got "
-                                + packageQuery.getClass().getSimpleName());
-            }
-            assertOnlyKnownKeys(pq, PACKAGE_QUERY_KEYS, "$.inventory.wingetEgress.packageQuery");
+        if (!(packageQuery instanceof Map<?, ?> pq)) {
+            throw new IllegalArgumentException(
+                    "wingetEgress.packageQuery is required and must be an object.");
         }
+        assertOnlyKnownKeys(pq, PACKAGE_QUERY_KEYS, "$.inventory.wingetEgress.packageQuery");
+        Object packageId = pq.get("packageId");
+        if (!(packageId instanceof String pid)) {
+            throw new IllegalArgumentException(
+                    "wingetEgress.packageQuery.packageId is required (string).");
+        }
+        if (!ACCEPTED_PACKAGE_ID.equals(pid)) {
+            // AG-026A is hard-coded to the pilot package. Anything else
+            // is wire-shape drift that BE-021A cannot use as PASS
+            // evidence; the install-preflight service additionally
+            // emits BLOCK `winget_fixed_probe_package_mismatch` when
+            // the catalog item's packageId doesn't match the pilot id,
+            // but here we reject at ingest time because a non-pilot
+            // packageId means the agent shipped output it had no
+            // business emitting.
+            throw new IllegalArgumentException(
+                    "wingetEgress.packageQuery.packageId must be "
+                            + ACCEPTED_PACKAGE_ID + " (got " + pid + ").");
+        }
+        requireBoolean(pq, "found", "$.inventory.wingetEgress.packageQuery");
+        requireNumber(pq, "exitCode", "$.inventory.wingetEgress.packageQuery");
+        requireNumber(pq, "durationMs", "$.inventory.wingetEgress.packageQuery");
+        requireBoolean(pq, "timeout", "$.inventory.wingetEgress.packageQuery");
 
+        // egress is REQUIRED. proxyConfigured boolean required.
+        // DNS/TCP/HTTPS arrays REQUIRED when supported=true (a
+        // supported AG-026A run on Windows always emits them; the
+        // non-Windows stub ships supported=false with empty arrays
+        // and is BLOCKed by the install-preflight service before
+        // reaching here in the first place).
         Object egress = root.get("egress");
-        if (egress != null) {
-            if (!(egress instanceof Map<?, ?> es)) {
-                throw new IllegalArgumentException(
-                        "wingetEgress.egress must be an object, got "
-                                + egress.getClass().getSimpleName());
-            }
-            assertOnlyKnownKeys(es, EGRESS_SUMMARY_KEYS, "$.inventory.wingetEgress.egress");
+        if (!(egress instanceof Map<?, ?> es)) {
+            throw new IllegalArgumentException(
+                    "wingetEgress.egress is required and must be an object.");
+        }
+        assertOnlyKnownKeys(es, EGRESS_SUMMARY_KEYS, "$.inventory.wingetEgress.egress");
+        requireBoolean(es, "proxyConfigured", "$.inventory.wingetEgress.egress");
+        if (supported) {
+            assertNetworkCheckListRequired(es.get("dns"), "dns");
+            assertNetworkCheckListRequired(es.get("tcp"), "tcp");
+            assertNetworkCheckListRequired(es.get("https"), "https");
+        } else {
+            // supported=false: the non-Windows stub legitimately emits
+            // empty arrays. The service gate will BLOCK on
+            // `winget_not_ready` before checking egress; the validator
+            // accepts the empty arrays here but still type-checks them.
             assertNetworkCheckList(es.get("dns"), "dns");
             assertNetworkCheckList(es.get("tcp"), "tcp");
             assertNetworkCheckList(es.get("https"), "https");
         }
+    }
+
+    private static void requireBoolean(Map<?, ?> map, String key, String parentPath) {
+        Object value = map.get(key);
+        if (value == null || !(value instanceof Boolean)) {
+            throw new IllegalArgumentException(
+                    parentPath + "." + key + " is required (boolean).");
+        }
+    }
+
+    private static void requireNumber(Map<?, ?> map, String key, String parentPath) {
+        Object value = map.get(key);
+        if (value == null || !(value instanceof Number)) {
+            throw new IllegalArgumentException(
+                    parentPath + "." + key + " is required (number).");
+        }
+    }
+
+    private void assertNetworkCheckListRequired(Object list, String fieldName) {
+        if (list == null) {
+            throw new IllegalArgumentException(
+                    "wingetEgress.egress." + fieldName
+                            + " is required (array) when supported=true.");
+        }
+        assertNetworkCheckList(list, fieldName);
     }
 
     private void assertSchemaVersionPinned(Object schemaVersion) {
@@ -242,20 +349,23 @@ public class WinGetEgressPayloadPolicy {
         }
     }
 
+    /**
+     * Case-sensitive verbatim match against the AG-026A wire-shape
+     * allowlist (Codex 019e6ba4 iter-1 absorb).
+     *
+     * <p>Earlier iterations tolerated case-insensitive variants on the
+     * theory that "even an uppercase typo is still unknown" — but in
+     * practice that masked drift detection. The AG-026A struct emits
+     * lowercase field names ({@code supported}, {@code packageQuery},
+     * etc.) verbatim; anything else is wire-shape drift and gets
+     * fail-closed rejected here.
+     */
     private void assertOnlyKnownKeys(Map<?, ?> map, Set<String> allowed, String path) {
         for (Object rawKey : map.keySet()) {
             String key = String.valueOf(rawKey);
             if (!allowed.contains(key)) {
-                String keyLower = key.toLowerCase(Locale.ROOT);
-                // Case-insensitive double-check covers a future field
-                // renamed via case (e.g. "PackageQuery"). Even then,
-                // unknown is unknown.
-                boolean caseInsensitiveMatch = allowed.stream()
-                        .anyMatch(known -> known.toLowerCase(Locale.ROOT).equals(keyLower));
-                if (!caseInsensitiveMatch) {
-                    throw new IllegalArgumentException(
-                            "Unknown wingetEgress field '" + key + "' at " + path);
-                }
+                throw new IllegalArgumentException(
+                        "Unknown wingetEgress field '" + key + "' at " + path);
             }
         }
     }

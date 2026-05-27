@@ -288,16 +288,37 @@ public class EndpointInstallPreflightService {
             blocking.add(Reason.INVENTORY_UNSUPPORTED);
             return;
         }
-        Instant lastSeen = snapshot.getUpdatedAt() != null
-                ? snapshot.getUpdatedAt()
-                : snapshot.getSummaryCollectedAt();
-        if (lastSeen != null && Duration.between(lastSeen, now)
-                .compareTo(INVENTORY_STALE_AFTER) > 0) {
+        // Codex 019e6ba4 iter-1 absorb (P1#2): freshness is computed
+        // against EACH evidence stream's own timestamp, not the bulk
+        // updatedAt. A wingetEgress-only ingest refreshes updatedAt
+        // and would otherwise mask a 3-day-stale apps_collected_at —
+        // which is the exact data the installedState heuristic relies
+        // on. Each stale stream contributes a single dedup'd
+        // inventory_stale warning.
+        boolean stale = false;
+        if (isStale(snapshot.getSummaryCollectedAt(), now)) {
+            stale = true;
+        }
+        if (snapshot.isAppsAvailable()
+                && isStale(snapshot.getAppsCollectedAt(), now)) {
+            stale = true;
+        }
+        if (snapshot.getWingetEgress() != null
+                && isStale(snapshot.getWingetEgressCollectedAt(), now)) {
+            stale = true;
+        }
+        if (stale) {
             warnings.add(Reason.INVENTORY_STALE);
         }
         if (!snapshot.isAppsAvailable()) {
             warnings.add(Reason.APPS_UNAVAILABLE);
         }
+    }
+
+    private static boolean isStale(Instant collectedAt, Instant now) {
+        return collectedAt != null
+                && Duration.between(collectedAt, now)
+                        .compareTo(INVENTORY_STALE_AFTER) > 0;
     }
 
     private void evaluateWinGetGate(
@@ -414,8 +435,17 @@ public class EndpointInstallPreflightService {
             EndpointSoftwareInventorySnapshot snapshot,
             EndpointSoftwareCatalogItem catalogItem) {
         UUID snapshotId = snapshot == null ? null : snapshot.getId();
+        Long snapshotRowVersion = snapshot == null ? null : snapshot.getVersion();
         Instant inventoryUpdatedAt = snapshot == null
                 ? null : snapshot.getUpdatedAt();
+        Instant summaryCollectedAt = snapshot == null
+                ? null : snapshot.getSummaryCollectedAt();
+        Instant appsCollectedAt = snapshot == null
+                ? null : snapshot.getAppsCollectedAt();
+        UUID summaryResultId = snapshot == null
+                || snapshot.getLatestSummaryCommandResult() == null
+                ? null
+                : snapshot.getLatestSummaryCommandResult().getId();
         UUID fullResultId = snapshot == null
                 || snapshot.getLatestFullCommandResult() == null
                 ? null
@@ -433,7 +463,11 @@ public class EndpointInstallPreflightService {
                 ? null : catalogItem.getLastUpdatedAt();
         return new InstallPreflightEvidence(
                 snapshotId,
+                snapshotRowVersion,
                 inventoryUpdatedAt,
+                summaryCollectedAt,
+                appsCollectedAt,
+                summaryResultId,
                 fullResultId,
                 egressResultId,
                 egressCollectedAt,

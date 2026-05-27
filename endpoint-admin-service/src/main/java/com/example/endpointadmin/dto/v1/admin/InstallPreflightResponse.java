@@ -82,13 +82,37 @@ public record InstallPreflightResponse(
      * command-creation time using these refs. Reuse of a cached PASS
      * response is explicitly forbidden (Codex 019e6b88 drift control).
      *
+     * <p>Codex 019e6ba4 iter-1 absorb (P2#3): the block now carries the
+     * inventory snapshot row version (Hibernate {@code @Version})
+     * alongside the summary / full / egress command-result IDs.
+     * Together they let AG-027 detect three independent drift signals
+     * at command-creation time:
+     *
+     * <ul>
+     *   <li>Catalog row revoked or disabled between preflight and
+     *       command-create: detected via {@code catalogRowVersion}
+     *       + {@code catalogLastUpdatedAt}.</li>
+     *   <li>Inventory snapshot replaced (apps[] ingest, summary
+     *       update, wingetEgress ingest) between preflight and
+     *       command-create: detected via {@code inventorySnapshotRowVersion}
+     *       (each ingest bumps {@code @Version}).</li>
+     *   <li>Specific evidence stream replaced: detected via the
+     *       individual {@code latestSummaryCommandResultId} /
+     *       {@code latestFullCommandResultId} /
+     *       {@code latestWingetEgressCommandResultId} pointers.</li>
+     * </ul>
+     *
      * <p>All fields nullable — the response is valid even when the
      * underlying evidence is missing (the matching reason codes will
      * appear in {@code reasons} / {@code blockingReasons}).
      */
     public record InstallPreflightEvidence(
             UUID inventorySnapshotId,
+            Long inventorySnapshotRowVersion,
             Instant inventoryUpdatedAt,
+            Instant summaryCollectedAt,
+            Instant appsCollectedAt,
+            UUID latestSummaryCommandResultId,
             UUID latestFullCommandResultId,
             UUID latestWingetEgressCommandResultId,
             Instant wingetEgressCollectedAt,

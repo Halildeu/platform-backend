@@ -199,7 +199,17 @@ class AdminInstallPreflightControllerTest {
             List<String> warnings,
             List<String> requirements) {
         InstallPreflightEvidence evidence = new InstallPreflightEvidence(
-                null, null, null, null, null, 1, 1L,
+                null, // inventorySnapshotId
+                null, // inventorySnapshotRowVersion
+                null, // inventoryUpdatedAt
+                null, // summaryCollectedAt
+                null, // appsCollectedAt
+                null, // latestSummaryCommandResultId
+                null, // latestFullCommandResultId
+                null, // latestWingetEgressCommandResultId
+                null, // wingetEgressCollectedAt
+                1,    // wingetEgressSchemaVersion
+                1L,   // catalogRowVersion
                 Instant.parse("2026-05-28T11:00:00Z"));
         return new InstallPreflightResponse(
                 decision,

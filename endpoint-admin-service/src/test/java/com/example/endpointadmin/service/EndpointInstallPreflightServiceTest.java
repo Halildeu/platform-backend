@@ -192,8 +192,10 @@ class EndpointInstallPreflightServiceTest {
     @Test
     void warnWhenInventoryStale() {
         EndpointSoftwareInventorySnapshot snapshot = healthySnapshot(true);
-        // Stale: last updated 48 hours before NOW.
+        // Stale: every evidence stream 48h old.
         setUpdatedAt(snapshot, NOW.minus(Duration.ofHours(48)));
+        snapshot.setSummaryCollectedAt(NOW.minus(Duration.ofHours(48)));
+        snapshot.setAppsCollectedAt(NOW.minus(Duration.ofHours(48)));
         snapshot.setWingetEgress(packageFoundEgress());
         snapshot.setWingetEgressSchemaVersion(1);
         snapshot.setWingetEgressCollectedAt(NOW.minus(Duration.ofHours(48)));
@@ -205,6 +207,71 @@ class EndpointInstallPreflightServiceTest {
                 .contains(Reason.INVENTORY_STALE.code());
         // INVENTORY_STALE alone does not block.
         assertThat(response.decision()).isEqualTo(InstallPreflightDecision.WARN);
+    }
+
+    @Test
+    void warnWhenAppsCollectedAtStaleButUpdatedAtFresh() {
+        // Codex 019e6ba4 iter-1 P1#2 absorb regression: a wingetEgress-
+        // only ingest refreshes updatedAt but apps_collected_at stays
+        // 48h old. The previous implementation (which read updatedAt)
+        // would have falsely classified this snapshot as fresh; the
+        // new evidence-stream-by-stream freshness check must catch it.
+        EndpointSoftwareInventorySnapshot snapshot = healthySnapshot(true);
+        setUpdatedAt(snapshot, NOW); // fresh bulk timestamp
+        snapshot.setSummaryCollectedAt(NOW);
+        snapshot.setAppsCollectedAt(NOW.minus(Duration.ofHours(48))); // stale apps
+        snapshot.setWingetEgress(packageFoundEgress());
+        snapshot.setWingetEgressSchemaVersion(1);
+        snapshot.setWingetEgressCollectedAt(NOW);
+
+        InstallPreflightResponse response = service.compute(
+                onlineDevice(), approvedCatalogItem("7zip.7zip"), snapshot);
+
+        assertThat(response.warnings())
+                .contains(Reason.INVENTORY_STALE.code());
+    }
+
+    @Test
+    void warnWhenWingetEgressCollectedAtStaleButUpdatedAtFresh() {
+        // Symmetric regression: a summary-only ingest refreshes
+        // updatedAt but wingetEgress_collected_at stays 48h old. The
+        // egress evidence the install-preflight relies on is stale and
+        // the operator must see the signal.
+        EndpointSoftwareInventorySnapshot snapshot = healthySnapshot(true);
+        setUpdatedAt(snapshot, NOW);
+        snapshot.setSummaryCollectedAt(NOW);
+        snapshot.setAppsCollectedAt(NOW);
+        snapshot.setWingetEgress(packageFoundEgress());
+        snapshot.setWingetEgressSchemaVersion(1);
+        snapshot.setWingetEgressCollectedAt(NOW.minus(Duration.ofHours(48)));
+
+        InstallPreflightResponse response = service.compute(
+                onlineDevice(), approvedCatalogItem("7zip.7zip"), snapshot);
+
+        assertThat(response.warnings())
+                .contains(Reason.INVENTORY_STALE.code());
+    }
+
+    @Test
+    void inventoryStaleEmittedOnceEvenWhenMultipleStreamsStale() {
+        // Three stale streams should still produce a single
+        // INVENTORY_STALE warning entry — the dedupe lives in the
+        // service-level boolean rollup, not in caller filtering.
+        EndpointSoftwareInventorySnapshot snapshot = healthySnapshot(true);
+        setUpdatedAt(snapshot, NOW.minus(Duration.ofHours(72)));
+        snapshot.setSummaryCollectedAt(NOW.minus(Duration.ofHours(72)));
+        snapshot.setAppsCollectedAt(NOW.minus(Duration.ofHours(72)));
+        snapshot.setWingetEgress(packageFoundEgress());
+        snapshot.setWingetEgressSchemaVersion(1);
+        snapshot.setWingetEgressCollectedAt(NOW.minus(Duration.ofHours(72)));
+
+        InstallPreflightResponse response = service.compute(
+                onlineDevice(), approvedCatalogItem("7zip.7zip"), snapshot);
+
+        long staleCount = response.warnings().stream()
+                .filter(Reason.INVENTORY_STALE.code()::equals)
+                .count();
+        assertThat(staleCount).isEqualTo(1L);
     }
 
     @Test
