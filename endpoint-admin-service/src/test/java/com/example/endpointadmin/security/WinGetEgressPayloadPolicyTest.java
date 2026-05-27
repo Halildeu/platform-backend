@@ -66,11 +66,38 @@ class WinGetEgressPayloadPolicyTest {
     }
 
     @Test
-    void schemaVersionAsStringAcceptedWhenNumeric() {
+    void schemaVersionAsStringIsRejected() {
+        // Codex 019e6ba4 iter-2 absorb: schemaVersion is strictly
+        // integral; "1" as a string is wire-shape drift.
         Map<String, Object> egress = wellFormedEgress();
         egress.put("schemaVersion", "1");
 
-        policy.validate(egress);
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schemaVersion");
+    }
+
+    @Test
+    void schemaVersionAsDecimalIsRejected() {
+        // 1.0 as a Double would have been truncated to 1 by the old
+        // `Number.intValue()` path; the new strict check rejects any
+        // non-integral payload.
+        Map<String, Object> egress = wellFormedEgress();
+        egress.put("schemaVersion", 1.0);
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schemaVersion");
+    }
+
+    @Test
+    void schemaVersionAsFractionalIsRejected() {
+        Map<String, Object> egress = wellFormedEgress();
+        egress.put("schemaVersion", 1.5);
+
+        assertThatThrownBy(() -> policy.validate(egress))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("schemaVersion");
     }
 
     @Test

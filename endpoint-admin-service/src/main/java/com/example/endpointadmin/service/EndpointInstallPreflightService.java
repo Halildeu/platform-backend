@@ -104,6 +104,7 @@ public class EndpointInstallPreflightService {
         INVENTORY_UNSUPPORTED("inventory_unsupported"),
         WINGET_NOT_READY("winget_not_ready"),
         WINGET_EGRESS_MISSING("winget_egress_missing"),
+        WINGET_EGRESS_UNSUPPORTED("winget_egress_unsupported"),
         WINGET_EGRESS_SCHEMA_UNSUPPORTED("winget_egress_schema_unsupported"),
         WINGET_FIXED_PROBE_PACKAGE_MISMATCH("winget_fixed_probe_package_mismatch"),
         WINGET_PACKAGE_QUERY_NOT_FOUND("winget_package_query_not_found"),
@@ -341,6 +342,19 @@ public class EndpointInstallPreflightService {
             blocking.add(Reason.WINGET_EGRESS_MISSING);
             return;
         }
+        // Codex 019e6ba4 iter-2 absorb (P1): the validator tolerates
+        // wingetEgress.supported=false (the non-Windows agent stub
+        // legitimately ships it that way), but the service must still
+        // BLOCK on it. Without this check a malformed/future agent
+        // payload with `supported=false + packageQuery.found=true +
+        // empty egress arrays` would have slipped through to PASS —
+        // the payload was schema-valid but the WinGet runtime was
+        // not on the device.
+        Boolean egressSupported = asBool(egress.get("supported"));
+        if (!Boolean.TRUE.equals(egressSupported)) {
+            blocking.add(Reason.WINGET_EGRESS_UNSUPPORTED);
+            return;
+        }
         Integer schemaVersion = snapshot.getWingetEgressSchemaVersion();
         if (schemaVersion == null
                 || schemaVersion != WinGetEgressPayloadPolicy.ACCEPTED_SCHEMA_VERSION) {
@@ -511,6 +525,7 @@ public class EndpointInstallPreflightService {
                 case INVENTORY_UNSUPPORTED -> "Device inventory reported unsupported state (non-Windows or agent stub).";
                 case WINGET_NOT_READY -> "WinGet App Installer not ready on the device (wingetReady=false).";
                 case WINGET_EGRESS_MISSING -> "Run COLLECT_INVENTORY with includeWinGetEgress=true to capture AG-026A evidence.";
+                case WINGET_EGRESS_UNSUPPORTED -> "WinGet egress evidence reports supported=false (likely a non-Windows agent stub).";
                 case WINGET_EGRESS_SCHEMA_UNSUPPORTED -> "WinGet egress evidence schema version is not supported by this backend.";
                 case WINGET_FIXED_PROBE_PACKAGE_MISMATCH -> "AG-026A only probes the pilot package (7zip.7zip); a per-package probe is required for this catalog item.";
                 case WINGET_PACKAGE_QUERY_NOT_FOUND -> "WinGet source could not locate the pilot package on this device.";

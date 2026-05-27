@@ -319,6 +319,28 @@ class EndpointInstallPreflightServiceTest {
     }
 
     @Test
+    void blockWhenEgressSupportedFalse() {
+        // Codex 019e6ba4 iter-2 absorb (P1): the validator tolerates
+        // wingetEgress.supported=false (non-Windows stub legitimate),
+        // but the service must STILL block on it. Without this check
+        // a malformed payload with supported=false + found=true +
+        // empty egress arrays could reach PASS.
+        EndpointSoftwareInventorySnapshot snapshot = healthySnapshot(true);
+        Map<String, Object> egress = new LinkedHashMap<>(packageFoundEgress());
+        egress.put("supported", false);
+        snapshot.setWingetEgress(egress);
+        snapshot.setWingetEgressSchemaVersion(1);
+        snapshot.setWingetEgressCollectedAt(NOW);
+
+        InstallPreflightResponse response = service.compute(
+                onlineDevice(), approvedCatalogItem("7zip.7zip"), snapshot);
+
+        assertThat(response.blockingReasons())
+                .contains(Reason.WINGET_EGRESS_UNSUPPORTED.code());
+        assertThat(response.decision()).isEqualTo(InstallPreflightDecision.BLOCK);
+    }
+
+    @Test
     void blockWhenEgressSchemaUnsupported() {
         EndpointSoftwareInventorySnapshot snapshot = fullEvidenceSnapshot();
         snapshot.setWingetEgressSchemaVersion(999);

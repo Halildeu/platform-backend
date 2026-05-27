@@ -298,27 +298,30 @@ public class WinGetEgressPayloadPolicy {
         assertNetworkCheckList(list, fieldName);
     }
 
+    /**
+     * Schema version pin — Codex 019e6ba4 iter-2 absorb: strict
+     * integral-only check, no string coercion, no decimal truncation.
+     *
+     * <p>Earlier iterations accepted {@code "1"} as a string and
+     * {@code 1.5} as a {@code Double} (truncated to {@code 1}); both
+     * paths violated the "verbatim AG-026A wire shape" contract.
+     * Drift detection beats compatibility — a future agent build that
+     * ships {@code schemaVersion: "1"} or {@code 1.0} as a string is
+     * already a wire-shape regression and gets fail-closed rejected
+     * here.
+     */
     private void assertSchemaVersionPinned(Object schemaVersion) {
         if (schemaVersion == null) {
             throw new IllegalArgumentException(
                     "wingetEgress.schemaVersion is required (expected "
-                            + ACCEPTED_SCHEMA_VERSION + ").");
+                            + ACCEPTED_SCHEMA_VERSION + ", integer).");
         }
-        int actual;
-        if (schemaVersion instanceof Number n) {
-            actual = n.intValue();
-        } else if (schemaVersion instanceof String s) {
-            try {
-                actual = Integer.parseInt(s.trim());
-            } catch (NumberFormatException e) {
-                throw new IllegalArgumentException(
-                        "wingetEgress.schemaVersion must be an integer, got " + s);
-            }
-        } else {
+        if (!(schemaVersion instanceof Integer || schemaVersion instanceof Long)) {
             throw new IllegalArgumentException(
                     "wingetEgress.schemaVersion must be an integer, got "
                             + schemaVersion.getClass().getSimpleName());
         }
+        long actual = ((Number) schemaVersion).longValue();
         if (actual != ACCEPTED_SCHEMA_VERSION) {
             throw new IllegalArgumentException(
                     "wingetEgress.schemaVersion = " + actual
