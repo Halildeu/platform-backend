@@ -49,6 +49,28 @@ class EndpointAdminAuthorizationAnnotationTest {
         }
     }
 
+    /**
+     * BE-020 PR-B (Faz 22.5.3): every approved-software-catalog admin route
+     * must reuse the existing {@code module:endpoint-admin} RBAC, not open
+     * a new scope (Codex 019e6a3e iter-2 acceptance #3). GET → VIEWER,
+     * POST / PUT → MANAGER.
+     */
+    @Test
+    void softwareCatalogControllerSeparatesReadAndWriteRelations() {
+        for (Method method :
+                AdminEndpointSoftwareCatalogController.class
+                        .getDeclaredMethods()) {
+            if (method.isAnnotationPresent(PostMapping.class)
+                    || method.isAnnotationPresent(
+                            org.springframework.web.bind.annotation.PutMapping.class)) {
+                assertMethodRequires(method, EndpointAdminAuthz.MANAGER);
+            }
+            if (method.isAnnotationPresent(GetMapping.class)) {
+                assertMethodRequires(method, EndpointAdminAuthz.VIEWER);
+            }
+        }
+    }
+
     private void assertClassRequires(Class<?> controllerClass, String relation) {
         RequireModule annotation = controllerClass.getAnnotation(RequireModule.class);
         assertThat(annotation).isNotNull();
