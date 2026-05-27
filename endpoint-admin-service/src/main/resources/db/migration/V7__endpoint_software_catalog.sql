@@ -61,7 +61,7 @@ CREATE TABLE endpoint_software_catalog_items (
     version_policy_value     VARCHAR(64),
     installer_type           VARCHAR(16),
     silent_args_policy       VARCHAR(32),
-    sha256                   CHAR(64),
+    sha256                   VARCHAR(64),
     provenance               VARCHAR(256),
     detection_rule           JSONB           NOT NULL,
     risk_tier                VARCHAR(8)      NOT NULL,
