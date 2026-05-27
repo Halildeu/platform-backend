@@ -68,6 +68,16 @@ class EndpointSoftwareCatalogServiceTest {
             UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID TENANT_B =
             UUID.fromString("22222222-2222-2222-2222-222222222222");
+    /**
+     * Dedicated tenant for the {@code NOT_SUPPORTED} regression test
+     * (Codex 019e6a64 iter-2 PARTIAL absorb): that test suspends the
+     * class-level {@code @DataJpaTest} transaction and commits real rows
+     * into the H2 instance — using a tenant that no other test in this
+     * class queries against keeps tenant-wide count assertions order-
+     * independent.
+     */
+    private static final UUID TENANT_DURABILITY =
+            UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final String SUBJECT_ALICE = "alice@example.com";
     private static final String SUBJECT_BOB = "bob@example.com";
 
@@ -387,18 +397,26 @@ class EndpointSoftwareCatalogServiceTest {
         // back when the 422 throws. If noRollbackFor is removed from
         // approveCatalogItem, this assertion MUST fail because the reject
         // audit row would not survive the throw.
+        //
+        // Codex 019e6a64 iter-2 PARTIAL absorb: the suspended-tx commits
+        // real rows into the class-scoped H2; using TENANT_DURABILITY
+        // (a tenant no other test in this class queries) keeps the
+        // tenant-wide count assertions in this class order-independent.
         AdminCatalogItemRequest req =
                 sevenZipRequest("7zip-self-approve-not-supported");
-        catalogService.createCatalogItem(context(TENANT_A, SUBJECT_ALICE), req);
+        catalogService.createCatalogItem(
+                context(TENANT_DURABILITY, SUBJECT_ALICE), req);
 
         assertThatThrownBy(() -> catalogService.approveCatalogItem(
-                context(TENANT_A, SUBJECT_ALICE), req.catalogItemId()))
+                context(TENANT_DURABILITY, SUBJECT_ALICE),
+                req.catalogItemId()))
                 .isInstanceOf(CatalogMakerCheckerViolationException.class);
 
-        // Durability assertion outside any test tx: audit row must survive
-        // the 422 throw. If noRollbackFor is removed from approveCatalogItem,
-        // the reject audit would roll back and this assertion would FAIL.
-        assertThat(auditEventTypes(TENANT_A))
+        // Durability assertion outside any test tx, scoped to the dedicated
+        // durability tenant: audit row must survive the 422 throw. If
+        // noRollbackFor is removed from approveCatalogItem, the reject audit
+        // would roll back and this assertion would FAIL.
+        assertThat(auditEventTypes(TENANT_DURABILITY))
                 .as("reject audit row must persist past the 422 throw "
                         + "(noRollbackFor=CatalogMakerCheckerViolationException "
                         + "invariant)")
