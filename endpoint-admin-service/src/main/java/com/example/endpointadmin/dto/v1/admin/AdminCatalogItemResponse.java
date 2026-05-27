@@ -4,6 +4,7 @@ import com.example.endpointadmin.model.CatalogInstallerType;
 import com.example.endpointadmin.model.CatalogItemStatus;
 import com.example.endpointadmin.model.CatalogProvider;
 import com.example.endpointadmin.model.CatalogRiskTier;
+import com.example.endpointadmin.model.CatalogSilentArgsPolicy;
 import com.example.endpointadmin.model.CatalogSourceTrust;
 import com.example.endpointadmin.model.CatalogSourceType;
 import com.example.endpointadmin.model.CatalogVersionPolicyType;
@@ -36,7 +37,7 @@ public record AdminCatalogItemResponse(
         CatalogVersionPolicyType versionPolicyType,
         String versionPolicyValue,
         CatalogInstallerType installerType,
-        String silentArgsPolicy,
+        CatalogSilentArgsPolicy silentArgsPolicy,
         String sha256,
         String provenance,
         Map<String, Object> detectionRule,

@@ -43,6 +43,11 @@ public interface EndpointSoftwareCatalogItemRepository
                                           boolean enabled,
                                           Pageable pageable);
 
+    Page<EndpointSoftwareCatalogItem>
+        findByTenantIdAndEnabled(UUID tenantId,
+                                 boolean enabled,
+                                 Pageable pageable);
+
     boolean existsByTenantIdAndCatalogItemId(UUID tenantId,
                                              String catalogItemId);
 }

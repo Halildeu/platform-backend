@@ -108,8 +108,9 @@ public class EndpointSoftwareCatalogItem {
     @Column(name = "installer_type", length = 16)
     private CatalogInstallerType installerType;
 
-    @Column(name = "silent_args_policy", length = 64)
-    private String silentArgsPolicy;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "silent_args_policy", length = 32)
+    private CatalogSilentArgsPolicy silentArgsPolicy;
 
     @Column(name = "sha256", length = 64)
     private String sha256;
@@ -286,11 +287,11 @@ public class EndpointSoftwareCatalogItem {
         this.installerType = installerType;
     }
 
-    public String getSilentArgsPolicy() {
+    public CatalogSilentArgsPolicy getSilentArgsPolicy() {
         return silentArgsPolicy;
     }
 
-    public void setSilentArgsPolicy(String silentArgsPolicy) {
+    public void setSilentArgsPolicy(CatalogSilentArgsPolicy silentArgsPolicy) {
         this.silentArgsPolicy = silentArgsPolicy;
     }
 

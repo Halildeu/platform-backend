@@ -3,6 +3,7 @@ package com.example.endpointadmin.dto.v1.admin;
 import com.example.endpointadmin.model.CatalogInstallerType;
 import com.example.endpointadmin.model.CatalogProvider;
 import com.example.endpointadmin.model.CatalogRiskTier;
+import com.example.endpointadmin.model.CatalogSilentArgsPolicy;
 import com.example.endpointadmin.model.CatalogSourceTrust;
 import com.example.endpointadmin.model.CatalogSourceType;
 import com.example.endpointadmin.model.CatalogVersionPolicyType;
@@ -71,8 +72,7 @@ public record AdminCatalogItemRequest(
 
         CatalogInstallerType installerType,
 
-        @Size(max = 64)
-        String silentArgsPolicy,
+        CatalogSilentArgsPolicy silentArgsPolicy,
 
         @Size(min = 64, max = 64,
                 message = "sha256 must be a 64-character hex digest.")

@@ -60,7 +60,7 @@ CREATE TABLE endpoint_software_catalog_items (
     version_policy_type      VARCHAR(16)     NOT NULL,
     version_policy_value     VARCHAR(64),
     installer_type           VARCHAR(16),
-    silent_args_policy       VARCHAR(64),
+    silent_args_policy       VARCHAR(32),
     sha256                   CHAR(64),
     provenance               VARCHAR(256),
     detection_rule           JSONB           NOT NULL,
@@ -105,6 +105,13 @@ CREATE TABLE endpoint_software_catalog_items (
     CONSTRAINT ck_endpoint_software_catalog_items_installer_type
         CHECK (installer_type IS NULL
             OR installer_type IN ('WINGET_SILENT', 'MSI_SILENT', 'EXE_SILENT')),
+
+    -- Silent args is an allowlisted policy keyword, never a free-text
+    -- command-line string. Codex 019e6a3e post-impl PARTIAL absorb: keep
+    -- the surface narrow so AG-027 cannot inherit a command-shaped value.
+    CONSTRAINT ck_endpoint_software_catalog_items_silent_args_policy
+        CHECK (silent_args_policy IS NULL
+            OR silent_args_policy IN ('DEFAULT', 'VENDOR_RECOMMENDED')),
 
     CONSTRAINT ck_endpoint_software_catalog_items_risk_tier
         CHECK (risk_tier IN ('LOW', 'MED', 'HIGH')),

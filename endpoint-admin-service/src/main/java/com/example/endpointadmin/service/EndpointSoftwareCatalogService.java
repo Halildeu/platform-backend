@@ -108,6 +108,14 @@ public class EndpointSoftwareCatalogService {
         } else if (statusFilter != null) {
             page = repository.findByTenantIdAndStatus(
                     tenantId, statusFilter, pageable);
+        } else if (enabledFilter != null) {
+            // Codex 019e6a64 post-impl PARTIAL absorb: don't silently ignore
+            // an `enabled` filter when callers omit the status; the AG-027
+            // future preflight only ever wants `APPROVED + enabled=true`,
+            // and the admin UI may want a "disabled-only" view independent
+            // of status.
+            page = repository.findByTenantIdAndEnabled(
+                    tenantId, enabledFilter, pageable);
         } else {
             page = repository.findByTenantId(tenantId, pageable);
         }
@@ -146,7 +154,6 @@ public class EndpointSoftwareCatalogService {
                 request.provenance());
 
         String subject = resolveSubject(context);
-        Instant now = Instant.now(clock);
 
         EndpointSoftwareCatalogItem item = new EndpointSoftwareCatalogItem();
         item.setTenantId(tenantId);

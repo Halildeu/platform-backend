@@ -10,6 +10,7 @@ import com.example.endpointadmin.model.CatalogInstallerType;
 import com.example.endpointadmin.model.CatalogItemStatus;
 import com.example.endpointadmin.model.CatalogProvider;
 import com.example.endpointadmin.model.CatalogRiskTier;
+import com.example.endpointadmin.model.CatalogSilentArgsPolicy;
 import com.example.endpointadmin.model.CatalogSourceTrust;
 import com.example.endpointadmin.model.CatalogSourceType;
 import com.example.endpointadmin.model.CatalogVersionPolicyType;
@@ -25,6 +26,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
@@ -347,6 +350,63 @@ class EndpointSoftwareCatalogServiceTest {
     }
 
     @Test
+    void listCatalogItemsByEnabledOnlyReturnsEnabledRowsOnly() {
+        // Codex 019e6a64 post-impl PARTIAL absorb #2: status==null + enabled
+        // filter must apply (was silently ignored before).
+        AdminCatalogItemRequest draft = sevenZipRequest("7zip-enabled-draft");
+        AdminCatalogItemRequest approved =
+                sevenZipRequest("7zip-enabled-approved");
+        catalogService.createCatalogItem(context(TENANT_A, SUBJECT_ALICE), draft);
+        catalogService.createCatalogItem(context(TENANT_A, SUBJECT_ALICE),
+                approved);
+        catalogService.approveCatalogItem(context(TENANT_A, SUBJECT_BOB),
+                approved.catalogItemId());
+
+        var enabledOnly = catalogService.listCatalogItems(
+                context(TENANT_A, SUBJECT_ALICE), null, true, PageRequest.of(0, 10));
+        assertThat(enabledOnly.getTotalElements()).isEqualTo(1);
+        assertThat(enabledOnly.getContent().get(0).catalogItemId())
+                .isEqualTo(approved.catalogItemId());
+
+        var disabledOnly = catalogService.listCatalogItems(
+                context(TENANT_A, SUBJECT_ALICE), null, false, PageRequest.of(0, 10));
+        assertThat(disabledOnly.getTotalElements()).isEqualTo(1);
+        assertThat(disabledOnly.getContent().get(0).catalogItemId())
+                .isEqualTo(draft.catalogItemId());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void approveCatalogItemSelfApprovalAuditDurableAcrossOwnTransaction_noRollbackForRegression() {
+        // Codex 019e6a64 post-impl PARTIAL absorb #5 / BE-014A pattern reuse
+        // (EndpointMaintenanceTokenServiceTest.consumeTokenDeviceMismatch...):
+        // suspend the class-level @DataJpaTest tx (NOT_SUPPORTED) so the
+        // approve call runs in its OWN tx. The maker-checker reject audit is
+        // emitted in the same tx as approveCatalogItem; noRollbackFor=
+        // CatalogMakerCheckerViolationException keeps that tx from rolling
+        // back when the 422 throws. If noRollbackFor is removed from
+        // approveCatalogItem, this assertion MUST fail because the reject
+        // audit row would not survive the throw.
+        AdminCatalogItemRequest req =
+                sevenZipRequest("7zip-self-approve-not-supported");
+        catalogService.createCatalogItem(context(TENANT_A, SUBJECT_ALICE), req);
+
+        assertThatThrownBy(() -> catalogService.approveCatalogItem(
+                context(TENANT_A, SUBJECT_ALICE), req.catalogItemId()))
+                .isInstanceOf(CatalogMakerCheckerViolationException.class);
+
+        // Durability assertion outside any test tx: audit row must survive
+        // the 422 throw. If noRollbackFor is removed from approveCatalogItem,
+        // the reject audit would roll back and this assertion would FAIL.
+        assertThat(auditEventTypes(TENANT_A))
+                .as("reject audit row must persist past the 422 throw "
+                        + "(noRollbackFor=CatalogMakerCheckerViolationException "
+                        + "invariant)")
+                .contains(EndpointSoftwareCatalogService
+                        .EVENT_APPROVAL_REJECTED_MAKER_CHECKER);
+    }
+
+    @Test
     void approveCatalogItemAcrossTenantsReturnsNotFound() {
         AdminCatalogItemRequest req =
                 sevenZipRequest("7zip-tenant-approve-isolation");
@@ -395,7 +455,7 @@ class EndpointSoftwareCatalogServiceTest {
                 CatalogVersionPolicyType.LATEST,
                 null,
                 CatalogInstallerType.WINGET_SILENT,
-                "DEFAULT",
+                CatalogSilentArgsPolicy.DEFAULT,
                 null,
                 null,
                 detection,
