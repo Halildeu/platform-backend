@@ -25,6 +25,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -34,6 +35,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * BE-022 — Hardware Inventory ingest + query tests (Faz 22.5).
@@ -209,11 +211,13 @@ class EndpointHardwareInventoryServiceTest {
         EndpointCommand cmd2 = persistCommand(device);
         EndpointCommandResult result2 = persistResult(cmd2);
 
-        // Distinct collectedAt so the latest ordering is stable.
+        // Distinct collectedAt so the latest ordering is stable —
+        // details1 strictly older than details2 (Codex iter-2 must-fix
+        // #2: deterministic dynamic timestamps).
         Map<String, Object> details1 = effectiveDetailsWithHardware(
-                hardwareWithCollectedAt("2026-05-28T10:00:00Z"));
+                hardwareWithCollectedAt(collectedAtMinutesAgo(120)));
         Map<String, Object> details2 = effectiveDetailsWithHardware(
-                hardwareWithCollectedAt("2026-05-28T11:00:00Z"));
+                hardwareWithCollectedAt(collectedAtMinutesAgo(30)));
 
         EndpointHardwareInventorySnapshot first =
                 service.ingest(device, cmd1, result1, details1);
@@ -244,6 +248,124 @@ class EndpointHardwareInventoryServiceTest {
         assertThat(latest).isEmpty();
     }
 
+    // ------------------------------------------------------------------
+    // collectedAt sanity range (Codex 019e7007 iter-2 must-fix #2:
+    // dedicated reject tests for too-old / too-far-future timestamps).
+    // ------------------------------------------------------------------
+
+    @Test
+    void rejectsCollectedAtTooFarInPast() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-A");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+
+        // 91 days old — outside the service's 90-day past sanity bound.
+        Map<String, Object> details = effectiveDetailsWithHardware(
+                hardwareWithCollectedAt(collectedAtMinutesAgo(91L * 24 * 60)));
+
+        assertThatThrownBy(() ->
+                service.ingest(device, command, result, details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("too far in the past");
+    }
+
+    @Test
+    void rejectsCollectedAtTooFarInFuture() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-A");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+
+        // 2 hours into the future — outside the +1 hour future bound.
+        Map<String, Object> details = effectiveDetailsWithHardware(
+                hardwareWithCollectedAt(
+                        Instant.now().plus(Duration.ofHours(2)).toString()));
+
+        assertThatThrownBy(() ->
+                service.ingest(device, command, result, details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("too far in the future");
+    }
+
+    // ------------------------------------------------------------------
+    // redacted_payload probeErrors substitution (Codex 019e7007 iter-2
+    // must-fix #3: prove that raw probeErrors fields do not leak into
+    // redacted_payload via the bounded {code, summary<=256} projection).
+    // ------------------------------------------------------------------
+
+    @Test
+    void redactedPayloadSubstitutesBoundedProbeErrors() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-A");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+
+        // Build a hardware sub-tree with raw probeErrors carrying
+        // extra fields the service must NOT propagate to
+        // redactedPayload.probeErrors. Sanitizer would normally
+        // strip user-path patterns from the summary; here we use a
+        // benign summary + extra `stackTrace` to test the bounded
+        // projection.
+        Map<String, Object> hw = baseHardware();
+        hw.put("collectedAt", collectedAtMinutesAgo(15));
+        List<Map<String, Object>> probeErrors = new ArrayList<>();
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("code", "PROBE_TIMEOUT");
+        entry.put("summary", "winget probe timed out after 5s");
+        // Raw stackTrace + extras — must be dropped.
+        entry.put("stackTrace", "at com.example.Probe.run(Probe.java:42)");
+        entry.put("rawCommandOutput", "stderr blob");
+        probeErrors.add(entry);
+        hw.put("probeErrors", probeErrors);
+
+        Map<String, Object> details = effectiveDetailsWithHardware(hw);
+        EndpointHardwareInventorySnapshot persisted =
+                service.ingest(device, command, result, details);
+
+        // Snapshot probe_errors (entity scalar) bounded:
+        assertThat(persisted.getProbeErrors()).hasSize(1);
+        Map<String, Object> first = persisted.getProbeErrors().get(0);
+        assertThat(first).containsOnlyKeys("code", "summary");
+        assertThat(first.get("code")).isEqualTo("PROBE_TIMEOUT");
+        assertThat(first.get("summary"))
+                .isEqualTo("winget probe timed out after 5s");
+
+        // redactedPayload.probeErrors also bounded — substitution
+        // (Codex iter-1 must-fix #2).
+        Object redactedProbeErrors = persisted.getRedactedPayload().get("probeErrors");
+        assertThat(redactedProbeErrors).isInstanceOf(List.class);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> redactedList = (List<Map<String, Object>>) redactedProbeErrors;
+        assertThat(redactedList).hasSize(1);
+        assertThat(redactedList.get(0))
+                .containsOnlyKeys("code", "summary");
+        // Raw fields explicitly NOT present in redactedPayload.
+        assertThat(redactedList.get(0)).doesNotContainKeys(
+                "stackTrace", "rawCommandOutput");
+    }
+
+    @Test
+    void redactedPayloadProbeErrorsSummaryTruncatedTo256Chars() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-A");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+
+        // 300-char benign summary — bounded projection must truncate
+        // to 256.
+        String longSummary = "x".repeat(300);
+        Map<String, Object> hw = baseHardware();
+        hw.put("collectedAt", collectedAtMinutesAgo(15));
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("code", "PROBE_VERBOSE");
+        entry.put("summary", longSummary);
+        hw.put("probeErrors", List.of(entry));
+
+        Map<String, Object> details = effectiveDetailsWithHardware(hw);
+        EndpointHardwareInventorySnapshot persisted =
+                service.ingest(device, command, result, details);
+
+        String storedSummary = (String) persisted.getProbeErrors().get(0).get("summary");
+        assertThat(storedSummary).hasSize(256);
+    }
+
     @Test
     void findLatestUsesCollectedAtDescTiebreak() {
         EndpointDevice device = persistDevice(TENANT_A, "PC-A");
@@ -252,7 +374,7 @@ class EndpointHardwareInventoryServiceTest {
         EndpointHardwareInventorySnapshot s1 = ingestAtTimestamp(
                 device, "2026-05-27T10:00:00Z");
         EndpointHardwareInventorySnapshot s2 = ingestAtTimestamp(
-                device, "2026-05-28T10:00:00Z");
+                device, collectedAtMinutesAgo(60));
         EndpointHardwareInventorySnapshot s3 = ingestAtTimestamp(
                 device, "2026-05-27T15:00:00Z");
 
@@ -267,6 +389,16 @@ class EndpointHardwareInventoryServiceTest {
     // ------------------------------------------------------------------
     // Fixtures + helpers
     // ------------------------------------------------------------------
+
+    /**
+     * Build an ISO-8601 timestamp at {@code minutesAgo} minutes before
+     * {@code Instant.now()}. Used to keep test fixtures within the
+     * service's 90-day past sanity bound (Codex 019e7007 iter-1
+     * must-fix #4) without baking a hard-coded date that would expire.
+     */
+    private static String collectedAtMinutesAgo(long minutesAgo) {
+        return Instant.now().minus(Duration.ofMinutes(minutesAgo)).toString();
+    }
 
     private EndpointHardwareInventorySnapshot ingestAtTimestamp(
             EndpointDevice device, String iso) {
@@ -329,7 +461,7 @@ class EndpointHardwareInventoryServiceTest {
 
     private Map<String, Object> hardwareWithDisksAndInterfaces() {
         Map<String, Object> hw = baseHardware();
-        hw.put("collectedAt", "2026-05-28T10:00:00Z");
+        hw.put("collectedAt", collectedAtMinutesAgo(60));
 
         List<Map<String, Object>> disks = new ArrayList<>();
         Map<String, Object> disk1 = new LinkedHashMap<>();
