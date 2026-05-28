@@ -91,7 +91,8 @@ class EndpointMachineCertsPostgresIntegrationTest {
 
     private EndpointMachineCert build(EndpointDevice device, String sanUri, String thumb) {
         EndpointMachineCert c = new EndpointMachineCert();
-        c.setId(UUID.randomUUID());
+        // Do NOT setId() — @GeneratedValue handles id assignment; manual id
+        // makes Hibernate treat the entity as detached with null version.
         c.setDevice(device);
         c.setTenantId(device.getTenantId());
         c.setSanUri(sanUri);

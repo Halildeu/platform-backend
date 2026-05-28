@@ -131,10 +131,13 @@ public class MachineCertAutoEnrollService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "FINGERPRINT_CONFLICT");
         }
 
-        // Create / adopt device + insert cert row.
+        // Create / adopt device + insert cert row. Note: do NOT setId() — the
+        // entity's @GeneratedValue(UUID) lets Hibernate detect it as transient
+        // and auto-assign an id + initial version. Manually setting an id
+        // makes Hibernate treat the entity as "detached" with version=null,
+        // which fails on saveAndFlush.
         EndpointDevice device = adoptOrCreateDevice(tenantId, request, now);
         EndpointMachineCert certRow = new EndpointMachineCert();
-        certRow.setId(UUID.randomUUID());
         certRow.setDevice(device);
         certRow.setTenantId(tenantId);
         certRow.setSanUri(parsed.sanUri());
@@ -151,8 +154,9 @@ public class MachineCertAutoEnrollService {
         try {
             certRepository.saveAndFlush(certRow);
         } catch (DataIntegrityViolationException ex) {
-            log.info("Concurrent enroll detected for sanUri={}; falling back to idempotent winner",
-                    parsed.sanUri());
+            log.warn("DataIntegrityViolation on cert insert sanUri={}: {}",
+                    parsed.sanUri(),
+                    ex.getMostSpecificCause() == null ? ex.getMessage() : ex.getMostSpecificCause().getMessage());
             var winner = certRepository.findActiveBySanUri(parsed.sanUri())
                     .orElseThrow(() -> new ResponseStatusException(
                             HttpStatus.CONFLICT,
