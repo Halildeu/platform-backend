@@ -10,7 +10,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -52,13 +51,15 @@ public class EndpointHardwareInventoryNetworkInterface {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    /**
+     * Single-column Hibernate association on {@code snapshot_id}; the
+     * composite FK {@code (snapshot_id, tenant_id) → snapshots(id,
+     * tenant_id) ON DELETE CASCADE} is enforced at the DB layer by the
+     * V13 migration. {@code tenant_id} is written as a dedicated
+     * scalar so the constraint can verify the pair.
+     */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumns({
-            @JoinColumn(name = "snapshot_id", referencedColumnName = "id",
-                    nullable = false, updatable = false),
-            @JoinColumn(name = "tenant_id", referencedColumnName = "tenant_id",
-                    nullable = false, updatable = false, insertable = false)
-    })
+    @JoinColumn(name = "snapshot_id", nullable = false, updatable = false)
     private EndpointHardwareInventorySnapshot snapshot;
 
     @Column(name = "tenant_id", nullable = false, updatable = false)

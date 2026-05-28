@@ -10,7 +10,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
-import jakarta.persistence.JoinColumns;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
@@ -47,18 +46,23 @@ public class EndpointHardwareInventoryDisk {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    /**
+     * Single-column Hibernate association on {@code snapshot_id}.
+     * The DB-layer composite FK {@code (snapshot_id, tenant_id) →
+     * snapshots(id, tenant_id) ON DELETE CASCADE} is enforced by the
+     * V13 migration's foreign key constraint, NOT by Hibernate (parity
+     * with V12 install audit pattern). Hibernate persists the
+     * {@code tenant_id} column as a dedicated scalar field at persist
+     * time so the DB constraint can verify the (snapshot, tenant)
+     * pair.
+     */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumns({
-            @JoinColumn(name = "snapshot_id", referencedColumnName = "id",
-                    nullable = false, updatable = false),
-            @JoinColumn(name = "tenant_id", referencedColumnName = "tenant_id",
-                    nullable = false, updatable = false,
-                    insertable = false /* tenant column already inserted via dedicated field */)
-    })
+    @JoinColumn(name = "snapshot_id", nullable = false, updatable = false)
     private EndpointHardwareInventorySnapshot snapshot;
 
-    /** Materialized tenant column kept for direct querying / partial
-     * indexes — mirrored from {@code snapshot.tenantId} at persist time. */
+    /** Tenant column — mirrored from {@code snapshot.tenantId} at persist
+     * time by {@link #onPersist()}. The DB-layer composite FK enforces
+     * that {@code (snapshot_id, tenant_id)} matches the snapshot row. */
     @Column(name = "tenant_id", nullable = false, updatable = false)
     private UUID tenantId;
 
