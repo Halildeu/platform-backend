@@ -502,10 +502,11 @@ public class EndpointAdminCommandService {
      * Compose {@code admin-install:{deviceId}:{catalogUuid}:{key}} so
      * the canonical string always fits the
      * {@code endpoint_commands.idempotency_key VARCHAR(128)} column.
-     * Caller-supplied keys are bounded to 48 chars by the request DTO
-     * size annotation. If the caller-supplied key is unusually long, we
-     * hash it down to the first 16 hex chars of SHA-256
-     * (Codex 019e6dfb iter-3 implementation note #3).
+     * Caller-supplied keys are bounded to 40 chars by the request DTO
+     * size annotation (CreateInstallRequest, Codex iter-4 P1-2). If the
+     * caller-supplied key is unusually long (programmatic callers that
+     * bypass the DTO validator), we hash it down to the first 16 hex
+     * chars of SHA-256.
      */
     private String resolveInstallIdempotencyKey(UUID deviceId, UUID catalogUuid, String requestedKey) {
         // Canonical key shape: `admin-install:{deviceId(36)}:{catalogUuid(36)}:{body}`.
