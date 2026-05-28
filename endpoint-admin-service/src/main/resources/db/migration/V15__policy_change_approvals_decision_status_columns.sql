@@ -11,11 +11,16 @@
 -- 3. Per-decision evidenceRefs (string array of supporting links / ticket
 --    ids) gives reviewers attachment surface.
 --
--- Migration is safe even if V14 has been applied to a live cluster: the
--- ALTER TABLE … ADD COLUMN with a transient DEFAULT then DROP DEFAULT
--- pattern keeps backfill atomic (no rows exist in the pilot yet — the
--- DEFAULT only satisfies the NOT NULL contract for the transient instant
--- between ADD and DROP).
+-- Migration assumes V14 + V15 are applied together to the pilot's
+-- empty policy_change_approvals tables (Codex iter-3 caveat). The
+-- transient DEFAULT 'PENDING' on ADD COLUMN exists only to satisfy
+-- the NOT NULL contract during the instant between ADD and DROP — no
+-- rows are present, so no live decisions are mis-labelled. If V14 has
+-- already produced decision rows in any environment, a follow-up
+-- migration MUST backfill previous_status / new_status from `kind`
+-- before this DEFAULT is dropped (APPROVE → APPROVED, REJECT →
+-- REJECTED, REQUEST_CHANGES → IN_REVIEW, DELEGATE/ATTEST → parent's
+-- current status at the time of the decision).
 
 ALTER TABLE policy_change_approvals
     DROP CONSTRAINT IF EXISTS ck_policy_change_approvals_status;

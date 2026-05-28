@@ -219,6 +219,7 @@ public class PolicyChangeApprovalService {
             throw badRequest("A delegate request body is required.");
         }
         requireActorMatchesSubject(context, request.actor(), "actor");
+        requireCanonicalActorId(request.delegateTo(), "delegateTo");
         if (Objects.equals(request.actor().id(), request.delegateTo().id())) {
             throw badRequest("Delegate target must differ from the delegating actor.");
         }
@@ -308,12 +309,28 @@ public class PolicyChangeApprovalService {
     }
 
     /**
-     * Codex iter-1 P1 absorb — guard against a body-supplied actor.id
-     * being used to spoof identity. The propose's {@code proposer.id}
-     * and each decision's {@code actor.id} must match the authenticated
-     * subject; display fields (name, role) are echoed from the body
-     * without further verification (Keycloak claims would be the
-     * canonical source — left as a future enhancement).
+     * Codex iter-1 P1 absorb + iter-3 canonicalization — guard against
+     * body-supplied {@code actor.id} (or propose's {@code proposer.id})
+     * being used to spoof identity. The id must be a canonical string:
+     *
+     * <ul>
+     *   <li>non-empty;</li>
+     *   <li>no leading / trailing whitespace (governance-bearing field,
+     *       reject silently-normalisable forms instead of accepting
+     *       them);</li>
+     *   <li>equals the authenticated subject ({@code context.subject()})
+     *       after the subject's own trim.</li>
+     * </ul>
+     *
+     * <p>Whitespace rejection is iter-3 absorb: silently trimming
+     * created a divergence where {@code actor.id="alice "} passed the
+     * mismatch guard (compared trimmed) but the persisted
+     * {@code proposerSubject="alice"} compared raw against
+     * {@code actor.id()} in {@link #guardProposerSelfApprove}, letting
+     * the 4-eyes check be skipped. Reject outright — display fields
+     * (name, role) are echoed from the body without further
+     * verification (Keycloak claims would be the canonical source —
+     * left as a future enhancement).
      */
     private void requireActorMatchesSubject(AdminTenantContext context,
                                             ApprovalActorDto actor,
@@ -321,24 +338,61 @@ public class PolicyChangeApprovalService {
         if (actor == null || actor.id() == null) {
             throw badRequest("actor.id is required.");
         }
+        String supplied = actor.id();
+        if (supplied.isEmpty() || !supplied.equals(supplied.trim())) {
+            throw new PolicyApprovalActorMismatchException(
+                    fieldName + ".id must not contain leading or trailing "
+                            + "whitespace.");
+        }
         String authenticated = trimToNull(context.subject());
-        String supplied = actor.id().trim();
         if (authenticated == null || !authenticated.equals(supplied)) {
             throw new PolicyApprovalActorMismatchException(
                     fieldName + ".id must equal the authenticated subject.");
         }
     }
 
+    /**
+     * Codex iter-3 absorb — applies the same canonical-id rule used
+     * for the authenticated actor to the delegateTo target, so the
+     * duplicate-approver guard cannot be bypassed by a whitespace-
+     * padded {@code delegateTo.id}.
+     */
+    private void requireCanonicalActorId(ApprovalActorDto actor, String fieldName) {
+        if (actor == null || actor.id() == null) {
+            throw badRequest(fieldName + ".id is required.");
+        }
+        String supplied = actor.id();
+        if (supplied.isEmpty() || !supplied.equals(supplied.trim())) {
+            throw badRequest(fieldName + ".id must not contain leading "
+                    + "or trailing whitespace.");
+        }
+    }
+
+    /**
+     * Codex iter-3 absorb — comparison uses {@code trim()} on both
+     * sides so the 4-eyes guard cannot be bypassed by a whitespace-
+     * padded body {@code actor.id} that slipped past the
+     * {@code requireActorMatchesSubject} normaliser (defence in depth).
+     */
     private void guardProposerSelfApprove(PolicyChangeApproval approval,
                                           ApprovalActorDto actor) {
-        if (Objects.equals(approval.getProposerSubject(), actor.id())) {
+        String proposer = trimToNull(approval.getProposerSubject());
+        String actorId = trimToNull(actor.id());
+        if (proposer != null && proposer.equals(actorId)) {
             throw new PolicyApprovalProposerSelfException(
                     "Proposer cannot approve their own policy-change request.");
         }
     }
 
+    /**
+     * Codex iter-3 absorb — membership check normalises both the
+     * needle and each stored id with {@code trim()} so the delegate
+     * duplicate guard cannot be bypassed by a whitespace-padded
+     * {@code delegateTo.id}.
+     */
     private boolean isCurrentApprover(List<Map<String, Object>> approvers, String actorId) {
-        if (approvers == null || actorId == null) {
+        String needle = trimToNull(actorId);
+        if (approvers == null || needle == null) {
             return false;
         }
         for (Map<String, Object> a : approvers) {
@@ -346,7 +400,7 @@ public class PolicyChangeApprovalService {
                 continue;
             }
             Object id = a.get("id");
-            if (id != null && actorId.equals(String.valueOf(id))) {
+            if (id != null && needle.equals(String.valueOf(id).trim())) {
                 return true;
             }
         }

@@ -234,6 +234,50 @@ class PolicyChangeApprovalServiceTest {
     }
 
     @Test
+    void proposerCannotApproveOwnRequestWithWhitespacePaddedActorId() {
+        // Codex iter-3 absorb — `actor.id` with leading/trailing
+        // whitespace would previously slip past
+        // requireActorMatchesSubject (trimmed compare) but bypass
+        // guardProposerSelfApprove (raw compare). The id is now
+        // rejected outright as non-canonical — the 4-eyes guard
+        // cannot be evaded by a stealth-encoded identity.
+        PolicyChangeApprovalDto created = service.propose(asProposer(),
+                proposeRequest("pol-self-ws"));
+
+        ApprovalActorDto padded = new ApprovalActorDto(
+                PROPOSER.id() + " ", PROPOSER.name(), PROPOSER.role());
+
+        assertThatThrownBy(() -> service.approve(asProposer(), created.id(),
+                new ApproveRequest(padded, "stealth self-sign-off", null)))
+                .isInstanceOf(PolicyApprovalActorMismatchException.class)
+                .hasMessageContaining("whitespace");
+
+        assertThat(service.get(asProposer(), created.id()).status())
+                .isEqualTo(PolicyApprovalStatus.PENDING);
+    }
+
+    @Test
+    void delegateToExistingApproverWithWhitespacePaddedTargetYieldsDelegateConflict() {
+        // Codex iter-3 absorb — even with `delegateTo.id` cosmetically
+        // padded ("carol "), the canonical-id check + trim-normalised
+        // membership comparison rejects the request: padded ids fail
+        // the upstream canonical-form guard with 400.
+        PolicyChangeApprovalDto created = service.propose(asProposer(),
+                proposeRequest("pol-delegate-dup-ws"));
+
+        ApprovalActorDto paddedCarol = new ApprovalActorDto(
+                APPROVER_TWO.id() + " ", APPROVER_TWO.name(),
+                APPROVER_TWO.role());
+
+        assertResponseStatus(
+                () -> service.delegate(as(APPROVER), created.id(),
+                        new DelegateRequest(APPROVER, paddedCarol,
+                                "padded duplicate", null)),
+                HttpStatus.BAD_REQUEST,
+                "whitespace");
+    }
+
+    @Test
     void delegateToExistingApproverYieldsDelegateConflict() {
         // Codex iter-2 P3 absorb — Bob (approver) delegates to Carol
         // (also approver). In-place swap would duplicate Carol on the
