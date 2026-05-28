@@ -279,6 +279,13 @@ class EndpointHardwareInventoryPostgresIntegrationTest {
 
     @Test
     void duplicateSourceCommandResultIdRejectedByPartialUnique() {
+        // Codex 019e7007 iter-4 P1 honesty: this proves the DB-level
+        // partial UNIQUE constraint condition that the service's
+        // saveAndFlush + DataIntegrityViolationException catch block
+        // depends on. The service-level branch coverage of the catch
+        // block itself lives in
+        // EndpointHardwareInventoryServiceRaceCatchTest (Mockito-based
+        // unit test that injects the exception).
         UUID tenantId = persistTenantAndDevice();
         UUID deviceId = singleDeviceId();
         UUID resultId = insertCommandResult(tenantId, deviceId);
@@ -286,9 +293,8 @@ class EndpointHardwareInventoryPostgresIntegrationTest {
         // First snapshot OK.
         insertValidSnapshot(tenantId, deviceId, resultId);
 
-        // Second snapshot for the SAME source_command_result_id is the
-        // race-catch trigger — Codex iter-1 must-fix #1 saveAndFlush +
-        // DataIntegrityViolationException path.
+        // Second snapshot for the SAME source_command_result_id
+        // triggers the partial UNIQUE violation.
         UUID dupId = UUID.randomUUID();
         assertThatThrownBy(() -> jdbc.update(
                 "INSERT INTO endpoint_hardware_inventory_snapshots "
@@ -438,18 +444,20 @@ class EndpointHardwareInventoryPostgresIntegrationTest {
                 0L);
 
         UUID resultId = UUID.randomUUID();
+        // Codex 019e7007 iter-4 P1 fix: endpoint_command_results
+        // schema has only `created_at` — no updated_at, no @Version
+        // (verified against V2 baseline + EndpointCommandResult.java
+        // entity mapping line 74).
         jdbc.update(
                 "INSERT INTO endpoint_command_results "
                         + "(id, tenant_id, command_id, device_id, result_status, "
-                        + " result_payload, reported_at, created_at, updated_at, version) "
-                        + "VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?)",
+                        + " result_payload, reported_at, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?)",
                 resultId, tenantId, commandId, deviceId,
                 "SUCCEEDED",
                 "{}",
                 Timestamp.from(Instant.now()),
-                Timestamp.from(Instant.now()),
-                Timestamp.from(Instant.now()),
-                0L);
+                Timestamp.from(Instant.now()));
         return resultId;
     }
 
