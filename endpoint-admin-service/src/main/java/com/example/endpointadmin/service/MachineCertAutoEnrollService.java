@@ -29,12 +29,14 @@ import java.util.UUID;
 
 /**
  * Faz 22.3 — Backend mTLS self-enrollment service. ADR-0029 backend layer.
- * Codex plan-time consult thread 019e692b-f023-75a1-a2e9-a915f9cd58ee.
+ * Codex plan-time consult thread {@code 019e692b-f023-75a1-a2e9-a915f9cd58ee}.
+ * Codex post-impl review {@code 019e6dc9} PARTIAL absorbed.
  *
  * <p>Flow per {@link #autoEnroll}:
  * <ol>
  *   <li>Parse the presented cert via {@link MachineCertExtractor}
- *       (validity + EKU + SAN URI). Failure → 401 with stable error code.</li>
+ *       (validity + EKU + SAN URI exactly-one). Failure → 401 with stable
+ *       error code.</li>
  *   <li>Idempotent lookup by SAN URI: if an active row exists, return it as
  *       {@code already-enrolled} (HTTP 200). Cross-tenant attempt detected
  *       here → 403.</li>
@@ -45,6 +47,30 @@ import java.util.UUID;
  *       {@link EndpointMachineCert} active row. Audit
  *       {@code MACHINE_CERT_AUTO_ENROLL_SUCCESS}.</li>
  * </ol>
+ *
+ * <h2>Transactional model (Codex 019e6dc9 P0-2 absorb)</h2>
+ *
+ * <p>The service is {@code @Transactional(noRollbackFor =
+ * ResponseStatusException.class)} so the failure-path
+ * {@code MACHINE_CERT_AUTO_ENROLL_FAILED} audit row (recorded BEFORE the
+ * {@code ResponseStatusException} is thrown) survives the throw and reaches
+ * the audit hash-chain. Without this annotation Spring's default rollback
+ * on runtime exceptions would erase forensic evidence of refused enrollments
+ * (mirrors the pattern used in {@link EndpointMaintenanceTokenService}).
+ *
+ * <h2>Race handling (Codex 019e6dc9 P0-1 absorb)</h2>
+ *
+ * <p>The PostgreSQL transaction enters an aborted state after a constraint
+ * violation, so an in-tx re-read after {@code DataIntegrityViolationException}
+ * is unsafe. Both the device upsert (which can hit
+ * {@code uq_endpoint_devices_tenant_fingerprint}) and the cert insert (which
+ * can hit {@code uq_endpoint_machine_certs_san_uri_active} or
+ * {@code uq_endpoint_machine_certs_device_active}) catch
+ * {@code DataIntegrityViolationException} and surface
+ * {@code 409 ENROLLMENT_RACE} / {@code 409 DEVICE_RACE} respectively. The
+ * caller retries — the second attempt reads the persisted winner via the
+ * idempotent {@code findActiveBySanUri} pre-check and returns
+ * {@code already-enrolled}. No in-tx re-read.
  */
 @Service
 public class MachineCertAutoEnrollService {
@@ -70,7 +96,13 @@ public class MachineCertAutoEnrollService {
         this.clock = clock;
     }
 
-    @Transactional
+    /**
+     * Self-enroll a machine identified by its presented mTLS client cert.
+     *
+     * <p>{@code noRollbackFor = ResponseStatusException.class} preserves the
+     * audit row written on the failure path — see class javadoc.
+     */
+    @Transactional(noRollbackFor = ResponseStatusException.class)
     public Outcome autoEnroll(X509Certificate cert, UUID tenantId, AutoEnrollmentRequest request) {
         Instant now = Instant.now(clock);
         MachineCertExtractor.ParsedCert parsed;
@@ -116,7 +148,7 @@ public class MachineCertAutoEnrollService {
             );
         }
 
-        // Fingerprint dedupe (within tenant).
+        // Fingerprint dedupe (within tenant). Active-cert query.
         List<EndpointMachineCert> fpClashes = certRepository
                 .findActiveByTenantAndMachineFingerprint(tenantId, request.machineFingerprint());
         if (!fpClashes.isEmpty()) {
@@ -131,13 +163,31 @@ public class MachineCertAutoEnrollService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "FINGERPRINT_CONFLICT");
         }
 
-        // Create / adopt device + insert cert row. Note: do NOT setId() — the
-        // entity's @GeneratedValue(UUID) lets Hibernate detect it as transient
-        // and auto-assign an id + initial version. Manually setting an id
-        // makes Hibernate treat the entity as "detached" with version=null,
-        // which fails on saveAndFlush.
-        EndpointDevice device = adoptOrCreateDevice(tenantId, request, now);
+        // Create / adopt device.
+        EndpointDevice device;
+        try {
+            device = adoptOrCreateDevice(tenantId, request, now);
+        } catch (DataIntegrityViolationException ex) {
+            // Codex 019e6dc9 P1-6: device persistence race (concurrent enroll
+            // hit uq_endpoint_devices_tenant_fingerprint). The PG tx is now
+            // aborted; we surface 409 DEVICE_RACE rather than try to re-read.
+            // The caller retries and the second attempt's pre-check resolves
+            // it as already-enrolled.
+            log.info("Device persistence race tenant={}: {}", tenantId,
+                    ex.getMostSpecificCause() == null ? ex.getMessage()
+                            : ex.getMostSpecificCause().getMessage());
+            // recordFailure inside the same tx is unreliable post-abort; we
+            // skip it here. The retry path's success audit (or the next
+            // failure's pre-abort audit) is the persisted trace.
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "DEVICE_RACE");
+        }
+
+        // Insert cert row. Codex 019e6dc9 P0-1: do NOT try a same-tx re-read
+        // after DataIntegrityViolation — PG tx is aborted. Surface 409 and
+        // let the caller retry; the retry's pre-check finds the winner.
         EndpointMachineCert certRow = new EndpointMachineCert();
+        // Do NOT setId() — @GeneratedValue handles it; manual id makes
+        // Hibernate treat the entity as detached with null version.
         certRow.setDevice(device);
         certRow.setTenantId(tenantId);
         certRow.setSanUri(parsed.sanUri());
@@ -154,31 +204,10 @@ public class MachineCertAutoEnrollService {
         try {
             certRepository.saveAndFlush(certRow);
         } catch (DataIntegrityViolationException ex) {
-            log.warn("DataIntegrityViolation on cert insert sanUri={}: {}",
-                    parsed.sanUri(),
-                    ex.getMostSpecificCause() == null ? ex.getMessage() : ex.getMostSpecificCause().getMessage());
-            var winner = certRepository.findActiveBySanUri(parsed.sanUri())
-                    .orElseThrow(() -> new ResponseStatusException(
-                            HttpStatus.CONFLICT,
-                            "ENROLLMENT_RACE_LOST"));
-            if (!winner.getTenantId().equals(tenantId)) {
-                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "TENANT_BOUNDARY");
-            }
-            recordSuccess(tenantId, winner.getDevice(), parsed, request, "already-enrolled");
-            return new Outcome(
-                    HttpStatus.OK,
-                    new AutoEnrollmentResponse(
-                            winner.getDevice().getId(),
-                            "already-enrolled",
-                            winner.getEnrolledAt(),
-                            new AutoEnrollmentResponse.CertInfo(
-                                    parsed.sanUri(),
-                                    parsed.objectGuid(),
-                                    parsed.thumbprint(),
-                                    parsed.notAfter()
-                            )
-                    )
-            );
+            log.info("Cert insert race sanUri={}: {}", parsed.sanUri(),
+                    ex.getMostSpecificCause() == null ? ex.getMessage()
+                            : ex.getMostSpecificCause().getMessage());
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "ENROLLMENT_RACE");
         }
 
         recordSuccess(tenantId, device, parsed, request, "enrolled");
@@ -276,6 +305,14 @@ public class MachineCertAutoEnrollService {
                 null);
     }
 
+    /**
+     * Record a failure audit event. {@code @Transactional(noRollbackFor =
+     * ResponseStatusException.class)} on the outer method preserves this row
+     * across the throw. We catch and swallow any audit-side runtime error
+     * here so the original 401/403/409 still reaches the caller — but the
+     * happy path of audit persistence is what callers depend on for
+     * forensic queries (Codex 019e6dc9 P0-2 absorb).
+     */
     private void recordFailure(UUID tenantId,
                                 MachineCertExtractor.ParsedCert parsed,
                                 String reason,

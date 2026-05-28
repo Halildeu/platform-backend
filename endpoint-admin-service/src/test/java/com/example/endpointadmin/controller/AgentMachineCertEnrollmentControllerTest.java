@@ -10,7 +10,6 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
@@ -33,7 +32,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(AgentMachineCertEnrollmentController.class)
 @ActiveProfiles("local")
 @Import(SecurityConfigLocal.class)
-@TestPropertySource(properties = "endpoint-admin.mtls.default-tenant-id=")
 class AgentMachineCertEnrollmentControllerTest {
 
     private static final UUID TENANT_A = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
@@ -238,5 +236,62 @@ class AgentMachineCertEnrollmentControllerTest {
                         .content(requestBody())
                         .with(withClientCert(cert)))
                 .andExpect(status().isForbidden());
+    }
+
+    /**
+     * Codex 019e6dc9 P0-3 absorb: cert presented via the
+     * {@code X-Client-Cert} gateway-forwarded PEM header (NGINX /
+     * Envoy style) MUST be accepted equivalently to the servlet attribute.
+     */
+    @Test
+    void enrollViaGatewayForwardedPemHeaderReturns201() throws Exception {
+        UUID guid = UUID.randomUUID();
+        UUID deviceId = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.validClientCert(guid);
+        Instant now = Instant.parse("2026-05-28T10:00:00Z");
+
+        when(service.autoEnroll(any(), eq(TENANT_A), any()))
+                .thenReturn(new MachineCertAutoEnrollService.Outcome(
+                        HttpStatus.CREATED,
+                        new AutoEnrollmentResponse(
+                                deviceId,
+                                "enrolled",
+                                now,
+                                new AutoEnrollmentResponse.CertInfo(
+                                        "adcomputer:" + guid.toString().toLowerCase(),
+                                        guid,
+                                        "abc123",
+                                        Instant.parse("2027-05-28T10:00:00Z")
+                                )
+                        )
+                ));
+
+        // PEM encoding of the test cert, URL-encoded as NGINX
+        // ssl_client_escaped_cert would produce.
+        String pem = "-----BEGIN CERTIFICATE-----\n"
+                + java.util.Base64.getMimeEncoder().encodeToString(cert.getEncoded())
+                + "\n-----END CERTIFICATE-----\n";
+        String urlEncoded = java.net.URLEncoder.encode(pem, java.nio.charset.StandardCharsets.UTF_8);
+
+        mockMvc.perform(post("/api/v1/endpoint-agent/endpoint-enrollments/auto")
+                        .contentType("application/json")
+                        .header(AgentMachineCertEnrollmentController.TENANT_HEADER, TENANT_A.toString())
+                        .header(AgentMachineCertEnrollmentController.CERT_FORWARD_HEADER, urlEncoded)
+                        .content(requestBody()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("enrolled"));
+    }
+
+    @Test
+    void malformedForwardedPemHeaderReturns401() throws Exception {
+        // Garbage that survives URL-decoding but does not parse as PEM.
+        String junk = "%2D%2D%2D%2DGARBAGE%2D%2D%2D%2D";
+
+        mockMvc.perform(post("/api/v1/endpoint-agent/endpoint-enrollments/auto")
+                        .contentType("application/json")
+                        .header(AgentMachineCertEnrollmentController.TENANT_HEADER, TENANT_A.toString())
+                        .header(AgentMachineCertEnrollmentController.CERT_FORWARD_HEADER, junk)
+                        .content(requestBody()))
+                .andExpect(status().isUnauthorized());
     }
 }

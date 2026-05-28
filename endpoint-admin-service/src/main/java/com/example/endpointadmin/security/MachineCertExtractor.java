@@ -162,10 +162,23 @@ public final class MachineCertExtractor {
         );
     }
 
+    /**
+     * Find the single {@code adcomputer:{objectGUID}} SAN URI in the cert.
+     *
+     * <p>Codex 019e6dc9 P1-5 absorb: cert MUST carry EXACTLY ONE matching
+     * SAN URI. A misissued cert (CA template bug or adversarial issuance)
+     * with two {@code adcomputer:} SANs would otherwise allow first-match-wins
+     * ambiguity — a single cert could enroll under two distinct objectGUID
+     * identities depending on iteration order. The strict count check
+     * propagates {@code CERT_SAN_URI_AMBIGUOUS} via
+     * {@link MachineCertExtractionException}.
+     */
     private static Optional<String> findAdcomputerSan(Collection<List<?>> sans) {
         if (sans == null) {
             return Optional.empty();
         }
+        String firstMatch = null;
+        int matchCount = 0;
         for (List<?> entry : sans) {
             if (entry.size() < 2) {
                 continue;
@@ -179,13 +192,22 @@ public final class MachineCertExtractor {
                 continue;
             }
             if (SAN_URI_PATTERN.matcher(uri).matches()) {
-                return Optional.of(uri);
+                if (firstMatch == null) {
+                    firstMatch = uri;
+                }
+                matchCount++;
             } else {
                 log.debug("Ignoring SAN URI not matching adcomputer pattern (length={})",
                         uri.length());
             }
         }
-        return Optional.empty();
+        if (matchCount > 1) {
+            throw new MachineCertExtractionException(
+                    "CERT_SAN_URI_AMBIGUOUS",
+                    "Cert has " + matchCount + " adcomputer:{objectGUID} SAN URIs; "
+                            + "exactly one is required.");
+        }
+        return Optional.ofNullable(firstMatch);
     }
 
     /**

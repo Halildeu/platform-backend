@@ -87,6 +87,26 @@ class MachineCertExtractorTest {
     }
 
     @Test
+    void rejectsCertWithAmbiguousMultipleAdcomputerSans() {
+        // Codex 019e6dc9 P1-5 absorb: a misissued cert with two matching
+        // adcomputer:{objectGUID} SAN URIs must be rejected explicitly, not
+        // resolved by first-match.
+        UUID guid1 = UUID.randomUUID();
+        UUID guid2 = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.builder()
+                .objectGuid(guid1)
+                .extraSanUri("adcomputer:" + guid2.toString().toLowerCase())
+                .clientAuth(true)
+                .validForDays(30)
+                .build();
+
+        assertThatThrownBy(() -> MachineCertExtractor.extract(cert, NOW))
+                .isInstanceOf(MachineCertExtractionException.class)
+                .extracting(ex -> ((MachineCertExtractionException) ex).getErrorCode())
+                .isEqualTo("CERT_SAN_URI_AMBIGUOUS");
+    }
+
+    @Test
     void rejectsExpiredCert() {
         X509Certificate cert = TestX509Certs.builder()
                 .expiredDaysAgo(5)

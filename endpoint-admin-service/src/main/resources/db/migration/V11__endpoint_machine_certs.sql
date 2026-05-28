@@ -21,12 +21,14 @@
 --     a different san_uri (or even the same san_uri after revocation) can
 --     enroll without colliding.
 --
--- R24 bounded grace (ADR-0029 §"Backend layer"):
---   `effective_not_after = cert_not_after + min(24h, last_good_crl_check)`
---   is enforced at the SERVICE layer (CRL outage handling). The DB constraint
---   below only enforces `cert_not_after > cert_not_before` — the runtime
---   grace window is application-controlled because it depends on CRL freshness
---   that the DB does not know about.
+-- R24 bounded grace (ADR-0029 §"Backend layer", Codex 019e6dc9 P2-7 absorb):
+--   `effective_not_after = cert_not_after + min(24h, age(last_good_crl_check))`
+--   where `age(last_good_crl_check) = max(0, now - last_good_crl_check_ts)`.
+--   I.e. grace equals the time we have been WITHOUT a fresh CRL, capped at
+--   24 hours. Enforced at the SERVICE layer (CRL outage handling); the DB
+--   constraint below only enforces `cert_not_after > cert_not_before`
+--   because the runtime grace window depends on CRL freshness state that
+--   the DB does not own.
 
 CREATE TABLE endpoint_machine_certs (
     id UUID PRIMARY KEY,

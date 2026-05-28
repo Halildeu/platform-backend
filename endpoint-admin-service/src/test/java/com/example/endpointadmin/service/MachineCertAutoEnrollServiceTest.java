@@ -2,6 +2,7 @@ package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.config.TimeConfig;
 import com.example.endpointadmin.dto.v1.agent.AutoEnrollmentRequest;
+import com.example.endpointadmin.repository.EndpointAuditEventRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import com.example.endpointadmin.security.TestX509Certs;
@@ -48,6 +49,9 @@ class MachineCertAutoEnrollServiceTest {
 
     @Autowired
     private EndpointDeviceRepository deviceRepository;
+
+    @Autowired
+    private EndpointAuditEventRepository auditRepository;
 
     private static AutoEnrollmentRequest sampleRequest(String fingerprint) {
         return new AutoEnrollmentRequest(
@@ -180,5 +184,84 @@ class MachineCertAutoEnrollServiceTest {
         assertThat(device.get().getHostname()).isEqualTo("DESKTOP-TEST");
         assertThat(device.get().getMachineFingerprint()).isEqualTo("fp-dev");
         assertThat(device.get().getDomainName()).isEqualTo("acik.local");
+    }
+
+    /**
+     * Codex 019e6dc9 P0-2 absorb: the failure-path audit row must SURVIVE
+     * the {@code ResponseStatusException} that the service throws. Without
+     * {@code noRollbackFor = ResponseStatusException.class} on the outer
+     * {@code @Transactional} the row would roll back and forensic evidence
+     * of a refused enrollment would be lost.
+     */
+    @Test
+    void expiredCertEmitsFailedAuditEvent() {
+        UUID guid = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.builder()
+                .objectGuid(guid)
+                .expiredDaysAgo(1)
+                .build();
+
+        assertThatThrownBy(() ->
+                service.autoEnroll(cert, TENANT_A, sampleRequest("fp-audit-exp")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("CERT_EXPIRED");
+
+        long failed = auditRepository.findAll().stream()
+                .filter(e -> e.getEventType().equals(MachineCertAutoEnrollService.EVENT_FAILED))
+                .filter(e -> e.getTenantId().equals(TENANT_A))
+                .filter(e -> {
+                    Object reason = e.getMetadata().get("reason");
+                    return "CERT_EXPIRED".equals(reason);
+                })
+                .count();
+        assertThat(failed)
+                .as("CERT_EXPIRED failure must persist a MACHINE_CERT_AUTO_ENROLL_FAILED row")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void fingerprintConflictEmitsFailedAuditEvent() {
+        UUID guid1 = UUID.randomUUID();
+        UUID guid2 = UUID.randomUUID();
+        X509Certificate cert1 = TestX509Certs.validClientCert(guid1);
+        X509Certificate cert2 = TestX509Certs.validClientCert(guid2);
+
+        service.autoEnroll(cert1, TENANT_A, sampleRequest("fp-audit-clone"));
+
+        assertThatThrownBy(() ->
+                service.autoEnroll(cert2, TENANT_A, sampleRequest("fp-audit-clone")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("FINGERPRINT_CONFLICT");
+
+        long failed = auditRepository.findAll().stream()
+                .filter(e -> e.getEventType().equals(MachineCertAutoEnrollService.EVENT_FAILED))
+                .filter(e -> e.getTenantId().equals(TENANT_A))
+                .filter(e -> "FINGERPRINT_CONFLICT".equals(e.getMetadata().get("reason")))
+                .count();
+        assertThat(failed)
+                .as("FINGERPRINT_CONFLICT failure must persist a FAILED audit row")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void crossTenantPresentationEmitsFailedAuditEvent() {
+        UUID guid = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.validClientCert(guid);
+
+        service.autoEnroll(cert, TENANT_A, sampleRequest("fp-audit-cross"));
+
+        assertThatThrownBy(() ->
+                service.autoEnroll(cert, TENANT_B, sampleRequest("fp-audit-cross")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("TENANT_BOUNDARY");
+
+        long failed = auditRepository.findAll().stream()
+                .filter(e -> e.getEventType().equals(MachineCertAutoEnrollService.EVENT_FAILED))
+                .filter(e -> e.getTenantId().equals(TENANT_B))
+                .filter(e -> "TENANT_BOUNDARY".equals(e.getMetadata().get("reason")))
+                .count();
+        assertThat(failed)
+                .as("TENANT_BOUNDARY failure must persist a FAILED audit row under requested tenant")
+                .isEqualTo(1);
     }
 }

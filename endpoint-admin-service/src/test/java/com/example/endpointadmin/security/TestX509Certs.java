@@ -62,6 +62,7 @@ public final class TestX509Certs {
         private boolean clientAuth = true;
         private boolean includeSanUri = true;
         private String customSanUri;
+        private String extraSanUri;
         private Instant notBefore = Instant.now().minusSeconds(60);
         private Instant notAfter = Instant.now().plusSeconds(24L * 60L * 60L * 30L);
         private String subjectDn = "CN=DESKTOP-TEST,DC=acik,DC=local";
@@ -84,6 +85,16 @@ public final class TestX509Certs {
 
         public Builder customSanUri(String v) {
             this.customSanUri = v;
+            return this;
+        }
+
+        /**
+         * Adds a SECOND SAN URI (for testing the exactly-one assertion in
+         * {@link MachineCertExtractor}). The primary URI is still derived
+         * from {@link #objectGuid()} / {@link #customSanUri(String)}.
+         */
+        public Builder extraSanUri(String v) {
+            this.extraSanUri = v;
             return this;
         }
 
@@ -158,9 +169,17 @@ public final class TestX509Certs {
                     String sanUri = customSanUri != null
                             ? customSanUri
                             : "adcomputer:" + objectGuid.toString().toLowerCase();
-                    GeneralName name = new GeneralName(GeneralName.uniformResourceIdentifier, sanUri);
-                    builder.addExtension(Extension.subjectAlternativeName, false,
-                            new GeneralNames(name));
+                    GeneralName primary = new GeneralName(
+                            GeneralName.uniformResourceIdentifier, sanUri);
+                    GeneralNames names;
+                    if (extraSanUri != null) {
+                        GeneralName extra = new GeneralName(
+                                GeneralName.uniformResourceIdentifier, extraSanUri);
+                        names = new GeneralNames(new GeneralName[]{primary, extra});
+                    } else {
+                        names = new GeneralNames(primary);
+                    }
+                    builder.addExtension(Extension.subjectAlternativeName, false, names);
                 }
 
                 ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
