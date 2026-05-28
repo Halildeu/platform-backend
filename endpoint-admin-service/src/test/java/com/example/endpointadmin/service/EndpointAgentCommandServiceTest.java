@@ -135,35 +135,68 @@ class EndpointAgentCommandServiceTest {
     @Autowired
     private com.example.endpointadmin.repository.EndpointHardwareInventorySnapshotRepository hardwareSnapshotRepository;
 
+    @Autowired
+    private com.example.endpointadmin.repository.EndpointSoftwareInventorySnapshotRepository softwareSnapshotRepository;
+
     @Test
-    void submitResultIngestsBothSoftwareAndHardwareForCollectInventoryWithHardware() {
+    void submitResultIngestsBothSoftwareAndHardwareForCollectInventoryWithBothBlocks() {
+        // Codex 019e7007 iter-3 must-fix: prove DUAL software + hardware
+        // ingest in a single submitResult call. The request now carries
+        // both `inventory.software` and `inventory.hardware`; assert
+        // both snapshot tables receive a row.
         EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-HW-1"));
         EndpointCommand command = commandRepository.saveAndFlush(command(device, "cmd-hw-1", 10));
         AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
 
+        java.util.Map<String, Object> hardware = new java.util.LinkedHashMap<>();
+        hardware.put("schemaVersion", 1);
+        hardware.put("supported", true);
+        hardware.put("cpuModel", "Intel i7-1260P");
+        hardware.put("ramTotalBytes", 16000000000L);
+        hardware.put("collectedAt",
+                java.time.Instant.now().minusSeconds(60).toString());
+        hardware.put("disks", java.util.List.of());
+        hardware.put("networkInterfaces", java.util.List.of());
+
+        java.util.Map<String, Object> software = new java.util.LinkedHashMap<>();
+        software.put("schemaVersion", 1);
+        software.put("supported", true);
+        software.put("appCount", 0);
+        software.put("wingetReady", true);
+        software.put("apps", java.util.List.of());
+
+        java.util.Map<String, Object> inventory = new java.util.LinkedHashMap<>();
+        inventory.put("software", software);
+        inventory.put("hardware", hardware);
+        java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.put("inventory", inventory);
+
         commandService.submitResult(
                 principal(device),
                 command.getId(),
-                resultRequestWithHardware(
-                        claimed.claimId(), claimed.attemptNumber(),
+                new AgentCommandResultRequest(
+                        claimed.claimId(),
+                        claimed.attemptNumber(),
                         CommandResultStatus.SUCCEEDED,
-                        java.util.Map.of(
-                                "schemaVersion", 1,
-                                "supported", true,
-                                "cpuModel", "Intel i7-1260P",
-                                "ramTotalBytes", 16000000000L,
-                                "collectedAt",
-                                java.time.Instant.now().minusSeconds(60).toString(),
-                                "disks", java.util.List.of(),
-                                "networkInterfaces", java.util.List.of()
-                        )));
+                        "done",
+                        details,
+                        null, null, 0,
+                        Instant.now().minusSeconds(5),
+                        Instant.now()));
 
         EndpointCommandResult result = resultRepository.findByCommand_Id(command.getId()).orElseThrow();
         assertThat(result.getResultStatus()).isEqualTo(CommandResultStatus.SUCCEEDED);
 
-        // Hardware snapshot persisted with source_command_result_id ref.
-        long hardwareCount = hardwareSnapshotRepository.count();
-        assertThat(hardwareCount).isEqualTo(1);
+        // SOFTWARE snapshot persisted (BE-020I path).
+        assertThat(softwareSnapshotRepository.count())
+                .as("software inventory snapshot row count")
+                .isEqualTo(1);
+
+        // HARDWARE snapshot persisted (BE-022 path) with the
+        // source_command_result_id pointer to this same result row.
+        assertThat(hardwareSnapshotRepository.count())
+                .as("hardware inventory snapshot row count")
+                .isEqualTo(1);
         var snapshot = hardwareSnapshotRepository.findBySourceCommandResultId(result.getId());
         assertThat(snapshot).isPresent();
         assertThat(snapshot.get().getDeviceId()).isEqualTo(device.getId());

@@ -52,7 +52,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>First ingest persists snapshot + cascades child disk/NIC rows</li>
  *   <li>Idempotency probe: re-delivering the same {@code source_
  *       command_result_id} returns the existing row, no duplicate</li>
- *   <li>{@code saveAndFlush} path: race catch returns the persisted row</li>
+ *   <li>{@code saveAndFlush} happy-no-op probe (race-catch branch
+ *       coverage lives in
+ *       {@code EndpointHardwareInventoryPostgresIntegrationTest})</li>
  *   <li>{@link ApplicationEventPublisher} receives bounded metadata
  *       (no MAC / IP / domain / serial)</li>
  *   <li>{@code findLatest} ordering is deterministic
@@ -370,13 +372,15 @@ class EndpointHardwareInventoryServiceTest {
     void findLatestUsesCollectedAtDescTiebreak() {
         EndpointDevice device = persistDevice(TENANT_A, "PC-A");
 
-        // Three snapshots with strictly distinct collectedAt.
+        // Three snapshots with strictly distinct collectedAt — dynamic
+        // offsets stay within the service's 90-day past sanity bound
+        // (Codex iter-3 must-fix: remove residual hard-coded dates).
         EndpointHardwareInventorySnapshot s1 = ingestAtTimestamp(
-                device, "2026-05-27T10:00:00Z");
+                device, collectedAtMinutesAgo(48 * 60)); // 48h ago
         EndpointHardwareInventorySnapshot s2 = ingestAtTimestamp(
-                device, collectedAtMinutesAgo(60));
+                device, collectedAtMinutesAgo(60));      // 1h ago — newest
         EndpointHardwareInventorySnapshot s3 = ingestAtTimestamp(
-                device, "2026-05-27T15:00:00Z");
+                device, collectedAtMinutesAgo(36 * 60)); // 36h ago
 
         Optional<EndpointHardwareInventorySnapshot> latest =
                 service.findLatest(TENANT_A, device.getId());
