@@ -129,9 +129,14 @@ class EndpointComplianceStatePostgresIntegrationTest {
 
     @Test
     void compositeFkRejectsCrossTenantCatalogReference() {
+        // Postgres aborts the @DataJpaTest-managed transaction as soon
+        // as a constraint violation fires (SQL state 25P02 — "current
+        // transaction is aborted, commands ignored until end of
+        // transaction block"). The reject side and the same-tenant
+        // happy-path are therefore split into two separate @Test
+        // methods so each runs in its own transaction.
         UUID tenantA = UUID.randomUUID();
         UUID tenantB = UUID.randomUUID();
-        UUID deviceA = seedDevice(tenantA);
 
         // Seed a catalog row owned by tenant A.
         UUID catalogA = UUID.randomUUID();
@@ -143,17 +148,23 @@ class EndpointComplianceStatePostgresIntegrationTest {
         // (id, tenant_id) must reject the INSERT.
         assertThatThrownBy(() -> insertPolicy(tenantB, catalogA))
                 .isInstanceOf(DataAccessException.class);
+    }
 
-        // Sanity: same-tenant insert succeeds.
+    @Test
+    void policyAcceptsSameTenantCatalogReference() {
+        UUID tenantA = UUID.randomUUID();
+        UUID catalogA = UUID.randomUUID();
+        insertCatalog(tenantA, catalogA, "tenantA.app");
+
         UUID validPolicyId = insertPolicy(tenantA, catalogA);
         assertThat(validPolicyId).isNotNull();
 
-        // Touch deviceA so the unused-warning is silenced and the
-        // referenced row is concrete in the assertion narrative.
-        Long deviceCount = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM endpoint_devices WHERE id = ?",
-                Long.class, deviceA);
-        assertThat(deviceCount).isEqualTo(1L);
+        // Verify the row landed via the FK pair, not just by primary key.
+        Long countMatching = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM endpoint_software_compliance_policy_items "
+                        + "WHERE id = ? AND tenant_id = ? AND catalog_item_id = ?",
+                Long.class, validPolicyId, tenantA, catalogA);
+        assertThat(countMatching).isEqualTo(1L);
     }
 
     @Test
