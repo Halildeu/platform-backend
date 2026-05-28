@@ -12,6 +12,7 @@ import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointCommandResultRepository;
 import com.example.endpointadmin.security.DeviceCredentialException;
 import com.example.endpointadmin.security.DeviceCredentialResult;
+import com.example.endpointadmin.security.HardwareInventoryPayloadPolicy;
 import com.example.endpointadmin.security.InstallEvidencePayloadPolicy;
 import com.example.endpointadmin.security.SoftwareInventoryPayloadPolicy;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,7 +37,9 @@ public class EndpointAgentCommandService {
     private final EndpointCommandResultRepository resultRepository;
     private final SoftwareInventoryPayloadPolicy inventoryPayloadPolicy;
     private final InstallEvidencePayloadPolicy installEvidencePayloadPolicy;
+    private final HardwareInventoryPayloadPolicy hardwareInventoryPayloadPolicy;
     private final EndpointSoftwareInventoryService softwareInventoryService;
+    private final EndpointHardwareInventoryService hardwareInventoryService;
     private final EndpointInstallAuditService installAuditService;
     private final Clock clock;
     private final Duration claimTtl;
@@ -45,7 +48,9 @@ public class EndpointAgentCommandService {
                                        EndpointCommandResultRepository resultRepository,
                                        SoftwareInventoryPayloadPolicy inventoryPayloadPolicy,
                                        InstallEvidencePayloadPolicy installEvidencePayloadPolicy,
+                                       HardwareInventoryPayloadPolicy hardwareInventoryPayloadPolicy,
                                        EndpointSoftwareInventoryService softwareInventoryService,
+                                       EndpointHardwareInventoryService hardwareInventoryService,
                                        EndpointInstallAuditService installAuditService,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.claim-ttl-seconds:300}") long claimTtlSeconds) {
@@ -53,7 +58,9 @@ public class EndpointAgentCommandService {
         this.resultRepository = resultRepository;
         this.inventoryPayloadPolicy = inventoryPayloadPolicy;
         this.installEvidencePayloadPolicy = installEvidencePayloadPolicy;
+        this.hardwareInventoryPayloadPolicy = hardwareInventoryPayloadPolicy;
         this.softwareInventoryService = softwareInventoryService;
+        this.hardwareInventoryService = hardwareInventoryService;
         this.installAuditService = installAuditService;
         this.clock = clock;
         this.claimTtl = Duration.ofSeconds(Math.max(30L, claimTtlSeconds));
@@ -103,17 +110,32 @@ public class EndpointAgentCommandService {
         }
         validateResultSubmission(command, request);
 
-        // BE-020I (Codex 019e6ab2 iter-2 acceptance #5): fail-closed PII /
-        // sensitive-field check on the agent payload BEFORE the result row is
-        // persisted. Any forbidden key (licenseKey/productKey/uninstallString/
-        // userProfile/sid/bearer/jwt/token/password) or value (raw MSI GUID,
-        // C:\Users\... path, Windows SID literal) aborts the result submit
-        // with 400 and rolls back the transaction so neither
-        // endpoint_command_results nor the inventory tables persist anything.
+        // BE-020I + BE-022 (Codex 019e6ab2 iter-2 acceptance #5,
+        // Codex 019e7007 iter-3/4 must-fix): fail-closed PII /
+        // sensitive-field check on the agent payload BEFORE the
+        // result row is persisted. Order matters:
+        //   1. BE-022 hardware sanitizer (mutating) — strips BIOS /
+        //      disk / serial / user-path / SID / machine-GUID from
+        //      the hardware sub-tree; fail-closed rejects token /
+        //      password / JWT / bearer. Returns a sanitized
+        //      effectiveDetails.
+        //   2. BE-020I software validator (validate-only, no
+        //      mutation) — runs on the sanitized effectiveDetails
+        //      so its user-path / SID / GUID rejection does not
+        //      fire on hardware facts that the hardware sanitizer
+        //      legitimately captures (in redacted form).
+        // Any forbidden key (licenseKey/productKey/uninstallString/
+        // userProfile/sid/bearer/jwt/token/password) or value (raw
+        // MSI GUID, C:\Users\... path, Windows SID literal) aborts
+        // the result submit with 400 and rolls back the transaction
+        // so neither endpoint_command_results nor the inventory
+        // tables persist anything.
+        Map<String, Object> effectiveDetails = request.details();
         if (command.getCommandType() == CommandType.COLLECT_INVENTORY
                 && request.details() != null) {
             try {
-                inventoryPayloadPolicy.validate(request.details());
+                effectiveDetails = hardwareInventoryPayloadPolicy.sanitize(request.details());
+                inventoryPayloadPolicy.validate(effectiveDetails);
             } catch (IllegalArgumentException ex) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         ex.getMessage());
@@ -126,7 +148,6 @@ public class EndpointAgentCommandService {
         // either endpoint_command_results.result_payload.details or
         // endpoint_install_audit.redacted_payload. A forbidden key or
         // value throws 400 + rolls back the entire submitResult tx.
-        Map<String, Object> effectiveDetails = request.details();
         if (command.getCommandType() == CommandType.INSTALL_SOFTWARE
                 && request.details() != null) {
             try {
@@ -164,20 +185,33 @@ public class EndpointAgentCommandService {
         commandRepository.saveAndFlush(command);
         resultRepository.saveAndFlush(result);
 
-        // BE-020I: only ingest software inventory on a SUCCEEDED
-        // COLLECT_INVENTORY result. Same transaction — an ingest failure
-        // (e.g. installSource enum miss, parse error) rolls back the
-        // command result + status flips above.
+        // BE-020I + BE-022: only ingest inventory on a SUCCEEDED
+        // COLLECT_INVENTORY result. Both ingest paths receive the
+        // sanitized `effectiveDetails` (NOT raw `request.details()`)
+        // so the result row, the software inventory snapshot, and
+        // the hardware inventory snapshot all reference the same
+        // redacted payload (Codex 019e7007 iter-3 must-fix). Same
+        // transaction — an ingest failure rolls back the command
+        // result + status flips above.
         if (command.getCommandType() == CommandType.COLLECT_INVENTORY
                 && request.status() == CommandResultStatus.SUCCEEDED
-                && request.details() != null
+                && effectiveDetails != null
                 && command.getDevice() != null) {
             try {
                 softwareInventoryService.ingest(
-                        command.getDevice(), command, result, request.details());
+                        command.getDevice(), command, result, effectiveDetails);
             } catch (IllegalArgumentException ex) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         ex.getMessage());
+            }
+            if (EndpointHardwareInventoryService.hasHardwareBlock(effectiveDetails)) {
+                try {
+                    hardwareInventoryService.ingest(
+                            command.getDevice(), command, result, effectiveDetails);
+                } catch (IllegalArgumentException ex) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            ex.getMessage());
+                }
             }
         }
 

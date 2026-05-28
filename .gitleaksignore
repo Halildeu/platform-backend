@@ -68,3 +68,13 @@ eaf1d326da69d4a059a3392f900a9d67471f076c:notification-orchestrator/src/test/java
 # above it, becomes residue that suppresses an SHA that no longer
 # exists in main history.
 b91a2410e8d67a1fbb35bbb9f5254a8083d71a75:.gitleaksignore:generic-api-key:43
+
+# PR #322 BE-022 — commit 6186943c2 test fixture api_key=ABC123DEF456...
+# in HardwareInventoryPayloadPolicyTest.java:262 (synthetic high-entropy
+# string for the value-level api-key reject test). Fix commit 3f172093
+# rewrote it to 'test-fake-fixture-marker-not-a-real-secret' but
+# gitleaks scans every commit in the PR --first-parent range.
+d5660f410920ffab1525e11985724a6f32c2b28b:endpoint-admin-service/src/test/java/com/example/endpointadmin/security/HardwareInventoryPayloadPolicyTest.java:generic-api-key:262
+
+# Self-suppression of the BE-022 narrative above (mirrors b91a2410 BE-021 pattern).
+1185f3cd4b642ad92dfa999a1eb7ac728544d46a:.gitleaksignore:generic-api-key:72

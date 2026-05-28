@@ -82,6 +82,11 @@ class EndpointAgentCommandServiceInstallBranchTest {
     @Mock private SoftwareInventoryPayloadPolicy inventoryPayloadPolicy;
     @Mock private EndpointSoftwareInventoryService softwareInventoryService;
     @Mock private EndpointInstallAuditService installAuditService;
+    // BE-022 — hardware inventory dependencies added to
+    // EndpointAgentCommandService constructor (Faz 22.5, Codex
+    // 019e7007 iter-4 absorb).
+    @Mock private com.example.endpointadmin.security.HardwareInventoryPayloadPolicy hardwareInventoryPayloadPolicy;
+    @Mock private EndpointHardwareInventoryService hardwareInventoryService;
 
     private EndpointAgentCommandService service;
 
@@ -96,7 +101,9 @@ class EndpointAgentCommandServiceInstallBranchTest {
                 resultRepository,
                 inventoryPayloadPolicy,
                 installPolicy,
+                hardwareInventoryPayloadPolicy,
                 softwareInventoryService,
+                hardwareInventoryService,
                 installAuditService,
                 fixed,
                 300L);
