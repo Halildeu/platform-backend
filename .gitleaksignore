@@ -36,3 +36,20 @@ eaf1d326da69d4a059a3392f900a9d67471f076c:notification-orchestrator/src/test/java
 # on main push) will PASS naturally — no SHA-bound entry needed for
 # the squashed commit.
 4f9f796419e979f2110641f7f703200062221c03:endpoint-admin-service/src/test/java/com/example/endpointadmin/security/InstallEvidencePayloadPolicyTest.java:jwt:60
+
+# Faz 22.5 BE-021 follow-up — historical commit suppression
+# (Codex 019e7011 iter-1 REVISE absorb). Original commit `7b31c45c...`
+# introduced EndpointAgentCommandServiceInstallBranchTest with an
+# inline `forbidden.put("licenseKey", "ABCD-1234-EFGH-5678")` test
+# fixture on line 114. Subsequent commit `821236e1...` replaced the
+# value with the same non-secret placeholder
+# (`test-fake-license-marker-no-real-secret`) that
+# InstallEvidencePayloadPolicyTest already uses, so the source no
+# longer matches the gitleaks `generic-api-key` regex. PR-time
+# gitleaks scans ALL PR commits in history and still flags the
+# original commit. Squash-merge will produce a single commit with the
+# placeholder version on main, so post-merge gitleaks (run on main
+# push) will PASS naturally — no SHA-bound entry needed for the
+# squashed commit. This entry only suppresses the historical PR
+# commit that no longer exists post-squash.
+7b31c45cff16c24b0605e006aed4aee656ed95bc:endpoint-admin-service/src/test/java/com/example/endpointadmin/service/EndpointAgentCommandServiceInstallBranchTest.java:generic-api-key:114
