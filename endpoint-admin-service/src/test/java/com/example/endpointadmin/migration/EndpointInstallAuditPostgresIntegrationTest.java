@@ -220,10 +220,14 @@ class EndpointInstallAuditPostgresIntegrationTest {
                         + "'public.idx_endpoint_install_audit_eval_selector'::regclass",
                 String.class);
         assertThat(predicate).isNotNull();
+        // PG 16's pg_get_expr typically emits "(column)::text = 'literal'::text"
+        // for VARCHAR equality predicates; tolerate either form (with or
+        // without the column paren wrap) via an explicit optional-paren
+        // group so the assertion is readable.
         assertThat(predicate)
-                .containsPattern("result_status\\)?+::text = 'SUCCEEDED'::text")
+                .containsPattern("\\(?result_status\\)?::text\\s*=\\s*'SUCCEEDED'::text")
                 .containsPattern(
-                        "post_verification\\)?+::text = 'SATISFIED'::text");
+                        "\\(?post_verification\\)?::text\\s*=\\s*'SATISFIED'::text");
         assertThat(predicate.toUpperCase()).contains(" AND ");
         // The selector's correctness depends on the predicate being a
         // pure conjunction over the two equality terms. OR / NOT would
@@ -627,6 +631,41 @@ class EndpointInstallAuditPostgresIntegrationTest {
         int deleted = jdbc.update(
                 "DELETE FROM endpoint_commands WHERE id = ?", commandA);
         assertThat(deleted).isEqualTo(1);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM endpoint_install_audit WHERE id = ?",
+                Long.class, auditId)).isEqualTo(0L);
+    }
+
+    @Test
+    void deletingDeviceCascadesAuditRow() {
+        // V12 §3 fk_endpoint_install_audit_device is declared
+        // ON DELETE CASCADE. Mirror the command-cascade test so we
+        // lock both CASCADE FKs symmetrically. Codex iter-2 nitpick
+        // absorb: device-side cascade was the only un-pinned ON
+        // DELETE behaviour after iter-1.
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = seedDevice(tenantA);
+        UUID catalogA = seedCatalog(tenantA, "tenantA.app");
+        UUID commandA = seedCommand(tenantA, deviceA, "INSTALL_SOFTWARE",
+                "idem-cascade-dev-" + UUID.randomUUID());
+
+        UUID auditId = persistAudit(tenantA, deviceA, commandA, catalogA,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED,
+                Instant.now()).getId();
+
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM endpoint_install_audit WHERE id = ?",
+                Long.class, auditId)).isEqualTo(1L);
+
+        entityManager.clear();
+
+        // Deleting the device cascades through both endpoint_commands
+        // (V2 FK ON DELETE CASCADE) and endpoint_install_audit (V12 FK
+        // ON DELETE CASCADE) — the audit row must disappear.
+        int deletedDev = jdbc.update(
+                "DELETE FROM endpoint_devices WHERE id = ?", deviceA);
+        assertThat(deletedDev).isEqualTo(1);
 
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM endpoint_install_audit WHERE id = ?",
