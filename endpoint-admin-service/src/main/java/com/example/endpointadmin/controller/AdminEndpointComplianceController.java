@@ -91,7 +91,8 @@ public class AdminEndpointComplianceController {
                         HttpStatus.NOT_FOUND, "Latest evaluation row missing."));
         ComplianceEvaluationOutcome.StalenessReport staleness =
                 complianceService.computeStaleness(tenant, deviceId);
-        return toStateResponse(latest, staleness);
+        String currentHash = complianceService.computeCurrentPolicyHash(tenant.tenantId());
+        return toStateResponse(latest, staleness, currentHash);
     }
 
     @PostMapping("/endpoint-devices/{deviceId}/compliance/evaluate")
@@ -101,7 +102,11 @@ public class AdminEndpointComplianceController {
         try {
             ComplianceEvaluationOutcome outcome =
                     complianceService.evaluateForAdmin(tenant, deviceId);
-            return ResponseEntity.ok(toStateResponse(outcome));
+            // The force-evaluate response is a freshly persisted row so
+            // catalogPolicyHashCurrent == evaluation.catalogPolicyHash
+            // (no drift between the just-written history and the
+            // current policy set).
+            return ResponseEntity.ok(toStateResponse(outcome, outcome.catalogPolicyHash()));
         } catch (ConcurrentComplianceEvaluationException ex) {
             HttpHeaders headers = new HttpHeaders();
             headers.add(HttpHeaders.RETRY_AFTER, "5");
@@ -122,6 +127,9 @@ public class AdminEndpointComplianceController {
                 Sort.by(Sort.Direction.DESC, "evaluatedAt"));
         Page<EndpointDeviceComplianceState> states =
                 complianceService.listLatestStates(tenant, decision, pageable);
+        // Resolve the tenant policy hash once for the whole page; every
+        // row in the response compares its persisted hash against it.
+        String currentHash = complianceService.computeCurrentPolicyHash(tenant.tenantId());
         List<ComplianceStateResponse> mapped = states.stream().map(state -> {
             EndpointComplianceEvaluation latest = complianceService
                     .getEvaluationById(tenant, state.getLatestEvaluationId())
@@ -129,8 +137,8 @@ public class AdminEndpointComplianceController {
             ComplianceEvaluationOutcome.StalenessReport staleness =
                     complianceService.computeStaleness(tenant, state.getDeviceId());
             return latest == null
-                    ? toStateResponseFromPointer(state, staleness)
-                    : toStateResponse(latest, staleness);
+                    ? toStateResponseFromPointer(state, staleness, currentHash)
+                    : toStateResponse(latest, staleness, currentHash);
         }).toList();
         return new ComplianceEvaluationListResponse<>(
                 mapped, states.getNumber(), states.getSize(),
@@ -150,8 +158,9 @@ public class AdminEndpointComplianceController {
                 complianceService.listDeviceHistory(tenant, deviceId, pageable);
         ComplianceEvaluationOutcome.StalenessReport staleness =
                 complianceService.computeStaleness(tenant, deviceId);
+        String currentHash = complianceService.computeCurrentPolicyHash(tenant.tenantId());
         List<ComplianceStateResponse> mapped = history.stream()
-                .map(e -> toStateResponse(e, staleness))
+                .map(e -> toStateResponse(e, staleness, currentHash))
                 .toList();
         return new ComplianceEvaluationListResponse<>(
                 mapped, history.getNumber(), history.getSize(),
@@ -176,7 +185,8 @@ public class AdminEndpointComplianceController {
     @SuppressWarnings("unchecked")
     private static ComplianceStateResponse toStateResponse(
             EndpointComplianceEvaluation evaluation,
-            ComplianceEvaluationOutcome.StalenessReport staleness) {
+            ComplianceEvaluationOutcome.StalenessReport staleness,
+            String currentPolicyHash) {
         Map<String, Object> evidenceMap = evaluation.getEvidence() == null
                 ? Map.of() : evaluation.getEvidence();
         ComplianceStateResponse.ComplianceEvidence evidence = new ComplianceStateResponse.ComplianceEvidence(
@@ -191,6 +201,9 @@ public class AdminEndpointComplianceController {
                 stringToInstant(evidenceMap.get("wingetEgressCollectedAt")),
                 toInteger(evidenceMap.get("wingetEgressSchemaVersion")),
                 (Map<String, Object>) evidenceMap.getOrDefault("matchedItems", Map.of()));
+        boolean drift = currentPolicyHash != null
+                && evaluation.getCatalogPolicyHash() != null
+                && !currentPolicyHash.equals(evaluation.getCatalogPolicyHash());
         return new ComplianceStateResponse(
                 evaluation.getDeviceId(),
                 evaluation.getId(),
@@ -204,11 +217,14 @@ public class AdminEndpointComplianceController {
                 evaluation.getWarnings(),
                 evidence,
                 evaluation.getCatalogPolicyHash(),
+                currentPolicyHash,
+                drift,
                 evaluation.getCatalogRowVersionMax(),
                 evaluation.getPolicyRowVersionMax());
     }
 
-    private static ComplianceStateResponse toStateResponse(ComplianceEvaluationOutcome outcome) {
+    private static ComplianceStateResponse toStateResponse(
+            ComplianceEvaluationOutcome outcome, String currentPolicyHash) {
         ComplianceStateResponse.ComplianceEvidence evidence = new ComplianceStateResponse.ComplianceEvidence(
                 outcome.inventorySnapshotId(),
                 outcome.inventorySnapshotRowVersion(),
@@ -221,6 +237,9 @@ public class AdminEndpointComplianceController {
                 stringToInstant(outcome.evidence().get("wingetEgressCollectedAt")),
                 toInteger(outcome.evidence().get("wingetEgressSchemaVersion")),
                 castMatched(outcome.evidence().get("matchedItems")));
+        boolean drift = currentPolicyHash != null
+                && outcome.catalogPolicyHash() != null
+                && !currentPolicyHash.equals(outcome.catalogPolicyHash());
         return new ComplianceStateResponse(
                 outcome.deviceId(),
                 outcome.evaluationId(),
@@ -236,6 +255,8 @@ public class AdminEndpointComplianceController {
                 outcome.warnings(),
                 evidence,
                 outcome.catalogPolicyHash(),
+                currentPolicyHash,
+                drift,
                 outcome.catalogRowVersionMax(),
                 outcome.policyRowVersionMax());
     }
@@ -243,7 +264,8 @@ public class AdminEndpointComplianceController {
     /** Minimal projection when the latest pointer references a missing evaluation row (defensive). */
     private static ComplianceStateResponse toStateResponseFromPointer(
             EndpointDeviceComplianceState pointer,
-            ComplianceEvaluationOutcome.StalenessReport staleness) {
+            ComplianceEvaluationOutcome.StalenessReport staleness,
+            String currentPolicyHash) {
         return new ComplianceStateResponse(
                 pointer.getDeviceId(),
                 pointer.getLatestEvaluationId(),
@@ -256,6 +278,8 @@ public class AdminEndpointComplianceController {
                 List.of(),
                 List.of(),
                 null,
+                null,
+                currentPolicyHash,
                 null,
                 null,
                 null);

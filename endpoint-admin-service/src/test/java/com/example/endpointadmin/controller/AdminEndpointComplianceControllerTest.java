@@ -76,6 +76,8 @@ class AdminEndpointComplianceControllerTest {
                 .thenReturn(Optional.of(eval));
         when(complianceService.computeStaleness(any(AdminTenantContext.class), eq(DEVICE_ID)))
                 .thenReturn(stalenessFresh());
+        when(complianceService.computeCurrentPolicyHash(eq(TENANT_ID)))
+                .thenReturn("0".repeat(64));
 
         mockMvc.perform(get("/api/v1/admin/endpoint-devices/{deviceId}/compliance", DEVICE_ID))
                 .andExpect(status().isOk())
@@ -85,7 +87,29 @@ class AdminEndpointComplianceControllerTest {
                 .andExpect(jsonPath("$.staleness.summary").value("FRESH"))
                 .andExpect(jsonPath("$.reasons").isArray())
                 .andExpect(jsonPath("$.blockingReasons").isEmpty())
-                .andExpect(jsonPath("$.warnings").isEmpty());
+                .andExpect(jsonPath("$.warnings").isEmpty())
+                .andExpect(jsonPath("$.policyDrift").value(false));
+    }
+
+    @Test
+    void getLatestSurfacesPolicyDriftWhenHashesDiffer() throws Exception {
+        bindTenantContext();
+        EndpointDeviceComplianceState state = buildState();
+        EndpointComplianceEvaluation eval = buildEvaluation(ComplianceDecision.COMPLIANT);
+        when(complianceService.getLatest(any(AdminTenantContext.class), eq(DEVICE_ID)))
+                .thenReturn(Optional.of(state));
+        when(complianceService.getEvaluationById(any(AdminTenantContext.class), eq(EVALUATION_ID)))
+                .thenReturn(Optional.of(eval));
+        when(complianceService.computeStaleness(any(AdminTenantContext.class), eq(DEVICE_ID)))
+                .thenReturn(stalenessFresh());
+        when(complianceService.computeCurrentPolicyHash(eq(TENANT_ID)))
+                .thenReturn("f".repeat(64));
+
+        mockMvc.perform(get("/api/v1/admin/endpoint-devices/{deviceId}/compliance", DEVICE_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.policyDrift").value(true))
+                .andExpect(jsonPath("$.catalogPolicyHash").value("0".repeat(64)))
+                .andExpect(jsonPath("$.catalogPolicyHashCurrent").value("f".repeat(64)));
     }
 
     @Test

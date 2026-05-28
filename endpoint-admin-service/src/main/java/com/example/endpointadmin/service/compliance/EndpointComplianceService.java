@@ -35,6 +35,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -108,6 +109,8 @@ public class EndpointComplianceService {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper canonicalObjectMapper;
     private final Clock clock;
+    /** Lazily-resolved single-call cached database product name. */
+    private volatile Boolean isPostgresDialect;
 
     public EndpointComplianceService(
             EndpointDeviceRepository deviceRepository,
@@ -209,6 +212,25 @@ public class EndpointComplianceService {
      * computes severity from the live snapshot's per-stream
      * timestamps, not the persisted evaluation row.
      */
+    /**
+     * Compute the catalog/policy hash for the tenant's currently
+     * enabled REQUIRED/FORBIDDEN policy rows. Used by the GET
+     * endpoints to surface a {@code policyDrift} flag: if the live
+     * hash differs from the persisted evaluation's
+     * {@code catalogPolicyHash}, the policy set has changed since the
+     * verdict was last computed and the operator should re-evaluate.
+     * Codex 019e6bdf iter-1 absorb.
+     */
+    @Transactional(readOnly = true)
+    public String computeCurrentPolicyHash(UUID tenantId) {
+        List<EndpointSoftwareCompliancePolicyItem> policies =
+                policyRepository.findEnabledByTenantAndModes(
+                        tenantId,
+                        List.of(ComplianceEnforcementMode.REQUIRED,
+                                ComplianceEnforcementMode.FORBIDDEN));
+        return computeCatalogPolicyHash(policies);
+    }
+
     @Transactional(readOnly = true)
     public ComplianceEvaluationOutcome.StalenessReport computeStaleness(
             AdminTenantContext tenant, UUID deviceId) {
@@ -489,13 +511,57 @@ public class EndpointComplianceService {
                     "SELECT pg_try_advisory_xact_lock(?)", Boolean.class, key);
             return Boolean.TRUE.equals(acquired);
         } catch (DataAccessException ex) {
-            // H2 and other non-Postgres dialects don't implement
-            // pg_try_advisory_xact_lock; tests that don't exercise
-            // concurrency take this fall-through path. The Postgres
-            // Testcontainers integration test verifies the real lock.
-            log.debug("BE-023 advisory lock unsupported on this dialect — proceeding without lock", ex);
+            // Codex 019e6bdf iter-1 absorb: a JDBC failure on the
+            // advisory-lock SQL must NOT silently disable
+            // serialisation on Postgres. The fall-through to
+            // unlocked-eval is allowed only when we are
+            // demonstrably running on a non-Postgres dialect that
+            // does not implement pg_try_advisory_xact_lock (e.g. H2
+            // in unit tests). On Postgres we re-throw as a
+            // ConcurrentComplianceEvaluationException so the caller
+            // (admin POST → 409, listener → silent skip) gets the
+            // same "could not lock" treatment instead of proceeding
+            // unserialised.
+            if (resolveIsPostgresDialect()) {
+                log.error("BE-023 advisory lock SQL failed on Postgres — fail-closed", ex);
+                throw new ConcurrentComplianceEvaluationException(
+                        "Advisory lock acquisition failed on Postgres; "
+                                + "refusing to evaluate without serialisation.");
+            }
+            log.debug("BE-023 advisory lock unsupported on non-Postgres dialect — proceeding without lock", ex);
             return true;
         }
+    }
+
+    /**
+     * Lazy single-call cached probe — Codex 019e6bdf iter-1 absorb.
+     * Returns {@code true} only when the underlying datasource is a
+     * genuine Postgres engine. H2 / Derby / unknown engines return
+     * {@code false} so the advisory-lock SQL failure falls through to
+     * the "unsupported dialect — proceed unlocked" branch.
+     */
+    private boolean resolveIsPostgresDialect() {
+        Boolean cached = isPostgresDialect;
+        if (cached != null) {
+            return cached;
+        }
+        boolean detected = false;
+        if (jdbcTemplate != null && jdbcTemplate.getDataSource() != null) {
+            try (java.sql.Connection conn = jdbcTemplate.getDataSource().getConnection()) {
+                String product = conn.getMetaData().getDatabaseProductName();
+                if (product != null) {
+                    detected = product.toLowerCase(Locale.ROOT).contains("postgres");
+                }
+            } catch (SQLException ex) {
+                // If we cannot determine the dialect, default to "not Postgres"
+                // so a metadata probe failure does not falsely classify a
+                // non-Postgres engine as Postgres. This keeps the
+                // fall-through unlocked-eval safe in unit tests.
+                log.debug("BE-023 could not resolve database dialect — defaulting to non-Postgres", ex);
+            }
+        }
+        isPostgresDialect = detected;
+        return detected;
     }
 
     static long computeLockKey(UUID tenantId, UUID deviceId) {

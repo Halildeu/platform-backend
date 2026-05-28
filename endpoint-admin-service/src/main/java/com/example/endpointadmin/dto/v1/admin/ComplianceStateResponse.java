@@ -37,6 +37,8 @@ public record ComplianceStateResponse(
         List<String> warnings,
         ComplianceEvidence evidence,
         String catalogPolicyHash,
+        String catalogPolicyHashCurrent,
+        Boolean policyDrift,
         Long catalogRowVersionMax,
         Long policyRowVersionMax) {
 
