@@ -1,6 +1,7 @@
 package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.dto.v1.admin.ApprovalActorDto;
+import com.example.endpointadmin.dto.v1.admin.DecisionAttestationDto;
 import com.example.endpointadmin.dto.v1.admin.DecisionRecordDto;
 import com.example.endpointadmin.dto.v1.admin.PolicyApprovalDecisionRequests.ApproveRequest;
 import com.example.endpointadmin.dto.v1.admin.PolicyApprovalDecisionRequests.AttestRequest;
@@ -39,23 +40,37 @@ import java.util.UUID;
  * localStorage}; once this service is in place the front-end can switch
  * to the {@code approvalsApiRepository} adapter (separate follow-up PR).
  *
- * <p>Governance invariants enforced here:
+ * <p>Governance invariants enforced here (Codex iter-1 absorb):
  * <ul>
+ *   <li><b>Actor identity from auth context</b> — the request body's
+ *       {@code actor.id} (and propose's {@code proposer.id}) must equal
+ *       the authenticated subject; mismatch returns
+ *       {@code 400 actor_mismatch}. This closes the body-trust 4-eyes
+ *       bypass — a user can only act as themselves;</li>
  *   <li>4-eyes guard — the proposer cannot {@code APPROVE} their own
- *       request (403 {@code proposer_self});</li>
+ *       request ({@code 403 proposer_self});</li>
  *   <li>Decisions are only accepted while the request is in an open
  *       state ({@code PENDING} or {@code IN_REVIEW});</li>
  *   <li>{@code REJECT} and {@code REQUEST_CHANGES} require a reason;</li>
- *   <li>{@code REQUEST_CHANGES} moves a {@code PENDING} request to
- *       {@code IN_REVIEW}; the request stays open for revision;</li>
- *   <li>{@code APPROVE} / {@code REJECT} are terminal — no further
- *       decision is accepted afterwards;</li>
- *   <li>{@code DELEGATE} rewrites {@code currentApprovers} atomically
- *       (the delegating actor is replaced by {@code delegateTo}); does
- *       not advance status.</li>
+ *   <li>{@code REQUEST_CHANGES} moves {@code PENDING → IN_REVIEW}; the
+ *       request stays open for revision;</li>
+ *   <li>{@code APPROVE} / {@code REJECT} are terminal;</li>
+ *   <li>{@code DELEGATE} requires the delegating actor to be on the
+ *       current approver list (else 400 {@code delegate_conflict}),
+ *       atomically swaps that actor with {@code delegateTo}, and does
+ *       NOT advance status;</li>
+ *   <li>{@code ATTEST} appends a record without advancing status;</li>
+ *   <li>Decision read uses a {@code PESSIMISTIC_WRITE} row lock so two
+ *       concurrent reviewers serialise cleanly — the loser sees the
+ *       up-to-date status post-commit and is rejected with 409 if the
+ *       request has become terminal.</li>
  * </ul>
  *
- * <p>The append-only {@code history} on each request is itself the audit
+ * <p>Each {@link PolicyChangeApprovalDecision} captures
+ * {@code previousStatus} + {@code newStatus} so the design-system
+ * {@code DecisionRecordBase} contract round-trips verbatim.
+ *
+ * <p>The append-only {@code history} on each request IS the audit
  * trail; this service intentionally does NOT write to the device-scoped
  * {@code EndpointAuditService} chain — policy-change approvals are not
  * tied to a single device.
@@ -98,6 +113,10 @@ public class PolicyChangeApprovalService {
         if (request == null) {
             throw badRequest("A propose request body is required.");
         }
+        // Codex iter-1 P1: a propose's proposer identity must equal the
+        // authenticated subject. Body name + role are echoed verbatim so
+        // display data is preserved; only the id is governance-bearing.
+        requireActorMatchesSubject(context, request.proposer(), "proposer");
         Instant now = Instant.now(clock);
         if (request.deadline() != null && !request.deadline().isAfter(now)) {
             throw badRequest("Deadline must be in the future.");
@@ -130,15 +149,19 @@ public class PolicyChangeApprovalService {
         if (request == null) {
             throw badRequest("An approve request body is required.");
         }
+        requireActorMatchesSubject(context, request.actor(), "actor");
         PolicyChangeApproval approval = loadRequiredForDecision(context, id);
         guardProposerSelfApprove(approval, request.actor());
 
-        Instant at = Instant.now(clock);
+        PolicyApprovalStatus previous = approval.getStatus();
+        PolicyApprovalStatus next = PolicyApprovalStatus.APPROVED;
         PolicyChangeApprovalDecision decision = baseDecision(
-                PolicyApprovalDecisionKind.APPROVE, request.actor(), at);
+                PolicyApprovalDecisionKind.APPROVE, request.actor(),
+                previous, next);
         decision.setReason(trimToNull(request.reason()));
+        decision.setEvidenceRefs(sanitizeEvidenceRefs(request.evidenceRefs()));
         approval.addDecision(decision);
-        approval.setStatus(PolicyApprovalStatus.APPROVED);
+        approval.setStatus(next);
 
         return toDto(repository.saveAndFlush(approval));
     }
@@ -149,14 +172,18 @@ public class PolicyChangeApprovalService {
         if (request == null) {
             throw badRequest("A reject request body is required.");
         }
+        requireActorMatchesSubject(context, request.actor(), "actor");
         PolicyChangeApproval approval = loadRequiredForDecision(context, id);
 
-        Instant at = Instant.now(clock);
+        PolicyApprovalStatus previous = approval.getStatus();
+        PolicyApprovalStatus next = PolicyApprovalStatus.REJECTED;
         PolicyChangeApprovalDecision decision = baseDecision(
-                PolicyApprovalDecisionKind.REJECT, request.actor(), at);
+                PolicyApprovalDecisionKind.REJECT, request.actor(),
+                previous, next);
         decision.setReason(request.reason().trim());
+        decision.setEvidenceRefs(sanitizeEvidenceRefs(request.evidenceRefs()));
         approval.addDecision(decision);
-        approval.setStatus(PolicyApprovalStatus.REJECTED);
+        approval.setStatus(next);
 
         return toDto(repository.saveAndFlush(approval));
     }
@@ -167,14 +194,18 @@ public class PolicyChangeApprovalService {
         if (request == null) {
             throw badRequest("A request-changes request body is required.");
         }
+        requireActorMatchesSubject(context, request.actor(), "actor");
         PolicyChangeApproval approval = loadRequiredForDecision(context, id);
 
-        Instant at = Instant.now(clock);
+        PolicyApprovalStatus previous = approval.getStatus();
+        PolicyApprovalStatus next = PolicyApprovalStatus.IN_REVIEW;
         PolicyChangeApprovalDecision decision = baseDecision(
-                PolicyApprovalDecisionKind.REQUEST_CHANGES, request.actor(), at);
+                PolicyApprovalDecisionKind.REQUEST_CHANGES, request.actor(),
+                previous, next);
         decision.setReason(request.reason().trim());
+        decision.setEvidenceRefs(sanitizeEvidenceRefs(request.evidenceRefs()));
         approval.addDecision(decision);
-        approval.setStatus(PolicyApprovalStatus.IN_REVIEW);
+        approval.setStatus(next);
 
         return toDto(repository.saveAndFlush(approval));
     }
@@ -185,18 +216,29 @@ public class PolicyChangeApprovalService {
         if (request == null) {
             throw badRequest("A delegate request body is required.");
         }
+        requireActorMatchesSubject(context, request.actor(), "actor");
         if (Objects.equals(request.actor().id(), request.delegateTo().id())) {
             throw badRequest("Delegate target must differ from the delegating actor.");
         }
         PolicyChangeApproval approval = loadRequiredForDecision(context, id);
+        // Codex iter-1 P2: the delegating actor must currently be on the
+        // approver list. Without this guard, any manager with module
+        // can_manage could parachute themselves (or anyone else) onto a
+        // request they don't own.
+        if (!isCurrentApprover(approval.getCurrentApprovers(), request.actor().id())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "delegate_conflict: actor is not on the current approver list.");
+        }
 
-        Instant at = Instant.now(clock);
+        PolicyApprovalStatus current = approval.getStatus();
         PolicyChangeApprovalDecision decision = baseDecision(
-                PolicyApprovalDecisionKind.DELEGATE, request.actor(), at);
+                PolicyApprovalDecisionKind.DELEGATE, request.actor(),
+                current, current);
         decision.setDelegateSubject(request.delegateTo().id().trim());
         decision.setDelegateName(request.delegateTo().name().trim());
         decision.setDelegateRole(request.delegateTo().role().trim());
         decision.setReason(trimToNull(request.reason()));
+        decision.setEvidenceRefs(sanitizeEvidenceRefs(request.evidenceRefs()));
         approval.addDecision(decision);
         approval.setCurrentApprovers(rewriteApproversForDelegate(
                 approval.getCurrentApprovers(), request.actor(), request.delegateTo()));
@@ -210,13 +252,17 @@ public class PolicyChangeApprovalService {
         if (request == null) {
             throw badRequest("An attest request body is required.");
         }
+        requireActorMatchesSubject(context, request.actor(), "actor");
         PolicyChangeApproval approval = loadRequiredForDecision(context, id);
 
-        Instant at = Instant.now(clock);
+        PolicyApprovalStatus current = approval.getStatus();
         PolicyChangeApprovalDecision decision = baseDecision(
-                PolicyApprovalDecisionKind.ATTEST, request.actor(), at);
-        decision.setStatement(request.statement().trim());
-        decision.setAcceptedAt(request.acceptedAt());
+                PolicyApprovalDecisionKind.ATTEST, request.actor(),
+                current, current);
+        DecisionAttestationDto att = request.attestation();
+        decision.setStatement(att.statement().trim());
+        decision.setAcceptedAt(att.acceptedAt());
+        decision.setEvidenceRefs(sanitizeEvidenceRefs(request.evidenceRefs()));
         approval.addDecision(decision);
 
         return toDto(repository.saveAndFlush(approval));
@@ -228,8 +274,18 @@ public class PolicyChangeApprovalService {
                         "Policy-change approval request not found."));
     }
 
+    /**
+     * Codex iter-1 P1 absorb — pessimistic row lock during the decision
+     * path so two concurrent reviewers serialise cleanly. The loser
+     * blocks here, re-reads the up-to-date status after the winner
+     * commits, and is rejected with 409 if the request has become
+     * terminal.
+     */
     private PolicyChangeApproval loadRequiredForDecision(AdminTenantContext context, UUID id) {
-        PolicyChangeApproval approval = loadRequired(context, id);
+        PolicyChangeApproval approval = repository
+                .findByTenantIdAndIdForUpdate(context.tenantId(), id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Policy-change approval request not found."));
         if (!OPEN_STATES.contains(approval.getStatus())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Approval request is not open to further decisions.");
@@ -242,6 +298,29 @@ public class PolicyChangeApprovalService {
         return approval;
     }
 
+    /**
+     * Codex iter-1 P1 absorb — guard against a body-supplied actor.id
+     * being used to spoof identity. The propose's {@code proposer.id}
+     * and each decision's {@code actor.id} must match the authenticated
+     * subject; display fields (name, role) are echoed from the body
+     * without further verification (Keycloak claims would be the
+     * canonical source — left as a future enhancement).
+     */
+    private void requireActorMatchesSubject(AdminTenantContext context,
+                                            ApprovalActorDto actor,
+                                            String fieldName) {
+        if (actor == null || actor.id() == null) {
+            throw badRequest("actor.id is required.");
+        }
+        String authenticated = trimToNull(context.subject());
+        String supplied = actor.id().trim();
+        if (authenticated == null || !authenticated.equals(supplied)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "actor_mismatch: " + fieldName
+                            + ".id must equal the authenticated subject.");
+        }
+    }
+
     private void guardProposerSelfApprove(PolicyChangeApproval approval,
                                           ApprovalActorDto actor) {
         if (Objects.equals(approval.getProposerSubject(), actor.id())) {
@@ -250,15 +329,34 @@ public class PolicyChangeApprovalService {
         }
     }
 
+    private boolean isCurrentApprover(List<Map<String, Object>> approvers, String actorId) {
+        if (approvers == null || actorId == null) {
+            return false;
+        }
+        for (Map<String, Object> a : approvers) {
+            if (a == null) {
+                continue;
+            }
+            Object id = a.get("id");
+            if (id != null && actorId.equals(String.valueOf(id))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private PolicyChangeApprovalDecision baseDecision(PolicyApprovalDecisionKind kind,
                                                       ApprovalActorDto actor,
-                                                      Instant at) {
+                                                      PolicyApprovalStatus previousStatus,
+                                                      PolicyApprovalStatus newStatus) {
         PolicyChangeApprovalDecision decision = new PolicyChangeApprovalDecision();
         decision.setKind(kind);
         decision.setActorSubject(actor.id().trim());
         decision.setActorName(actor.name().trim());
         decision.setActorRole(actor.role().trim());
-        decision.setDecidedAt(at);
+        decision.setPreviousStatus(previousStatus);
+        decision.setNewStatus(newStatus);
+        decision.setDecidedAt(Instant.now(clock));
         return decision;
     }
 
@@ -299,6 +397,8 @@ public class PolicyChangeApprovalService {
             List<Map<String, Object>> existing,
             ApprovalActorDto delegating,
             ApprovalActorDto delegateTo) {
+        // Codex iter-1 P2: actor is guaranteed in-list by the
+        // delegate_conflict guard upstream; this is a straight swap.
         List<Map<String, Object>> result = new ArrayList<>();
         boolean replaced = false;
         if (existing != null) {
@@ -311,9 +411,6 @@ public class PolicyChangeApprovalService {
                     result.add(a);
                 }
             }
-        }
-        if (!replaced) {
-            result.add(actorToJson(delegateTo));
         }
         return result;
     }
@@ -364,19 +461,28 @@ public class PolicyChangeApprovalService {
     private DecisionRecordDto toDecisionDto(PolicyChangeApprovalDecision d) {
         ApprovalActorDto actor = new ApprovalActorDto(
                 d.getActorSubject(), d.getActorName(), d.getActorRole());
+        List<String> refs = d.getEvidenceRefs() == null
+                ? null
+                : List.copyOf(d.getEvidenceRefs());
         return switch (d.getKind()) {
-            case APPROVE -> new DecisionRecordDto.Approve(actor, d.getDecidedAt(),
-                    d.getReason());
-            case REJECT -> new DecisionRecordDto.Reject(actor, d.getDecidedAt(),
-                    d.getReason());
-            case REQUEST_CHANGES -> new DecisionRecordDto.RequestChanges(actor,
-                    d.getDecidedAt(), d.getReason());
-            case DELEGATE -> new DecisionRecordDto.Delegate(actor,
-                    new ApprovalActorDto(d.getDelegateSubject(), d.getDelegateName(),
-                            d.getDelegateRole()),
-                    d.getDecidedAt(), d.getReason());
-            case ATTEST -> new DecisionRecordDto.Attest(actor, d.getDecidedAt(),
-                    d.getStatement(), d.getAcceptedAt());
+            case APPROVE -> new DecisionRecordDto.Approve(d.getId(), actor,
+                    d.getActorRole(), d.getReason(), refs,
+                    d.getPreviousStatus(), d.getNewStatus(), d.getDecidedAt());
+            case REJECT -> new DecisionRecordDto.Reject(d.getId(), actor,
+                    d.getActorRole(), d.getReason(), refs,
+                    d.getPreviousStatus(), d.getNewStatus(), d.getDecidedAt());
+            case REQUEST_CHANGES -> new DecisionRecordDto.RequestChanges(d.getId(), actor,
+                    d.getActorRole(), d.getReason(), refs,
+                    d.getPreviousStatus(), d.getNewStatus(), d.getDecidedAt());
+            case DELEGATE -> new DecisionRecordDto.Delegate(d.getId(), actor,
+                    d.getActorRole(), d.getReason(), refs,
+                    d.getPreviousStatus(), d.getNewStatus(), d.getDecidedAt(),
+                    new ApprovalActorDto(d.getDelegateSubject(),
+                            d.getDelegateName(), d.getDelegateRole()));
+            case ATTEST -> new DecisionRecordDto.Attest(d.getId(), actor,
+                    d.getActorRole(), d.getReason(), refs,
+                    d.getPreviousStatus(), d.getNewStatus(), d.getDecidedAt(),
+                    new DecisionAttestationDto(d.getStatement(), d.getAcceptedAt()));
         };
     }
 

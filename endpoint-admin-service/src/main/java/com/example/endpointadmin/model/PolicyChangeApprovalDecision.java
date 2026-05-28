@@ -13,8 +13,11 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -32,7 +35,12 @@ import java.util.UUID;
  *       required.</li>
  * </ul>
  *
- * Service-layer validation enforces these required-by-kind invariants.
+ * <p>Service-layer validation enforces these required-by-kind invariants.
+ *
+ * <p>{@code previousStatus} and {@code newStatus} capture the parent
+ * request's status transition the decision triggered, so the
+ * design-system {@code DecisionRecordBase} contract round-trips
+ * verbatim.
  */
 @Entity
 @Table(name = "policy_change_approval_decisions",
@@ -79,11 +87,23 @@ public class PolicyChangeApprovalDecision {
     @Column(name = "reason", length = 2048)
     private String reason;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "evidence_refs", columnDefinition = "jsonb")
+    private List<String> evidenceRefs;
+
     @Column(name = "statement", length = 4096)
     private String statement;
 
     @Column(name = "accepted_at")
     private Instant acceptedAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "previous_status", nullable = false, length = 32)
+    private PolicyApprovalStatus previousStatus;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "new_status", nullable = false, length = 32)
+    private PolicyApprovalStatus newStatus;
 
     @Column(name = "decided_at", nullable = false)
     private Instant decidedAt;
@@ -182,6 +202,14 @@ public class PolicyChangeApprovalDecision {
         this.reason = reason;
     }
 
+    public List<String> getEvidenceRefs() {
+        return evidenceRefs;
+    }
+
+    public void setEvidenceRefs(List<String> evidenceRefs) {
+        this.evidenceRefs = evidenceRefs;
+    }
+
     public String getStatement() {
         return statement;
     }
@@ -196,6 +224,22 @@ public class PolicyChangeApprovalDecision {
 
     public void setAcceptedAt(Instant acceptedAt) {
         this.acceptedAt = acceptedAt;
+    }
+
+    public PolicyApprovalStatus getPreviousStatus() {
+        return previousStatus;
+    }
+
+    public void setPreviousStatus(PolicyApprovalStatus previousStatus) {
+        this.previousStatus = previousStatus;
+    }
+
+    public PolicyApprovalStatus getNewStatus() {
+        return newStatus;
+    }
+
+    public void setNewStatus(PolicyApprovalStatus newStatus) {
+        this.newStatus = newStatus;
     }
 
     public Instant getDecidedAt() {

@@ -9,6 +9,9 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -134,6 +137,26 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleProposerSelf(
             PolicyApprovalProposerSelfException ex) {
         return build(HttpStatus.FORBIDDEN, "proposer_self", ex.getMessage());
+    }
+
+    /**
+     * Wave-12 PR-5 (Codex iter-1 P1 absorb) — concurrent reviewers race
+     * on the same approval request. With {@code PESSIMISTIC_WRITE} on
+     * the decision read path the loser should observe the new state and
+     * raise a domain 409; but if the lock falls through (e.g. parent row
+     * dirty-update + version mismatch, or unique-constraint clash on
+     * {@code (approval_id, sequence)}), surface a clean 409 instead of a
+     * generic 500.
+     */
+    @ExceptionHandler({OptimisticLockingFailureException.class,
+            PessimisticLockingFailureException.class,
+            DataIntegrityViolationException.class})
+    public ResponseEntity<ErrorResponse> handleConcurrentApprovalRace(
+            RuntimeException ex) {
+        log.warn("concurrent approval race: {}", ex.getMessage());
+        return build(HttpStatus.CONFLICT, "concurrent_decision",
+                "Another reviewer decided this approval request first. "
+                        + "Refresh and retry.");
     }
 
     @ExceptionHandler(Exception.class)
