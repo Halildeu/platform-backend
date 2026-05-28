@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -63,9 +64,36 @@ public class AgentMachineCertEnrollmentController {
     public static final String TENANT_HEADER = "X-Tenant-Id";
 
     private final MachineCertAutoEnrollService service;
+    private final boolean forwardHeaderEnabled;
 
-    public AgentMachineCertEnrollmentController(MachineCertAutoEnrollService service) {
+    /**
+     * @param forwardHeaderEnabled when {@code false} (default) the controller
+     *                             only accepts certs from the servlet
+     *                             attribute set by a directly-terminating
+     *                             TLS layer (Tomcat / Spring Boot SSL). When
+     *                             {@code true} the controller also accepts a
+     *                             gateway-forwarded PEM via
+     *                             {@link #CERT_FORWARD_HEADER}. Enable this
+     *                             only in deployments where an upstream
+     *                             gateway TERMINATES mTLS, VALIDATES the
+     *                             chain, and STRIPS any client-supplied
+     *                             {@code X-Client-Cert} before reaching this
+     *                             service. Codex 019e6dc9 P0-B absorb: a
+     *                             default-on header mode would let any
+     *                             caller with raw service access spoof an
+     *                             enrollment by injecting their own PEM.
+     */
+    public AgentMachineCertEnrollmentController(
+            MachineCertAutoEnrollService service,
+            @Value("${endpoint-admin.mtls.forward-header.enabled:false}") boolean forwardHeaderEnabled) {
         this.service = service;
+        this.forwardHeaderEnabled = forwardHeaderEnabled;
+        if (forwardHeaderEnabled) {
+            log.info("X-Client-Cert forwarded-header mode ENABLED. "
+                    + "Upstream gateway MUST validate the cert chain and strip "
+                    + "any client-supplied X-Client-Cert / X-Tenant-Id before "
+                    + "this service receives the request.");
+        }
     }
 
     @PostMapping("/auto")
@@ -97,9 +125,16 @@ public class AgentMachineCertEnrollmentController {
             return single;
         }
 
-        String pemHeader = request.getHeader(CERT_FORWARD_HEADER);
-        if (pemHeader != null && !pemHeader.isBlank()) {
-            return parseForwardedPem(pemHeader);
+        // Codex 019e6dc9 P0-B absorb: forwarded-header mode is config-gated.
+        // Default OFF — a caller with direct service access cannot spoof an
+        // enrollment by injecting an X-Client-Cert header. Only deployments
+        // that explicitly trust the upstream gateway flip the flag in their
+        // profile config.
+        if (forwardHeaderEnabled) {
+            String pemHeader = request.getHeader(CERT_FORWARD_HEADER);
+            if (pemHeader != null && !pemHeader.isBlank()) {
+                return parseForwardedPem(pemHeader);
+            }
         }
 
         throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "MTLS_CERT_MISSING");

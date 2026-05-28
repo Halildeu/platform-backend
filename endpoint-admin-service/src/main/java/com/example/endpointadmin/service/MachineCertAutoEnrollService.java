@@ -16,6 +16,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.security.cert.X509Certificate;
@@ -173,9 +174,16 @@ public class MachineCertAutoEnrollService {
             // aborted; we surface 409 DEVICE_RACE rather than try to re-read.
             // The caller retries and the second attempt's pre-check resolves
             // it as already-enrolled.
+            //
+            // Codex 019e6dc9 iter-2 P1: explicit setRollbackOnly() so the
+            // outer @Transactional(noRollbackFor = ResponseStatusException)
+            // does NOT attempt a commit on a PG tx already in rollback-only
+            // state — a commit attempt would mask the 409 with a generic
+            // TransactionSystemException.
             log.info("Device persistence race tenant={}: {}", tenantId,
                     ex.getMostSpecificCause() == null ? ex.getMessage()
                             : ex.getMostSpecificCause().getMessage());
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             // recordFailure inside the same tx is unreliable post-abort; we
             // skip it here. The retry path's success audit (or the next
             // failure's pre-abort audit) is the persisted trace.
@@ -204,9 +212,14 @@ public class MachineCertAutoEnrollService {
         try {
             certRepository.saveAndFlush(certRow);
         } catch (DataIntegrityViolationException ex) {
+            // Codex 019e6dc9 iter-2 P1: same setRollbackOnly() rationale as
+            // the device-race branch above — PG tx is aborted, mark
+            // rollback-only so the outer commit attempt does not mask the
+            // 409 ENROLLMENT_RACE with a TransactionSystemException.
             log.info("Cert insert race sanUri={}: {}", parsed.sanUri(),
                     ex.getMostSpecificCause() == null ? ex.getMessage()
                             : ex.getMostSpecificCause().getMessage());
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             throw new ResponseStatusException(HttpStatus.CONFLICT, "ENROLLMENT_RACE");
         }
 

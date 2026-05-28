@@ -32,6 +32,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(AgentMachineCertEnrollmentController.class)
 @ActiveProfiles("local")
 @Import(SecurityConfigLocal.class)
+@org.springframework.test.context.TestPropertySource(properties =
+        "endpoint-admin.mtls.forward-header.enabled=true")
 class AgentMachineCertEnrollmentControllerTest {
 
     private static final UUID TENANT_A = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
