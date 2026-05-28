@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -117,7 +118,12 @@ public class EndpointHardwareInventoryService {
         EndpointHardwareInventorySnapshot snapshot = buildSnapshot(device, commandResultId, hardware);
 
         try {
-            EndpointHardwareInventorySnapshot persisted = repository.save(snapshot);
+            // Codex 019e7007 post-impl iter-1 must-fix #1: use
+            // saveAndFlush so any partial-UNIQUE violation on
+            // source_command_result_id surfaces NOW (and is caught
+            // by the block below), rather than at transaction
+            // commit when this catch is no longer in scope.
+            EndpointHardwareInventorySnapshot persisted = repository.saveAndFlush(snapshot);
             log.info("Hardware inventory snapshot persisted device_id={} snapshot_id={} schema={}",
                     device.getId(), persisted.getId(), persisted.getSchemaVersion());
             events.publishEvent(buildAuditEvent(persisted, command));
@@ -201,13 +207,14 @@ public class EndpointHardwareInventoryService {
         snapshot.setCollectedAt(parseInstant(hardware.get("collectedAt")));
         snapshot.setPayloadHashSha256(sha256Hex(hardware));
 
-        // Redacted payload — caller already sanitized.
-        snapshot.setRedactedPayload(new HashMap<>(hardware));
-
-        // Probe errors (bounded {code, summary} objects).
+        // Probe errors (bounded {code, summary} objects). Build the
+        // bounded list FIRST so the redacted_payload projection
+        // below can substitute it for the raw probeErrors subtree
+        // (Codex 019e7007 post-impl iter-1 must-fix #2: stack-trace
+        // / raw probe text must not leak via redacted_payload).
+        List<Map<String, Object>> boundedProbeErrors = new ArrayList<>();
         Object probeErrors = hardware.get("probeErrors");
         if (probeErrors instanceof List<?> list) {
-            List<Map<String, Object>> bounded = new ArrayList<>();
             for (Object element : list) {
                 if (element instanceof Map<?, ?> em) {
                     Map<String, Object> entry = new HashMap<>();
@@ -222,12 +229,22 @@ public class EndpointHardwareInventoryService {
                         entry.put("summary", s);
                     }
                     if (!entry.isEmpty()) {
-                        bounded.add(entry);
+                        boundedProbeErrors.add(entry);
                     }
                 }
             }
-            snapshot.setProbeErrors(bounded);
         }
+        snapshot.setProbeErrors(boundedProbeErrors);
+
+        // Redacted payload — caller already sanitized scalar values
+        // and stripped known sensitive keys. Substitute the bounded
+        // probeErrors so any stack-trace / raw command output the
+        // agent surfaced does not land here (Codex iter-1 #2).
+        Map<String, Object> redactedPayload = new HashMap<>(hardware);
+        if (redactedPayload.containsKey("probeErrors")) {
+            redactedPayload.put("probeErrors", boundedProbeErrors);
+        }
+        snapshot.setRedactedPayload(redactedPayload);
 
         // Disks.
         Object disksRaw = hardware.get("disks");
@@ -345,7 +362,29 @@ public class EndpointHardwareInventoryService {
                 snapshot.getCollectedAt());
     }
 
+    /** Sanity bounds for collectedAt (Codex iter-1 must-fix #4):
+     * agent-reported timestamps must be within the last 90 days
+     * and not more than 1 hour in the future. */
+    private static final Duration COLLECTED_AT_PAST_BOUND = Duration.ofDays(90);
+    private static final Duration COLLECTED_AT_FUTURE_BOUND = Duration.ofHours(1);
+
     private static Instant parseInstant(Object value) {
+        Instant parsed = parseInstantRaw(value);
+        // Range sanity — fail closed if the timestamp is unreasonably
+        // old or in the future.
+        Instant now = Instant.now();
+        if (parsed.isAfter(now.plus(COLLECTED_AT_FUTURE_BOUND))) {
+            throw new IllegalArgumentException(
+                    "collectedAt too far in the future: " + parsed);
+        }
+        if (parsed.isBefore(now.minus(COLLECTED_AT_PAST_BOUND))) {
+            throw new IllegalArgumentException(
+                    "collectedAt too far in the past: " + parsed);
+        }
+        return parsed;
+    }
+
+    private static Instant parseInstantRaw(Object value) {
         if (value == null) {
             throw new IllegalArgumentException("collectedAt required");
         }

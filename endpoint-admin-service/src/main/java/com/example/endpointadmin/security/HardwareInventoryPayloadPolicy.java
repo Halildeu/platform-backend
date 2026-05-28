@@ -100,8 +100,30 @@ public class HardwareInventoryPayloadPolicy {
     private static final Pattern WINDOWS_SID = Pattern.compile(
             "S-1-5-21-\\d+-\\d+-\\d+-\\d+");
 
+    /** Braced machine GUID — `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}`. */
     private static final Pattern MACHINE_GUID = Pattern.compile(
             "(?i)\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}");
+
+    /**
+     * Value-level secret pattern denylist (Codex 019e7007 post-impl
+     * iter-1 must-fix #3). Key-level reject covers
+     * {@code token / password / jwt / bearer / secret}, but raw
+     * agent-reported strings can also leak secrets out of band — e.g.
+     * {@code probeErrors[].summary = "auth header rejected: Bearer eyJ..."}.
+     * The patterns below fail-closed reject the result entire so the
+     * snapshot, the command result, and any audit copy of the payload
+     * all roll back together.
+     */
+    private static final Pattern[] SECRET_VALUE_PATTERNS = new Pattern[]{
+            // Bearer / Basic auth schemes followed by an opaque token.
+            Pattern.compile("(?i)\\b(bearer|basic)\\s+[A-Za-z0-9._=+/-]{10,}"),
+            // Compact JWT: three base64url segments separated by dots,
+            // with the canonical `eyJ` (base64 of `{"`) header prefix.
+            Pattern.compile("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"),
+            // Common `password=...`, `secret=...`, `api_key=...` kv
+            // leaks in agent error / probe strings.
+            Pattern.compile("(?i)\\b(password|secret|api[-_]?key|access[-_]?token|refresh[-_]?token)\\s*[=:]\\s*[^\\s]{4,}")
+    };
 
     /** Canonical lowercase MAC matcher. */
     private static final Pattern MAC_ANY = Pattern.compile(
@@ -248,20 +270,40 @@ public class HardwareInventoryPayloadPolicy {
             return out;
         }
         if (node instanceof String s) {
-            return redactStringValue(s);
+            return redactStringValue(s, path);
         }
         return node;
     }
 
     /**
-     * Replace user paths, SIDs, machine GUIDs in a string value with
-     * {@code <redacted>}. Does not throw — strip-by-pattern is the
-     * value-level analogue of strip-by-key.
+     * Apply value-level redaction to a string scalar.
+     *
+     * <p>Two-tier behavior (Codex 019e7007 post-impl iter-1 must-fix #3):
+     * <ol>
+     *   <li>Secret value patterns (Bearer / JWT / password=) fail-closed
+     *       throw {@link IllegalArgumentException} — strip is unsafe
+     *       because the surrounding string structure may still leak
+     *       the secret length or position.</li>
+     *   <li>Identifier patterns (user paths, SIDs, machine GUIDs) are
+     *       replaced with {@value #REDACTED} — these have legitimate
+     *       presence in error strings (path validation, OS reports)
+     *       and reject would block all of those signals.</li>
+     * </ol>
      */
-    private String redactStringValue(String value) {
+    private String redactStringValue(String value, String path) {
         if (value == null || value.isEmpty()) {
             return value;
         }
+        // Tier 1 — fail-closed reject on secret value patterns.
+        for (Pattern pattern : SECRET_VALUE_PATTERNS) {
+            if (pattern.matcher(value).find()) {
+                throw new IllegalArgumentException(
+                        "Secret value pattern detected at " + path
+                                + " — tokens / passwords / bearer headers must not appear"
+                                + " in hardware payloads.");
+            }
+        }
+        // Tier 2 — strip identifier patterns.
         String out = value;
         out = USERS_PATH.matcher(out).replaceAll(REDACTED);
         out = UNIX_USER_PATH.matcher(out).replaceAll(REDACTED);
