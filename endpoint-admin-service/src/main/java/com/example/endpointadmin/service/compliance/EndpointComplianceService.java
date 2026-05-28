@@ -5,6 +5,7 @@ import com.example.endpointadmin.model.ComplianceEnforcementMode;
 import com.example.endpointadmin.model.EndpointComplianceEvaluation;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointDeviceComplianceState;
+import com.example.endpointadmin.model.EndpointInstallAudit;
 import com.example.endpointadmin.model.EndpointSoftwareCatalogItem;
 import com.example.endpointadmin.model.EndpointSoftwareCompliancePolicyItem;
 import com.example.endpointadmin.model.EndpointSoftwareInventoryItem;
@@ -12,6 +13,7 @@ import com.example.endpointadmin.model.EndpointSoftwareInventorySnapshot;
 import com.example.endpointadmin.repository.EndpointComplianceEvaluationRepository;
 import com.example.endpointadmin.repository.EndpointDeviceComplianceStateRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
+import com.example.endpointadmin.repository.EndpointInstallAuditRepository;
 import com.example.endpointadmin.repository.EndpointSoftwareCompliancePolicyItemRepository;
 import com.example.endpointadmin.repository.EndpointSoftwareInventorySnapshotRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
@@ -22,6 +24,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -37,6 +40,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.SQLException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -106,9 +110,19 @@ public class EndpointComplianceService {
     private final EndpointSoftwareCompliancePolicyItemRepository policyRepository;
     private final EndpointComplianceEvaluationRepository evaluationRepository;
     private final EndpointDeviceComplianceStateRepository stateRepository;
+    private final EndpointInstallAuditRepository installAuditRepository;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper canonicalObjectMapper;
     private final Clock clock;
+    /**
+     * BE-021 (Codex 019e6dfb iter-3 P0-4): grace window between an
+     * install audit's {@code reported_at} and the next inventory
+     * snapshot's {@code appsCollectedAt}. Within the window an audit
+     * SATISFIES a REQUIRED policy item even when the inventory does
+     * not yet show the package; past the window an inventory miss is
+     * treated as an uninstall and the audit is invalidated.
+     */
+    private final Duration installGraceWindow;
     /** Lazily-resolved single-call cached database product name. */
     private volatile Boolean isPostgresDialect;
 
@@ -118,17 +132,23 @@ public class EndpointComplianceService {
             EndpointSoftwareCompliancePolicyItemRepository policyRepository,
             EndpointComplianceEvaluationRepository evaluationRepository,
             EndpointDeviceComplianceStateRepository stateRepository,
+            EndpointInstallAuditRepository installAuditRepository,
             @Autowired(required = false) JdbcTemplate jdbcTemplate,
-            ObjectProvider<Clock> clockProvider) {
+            ObjectProvider<Clock> clockProvider,
+            @Value("${endpoint-admin.compliance.install-audit-grace-window:PT15M}")
+            Duration installGraceWindow) {
         this.deviceRepository = deviceRepository;
         this.snapshotRepository = snapshotRepository;
         this.policyRepository = policyRepository;
         this.evaluationRepository = evaluationRepository;
         this.stateRepository = stateRepository;
+        this.installAuditRepository = installAuditRepository;
         this.jdbcTemplate = jdbcTemplate;
         // ObjectProvider avoids the @Lazy CGLIB enhancement of java.time.Clock
         // that broke pod boot under Java 21 + Spring Boot LaunchedClassLoader.
         this.clock = clockProvider.getIfAvailable(Clock::systemUTC);
+        this.installGraceWindow = installGraceWindow == null
+                ? Duration.ofMinutes(15) : installGraceWindow;
         this.canonicalObjectMapper = new ObjectMapper()
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
                 .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
@@ -313,7 +333,7 @@ public class EndpointComplianceService {
                 ctx.addReason(ComplianceReason.POLICY_CATALOG_ITEM_UNAVAILABLE);
                 continue;
             }
-            evaluatePolicyItem(policy, catalog, snapshot, ctx,
+            evaluatePolicyItem(policy, catalog, snapshot, device.getId(), now, ctx,
                     matchedRequired, outdatedRequired, missingRequired,
                     forbiddenInstalled, unsupportedDetectionPackageIds);
         }
@@ -430,6 +450,8 @@ public class EndpointComplianceService {
             EndpointSoftwareCompliancePolicyItem policy,
             EndpointSoftwareCatalogItem catalog,
             EndpointSoftwareInventorySnapshot snapshot,
+            UUID deviceId,
+            Instant evaluationStartedAt,
             EvaluationContext ctx,
             Map<UUID, MatchedRequired> matchedRequired,
             Map<UUID, MatchedRequired> outdatedRequired,
@@ -440,35 +462,19 @@ public class EndpointComplianceService {
         // are unavailable. The telemetry gate has already added the
         // appropriate UNKNOWN-driving reason; piling additional
         // per-policy noise on top makes the audit row harder to read.
+        // BE-021 (Codex 019e6dfb iter-3 P0-4): the install audit fallback
+        // is *minimal/conservative* — it only kicks in when inventory is
+        // present and apps-available; an audit alone cannot suppress
+        // UNKNOWN driven by missing telemetry.
         if (snapshot == null || !snapshot.isAppsAvailable()) {
             return;
         }
         EndpointSoftwareInventoryItem installed = findInstalled(snapshot, catalog);
         switch (policy.getEnforcementMode()) {
-            case REQUIRED -> {
-                if (installed == null) {
-                    ctx.addReason(ComplianceReason.MISSING_REQUIRED_APP);
-                    missingRequired.put(catalog.getId(), MatchedRequired.missing(catalog));
-                    return;
-                }
-                VersionComparator.Result result = VersionComparator.compare(
-                        catalog.getVersionPolicyType(),
-                        catalog.getVersionPolicyValue(),
-                        installed.getDisplayVersion());
-                switch (result) {
-                    case SATISFIES -> matchedRequired.put(catalog.getId(),
-                            MatchedRequired.installed(catalog, installed));
-                    case VIOLATES -> {
-                        ctx.addReason(ComplianceReason.OUTDATED_REQUIRED_APP);
-                        outdatedRequired.put(catalog.getId(),
-                                MatchedRequired.outdated(catalog, installed));
-                    }
-                    case UNSUPPORTED -> {
-                        ctx.addReason(ComplianceReason.VERSION_COMPARE_UNSUPPORTED);
-                        unsupportedDetectionPackageIds.add(catalog.getPackageId());
-                    }
-                }
-            }
+            case REQUIRED -> evaluateRequired(policy, catalog, snapshot, deviceId,
+                    evaluationStartedAt, installed, ctx,
+                    matchedRequired, outdatedRequired, missingRequired,
+                    unsupportedDetectionPackageIds);
             case FORBIDDEN -> {
                 if (installed != null) {
                     ctx.addReason(ComplianceReason.FORBIDDEN_APP_INSTALLED);
@@ -479,6 +485,86 @@ public class EndpointComplianceService {
             case ALLOWED -> {
                 // ALLOWED rows are skipped by the repository query;
                 // included here for exhaustiveness only.
+            }
+        }
+    }
+
+    private void evaluateRequired(
+            EndpointSoftwareCompliancePolicyItem policy,
+            EndpointSoftwareCatalogItem catalog,
+            EndpointSoftwareInventorySnapshot snapshot,
+            UUID deviceId,
+            Instant evaluationStartedAt,
+            EndpointSoftwareInventoryItem installed,
+            EvaluationContext ctx,
+            Map<UUID, MatchedRequired> matchedRequired,
+            Map<UUID, MatchedRequired> outdatedRequired,
+            Map<UUID, MatchedRequired> missingRequired,
+            Set<String> unsupportedDetectionPackageIds) {
+        if (installed != null) {
+            // Inventory is the primary signal — the install audit is
+            // ignored when the package is observably present.
+            VersionComparator.Result result = VersionComparator.compare(
+                    catalog.getVersionPolicyType(),
+                    catalog.getVersionPolicyValue(),
+                    installed.getDisplayVersion());
+            switch (result) {
+                case SATISFIES -> matchedRequired.put(catalog.getId(),
+                        MatchedRequired.installed(catalog, installed));
+                case VIOLATES -> {
+                    ctx.addReason(ComplianceReason.OUTDATED_REQUIRED_APP);
+                    outdatedRequired.put(catalog.getId(),
+                            MatchedRequired.outdated(catalog, installed));
+                }
+                case UNSUPPORTED -> {
+                    ctx.addReason(ComplianceReason.VERSION_COMPARE_UNSUPPORTED);
+                    unsupportedDetectionPackageIds.add(catalog.getPackageId());
+                }
+            }
+            return;
+        }
+        // BE-021 — inventory miss + apps available → install audit
+        // fallback (deterministic selector). The repository query
+        // already restricts to SUCCEEDED + SATISFIED and rejects
+        // rows committed at or after evaluationStartedAt.
+        Optional<EndpointInstallAudit> auditOpt = installAuditRepository
+                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                        policy.getTenantId(), deviceId, catalog.getId(), evaluationStartedAt);
+        if (auditOpt.isEmpty()) {
+            ctx.addReason(ComplianceReason.MISSING_REQUIRED_APP);
+            missingRequired.put(catalog.getId(), MatchedRequired.missing(catalog));
+            return;
+        }
+        EndpointInstallAudit audit = auditOpt.get();
+        // Contradiction check: a newer inventory snapshot (collected
+        // past the install grace window) that still does not see the
+        // package is treated as a post-install uninstall — the audit
+        // is invalidated and a WARN explains the contradiction.
+        if (snapshot.getAppsCollectedAt() != null
+                && audit.getReportedAt() != null
+                && snapshot.getAppsCollectedAt().isAfter(
+                        audit.getReportedAt().plus(installGraceWindow))) {
+            ctx.addReason(ComplianceReason.MISSING_REQUIRED_APP);
+            ctx.addReason(ComplianceReason.INSTALL_AUDIT_CONTRADICTED_BY_INVENTORY);
+            missingRequired.put(catalog.getId(),
+                    MatchedRequired.missingByContradiction(catalog, audit));
+            return;
+        }
+        VersionComparator.Result result = VersionComparator.compare(
+                catalog.getVersionPolicyType(),
+                catalog.getVersionPolicyValue(),
+                audit.getDetectedVersion());
+        switch (result) {
+            case SATISFIES -> matchedRequired.put(catalog.getId(),
+                    MatchedRequired.installedByAudit(catalog, audit));
+            case VIOLATES -> {
+                ctx.addReason(ComplianceReason.OUTDATED_REQUIRED_APP);
+                outdatedRequired.put(catalog.getId(),
+                        MatchedRequired.outdatedByAudit(catalog, audit));
+            }
+            case UNSUPPORTED -> {
+                ctx.addReason(ComplianceReason.VERSION_COMPARE_UNSUPPORTED);
+                unsupportedDetectionPackageIds.add(catalog.getPackageId());
             }
         }
     }
@@ -646,6 +732,57 @@ public class EndpointComplianceService {
             Map<UUID, MatchedRequired> missingRequired,
             Map<UUID, MatchedForbidden> forbiddenInstalled,
             Set<String> unsupportedDetectionPackageIds) {
+        Map<String, Object> ev = buildEvidenceCore(snapshot, policies,
+                matchedRequired, outdatedRequired, missingRequired,
+                forbiddenInstalled, unsupportedDetectionPackageIds);
+        // BE-021 (Codex 019e6dfb iter-3 P0-4): expose the install audit
+        // fallback references as a top-level evidence projection so the
+        // UI can render "satisfied via install audit X (reported_at Y)"
+        // without having to walk matched.requiredOk[*].installAuditId.
+        // This sits OUTSIDE catalogPolicyHash by construction —
+        // computeCatalogPolicyHash projects policies only.
+        List<Map<String, Object>> installAuditRefs = new ArrayList<>();
+        Map<String, String> dataSourceByCatalogItemId = new LinkedHashMap<>();
+        appendInstallAuditRefs(matchedRequired.values(), installAuditRefs, dataSourceByCatalogItemId);
+        appendInstallAuditRefs(outdatedRequired.values(), installAuditRefs, dataSourceByCatalogItemId);
+        appendInstallAuditRefs(missingRequired.values(), installAuditRefs, dataSourceByCatalogItemId);
+        ev.put("installAuditRefs", installAuditRefs);
+        ev.put("dataSourceByCatalogItemId", dataSourceByCatalogItemId);
+        ev.put("installAuditGraceWindowSeconds", installGraceWindow.toSeconds());
+        return ev;
+    }
+
+    private static void appendInstallAuditRefs(
+            Iterable<MatchedRequired> rows,
+            List<Map<String, Object>> installAuditRefs,
+            Map<String, String> dataSourceByCatalogItemId) {
+        for (MatchedRequired m : rows) {
+            if (m.catalogItemId() != null && m.dataSource() != null) {
+                dataSourceByCatalogItemId.put(m.catalogItemId().toString(), m.dataSource());
+            }
+            if (m.installAuditId() == null) {
+                continue;
+            }
+            Map<String, Object> ref = new LinkedHashMap<>();
+            ref.put("catalogItemId", m.catalogItemId() == null ? null : m.catalogItemId().toString());
+            ref.put("installAuditId", m.installAuditId().toString());
+            ref.put("installAuditReportedAt",
+                    m.installAuditReportedAt() == null ? null : m.installAuditReportedAt().toString());
+            ref.put("installAuditRowVersion", m.installAuditRowVersion());
+            ref.put("outcome", m.outcome());
+            ref.put("dataSource", m.dataSource());
+            installAuditRefs.add(ref);
+        }
+    }
+
+    private Map<String, Object> buildEvidenceCore(
+            EndpointSoftwareInventorySnapshot snapshot,
+            List<EndpointSoftwareCompliancePolicyItem> policies,
+            Map<UUID, MatchedRequired> matchedRequired,
+            Map<UUID, MatchedRequired> outdatedRequired,
+            Map<UUID, MatchedRequired> missingRequired,
+            Map<UUID, MatchedForbidden> forbiddenInstalled,
+            Set<String> unsupportedDetectionPackageIds) {
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("inventorySnapshotId", snapshot == null ? null
                 : (snapshot.getId() == null ? null : snapshot.getId().toString()));
@@ -791,7 +928,9 @@ public class EndpointComplianceService {
     /**
      * Compact projection of a REQUIRED policy match for the evidence
      * block. Only carries what an admin / UI needs to confirm the
-     * decision (catalog item id, installed display name + version).
+     * decision (catalog item id, installed display name + version,
+     * optional install-audit reference when the inventory was missing
+     * the package but a SATISFIED audit was selected).
      */
     record MatchedRequired(
             UUID catalogItemId,
@@ -800,21 +939,49 @@ public class EndpointComplianceService {
             String policyExpectedVersion,
             String installedDisplayName,
             String installedVersion,
-            String outcome) {
+            String outcome,
+            String dataSource,
+            UUID installAuditId,
+            Instant installAuditReportedAt,
+            Long installAuditRowVersion) {
 
         static MatchedRequired installed(EndpointSoftwareCatalogItem c, EndpointSoftwareInventoryItem i) {
             return new MatchedRequired(c.getId(), c.getCatalogItemId(), c.getDisplayName(),
-                    c.getVersionPolicyValue(), i.getDisplayName(), i.getDisplayVersion(), "INSTALLED");
+                    c.getVersionPolicyValue(), i.getDisplayName(), i.getDisplayVersion(),
+                    "INSTALLED", "INVENTORY", null, null, null);
         }
 
         static MatchedRequired outdated(EndpointSoftwareCatalogItem c, EndpointSoftwareInventoryItem i) {
             return new MatchedRequired(c.getId(), c.getCatalogItemId(), c.getDisplayName(),
-                    c.getVersionPolicyValue(), i.getDisplayName(), i.getDisplayVersion(), "OUTDATED");
+                    c.getVersionPolicyValue(), i.getDisplayName(), i.getDisplayVersion(),
+                    "OUTDATED", "INVENTORY", null, null, null);
         }
 
         static MatchedRequired missing(EndpointSoftwareCatalogItem c) {
             return new MatchedRequired(c.getId(), c.getCatalogItemId(), c.getDisplayName(),
-                    c.getVersionPolicyValue(), null, null, "MISSING");
+                    c.getVersionPolicyValue(), null, null,
+                    "MISSING", "INVENTORY", null, null, null);
+        }
+
+        static MatchedRequired installedByAudit(EndpointSoftwareCatalogItem c, EndpointInstallAudit a) {
+            return new MatchedRequired(c.getId(), c.getCatalogItemId(), c.getDisplayName(),
+                    c.getVersionPolicyValue(), c.getDisplayName(), a.getDetectedVersion(),
+                    "INSTALLED", "INSTALL_AUDIT",
+                    a.getId(), a.getReportedAt(), a.getRowVersion());
+        }
+
+        static MatchedRequired outdatedByAudit(EndpointSoftwareCatalogItem c, EndpointInstallAudit a) {
+            return new MatchedRequired(c.getId(), c.getCatalogItemId(), c.getDisplayName(),
+                    c.getVersionPolicyValue(), c.getDisplayName(), a.getDetectedVersion(),
+                    "OUTDATED", "INSTALL_AUDIT",
+                    a.getId(), a.getReportedAt(), a.getRowVersion());
+        }
+
+        static MatchedRequired missingByContradiction(EndpointSoftwareCatalogItem c, EndpointInstallAudit a) {
+            return new MatchedRequired(c.getId(), c.getCatalogItemId(), c.getDisplayName(),
+                    c.getVersionPolicyValue(), null, null,
+                    "MISSING_CONTRADICTED", "INVENTORY",
+                    a.getId(), a.getReportedAt(), a.getRowVersion());
         }
 
         Map<String, Object> toEvidenceMap() {
@@ -826,6 +993,13 @@ public class EndpointComplianceService {
             m.put("installedDisplayName", installedDisplayName);
             m.put("installedVersion", installedVersion);
             m.put("outcome", outcome);
+            m.put("dataSource", dataSource);
+            if (installAuditId != null) {
+                m.put("installAuditId", installAuditId.toString());
+                m.put("installAuditReportedAt",
+                        installAuditReportedAt == null ? null : installAuditReportedAt.toString());
+                m.put("installAuditRowVersion", installAuditRowVersion);
+            }
             return m;
         }
     }

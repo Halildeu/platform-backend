@@ -82,6 +82,8 @@ class EndpointComplianceServiceTest {
     private EndpointComplianceEvaluationRepository evaluationRepository;
     @Mock
     private EndpointDeviceComplianceStateRepository stateRepository;
+    @Mock
+    private com.example.endpointadmin.repository.EndpointInstallAuditRepository installAuditRepository;
 
     private EndpointComplianceService service;
 
@@ -90,9 +92,10 @@ class EndpointComplianceServiceTest {
         Clock fixed = Clock.fixed(NOW, ZoneOffset.UTC);
         service = new EndpointComplianceService(
                 deviceRepository, snapshotRepository, policyRepository,
-                evaluationRepository, stateRepository,
+                evaluationRepository, stateRepository, installAuditRepository,
                 null, // no JdbcTemplate — advisory lock path is a no-op in unit tests
-                singletonProvider(fixed));
+                singletonProvider(fixed),
+                java.time.Duration.ofMinutes(15));
     }
 
     private static ObjectProvider<Clock> singletonProvider(Clock clock) {

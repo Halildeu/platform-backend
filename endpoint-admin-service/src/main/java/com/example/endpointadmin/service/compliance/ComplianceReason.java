@@ -40,7 +40,14 @@ public enum ComplianceReason {
     // ─── WARN-only (decoration; does not flip decision) ───────────
     INVENTORY_STALE_SOFT("inventory_stale_soft", Severity.WARN),
     WINGET_EGRESS_PARTIAL("winget_egress_partial", Severity.WARN),
-    WINGET_SOURCE_LIST_WARNING("winget_source_list_warning", Severity.WARN);
+    WINGET_SOURCE_LIST_WARNING("winget_source_list_warning", Severity.WARN),
+    // BE-021 (Codex 019e6dfb iter-3 P0-4): emitted when the install
+    // audit fallback selector found a SUCCEEDED+SATISFIED audit but the
+    // subsequent inventory snapshot (collected past the install grace
+    // window) no longer reports the package. The audit is invalidated
+    // and the catalog item falls back to MISSING_REQUIRED_APP; this
+    // warning surfaces the contradiction in the evidence block.
+    INSTALL_AUDIT_CONTRADICTED_BY_INVENTORY("install_audit_contradicted_by_inventory", Severity.WARN);
 
     public enum Severity {
         WARN,

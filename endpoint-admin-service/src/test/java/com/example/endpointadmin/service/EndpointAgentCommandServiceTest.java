@@ -43,7 +43,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         com.example.endpointadmin.security.SoftwareInventoryPayloadPolicy.class,
         // BE-021A — the inventory service now also depends on the
         // wingetEgress validator (fail-closed schema + PII guard).
-        com.example.endpointadmin.security.WinGetEgressPayloadPolicy.class
+        com.example.endpointadmin.security.WinGetEgressPayloadPolicy.class,
+        // BE-021 — install audit dependencies for the INSTALL_SOFTWARE
+        // terminal-result branch in submitResult.
+        com.example.endpointadmin.security.InstallEvidencePayloadPolicy.class,
+        EndpointInstallAuditService.class
 })
 class EndpointAgentCommandServiceTest {
 

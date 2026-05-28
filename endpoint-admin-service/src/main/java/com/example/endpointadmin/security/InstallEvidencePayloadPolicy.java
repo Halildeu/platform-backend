@@ -1,0 +1,280 @@
+package com.example.endpointadmin.security;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+/**
+ * BE-021 — DOUBLE-REDACT policy for the agent INSTALL_SOFTWARE
+ * {@code details} payload (Faz 22.5). Codex 019e6dfb iter-3 P0-2 / C
+ * absorb.
+ *
+ * <p>The backend cannot trust agent-side redaction. Every install
+ * terminal-result submit goes through {@link #validate(Object)} (fail
+ * closed on a forbidden key / value) and then through
+ * {@link #redact(Map)} (idempotent backend strip + truncate + size cap)
+ * before either {@code endpoint_command_results.result_payload.details}
+ * or {@code endpoint_install_audit.redacted_payload} is persisted. The
+ * raw {@code request.details()} reference never reaches a save call.
+ *
+ * <p>Idempotency guarantee: {@code redact(redact(x))} produces the same
+ * map (forbidden keys are dropped, forbidden value patterns are
+ * replaced with the literal {@value #REDACTED_LITERAL} which itself
+ * does not match the patterns, and the truncate suffix is sticky).
+ */
+@Component
+public class InstallEvidencePayloadPolicy {
+
+    /** Replacement literal for forbidden value patterns. */
+    public static final String REDACTED_LITERAL = "[REDACTED]";
+    /** Suffix appended after summary truncate; pattern-stable. */
+    public static final String TRUNCATE_SUFFIX = "...[truncated]";
+    /** Max bytes of the serialized redacted payload. */
+    public static final int MAX_REDACTED_BYTES_DEFAULT = 8 * 1024;
+    /** Max bytes per stdoutSummary / stderrSummary entry. */
+    public static final int MAX_SUMMARY_BYTES_DEFAULT = 2 * 1024;
+
+    private static final Set<String> ALLOWED_TOP_LEVEL_KEYS = Set.of(
+            "stage",
+            "exitCode",
+            "durationMs",
+            "installerVersion",
+            "catalogItemId",
+            "catalogItemUuid",
+            "catalogPackageId",
+            "detection",
+            "postVerification",
+            "stdoutSummary",
+            "stderrSummary",
+            "errorCode",
+            "errorMessage"
+    );
+
+    /**
+     * Keys that are dropped from any nesting depth (case-insensitive).
+     * Mirrors {@link SoftwareInventoryPayloadPolicy} plus a few
+     * install-specific surface keys.
+     */
+    private static final Set<String> FORBIDDEN_KEYS_LOWER = Set.of(
+            "licensekey",
+            "productkey",
+            "password",
+            "token",
+            "jwt",
+            "bearer",
+            "apikey",
+            "secret",
+            "envblock",
+            "fullcommandline",
+            "commandlineraw",
+            "processenvironment",
+            "stdoutraw",
+            "stderrraw"
+    );
+
+    private static final Pattern USERS_PATH = Pattern.compile(
+            "(?i)c:\\\\users\\\\[^\\\\\\s\"']+");
+    private static final Pattern PROGRAMDATA_PATH = Pattern.compile(
+            "(?i)c:\\\\programdata\\\\[^\\\\\\s\"']+");
+    private static final Pattern WINDOWS_SID = Pattern.compile(
+            "S-1-5-21-\\d+-\\d+-\\d+-\\d+");
+    private static final Pattern RAW_MSI_GUID = Pattern.compile(
+            "\\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                    + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\\}");
+    private static final Pattern JWT_PATTERN = Pattern.compile(
+            "eyJ[A-Za-z0-9_\\-]+\\.eyJ[A-Za-z0-9_\\-]+\\.[A-Za-z0-9_\\-]+");
+    private static final Pattern BEARER_PATTERN = Pattern.compile(
+            "(?i)bearer\\s+[A-Za-z0-9._\\-]+");
+
+    private final int maxRedactedBytes;
+    private final int maxSummaryBytes;
+    private final ObjectMapper jsonMapper;
+
+    public InstallEvidencePayloadPolicy(
+            @Value("${endpoint-admin.installs.max-redacted-bytes:" + MAX_REDACTED_BYTES_DEFAULT + "}")
+            int maxRedactedBytes,
+            @Value("${endpoint-admin.installs.max-summary-bytes:" + MAX_SUMMARY_BYTES_DEFAULT + "}")
+            int maxSummaryBytes) {
+        this.maxRedactedBytes = maxRedactedBytes;
+        this.maxSummaryBytes = maxSummaryBytes;
+        this.jsonMapper = new ObjectMapper();
+    }
+
+    /**
+     * Recursively walk the agent payload tree; throw on any forbidden
+     * key or value. The throw rolls back the surrounding
+     * {@code EndpointAgentCommandService.submitResult} transaction so
+     * neither the result row nor the audit row is persisted.
+     */
+    public void validate(Object payload) {
+        walkValidate(payload, "$");
+    }
+
+    /**
+     * Produce an idempotent backend-redacted copy of the install
+     * payload. Forbidden keys are dropped (case-insensitive); forbidden
+     * value patterns are replaced with {@link #REDACTED_LITERAL};
+     * {@code stdoutSummary} / {@code stderrSummary} are truncated to
+     * {@link #maxSummaryBytes}; the entire serialized payload is
+     * trimmed to fit {@link #maxRedactedBytes}. The output is a fresh
+     * {@link LinkedHashMap} — the caller's map is not mutated.
+     */
+    public Map<String, Object> redact(Map<String, Object> payload) {
+        if (payload == null) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : payload.entrySet()) {
+            String key = entry.getKey();
+            if (key == null) {
+                continue;
+            }
+            if (FORBIDDEN_KEYS_LOWER.contains(key.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            if (!ALLOWED_TOP_LEVEL_KEYS.contains(key)) {
+                continue;
+            }
+            Object redactedValue = redactValue(entry.getValue(), key);
+            out.put(key, redactedValue);
+        }
+        return enforceSizeCap(out);
+    }
+
+    private Object redactValue(Object node, String topKey) {
+        if (node == null) {
+            return null;
+        }
+        if (node instanceof Map<?, ?> map) {
+            Map<String, Object> sub = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String rawKey = String.valueOf(entry.getKey());
+                if (FORBIDDEN_KEYS_LOWER.contains(rawKey.toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
+                sub.put(rawKey, redactValue(entry.getValue(), topKey));
+            }
+            return sub;
+        }
+        if (node instanceof Iterable<?> iterable) {
+            List<Object> list = new ArrayList<>();
+            for (Object e : iterable) {
+                list.add(redactValue(e, topKey));
+            }
+            return list;
+        }
+        if (node instanceof String s) {
+            String replaced = replaceForbiddenValues(s);
+            if (("stdoutSummary".equals(topKey) || "stderrSummary".equals(topKey))
+                    && replaced.length() > maxSummaryBytes) {
+                return replaced.substring(0, maxSummaryBytes) + TRUNCATE_SUFFIX;
+            }
+            return replaced;
+        }
+        return node;
+    }
+
+    private String replaceForbiddenValues(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        String out = USERS_PATH.matcher(value).replaceAll(REDACTED_LITERAL);
+        out = PROGRAMDATA_PATH.matcher(out).replaceAll(REDACTED_LITERAL);
+        out = WINDOWS_SID.matcher(out).replaceAll(REDACTED_LITERAL);
+        out = RAW_MSI_GUID.matcher(out).replaceAll(REDACTED_LITERAL);
+        out = JWT_PATTERN.matcher(out).replaceAll(REDACTED_LITERAL);
+        out = BEARER_PATTERN.matcher(out).replaceAll(REDACTED_LITERAL);
+        return out;
+    }
+
+    private Map<String, Object> enforceSizeCap(Map<String, Object> redacted) {
+        try {
+            byte[] bytes = jsonMapper.writeValueAsBytes(redacted);
+            if (bytes.length <= maxRedactedBytes) {
+                return redacted;
+            }
+            // Drop optional decoration fields in priority order until we fit.
+            for (String optional : List.of(
+                    "stderrSummary", "stdoutSummary",
+                    "installerVersion", "durationMs")) {
+                if (redacted.remove(optional) != null) {
+                    bytes = jsonMapper.writeValueAsBytes(redacted);
+                    if (bytes.length <= maxRedactedBytes) {
+                        return redacted;
+                    }
+                }
+            }
+            // Last resort: collapse detection / postVerification to scalar
+            // markers so the row still records that something was reported.
+            redacted.computeIfPresent("detection", (k, v) -> Map.of("trimmed", true));
+            redacted.computeIfPresent("postVerification", (k, v) -> Map.of("trimmed", true));
+        } catch (JsonProcessingException ex) {
+            // Serialization failure: replace with an explicit error marker
+            // so the audit row is still written (recordInstallResult cannot
+            // succeed without a Map). The validator already passed at this
+            // point, so this is a deep-Jackson-edge-case failure.
+            Map<String, Object> fallback = new LinkedHashMap<>();
+            fallback.put("error", "redaction_serialization_failed");
+            return fallback;
+        }
+        return redacted;
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // validate helpers
+
+    private void walkValidate(Object node, String path) {
+        if (node == null) {
+            return;
+        }
+        if (node instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String rawKey = String.valueOf(entry.getKey());
+                String keyLower = rawKey.toLowerCase(Locale.ROOT);
+                if (FORBIDDEN_KEYS_LOWER.contains(keyLower)) {
+                    throw new IllegalArgumentException(
+                            "Forbidden install-evidence field '" + rawKey + "' at " + path);
+                }
+                walkValidate(entry.getValue(), path + "." + rawKey);
+            }
+            return;
+        }
+        if (node instanceof Iterable<?> iterable) {
+            int i = 0;
+            for (Object e : iterable) {
+                walkValidate(e, path + "[" + (i++) + "]");
+            }
+            return;
+        }
+        if (node instanceof String s) {
+            assertNoRawSecrets(s, path);
+        }
+    }
+
+    private void assertNoRawSecrets(String value, String path) {
+        if (WINDOWS_SID.matcher(value).find()) {
+            throw new IllegalArgumentException(
+                    "Windows SID literal detected at " + path
+                            + " — SIDs must not be shipped in install evidence.");
+        }
+        if (JWT_PATTERN.matcher(value).find()) {
+            throw new IllegalArgumentException(
+                    "JWT detected at " + path
+                            + " — install evidence must not carry tokens.");
+        }
+        // Note: USERS_PATH / PROGRAMDATA_PATH / RAW_MSI_GUID / BEARER are
+        // ALLOWED through validate() but masked by redact(); they are
+        // common in installer chatter and rejecting them outright would
+        // force agents to emit a degraded payload. The redact step strips
+        // them before persistence.
+    }
+}
