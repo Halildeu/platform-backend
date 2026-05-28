@@ -147,7 +147,13 @@ public class EndpointHardwareInventorySnapshot {
     @Column(name = "last_boot_at")
     private Instant lastBootAt;
 
-    @Column(name = "payload_hash_sha256", nullable = false, length = 64, columnDefinition = "char(64)")
+    // BE-022 V14: column type is VARCHAR(64) (not CHAR(64)) so
+    // Hibernate ddl-auto=validate is satisfied. The DB CHECK
+    // constraint `payload_hash_sha256 ~ '^[a-f0-9]{64}$'` (V13)
+    // enforces the exact 64-char SHA-256 hex shape regardless of
+    // CHAR vs VARCHAR storage. CHAR's blank-padding semantics are
+    // not needed here — the hash is always exactly 64 chars.
+    @Column(name = "payload_hash_sha256", nullable = false, length = 64)
     private String payloadHashSha256;
 
     @JdbcTypeCode(SqlTypes.JSON)
