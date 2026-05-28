@@ -34,4 +34,18 @@ EXPOSE 8096 8081
 
 USER 1000:1000
 
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# JPMS opens required for Spring Boot 3.5.6 + Java 21 CGLIB proxy on
+# beans that capture java.time.Clock (BE-023 EndpointComplianceService /
+# EndpointCompliancePolicyService take Clock via @Lazy constructor
+# autowire, which forces CGLIB enhancement of java.time.Clock). Without
+# these opens the LaunchedClassLoader cannot defineClass into java.base:
+#   java.lang.IllegalAccessException: module java.base does not open
+#   java.time to unnamed module @...
+#   ClassLoader mismatch for [java.time.Clock]: JVM should be started
+#   with --add-opens=java.base/java.lang=ALL-UNNAMED for
+#   ClassLoader.defineClass to be accessible on
+#   org.springframework.boot.loader.launch.LaunchedClassLoader
+ENTRYPOINT ["java", \
+  "--add-opens=java.base/java.lang=ALL-UNNAMED", \
+  "--add-opens=java.base/java.time=ALL-UNNAMED", \
+  "-jar", "app.jar"]
