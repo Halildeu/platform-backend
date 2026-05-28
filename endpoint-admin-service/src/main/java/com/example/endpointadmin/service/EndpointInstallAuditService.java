@@ -101,9 +101,15 @@ public class EndpointInstallAuditService {
                     "INSTALL_SOFTWARE command is missing catalogRowVersion in payload (commandId="
                             + command.getId() + ")");
         }
+        // Codex iter-4 P1-3: preflight snapshot fields are written by
+        // the dedicated install path; an absent / invalid value here is
+        // a programmatic bug, not an agent issue. Fail closed so the
+        // surrounding submitResult transaction rolls back rather than
+        // persisting an audit row that overstates the preflight outcome.
         InstallPreflightDecisionRecorded preflightDecision =
-                parsePreflightDecision(payload.get("preflightDecision"));
-        Instant preflightDecisionAt = parseInstant(payload.get("preflightDecisionAt"));
+                requirePreflightDecision(payload.get("preflightDecision"), command.getId());
+        Instant preflightDecisionAt =
+                requireInstant(payload.get("preflightDecisionAt"), command.getId());
         List<String> preflightWarnCodes = asStringList(payload.get("preflightWarnCodes"));
 
         Map<String, Object> safeRedacted = redactedDetails == null
@@ -118,7 +124,7 @@ public class EndpointInstallAuditService {
         audit.setCatalogPackageId(catalogPackageId);
         audit.setCatalogRowVersion(catalogRowVersion);
         audit.setPreflightDecision(preflightDecision);
-        audit.setPreflightDecisionAt(preflightDecisionAt == null ? now : preflightDecisionAt);
+        audit.setPreflightDecisionAt(preflightDecisionAt);
         audit.setPreflightWarnCodes(preflightWarnCodes);
         audit.setActorSubject(command.getIssuedBySubject());
         audit.setApprovalSubject(null);
@@ -253,16 +259,30 @@ public class EndpointInstallAuditService {
         }
     }
 
-    private static InstallPreflightDecisionRecorded parsePreflightDecision(Object node) {
+    private static InstallPreflightDecisionRecorded requirePreflightDecision(Object node, UUID commandId) {
         if (node == null) {
-            return InstallPreflightDecisionRecorded.PASS;
+            throw new IllegalStateException(
+                    "INSTALL_SOFTWARE command is missing preflightDecision in payload (commandId="
+                            + commandId + ")");
         }
         try {
             return InstallPreflightDecisionRecorded.valueOf(
                     String.valueOf(node).trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException ex) {
-            return InstallPreflightDecisionRecorded.PASS;
+            throw new IllegalStateException(
+                    "INSTALL_SOFTWARE command preflightDecision is not PASS|WARN (commandId="
+                            + commandId + ", value=" + node + ")");
         }
+    }
+
+    private static Instant requireInstant(Object node, UUID commandId) {
+        Instant parsed = parseInstant(node);
+        if (parsed == null) {
+            throw new IllegalStateException(
+                    "INSTALL_SOFTWARE command is missing/invalid preflightDecisionAt in payload (commandId="
+                            + commandId + ", value=" + node + ")");
+        }
+        return parsed;
     }
 
     private static InstallPostVerification parsePostVerification(Object node) {

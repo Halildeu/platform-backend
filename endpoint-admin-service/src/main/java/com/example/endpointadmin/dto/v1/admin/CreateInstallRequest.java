@@ -18,7 +18,13 @@ public record CreateInstallRequest(
         @Size(max = 128)
         String catalogItemId,
 
-        @Size(max = 48)
+        // Codex iter-4 P1-2: canonical idempotency key
+        // `admin-install:{deviceId(36)}:{catalogUuid(36)}:{key}` has a
+        // fixed prefix of 88 characters. The DB column is VARCHAR(128),
+        // so the supplied key must fit in 40 characters; anything
+        // longer is SHA-256-prefix-hashed by
+        // {@code resolveInstallIdempotencyKey}.
+        @Size(max = 40)
         String idempotencyKey,
 
         @Size(max = 512)

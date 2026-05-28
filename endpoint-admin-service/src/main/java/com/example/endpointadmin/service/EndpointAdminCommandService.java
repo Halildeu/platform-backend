@@ -375,22 +375,17 @@ public class EndpointAdminCommandService {
                 .findByTenantIdAndCatalogItemId(tenantId, slug)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Catalog item not found."));
 
-        // Recompute the preflight at command-creation time. Cached PASS
-        // reuse is forbidden (EndpointInstallPreflightService Javadoc).
-        InstallPreflightResponse preflight =
-                preflightService.evaluate(context, deviceId, slug);
-        if (preflight.decision() == InstallPreflightDecision.BLOCK) {
-            throw new InstallBlockedException(preflight);
-        }
-
         String reason = trimToNull(request.reason());
         Instant now = Instant.now(clock);
         String idempotencyKey = resolveInstallIdempotencyKey(
                 deviceId, catalogItem.getId(), request.idempotencyKey());
 
-        // Idempotency replay — compare stable fields only (volatile
-        // preflightDecisionAt / evidence refs would force a 409 on
-        // legitimate retries).
+        // BE-021 (Codex 019e6dfb iter-4 P1-1): idempotency replay MUST
+        // run BEFORE the preflight recompute, otherwise a legitimate
+        // retry of a PASS-issued command can fail with a 409 BLOCK if
+        // the device / catalog drifted between the first issue and the
+        // retry. Stable-field check guards against accidental key reuse
+        // with mismatched device or catalog.
         var existing = commandRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
         if (existing.isPresent()) {
             EndpointCommand cmd = existing.get();
@@ -403,6 +398,15 @@ public class EndpointAdminCommandService {
                         "Install idempotency key already used by another install.");
             }
             return toDto(cmd);
+        }
+
+        // Recompute the preflight ONLY when creating a new command.
+        // Cached PASS reuse is forbidden
+        // (EndpointInstallPreflightService Javadoc).
+        InstallPreflightResponse preflight =
+                preflightService.evaluate(context, deviceId, slug);
+        if (preflight.decision() == InstallPreflightDecision.BLOCK) {
+            throw new InstallBlockedException(preflight);
         }
 
         Map<String, Object> payload = buildInstallPayload(catalogItem, preflight, reason);
@@ -507,7 +511,9 @@ public class EndpointAdminCommandService {
         String key = trimToNull(requestedKey);
         if (key == null) {
             key = UUID.randomUUID().toString();
-        } else if (key.length() > 48) {
+        } else if (key.length() > 40) {
+            // Codex iter-4 P1-2: hard-cap at 40 chars so the canonical
+            // string stays ≤ 128 (88 fixed prefix + 40 key body).
             key = sha256Prefix(key);
         }
         return "admin-install:" + deviceId + ":" + catalogUuid + ":" + key;
