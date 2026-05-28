@@ -5,6 +5,7 @@ import com.example.endpointadmin.model.EndpointInstallAudit;
 import com.example.endpointadmin.model.InstallPostVerification;
 import com.example.endpointadmin.model.InstallPreflightDecisionRecorded;
 import com.example.endpointadmin.repository.EndpointInstallAuditRepository;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -94,6 +95,9 @@ class EndpointInstallAuditPostgresIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private EntityManager entityManager;
 
     // ─── Flyway / schema validation ──────────────────────────────────
 
@@ -201,20 +205,42 @@ class EndpointInstallAuditPostgresIntegrationTest {
 
     @Test
     void evalSelectorPartialIndexCarriesExpectedPredicate() {
+        // pg_get_expr(indpred, indrelid) returns the deparsed partial-
+        // index WHERE predicate — stronger than substring-matching
+        // pg_indexes.indexdef because the result is the normalized
+        // boolean expression PG evaluates at query-plan time. Codex
+        // iter-1 nitpick #1 absorb: the substring form would have
+        // passed on a predicate that contains the same literals under
+        // an OR/NOT, so we additionally pin the connective and forbid
+        // OR/NOT in the predicate.
+        String predicate = jdbc.queryForObject(
+                "SELECT pg_get_expr(indpred, indrelid) "
+                        + "FROM pg_catalog.pg_index "
+                        + "WHERE indexrelid = "
+                        + "'public.idx_endpoint_install_audit_eval_selector'::regclass",
+                String.class);
+        assertThat(predicate).isNotNull();
+        assertThat(predicate)
+                .containsPattern("result_status\\)?+::text = 'SUCCEEDED'::text")
+                .containsPattern(
+                        "post_verification\\)?+::text = 'SATISFIED'::text");
+        assertThat(predicate.toUpperCase()).contains(" AND ");
+        // The selector's correctness depends on the predicate being a
+        // pure conjunction over the two equality terms. OR / NOT would
+        // either widen the matched rows or invert the selector,
+        // breaking the compliance evaluator's deterministic semantics.
+        assertThat(predicate.toUpperCase())
+                .doesNotContain(" OR ")
+                .doesNotContain(" NOT ");
+
+        // Sanity: indexdef also contains created_at as the ordering
+        // column (this is the column the selector ORDER BY ... DESC
+        // uses; not in the predicate, in the index expression).
         String indexdef = jdbc.queryForObject(
                 "SELECT indexdef FROM pg_indexes "
                         + "WHERE indexname = 'idx_endpoint_install_audit_eval_selector'",
                 String.class);
-        assertThat(indexdef).isNotNull();
-        // The compliance evaluator selector relies on this WHERE clause
-        // matching its query predicate so PG can pick the partial
-        // index. Both terms must appear in the index definition.
-        assertThat(indexdef)
-                .contains("result_status")
-                .contains("SUCCEEDED")
-                .contains("post_verification")
-                .contains("SATISFIED")
-                .contains("created_at");
+        assertThat(indexdef).contains("created_at");
     }
 
     // ─── command_type CHECK extension (INSTALL_SOFTWARE) ─────────────
@@ -387,11 +413,23 @@ class EndpointInstallAuditPostgresIntegrationTest {
         UUID id = saved.getId();
         assertThat(id).isNotNull();
 
-        // Re-read through repository (clears Hibernate first-level cache
-        // via flush+detach pattern: fetch by id forces a SELECT round
-        // trip in a fresh detached instance).
-        auditRepository.flush();
+        // Codex iter-1 critical finding absorb: repository.flush()
+        // only writes pending changes — it does NOT evict the managed
+        // instance from the persistence context, so a subsequent
+        // findById would return the SAME Java object that was saved,
+        // not a fresh re-materialization from PG. That would defeat
+        // the JSONB round-trip assertion (we'd be checking the in-
+        // memory map, never proving the Hibernate JdbcTypeCode.JSON
+        // serializer can also DESERIALIZE PG's jsonb back). Explicit
+        // flush+clear forces Hibernate to round-trip through PG.
+        entityManager.flush();
+        entityManager.clear();
+
         EndpointInstallAudit reloaded = auditRepository.findById(id).orElseThrow();
+        assertThat(System.identityHashCode(reloaded))
+                .as("after clear(), reloaded must be a fresh instance, not "
+                        + "the original managed entity")
+                .isNotEqualTo(System.identityHashCode(saved));
         assertThat(reloaded.getPreflightWarnCodes())
                 .containsExactly("WARN_DRIVE_LOW", "WARN_REBOOT_PENDING");
         assertThat(reloaded.getPostVerificationEvidence())
@@ -420,6 +458,33 @@ class EndpointInstallAuditPostgresIntegrationTest {
                         + "FROM endpoint_install_audit WHERE id = ?",
                 String.class, id);
         assertThat(evidenceShape).isEqualTo("object");
+        String redactedShape = jdbc.queryForObject(
+                "SELECT jsonb_typeof(redacted_payload) "
+                        + "FROM endpoint_install_audit WHERE id = ?",
+                String.class, id);
+        assertThat(redactedShape).isEqualTo("object");
+
+        // Codex iter-1 critical finding absorb (depth): also navigate
+        // the JSONB on the PG side so we prove the field landed in the
+        // expected nested key path, not just that it round-trips at
+        // the top level.
+        String detectedPackageId = jdbc.queryForObject(
+                "SELECT post_verification_evidence->'detection'->>'packageId' "
+                        + "FROM endpoint_install_audit WHERE id = ?",
+                String.class, id);
+        assertThat(detectedPackageId).isEqualTo("7zip.7zip");
+
+        String redactedStdout = jdbc.queryForObject(
+                "SELECT redacted_payload->>'stdout' "
+                        + "FROM endpoint_install_audit WHERE id = ?",
+                String.class, id);
+        assertThat(redactedStdout).isEqualTo("[redacted]");
+
+        Integer warnCodeCount = jdbc.queryForObject(
+                "SELECT jsonb_array_length(preflight_warn_codes) "
+                        + "FROM endpoint_install_audit WHERE id = ?",
+                Integer.class, id);
+        assertThat(warnCodeCount).isEqualTo(2);
     }
 
     @Test
@@ -530,6 +595,157 @@ class EndpointInstallAuditPostgresIntegrationTest {
                 .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
                         tenantB, deviceA, catalogA, Instant.now());
         assertThat(none).isEmpty();
+    }
+
+    // ─── ON DELETE behavior on composite FKs ─────────────────────────
+
+    @Test
+    void deletingCommandCascadesAuditRow() {
+        // V12 §3 fk_endpoint_install_audit_command is declared
+        // ON DELETE CASCADE — wiping the command must also wipe the
+        // audit row. Codex iter-1 nitpick #2 absorb: lock the cascade
+        // semantics, not just constraint existence.
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = seedDevice(tenantA);
+        UUID catalogA = seedCatalog(tenantA, "tenantA.app");
+        UUID commandA = seedCommand(tenantA, deviceA, "INSTALL_SOFTWARE",
+                "idem-cascade-cmd-" + UUID.randomUUID());
+
+        UUID auditId = persistAudit(tenantA, deviceA, commandA, catalogA,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED,
+                Instant.now()).getId();
+
+        // Pre-condition: audit row is there.
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM endpoint_install_audit WHERE id = ?",
+                Long.class, auditId)).isEqualTo(1L);
+
+        // Detach the entity so Hibernate doesn't try to flush stale
+        // state on top of the JDBC-level cascade delete.
+        entityManager.clear();
+
+        int deleted = jdbc.update(
+                "DELETE FROM endpoint_commands WHERE id = ?", commandA);
+        assertThat(deleted).isEqualTo(1);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM endpoint_install_audit WHERE id = ?",
+                Long.class, auditId)).isEqualTo(0L);
+    }
+
+    @Test
+    void deletingCatalogIsRestrictedWhileAuditReferencesIt() {
+        // V12 §3 fk_endpoint_install_audit_catalog is declared
+        // ON DELETE RESTRICT — the catalog row cannot be hard-deleted
+        // while an audit row points at it (the catalog has a separate
+        // status='REVOKED' soft-delete path; this constraint guards
+        // against accidental hard DELETEs from ops scripts).
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = seedDevice(tenantA);
+        UUID catalogA = seedCatalog(tenantA, "tenantA.restricted-app");
+        UUID commandA = seedCommand(tenantA, deviceA, "INSTALL_SOFTWARE",
+                "idem-restrict-cat-" + UUID.randomUUID());
+
+        persistAudit(tenantA, deviceA, commandA, catalogA,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED,
+                Instant.now());
+
+        entityManager.clear();
+
+        assertThatThrownBy(() -> jdbc.update(
+                "DELETE FROM endpoint_software_catalog_items "
+                        + "WHERE id = ? AND tenant_id = ?", catalogA, tenantA))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    // ─── Direct JDBC negative tests for the remaining shape CHECKs ───
+
+    @Test
+    void postVerificationEvidenceShapeCheckRejectsNonObjectJson() {
+        // ck_endpoint_install_audit_post_verification_shape requires a
+        // JSON object. Force an array via JDBC so JPA's Map serializer
+        // cannot mask the violation.
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = seedDevice(tenantA);
+        UUID catalogA = seedCatalog(tenantA, "tenantA.app");
+        UUID commandA = seedCommand(tenantA, deviceA, "INSTALL_SOFTWARE",
+                "idem-evidence-shape-" + UUID.randomUUID());
+
+        Timestamp now = Timestamp.from(Instant.now());
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO endpoint_install_audit ("
+                        + "id, tenant_id, device_id, command_id, catalog_item_id, "
+                        + "catalog_package_id, catalog_row_version, "
+                        + "preflight_decision, preflight_decision_at, "
+                        + "preflight_warn_codes, actor_subject, result_status, "
+                        + "reported_at, post_verification, "
+                        + "post_verification_evidence, redacted_payload, "
+                        + "row_version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, 0, 'PASS', ?, "
+                        + "'[]'::jsonb, ?, 'SUCCEEDED', ?, 'SATISFIED', "
+                        + "'[]'::jsonb, '{}'::jsonb, 0)",
+                UUID.randomUUID(), tenantA, deviceA, commandA, catalogA,
+                "tenantA.app", now, "actor@example.com", now))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void redactedPayloadShapeCheckRejectsNonObjectJson() {
+        // ck_endpoint_install_audit_redacted_payload_shape requires a
+        // JSON object. Mirror the evidence-shape test but flip the
+        // bad column to redacted_payload.
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = seedDevice(tenantA);
+        UUID catalogA = seedCatalog(tenantA, "tenantA.app");
+        UUID commandA = seedCommand(tenantA, deviceA, "INSTALL_SOFTWARE",
+                "idem-payload-shape-" + UUID.randomUUID());
+
+        Timestamp now = Timestamp.from(Instant.now());
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO endpoint_install_audit ("
+                        + "id, tenant_id, device_id, command_id, catalog_item_id, "
+                        + "catalog_package_id, catalog_row_version, "
+                        + "preflight_decision, preflight_decision_at, "
+                        + "preflight_warn_codes, actor_subject, result_status, "
+                        + "reported_at, post_verification, "
+                        + "post_verification_evidence, redacted_payload, "
+                        + "row_version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, 0, 'PASS', ?, "
+                        + "'[]'::jsonb, ?, 'SUCCEEDED', ?, 'SATISFIED', "
+                        + "'{}'::jsonb, '\"redacted\"'::jsonb, 0)",
+                UUID.randomUUID(), tenantA, deviceA, commandA, catalogA,
+                "tenantA.app", now, "actor@example.com", now))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void preflightDecisionCheckRejectsUnknownEnumLiteral() {
+        // ck_endpoint_install_audit_preflight_decision allows PASS or
+        // WARN only. BLOCK never reaches command creation (the install
+        // controller returns 409), but the DB-layer CHECK still has to
+        // reject any stray literal a service bug might attempt.
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = seedDevice(tenantA);
+        UUID catalogA = seedCatalog(tenantA, "tenantA.app");
+        UUID commandA = seedCommand(tenantA, deviceA, "INSTALL_SOFTWARE",
+                "idem-preflight-bad-" + UUID.randomUUID());
+
+        Timestamp now = Timestamp.from(Instant.now());
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO endpoint_install_audit ("
+                        + "id, tenant_id, device_id, command_id, catalog_item_id, "
+                        + "catalog_package_id, catalog_row_version, "
+                        + "preflight_decision, preflight_decision_at, "
+                        + "preflight_warn_codes, actor_subject, result_status, "
+                        + "reported_at, post_verification, "
+                        + "post_verification_evidence, redacted_payload, "
+                        + "row_version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, 0, 'BLOCK', ?, "
+                        + "'[]'::jsonb, ?, 'SUCCEEDED', ?, 'SATISFIED', "
+                        + "'{}'::jsonb, '{}'::jsonb, 0)",
+                UUID.randomUUID(), tenantA, deviceA, commandA, catalogA,
+                "tenantA.app", now, "actor@example.com", now))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
