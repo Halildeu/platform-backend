@@ -27,14 +27,33 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * needing a real Postgres (partial unique index behaviors are exercised in
  * the Postgres integration test).
  */
+/**
+ * <p>Note on @Import set: this matches the @Import set of
+ * {@link com.example.endpointadmin.service.EndpointEnrollmentServiceTest}
+ * (plus {@link MachineCertAutoEnrollService}). Spring's test-context cache
+ * key includes the @Import set; aligning the sets lets the two suites
+ * share a cached context rather than each creating a fresh one. Without
+ * this alignment the test-context cache size budget can evict an active
+ * context mid-suite, which triggers Hibernate's {@code create-drop} DROP
+ * cycle and breaks downstream tests that expect the shared H2 schema
+ * (observed as "Table endpoint_devices not found" CI fail on PR #316).
+ */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ActiveProfiles("test")
 @Import({
         TimeConfig.class,
-        MachineCertAutoEnrollService.class,
+        EndpointEnrollmentService.class,
+        EndpointDeviceService.class,
+        DeviceCredentialService.class,
         EndpointAuditService.class,
-        com.example.endpointadmin.audit.NoOpAuditChainLock.class
+        com.example.endpointadmin.audit.NoOpAuditChainLock.class,
+        com.example.endpointadmin.security.EnrollmentTokenGenerator.class,
+        com.example.endpointadmin.security.EnrollmentTokenHasher.class,
+        com.example.endpointadmin.security.EnrollmentAttemptLimiter.class,
+        com.example.endpointadmin.security.DeviceSecretGenerator.class,
+        com.example.endpointadmin.security.AesGcmDeviceSecretProtector.class,
+        MachineCertAutoEnrollService.class
 })
 class MachineCertAutoEnrollServiceTest {
 
