@@ -52,7 +52,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestPropertySource(properties =
         "endpoint-admin.commands.admin-creatable-types=COLLECT_INVENTORY,LOCK_USER_LOGIN")
 @Import({TimeConfig.class, EndpointAdminCommandService.class, EndpointAuditService.class,
-        NoOpAuditChainLock.class})
+        NoOpAuditChainLock.class,
+        // BE-021 — createInstall path depends on the install preflight
+        // service to recompute the decision at command-creation time.
+        EndpointInstallPreflightService.class})
 class EndpointAdminCommandDualControlTest {
 
     private static final UUID TENANT_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");

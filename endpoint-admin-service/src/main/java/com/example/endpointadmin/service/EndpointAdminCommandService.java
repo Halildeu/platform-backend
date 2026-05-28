@@ -2,8 +2,12 @@ package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
+import com.example.endpointadmin.dto.v1.admin.CreateInstallRequest;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandDto;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandResultDto;
+import com.example.endpointadmin.dto.v1.admin.InstallPreflightResponse;
+import com.example.endpointadmin.dto.v1.admin.InstallPreflightResponse.InstallPreflightDecision;
+import com.example.endpointadmin.exception.InstallBlockedException;
 import com.example.endpointadmin.model.ApprovalDecision;
 import com.example.endpointadmin.model.ApprovalStatus;
 import com.example.endpointadmin.model.CommandStatus;
@@ -12,10 +16,12 @@ import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointCommandApproval;
 import com.example.endpointadmin.model.EndpointCommandResult;
 import com.example.endpointadmin.model.EndpointDevice;
+import com.example.endpointadmin.model.EndpointSoftwareCatalogItem;
 import com.example.endpointadmin.repository.EndpointCommandApprovalRepository;
 import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointCommandResultRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
+import com.example.endpointadmin.repository.EndpointSoftwareCatalogItemRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -23,6 +29,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.EnumSet;
@@ -54,6 +62,8 @@ public class EndpointAdminCommandService {
     private final EndpointCommandResultRepository resultRepository;
     private final EndpointCommandApprovalRepository approvalRepository;
     private final EndpointDeviceRepository deviceRepository;
+    private final EndpointSoftwareCatalogItemRepository catalogRepository;
+    private final EndpointInstallPreflightService preflightService;
     private final EndpointAuditService auditService;
     private final Clock clock;
 
@@ -70,6 +80,8 @@ public class EndpointAdminCommandService {
                                        EndpointCommandResultRepository resultRepository,
                                        EndpointCommandApprovalRepository approvalRepository,
                                        EndpointDeviceRepository deviceRepository,
+                                       EndpointSoftwareCatalogItemRepository catalogRepository,
+                                       EndpointInstallPreflightService preflightService,
                                        EndpointAuditService auditService,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.admin-creatable-types:COLLECT_INVENTORY}")
@@ -78,6 +90,8 @@ public class EndpointAdminCommandService {
         this.resultRepository = resultRepository;
         this.approvalRepository = approvalRepository;
         this.deviceRepository = deviceRepository;
+        this.catalogRepository = catalogRepository;
+        this.preflightService = preflightService;
         this.auditService = auditService;
         this.clock = clock;
         this.adminCreatableTypes = (adminCreatableTypes == null || adminCreatableTypes.isEmpty())
@@ -317,8 +331,224 @@ public class EndpointAdminCommandService {
         if (type == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Command type is required.");
         }
+        // BE-021 (Codex 019e6dfb iter-3 P0-1): INSTALL_SOFTWARE cannot
+        // be created via the generic command surface — the preflight
+        // recompute would be bypassed. The dedicated
+        // POST .../endpoint-devices/{deviceId}/installs path is the
+        // only legal install creation route.
+        if (type == CommandType.INSTALL_SOFTWARE) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "INSTALL_SOFTWARE must be created via "
+                            + "POST /api/v1/admin/endpoint-devices/{deviceId}/installs.");
+        }
         if (!adminCreatableTypes.contains(type)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Command type is not enabled for admin creation.");
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // BE-021 — dedicated INSTALL_SOFTWARE creation path
+
+    /**
+     * BE-021 — create an INSTALL_SOFTWARE command after recomputing the
+     * preflight decision. BLOCK → {@link InstallBlockedException} (mapped
+     * to 409 + {@link InstallPreflightResponse} body). PASS / WARN →
+     * backend-controlled payload + standard idempotency. Codex 019e6dfb
+     * iter-3 AGREE.
+     */
+    @Transactional
+    public EndpointCommandDto createInstall(AdminTenantContext context,
+                                            UUID deviceId,
+                                            CreateInstallRequest request) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Install request is required.");
+        }
+        String slug = trimToNull(request.catalogItemId());
+        if (slug == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "catalogItemId is required.");
+        }
+
+        UUID tenantId = context.tenantId();
+        EndpointDevice device = deviceRepository.findByTenantIdAndId(tenantId, deviceId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
+        EndpointSoftwareCatalogItem catalogItem = catalogRepository
+                .findByTenantIdAndCatalogItemId(tenantId, slug)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Catalog item not found."));
+
+        String reason = trimToNull(request.reason());
+        Instant now = Instant.now(clock);
+        String idempotencyKey = resolveInstallIdempotencyKey(
+                deviceId, catalogItem.getId(), request.idempotencyKey());
+
+        // BE-021 (Codex 019e6dfb iter-4 P1-1): idempotency replay MUST
+        // run BEFORE the preflight recompute, otherwise a legitimate
+        // retry of a PASS-issued command can fail with a 409 BLOCK if
+        // the device / catalog drifted between the first issue and the
+        // retry. Stable-field check guards against accidental key reuse
+        // with mismatched device or catalog.
+        var existing = commandRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
+        if (existing.isPresent()) {
+            EndpointCommand cmd = existing.get();
+            UUID existingCatalogUuid = parseUuid(cmd.getPayload() == null
+                    ? null : cmd.getPayload().get("catalogItemUuid"));
+            if (cmd.getCommandType() != CommandType.INSTALL_SOFTWARE
+                    || !Objects.equals(cmd.getDevice().getId(), deviceId)
+                    || !Objects.equals(existingCatalogUuid, catalogItem.getId())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Install idempotency key already used by another install.");
+            }
+            return toDto(cmd);
+        }
+
+        // Recompute the preflight ONLY when creating a new command.
+        // Cached PASS reuse is forbidden
+        // (EndpointInstallPreflightService Javadoc).
+        InstallPreflightResponse preflight =
+                preflightService.evaluate(context, deviceId, slug);
+        if (preflight.decision() == InstallPreflightDecision.BLOCK) {
+            throw new InstallBlockedException(preflight);
+        }
+
+        Map<String, Object> payload = buildInstallPayload(catalogItem, preflight, reason);
+
+        EndpointCommand command = new EndpointCommand();
+        command.setTenantId(tenantId);
+        command.setDevice(device);
+        command.setCommandType(CommandType.INSTALL_SOFTWARE);
+        command.setIdempotencyKey(idempotencyKey);
+        command.setStatus(CommandStatus.QUEUED);
+        // BE-021 MVP (Codex D): catalog maker-checker + preflight PASS
+        // is sufficient; no dual-control approval gate on install
+        // creation. Future HIGH-risk WARN escalation can flip this.
+        command.setApprovalStatus(ApprovalStatus.NOT_REQUIRED);
+        command.setPayload(payload);
+        command.setPriority(100);
+        command.setAttemptCount(0);
+        command.setMaxAttempts(3);
+        command.setVisibleAfterAt(now);
+        command.setExpiresAt(null);
+        String subject = resolveSubject(context);
+        command.setIssuedBySubject(subject);
+        command.setIssuedAt(now);
+
+        EndpointCommand saved = commandRepository.saveAndFlush(command);
+
+        Map<String, Object> auditMetadata = new LinkedHashMap<>();
+        auditMetadata.put("commandType", saved.getCommandType().name());
+        auditMetadata.put("idempotencyKey", saved.getIdempotencyKey());
+        auditMetadata.put("catalogItemId", slug);
+        auditMetadata.put("catalogItemUuid", catalogItem.getId().toString());
+        auditMetadata.put("catalogPackageId", catalogItem.getPackageId());
+        auditMetadata.put("catalogRowVersion", catalogItem.getVersion());
+        auditMetadata.put("preflightDecision", preflight.decision().name());
+        auditMetadata.put("preflightDecisionAt", preflight.evaluatedAt().toString());
+        if (preflight.warnings() != null && !preflight.warnings().isEmpty()) {
+            auditMetadata.put("preflightWarnCodes", preflight.warnings());
+        }
+        if (reason != null) {
+            auditMetadata.put("reason", reason);
+        }
+        auditService.record(
+                tenantId,
+                device,
+                saved,
+                "ENDPOINT_INSTALL_COMMAND_CREATED",
+                "CREATE_INSTALL_COMMAND",
+                subject,
+                idempotencyKey,
+                auditMetadata,
+                null,
+                Map.of("status", saved.getStatus().name(),
+                        "approvalStatus", saved.getApprovalStatus().name()));
+
+        return toDto(saved);
+    }
+
+    private Map<String, Object> buildInstallPayload(EndpointSoftwareCatalogItem catalogItem,
+                                                    InstallPreflightResponse preflight,
+                                                    String reason) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("catalogItemId", catalogItem.getCatalogItemId());
+        payload.put("catalogItemUuid", catalogItem.getId().toString());
+        payload.put("catalogPackageId", catalogItem.getPackageId());
+        payload.put("catalogRowVersion", catalogItem.getVersion());
+        payload.put("packageProvider", catalogItem.getProvider() == null
+                ? null : catalogItem.getProvider().name());
+        payload.put("sourceType", catalogItem.getSourceType() == null
+                ? null : catalogItem.getSourceType().name());
+        payload.put("installerType", catalogItem.getInstallerType() == null
+                ? null : catalogItem.getInstallerType().name());
+        payload.put("preflightDecision", preflight.decision().name());
+        payload.put("preflightDecisionAt", preflight.evaluatedAt() == null
+                ? null : preflight.evaluatedAt().toString());
+        if (preflight.evidence() != null) {
+            Map<String, Object> evidenceRefs = new LinkedHashMap<>();
+            evidenceRefs.put("inventorySnapshotId", preflight.evidence().inventorySnapshotId() == null
+                    ? null : preflight.evidence().inventorySnapshotId().toString());
+            evidenceRefs.put("inventorySnapshotRowVersion", preflight.evidence().inventorySnapshotRowVersion());
+            evidenceRefs.put("catalogRowVersion", preflight.evidence().catalogRowVersion());
+            payload.put("preflightEvidenceRefs", evidenceRefs);
+        }
+        if (preflight.warnings() != null && !preflight.warnings().isEmpty()) {
+            payload.put("preflightWarnCodes", preflight.warnings());
+        }
+        if (reason != null) {
+            payload.put("reason", reason);
+        }
+        return payload;
+    }
+
+    /**
+     * Compose {@code admin-install:{deviceId}:{catalogUuid}:{key}} so
+     * the canonical string always fits the
+     * {@code endpoint_commands.idempotency_key VARCHAR(128)} column.
+     * Caller-supplied keys are bounded to 40 chars by the request DTO
+     * size annotation (CreateInstallRequest, Codex iter-4 P1-2). If the
+     * caller-supplied key is unusually long (programmatic callers that
+     * bypass the DTO validator), we hash it down to the first 16 hex
+     * chars of SHA-256.
+     */
+    private String resolveInstallIdempotencyKey(UUID deviceId, UUID catalogUuid, String requestedKey) {
+        // Canonical key shape: `admin-install:{deviceId(36)}:{catalogUuid(36)}:{body}`.
+        // Fixed prefix = 88 chars; body MUST fit in 40 chars so the canonical
+        // string stays ≤ 128 (endpoint_commands.idempotency_key VARCHAR(128)).
+        // CreateInstallRequest @Size(max=40) enforces this on caller input;
+        // the > 40 fall-through here covers programmatic callers
+        // (Codex iter-4 P1-2).
+        String key = trimToNull(requestedKey);
+        if (key == null) {
+            key = UUID.randomUUID().toString();
+        } else if (key.length() > 40) {
+            key = sha256Prefix(key);
+        }
+        return "admin-install:" + deviceId + ":" + catalogUuid + ":" + key;
+    }
+
+    private static String sha256Prefix(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) {
+                sb.append(String.format("%02x", bytes[i]));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException ex) {
+            return Integer.toHexString(value.hashCode());
+        }
+    }
+
+    private static UUID parseUuid(Object node) {
+        if (node == null) {
+            return null;
+        }
+        if (node instanceof UUID u) {
+            return u;
+        }
+        try {
+            return UUID.fromString(String.valueOf(node).trim());
+        } catch (IllegalArgumentException ex) {
+            return null;
         }
     }
 

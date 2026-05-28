@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.time.Instant;
@@ -24,6 +25,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ActiveProfiles("test")
+// BE-021 (PR #317): the shared in-memory H2 instance (DB_CLOSE_DELAY=-1)
+// has its schema dropped by earlier @DataJpaTest contexts whose ddl-auto
+// is `create-drop`. The new install-audit bean wiring in BE-021 changes
+// the @DataJpaTest context fingerprint enough that this test executes
+// against an empty schema instead of the cached one. BEFORE_CLASS forces
+// a fresh context boot so Hibernate re-runs the entity-driven schema
+// generation right before this class' tests start.
+@DirtiesContext(classMode = DirtiesContext.ClassMode.BEFORE_CLASS)
 @Import({
         TimeConfig.class,
         HmacDeviceCredentialProvider.class,

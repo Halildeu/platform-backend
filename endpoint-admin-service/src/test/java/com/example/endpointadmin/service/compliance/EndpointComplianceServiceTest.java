@@ -82,6 +82,8 @@ class EndpointComplianceServiceTest {
     private EndpointComplianceEvaluationRepository evaluationRepository;
     @Mock
     private EndpointDeviceComplianceStateRepository stateRepository;
+    @Mock
+    private com.example.endpointadmin.repository.EndpointInstallAuditRepository installAuditRepository;
 
     private EndpointComplianceService service;
 
@@ -90,9 +92,10 @@ class EndpointComplianceServiceTest {
         Clock fixed = Clock.fixed(NOW, ZoneOffset.UTC);
         service = new EndpointComplianceService(
                 deviceRepository, snapshotRepository, policyRepository,
-                evaluationRepository, stateRepository,
+                evaluationRepository, stateRepository, installAuditRepository,
                 null, // no JdbcTemplate — advisory lock path is a no-op in unit tests
-                singletonProvider(fixed));
+                singletonProvider(fixed),
+                java.time.Duration.ofMinutes(15));
     }
 
     private static ObjectProvider<Clock> singletonProvider(Clock clock) {
@@ -433,6 +436,132 @@ class EndpointComplianceServiceTest {
                 service.evaluateForEvent(TENANT_ID, DEVICE_ID);
 
         assertThat(outcome).isEmpty();
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // BE-021 — install audit fallback acceptance scenarios
+    // (Codex 019e6dfb iter-4 P1-4 group 3 of 3 coverage)
+
+    @Test
+    void installAuditFallbackNotAppliedWhenSnapshotMissing() {
+        // T1: snapshot null → policy item is early-returned (telemetry
+        // gate UNKNOWN). Audit fallback is intentionally NOT consulted.
+        mockDevice();
+        mockSnapshot(null);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.LATEST, null);
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.UNKNOWN);
+        assertThat(outcome.reasons()).contains("inventory_missing");
+        // Conservative MVP: audit fallback NOT invoked when inventory is missing.
+        org.mockito.Mockito.verifyNoInteractions(installAuditRepository);
+    }
+
+    @Test
+    void installAuditFallbackSatisfiesRequiredWithinGrace() {
+        // T3: snapshot fresh + apps_available, package NOT observed in
+        // inventory, SUCCEEDED+SATISFIED audit within install grace
+        // window → REQUIRED satisfied → COMPLIANT.
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        // Note: NO addItem — package not currently observable.
+        mockSnapshot(snap);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.MINIMUM, "24.0");
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        com.example.endpointadmin.model.EndpointInstallAudit audit =
+                buildAudit(catalog.getId(), "24.07",
+                        NOW.minusSeconds(60));    // within 15-min grace
+        when(installAuditRepository
+                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                        eq(TENANT_ID), eq(DEVICE_ID), eq(catalog.getId()), any()))
+                .thenReturn(Optional.of(audit));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.COMPLIANT);
+        assertThat(outcome.blockingReasons()).isEmpty();
+    }
+
+    @Test
+    void installAuditFallbackContradictedPastGraceTriggersWarn() {
+        // T4: snapshot fresh + apps_available, package NOT observed,
+        // SUCCEEDED+SATISFIED audit reported well before snapshot
+        // apps_collected_at (past install grace) → MISSING_REQUIRED_APP
+        // + INSTALL_AUDIT_CONTRADICTED_BY_INVENTORY.
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        snap.setAppsCollectedAt(NOW);   // fresh snapshot
+        mockSnapshot(snap);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.LATEST, null);
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        com.example.endpointadmin.model.EndpointInstallAudit audit =
+                buildAudit(catalog.getId(), "24.07",
+                        NOW.minus(Duration.ofHours(1)));    // grace = 15min → contradicted
+        when(installAuditRepository
+                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                        eq(TENANT_ID), eq(DEVICE_ID), eq(catalog.getId()), any()))
+                .thenReturn(Optional.of(audit));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.NON_COMPLIANT);
+        assertThat(outcome.reasons())
+                .contains("missing_required_app", "install_audit_contradicted_by_inventory");
+    }
+
+    @Test
+    void installAuditFallbackVersionViolatesProducesOutdated() {
+        // T5: within grace + audit detectedVersion violates the
+        // catalog policy → OUTDATED_REQUIRED_APP.
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        mockSnapshot(snap);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.MINIMUM, "24.0");
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        com.example.endpointadmin.model.EndpointInstallAudit audit =
+                buildAudit(catalog.getId(), "20.0",
+                        NOW.minusSeconds(60));
+        when(installAuditRepository
+                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                        eq(TENANT_ID), eq(DEVICE_ID), eq(catalog.getId()), any()))
+                .thenReturn(Optional.of(audit));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.NON_COMPLIANT);
+        assertThat(outcome.blockingReasons()).contains("outdated_required_app");
+    }
+
+    private com.example.endpointadmin.model.EndpointInstallAudit buildAudit(
+            UUID catalogItemId, String detectedVersion, Instant reportedAt) {
+        com.example.endpointadmin.model.EndpointInstallAudit a =
+                new com.example.endpointadmin.model.EndpointInstallAudit();
+        setField(a, "id", UUID.randomUUID());
+        a.setTenantId(TENANT_ID);
+        a.setDeviceId(DEVICE_ID);
+        a.setCatalogItemId(catalogItemId);
+        a.setDetectedVersion(detectedVersion);
+        a.setReportedAt(reportedAt);
+        setField(a, "rowVersion", 1L);
+        return a;
     }
 
     // ────────────────────────────────────────────────────────────────

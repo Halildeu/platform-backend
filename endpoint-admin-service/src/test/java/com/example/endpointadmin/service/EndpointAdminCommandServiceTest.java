@@ -36,7 +36,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ActiveProfiles("test")
 @Import({TimeConfig.class, EndpointAdminCommandService.class, EndpointAuditService.class,
-        NoOpAuditChainLock.class})
+        NoOpAuditChainLock.class,
+        // BE-021 — createInstall path depends on the install preflight
+        // service to recompute the decision at command-creation time.
+        EndpointInstallPreflightService.class})
 class EndpointAdminCommandServiceTest {
 
     private static final UUID TENANT_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
@@ -90,6 +93,30 @@ class EndpointAdminCommandServiceTest {
         assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
                 .extracting("eventType")
                 .contains("ENDPOINT_COMMAND_CREATED");
+    }
+
+    @Test
+    void createCommandRejectsInstallSoftwareOnGenericEndpoint() {
+        // BE-021 (Codex 019e6dfb iter-3 P0-1): INSTALL_SOFTWARE cannot
+        // be created via the generic /commands surface — that would
+        // bypass the preflight recompute. The dedicated /installs path
+        // is the only legal route.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(TENANT_ID, "PC-INSTALL"));
+        CreateEndpointCommandRequest request = new CreateEndpointCommandRequest(
+                CommandType.INSTALL_SOFTWARE,
+                "install-generic-001",
+                "should be rejected",
+                Map.of("catalogItemUuid", UUID.randomUUID().toString()),
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+
+        assertThatThrownBy(() -> commandService.createCommand(adminContext(), device.getId(), request))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("INSTALL_SOFTWARE must be created via");
     }
 
     @Test

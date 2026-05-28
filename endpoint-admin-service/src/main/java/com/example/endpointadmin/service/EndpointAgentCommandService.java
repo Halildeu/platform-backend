@@ -12,6 +12,7 @@ import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointCommandResultRepository;
 import com.example.endpointadmin.security.DeviceCredentialException;
 import com.example.endpointadmin.security.DeviceCredentialResult;
+import com.example.endpointadmin.security.InstallEvidencePayloadPolicy;
 import com.example.endpointadmin.security.SoftwareInventoryPayloadPolicy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
@@ -34,20 +35,26 @@ public class EndpointAgentCommandService {
     private final EndpointCommandRepository commandRepository;
     private final EndpointCommandResultRepository resultRepository;
     private final SoftwareInventoryPayloadPolicy inventoryPayloadPolicy;
+    private final InstallEvidencePayloadPolicy installEvidencePayloadPolicy;
     private final EndpointSoftwareInventoryService softwareInventoryService;
+    private final EndpointInstallAuditService installAuditService;
     private final Clock clock;
     private final Duration claimTtl;
 
     public EndpointAgentCommandService(EndpointCommandRepository commandRepository,
                                        EndpointCommandResultRepository resultRepository,
                                        SoftwareInventoryPayloadPolicy inventoryPayloadPolicy,
+                                       InstallEvidencePayloadPolicy installEvidencePayloadPolicy,
                                        EndpointSoftwareInventoryService softwareInventoryService,
+                                       EndpointInstallAuditService installAuditService,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.claim-ttl-seconds:300}") long claimTtlSeconds) {
         this.commandRepository = commandRepository;
         this.resultRepository = resultRepository;
         this.inventoryPayloadPolicy = inventoryPayloadPolicy;
+        this.installEvidencePayloadPolicy = installEvidencePayloadPolicy;
         this.softwareInventoryService = softwareInventoryService;
+        this.installAuditService = installAuditService;
         this.clock = clock;
         this.claimTtl = Duration.ofSeconds(Math.max(30L, claimTtlSeconds));
     }
@@ -103,7 +110,8 @@ public class EndpointAgentCommandService {
         // C:\Users\... path, Windows SID literal) aborts the result submit
         // with 400 and rolls back the transaction so neither
         // endpoint_command_results nor the inventory tables persist anything.
-        if (request.details() != null) {
+        if (command.getCommandType() == CommandType.COLLECT_INVENTORY
+                && request.details() != null) {
             try {
                 inventoryPayloadPolicy.validate(request.details());
             } catch (IllegalArgumentException ex) {
@@ -112,13 +120,31 @@ public class EndpointAgentCommandService {
             }
         }
 
+        // BE-021 (Codex 019e6dfb iter-3 P0-2): for INSTALL_SOFTWARE
+        // terminal results, the double-redact pass runs BEFORE the
+        // result row is built so the raw agent payload never reaches
+        // either endpoint_command_results.result_payload.details or
+        // endpoint_install_audit.redacted_payload. A forbidden key or
+        // value throws 400 + rolls back the entire submitResult tx.
+        Map<String, Object> effectiveDetails = request.details();
+        if (command.getCommandType() == CommandType.INSTALL_SOFTWARE
+                && request.details() != null) {
+            try {
+                installEvidencePayloadPolicy.validate(request.details());
+            } catch (IllegalArgumentException ex) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        ex.getMessage());
+            }
+            effectiveDetails = installEvidencePayloadPolicy.redact(request.details());
+        }
+
         Instant now = Instant.now(clock);
         EndpointCommandResult result = new EndpointCommandResult();
         result.setTenantId(command.getTenantId());
         result.setCommand(command);
         result.setDevice(command.getDevice());
         result.setResultStatus(request.status());
-        result.setResultPayload(resultPayload(request));
+        result.setResultPayload(buildResultPayload(request, effectiveDetails));
         result.setErrorCode(trimToNull(request.errorCode()));
         result.setErrorMessage(trimToNull(request.errorMessage()));
         result.setExitCode(request.exitCode());
@@ -154,6 +180,24 @@ public class EndpointAgentCommandService {
                         ex.getMessage());
             }
         }
+
+        // BE-021 (Codex 019e6dfb iter-3 P0-3): write the install audit
+        // row in the SAME transaction as the result row so a failed
+        // audit insert rolls back the result too. The compliance
+        // re-evaluation trigger is published as an ApplicationEvent and
+        // fires on AFTER_COMMIT (ComplianceInstallAuditEventListener).
+        if (command.getCommandType() == CommandType.INSTALL_SOFTWARE
+                && isTerminalResult(request.status())) {
+            installAuditService.recordInstallResult(
+                    command, result, request, effectiveDetails, now);
+        }
+    }
+
+    private static boolean isTerminalResult(CommandResultStatus status) {
+        return status == CommandResultStatus.SUCCEEDED
+                || status == CommandResultStatus.FAILED
+                || status == CommandResultStatus.PARTIAL
+                || status == CommandResultStatus.UNSUPPORTED;
     }
 
     private void validateResultSubmission(EndpointCommand command, AgentCommandResultRequest request) {
@@ -193,11 +237,12 @@ public class EndpointAgentCommandService {
         return value instanceof String stringValue ? trimToNull(stringValue) : null;
     }
 
-    private Map<String, Object> resultPayload(AgentCommandResultRequest request) {
+    private Map<String, Object> buildResultPayload(AgentCommandResultRequest request,
+                                                   Map<String, Object> effectiveDetails) {
         Map<String, Object> payload = new LinkedHashMap<>();
         putIfPresent(payload, "summary", request.summary());
-        if (request.details() != null) {
-            payload.put("details", request.details());
+        if (effectiveDetails != null) {
+            payload.put("details", effectiveDetails);
         }
         putIfPresent(payload, "claimId", request.claimId());
         if (request.attemptNumber() != null) {

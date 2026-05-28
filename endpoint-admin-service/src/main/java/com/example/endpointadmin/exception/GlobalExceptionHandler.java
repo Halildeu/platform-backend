@@ -2,6 +2,7 @@ package com.example.endpointadmin.exception;
 
 import com.example.endpointadmin.dto.ErrorResponse;
 import com.example.endpointadmin.dto.ErrorResponse.FieldError;
+import com.example.endpointadmin.dto.v1.admin.InstallPreflightResponse;
 import com.example.endpointadmin.security.DeviceCredentialException;
 import java.util.List;
 import java.util.UUID;
@@ -103,6 +104,23 @@ public class GlobalExceptionHandler {
         String message = "Missing required parameter '" + paramName
                 + "' (" + paramType + ").";
         return build(HttpStatus.BAD_REQUEST, "MISSING_PARAMETER", message);
+    }
+
+    /**
+     * BE-021 — dedicated install path returns the canonical
+     * {@link InstallPreflightResponse} body when preflight recompute
+     * yields BLOCK. Status is 409 Conflict so the UI can treat it as a
+     * recoverable "fix the device / catalog and retry" outcome
+     * (Codex 019e6dfb iter-3 P1-2).
+     */
+    @ExceptionHandler(InstallBlockedException.class)
+    public ResponseEntity<InstallPreflightResponse> handleInstallBlocked(
+            InstallBlockedException ex) {
+        InstallPreflightResponse body = ex.preflight();
+        log.warn("install_blocked decision={} catalogItemId={} deviceId={} reasons={}",
+                body.decision(), body.catalogItemId(), body.deviceId(),
+                body.blockingReasons());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
     @ExceptionHandler(Exception.class)
