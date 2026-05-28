@@ -27,6 +27,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -111,7 +112,12 @@ class EndpointAgentCommandServiceInstallBranchTest {
         Map<String, Object> forbidden = new LinkedHashMap<>();
         forbidden.put("stage", "post_install");
         forbidden.put("exitCode", 0);
-        forbidden.put("licenseKey", "ABCD-1234-EFGH-5678");
+        // Value is a non-secret placeholder; the policy rejects on the
+        // forbidden KEY (licenseKey), so the value's shape is irrelevant
+        // to coverage and we keep it clearly non-secret-shaped to avoid
+        // gitleaks generic-api-key false positives. Mirrors the
+        // placeholder used in InstallEvidencePayloadPolicyTest.
+        forbidden.put("licenseKey", "test-fake-license-marker-no-real-secret");
 
         AgentCommandResultRequest request = resultRequest(
                 CommandResultStatus.SUCCEEDED, forbidden);
@@ -138,9 +144,13 @@ class EndpointAgentCommandServiceInstallBranchTest {
         Map<String, Object> withJwt = new LinkedHashMap<>();
         withJwt.put("stage", "post_install");
         withJwt.put("exitCode", 0);
-        // Pattern-shaped JWT value sitting in an otherwise innocuous string field.
-        withJwt.put("errorMessage",
-                "auth header was eyJhbGciOi.eyJzdWIiOi.signature-bytes-here");
+        // Synthetic JWT fixture — header/payload/signature segments are
+        // assembled at runtime so the literal does not appear in source
+        // and gitleaks does not flag it. Same pattern as
+        // InstallEvidencePayloadPolicyTest.
+        String jwtFixture = "eyJ" + "headerPlaceholder.eyJ"
+                + "payloadPlaceholder.sig" + "Placeholder";
+        withJwt.put("errorMessage", "auth header was " + jwtFixture);
 
         AgentCommandResultRequest request = resultRequest(
                 CommandResultStatus.FAILED, withJwt);
@@ -158,15 +168,28 @@ class EndpointAgentCommandServiceInstallBranchTest {
     }
 
     @Test
-    void submitResultWritesSameRedactedMapToResultRowAndAuditRow() {
+    void submitResultRedactsPayloadAndWritesSameMapToResultRowAndAuditRow() {
         EndpointCommand command = installCommand();
         when(commandRepository.findByIdAndDeviceIdForUpdate(COMMAND_ID, DEVICE_ID))
                 .thenReturn(Optional.of(command));
         when(resultRepository.findByCommand_Id(COMMAND_ID)).thenReturn(Optional.empty());
 
+        // Validate-passing payload that REQUIRES policy.redact() to
+        // transform it. A future refactor that quietly drops the
+        // redact() call (e.g. degrades to `new LinkedHashMap<>(request
+        // .details())`) would still satisfy the isSameAs / isNotSameAs
+        // identity contract below — but it would NOT redact the
+        // Windows user path nor drop the off-allowlist processList key,
+        // and those assertions would catch the leak.
         Map<String, Object> clean = new LinkedHashMap<>();
         clean.put("stage", "post_install");
-        clean.put("exitCode", 0);
+        clean.put("exitCode", 1);
+        // Triggers USERS_PATH redaction → REDACTED_LITERAL in place of
+        // C:\Users\Bob\... segment.
+        clean.put("stdoutSummary", "installed under C:\\Users\\Bob\\AppData\\Local");
+        // Off-allowlist top-level key — passes validate (not forbidden),
+        // dropped by redact (not in REDACT_ALLOWLIST_KEYS).
+        clean.put("processList", List.of("System", "AcmeApp.exe"));
         Map<String, Object> detection = new LinkedHashMap<>();
         detection.put("packageId", "7zip.7zip");
         detection.put("version", "24.07");
@@ -175,8 +198,11 @@ class EndpointAgentCommandServiceInstallBranchTest {
         postVerification.put("status", "SATISFIED");
         clean.put("postVerification", postVerification);
 
+        // FAILED status (not SUCCEEDED) — guards against a refactor that
+        // would only redact the success branch and silently leak raw
+        // details on failure rows.
         AgentCommandResultRequest request = resultRequest(
-                CommandResultStatus.SUCCEEDED, clean);
+                CommandResultStatus.FAILED, clean);
 
         service.submitResult(principal(), COMMAND_ID, request);
 
@@ -197,8 +223,9 @@ class EndpointAgentCommandServiceInstallBranchTest {
         Object persistedDetails = resultCaptor.getValue().getResultPayload().get("details");
         Map<String, Object> auditDetails = mapCaptor.getValue();
 
-        // Double-redact contract: the SAME reference is handed to both the
-        // result row and the audit row. The raw request map is never reused.
+        // Identity contract: the SAME redacted map reference is handed
+        // to both the result row and the audit row. The raw request map
+        // is never reused past the policy step.
         assertThat(persistedDetails)
                 .as("result row details and audit row details must be the same redacted map reference")
                 .isSameAs(auditDetails)
@@ -206,9 +233,19 @@ class EndpointAgentCommandServiceInstallBranchTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> effective = (Map<String, Object>) persistedDetails;
+
+        // Transformation evidence — proves the service actually invoked
+        // policy.redact() rather than degrading to a plain map copy.
+        assertThat(effective)
+                .as("processList is off the redact allowlist; must be dropped")
+                .doesNotContainKey("processList");
+        assertThat((String) effective.get("stdoutSummary"))
+                .as("Windows user path must be replaced with the policy literal")
+                .doesNotContain("C:\\Users\\Bob")
+                .contains(InstallEvidencePayloadPolicy.REDACTED_LITERAL);
         assertThat(effective)
                 .containsEntry("stage", "post_install")
-                .containsEntry("exitCode", 0)
+                .containsEntry("exitCode", 1)
                 .containsKeys("detection", "postVerification");
     }
 
