@@ -15,6 +15,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -172,7 +173,10 @@ class EndpointComplianceStatePostgresIntegrationTest {
 
     private UUID seedDevice(UUID tenantId) {
         UUID id = UUID.randomUUID();
-        Instant now = Instant.now();
+        // PG JDBC driver cannot infer the SQL type for java.time.Instant
+        // via JdbcTemplate setObject; convert to java.sql.Timestamp so
+        // the prepared-statement binding has an explicit Types.TIMESTAMP.
+        Timestamp now = Timestamp.from(Instant.now());
         jdbcTemplate.update(
                 "INSERT INTO endpoint_devices "
                         + "(id, tenant_id, hostname, machine_fingerprint, status, "
@@ -184,7 +188,7 @@ class EndpointComplianceStatePostgresIntegrationTest {
     }
 
     private void insertCatalog(UUID tenantId, UUID catalogId, String packageId) {
-        Instant now = Instant.now();
+        Timestamp now = Timestamp.from(Instant.now());
         jdbcTemplate.update(
                 "INSERT INTO endpoint_software_catalog_items ("
                         + "id, tenant_id, catalog_item_id, status, provider, source_type,"
@@ -204,7 +208,7 @@ class EndpointComplianceStatePostgresIntegrationTest {
 
     private UUID insertPolicy(UUID tenantId, UUID catalogId) {
         UUID id = UUID.randomUUID();
-        Instant now = Instant.now();
+        Timestamp now = Timestamp.from(Instant.now());
         jdbcTemplate.update(
                 "INSERT INTO endpoint_software_compliance_policy_items "
                         + "(id, tenant_id, catalog_item_id, enforcement_mode, enabled, "
