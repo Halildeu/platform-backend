@@ -24,3 +24,15 @@
 # naturally — no SHA-bound entry needed for the squashed commit. This entry
 # only suppresses the historical PR commit that no longer exists post-squash.
 eaf1d326da69d4a059a3392f900a9d67471f076c:notification-orchestrator/src/test/java/com/serban/notify/unsubscribe/UnsubscribeRevokeServiceIntegrationTest.java:generic-api-key:58
+
+# Faz 22.5 BE-021 — historical commit suppression. Original commit
+# `4f9f7964...` introduced InstallEvidencePayloadPolicyTest with an
+# inline pseudo-JWT fixture (`eyJ...eyJ...sig...`) on line 60. Subsequent
+# commit `abaaddfe...` composed the fixture at runtime via string
+# concatenation so the source line no longer matches the gitleaks
+# `jwt` regex. PR-time gitleaks scans ALL PR commits in history and
+# still flags the original commit. Squash-merge will produce a single
+# commit with the SPLIT version on main, so post-merge gitleaks (run
+# on main push) will PASS naturally — no SHA-bound entry needed for
+# the squashed commit.
+4f9f796419e979f2110641f7f703200062221c03:endpoint-admin-service/src/test/java/com/example/endpointadmin/security/InstallEvidencePayloadPolicyTest.java:jwt:60

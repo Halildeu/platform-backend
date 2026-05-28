@@ -508,12 +508,16 @@ public class EndpointAdminCommandService {
      * (Codex 019e6dfb iter-3 implementation note #3).
      */
     private String resolveInstallIdempotencyKey(UUID deviceId, UUID catalogUuid, String requestedKey) {
+        // Canonical key shape: `admin-install:{deviceId(36)}:{catalogUuid(36)}:{body}`.
+        // Fixed prefix = 88 chars; body MUST fit in 40 chars so the canonical
+        // string stays ≤ 128 (endpoint_commands.idempotency_key VARCHAR(128)).
+        // CreateInstallRequest @Size(max=40) enforces this on caller input;
+        // the > 40 fall-through here covers programmatic callers
+        // (Codex iter-4 P1-2).
         String key = trimToNull(requestedKey);
         if (key == null) {
             key = UUID.randomUUID().toString();
         } else if (key.length() > 40) {
-            // Codex iter-4 P1-2: hard-cap at 40 chars so the canonical
-            // string stays ≤ 128 (88 fixed prefix + 40 key body).
             key = sha256Prefix(key);
         }
         return "admin-install:" + deviceId + ":" + catalogUuid + ":" + key;
