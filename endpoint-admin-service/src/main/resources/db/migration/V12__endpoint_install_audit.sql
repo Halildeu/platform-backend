@@ -38,8 +38,30 @@
 
 -- ---------------------------------------------------------------------
 -- 1. Extend command_type CHECK with INSTALL_SOFTWARE
+--
+-- V2 baseline used inline `CONSTRAINT ck_endpoint_commands_type CHECK
+-- (...)` syntax but the live cluster's endpoint_admin DB was bootstrapped
+-- with the PG-auto-generated constraint name `endpoint_commands_command_type_check`.
+-- Dropping by a hard-coded name therefore fails on existing deployments.
+-- Discover the actual command_type CHECK constraint by definition (so
+-- both naming conventions are handled) and drop it dynamically before
+-- re-adding the canonical `ck_endpoint_commands_type`. The new constraint
+-- name is stable across re-deployments and future Flyway migrations.
 -- ---------------------------------------------------------------------
-ALTER TABLE endpoint_commands DROP CONSTRAINT ck_endpoint_commands_type;
+DO $$
+DECLARE
+    cn text;
+BEGIN
+    SELECT conname INTO cn
+    FROM pg_constraint
+    WHERE conrelid = 'endpoint_commands'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%command_type%';
+    IF cn IS NOT NULL THEN
+        EXECUTE 'ALTER TABLE endpoint_commands DROP CONSTRAINT ' || quote_ident(cn);
+    END IF;
+END $$;
+
 ALTER TABLE endpoint_commands ADD CONSTRAINT ck_endpoint_commands_type
     CHECK (command_type IN (
         'COLLECT_INVENTORY',
