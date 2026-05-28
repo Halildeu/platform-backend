@@ -259,7 +259,10 @@ class HardwareInventoryPayloadPolicyTest {
     @Test
     void rejectsApiKeyKvLeakInValuePosition() {
         Map<String, Object> hw = cleanHardware();
-        hw.put("notes", "api_key=ABC123DEF456GHI789JKL");
+        // Test marker — explicit synthetic value so gitleaks does
+        // not flag this fixture as a real api-key leak (PR #310
+        // CI absorb pattern from SoftwareInventoryPayloadPolicyTest).
+        hw.put("notes", "api_key=test-fake-fixture-marker-not-a-real-secret");
 
         assertThatThrownBy(() -> policy.sanitize(wrapHardware(hw)))
                 .isInstanceOf(IllegalArgumentException.class)
