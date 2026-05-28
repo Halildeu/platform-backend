@@ -123,6 +123,19 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
     }
 
+    /**
+     * Wave-12 PR-5 — 4-eyes governance violation: the proposer of a
+     * policy-change approval request tried to approve their own request.
+     * Surfaced as {@code 403 Forbidden} with error code
+     * {@code proposer_self} so the platform-web UI can distinguish this
+     * from a generic authorisation failure.
+     */
+    @ExceptionHandler(PolicyApprovalProposerSelfException.class)
+    public ResponseEntity<ErrorResponse> handleProposerSelf(
+            PolicyApprovalProposerSelfException ex) {
+        return build(HttpStatus.FORBIDDEN, "proposer_self", ex.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
         log.error("Unhandled exception", ex);
