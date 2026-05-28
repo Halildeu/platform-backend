@@ -11,6 +11,8 @@ import com.example.endpointadmin.dto.v1.admin.PolicyApprovalDecisionRequests.Rej
 import com.example.endpointadmin.dto.v1.admin.PolicyApprovalDecisionRequests.RequestChangesRequest;
 import com.example.endpointadmin.dto.v1.admin.PolicyChangeApprovalDto;
 import com.example.endpointadmin.dto.v1.admin.ProposePolicyChangeRequest;
+import com.example.endpointadmin.exception.PolicyApprovalActorMismatchException;
+import com.example.endpointadmin.exception.PolicyApprovalDelegateConflictException;
 import com.example.endpointadmin.exception.PolicyApprovalProposerSelfException;
 import com.example.endpointadmin.model.PolicyApprovalStatus;
 import com.example.endpointadmin.model.PolicyChangeKind;
@@ -89,16 +91,17 @@ class PolicyChangeApprovalServiceTest {
 
     @Test
     void proposeWithMismatchedProposerIdYieldsActorMismatch() {
-        // Codex iter-1 P1 — Mallory authenticated but the body claims Alice.
+        // Codex iter-1 P1 + iter-2 — Mallory authenticated but the body
+        // claims Alice. Typed exception lets the global handler emit
+        // a stable {@code error=actor_mismatch} body (Codex iter-2 P1).
         ProposePolicyChangeRequest spoofed = new ProposePolicyChangeRequest(
                 "Update DLP exfil rule", "pol-spoof", PROPOSER, "x",
                 null, List.of(APPROVER), null,
                 PolicyChangeKind.UPDATE, PolicyRiskTier.MEDIUM, null, null);
 
-        assertResponseStatus(
-                () -> service.propose(as(NON_APPROVER), spoofed),
-                HttpStatus.BAD_REQUEST,
-                "actor_mismatch");
+        assertThatThrownBy(() -> service.propose(as(NON_APPROVER), spoofed))
+                .isInstanceOf(PolicyApprovalActorMismatchException.class)
+                .hasMessageContaining("must equal the authenticated subject");
     }
 
     @Test
@@ -127,11 +130,10 @@ class PolicyChangeApprovalServiceTest {
                 proposeRequest("pol-am"));
 
         // Codex iter-1 P1 — authenticated as Bob but body says Carol.
-        assertResponseStatus(
-                () -> service.approve(as(APPROVER), created.id(),
-                        new ApproveRequest(APPROVER_TWO, "spoof", null)),
-                HttpStatus.BAD_REQUEST,
-                "actor_mismatch");
+        assertThatThrownBy(() -> service.approve(as(APPROVER), created.id(),
+                new ApproveRequest(APPROVER_TWO, "spoof", null)))
+                .isInstanceOf(PolicyApprovalActorMismatchException.class)
+                .hasMessageContaining("must equal the authenticated subject");
     }
 
     @Test
@@ -225,11 +227,25 @@ class PolicyChangeApprovalServiceTest {
         PolicyChangeApprovalDto created = service.propose(asProposer(),
                 proposeRequest("pol-delegate-conflict"));
 
-        assertResponseStatus(
-                () -> service.delegate(as(NON_APPROVER), created.id(),
-                        new DelegateRequest(NON_APPROVER, APPROVER_TWO, null, null)),
-                HttpStatus.BAD_REQUEST,
-                "delegate_conflict");
+        assertThatThrownBy(() -> service.delegate(as(NON_APPROVER), created.id(),
+                new DelegateRequest(NON_APPROVER, APPROVER_TWO, null, null)))
+                .isInstanceOf(PolicyApprovalDelegateConflictException.class)
+                .hasMessageContaining("not on the current approver list");
+    }
+
+    @Test
+    void delegateToExistingApproverYieldsDelegateConflict() {
+        // Codex iter-2 P3 absorb — Bob (approver) delegates to Carol
+        // (also approver). In-place swap would duplicate Carol on the
+        // approver list, so 400 delegate_conflict instead.
+        PolicyChangeApprovalDto created = service.propose(asProposer(),
+                proposeRequest("pol-delegate-dup"));
+
+        assertThatThrownBy(() -> service.delegate(as(APPROVER), created.id(),
+                new DelegateRequest(APPROVER, APPROVER_TWO,
+                        "duplicate scenario", null)))
+                .isInstanceOf(PolicyApprovalDelegateConflictException.class)
+                .hasMessageContaining("already on the current approver list");
     }
 
     @Test

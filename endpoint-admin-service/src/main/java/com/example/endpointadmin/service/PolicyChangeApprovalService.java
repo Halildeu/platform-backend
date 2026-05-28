@@ -10,6 +10,8 @@ import com.example.endpointadmin.dto.v1.admin.PolicyApprovalDecisionRequests.Rej
 import com.example.endpointadmin.dto.v1.admin.PolicyApprovalDecisionRequests.RequestChangesRequest;
 import com.example.endpointadmin.dto.v1.admin.PolicyChangeApprovalDto;
 import com.example.endpointadmin.dto.v1.admin.ProposePolicyChangeRequest;
+import com.example.endpointadmin.exception.PolicyApprovalActorMismatchException;
+import com.example.endpointadmin.exception.PolicyApprovalDelegateConflictException;
 import com.example.endpointadmin.exception.PolicyApprovalProposerSelfException;
 import com.example.endpointadmin.model.PolicyApprovalDecisionKind;
 import com.example.endpointadmin.model.PolicyApprovalStatus;
@@ -221,13 +223,20 @@ public class PolicyChangeApprovalService {
             throw badRequest("Delegate target must differ from the delegating actor.");
         }
         PolicyChangeApproval approval = loadRequiredForDecision(context, id);
-        // Codex iter-1 P2: the delegating actor must currently be on the
-        // approver list. Without this guard, any manager with module
-        // can_manage could parachute themselves (or anyone else) onto a
-        // request they don't own.
-        if (!isCurrentApprover(approval.getCurrentApprovers(), request.actor().id())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "delegate_conflict: actor is not on the current approver list.");
+        // Codex iter-1 P2 + iter-2 absorb: the delegating actor must
+        // currently be on the approver list AND the delegateTo target
+        // must NOT already be on the list. The first stops a non-
+        // approver from parachuting themselves onto a request; the
+        // second stops the in-place swap from creating a duplicate
+        // approver entry.
+        List<Map<String, Object>> approvers = approval.getCurrentApprovers();
+        if (!isCurrentApprover(approvers, request.actor().id())) {
+            throw new PolicyApprovalDelegateConflictException(
+                    "Delegating actor is not on the current approver list.");
+        }
+        if (isCurrentApprover(approvers, request.delegateTo().id())) {
+            throw new PolicyApprovalDelegateConflictException(
+                    "Delegate target is already on the current approver list.");
         }
 
         PolicyApprovalStatus current = approval.getStatus();
@@ -315,9 +324,8 @@ public class PolicyChangeApprovalService {
         String authenticated = trimToNull(context.subject());
         String supplied = actor.id().trim();
         if (authenticated == null || !authenticated.equals(supplied)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "actor_mismatch: " + fieldName
-                            + ".id must equal the authenticated subject.");
+            throw new PolicyApprovalActorMismatchException(
+                    fieldName + ".id must equal the authenticated subject.");
         }
     }
 

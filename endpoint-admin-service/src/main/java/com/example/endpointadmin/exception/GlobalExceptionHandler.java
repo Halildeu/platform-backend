@@ -9,7 +9,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
@@ -140,17 +139,53 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Wave-12 PR-5 (Codex iter-1 P1 absorb) — concurrent reviewers race
-     * on the same approval request. With {@code PESSIMISTIC_WRITE} on
-     * the decision read path the loser should observe the new state and
-     * raise a domain 409; but if the lock falls through (e.g. parent row
-     * dirty-update + version mismatch, or unique-constraint clash on
-     * {@code (approval_id, sequence)}), surface a clean 409 instead of a
-     * generic 500.
+     * Wave-12 PR-5 (Codex iter-2 absorb) — body-supplied {@code actor.id}
+     * (or {@code proposer.id} on propose) did not equal the
+     * authenticated subject. Surfaced as {@code 400 Bad Request} with a
+     * stable error code so the UI can show a "your session does not
+     * match the actor in the request" hint rather than a generic
+     * validation error.
+     */
+    @ExceptionHandler(PolicyApprovalActorMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleActorMismatch(
+            PolicyApprovalActorMismatchException ex) {
+        return build(HttpStatus.BAD_REQUEST, "actor_mismatch", ex.getMessage());
+    }
+
+    /**
+     * Wave-12 PR-5 (Codex iter-2 absorb) — delegate violated the
+     * current-approver membership invariant (delegating actor not on
+     * the list, or delegateTo already on the list). Surfaced as
+     * {@code 400 Bad Request} with the stable {@code delegate_conflict}
+     * code so the UI can highlight the offending actor.
+     */
+    @ExceptionHandler(PolicyApprovalDelegateConflictException.class)
+    public ResponseEntity<ErrorResponse> handleDelegateConflict(
+            PolicyApprovalDelegateConflictException ex) {
+        return build(HttpStatus.BAD_REQUEST, "delegate_conflict", ex.getMessage());
+    }
+
+    /**
+     * Wave-12 PR-5 (Codex iter-1 P1 absorb + iter-2 narrowing) —
+     * concurrent reviewers race on the same approval request. With
+     * {@code PESSIMISTIC_WRITE} on the decision read path the loser
+     * should observe the new state and raise a domain 409 via the
+     * "not open" status check. The handler covers the residual surface
+     * where Hibernate translates a lock acquisition failure into a
+     * Spring lock-failure exception (timeout, dead-lock, etc.).
+     *
+     * <p>{@code DataIntegrityViolationException} is intentionally NOT
+     * caught here — that class also raises on legitimate constraint
+     * failures in unrelated endpoint-admin paths (compliance policy
+     * persist, HMAC nonce replay, machine-cert enrollment race) and
+     * mis-labelling those as {@code concurrent_decision} would mask
+     * real bugs. The unique-on-sequence path in the decision flow is
+     * already protected by the pessimistic lock; should it ever surface
+     * a constraint hit, the generic 500 plus warn-log is the correct
+     * fail-loud behaviour (Codex iter-2 P2 absorb).
      */
     @ExceptionHandler({OptimisticLockingFailureException.class,
-            PessimisticLockingFailureException.class,
-            DataIntegrityViolationException.class})
+            PessimisticLockingFailureException.class})
     public ResponseEntity<ErrorResponse> handleConcurrentApprovalRace(
             RuntimeException ex) {
         log.warn("concurrent approval race: {}", ex.getMessage());
