@@ -16,7 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -358,10 +357,28 @@ public class EndpointSoftwareInventoryService {
      * Append one append-only software-state capture for a full apps[]
      * ingest. Idempotent on {@code source_command_result_id} (partial
      * UNIQUE): re-delivering the same command-result no-ops instead of
-     * appending a duplicate (mirrors the BE-022 hardware-inventory
-     * DataIntegrityViolation catch). The capture stores only the
-     * diff-relevant whitelist subset (already sanitized at ingest), never
-     * the raw item payload.
+     * appending a duplicate. The capture stores only the diff-relevant
+     * whitelist subset (already sanitized at ingest), never the raw item
+     * payload.
+     *
+     * <p><b>Atomicity (Codex 019e75fe CRITICAL).</b> The append must NOT
+     * swallow a broad {@code DataIntegrityViolationException}. Doing so
+     * (a) mis-classifies a real non-duplicate V18 violation (a CHECK / FK
+     * breach) as a "duplicate" and hides a data bug, and (b) on PostgreSQL
+     * leaves the surrounding transaction marked rollback-only, so the later
+     * audit/commit stage of {@link #ingest} fails uncontrolled — breaking
+     * the snapshot+result+history atomicity claim. Instead the write goes
+     * through a native {@code INSERT ... ON CONFLICT
+     * (source_command_result_id) WHERE source_command_result_id IS NOT NULL
+     * DO NOTHING} (see
+     * {@link com.example.endpointadmin.repository.EndpointSoftwareInventoryStateHistoryRepositoryImpl}):
+     * ONLY the partial-unique duplicate is a clean no-op (no exception); a
+     * concurrent re-delivery that loses the partial-UNIQUE race is also a
+     * no-op. EVERY other constraint / FK / CHECK violation PROPAGATES and
+     * rolls back the whole ingest transaction together with the snapshot.
+     * The pre-probe below stays as a cheap fast path that avoids the insert
+     * round-trip on the common re-delivery; the {@code ON CONFLICT} is the
+     * authoritative race-safe guard.
      */
     private void appendStateHistory(UUID tenantId,
                                     UUID deviceId,
@@ -370,8 +387,10 @@ public class EndpointSoftwareInventoryService {
                                     List<EndpointSoftwareInventoryItem> items,
                                     Instant now) {
         UUID sourceResultId = result != null ? result.getId() : null;
-        // Idempotency probe: skip if this command-result already produced a
-        // capture (agent SUBMIT path may re-deliver).
+        // Idempotency fast-path: skip the insert round-trip if this
+        // command-result already produced a capture (agent SUBMIT path may
+        // re-deliver). The native ON CONFLICT below is the authoritative
+        // race-safe guard for the window between this probe and the insert.
         if (sourceResultId != null
                 && stateHistoryRepository
                         .findBySourceCommandResultId(sourceResultId)
@@ -392,14 +411,14 @@ public class EndpointSoftwareInventoryService {
         history.setAppsDigest(digest);
         history.setCapturedAt(now);
 
-        try {
-            stateHistoryRepository.saveAndFlush(history);
-        } catch (DataIntegrityViolationException ex) {
-            // Concurrent re-delivery of the same command-result lost the
-            // partial-UNIQUE race; the existing capture is canonical. The
-            // snapshot upsert above already committed its own state, so we
-            // swallow this rather than fail the whole ingest.
-            log.debug("BE-024 software-state history append skipped "
+        // ON CONFLICT DO NOTHING: a duplicate source_command_result_id is a
+        // no-op (returns false); any other V18 violation throws and rolls
+        // back the whole ingest transaction (no swallow, no rollback-only
+        // leak into the audit stage).
+        boolean inserted =
+                stateHistoryRepository.insertIfNewSourceCommandResult(history);
+        if (!inserted) {
+            log.debug("BE-024 software-state history append no-op "
                             + "(duplicate source_command_result_id) tenant={} "
                             + "device={} result={}",
                     tenantId, deviceId, sourceResultId);

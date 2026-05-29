@@ -23,7 +23,8 @@ import java.util.UUID;
  */
 @Repository
 public interface EndpointSoftwareInventoryStateHistoryRepository
-        extends JpaRepository<EndpointSoftwareInventoryStateHistory, UUID> {
+        extends JpaRepository<EndpointSoftwareInventoryStateHistory, UUID>,
+        EndpointSoftwareInventoryStateHistoryRepositoryCustom {
 
     /**
      * Idempotency probe for the inline ingest append: if the
