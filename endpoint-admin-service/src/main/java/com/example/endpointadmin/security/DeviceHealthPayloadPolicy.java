@@ -191,6 +191,35 @@ public class DeviceHealthPayloadPolicy {
     /** Accepted {@code schemaVersion} values (current agent emits 1). */
     private static final Set<Integer> ACCEPTED_SCHEMA_VERSIONS = Set.of(1);
 
+    /**
+     * Agent-side fixed-disk cap. The contract pins {@code maxFixedDisks}
+     * to {@code const: 64} and the {@code fixedDisks} array to
+     * {@code maxItems: 64}. Both are fail-closed enforced here so an
+     * off-contract-but-otherwise-valid payload (e.g. {@code maxFixedDisks=128}
+     * or a 70-element disk array) cannot slip past the policy into the
+     * command-result payload + snapshot {@code redacted_payload}.
+     */
+    public static final int MAX_FIXED_DISKS = 64;
+
+    /**
+     * Upper bound for fields persisted in an {@code INTEGER} column
+     * (V17: {@code fixed_disk_count}, {@code max_fixed_disks},
+     * {@code uptime_days}, {@code probe_duration_ms}). Matches PostgreSQL
+     * {@code INT} so the policy fail-closed rejects a value that would
+     * overflow the column at persist time instead of surfacing a later
+     * DB error after the snapshot row half-commits.
+     */
+    private static final long INT_MAX = Integer.MAX_VALUE;
+
+    /**
+     * Upper bound for fields persisted in a {@code BIGINT} column or
+     * carried only in the {@code redacted_payload} JSONB as byte totals
+     * (V17: {@code uptime_seconds}, {@code last_boot_epoch_sec}, disk
+     * {@code total_bytes}/{@code free_bytes}; redacted_payload memory byte
+     * totals + commit fields). Matches PostgreSQL {@code BIGINT}.
+     */
+    private static final long BIGINT_MAX = Long.MAX_VALUE;
+
     /** Accepted {@code sourceUsed} enum values. */
     private static final Set<String> ACCEPTED_SOURCE_USED =
             Set.of("win32", "none");
@@ -305,9 +334,11 @@ public class DeviceHealthPayloadPolicy {
             }
         }
 
-        // 2. Schema version (const 1).
-        Integer schemaVersion = toInt(dh.get("schemaVersion"), path + ".schemaVersion");
-        if (schemaVersion == null || !ACCEPTED_SCHEMA_VERSIONS.contains(schemaVersion)) {
+        // 2. Schema version (const 1). Strict integer typing — a string
+        //    "1" is NOT silently coerced (contract: type integer, const 1).
+        long schemaVersion = toStrictLong(dh.get("schemaVersion"), path + ".schemaVersion");
+        if (schemaVersion < Integer.MIN_VALUE || schemaVersion > Integer.MAX_VALUE
+                || !ACCEPTED_SCHEMA_VERSIONS.contains((int) schemaVersion)) {
             throw new IllegalArgumentException(
                     "Unsupported device-health schema_version=" + dh.get("schemaVersion")
                             + " at " + path + ".schemaVersion");
@@ -327,18 +358,30 @@ public class DeviceHealthPayloadPolicy {
                             + "' at " + path + ".sourceUsed (expected win32 | none)");
         }
 
-        // 5. Top-level numeric ranges (required → non-null already proven).
-        requireNonNegative(dh.get("fixedDiskCount"), path + ".fixedDiskCount");
-        requireNonNegative(dh.get("maxFixedDisks"), path + ".maxFixedDisks");
-        requireNonNegative(dh.get("probeDurationMs"), path + ".probeDurationMs");
+        // 5. Top-level numeric ranges. Strict integer typing (Integer/Long
+        //    only, no string coercion, no non-integral decimal) + the column
+        //    bound (INT vs BIGINT) the value is persisted into. Required →
+        //    non-null already proven.
+        requireIntegerInRange(dh.get("fixedDiskCount"), path + ".fixedDiskCount", 0, INT_MAX);
+        // maxFixedDisks is const 64 (contract), not merely non-negative.
+        requireIntegerConst(dh.get("maxFixedDisks"), path + ".maxFixedDisks", MAX_FIXED_DISKS);
+        requireIntegerInRange(dh.get("probeDurationMs"), path + ".probeDurationMs", 0, INT_MAX);
 
-        // 6. fixedDisks must be an array — and each entry must conform to
-        //    the strict disk allowlist + driveLetter pattern.
+        // 6. fixedDisks must be an array, capped at maxItems (contract: 64),
+        //    and each entry must conform to the strict disk allowlist +
+        //    driveLetter pattern.
         Object fixedDisksRaw = dh.get("fixedDisks");
         if (!(fixedDisksRaw instanceof List<?>)) {
             throw new IllegalArgumentException(
                     "Expected array at " + path + ".fixedDisks but got "
                             + fixedDisksRaw.getClass().getSimpleName());
+        }
+        if (((List<?>) fixedDisksRaw).size() > MAX_FIXED_DISKS) {
+            throw new IllegalArgumentException(
+                    "Too many fixedDisks at " + path + ".fixedDisks: "
+                            + ((List<?>) fixedDisksRaw).size()
+                            + " exceeds the contract cap of " + MAX_FIXED_DISKS
+                            + " (maxItems).");
         }
         List<Object> projectedDisks = new ArrayList<>();
         int idx = 0;
@@ -453,8 +496,8 @@ public class DeviceHealthPayloadPolicy {
                     "Invalid driveLetter '" + dl + "' at " + diskPath
                             + ".driveLetter (expected ^[A-Z]:$)");
         }
-        requireNonNegative(diskMap.get("totalBytes"), diskPath + ".totalBytes");
-        requireNonNegative(diskMap.get("freeBytes"), diskPath + ".freeBytes");
+        requireIntegerInRange(diskMap.get("totalBytes"), diskPath + ".totalBytes", 0, BIGINT_MAX);
+        requireIntegerInRange(diskMap.get("freeBytes"), diskPath + ".freeBytes", 0, BIGINT_MAX);
         requirePercent(diskMap.get("freePercent"), diskPath + ".freePercent");
         requireBoolean(diskMap.get("lowDiskWarning"), diskPath + ".lowDiskWarning");
 
@@ -475,12 +518,14 @@ public class DeviceHealthPayloadPolicy {
      *  dropped + debug-logged. */
     private Map<String, Object> projectMemory(Map<?, ?> memMap, String path) {
         requireKeysPresent(memMap, MEMORY_ALLOWED_KEYS, path);
-        requireNonNegative(memMap.get("totalPhysicalBytes"), path + ".totalPhysicalBytes");
-        requireNonNegative(memMap.get("availableBytes"), path + ".availableBytes");
+        // Memory byte totals live in redacted_payload JSONB; they are integer
+        // byte totals (BIGINT-class) in the contract — strict integer typing.
+        requireIntegerInRange(memMap.get("totalPhysicalBytes"), path + ".totalPhysicalBytes", 0, BIGINT_MAX);
+        requireIntegerInRange(memMap.get("availableBytes"), path + ".availableBytes", 0, BIGINT_MAX);
         requirePercent(memMap.get("usedPercent"), path + ".usedPercent");
         requireBoolean(memMap.get("highPressureWarning"), path + ".highPressureWarning");
-        requireNonNegative(memMap.get("commitLimitBytes"), path + ".commitLimitBytes");
-        requireNonNegative(memMap.get("commitUsedBytes"), path + ".commitUsedBytes");
+        requireIntegerInRange(memMap.get("commitLimitBytes"), path + ".commitLimitBytes", 0, BIGINT_MAX);
+        requireIntegerInRange(memMap.get("commitUsedBytes"), path + ".commitUsedBytes", 0, BIGINT_MAX);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("totalPhysicalBytes", memMap.get("totalPhysicalBytes"));
@@ -498,9 +543,11 @@ public class DeviceHealthPayloadPolicy {
      *  are dropped + debug-logged. */
     private Map<String, Object> projectUptime(Map<?, ?> upMap, String path) {
         requireKeysPresent(upMap, UPTIME_ALLOWED_KEYS, path);
-        requireNonNegative(upMap.get("lastBootEpochSec"), path + ".lastBootEpochSec");
-        requireNonNegative(upMap.get("uptimeSeconds"), path + ".uptimeSeconds");
-        requireNonNegative(upMap.get("uptimeDays"), path + ".uptimeDays");
+        // V17 column types: last_boot_epoch_sec + uptime_seconds = BIGINT,
+        // uptime_days = INTEGER. Strict integer typing + column bound.
+        requireIntegerInRange(upMap.get("lastBootEpochSec"), path + ".lastBootEpochSec", 0, BIGINT_MAX);
+        requireIntegerInRange(upMap.get("uptimeSeconds"), path + ".uptimeSeconds", 0, BIGINT_MAX);
+        requireIntegerInRange(upMap.get("uptimeDays"), path + ".uptimeDays", 0, INT_MAX);
         requireBoolean(upMap.get("longUptimeWarning"), path + ".longUptimeWarning");
 
         Map<String, Object> out = new LinkedHashMap<>();
@@ -547,10 +594,17 @@ public class DeviceHealthPayloadPolicy {
         out.put("code", codeStr);
         Object summary = errMap.get("summary");
         if (summary != null) {
-            // Value-redaction already ran in rejectSecrets(); re-apply the
-            // identifier strip on the projected scalar so a stripped path
-            // is reflected, then bound the length.
-            String s = redactStringValue(String.valueOf(summary), errPath + ".summary");
+            // Contract: summary is type:string. Fail-closed reject a
+            // non-string (a number/object/array would otherwise be coerced
+            // by String.valueOf into bogus operator text). Then re-apply the
+            // identifier strip on the projected scalar (value-redaction
+            // already ran in rejectSecrets) and bound the length.
+            if (!(summary instanceof String)) {
+                throw new IllegalArgumentException(
+                        "Expected string at " + errPath + ".summary but got "
+                                + summary.getClass().getSimpleName());
+            }
+            String s = redactStringValue((String) summary, errPath + ".summary");
             if (s.length() > SUMMARY_MAX_LEN) {
                 s = s.substring(0, SUMMARY_MAX_LEN);
             }
@@ -657,74 +711,122 @@ public class DeviceHealthPayloadPolicy {
                         + (value == null ? "null" : value.getClass().getSimpleName()));
     }
 
-    private static void requireNonNegative(Object value, String path) {
-        if (value == null) {
-            throw new IllegalArgumentException(
-                    "Expected number at " + path + " but got null");
-        }
-        Number n = toNumber(value, path);
-        if (n != null && n.longValue() < 0) {
-            throw new IllegalArgumentException(
-                    "Negative value not allowed at " + path + ": " + value);
-        }
-    }
-
+    /**
+     * Strict integer-percent check: the value must be a JSON integer
+     * (Integer/Long, NOT a string nor a non-integral decimal) in the
+     * inclusive range [0, 100]. The contract types every percent as
+     * {@code integer, minimum:0, maximum:100} and V17 persists them as
+     * {@code SMALLINT}; the upper bound is therefore 100, not SMALLINT_MAX.
+     */
     private static void requirePercent(Object value, String path) {
-        if (value == null) {
+        requireIntegerInRange(value, path, 0, 100);
+    }
+
+    /**
+     * Strict required-integer-in-range check. Accepts ONLY a JSON integer
+     * decoded as {@link Integer} or {@link Long} (Jackson's integral
+     * mapping). Fail-closed rejects:
+     * <ul>
+     *   <li>{@code null} (caller already proved presence, but be defensive)</li>
+     *   <li>a {@code String} (e.g. {@code "1"}) — no silent string coercion</li>
+     *   <li>a non-integral {@code Double}/{@code Float}/{@code BigDecimal}
+     *       (e.g. {@code 1.5}) — a fractional value has no place in an
+     *       integer column</li>
+     * </ul>
+     * and enforces {@code [min, max]} (max is the persisting column's
+     * ceiling — {@code INT_MAX} for an {@code INTEGER} column,
+     * {@code BIGINT_MAX} for a {@code BIGINT} column, or {@code 100} for a
+     * percent).
+     */
+    private static void requireIntegerInRange(Object value, String path, long min, long max) {
+        long v = toStrictLong(value, path);
+        if (v < min) {
             throw new IllegalArgumentException(
-                    "Expected percent at " + path + " but got null");
+                    (min == 0 ? "Negative value not allowed at "
+                              : "Value below minimum (" + min + ") at ")
+                            + path + ": " + value);
         }
-        Number n = toNumber(value, path);
-        if (n == null) {
-            return;
-        }
-        long v = n.longValue();
-        if (v < 0 || v > 100) {
+        if (v > max) {
+            // Percent uses max 100; column overflow uses INT_MAX/BIGINT_MAX.
+            if (max == 100) {
+                throw new IllegalArgumentException(
+                        "Percent out of range [0,100] at " + path + ": " + value);
+            }
             throw new IllegalArgumentException(
-                    "Percent out of range [0,100] at " + path + ": " + value);
+                    "Value exceeds column bound (" + max + ") at " + path + ": " + value);
         }
     }
 
-    private static Integer toInt(Object value, String path) {
+    /** Strict required-integer with an exact expected value (contract
+     *  {@code const}). Same strict typing as {@link #requireIntegerInRange}. */
+    private static void requireIntegerConst(Object value, String path, long expected) {
+        long v = toStrictLong(value, path);
+        if (v != expected) {
+            throw new IllegalArgumentException(
+                    "Value at " + path + " must equal " + expected
+                            + " (contract const) but was " + value);
+        }
+    }
+
+    /**
+     * Decode a value to a {@code long} accepting ONLY a true JSON integer
+     * (Integer/Long; integral Short/Byte are also accepted as they are
+     * non-fractional). A {@code String}, or a {@code Double}/{@code Float}/
+     * {@code BigDecimal} carrying a fractional part, is fail-closed
+     * rejected. A {@code BigInteger} outside {@code long} range is rejected
+     * (it could not fit the BIGINT column either). This is the single
+     * coercion gate that tightens the formerly-lenient numeric parser.
+     */
+    private static long toStrictLong(Object value, String path) {
         if (value == null) {
-            return null;
+            throw new IllegalArgumentException(
+                    "Expected integer at " + path + " but got null");
         }
         if (value instanceof Integer i) {
-            return i;
+            return i.longValue();
         }
-        if (value instanceof Number n) {
-            return n.intValue();
+        if (value instanceof Long l) {
+            return l;
         }
-        if (value instanceof String s) {
-            try {
-                return Integer.parseInt(s.trim());
-            } catch (NumberFormatException ex) {
+        if (value instanceof Short s) {
+            return s.longValue();
+        }
+        if (value instanceof Byte b) {
+            return b.longValue();
+        }
+        if (value instanceof java.math.BigInteger bi) {
+            if (bi.bitLength() >= 64) {
                 throw new IllegalArgumentException(
-                        "Expected integer at " + path + " but got '" + s + "'");
+                        "Integer at " + path + " exceeds 64-bit range: " + value);
             }
+            return bi.longValue();
         }
-        throw new IllegalArgumentException(
-                "Expected integer at " + path + " but got " + value.getClass().getSimpleName());
-    }
-
-    private static Number toNumber(Object value, String path) {
-        if (value instanceof Number n) {
-            return n;
-        }
-        if (value instanceof String s) {
+        if (value instanceof java.math.BigDecimal bd) {
             try {
-                return Long.parseLong(s.trim());
-            } catch (NumberFormatException ex) {
-                try {
-                    return Double.parseDouble(s.trim());
-                } catch (NumberFormatException ex2) {
-                    throw new IllegalArgumentException(
-                            "Expected number at " + path + " but got '" + s + "'");
-                }
+                return bd.longValueExact();
+            } catch (ArithmeticException ex) {
+                throw new IllegalArgumentException(
+                        "Expected integer at " + path
+                                + " but got a non-integral / out-of-range decimal: " + value);
             }
         }
+        if (value instanceof Double || value instanceof Float) {
+            double d = ((Number) value).doubleValue();
+            if (d != Math.rint(d) || Double.isNaN(d) || Double.isInfinite(d)) {
+                throw new IllegalArgumentException(
+                        "Expected integer at " + path
+                                + " but got a non-integral decimal: " + value);
+            }
+            if (d < Long.MIN_VALUE || d > Long.MAX_VALUE) {
+                throw new IllegalArgumentException(
+                        "Integer at " + path + " exceeds 64-bit range: " + value);
+            }
+            return (long) d;
+        }
+        // String and any other type: no silent coercion.
         throw new IllegalArgumentException(
-                "Expected number at " + path + " but got " + value.getClass().getSimpleName());
+                "Expected integer at " + path + " but got "
+                        + value.getClass().getSimpleName() + ": " + value);
     }
 
     /** Collect the string-typed keys of a map (for drop-logging). */

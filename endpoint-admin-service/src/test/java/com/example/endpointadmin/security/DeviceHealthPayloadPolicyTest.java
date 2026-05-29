@@ -257,6 +257,131 @@ class DeviceHealthPayloadPolicyTest {
     }
 
     // ------------------------------------------------------------------
+    // Schema-fidelity gap (Codex iter-2 REVISE): const / maxItems /
+    // strict integer typing + column bounds
+    // ------------------------------------------------------------------
+
+    @Test
+    void rejectsMaxFixedDisksOtherThan64() {
+        // Contract: maxFixedDisks is const 64. A non-negative-but-wrong
+        // value (e.g. 128) must NOT slip into the command-result payload
+        // + snapshot redacted_payload — fail-closed reject.
+        Map<String, Object> dh = goldenHealthy();
+        dh.put("maxFixedDisks", 128);
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must equal 64");
+
+        // The const-64 golden value still validates (no regression).
+        Map<String, Object> ok = goldenHealthy();
+        assertThatCode(() -> policy.sanitize(wrap(ok))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void rejectsFixedDisksAbove64() {
+        // Contract: fixedDisks has maxItems 64. A 65-element array is
+        // fail-closed rejected (no per-disk projection happens).
+        Map<String, Object> dh = goldenHealthy();
+        List<Map<String, Object>> disks = new ArrayList<>();
+        for (int i = 0; i < 65; i++) {
+            disks.add(disk("C:", 536870912000L, 268435456000L, 50, false));
+        }
+        dh.put("fixedDisks", disks);
+        dh.put("fixedDiskCount", 65);
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Too many fixedDisks");
+
+        // Exactly 64 is the boundary — accepted.
+        Map<String, Object> atCap = goldenHealthy();
+        List<Map<String, Object>> capDisks = new ArrayList<>();
+        for (int i = 0; i < 64; i++) {
+            capDisks.add(disk("C:", 536870912000L, 268435456000L, 50, false));
+        }
+        atCap.put("fixedDisks", capDisks);
+        atCap.put("fixedDiskCount", 64);
+        atCap.put("fixedDisksTruncated", true);
+        assertThatCode(() -> policy.sanitize(wrap(atCap))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void rejectsStringNumericField() {
+        // A required integer field delivered as a String (e.g.
+        // fixedDiskCount:"1") must NOT be silently coerced — fail-closed.
+        Map<String, Object> dh = goldenHealthy();
+        dh.put("fixedDiskCount", "1");
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .as("string-typed integer field must be rejected")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected integer");
+
+        // Also covers a nested byte total + a percent delivered as String.
+        Map<String, Object> dh2 = goldenHealthy();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mem2 = (Map<String, Object>) dh2.get("memory");
+        mem2.put("usedPercent", "42");
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh2)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected integer");
+
+        Map<String, Object> dh3 = goldenHealthy();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> disks3 = (List<Map<String, Object>>) dh3.get("fixedDisks");
+        disks3.get(0).put("totalBytes", "536870912000");
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh3)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected integer");
+    }
+
+    @Test
+    void rejectsDecimalIntegerField() {
+        // A non-integral decimal (e.g. uptimeDays:1.5) for an integer field
+        // must be fail-closed rejected, not floored/coerced.
+        Map<String, Object> dh = goldenHealthy();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> up = (Map<String, Object>) dh.get("uptime");
+        up.put("uptimeDays", 1.5d);
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .as("fractional double for an integer field must be rejected")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-integral decimal");
+
+        // A BigDecimal with a fractional part is equally rejected.
+        Map<String, Object> dh2 = goldenHealthy();
+        dh2.put("probeDurationMs", new java.math.BigDecimal("12.7"));
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh2)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-integral");
+
+        // An integral double (1.0) is the harmless boundary — accepted
+        // (Jackson can hand an integer back as a double in some configs).
+        Map<String, Object> dh3 = goldenHealthy();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> up3 = (Map<String, Object>) dh3.get("uptime");
+        up3.put("uptimeDays", 3.0d);
+        assertThatCode(() -> policy.sanitize(wrap(dh3))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void rejectsNonStringProbeErrorSummary() {
+        // Contract: probeError.summary is type:string. A non-string (here a
+        // number) must be fail-closed rejected, not String.valueOf-coerced
+        // into bogus operator text.
+        Map<String, Object> dh = goldenUnsupported();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).put("summary", 12345);
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected string at");
+    }
+
+    // ------------------------------------------------------------------
     // Required v1 fields — fail-closed (Codex P1-2)
     // ------------------------------------------------------------------
 
