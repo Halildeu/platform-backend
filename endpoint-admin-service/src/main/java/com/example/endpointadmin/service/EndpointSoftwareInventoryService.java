@@ -5,11 +5,15 @@ import com.example.endpointadmin.model.EndpointCommandResult;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointSoftwareInventoryItem;
 import com.example.endpointadmin.model.EndpointSoftwareInventorySnapshot;
+import com.example.endpointadmin.model.EndpointSoftwareInventoryStateHistory;
 import com.example.endpointadmin.model.SoftwareInstallSource;
 import com.example.endpointadmin.repository.EndpointSoftwareInventorySnapshotRepository;
+import com.example.endpointadmin.repository.EndpointSoftwareInventoryStateHistoryRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.WinGetEgressPayloadPolicy;
 import com.example.endpointadmin.service.compliance.SoftwareInventorySnapshotPersistedEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
@@ -69,7 +73,11 @@ public class EndpointSoftwareInventoryService {
         INGESTED, REPLACED, SUMMARY_UPDATED, SKIPPED
     }
 
+    private static final Logger log =
+            LoggerFactory.getLogger(EndpointSoftwareInventoryService.class);
+
     private final EndpointSoftwareInventorySnapshotRepository snapshotRepository;
+    private final EndpointSoftwareInventoryStateHistoryRepository stateHistoryRepository;
     private final EndpointAuditService auditService;
     private final Clock clock;
     private final WinGetEgressPayloadPolicy winGetEgressPayloadPolicy;
@@ -78,11 +86,13 @@ public class EndpointSoftwareInventoryService {
     @Autowired
     public EndpointSoftwareInventoryService(
             EndpointSoftwareInventorySnapshotRepository snapshotRepository,
+            EndpointSoftwareInventoryStateHistoryRepository stateHistoryRepository,
             EndpointAuditService auditService,
             Clock clock,
             WinGetEgressPayloadPolicy winGetEgressPayloadPolicy,
             ApplicationEventPublisher eventPublisher) {
         this.snapshotRepository = snapshotRepository;
+        this.stateHistoryRepository = stateHistoryRepository;
         this.auditService = auditService;
         this.clock = clock;
         this.winGetEgressPayloadPolicy = winGetEgressPayloadPolicy;
@@ -191,13 +201,13 @@ public class EndpointSoftwareInventoryService {
                                     : appsNode.getClass().getSimpleName())
                             + ".");
         }
+        List<EndpointSoftwareInventoryItem> fullPayloadItems = null;
         if (hasFullPayload) {
-            List<EndpointSoftwareInventoryItem> next =
-                    parseItems(snapshot, appsNode);
-            snapshot.replaceItems(next);
+            fullPayloadItems = parseItems(snapshot, appsNode);
+            snapshot.replaceItems(fullPayloadItems);
             snapshot.setLatestFullCommandResult(result);
             snapshot.setAppsCollectedAt(now);
-            snapshot.setAppsStoredCount(next.size());
+            snapshot.setAppsStoredCount(fullPayloadItems.size());
             snapshot.setAppsAvailable(true);
         }
 
@@ -224,6 +234,19 @@ public class EndpointSoftwareInventoryService {
         }
 
         snapshotRepository.saveAndFlush(snapshot);
+
+        // BE-024 — append-only software-state history. The BE-020I snapshot
+        // above is a single-row upsert that physically deletes the prior
+        // items, so it cannot answer "what changed since last collect". We
+        // therefore capture the diff-relevant subset of every FULL apps[]
+        // payload here, in the SAME transaction (atomic with the snapshot,
+        // no async listener — lowest-risk for the BE-020/021 freeze window;
+        // Codex 019e75a5 (b) absorb). Summary-only / wingetEgress-only
+        // ingests do NOT append (the app state did not change).
+        if (hasFullPayload) {
+            appendStateHistory(tenantId, device.getId(), result,
+                    snapshot.getSchemaVersion(), fullPayloadItems, now);
+        }
 
         IngestOutcome outcome;
         String eventType;
@@ -325,6 +348,81 @@ public class EndpointSoftwareInventoryService {
                 wingetReady,
                 truncated,
                 pageable);
+    }
+
+    // ----------------------------------------------------------------
+    // BE-024 software-state history append
+
+    /**
+     * Append one append-only software-state capture for a full apps[]
+     * ingest. Idempotent on {@code source_command_result_id} (partial
+     * UNIQUE): re-delivering the same command-result no-ops instead of
+     * appending a duplicate. The capture stores only the diff-relevant
+     * whitelist subset (already sanitized at ingest), never the raw item
+     * payload.
+     *
+     * <p><b>Atomicity (Codex 019e75fe CRITICAL).</b> The append must NOT
+     * swallow a broad {@code DataIntegrityViolationException}. Doing so
+     * (a) mis-classifies a real non-duplicate V18 violation (a CHECK / FK
+     * breach) as a "duplicate" and hides a data bug, and (b) on PostgreSQL
+     * leaves the surrounding transaction marked rollback-only, so the later
+     * audit/commit stage of {@link #ingest} fails uncontrolled — breaking
+     * the snapshot+result+history atomicity claim. Instead the write goes
+     * through a native {@code INSERT ... ON CONFLICT
+     * (source_command_result_id) WHERE source_command_result_id IS NOT NULL
+     * DO NOTHING} (see
+     * {@link com.example.endpointadmin.repository.EndpointSoftwareInventoryStateHistoryRepositoryImpl}):
+     * ONLY the partial-unique duplicate is a clean no-op (no exception); a
+     * concurrent re-delivery that loses the partial-UNIQUE race is also a
+     * no-op. EVERY other constraint / FK / CHECK violation PROPAGATES and
+     * rolls back the whole ingest transaction together with the snapshot.
+     * The pre-probe below stays as a cheap fast path that avoids the insert
+     * round-trip on the common re-delivery; the {@code ON CONFLICT} is the
+     * authoritative race-safe guard.
+     */
+    private void appendStateHistory(UUID tenantId,
+                                    UUID deviceId,
+                                    EndpointCommandResult result,
+                                    Integer schemaVersion,
+                                    List<EndpointSoftwareInventoryItem> items,
+                                    Instant now) {
+        UUID sourceResultId = result != null ? result.getId() : null;
+        // Idempotency fast-path: skip the insert round-trip if this
+        // command-result already produced a capture (agent SUBMIT path may
+        // re-deliver). The native ON CONFLICT below is the authoritative
+        // race-safe guard for the window between this probe and the insert.
+        if (sourceResultId != null
+                && stateHistoryRepository
+                        .findBySourceCommandResultId(sourceResultId)
+                        .isPresent()) {
+            return;
+        }
+
+        List<Map<String, Object>> digest = SoftwareInventoryDigest.fromItems(items);
+
+        EndpointSoftwareInventoryStateHistory history =
+                new EndpointSoftwareInventoryStateHistory();
+        history.setTenantId(tenantId);
+        history.setDeviceId(deviceId);
+        history.setSourceCommandResultId(sourceResultId);
+        history.setSchemaVersion(schemaVersion != null ? schemaVersion : 1);
+        history.setAppCount(digest.size());
+        history.setAppsDigestHash(SoftwareInventoryDigest.digestHash(digest));
+        history.setAppsDigest(digest);
+        history.setCapturedAt(now);
+
+        // ON CONFLICT DO NOTHING: a duplicate source_command_result_id is a
+        // no-op (returns false); any other V18 violation throws and rolls
+        // back the whole ingest transaction (no swallow, no rollback-only
+        // leak into the audit stage).
+        boolean inserted =
+                stateHistoryRepository.insertIfNewSourceCommandResult(history);
+        if (!inserted) {
+            log.debug("BE-024 software-state history append no-op "
+                            + "(duplicate source_command_result_id) tenant={} "
+                            + "device={} result={}",
+                    tenantId, deviceId, sourceResultId);
+        }
     }
 
     // ----------------------------------------------------------------

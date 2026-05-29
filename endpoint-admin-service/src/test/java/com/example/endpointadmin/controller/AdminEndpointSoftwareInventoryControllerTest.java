@@ -1,12 +1,17 @@
 package com.example.endpointadmin.controller;
 
 import com.example.endpointadmin.config.SecurityConfigLocal;
+import com.example.endpointadmin.dto.v1.admin.AdminSoftwareInventoryDiffResponse;
+import com.example.endpointadmin.dto.v1.admin.AdminSoftwareInventoryStateHistoryResponse;
 import com.example.endpointadmin.model.EndpointSoftwareInventoryItem;
 import com.example.endpointadmin.model.EndpointSoftwareInventorySnapshot;
 import com.example.endpointadmin.model.SoftwareInstallSource;
+import com.example.endpointadmin.model.SoftwareInventoryChangeType;
+import com.example.endpointadmin.dto.v1.admin.AdminSoftwareInventoryDiffEntryResponse;
 import com.example.endpointadmin.repository.EndpointSoftwareInventoryItemRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.TenantContextResolver;
+import com.example.endpointadmin.service.EndpointSoftwareInventoryDiffService;
 import com.example.endpointadmin.service.EndpointSoftwareInventoryService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,6 +63,9 @@ class AdminEndpointSoftwareInventoryControllerTest {
 
     @MockitoBean
     private EndpointSoftwareInventoryService inventoryService;
+
+    @MockitoBean
+    private EndpointSoftwareInventoryDiffService diffService;
 
     @MockitoBean
     private EndpointSoftwareInventoryItemRepository itemRepository;
@@ -175,6 +183,129 @@ class AdminEndpointSoftwareInventoryControllerTest {
         mockMvc.perform(get("/api/v1/admin/endpoint-software-inventory")
                         .param("page", "abc"))
                 .andExpect(status().isBadRequest());
+    }
+
+    // ----------------------------------------------------------------
+    // BE-024 diff + history routes
+
+    @Test
+    void getDeviceSoftwareDiffReturns200WithChangeLists() throws Exception {
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+        AdminSoftwareInventoryDiffResponse diff = new AdminSoftwareInventoryDiffResponse(
+                DEVICE_ID,
+                AdminSoftwareInventoryDiffResponse.DiffStatus.OK,
+                Instant.parse("2026-05-27T10:00:00Z"),
+                Instant.parse("2026-05-28T10:00:00Z"),
+                2, 2,
+                List.of(AdminSoftwareInventoryDiffEntryResponse.added(
+                        "key-added", "Firefox", "Mozilla", "120.0")),
+                List.of(AdminSoftwareInventoryDiffEntryResponse.removed(
+                        "key-removed", "OldApp", "OldVendor", "1.0")),
+                List.of(AdminSoftwareInventoryDiffEntryResponse.versionChanged(
+                        "key-changed", "7-Zip", "Igor Pavlov", "24.07", "24.08")));
+        when(diffService.diffLatest(context, DEVICE_ID)).thenReturn(diff);
+
+        mockMvc.perform(get(
+                        "/api/v1/admin/endpoint-devices/{deviceId}/software-inventory/diff",
+                        DEVICE_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.deviceId").value(DEVICE_ID.toString()))
+                .andExpect(jsonPath("$.status").value("OK"))
+                .andExpect(jsonPath("$.added[0].appKey").value("key-added"))
+                .andExpect(jsonPath("$.added[0].changeType").value(
+                        SoftwareInventoryChangeType.ADDED.name()))
+                .andExpect(jsonPath("$.added[0].fromVersion").doesNotExist())
+                .andExpect(jsonPath("$.added[0].toVersion").value("120.0"))
+                .andExpect(jsonPath("$.removed[0].appKey").value("key-removed"))
+                .andExpect(jsonPath("$.removed[0].toVersion").doesNotExist())
+                .andExpect(jsonPath("$.versionChanged[0].fromVersion").value("24.07"))
+                .andExpect(jsonPath("$.versionChanged[0].toVersion").value("24.08"));
+    }
+
+    @Test
+    void getDeviceSoftwareDiffReturns200WithNoHistoryStatusNot404() throws Exception {
+        // No-leak discipline: an unknown / cross-tenant device must NOT 404;
+        // it returns 200 + NO_HISTORY indistinguishable from "no data yet".
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+        when(diffService.diffLatest(context, DEVICE_ID))
+                .thenReturn(AdminSoftwareInventoryDiffResponse.noHistory(DEVICE_ID));
+
+        mockMvc.perform(get(
+                        "/api/v1/admin/endpoint-devices/{deviceId}/software-inventory/diff",
+                        DEVICE_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("NO_HISTORY"))
+                .andExpect(jsonPath("$.added").isEmpty())
+                .andExpect(jsonPath("$.removed").isEmpty())
+                .andExpect(jsonPath("$.versionChanged").isEmpty());
+    }
+
+    @Test
+    void getDeviceSoftwareHistoryReturns200PagedSummary() throws Exception {
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+        AdminSoftwareInventoryStateHistoryResponse row =
+                new AdminSoftwareInventoryStateHistoryResponse(
+                        UUID.fromString("55555555-5555-5555-5555-555555555555"),
+                        DEVICE_ID, 1, 42,
+                        "a".repeat(64),
+                        Instant.parse("2026-05-28T10:00:00Z"),
+                        Instant.parse("2026-05-28T10:00:01Z"));
+        when(diffService.history(eq(context), eq(DEVICE_ID), eq(0), eq(20)))
+                .thenReturn(new PageImpl<>(List.of(
+                        toEntity(row))));
+        // The controller maps entity -> DTO; stub the service to return the
+        // entity page so the mapping is exercised end-to-end.
+
+        mockMvc.perform(get(
+                        "/api/v1/admin/endpoint-devices/{deviceId}/software-inventory/history",
+                        DEVICE_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].deviceId").value(DEVICE_ID.toString()))
+                .andExpect(jsonPath("$.content[0].appCount").value(42))
+                .andExpect(jsonPath("$.content[0].appsDigestHash").value("a".repeat(64)))
+                // The raw per-app digest must NOT be on the summary wire.
+                .andExpect(jsonPath("$.content[0].appsDigest").doesNotExist());
+    }
+
+    @Test
+    void getDeviceSoftwareHistoryClampsPageSizeToMax50() throws Exception {
+        AdminTenantContext context = adminContext();
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+        when(diffService.history(eq(context), eq(DEVICE_ID), eq(0), eq(50)))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        mockMvc.perform(get(
+                        "/api/v1/admin/endpoint-devices/{deviceId}/software-inventory/history",
+                        DEVICE_ID)
+                        .param("size", "9999"))
+                .andExpect(status().isOk());
+    }
+
+    private com.example.endpointadmin.model.EndpointSoftwareInventoryStateHistory toEntity(
+            AdminSoftwareInventoryStateHistoryResponse dto) {
+        com.example.endpointadmin.model.EndpointSoftwareInventoryStateHistory e =
+                new com.example.endpointadmin.model.EndpointSoftwareInventoryStateHistory();
+        try {
+            java.lang.reflect.Field idField = e.getClass().getDeclaredField("id");
+            idField.setAccessible(true);
+            idField.set(e, dto.id());
+            java.lang.reflect.Field createdField =
+                    e.getClass().getDeclaredField("createdAt");
+            createdField.setAccessible(true);
+            createdField.set(e, dto.createdAt());
+        } catch (ReflectiveOperationException ex) {
+            throw new RuntimeException(ex);
+        }
+        e.setDeviceId(dto.deviceId());
+        e.setTenantId(TENANT_ID);
+        e.setSchemaVersion(dto.schemaVersion());
+        e.setAppCount(dto.appCount());
+        e.setAppsDigestHash(dto.appsDigestHash());
+        e.setCapturedAt(dto.capturedAt());
+        return e;
     }
 
     // ----------------------------------------------------------------
