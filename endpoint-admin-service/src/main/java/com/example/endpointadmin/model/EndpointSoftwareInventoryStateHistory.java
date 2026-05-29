@@ -56,7 +56,11 @@ import java.util.UUID;
 @Table(name = "endpoint_software_inventory_state_history",
         indexes = {
                 @Index(
-                        name = "idx_endpoint_software_inventory_state_history_tenant_device_time",
+                        // "device" abbreviated to "dev": the full name is 64
+                        // bytes, over PostgreSQL's 63-byte identifier limit
+                        // (would be truncated by PG and diverge from the V18
+                        // CREATE INDEX name). Keep this in lockstep with V18.
+                        name = "idx_endpoint_software_inventory_state_history_tenant_dev_time",
                         columnList = "tenant_id,device_id,captured_at,created_at,id")
         })
 public class EndpointSoftwareInventoryStateHistory {

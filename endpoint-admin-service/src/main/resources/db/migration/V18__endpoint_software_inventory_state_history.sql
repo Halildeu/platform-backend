@@ -96,8 +96,13 @@ CREATE TABLE endpoint_software_inventory_state_history (
 
     CONSTRAINT pk_endpoint_software_inventory_state_history PRIMARY KEY (id),
 
-    -- Schema version is a positive integer.
-    CONSTRAINT ck_endpoint_software_inventory_state_history_schema_version_range
+    -- Schema version is a positive integer. NOTE: the constraint name omits
+    -- the "_range" suffix used by the V13/V17 precedents — with this table's
+    -- longer name "..._schema_version_range" is 65 bytes, over PostgreSQL's
+    -- 63-byte identifier limit, so PG would silently truncate it and the
+    -- migration / entity / test names would no longer agree. This 58-byte
+    -- name is stored verbatim.
+    CONSTRAINT ck_endpoint_software_inventory_state_history_schema_version
         CHECK (schema_version >= 1),
 
     -- App count is non-negative (an explicit empty inventory is app_count=0).
@@ -137,7 +142,10 @@ CREATE UNIQUE INDEX uq_endpoint_software_inventory_state_history_source_cmd_resu
 -- Latest-per-device + history query path. Column order matches the
 -- deterministic tiebreaker (captured_at DESC, created_at DESC, id DESC)
 -- so PG can serve the diff "latest two" + the paged history view from an
--- index scan without a sort.
-CREATE INDEX idx_endpoint_software_inventory_state_history_tenant_device_time
+-- index scan without a sort. NOTE: "device" is abbreviated to "dev" so the
+-- name stays at 61 bytes — the unabbreviated "..._tenant_device_time" is 64
+-- bytes, over PostgreSQL's 63-byte identifier limit (would be truncated and
+-- diverge from the entity @Index + test names).
+CREATE INDEX idx_endpoint_software_inventory_state_history_tenant_dev_time
     ON endpoint_software_inventory_state_history
         (tenant_id, device_id, captured_at, created_at, id);

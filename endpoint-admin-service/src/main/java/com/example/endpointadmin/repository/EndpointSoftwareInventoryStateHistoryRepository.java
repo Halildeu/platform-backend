@@ -18,7 +18,7 @@ import java.util.UUID;
  * (capped to {@code PageRequest.of(0, 2)}); the history view pages the same
  * ordering. The deterministic tiebreaker — {@code captured_at DESC,
  * created_at DESC, id DESC} — matches the
- * {@code idx_endpoint_software_inventory_state_history_tenant_device_time}
+ * {@code idx_endpoint_software_inventory_state_history_tenant_dev_time}
  * composite index column order so PG avoids a sort.
  */
 @Repository

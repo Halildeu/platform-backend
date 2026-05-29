@@ -106,7 +106,7 @@ class EndpointSoftwareInventoryStateHistoryPostgresIntegrationTest {
                         + "AND contype = 'c'",
                 String.class);
         assertThat(checks).contains(
-                "ck_endpoint_software_inventory_state_history_schema_version_range",
+                "ck_endpoint_software_inventory_state_history_schema_version",
                 "ck_endpoint_software_inventory_state_history_app_count_range",
                 "ck_endpoint_software_inventory_state_history_hash_format",
                 "ck_endpoint_software_inventory_state_history_digest_shape");
@@ -123,7 +123,7 @@ class EndpointSoftwareInventoryStateHistoryPostgresIntegrationTest {
                 "SELECT indexname FROM pg_indexes "
                         + "WHERE tablename = '" + TABLE + "' "
                         + "AND indexname = "
-                        + "'idx_endpoint_software_inventory_state_history_tenant_device_time'",
+                        + "'idx_endpoint_software_inventory_state_history_tenant_dev_time'",
                 String.class);
         assertThat(latestIndex).hasSize(1);
     }
@@ -159,7 +159,7 @@ class EndpointSoftwareInventoryStateHistoryPostgresIntegrationTest {
                 tenantId, deviceId, null, 0, 0, VALID_HASH, "[]"))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining(
-                        "ck_endpoint_software_inventory_state_history_schema_version_range");
+                        "ck_endpoint_software_inventory_state_history_schema_version");
     }
 
     @Test
