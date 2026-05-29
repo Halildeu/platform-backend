@@ -140,13 +140,17 @@ class EndpointSoftwareInventoryQueryPostgresIntegrationTest {
                 deviceId, tenantId, "test-host", Timestamp.from(now),
                 Timestamp.from(now));
 
+        // V8 CHECK ck_endpoint_software_inventory_snapshots_apps_available_pair
+        // requires apps_collected_at NOT NULL when apps_available = true.
         jdbc.update(
                 "INSERT INTO endpoint_software_inventory_snapshots "
                         + "(id, tenant_id, device_id, schema_version, "
                         + " supported, truncated, apps_available, "
+                        + " apps_collected_at, "
                         + " created_at, updated_at, version) "
-                        + "VALUES (?, ?, ?, 1, true, false, true, ?, ?, 0)",
+                        + "VALUES (?, ?, ?, 1, true, false, true, ?, ?, ?, 0)",
                 snapshotId, tenantId, deviceId,
+                Timestamp.from(now),
                 Timestamp.from(now), Timestamp.from(now));
 
         insertItem("7-Zip", "Igor Pavlov", SoftwareInstallSource.HKLM, now);
