@@ -1,5 +1,7 @@
 package com.example.endpointadmin.security;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,6 +25,32 @@ import java.util.regex.Pattern;
  * caller did not opt in; AG-025H lightweight default). When present it
  * MUST conform to the schema.
  *
+ * <p><strong>Allowlist projection (Codex 019e… P1-1 must-fix).</strong>
+ * The output of {@link #sanitize(Map)} is the SAME object that flows into
+ * BOTH the persisted command-result {@code result_payload.details} and the
+ * device-health snapshot {@code redacted_payload}. The policy therefore
+ * does not merely walk-and-copy the agent map (which would carry
+ * off-contract keys such as {@code volumeLabel}, {@code processList},
+ * {@code localBootTime}, {@code rawOutput} verbatim into both sinks). It
+ * builds a <em>canonical projection</em> containing only the v1 contract
+ * keys; any unknown key — top-level, nested in {@code memory}/{@code uptime},
+ * or on a {@code probeErrors[]} element — is DROPPED (and debug-logged).
+ * This is exactly the contract's forward-compat rule
+ * (docs/faz-22-device-health-contract-v1.md §"Forward-compat rule":
+ * unknown top-level fields are <em>ignored, not persisted</em>). The
+ * stricter disk facet ({@code additionalProperties: false}) is fail-closed
+ * <em>rejected</em> (not dropped) on any extra key, because a label /
+ * serial / filesystem / mount / GUID has no legitimate place there.
+ *
+ * <p><strong>Fail-closed required fields (Codex 019e… P1-2 must-fix).</strong>
+ * The policy validates required v1 fields like a JSON-schema validator:
+ * a missing/wrong-typed required top-level field, a missing/wrong-typed
+ * required {@code memory}/{@code uptime} subfield, or a non-enum
+ * {@code sourceUsed} is fail-closed <em>rejected</em> with
+ * {@link IllegalArgumentException}. A minimal {@code {"schemaVersion":1}}
+ * block is rejected — the downstream service must NEVER synthesize
+ * "healthy" defaults for required fields.
+ *
  * <p>Redaction boundary (security invariant — DO NOT widen):
  * <table>
  *   <tr><th>Field group</th><th>On the wire</th><th>NEVER on the wire</th></tr>
@@ -37,31 +65,21 @@ import java.util.regex.Pattern;
  *   <tr><td>Errors</td><td>{@code code} (enum), bounded {@code summary}
  *       (&le;200)</td><td>raw errno, filesystem path</td></tr>
  * </table>
- *
- * <p>Unlike the hardware policy (which STRIPS sensitive disk identifiers
- * to {@code <redacted>}), the device-health disk facet has a strict
- * allowlist: a disk object carrying ANY key outside
- * {@code {driveLetter, totalBytes, freeBytes, freePercent, lowDiskWarning}}
- * is <strong>fail-closed rejected</strong> (out-of-shape), because the
- * contract's {@code fixedDiskHealth} is {@code additionalProperties:
- * false} — a label / serial / filesystem / mount / GUID key has no
- * legitimate place there and its presence means an off-contract agent or
- * an intermediary is shipping something it shouldn't.
- *
- * <p>Forward-compat (contract §"Forward-compat rule"): the policy is
- * runtime-tolerant of unknown <em>top-level</em> device-health fields
- * (ignored), but strict on the disk facet shape and on the known v1
- * fields it validates. A genuinely new shape bumps {@code schemaVersion}.
- *
- * <p>Schema validation: {@link #sanitize(Map)} validates the schema
- * version ({@code const 1}), the {@code sourceUsed} enum
- * ({@code win32 | none}), numeric ranges, the disk-facet allowlist +
- * {@code driveLetter} pattern, and fail-closed rejects secret value
- * patterns (bearer / JWT / kv leaks) and out-of-shape sub-trees with
- * {@link IllegalArgumentException}.
  */
 @Component
 public class DeviceHealthPayloadPolicy {
+
+    private static final Logger log = LoggerFactory.getLogger(DeviceHealthPayloadPolicy.class);
+
+    /**
+     * Bounded probeError {@code summary} cap. The contract pins
+     * {@code maxLength: 200}; the policy enforces it on the projection so
+     * the command-result payload, the snapshot {@code redacted_payload},
+     * and any audit copy are all bounded — not just the persisted entity
+     * scalar (Codex 019e… P1-3 must-fix). Exposed so the snapshot service
+     * shares the SAME constant instead of an independent 256 value.
+     */
+    public static final int SUMMARY_MAX_LEN = 200;
 
     /**
      * Keys whose value, anywhere in the device-health sub-tree, must
@@ -74,6 +92,81 @@ public class DeviceHealthPayloadPolicy {
             "jwt",
             "password",
             "secret"
+    );
+
+    /**
+     * Allowlist of v1 top-level device-health keys (contract
+     * {@code additionalProperties: false} + required set, plus the optional
+     * {@code probeErrors}). Any other top-level key is DROPPED (forward-compat
+     * "ignore unknown", never persisted).
+     */
+    private static final Set<String> TOP_ALLOWED_KEYS = Set.of(
+            "schemaVersion",
+            "supported",
+            "probeComplete",
+            "fixedDisks",
+            "fixedDiskCount",
+            "fixedDisksTruncated",
+            "maxFixedDisks",
+            "memory",
+            "uptime",
+            "anyLowDisk",
+            "sourceUsed",
+            "probeErrors",
+            "probeDurationMs"
+    );
+
+    /** Required top-level fields (contract {@code required}). */
+    private static final Set<String> TOP_REQUIRED_KEYS = Set.of(
+            "schemaVersion",
+            "supported",
+            "probeComplete",
+            "fixedDisks",
+            "fixedDiskCount",
+            "fixedDisksTruncated",
+            "maxFixedDisks",
+            "memory",
+            "uptime",
+            "anyLowDisk",
+            "sourceUsed",
+            "probeDurationMs"
+    );
+
+    /** Allowlist of {@code memory} keys (contract {@code memoryHealth}). */
+    private static final Set<String> MEMORY_ALLOWED_KEYS = Set.of(
+            "totalPhysicalBytes",
+            "availableBytes",
+            "usedPercent",
+            "highPressureWarning",
+            "commitLimitBytes",
+            "commitUsedBytes"
+    );
+
+    /** Allowlist of {@code uptime} keys (contract {@code uptimeHealth}). */
+    private static final Set<String> UPTIME_ALLOWED_KEYS = Set.of(
+            "lastBootEpochSec",
+            "uptimeSeconds",
+            "uptimeDays",
+            "longUptimeWarning"
+    );
+
+    /** Allowlist of {@code probeErrors[]} element keys (contract
+     *  {@code probeError}; {@code code} required, {@code source}/{@code summary}
+     *  optional). */
+    private static final Set<String> PROBE_ERROR_ALLOWED_KEYS = Set.of(
+            "source",
+            "code",
+            "summary"
+    );
+
+    /** Accepted {@code probeError.code} enum (contract). */
+    private static final Set<String> PROBE_ERROR_CODES = Set.of(
+            "UNSUPPORTED_PLATFORM",
+            "DISK_ENUM_FAILED",
+            "MEMORY_QUERY_FAILED",
+            "UPTIME_QUERY_FAILED",
+            "BOOT_TIME_FAILED",
+            "NO_EVIDENCE"
     );
 
     /**
@@ -137,7 +230,8 @@ public class DeviceHealthPayloadPolicy {
 
     /**
      * Walk {@code details} producing a new map with the device-health
-     * sub-tree validated + sanitized. The original map is not modified.
+     * sub-tree validated + projected onto the canonical v1 shape. The
+     * original map is not modified.
      *
      * @param details the agent {@code result_payload.details} map
      * @return sanitized {@code effectiveDetails} — caller hands this to
@@ -175,101 +269,166 @@ public class DeviceHealthPayloadPolicy {
     }
 
     /**
-     * Validate + sanitize a device-health sub-tree map. Performs:
+     * Validate + project a device-health sub-tree map onto the canonical
+     * v1 shape. Performs (in order):
      * <ul>
-     *   <li>Schema version check ({@code const 1})</li>
-     *   <li>{@code sourceUsed} enum check ({@code win32 | none})</li>
+     *   <li>Secret key/value reject over the RAW sub-tree (so a secret in
+     *       an off-contract key is rejected before that key is dropped)</li>
+     *   <li>Required top-level field presence + type (fail-closed)</li>
+     *   <li>Schema version ({@code const 1}) + {@code sourceUsed} enum</li>
      *   <li>Numeric range checks (counts, durations, percents)</li>
-     *   <li>{@code fixedDisks} array shape + per-disk allowlist +
+     *   <li>{@code fixedDisks} array shape + per-disk allowlist (reject) +
      *       {@code driveLetter} pattern</li>
-     *   <li>{@code memory} / {@code uptime} object shape</li>
-     *   <li>Key-based reject (secrets) + value-pattern reject/strip</li>
+     *   <li>{@code memory} / {@code uptime} required-subfield presence +
+     *       range</li>
+     *   <li>{@code probeErrors[]} shape ({@code code} enum, bounded summary)</li>
+     *   <li>Allowlist projection — only canonical v1 keys survive; unknown
+     *       top-level / memory / uptime / probeError keys are dropped +
+     *       debug-logged</li>
      * </ul>
      */
     private Map<String, Object> sanitizeDeviceHealth(Map<String, Object> dh, String path) {
-        // Schema version.
-        Object schemaVersionObj = dh.get("schemaVersion");
-        if (schemaVersionObj != null) {
-            Integer schemaVersion = toInt(schemaVersionObj, path + ".schemaVersion");
-            if (schemaVersion == null || !ACCEPTED_SCHEMA_VERSIONS.contains(schemaVersion)) {
+        // 0. Secret reject over the RAW sub-tree FIRST. A secret hidden in
+        //    an off-contract key (which the projection below would drop)
+        //    must still fail-closed the whole result, not be silently
+        //    discarded. Also applies value-pattern reject to every scalar.
+        rejectSecrets(dh, path);
+
+        // 1. Required top-level fields (fail-closed). A minimal
+        //    {"schemaVersion":1} block is rejected here.
+        for (String req : TOP_REQUIRED_KEYS) {
+            if (!dh.containsKey(req) || dh.get(req) == null) {
                 throw new IllegalArgumentException(
-                        "Unsupported device-health schema_version=" + schemaVersionObj
-                                + " at " + path + ".schemaVersion");
+                        "Missing required device-health field '" + req + "' at "
+                                + path + "." + req
+                                + " — required v1 fields are fail-closed (no healthy default).");
             }
         }
 
-        // sourceUsed enum.
-        Object sourceUsed = dh.get("sourceUsed");
-        if (sourceUsed != null) {
-            String su = String.valueOf(sourceUsed);
-            if (!ACCEPTED_SOURCE_USED.contains(su)) {
-                throw new IllegalArgumentException(
-                        "Unsupported device-health sourceUsed='" + su
-                                + "' at " + path + ".sourceUsed (expected win32 | none)");
-            }
+        // 2. Schema version (const 1).
+        Integer schemaVersion = toInt(dh.get("schemaVersion"), path + ".schemaVersion");
+        if (schemaVersion == null || !ACCEPTED_SCHEMA_VERSIONS.contains(schemaVersion)) {
+            throw new IllegalArgumentException(
+                    "Unsupported device-health schema_version=" + dh.get("schemaVersion")
+                            + " at " + path + ".schemaVersion");
         }
 
-        // Top-level numeric ranges.
+        // 3. Boolean-typed required fields.
+        requireBoolean(dh.get("supported"), path + ".supported");
+        requireBoolean(dh.get("probeComplete"), path + ".probeComplete");
+        requireBoolean(dh.get("fixedDisksTruncated"), path + ".fixedDisksTruncated");
+        requireBoolean(dh.get("anyLowDisk"), path + ".anyLowDisk");
+
+        // 4. sourceUsed enum (required + must be win32|none).
+        String su = String.valueOf(dh.get("sourceUsed"));
+        if (!ACCEPTED_SOURCE_USED.contains(su)) {
+            throw new IllegalArgumentException(
+                    "Unsupported device-health sourceUsed='" + su
+                            + "' at " + path + ".sourceUsed (expected win32 | none)");
+        }
+
+        // 5. Top-level numeric ranges (required → non-null already proven).
         requireNonNegative(dh.get("fixedDiskCount"), path + ".fixedDiskCount");
         requireNonNegative(dh.get("maxFixedDisks"), path + ".maxFixedDisks");
         requireNonNegative(dh.get("probeDurationMs"), path + ".probeDurationMs");
 
-        // fixedDisks must be an array (or absent) — and each entry must
-        // conform to the strict disk allowlist + driveLetter pattern.
+        // 6. fixedDisks must be an array — and each entry must conform to
+        //    the strict disk allowlist + driveLetter pattern.
         Object fixedDisksRaw = dh.get("fixedDisks");
-        ensureArrayOrAbsent(fixedDisksRaw, path + ".fixedDisks");
-        if (fixedDisksRaw instanceof List<?> fixedDisks) {
-            int idx = 0;
-            for (Object diskObj : fixedDisks) {
-                String diskPath = path + ".fixedDisks[" + idx + "]";
-                if (!(diskObj instanceof Map<?, ?> diskMap)) {
+        if (!(fixedDisksRaw instanceof List<?>)) {
+            throw new IllegalArgumentException(
+                    "Expected array at " + path + ".fixedDisks but got "
+                            + fixedDisksRaw.getClass().getSimpleName());
+        }
+        List<Object> projectedDisks = new ArrayList<>();
+        int idx = 0;
+        for (Object diskObj : (List<?>) fixedDisksRaw) {
+            String diskPath = path + ".fixedDisks[" + idx + "]";
+            if (!(diskObj instanceof Map<?, ?> diskMap)) {
+                throw new IllegalArgumentException(
+                        "Expected object at " + diskPath + " but got "
+                                + (diskObj == null ? "null"
+                                        : diskObj.getClass().getSimpleName()));
+            }
+            projectedDisks.add(projectDiskFacet(diskMap, diskPath));
+            idx++;
+        }
+
+        // 7. memory — required object with required subfields.
+        Object memoryRaw = dh.get("memory");
+        if (!(memoryRaw instanceof Map<?, ?> memMap)) {
+            throw new IllegalArgumentException(
+                    "Expected object at " + path + ".memory but got "
+                            + memoryRaw.getClass().getSimpleName());
+        }
+        Map<String, Object> projectedMemory =
+                projectMemory(memMap, path + ".memory");
+
+        // 8. uptime — required object with required subfields.
+        Object uptimeRaw = dh.get("uptime");
+        if (!(uptimeRaw instanceof Map<?, ?> upMap)) {
+            throw new IllegalArgumentException(
+                    "Expected object at " + path + ".uptime but got "
+                            + uptimeRaw.getClass().getSimpleName());
+        }
+        Map<String, Object> projectedUptime =
+                projectUptime(upMap, path + ".uptime");
+
+        // 9. probeErrors — optional array of bounded {source,code,summary}.
+        Object probeErrorsRaw = dh.get("probeErrors");
+        List<Object> projectedProbeErrors = null;
+        if (probeErrorsRaw != null) {
+            if (!(probeErrorsRaw instanceof List<?>)) {
+                throw new IllegalArgumentException(
+                        "Expected array at " + path + ".probeErrors but got "
+                                + probeErrorsRaw.getClass().getSimpleName());
+            }
+            projectedProbeErrors = new ArrayList<>();
+            int ei = 0;
+            for (Object errObj : (List<?>) probeErrorsRaw) {
+                String errPath = path + ".probeErrors[" + ei + "]";
+                if (!(errObj instanceof Map<?, ?> errMap)) {
                     throw new IllegalArgumentException(
-                            "Expected object at " + diskPath + " but got "
-                                    + (diskObj == null ? "null"
-                                            : diskObj.getClass().getSimpleName()));
+                            "Expected object at " + errPath + " but got "
+                                    + (errObj == null ? "null"
+                                            : errObj.getClass().getSimpleName()));
                 }
-                validateDiskFacet(diskMap, diskPath);
-                idx++;
+                projectedProbeErrors.add(projectProbeError(errMap, errPath));
+                ei++;
             }
         }
 
-        // memory / uptime object range checks (shape-tolerant: extra
-        // fields ignored, known fields validated).
-        Object memory = dh.get("memory");
-        if (memory instanceof Map<?, ?> memMap) {
-            requireNonNegative(memMap.get("totalPhysicalBytes"),
-                    path + ".memory.totalPhysicalBytes");
-            requireNonNegative(memMap.get("availableBytes"),
-                    path + ".memory.availableBytes");
-            requirePercent(memMap.get("usedPercent"), path + ".memory.usedPercent");
-            requireNonNegative(memMap.get("commitLimitBytes"),
-                    path + ".memory.commitLimitBytes");
-            requireNonNegative(memMap.get("commitUsedBytes"),
-                    path + ".memory.commitUsedBytes");
+        // 10. Allowlist projection — assemble the canonical v1 map. Only
+        //     contract keys survive; unknown top-level keys are dropped
+        //     (debug-logged), never persisted.
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("schemaVersion", dh.get("schemaVersion"));
+        out.put("supported", dh.get("supported"));
+        out.put("probeComplete", dh.get("probeComplete"));
+        out.put("fixedDisks", projectedDisks);
+        out.put("fixedDiskCount", dh.get("fixedDiskCount"));
+        out.put("fixedDisksTruncated", dh.get("fixedDisksTruncated"));
+        out.put("maxFixedDisks", dh.get("maxFixedDisks"));
+        out.put("memory", projectedMemory);
+        out.put("uptime", projectedUptime);
+        out.put("anyLowDisk", dh.get("anyLowDisk"));
+        out.put("sourceUsed", su);
+        if (projectedProbeErrors != null) {
+            out.put("probeErrors", projectedProbeErrors);
         }
+        out.put("probeDurationMs", dh.get("probeDurationMs"));
 
-        Object uptime = dh.get("uptime");
-        if (uptime instanceof Map<?, ?> upMap) {
-            requireNonNegative(upMap.get("lastBootEpochSec"),
-                    path + ".uptime.lastBootEpochSec");
-            requireNonNegative(upMap.get("uptimeSeconds"),
-                    path + ".uptime.uptimeSeconds");
-            requireNonNegative(upMap.get("uptimeDays"),
-                    path + ".uptime.uptimeDays");
-        }
-
-        // Walk + sanitize recursively (key reject + value reject/strip).
-        @SuppressWarnings("unchecked")
-        Map<String, Object> out = (Map<String, Object>) walkSanitize(dh, path);
+        logDroppedKeys(dh.keySet(), TOP_ALLOWED_KEYS, path);
         return out;
     }
 
     /**
-     * Validate a single fixed-disk facet against the strict contract
-     * shape: only the five allowed keys, and {@code driveLetter} must
-     * match {@code ^[A-Z]:$}. Any other key is fail-closed rejected.
+     * Validate + project a single fixed-disk facet. The disk facet is
+     * stricter than the rest of the tree: any key outside the five-key
+     * allowlist is fail-closed REJECTED (not dropped) — a label / serial /
+     * filesystem / mount / GUID has no legitimate place on the wire.
      */
-    private void validateDiskFacet(Map<?, ?> diskMap, String diskPath) {
+    private Map<String, Object> projectDiskFacet(Map<?, ?> diskMap, String diskPath) {
         for (Map.Entry<?, ?> entry : diskMap.entrySet()) {
             String key = String.valueOf(entry.getKey());
             String keyLower = key.toLowerCase(Locale.ROOT);
@@ -297,60 +456,152 @@ public class DeviceHealthPayloadPolicy {
         requireNonNegative(diskMap.get("totalBytes"), diskPath + ".totalBytes");
         requireNonNegative(diskMap.get("freeBytes"), diskPath + ".freeBytes");
         requirePercent(diskMap.get("freePercent"), diskPath + ".freePercent");
+        requireBoolean(diskMap.get("lowDiskWarning"), diskPath + ".lowDiskWarning");
+
+        // Project the canonical five-key disk facet (all five required +
+        // already validated). Disk facet has no extra keys (rejected
+        // above), so this is a straight canonical re-emit.
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("driveLetter", dl);
+        out.put("totalBytes", diskMap.get("totalBytes"));
+        out.put("freeBytes", diskMap.get("freeBytes"));
+        out.put("freePercent", diskMap.get("freePercent"));
+        out.put("lowDiskWarning", diskMap.get("lowDiskWarning"));
+        return out;
     }
 
-    @SuppressWarnings("unchecked")
-    private Object walkSanitize(Object node, String path) {
+    /** Validate required {@code memory} subfields + project the canonical
+     *  six-key object. Unknown memory keys (e.g. {@code processList}) are
+     *  dropped + debug-logged. */
+    private Map<String, Object> projectMemory(Map<?, ?> memMap, String path) {
+        requireKeysPresent(memMap, MEMORY_ALLOWED_KEYS, path);
+        requireNonNegative(memMap.get("totalPhysicalBytes"), path + ".totalPhysicalBytes");
+        requireNonNegative(memMap.get("availableBytes"), path + ".availableBytes");
+        requirePercent(memMap.get("usedPercent"), path + ".usedPercent");
+        requireBoolean(memMap.get("highPressureWarning"), path + ".highPressureWarning");
+        requireNonNegative(memMap.get("commitLimitBytes"), path + ".commitLimitBytes");
+        requireNonNegative(memMap.get("commitUsedBytes"), path + ".commitUsedBytes");
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("totalPhysicalBytes", memMap.get("totalPhysicalBytes"));
+        out.put("availableBytes", memMap.get("availableBytes"));
+        out.put("usedPercent", memMap.get("usedPercent"));
+        out.put("highPressureWarning", memMap.get("highPressureWarning"));
+        out.put("commitLimitBytes", memMap.get("commitLimitBytes"));
+        out.put("commitUsedBytes", memMap.get("commitUsedBytes"));
+        logDroppedKeys(stringKeys(memMap), MEMORY_ALLOWED_KEYS, path);
+        return out;
+    }
+
+    /** Validate required {@code uptime} subfields + project the canonical
+     *  four-key object. Unknown uptime keys (e.g. {@code localBootTime})
+     *  are dropped + debug-logged. */
+    private Map<String, Object> projectUptime(Map<?, ?> upMap, String path) {
+        requireKeysPresent(upMap, UPTIME_ALLOWED_KEYS, path);
+        requireNonNegative(upMap.get("lastBootEpochSec"), path + ".lastBootEpochSec");
+        requireNonNegative(upMap.get("uptimeSeconds"), path + ".uptimeSeconds");
+        requireNonNegative(upMap.get("uptimeDays"), path + ".uptimeDays");
+        requireBoolean(upMap.get("longUptimeWarning"), path + ".longUptimeWarning");
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("lastBootEpochSec", upMap.get("lastBootEpochSec"));
+        out.put("uptimeSeconds", upMap.get("uptimeSeconds"));
+        out.put("uptimeDays", upMap.get("uptimeDays"));
+        out.put("longUptimeWarning", upMap.get("longUptimeWarning"));
+        logDroppedKeys(stringKeys(upMap), UPTIME_ALLOWED_KEYS, path);
+        return out;
+    }
+
+    /**
+     * Validate + project a single {@code probeErrors[]} element. {@code code}
+     * is required + enum-checked; {@code source} (if present) must be the
+     * {@code win32|none} enum; {@code summary} (if present) is bounded to
+     * {@link #SUMMARY_MAX_LEN} HERE (so the command-result payload is also
+     * bounded, not just the snapshot scalar) after value-redaction. Unknown
+     * keys (e.g. {@code rawOutput}, {@code stackTrace}) are dropped +
+     * debug-logged.
+     */
+    private Map<String, Object> projectProbeError(Map<?, ?> errMap, String errPath) {
+        Object code = errMap.get("code");
+        if (code == null) {
+            throw new IllegalArgumentException(
+                    "Missing required probeError code at " + errPath + ".code");
+        }
+        String codeStr = String.valueOf(code);
+        if (!PROBE_ERROR_CODES.contains(codeStr)) {
+            throw new IllegalArgumentException(
+                    "Unsupported probeError code '" + codeStr + "' at "
+                            + errPath + ".code");
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        Object source = errMap.get("source");
+        if (source != null) {
+            String src = String.valueOf(source);
+            if (!ACCEPTED_SOURCE_USED.contains(src)) {
+                throw new IllegalArgumentException(
+                        "Unsupported probeError source '" + src + "' at "
+                                + errPath + ".source (expected win32 | none)");
+            }
+            out.put("source", src);
+        }
+        out.put("code", codeStr);
+        Object summary = errMap.get("summary");
+        if (summary != null) {
+            // Value-redaction already ran in rejectSecrets(); re-apply the
+            // identifier strip on the projected scalar so a stripped path
+            // is reflected, then bound the length.
+            String s = redactStringValue(String.valueOf(summary), errPath + ".summary");
+            if (s.length() > SUMMARY_MAX_LEN) {
+                s = s.substring(0, SUMMARY_MAX_LEN);
+            }
+            out.put("summary", s);
+        }
+        logDroppedKeys(stringKeys(errMap), PROBE_ERROR_ALLOWED_KEYS, errPath);
+        return out;
+    }
+
+    /**
+     * Recursively walk the RAW sub-tree rejecting forbidden secret keys
+     * and secret value patterns BEFORE the allowlist projection drops any
+     * off-contract key. A secret in a soon-to-be-dropped key must still
+     * fail-closed the entire result.
+     */
+    private void rejectSecrets(Object node, String path) {
         if (node == null) {
-            return null;
+            return;
         }
         if (node instanceof Map<?, ?> map) {
-            Map<String, Object> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 String key = String.valueOf(entry.getKey());
                 String keyLower = key.toLowerCase(Locale.ROOT);
                 String childPath = path + "." + key;
-
                 if (REJECT_KEY_LOWER.contains(keyLower)) {
                     throw new IllegalArgumentException(
                             "Forbidden device-health key '" + key + "' at "
                                     + childPath
                                     + " — secrets must not appear in device-health payloads.");
                 }
-                out.put(key, walkSanitize(entry.getValue(), childPath));
+                rejectSecrets(entry.getValue(), childPath);
             }
-            return out;
+            return;
         }
         if (node instanceof Iterable<?> iterable) {
-            List<Object> out = new ArrayList<>();
             int i = 0;
             for (Object element : iterable) {
-                out.add(walkSanitize(element, path + "[" + (i++) + "]"));
+                rejectSecrets(element, path + "[" + (i++) + "]");
             }
-            return out;
+            return;
         }
         if (node instanceof String s) {
-            return redactStringValue(s, path);
+            assertNoSecretValue(s, path);
         }
-        return node;
     }
 
-    /**
-     * Apply value-level redaction to a string scalar (parity with the
-     * hardware policy's two-tier behavior):
-     * <ol>
-     *   <li>Secret value patterns (Bearer / JWT / kv leaks) fail-closed
-     *       throw — strip is unsafe because the surrounding structure may
-     *       still leak the secret length or position.</li>
-     *   <li>Identifier patterns (user paths, SIDs, machine GUIDs) are
-     *       replaced with {@value #REDACTED} — the contract says a
-     *       probeError summary must never be a path; if an off-contract
-     *       agent embeds one, we neutralize it rather than persist it.</li>
-     * </ol>
-     */
-    private String redactStringValue(String value, String path) {
+    /** Fail-closed reject a string scalar carrying a secret value pattern
+     *  (Bearer / JWT / kv leak). */
+    private static void assertNoSecretValue(String value, String path) {
         if (value == null || value.isEmpty()) {
-            return value;
+            return;
         }
         for (Pattern pattern : SECRET_VALUE_PATTERNS) {
             if (pattern.matcher(value).find()) {
@@ -360,6 +611,22 @@ public class DeviceHealthPayloadPolicy {
                                 + " in device-health payloads.");
             }
         }
+    }
+
+    /**
+     * Apply identifier-level redaction to a string scalar (user paths,
+     * SIDs, machine GUIDs replaced with {@value #REDACTED}). Secret value
+     * patterns were already fail-closed rejected by {@link #rejectSecrets}.
+     * The contract says a probeError summary must never be a path; if an
+     * off-contract agent embeds one, we neutralize it rather than persist.
+     */
+    private String redactStringValue(String value, String path) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        // Defense-in-depth: also reject here (a value reaching this method
+        // outside the rejectSecrets walk still must not leak a secret).
+        assertNoSecretValue(value, path);
         String out = value;
         out = USERS_PATH.matcher(out).replaceAll(REDACTED);
         out = UNIX_USER_PATH.matcher(out).replaceAll(REDACTED);
@@ -368,9 +635,32 @@ public class DeviceHealthPayloadPolicy {
         return out;
     }
 
+    /** Require every key in {@code requiredKeys} present + non-null in the
+     *  map. Used for {@code memory}/{@code uptime} required subfields. */
+    private static void requireKeysPresent(Map<?, ?> map, Set<String> requiredKeys, String path) {
+        for (String req : requiredKeys) {
+            if (!map.containsKey(req) || map.get(req) == null) {
+                throw new IllegalArgumentException(
+                        "Missing required device-health field '" + req + "' at "
+                                + path + "." + req
+                                + " — required v1 subfields are fail-closed.");
+            }
+        }
+    }
+
+    private static void requireBoolean(Object value, String path) {
+        if (value instanceof Boolean) {
+            return;
+        }
+        throw new IllegalArgumentException(
+                "Expected boolean at " + path + " but got "
+                        + (value == null ? "null" : value.getClass().getSimpleName()));
+    }
+
     private static void requireNonNegative(Object value, String path) {
         if (value == null) {
-            return;
+            throw new IllegalArgumentException(
+                    "Expected number at " + path + " but got null");
         }
         Number n = toNumber(value, path);
         if (n != null && n.longValue() < 0) {
@@ -381,7 +671,8 @@ public class DeviceHealthPayloadPolicy {
 
     private static void requirePercent(Object value, String path) {
         if (value == null) {
-            return;
+            throw new IllegalArgumentException(
+                    "Expected percent at " + path + " but got null");
         }
         Number n = toNumber(value, path);
         if (n == null) {
@@ -391,16 +682,6 @@ public class DeviceHealthPayloadPolicy {
         if (v < 0 || v > 100) {
             throw new IllegalArgumentException(
                     "Percent out of range [0,100] at " + path + ": " + value);
-        }
-    }
-
-    private static void ensureArrayOrAbsent(Object value, String path) {
-        if (value == null) {
-            return;
-        }
-        if (!(value instanceof List<?>)) {
-            throw new IllegalArgumentException(
-                    "Expected array at " + path + " but got " + value.getClass().getSimpleName());
         }
     }
 
@@ -444,6 +725,29 @@ public class DeviceHealthPayloadPolicy {
         }
         throw new IllegalArgumentException(
                 "Expected number at " + path + " but got " + value.getClass().getSimpleName());
+    }
+
+    /** Collect the string-typed keys of a map (for drop-logging). */
+    private static Set<String> stringKeys(Map<?, ?> map) {
+        java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>();
+        for (Object k : map.keySet()) {
+            keys.add(String.valueOf(k));
+        }
+        return keys;
+    }
+
+    /** Debug-log any key in {@code present} not in {@code allowed} (dropped
+     *  by the projection). Forward-compat: ignore unknown, do not persist. */
+    private static void logDroppedKeys(Set<String> present, Set<String> allowed, String path) {
+        if (!log.isDebugEnabled()) {
+            return;
+        }
+        for (String key : present) {
+            if (!allowed.contains(key)) {
+                log.debug("Dropping off-contract device-health key '{}' at {} (forward-compat: ignored, not persisted)",
+                        key, path + "." + key);
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")

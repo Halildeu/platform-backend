@@ -14,6 +14,7 @@ import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointCommandResultRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointDeviceHealthSnapshotRepository;
+import com.example.endpointadmin.security.DeviceHealthPayloadPolicy;
 import com.example.endpointadmin.testsupport.IsolatedH2DataJpaTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * BE — device-health ingest + query tests (Faz 22.5, AG-033). Mirrors the
@@ -83,6 +85,11 @@ class EndpointDeviceHealthServiceTest {
 
     @Autowired
     private RecordingEventPublisher recordingEvents;
+
+    /** Plain policy instance (no Spring deps) — used to mirror the
+     *  production flow where EndpointAgentCommandService sanitizes the
+     *  agent payload BEFORE handing it to {@link EndpointDeviceHealthService}. */
+    private final DeviceHealthPayloadPolicy policy = new DeviceHealthPayloadPolicy();
 
     // ------------------------------------------------------------------
     // hasDeviceHealthBlock predicate
@@ -330,7 +337,11 @@ class EndpointDeviceHealthServiceTest {
     }
 
     @Test
-    void probeErrorSummaryTruncatedTo256Chars() {
+    void probeErrorSummaryBoundedToContractMax() {
+        // Codex P1-3: cap is 200 (contract maxLength), NOT 256. The bound
+        // is enforced in the policy stage AND defensively in the service,
+        // so both the command-result payload and the persisted scalar are
+        // ≤200. The service shares DeviceHealthPayloadPolicy.SUMMARY_MAX_LEN.
         EndpointDevice device = persistDevice(TENANT_A, "PC-A");
         EndpointCommand command = persistCommand(device);
         EndpointCommandResult result = persistResult(command, Instant.now());
@@ -338,13 +349,130 @@ class EndpointDeviceHealthServiceTest {
         Map<String, Object> dh = goldenUnsupported();
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
-        errors.get(0).put("summary", "x".repeat(300));
+        errors.get(0).put("summary", "x".repeat(500));
 
+        // Mirror the production flow: the policy projection runs before
+        // ingest (EndpointAgentCommandService), so the command-result
+        // payload is the bounded projection.
+        Map<String, Object> sanitized = policy.sanitize(wrap(dh));
         EndpointDeviceHealthSnapshot persisted =
-                service.ingest(device, command, result, wrap(dh));
+                service.ingest(device, command, result, sanitized);
 
+        // Persisted entity scalar bounded to 200.
         String stored = (String) persisted.getProbeErrors().get(0).get("summary");
-        assertThat(stored).hasSize(256);
+        assertThat(stored).hasSize(200);
+        assertThat(DeviceHealthPayloadPolicy.SUMMARY_MAX_LEN).isEqualTo(200);
+
+        // Round-trip: the command-result payload that the policy produced
+        // (the SAME object handed to the result row + the snapshot
+        // redacted_payload) is also bounded ≤200, not just the entity.
+        @SuppressWarnings("unchecked")
+        Map<String, Object> dhProjection = (Map<String, Object>)
+                ((Map<String, Object>) sanitized.get("inventory")).get("deviceHealth");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> payloadErrors =
+                (List<Map<String, Object>>) dhProjection.get("probeErrors");
+        assertThat((String) payloadErrors.get(0).get("summary")).hasSize(200);
+
+        // redacted_payload (snapshot) probeErrors summary also bounded.
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> redactedErrors =
+                (List<Map<String, Object>>) persisted.getRedactedPayload().get("probeErrors");
+        assertThat((String) redactedErrors.get(0).get("summary")).hasSize(200);
+    }
+
+    @Test
+    void ingestRejectsMinimalSchemaVersionOnlyBlockNoHealthyDefault() {
+        // Codex P1-2: the service must NOT synthesize healthy defaults for
+        // required fields. A minimal {"schemaVersion":1} block (which the
+        // policy would already reject upstream) must NOT become a
+        // healthy-looking snapshot if it reaches ingest — the service's
+        // strict required-field accessors fail loud instead.
+        EndpointDevice device = persistDevice(TENANT_A, "PC-A");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command, Instant.now());
+
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        Map<String, Object> minimal = new LinkedHashMap<>();
+        minimal.put("schemaVersion", 1);
+        inventory.put("deviceHealth", minimal);
+        details.put("inventory", inventory);
+
+        assertThatThrownBy(() -> service.ingest(device, command, result, details))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(snapshotRepository.count()).isZero();
+    }
+
+    @Test
+    void policyRejectsMinimalSchemaVersionOnlyBlock() {
+        // The upstream guard: the policy itself fail-closed rejects the
+        // minimal block with a 400-mapped IllegalArgumentException, so it
+        // never reaches ingest in production.
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        Map<String, Object> minimal = new LinkedHashMap<>();
+        minimal.put("schemaVersion", 1);
+        inventory.put("deviceHealth", minimal);
+        details.put("inventory", inventory);
+
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Missing required device-health field");
+    }
+
+    @Test
+    void commandResultPayloadProjectionDropsOffContractFields() {
+        // Codex P1-1 round-trip: off-contract fields (volumeLabel,
+        // memory.processList, uptime.localBootTime, probeErrors[].rawOutput)
+        // must NOT survive into the command-result payload projection NOR
+        // the snapshot redacted_payload — they are dropped by the policy.
+        EndpointDevice device = persistDevice(TENANT_A, "PC-A");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command, Instant.now());
+
+        Map<String, Object> dh = goldenUnsupported();
+        dh.put("volumeLabel", "OS");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mem = (Map<String, Object>) dh.get("memory");
+        mem.put("processList", List.of("explorer.exe"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> up = (Map<String, Object>) dh.get("uptime");
+        up.put("localBootTime", "2026-05-29 10:00 EEST");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).put("rawOutput", "stderr blob");
+
+        Map<String, Object> sanitized = policy.sanitize(wrap(dh));
+        EndpointDeviceHealthSnapshot persisted =
+                service.ingest(device, command, result, sanitized);
+
+        // Command-result payload projection clean.
+        @SuppressWarnings("unchecked")
+        Map<String, Object> dhProjection = (Map<String, Object>)
+                ((Map<String, Object>) sanitized.get("inventory")).get("deviceHealth");
+        assertThat(dhProjection).doesNotContainKey("volumeLabel");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> projMem = (Map<String, Object>) dhProjection.get("memory");
+        assertThat(projMem).doesNotContainKey("processList");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> projUp = (Map<String, Object>) dhProjection.get("uptime");
+        assertThat(projUp).doesNotContainKey("localBootTime");
+
+        // Snapshot redacted_payload clean.
+        Map<String, Object> redacted = persisted.getRedactedPayload();
+        assertThat(redacted).doesNotContainKey("volumeLabel");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> redMem = (Map<String, Object>) redacted.get("memory");
+        assertThat(redMem).doesNotContainKey("processList");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> redUp = (Map<String, Object>) redacted.get("uptime");
+        assertThat(redUp).doesNotContainKey("localBootTime");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> redErrors =
+                (List<Map<String, Object>>) redacted.get("probeErrors");
+        assertThat(redErrors.get(0)).doesNotContainKey("rawOutput");
+        assertThat(redErrors.get(0)).containsOnlyKeys("code", "source", "summary");
     }
 
     // ------------------------------------------------------------------

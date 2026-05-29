@@ -257,6 +257,161 @@ class DeviceHealthPayloadPolicyTest {
     }
 
     // ------------------------------------------------------------------
+    // Required v1 fields — fail-closed (Codex P1-2)
+    // ------------------------------------------------------------------
+
+    @Test
+    void rejectsMinimalSchemaVersionOnlyBlock() {
+        // A block carrying ONLY {"schemaVersion":1} must be fail-closed
+        // rejected — NOT projected into a healthy-looking default snapshot.
+        Map<String, Object> dh = new LinkedHashMap<>();
+        dh.put("schemaVersion", 1);
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Missing required device-health field");
+    }
+
+    @Test
+    void rejectsMissingRequiredTopLevelField() {
+        // Each required top-level field, when removed, fails closed.
+        for (String required : new String[]{
+                "supported", "probeComplete", "fixedDisks", "fixedDiskCount",
+                "fixedDisksTruncated", "maxFixedDisks", "memory", "uptime",
+                "anyLowDisk", "sourceUsed", "probeDurationMs"}) {
+            Map<String, Object> dh = goldenHealthy();
+            dh.remove(required);
+
+            assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                    .as("missing required field '%s' must fail closed", required)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Missing required device-health field");
+        }
+    }
+
+    @Test
+    void rejectsMissingRequiredMemorySubfield() {
+        for (String required : new String[]{
+                "totalPhysicalBytes", "availableBytes", "usedPercent",
+                "highPressureWarning", "commitLimitBytes", "commitUsedBytes"}) {
+            Map<String, Object> dh = goldenHealthy();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> mem = (Map<String, Object>) dh.get("memory");
+            mem.remove(required);
+
+            assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                    .as("missing required memory subfield '%s' must fail closed", required)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Missing required device-health field");
+        }
+    }
+
+    @Test
+    void rejectsMissingRequiredUptimeSubfield() {
+        for (String required : new String[]{
+                "lastBootEpochSec", "uptimeSeconds", "uptimeDays", "longUptimeWarning"}) {
+            Map<String, Object> dh = goldenHealthy();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> up = (Map<String, Object>) dh.get("uptime");
+            up.remove(required);
+
+            assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                    .as("missing required uptime subfield '%s' must fail closed", required)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Missing required device-health field");
+        }
+    }
+
+    @Test
+    void rejectsWrongTypedRequiredBooleanField() {
+        Map<String, Object> dh = goldenHealthy();
+        dh.put("supported", "yes"); // not a boolean
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected boolean");
+    }
+
+    @Test
+    void rejectsMemoryNotObject() {
+        Map<String, Object> dh = goldenHealthy();
+        dh.put("memory", "not-an-object");
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected object");
+    }
+
+    // ------------------------------------------------------------------
+    // probeErrors[] shape enforcement (Codex P1-1/P1-3)
+    // ------------------------------------------------------------------
+
+    @Test
+    void rejectsProbeErrorMissingCode() {
+        Map<String, Object> dh = goldenUnsupported();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).remove("code");
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Missing required probeError code");
+    }
+
+    @Test
+    void rejectsProbeErrorUnknownCodeEnum() {
+        Map<String, Object> dh = goldenUnsupported();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).put("code", "MADE_UP_CODE");
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported probeError code");
+    }
+
+    @Test
+    void rejectsProbeErrorUnknownSourceEnum() {
+        Map<String, Object> dh = goldenUnsupported();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).put("source", "wmi");
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported probeError source");
+    }
+
+    @Test
+    void rejectsProbeErrorsNotArray() {
+        Map<String, Object> dh = goldenHealthy();
+        dh.put("probeErrors", "not-an-array");
+
+        assertThatThrownBy(() -> policy.sanitize(wrap(dh)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Expected array");
+    }
+
+    @Test
+    void boundsProbeErrorSummaryToContractMaxInPolicyStage() {
+        // Codex P1-3: the summary cap (=200, contract maxLength) is enforced
+        // in the POLICY stage, so the command-result payload (which carries
+        // the policy projection) is bounded — not just the persisted entity
+        // scalar. SUMMARY_MAX_LEN is the single shared constant.
+        Map<String, Object> dh = goldenUnsupported();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).put("summary", "x".repeat(500));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> out =
+                (List<Map<String, Object>>) dhOf(policy.sanitize(wrap(dh))).get("probeErrors");
+        String summary = (String) out.get(0).get("summary");
+        assertThat(summary).hasSize(DeviceHealthPayloadPolicy.SUMMARY_MAX_LEN);
+        assertThat(DeviceHealthPayloadPolicy.SUMMARY_MAX_LEN).isEqualTo(200);
+    }
+
+    // ------------------------------------------------------------------
     // Secret reject (key + value pattern)
     // ------------------------------------------------------------------
 
@@ -349,15 +504,89 @@ class DeviceHealthPayloadPolicyTest {
     }
 
     @Test
-    void toleratesUnknownTopLevelField() {
-        // Forward-compat: an unknown top-level field on the device-health
-        // block (a newer agent) is preserved, not rejected (the schema is
-        // strict v1 for CI validation but ingest is runtime-tolerant).
+    void dropsUnknownTopLevelField() {
+        // Forward-compat (contract §"Forward-compat rule"): an unknown
+        // top-level field on the device-health block (a newer agent) is
+        // IGNORED — not persisted. The allowlist projection drops it (it
+        // does NOT survive into the command-result payload nor the snapshot
+        // redacted_payload). The known v1 fields still validate + survive.
         Map<String, Object> dh = goldenHealthy();
         dh.put("futureField", "some-value");
 
         Map<String, Object> sanitized = policy.sanitize(wrap(dh));
-        assertThat(dhOf(sanitized).get("futureField")).isEqualTo("some-value");
+        Map<String, Object> out = dhOf(sanitized);
+        assertThat(out).doesNotContainKey("futureField");
+        // Known v1 fields survive.
+        assertThat(out.get("sourceUsed")).isEqualTo("win32");
+        assertThat(out.get("supported")).isEqualTo(true);
+    }
+
+    @Test
+    void dropsOffContractTopLevelFieldsFromLeakSet() {
+        // The specific off-contract fields Codex flagged as leaking into
+        // the command-result payload + snapshot must be DROPPED (not
+        // preserved verbatim by a walk-and-copy).
+        Map<String, Object> dh = goldenHealthy();
+        dh.put("volumeLabel", "OS");                 // off-contract top-level
+        dh.put("hostname", "PC-LEAK");               // off-contract
+        dh.put("localBootTime", "2026-05-29 10:00"); // tz/locale leak shape
+
+        Map<String, Object> out = dhOf(policy.sanitize(wrap(dh)));
+        assertThat(out).doesNotContainKeys("volumeLabel", "hostname", "localBootTime");
+        // The canonical projection carries exactly the v1 keys (no extras).
+        assertThat(out.keySet()).containsExactlyInAnyOrder(
+                "schemaVersion", "supported", "probeComplete", "fixedDisks",
+                "fixedDiskCount", "fixedDisksTruncated", "maxFixedDisks", "memory",
+                "uptime", "anyLowDisk", "sourceUsed", "probeDurationMs");
+    }
+
+    @Test
+    void dropsUnknownMemorySubfield() {
+        // memory.processList is off-contract — DROPPED, not persisted.
+        Map<String, Object> dh = goldenHealthy();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> mem = (Map<String, Object>) dh.get("memory");
+        mem.put("processList", List.of("explorer.exe", "chrome.exe"));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> outMem = (Map<String, Object>) dhOf(policy.sanitize(wrap(dh))).get("memory");
+        assertThat(outMem).doesNotContainKey("processList");
+        assertThat(outMem.keySet()).containsExactlyInAnyOrder(
+                "totalPhysicalBytes", "availableBytes", "usedPercent",
+                "highPressureWarning", "commitLimitBytes", "commitUsedBytes");
+    }
+
+    @Test
+    void dropsUnknownUptimeSubfield() {
+        // uptime.localBootTime is off-contract (tz/locale leak) — DROPPED.
+        Map<String, Object> dh = goldenHealthy();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> up = (Map<String, Object>) dh.get("uptime");
+        up.put("localBootTime", "Thu May 29 10:00:00 EEST 2026");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> outUp = (Map<String, Object>) dhOf(policy.sanitize(wrap(dh))).get("uptime");
+        assertThat(outUp).doesNotContainKey("localBootTime");
+        assertThat(outUp.keySet()).containsExactlyInAnyOrder(
+                "lastBootEpochSec", "uptimeSeconds", "uptimeDays", "longUptimeWarning");
+    }
+
+    @Test
+    void dropsUnknownProbeErrorField() {
+        // probeErrors[].rawOutput is off-contract — DROPPED. Only
+        // {source, code, summary} survive.
+        Map<String, Object> dh = goldenUnsupported();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> errors = (List<Map<String, Object>>) dh.get("probeErrors");
+        errors.get(0).put("rawOutput", "stderr: GetLogicalDrives failed errno=5");
+        errors.get(0).put("stackTrace", "at device_health.go:42");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> out =
+                (List<Map<String, Object>>) dhOf(policy.sanitize(wrap(dh))).get("probeErrors");
+        assertThat(out).hasSize(1);
+        assertThat(out.get(0)).containsOnlyKeys("source", "code", "summary");
+        assertThat(out.get(0)).doesNotContainKeys("rawOutput", "stackTrace");
     }
 
     // ------------------------------------------------------------------

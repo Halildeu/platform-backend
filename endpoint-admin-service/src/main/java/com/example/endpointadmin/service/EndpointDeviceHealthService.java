@@ -1,6 +1,7 @@
 package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.event.DeviceHealthSnapshotPersistedEvent;
+import com.example.endpointadmin.security.DeviceHealthPayloadPolicy;
 import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointCommandResult;
 import com.example.endpointadmin.model.EndpointDevice;
@@ -77,12 +78,15 @@ public class EndpointDeviceHealthService {
 
     private static final Logger log = LoggerFactory.getLogger(EndpointDeviceHealthService.class);
 
-    /** Agent-side fixed-disk cap (DeviceHealthResult.MaxFixedDisks = 64). */
-    private static final int DEFAULT_MAX_FIXED_DISKS = 64;
-
-    /** Bounded probeError summary cap (contract: &le;200; we store with a
-     *  small headroom margin like the hardware policy's 256). */
-    private static final int SUMMARY_MAX_LEN = 256;
+    /**
+     * Bounded probeError summary cap. Single source of truth shared with
+     * {@link DeviceHealthPayloadPolicy#SUMMARY_MAX_LEN} (= contract
+     * {@code maxLength: 200}). The policy already bounds the summary in the
+     * canonical projection (so the command-result payload is bounded too);
+     * this constant is the same value, applied defensively when the entity
+     * scalar is built (Codex 019e… P1-3 must-fix: 256 → 200).
+     */
+    private static final int SUMMARY_MAX_LEN = DeviceHealthPayloadPolicy.SUMMARY_MAX_LEN;
 
     private final EndpointDeviceHealthSnapshotRepository repository;
     private final ApplicationEventPublisher events;
@@ -222,31 +226,38 @@ public class EndpointDeviceHealthService {
         snapshot.setTenantId(device.getTenantId());
         snapshot.setDeviceId(device.getId());
         snapshot.setSourceCommandResultId(commandResultId);
-        snapshot.setSchemaVersion(shortOr(dh.get("schemaVersion"), (short) 1));
-        snapshot.setSupported(boolOr(dh.get("supported"), Boolean.TRUE));
-        snapshot.setProbeComplete(boolOr(dh.get("probeComplete"), Boolean.TRUE));
-        snapshot.setAnyLowDisk(boolOr(dh.get("anyLowDisk"), Boolean.FALSE));
-        snapshot.setFixedDiskCount(intOr(dh.get("fixedDiskCount"), 0));
-        snapshot.setFixedDisksTruncated(boolOr(dh.get("fixedDisksTruncated"), Boolean.FALSE));
-        snapshot.setMaxFixedDisks(intOr(dh.get("maxFixedDisks"), DEFAULT_MAX_FIXED_DISKS));
-        snapshot.setSourceUsed(sourceUsedOr(dh.get("sourceUsed")));
-        snapshot.setProbeDurationMs(intOrNull(dh.get("probeDurationMs")));
+        // Required v1 fields — the policy projection (DeviceHealthPayloadPolicy)
+        // already fail-closed REJECTED a payload missing/wrong-typed on any
+        // of these (Codex 019e… P1-2). The service must NOT synthesize a
+        // "healthy" default (that would turn a {"schemaVersion":1} reject
+        // into a healthy-looking snapshot). We therefore read the canonical
+        // projection directly — never an Or(default) fallback.
+        snapshot.setSchemaVersion(requireShort(dh.get("schemaVersion")));
+        snapshot.setSupported(requireBool(dh.get("supported")));
+        snapshot.setProbeComplete(requireBool(dh.get("probeComplete")));
+        snapshot.setAnyLowDisk(requireBool(dh.get("anyLowDisk")));
+        snapshot.setFixedDiskCount(requireInt(dh.get("fixedDiskCount")));
+        snapshot.setFixedDisksTruncated(requireBool(dh.get("fixedDisksTruncated")));
+        snapshot.setMaxFixedDisks(requireInt(dh.get("maxFixedDisks")));
+        snapshot.setSourceUsed(requireSourceUsed(dh.get("sourceUsed")));
+        snapshot.setProbeDurationMs(requireInt(dh.get("probeDurationMs")));
 
         // Memory summary scalars (full byte/commit fields stay in
-        // redacted_payload).
+        // redacted_payload). memory is a required object (policy-enforced),
+        // and its required subfields are present + range-checked.
         Object memory = dh.get("memory");
         if (memory instanceof Map<?, ?> mem) {
-            snapshot.setMemoryUsedPercent(shortPercentOrNull(mem.get("usedPercent")));
-            snapshot.setMemoryHighPressure(boolOrNull(mem.get("highPressureWarning")));
+            snapshot.setMemoryUsedPercent(requireShortPercent(mem.get("usedPercent")));
+            snapshot.setMemoryHighPressure(requireBool(mem.get("highPressureWarning")));
         }
 
-        // Uptime summary scalars.
+        // Uptime summary scalars (required object, required subfields).
         Object uptime = dh.get("uptime");
         if (uptime instanceof Map<?, ?> up) {
-            snapshot.setUptimeDays(intOrNull(up.get("uptimeDays")));
-            snapshot.setUptimeSeconds(longOrNull(up.get("uptimeSeconds")));
-            snapshot.setLastBootEpochSec(longOrNull(up.get("lastBootEpochSec")));
-            snapshot.setLongUptimeWarning(boolOrNull(up.get("longUptimeWarning")));
+            snapshot.setUptimeDays(requireInt(up.get("uptimeDays")));
+            snapshot.setUptimeSeconds(requireLong(up.get("uptimeSeconds")));
+            snapshot.setLastBootEpochSec(requireLong(up.get("lastBootEpochSec")));
+            snapshot.setLongUptimeWarning(requireBool(up.get("longUptimeWarning")));
         }
 
         snapshot.setCollectedAt(collectedAt);
@@ -352,17 +363,67 @@ public class EndpointDeviceHealthService {
         }
     }
 
-    private static String sourceUsedOr(Object value) {
-        if (value == null) {
-            return "none";
-        }
+    // ------------------------------------------------------------------
+    // Strict required-field accessors (Codex 019e… P1-2). These are used
+    // only for v1 REQUIRED fields, which the policy already fail-closed
+    // rejected when missing/wrong-typed. They therefore NEVER fall back to
+    // a "healthy" default; a null/wrong-typed value here is a code
+    // invariant violation (policy bypassed) → fail loud, not silent.
+    // ------------------------------------------------------------------
+
+    private static String requireSourceUsed(Object value) {
         String s = String.valueOf(value);
-        return ("win32".equals(s) || "none".equals(s)) ? s : "none";
+        if (!("win32".equals(s) || "none".equals(s))) {
+            throw new IllegalStateException(
+                    "sourceUsed must be win32|none after policy projection but was '" + s + "'");
+        }
+        return s;
     }
 
-    private static Integer intOr(Object value, int fallback) {
+    private static int requireInt(Object value) {
         Integer parsed = intOrNull(value);
-        return parsed != null ? parsed : fallback;
+        if (parsed == null) {
+            throw new IllegalStateException(
+                    "Required integer field null after policy projection: " + value);
+        }
+        return parsed;
+    }
+
+    private static long requireLong(Object value) {
+        Long parsed = longOrNull(value);
+        if (parsed == null) {
+            throw new IllegalStateException(
+                    "Required long field null after policy projection: " + value);
+        }
+        return parsed;
+    }
+
+    private static short requireShort(Object value) {
+        Integer parsed = intOrNull(value);
+        if (parsed == null || parsed < Short.MIN_VALUE || parsed > Short.MAX_VALUE) {
+            throw new IllegalStateException(
+                    "Required short field null/out-of-range after policy projection: " + value);
+        }
+        return parsed.shortValue();
+    }
+
+    private static short requireShortPercent(Object value) {
+        Integer parsed = intOrNull(value);
+        if (parsed == null) {
+            throw new IllegalStateException(
+                    "Required percent field null after policy projection: " + value);
+        }
+        if (parsed < 0) return (short) 0;
+        if (parsed > 100) return (short) 100;
+        return parsed.shortValue();
+    }
+
+    private static boolean requireBool(Object value) {
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        throw new IllegalStateException(
+                "Required boolean field not Boolean after policy projection: " + value);
     }
 
     private static Integer intOrNull(Object value) {
@@ -375,16 +436,10 @@ public class EndpointDeviceHealthService {
         return null;
     }
 
-    private static Short shortOr(Object value, short fallback) {
-        Integer parsed = intOrNull(value);
-        if (parsed == null) return fallback;
-        if (parsed < Short.MIN_VALUE || parsed > Short.MAX_VALUE) return fallback;
-        return parsed.shortValue();
-    }
-
     /** Parse a 0..100 percentage into a Short, clamping/dropping
      *  out-of-range values (the policy already range-checks, but the
-     *  service must persist a SMALLINT-safe value). */
+     *  service must persist a SMALLINT-safe value). Used for the OPTIONAL
+     *  disk-facet freePercent. */
     private static Short shortPercentOrNull(Object value) {
         Integer parsed = intOrNull(value);
         if (parsed == null) return null;
@@ -406,11 +461,6 @@ public class EndpointDeviceHealthService {
     private static String strOr(Object value, String fallback) {
         if (value == null) return fallback;
         return String.valueOf(value);
-    }
-
-    private static Boolean boolOr(Object value, Boolean fallback) {
-        Boolean parsed = boolOrNull(value);
-        return parsed != null ? parsed : fallback;
     }
 
     private static Boolean boolOrNull(Object value) {
