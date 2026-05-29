@@ -10,7 +10,6 @@ import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.EndpointAuditEvent;
 import com.example.endpointadmin.repository.EndpointAuditEventRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
-import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -133,9 +132,6 @@ class EndpointInstallCommandAuditPostgresIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
-
-    @Autowired
-    private EntityManager entityManager;
 
     @Autowired
     private PlatformTransactionManager txManager;
