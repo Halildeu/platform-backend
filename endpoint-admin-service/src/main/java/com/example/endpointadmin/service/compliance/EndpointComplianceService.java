@@ -276,7 +276,14 @@ public class EndpointComplianceService {
                         tenantId,
                         List.of(ComplianceEnforcementMode.REQUIRED,
                                 ComplianceEnforcementMode.FORBIDDEN));
-        return computePolicyHash(tenantId, policies);
+        // Drift read: deliberately a FRESH read of the CURRENT enabled
+        // prohibited-rule set (NOT a passed-in snapshot). This is the live
+        // "current policy state" that the controller compares against a
+        // persisted evaluation's stored hash — using a stale list here would
+        // defeat drift detection entirely.
+        List<EndpointProhibitedSoftwareRule> currentProhibitedRules =
+                loadEnabledProhibitedRules(tenantId);
+        return computePolicyHash(policies, currentProhibitedRules);
     }
 
     @Transactional(readOnly = true)
@@ -333,6 +340,17 @@ public class EndpointComplianceService {
                         List.of(ComplianceEnforcementMode.REQUIRED,
                                 ComplianceEnforcementMode.FORBIDDEN));
 
+        // BE-025 (Codex 019e763a REVISE #1): load the enabled prohibited-rule
+        // set ONCE for this evaluation, unconditionally (apps-available-
+        // independent — matching may early-return on it but the hash path
+        // always needs it). The SAME in-memory snapshot then feeds BOTH the
+        // matching path AND the persisted catalogPolicyHash projection, so the
+        // persisted row's decision/evidence and its stored hash can never
+        // derive from two different reads that straddle a concurrent
+        // prohibited-rule commit under READ_COMMITTED. computeCurrentPolicyHash
+        // (the controller's drift read) deliberately keeps its OWN fresh read.
+        List<EndpointProhibitedSoftwareRule> prohibitedRules = loadEnabledProhibitedRules(tenantId);
+
         Instant now = clock.instant();
         EvaluationContext ctx = new EvaluationContext();
 
@@ -372,7 +390,7 @@ public class EndpointComplianceService {
         // snapshot already added the UNKNOWN-driving reason; producing
         // prohibited findings off it would be off stale/missing data).
         List<MatchedProhibited> prohibitedInstalled =
-                evaluateProhibitedDenylist(tenantId, snapshot, ctx);
+                evaluateProhibitedDenylist(prohibitedRules, snapshot, ctx);
 
         // ─── Decide ───────────────────────────────────────────────
         ComplianceDecision decision = decide(ctx);
@@ -384,8 +402,11 @@ public class EndpointComplianceService {
                 unsupportedDetectionPackageIds);
         // BE-025 (Codex 019e763a REVISE #1): the persisted hash folds in the
         // enabled prohibited-rule set so a later prohibited-rule change makes
-        // computeCurrentPolicyHash diverge from this stored value → drift.
-        String catalogPolicyHash = computePolicyHash(tenantId, policies);
+        // computeCurrentPolicyHash diverge from this stored value → drift. The
+        // SAME pre-loaded prohibitedRules snapshot used by the matching path is
+        // threaded in here so the persisted decision/evidence and this stored
+        // hash are guaranteed to derive from one rule-set read.
+        String catalogPolicyHash = computePolicyHash(policies, prohibitedRules);
 
         Long catalogRowVersionMax = policies.stream()
                 .map(p -> p.getCatalogItem() == null ? null : p.getCatalogItem().getVersion())
@@ -610,6 +631,27 @@ public class EndpointComplianceService {
     }
 
     /**
+     * BE-025 (Codex 019e763a REVISE #1) — single source of the enabled
+     * prohibited-rule set for one evaluation. Called ONCE at the start of
+     * {@code evaluateInternal} so the matching path and the persisted-hash
+     * projection share one in-memory snapshot (no two reads straddling a
+     * concurrent commit). Also used by {@code computeCurrentPolicyHash} for
+     * its independent fresh drift read.
+     *
+     * <p>{@code prohibitedSoftwareRuleRepository} is constructor-injected and
+     * never null in production wiring. The null guard keeps older unit
+     * fixtures that do not supply it from NPE-ing — they simply see an empty
+     * denylist (and contribute no rows to the hash).
+     */
+    private List<EndpointProhibitedSoftwareRule> loadEnabledProhibitedRules(UUID tenantId) {
+        if (prohibitedSoftwareRuleRepository == null) {
+            return List.of();
+        }
+        return prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(tenantId);
+    }
+
+    /**
      * BE-025 — match the tenant's enabled prohibited-software denylist
      * rules against the inventory snapshot. Returns the de-duplicated
      * list of {@link MatchedProhibited} findings (one per matched item,
@@ -622,20 +664,15 @@ public class EndpointComplianceService {
      * decision to UNKNOWN. {@code findInstalled}-style matching is delegated
      * to the pure {@link ProhibitedSoftwareMatcher}.
      *
-     * <p>{@code prohibitedSoftwareRuleRepository} is constructor-injected;
-     * it is never null in production wiring. The null guard keeps older
-     * unit fixtures that do not supply it from NPE-ing — they simply see no
-     * denylist rules.
+     * <p>BE-025 (Codex 019e763a REVISE #1): the {@code rules} list is
+     * PRE-LOADED by {@code evaluateInternal} and the SAME instance feeds the
+     * persisted-hash projection, so the persisted decision/evidence and stored
+     * hash never derive from two independent reads.
      */
     private List<MatchedProhibited> evaluateProhibitedDenylist(
-            UUID tenantId, EndpointSoftwareInventorySnapshot snapshot, EvaluationContext ctx) {
-        if (prohibitedSoftwareRuleRepository == null
-                || snapshot == null || !snapshot.isAppsAvailable()) {
-            return List.of();
-        }
-        List<EndpointProhibitedSoftwareRule> rules = prohibitedSoftwareRuleRepository
-                .findByTenantIdAndEnabledTrueOrderByIdAsc(tenantId);
-        if (rules.isEmpty()) {
+            List<EndpointProhibitedSoftwareRule> rules,
+            EndpointSoftwareInventorySnapshot snapshot, EvaluationContext ctx) {
+        if (snapshot == null || !snapshot.isAppsAvailable() || rules.isEmpty()) {
             return List.of();
         }
         // Stable de-dup: at most one finding per (rule, installed item) pair,
@@ -795,11 +832,12 @@ public class EndpointComplianceService {
      * set (catalog policies + prohibited rules) that produced this verdict".
      */
     private String computePolicyHash(
-            UUID tenantId, List<EndpointSoftwareCompliancePolicyItem> policies) {
+            List<EndpointSoftwareCompliancePolicyItem> policies,
+            List<EndpointProhibitedSoftwareRule> prohibitedRules) {
         try {
             Map<String, Object> document = new TreeMap<>();
             document.put("catalogPolicies", catalogPolicyProjection(policies));
-            document.put("prohibitedRules", prohibitedRuleProjection(tenantId));
+            document.put("prohibitedRules", prohibitedRuleProjection(prohibitedRules));
             String canonical = canonicalObjectMapper.writeValueAsString(document);
             return sha256Hex(canonical);
         } catch (JsonProcessingException | NoSuchAlgorithmException ex) {
@@ -855,16 +893,15 @@ public class EndpointComplianceService {
      * ordering. An empty / absent denylist contributes an empty list (a hash
      * input distinct from a populated one).
      *
-     * <p>The repository is constructor-injected and non-null in production;
-     * the null guard keeps older unit fixtures that omit it from NPE-ing
-     * (they simply contribute no denylist rows to the hash).
+     * <p>BE-025 (Codex 019e763a REVISE #1): the {@code rules} list is
+     * PRE-LOADED once per call site — the persisted path passes the same
+     * snapshot the matching path consumed; {@code computeCurrentPolicyHash}
+     * passes its own fresh read. This method no longer touches the repository,
+     * so the persisted decision/evidence and stored hash can never derive from
+     * two independent reads.
      */
-    private List<Map<String, Object>> prohibitedRuleProjection(UUID tenantId) {
-        if (prohibitedSoftwareRuleRepository == null) {
-            return List.of();
-        }
-        List<EndpointProhibitedSoftwareRule> rules = prohibitedSoftwareRuleRepository
-                .findByTenantIdAndEnabledTrueOrderByIdAsc(tenantId);
+    private List<Map<String, Object>> prohibitedRuleProjection(
+            List<EndpointProhibitedSoftwareRule> rules) {
         List<Map<String, Object>> projection = new ArrayList<>(rules.size());
         for (EndpointProhibitedSoftwareRule rule : rules) {
             Map<String, Object> entry = new TreeMap<>();

@@ -31,6 +31,7 @@ import com.example.endpointadmin.security.AdminTenantContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
@@ -478,11 +479,13 @@ class EndpointComplianceServiceTest {
     @Test
     void prohibitedNotEvaluatedWhenAppsUnavailable() {
         // Apps-unavailable inventory is not authoritative → no prohibited
-        // findings produced off it (mirrors the catalog FORBIDDEN gate). The
-        // MATCHING path early-returns before consulting the denylist repo; the
-        // HASH path (drift visibility, Codex 019e763a REVISE #1) still reads it
-        // exactly once so a rule change surfaces drift even on an
-        // apps-unavailable device.
+        // findings produced off it (mirrors the catalog FORBIDDEN gate): the
+        // matching path early-returns on the apps-unavailable snapshot. The
+        // hash path (drift visibility, Codex 019e763a REVISE #1) still folds
+        // the rule set in, so a rule change surfaces drift even on an
+        // apps-unavailable device. Codex 019e763a single-snapshot fix: the
+        // rule set is loaded ONCE at the start of evaluateInternal and shared
+        // by both consumers, so the repository is consulted exactly once.
         mockDevice();
         EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
         snap.setAppsAvailable(false);
@@ -501,10 +504,101 @@ class EndpointComplianceServiceTest {
 
         // No finding produced off non-authoritative inventory…
         assertThat(outcome.reasons()).doesNotContain("prohibited_app_installed");
-        // …but the hash DID fold the rule set in (consulted exactly once, by
-        // the hash path only — the matching path never reached the repo).
+        // …but the hash DID fold the rule set in (the single shared snapshot is
+        // read exactly once per evaluation).
         verify(prohibitedSoftwareRuleRepository, times(1))
                 .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID);
+    }
+
+    @Test
+    void singleProhibitedRuleSnapshotPerEvaluation() {
+        // Codex 019e763a REVISE #1 (concurrency drift variant): a single
+        // evaluation must read the enabled prohibited-rule set ONCE so the
+        // persisted decision/evidence and the persisted catalogPolicyHash can
+        // never derive from two reads that straddle a concurrent rule commit
+        // under READ_COMMITTED.
+        //
+        // The repository is stubbed to return DIFFERENT results on successive
+        // calls within one evaluateInternal: EMPTY first, then ONE rule that
+        // matches the installed "uTorrent". Under the OLD two-read design the
+        // matching path would have seen the EMPTY list (evidence: no prohibited
+        // finding, device COMPLIANT) while the hash path would have seen the
+        // ONE-rule list (catalogPolicyHash folds the rule in) — an evaluation
+        // row whose evidence and stored hash disagree, the exact silent-drift
+        // re-opening. Under the single-load design both consumers receive the
+        // EMPTY first value, so the row is internally consistent.
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        // A satisfied REQUIRED policy makes the device genuinely COMPLIANT when
+        // the denylist is empty (an empty policy set would drive UNKNOWN).
+        addItem(snap, "7-Zip 24.07 (x64)", "24.07", "Igor Pavlov");
+        addItem(snap, "uTorrent", "3.5", "BitTorrent Inc");
+        mockSnapshot(snap);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.MINIMUM, "24.0");
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        // Successive calls return DIFFERENT rule sets: empty, then one rule.
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(
+                        List.of(),
+                        List.of(denylistRule(
+                                ProhibitedSoftwareMatchType.NAME,
+                                ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        // Core invariant: the rule set was consulted EXACTLY ONCE within this
+        // single evaluation (the two-read design consulted it twice, exposing
+        // the straddle window).
+        verify(prohibitedSoftwareRuleRepository, times(1))
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID);
+
+        // Capture the row as persisted so evidence + stored hash are read
+        // from the SAME object the service wrote (not just the outcome DTO).
+        ArgumentCaptor<EndpointComplianceEvaluation> savedCaptor =
+                ArgumentCaptor.forClass(EndpointComplianceEvaluation.class);
+        verify(evaluationRepository).save(savedCaptor.capture());
+        EndpointComplianceEvaluation persisted = savedCaptor.getValue();
+
+        // The single read returned the EMPTY denylist → no prohibited finding,
+        // device COMPLIANT. Evidence reflects the SAME empty snapshot.
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.COMPLIANT);
+        assertThat(outcome.reasons()).doesNotContain("prohibited_app_installed");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> matched =
+                (Map<String, Object>) persisted.getEvidence().get("matchedItems");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> prohibited =
+                (List<Map<String, Object>>) matched.get("prohibitedInstalled");
+        assertThat(prohibited).isEmpty();
+
+        // Evidence ↔ hash consistency: the persisted hash MUST reflect the same
+        // EMPTY rule set the evidence reflects — NOT the one-rule second read.
+        // Proof: a fresh current-hash read over the SAME empty denylist equals
+        // the persisted hash (policyDrift would be false), whereas a current
+        // read over the one-rule set diverges. Under the old two-read design
+        // the persisted hash already folded in the rule, so it would have
+        // equalled the one-rule current hash and DISAGREED with its own empty
+        // evidence.
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of());
+        String currentHashEmpty = service.computeCurrentPolicyHash(TENANT_ID);
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        String currentHashOneRule = service.computeCurrentPolicyHash(TENANT_ID);
+
+        assertThat(persisted.getCatalogPolicyHash())
+                .isEqualTo(outcome.catalogPolicyHash())
+                .isEqualTo(currentHashEmpty)        // persisted hash == empty-snapshot hash
+                .isNotEqualTo(currentHashOneRule);  // … and NOT the one-rule hash
     }
 
     @Test
