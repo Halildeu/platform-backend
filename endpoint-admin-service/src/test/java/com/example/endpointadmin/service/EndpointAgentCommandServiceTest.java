@@ -52,7 +52,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         // BE — device-health (AG-033) sanitizer + service wired into the
         // same COLLECT_INVENTORY pre-persist + ingest path.
         com.example.endpointadmin.security.DeviceHealthPayloadPolicy.class,
-        EndpointDeviceHealthService.class
+        EndpointDeviceHealthService.class,
+        // AG-036 — outdated-software sanitizer + service wired into the same
+        // COLLECT_INVENTORY pre-persist + ingest path.
+        com.example.endpointadmin.security.OutdatedSoftwarePayloadPolicy.class,
+        EndpointOutdatedSoftwareService.class
 })
 class EndpointAgentCommandServiceTest {
 
