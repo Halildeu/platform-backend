@@ -6,6 +6,7 @@ import com.example.endpointadmin.model.EndpointComplianceEvaluation;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointDeviceComplianceState;
 import com.example.endpointadmin.model.EndpointInstallAudit;
+import com.example.endpointadmin.model.EndpointProhibitedSoftwareRule;
 import com.example.endpointadmin.model.EndpointSoftwareCatalogItem;
 import com.example.endpointadmin.model.EndpointSoftwareCompliancePolicyItem;
 import com.example.endpointadmin.model.EndpointSoftwareInventoryItem;
@@ -14,6 +15,7 @@ import com.example.endpointadmin.repository.EndpointComplianceEvaluationReposito
 import com.example.endpointadmin.repository.EndpointDeviceComplianceStateRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointInstallAuditRepository;
+import com.example.endpointadmin.repository.EndpointProhibitedSoftwareRuleRepository;
 import com.example.endpointadmin.repository.EndpointSoftwareCompliancePolicyItemRepository;
 import com.example.endpointadmin.repository.EndpointSoftwareInventorySnapshotRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
@@ -91,12 +93,24 @@ import java.util.stream.Collectors;
  *       every (policy item, catalog item) pair visible at evaluation
  *       time; a future audit can prove exactly which policy/catalog
  *       set produced the verdict.</li>
+ *   <li><b>BE-025 prohibited-software denylist</b>: after the
+ *       REQUIRED/FORBIDDEN catalog loop, the enabled tenant-scoped
+ *       {@link com.example.endpointadmin.model.EndpointProhibitedSoftwareRule}
+ *       rows (NOT catalog-bound) are matched against the same inventory
+ *       snapshot by name and/or publisher. A match adds
+ *       {@code PROHIBITED_APP_INSTALLED} ({@code Severity.UNAUTHORIZED})
+ *       and a {@code matchedItems.prohibitedInstalled} evidence entry.
+ *       Detection only — no auto-uninstall.</li>
  *   <li><b>v1 limitations</b>: {@code UNAPPROVED_APP_DETECTED}
- *       (generic "not in catalog") is deferred to BE-024 along with
+ *       (generic "not in catalog") remains deferred along with
  *       an explicit machine-readable scope-matcher DSL. v1
- *       {@code UNAUTHORIZED} is produced *only* by
- *       {@code FORBIDDEN_APP_INSTALLED}. Scheduled stale sweep
- *       deferred to BE-024 (GET responses surface live per-stream
+ *       {@code UNAUTHORIZED} is produced by the explicit-deny reasons
+ *       {@code FORBIDDEN_APP_INSTALLED} (catalog) and
+ *       {@code PROHIBITED_APP_INSTALLED} (denylist). The locked
+ *       invariant is the precedence ladder
+ *       (UNAUTHORIZED &gt; UNKNOWN &gt; NON_COMPLIANT &gt; COMPLIANT),
+ *       not the single reason driving a tier. Scheduled stale sweep
+ *       deferred (GET responses surface live per-stream
  *       staleness so clients can re-trigger proactively).</li>
  * </ul>
  */
@@ -111,6 +125,8 @@ public class EndpointComplianceService {
     private final EndpointComplianceEvaluationRepository evaluationRepository;
     private final EndpointDeviceComplianceStateRepository stateRepository;
     private final EndpointInstallAuditRepository installAuditRepository;
+    /** BE-025 — tenant-scoped prohibited-software denylist rules. */
+    private final EndpointProhibitedSoftwareRuleRepository prohibitedSoftwareRuleRepository;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper canonicalObjectMapper;
     private final Clock clock;
@@ -133,6 +149,7 @@ public class EndpointComplianceService {
             EndpointComplianceEvaluationRepository evaluationRepository,
             EndpointDeviceComplianceStateRepository stateRepository,
             EndpointInstallAuditRepository installAuditRepository,
+            EndpointProhibitedSoftwareRuleRepository prohibitedSoftwareRuleRepository,
             @Autowired(required = false) JdbcTemplate jdbcTemplate,
             ObjectProvider<Clock> clockProvider,
             @Value("${endpoint-admin.compliance.install-audit-grace-window:PT15M}")
@@ -143,6 +160,7 @@ public class EndpointComplianceService {
         this.evaluationRepository = evaluationRepository;
         this.stateRepository = stateRepository;
         this.installAuditRepository = installAuditRepository;
+        this.prohibitedSoftwareRuleRepository = prohibitedSoftwareRuleRepository;
         this.jdbcTemplate = jdbcTemplate;
         // ObjectProvider avoids the @Lazy CGLIB enhancement of java.time.Clock
         // that broke pod boot under Java 21 + Spring Boot LaunchedClassLoader.
@@ -338,13 +356,24 @@ public class EndpointComplianceService {
                     forbiddenInstalled, unsupportedDetectionPackageIds);
         }
 
+        // ─── BE-025 prohibited-software denylist matching ─────────
+        // Tenant-scoped, NOT catalog-bound: matched directly against the
+        // installed inventory by name/publisher. Same telemetry gate as the
+        // catalog FORBIDDEN path — only authoritative when the inventory is
+        // present and apps are available (an absent / apps-unavailable
+        // snapshot already added the UNKNOWN-driving reason; producing
+        // prohibited findings off it would be off stale/missing data).
+        List<MatchedProhibited> prohibitedInstalled =
+                evaluateProhibitedDenylist(tenantId, snapshot, ctx);
+
         // ─── Decide ───────────────────────────────────────────────
         ComplianceDecision decision = decide(ctx);
 
         // ─── Evidence + hash ──────────────────────────────────────
         Map<String, Object> evidence = buildEvidence(
                 snapshot, policies, matchedRequired, outdatedRequired,
-                missingRequired, forbiddenInstalled, unsupportedDetectionPackageIds);
+                missingRequired, forbiddenInstalled, prohibitedInstalled,
+                unsupportedDetectionPackageIds);
         String catalogPolicyHash = computeCatalogPolicyHash(policies);
 
         Long catalogRowVersionMax = policies.stream()
@@ -570,8 +599,58 @@ public class EndpointComplianceService {
     }
 
     /**
+     * BE-025 — match the tenant's enabled prohibited-software denylist
+     * rules against the inventory snapshot. Returns the de-duplicated
+     * list of {@link MatchedProhibited} findings (one per matched item,
+     * carrying the rule that fired) and, when non-empty, adds the
+     * {@code PROHIBITED_APP_INSTALLED} reason ({@code Severity.UNAUTHORIZED}).
+     *
+     * <p>Gated on a present + apps-available snapshot for the same reason
+     * the catalog FORBIDDEN path is: an absent / apps-unavailable inventory
+     * is not authoritative, and the telemetry gate has already driven the
+     * decision to UNKNOWN. {@code findInstalled}-style matching is delegated
+     * to the pure {@link ProhibitedSoftwareMatcher}.
+     *
+     * <p>{@code prohibitedSoftwareRuleRepository} is constructor-injected;
+     * it is never null in production wiring. The null guard keeps older
+     * unit fixtures that do not supply it from NPE-ing — they simply see no
+     * denylist rules.
+     */
+    private List<MatchedProhibited> evaluateProhibitedDenylist(
+            UUID tenantId, EndpointSoftwareInventorySnapshot snapshot, EvaluationContext ctx) {
+        if (prohibitedSoftwareRuleRepository == null
+                || snapshot == null || !snapshot.isAppsAvailable()) {
+            return List.of();
+        }
+        List<EndpointProhibitedSoftwareRule> rules = prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(tenantId);
+        if (rules.isEmpty()) {
+            return List.of();
+        }
+        // Stable de-dup: at most one finding per (rule, installed item) pair,
+        // keyed on rule id + item id so two rules that both flag the same app
+        // each surface once, and one rule flagging two apps surfaces twice.
+        Map<String, MatchedProhibited> findings = new LinkedHashMap<>();
+        for (EndpointSoftwareInventoryItem item : snapshot.getItems()) {
+            for (EndpointProhibitedSoftwareRule rule : rules) {
+                if (ProhibitedSoftwareMatcher.matches(rule, item)) {
+                    String key = rule.getId() + "|" + item.getId();
+                    findings.putIfAbsent(key, MatchedProhibited.of(rule, item));
+                }
+            }
+        }
+        if (!findings.isEmpty()) {
+            ctx.addReason(ComplianceReason.PROHIBITED_APP_INSTALLED);
+        }
+        return new ArrayList<>(findings.values());
+    }
+
+    /**
      * Decision precedence ladder (Codex 019e6bbf iter-3 AGREE locked):
-     * UNAUTHORIZED &gt; UNKNOWN &gt; NON_COMPLIANT &gt; COMPLIANT.
+     * UNAUTHORIZED &gt; UNKNOWN &gt; NON_COMPLIANT &gt; COMPLIANT. BE-025
+     * adds {@code PROHIBITED_APP_INSTALLED} as a second
+     * {@code Severity.UNAUTHORIZED} source; the ladder is unchanged because
+     * {@code decide} keys on severity, not on the specific reason.
      */
     private ComplianceDecision decide(EvaluationContext ctx) {
         if (ctx.hasReasonOfSeverity(ComplianceReason.Severity.UNAUTHORIZED)) {
@@ -731,10 +810,11 @@ public class EndpointComplianceService {
             Map<UUID, MatchedRequired> outdatedRequired,
             Map<UUID, MatchedRequired> missingRequired,
             Map<UUID, MatchedForbidden> forbiddenInstalled,
+            List<MatchedProhibited> prohibitedInstalled,
             Set<String> unsupportedDetectionPackageIds) {
         Map<String, Object> ev = buildEvidenceCore(snapshot, policies,
                 matchedRequired, outdatedRequired, missingRequired,
-                forbiddenInstalled, unsupportedDetectionPackageIds);
+                forbiddenInstalled, prohibitedInstalled, unsupportedDetectionPackageIds);
         // BE-021 (Codex 019e6dfb iter-3 P0-4): expose the install audit
         // fallback references as a top-level evidence projection so the
         // UI can render "satisfied via install audit X (reported_at Y)"
@@ -782,6 +862,7 @@ public class EndpointComplianceService {
             Map<UUID, MatchedRequired> outdatedRequired,
             Map<UUID, MatchedRequired> missingRequired,
             Map<UUID, MatchedForbidden> forbiddenInstalled,
+            List<MatchedProhibited> prohibitedInstalled,
             Set<String> unsupportedDetectionPackageIds) {
         Map<String, Object> ev = new LinkedHashMap<>();
         ev.put("inventorySnapshotId", snapshot == null ? null
@@ -819,6 +900,13 @@ public class EndpointComplianceService {
                 .map(MatchedRequired::toEvidenceMap).collect(Collectors.toList()));
         matched.put("forbiddenInstalled", forbiddenInstalled.values().stream()
                 .map(MatchedForbidden::toEvidenceMap).collect(Collectors.toList()));
+        // BE-025 — denylist findings, kept distinct from catalog
+        // forbiddenInstalled so the UI / read surface can tell a
+        // catalog-FORBIDDEN hit from a prohibited-denylist hit. Only the
+        // rule id + redacted matched fields (name / publisher / version) —
+        // never the rule's notes / created_by_subject.
+        matched.put("prohibitedInstalled", prohibitedInstalled.stream()
+                .map(MatchedProhibited::toEvidenceMap).collect(Collectors.toList()));
         matched.put("versionCompareUnsupportedPackageIds",
                 new ArrayList<>(unsupportedDetectionPackageIds));
         ev.put("matchedItems", matched);
@@ -1023,6 +1111,54 @@ public class EndpointComplianceService {
             m.put("catalogDisplayName", catalogDisplayName);
             m.put("installedDisplayName", installedDisplayName);
             m.put("installedVersion", installedVersion);
+            return m;
+        }
+    }
+
+    /**
+     * BE-025 — compact projection of one prohibited-software denylist match
+     * for the evidence block. Carries the rule that fired (id + match
+     * type/mode) and the redacted matched inventory fields (name / publisher
+     * / version). Deliberately does NOT carry the rule's {@code notes} /
+     * {@code createdBySubject} or any raw path / registry key. The evidence
+     * key names ({@code ruleId} / {@code matchType} / {@code matchMode} /
+     * {@code matchedName} / {@code matchedPublisher} / {@code matchedVersion})
+     * are the wire contract the BE-025 read service parses back.
+     */
+    record MatchedProhibited(
+            UUID ruleId,
+            String matchType,
+            String matchMode,
+            String matchedName,
+            String matchedPublisher,
+            String matchedVersion) {
+
+        static final String KEY_RULE_ID = "ruleId";
+        static final String KEY_MATCH_TYPE = "matchType";
+        static final String KEY_MATCH_MODE = "matchMode";
+        static final String KEY_MATCHED_NAME = "matchedName";
+        static final String KEY_MATCHED_PUBLISHER = "matchedPublisher";
+        static final String KEY_MATCHED_VERSION = "matchedVersion";
+
+        static MatchedProhibited of(
+                EndpointProhibitedSoftwareRule rule, EndpointSoftwareInventoryItem item) {
+            return new MatchedProhibited(
+                    rule.getId(),
+                    rule.getMatchType() == null ? null : rule.getMatchType().name(),
+                    rule.getMatchMode() == null ? null : rule.getMatchMode().name(),
+                    item.getDisplayName(),
+                    item.getPublisher(),
+                    item.getDisplayVersion());
+        }
+
+        Map<String, Object> toEvidenceMap() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put(KEY_RULE_ID, ruleId == null ? null : ruleId.toString());
+            m.put(KEY_MATCH_TYPE, matchType);
+            m.put(KEY_MATCH_MODE, matchMode);
+            m.put(KEY_MATCHED_NAME, matchedName);
+            m.put(KEY_MATCHED_PUBLISHER, matchedPublisher);
+            m.put(KEY_MATCHED_VERSION, matchedVersion);
             return m;
         }
     }

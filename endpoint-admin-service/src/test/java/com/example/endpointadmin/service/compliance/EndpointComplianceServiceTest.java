@@ -16,8 +16,11 @@ import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointDeviceComplianceState;
 import com.example.endpointadmin.model.EndpointSoftwareCatalogItem;
 import com.example.endpointadmin.model.EndpointSoftwareCompliancePolicyItem;
+import com.example.endpointadmin.model.EndpointProhibitedSoftwareRule;
 import com.example.endpointadmin.model.EndpointSoftwareInventoryItem;
 import com.example.endpointadmin.model.EndpointSoftwareInventorySnapshot;
+import com.example.endpointadmin.model.ProhibitedSoftwareMatchMode;
+import com.example.endpointadmin.model.ProhibitedSoftwareMatchType;
 import com.example.endpointadmin.model.SoftwareInstallSource;
 import com.example.endpointadmin.repository.EndpointComplianceEvaluationRepository;
 import com.example.endpointadmin.repository.EndpointDeviceComplianceStateRepository;
@@ -50,6 +53,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -84,6 +88,9 @@ class EndpointComplianceServiceTest {
     private EndpointDeviceComplianceStateRepository stateRepository;
     @Mock
     private com.example.endpointadmin.repository.EndpointInstallAuditRepository installAuditRepository;
+    @Mock
+    private com.example.endpointadmin.repository.EndpointProhibitedSoftwareRuleRepository
+            prohibitedSoftwareRuleRepository;
 
     private EndpointComplianceService service;
 
@@ -93,6 +100,7 @@ class EndpointComplianceServiceTest {
         service = new EndpointComplianceService(
                 deviceRepository, snapshotRepository, policyRepository,
                 evaluationRepository, stateRepository, installAuditRepository,
+                prohibitedSoftwareRuleRepository,
                 null, // no JdbcTemplate — advisory lock path is a no-op in unit tests
                 singletonProvider(fixed),
                 java.time.Duration.ofMinutes(15));
@@ -212,6 +220,120 @@ class EndpointComplianceServiceTest {
 
         assertThat(outcome.decision()).isEqualTo(ComplianceDecision.UNAUTHORIZED);
         assertThat(outcome.blockingReasons()).containsExactly("forbidden_app_installed");
+    }
+
+    // ── BE-025 prohibited-software denylist ────────────────────────────
+
+    @Test
+    void prohibitedDenylistMatchProducesUNAUTHORIZED() {
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        addItem(snap, "uTorrent", "3.5", "BitTorrent Inc");
+        addItem(snap, "7-Zip", "24.07", "Igor Pavlov");
+        mockSnapshot(snap);
+        // No catalog policy at all — prohibited is NOT catalog-bound.
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of());
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        // Drives UNAUTHORIZED even with an otherwise-empty catalog policy set.
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.UNAUTHORIZED);
+        assertThat(outcome.blockingReasons()).contains("prohibited_app_installed");
+        // Evidence carries the redacted matched fields (name/publisher/version).
+        Map<String, Object> matched = matchedItems(outcome);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> prohibited =
+                (List<Map<String, Object>>) matched.get("prohibitedInstalled");
+        assertThat(prohibited).hasSize(1);
+        assertThat(prohibited.get(0))
+                .containsEntry("matchedName", "uTorrent")
+                .containsEntry("matchedPublisher", "BitTorrent Inc")
+                .containsEntry("matchedVersion", "3.5")
+                .containsEntry("matchType", "NAME")
+                .containsEntry("matchMode", "EXACT");
+        // Redaction: no notes / createdBySubject leak into evidence.
+        assertThat(prohibited.get(0)).doesNotContainKeys("notes", "createdBySubject");
+    }
+
+    @Test
+    void cleanDeviceWithDenylistRulesStaysCompliant() {
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        addItem(snap, "7-Zip 24.07 (x64)", "24.07", "Igor Pavlov");
+        mockSnapshot(snap);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.MINIMUM, "24.0");
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        // A denylist rule exists but matches nothing installed.
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.CONTAINS, "torrent", null)));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.COMPLIANT);
+        assertThat(outcome.reasons()).doesNotContain("prohibited_app_installed");
+    }
+
+    @Test
+    void prohibitedPreservedUnderHardStaleInventory() {
+        // The locked invariant is the precedence ladder (any UNAUTHORIZED
+        // severity outranks UNKNOWN), NOT that only forbidden_app_installed
+        // drives it. A prohibited match must survive hard-stale telemetry the
+        // same way a catalog FORBIDDEN hit does.
+        mockDevice();
+        Instant collected = NOW.minus(Duration.ofDays(10));
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(collected, true);
+        addItem(snap, "Sketchy Tool", "1.0", "Sketchy Software LLC");
+        mockSnapshot(snap);
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of());
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.PUBLISHER,
+                        ProhibitedSoftwareMatchMode.EXACT, null, "Sketchy Software LLC")));
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.UNAUTHORIZED);
+        assertThat(outcome.reasons())
+                .contains("prohibited_app_installed", "inventory_stale_hard");
+    }
+
+    @Test
+    void prohibitedNotEvaluatedWhenAppsUnavailable() {
+        // Apps-unavailable inventory is not authoritative → no prohibited
+        // findings produced off it (mirrors the catalog FORBIDDEN gate).
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        snap.setAppsAvailable(false);
+        mockSnapshot(snap);
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of());
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+
+        assertThat(outcome.reasons()).doesNotContain("prohibited_app_installed");
+        // The denylist repo is not even consulted on an apps-unavailable snapshot.
+        verifyNoInteractions(prohibitedSoftwareRuleRepository);
     }
 
     @Test
@@ -678,6 +800,30 @@ class EndpointComplianceServiceTest {
         p.setLastUpdatedBySubject("creator");
         setField(p, "version", 1L);
         return p;
+    }
+
+    private EndpointProhibitedSoftwareRule denylistRule(
+            ProhibitedSoftwareMatchType matchType,
+            ProhibitedSoftwareMatchMode matchMode,
+            String namePattern, String publisherPattern) {
+        EndpointProhibitedSoftwareRule r = new EndpointProhibitedSoftwareRule();
+        setField(r, "id", UUID.randomUUID());
+        r.setTenantId(TENANT_ID);
+        r.setMatchType(matchType);
+        r.setMatchMode(matchMode);
+        r.setNamePattern(namePattern);
+        r.setPublisherPattern(publisherPattern);
+        r.setEnabled(true);
+        r.setNotes("internal note — must NOT leak to evidence");
+        r.setCreatedBySubject("creator");
+        r.setLastUpdatedBySubject("creator");
+        setField(r, "version", 1L);
+        return r;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> matchedItems(ComplianceEvaluationOutcome outcome) {
+        return (Map<String, Object>) outcome.evidence().get("matchedItems");
     }
 
     private static void setField(Object target, String fieldName, Object value) {
