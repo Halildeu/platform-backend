@@ -21,9 +21,19 @@ import java.util.regex.Pattern;
  * commit {@code 73f0db0f}).
  *
  * <p>Wire path: the block is carried at
- * {@code details.inventory.outdatedSoftware} (nullable — absent when the
- * caller did not opt in; heartbeat / lightweight inventory default). When
- * present it MUST conform to the schema.
+ * {@code details.inventory.outdatedSoftware} (and the redundant top-level
+ * {@code details.outdatedSoftware} accepted by some agent versions). It is
+ * nullable — absent or explicit-{@code null} when the caller did not opt in
+ * (heartbeat / lightweight inventory default). When <em>present</em> it MUST
+ * be the contract object: a present-but-non-{@link Map} value (a
+ * {@code List} / {@code String} / scalar) is fail-closed <em>rejected</em>
+ * (Codex 019e7693 RED). Otherwise the type-confusion would skip
+ * {@link #sanitizeOutdatedSoftware} entirely — the per-package
+ * {@code additionalProperties:false} redaction boundary never runs — and the
+ * raw block (publisher / downloadUrl / display name PII) would pass through
+ * into the persisted {@code result_payload.details} unsanitized (the ingest
+ * gate also accepts only a Map, so it skips ingest and the per-package reject
+ * too). A present-but-malformed redaction-gated block must FAIL the submit.
  *
  * <p><strong>Allowlist projection.</strong> The output of
  * {@link #sanitize(Map)} is the SAME object that flows into BOTH the
@@ -125,10 +135,31 @@ public class OutdatedSoftwarePayloadPolicy {
     /**
      * Allowlist of keys on an {@code upgrade[]} package facet. The contract's
      * {@code outdatedPackage} is {@code additionalProperties: false} with
-     * exactly these three required keys. Any other key (name, publisher,
-     * path, license, url, ...) is fail-closed rejected — that is precisely
+     * EXACTLY these three required keys. The match is <strong>exact and
+     * case-sensitive</strong>: any other key (name, publisher, path, license,
+     * url, ...) <em>and any case-variant</em> ({@code PackageId},
+     * {@code Publisher}, {@code InstalledVersion}, ...) is fail-closed
+     * rejected. A case-insensitive allowlist would silently DROP a
+     * case-variant extra instead of rejecting it as the
+     * {@code additionalProperties:false} violation it is — that is precisely
      * the redaction boundary the agent enforces at source, mirrored here
      * machine-side.
+     */
+    private static final Set<String> PACKAGE_ALLOWED_KEYS_EXACT = Set.of(
+            "packageId",
+            "installedVersion",
+            "availableVersion"
+    );
+
+    /**
+     * Lowercased forms of the three exact package keys. A package key that
+     * is NOT an exact contract key but whose lowercase form collides with one
+     * (e.g. {@code PackageId}, {@code PACKAGEID}) is a case-variant of a
+     * redaction-gated field — rejected with a targeted "case-variant" message
+     * so the operator sees it is the additionalProperties violation, not a
+     * stray off-contract field. Any other off-contract key (e.g.
+     * {@code publisher}, {@code downloadUrl}) is rejected with the generic
+     * forbidden-key message.
      */
     private static final Set<String> PACKAGE_ALLOWED_KEYS_LOWER = Set.of(
             "packageid",
@@ -251,6 +282,17 @@ public class OutdatedSoftwarePayloadPolicy {
                 Map<String, Object> osTyped = (Map<String, Object>) osMap;
                 typed.put("outdatedSoftware",
                         sanitizeOutdatedSoftware(osTyped, "$.inventory.outdatedSoftware"));
+            } else if (osNode != null) {
+                // Present-but-wrong-type (a List/String/scalar — NOT the
+                // contract object) is fail-closed REJECTED, never passed
+                // through. Otherwise a `outdatedSoftware: [ {publisher,
+                // downloadUrl, ...} ]` list would skip sanitizeOutdated-
+                // Software entirely (the redaction boundary never runs) and
+                // the raw PII-bearing block would persist into
+                // result_payload.details. Absent (osNode == null because the
+                // key is missing) OR explicit-null is the legitimate optional
+                // opt-out and is left untouched.
+                rejectNonMapBlock(osNode, "$.inventory.outdatedSoftware");
             }
         }
         // Some agent versions may also place the block at the top level —
@@ -261,8 +303,36 @@ public class OutdatedSoftwarePayloadPolicy {
             Map<String, Object> osTyped = (Map<String, Object>) topMap;
             sanitized.put("outdatedSoftware",
                     sanitizeOutdatedSoftware(osTyped, "$.outdatedSoftware"));
+        } else if (topNode != null) {
+            // Same fail-closed reject for the top-level alias (present-but-
+            // wrong-type only; absent/explicit-null is the valid opt-out).
+            rejectNonMapBlock(topNode, "$.outdatedSoftware");
         }
         return sanitized;
+    }
+
+    /**
+     * Fail-closed reject a present-but-non-{@link Map} outdated-software
+     * block. A {@code List} / {@code String} / scalar at this path is NOT the
+     * contract object, so the per-package {@code additionalProperties:false}
+     * redaction boundary in {@link #sanitizeOutdatedSoftware} would never run
+     * on it — the raw block would otherwise flow unsanitized into the
+     * persisted {@code result_payload.details} (the
+     * {@code hasOutdatedSoftwareBlock} ingest gate also accepts only a Map, so
+     * it would skip ingest and never hit the per-package reject either). A
+     * present-but-malformed redaction-gated block must FAIL the submit, never
+     * pass through. The call site only invokes this for a present, non-null,
+     * wrong-typed value; an absent key or an explicit {@code null} is the
+     * legitimate optional opt-out and is left untouched.
+     */
+    private static void rejectNonMapBlock(Object node, String path) {
+        throw new IllegalArgumentException(
+                "Expected object at " + path + " but got "
+                        + node.getClass().getSimpleName()
+                        + " — a present outdated-software block MUST be the contract"
+                        + " object (a List / String / scalar would bypass the"
+                        + " per-package redaction boundary; absent or null is the"
+                        + " valid opt-out).");
     }
 
     /**
@@ -421,16 +491,32 @@ public class OutdatedSoftwarePayloadPolicy {
     private Map<String, Object> projectPackage(Map<?, ?> pkgMap, String pkgPath) {
         for (Map.Entry<?, ?> entry : pkgMap.entrySet()) {
             String key = String.valueOf(entry.getKey());
+            if (PACKAGE_ALLOWED_KEYS_EXACT.contains(key)) {
+                continue;
+            }
+            // Exact case-sensitive additionalProperties:false: any key not
+            // EXACTLY one of the three contract keys is rejected. A
+            // case-variant whose lowercase form collides with a contract key
+            // (e.g. PackageId / INSTALLEDVERSION) is the additionalProperties
+            // violation, NOT a field to silently drop — distinguish it for a
+            // clearer operator error.
             String keyLower = key.toLowerCase(Locale.ROOT);
-            if (!PACKAGE_ALLOWED_KEYS_LOWER.contains(keyLower)) {
+            if (PACKAGE_ALLOWED_KEYS_LOWER.contains(keyLower)) {
                 throw new IllegalArgumentException(
                         "Forbidden outdated-software package key '" + key + "' at "
                                 + pkgPath + "." + key
-                                + " — the package facet redaction boundary allows ONLY"
-                                + " {packageId, installedVersion, availableVersion} (no"
-                                + " display name / publisher / install location / license"
-                                + " / download URL).");
+                                + " — case-variant of a contract key; the package facet"
+                                + " redaction boundary requires the EXACT keys"
+                                + " {packageId, installedVersion, availableVersion}"
+                                + " (additionalProperties:false, case-sensitive).");
             }
+            throw new IllegalArgumentException(
+                    "Forbidden outdated-software package key '" + key + "' at "
+                            + pkgPath + "." + key
+                            + " — the package facet redaction boundary allows ONLY"
+                            + " {packageId, installedVersion, availableVersion} (no"
+                            + " display name / publisher / install location / license"
+                            + " / download URL).");
         }
         String packageId = requireBoundedString(pkgMap.get("packageId"),
                 pkgPath + ".packageId", PACKAGE_ID_MAX_LEN);
