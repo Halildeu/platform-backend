@@ -53,7 +53,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -316,24 +317,194 @@ class EndpointComplianceServiceTest {
                 .contains("prohibited_app_installed", "inventory_stale_hard");
     }
 
+    // ── BE-025 prohibited-rule drift visibility (Codex 019e763a REVISE #1) ──
+
+    @Test
+    void prohibitedRuleSetFoldsIntoPolicyHash() {
+        // Two tenants with identical (empty) catalog policy but DIFFERENT
+        // enabled denylist rule sets must produce different policy hashes, so
+        // the prohibited-rule set genuinely participates in the drift hash.
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of());
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of());
+        String hashNoRules = service.computeCurrentPolicyHash(TENANT_ID);
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        String hashWithRule = service.computeCurrentPolicyHash(TENANT_ID);
+
+        assertThat(hashWithRule).isNotEqualTo(hashNoRules);
+        assertThat(hashWithRule).hasSize(64); // SHA-256 hex
+    }
+
+    @Test
+    void addingProhibitedRuleSurfacesDriftForPreviouslyCompliantDevice() {
+        // THE previously-silent case (Codex 019e763a REVISE #1): a device is
+        // evaluated COMPLIANT when NO denylist rule exists; later an enabled
+        // rule that matches its installed software is added. The persisted
+        // evaluation hash must no longer equal computeCurrentPolicyHash, so
+        // the controller reports policyDrift=true and the operator sees a
+        // "re-evaluate" CTA instead of a silently-stale COMPLIANT.
+        mockDevice();
+        EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
+        // A satisfied REQUIRED policy makes the device genuinely COMPLIANT
+        // (an empty policy set would drive UNKNOWN via policy_empty). The
+        // uTorrent item is unrelated to the catalog item and is not yet
+        // prohibited by any rule.
+        addItem(snap, "7-Zip 24.07 (x64)", "24.07", "Igor Pavlov");
+        addItem(snap, "uTorrent", "3.5", "BitTorrent Inc");
+        mockSnapshot(snap);
+        EndpointSoftwareCatalogItem catalog = buildCatalog(
+                "7zip.7zip", "7-Zip", CatalogVersionPolicyType.MINIMUM, "24.0");
+        when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
+                .thenReturn(List.of(buildPolicy(catalog, ComplianceEnforcementMode.REQUIRED)));
+        // At EVALUATION time there are no denylist rules → COMPLIANT.
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of());
+        mockSaveEvaluationEcho();
+        mockUpsertNoExisting();
+
+        ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
+        assertThat(outcome.decision()).isEqualTo(ComplianceDecision.COMPLIANT);
+        String persistedHash = outcome.catalogPolicyHash();
+
+        // LATER a matching enabled prohibited rule is added for the tenant.
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        String currentHash = service.computeCurrentPolicyHash(TENANT_ID);
+
+        // The previously-silent stale state is now visible: hashes diverge.
+        assertThat(currentHash).isNotEqualTo(persistedHash);
+    }
+
+    @Test
+    void updatingProhibitedRulePatternSurfacesDrift() {
+        // A genuine pattern change on an existing rule changes the hash.
+        UUID ruleId = UUID.fromString("99999999-9999-9999-9999-999999999999");
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRuleWithId(ruleId,
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.CONTAINS, "torrent", null)));
+        String before = service.computeCurrentPolicyHash(TENANT_ID);
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRuleWithId(ruleId,
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.CONTAINS, "bittorrent", null)));
+        String after = service.computeCurrentPolicyHash(TENANT_ID);
+
+        assertThat(after).isNotEqualTo(before);
+    }
+
+    @Test
+    void deletingProhibitedRuleSurfacesDrift() {
+        // Removing the last enabled rule changes the hash (delete path).
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        String withRule = service.computeCurrentPolicyHash(TENANT_ID);
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of());
+        String afterDelete = service.computeCurrentPolicyHash(TENANT_ID);
+
+        assertThat(afterDelete).isNotEqualTo(withRule);
+    }
+
+    @Test
+    void caseOrWhitespaceOnlyPatternEditDoesNotFalselyDrift() {
+        // Normalized patterns: a pure case/whitespace edit the matcher treats
+        // as equivalent must NOT register as drift (no spurious re-evaluate
+        // CTA). Same rule id, normalized name folds to the same value.
+        UUID ruleId = UUID.fromString("88888888-8888-8888-8888-888888888888");
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRuleWithId(ruleId,
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
+        String original = service.computeCurrentPolicyHash(TENANT_ID);
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRuleWithId(ruleId,
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "  UTORRENT  ", null)));
+        String afterCosmeticEdit = service.computeCurrentPolicyHash(TENANT_ID);
+
+        assertThat(afterCosmeticEdit).isEqualTo(original);
+    }
+
+    @Test
+    void prohibitedRuleProjectionIsOrderIndependent() {
+        // Hash must not depend on repository result ordering — two orderings
+        // of the same rule set fold to the same hash.
+        EndpointProhibitedSoftwareRule a = denylistRuleWithId(
+                UUID.fromString("11111111-aaaa-1111-aaaa-111111111111"),
+                ProhibitedSoftwareMatchType.NAME,
+                ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null);
+        EndpointProhibitedSoftwareRule b = denylistRuleWithId(
+                UUID.fromString("22222222-bbbb-2222-bbbb-222222222222"),
+                ProhibitedSoftwareMatchType.PUBLISHER,
+                ProhibitedSoftwareMatchMode.EXACT, null, "Sketchy LLC");
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(a, b));
+        String ab = service.computeCurrentPolicyHash(TENANT_ID);
+
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(b, a));
+        String ba = service.computeCurrentPolicyHash(TENANT_ID);
+
+        assertThat(ab).isEqualTo(ba);
+    }
+
     @Test
     void prohibitedNotEvaluatedWhenAppsUnavailable() {
         // Apps-unavailable inventory is not authoritative → no prohibited
-        // findings produced off it (mirrors the catalog FORBIDDEN gate).
+        // findings produced off it (mirrors the catalog FORBIDDEN gate). The
+        // MATCHING path early-returns before consulting the denylist repo; the
+        // HASH path (drift visibility, Codex 019e763a REVISE #1) still reads it
+        // exactly once so a rule change surfaces drift even on an
+        // apps-unavailable device.
         mockDevice();
         EndpointSoftwareInventorySnapshot snap = buildSnapshotFresh(NOW, true);
         snap.setAppsAvailable(false);
         mockSnapshot(snap);
         when(policyRepository.findEnabledByTenantAndModes(eq(TENANT_ID), any()))
                 .thenReturn(List.of());
+        when(prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID))
+                .thenReturn(List.of(denylistRule(
+                        ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "uTorrent", null)));
         mockSaveEvaluationEcho();
         mockUpsertNoExisting();
 
         ComplianceEvaluationOutcome outcome = service.evaluateForAdmin(TENANT, DEVICE_ID);
 
+        // No finding produced off non-authoritative inventory…
         assertThat(outcome.reasons()).doesNotContain("prohibited_app_installed");
-        // The denylist repo is not even consulted on an apps-unavailable snapshot.
-        verifyNoInteractions(prohibitedSoftwareRuleRepository);
+        // …but the hash DID fold the rule set in (consulted exactly once, by
+        // the hash path only — the matching path never reached the repo).
+        verify(prohibitedSoftwareRuleRepository, times(1))
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(TENANT_ID);
     }
 
     @Test
@@ -806,8 +977,17 @@ class EndpointComplianceServiceTest {
             ProhibitedSoftwareMatchType matchType,
             ProhibitedSoftwareMatchMode matchMode,
             String namePattern, String publisherPattern) {
+        return denylistRuleWithId(UUID.randomUUID(), matchType, matchMode,
+                namePattern, publisherPattern);
+    }
+
+    private EndpointProhibitedSoftwareRule denylistRuleWithId(
+            UUID id,
+            ProhibitedSoftwareMatchType matchType,
+            ProhibitedSoftwareMatchMode matchMode,
+            String namePattern, String publisherPattern) {
         EndpointProhibitedSoftwareRule r = new EndpointProhibitedSoftwareRule();
-        setField(r, "id", UUID.randomUUID());
+        setField(r, "id", id);
         r.setTenantId(TENANT_ID);
         r.setMatchType(matchType);
         r.setMatchMode(matchMode);

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -136,6 +137,78 @@ class ProhibitedSoftwareRuleServiceTest {
                 .extracting(ex -> ((ResponseStatusException) ex).getStatusCode().value())
                 .isEqualTo(HttpStatus.NOT_FOUND.value());
         verify(ruleRepository, never()).delete(any());
+    }
+
+    // ── persist() status routing (Codex 019e763a REVISE #2) ──
+    // A CHECK-constraint violation that reaches the backstop must surface as
+    // 400 (invalid input), NOT 409 (duplicate). A UNIQUE-dedup race stays 409.
+
+    @Test
+    void checkConstraintViolationOnPersistMapsTo400() {
+        when(ruleRepository.findDuplicate(eq(TENANT_ID), any(), any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(ruleRepository.save(any()))
+                .thenThrow(dataIntegrityViolation(
+                        "ck_endpoint_prohibited_software_rules_name_pattern_blank", "23514"));
+
+        assertThatThrownBy(() -> service.create(TENANT, nameRequest("uTorrent", null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(ex -> ((ResponseStatusException) ex).getStatusCode().value())
+                .isEqualTo(HttpStatus.BAD_REQUEST.value());
+    }
+
+    @Test
+    void uniqueConstraintViolationOnPersistMapsTo409() {
+        when(ruleRepository.findDuplicate(eq(TENANT_ID), any(), any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(ruleRepository.save(any()))
+                .thenThrow(dataIntegrityViolation(
+                        "uq_endpoint_prohibited_software_rules_tenant_dedup", "23505"));
+
+        assertThatThrownBy(() -> service.create(TENANT, nameRequest("uTorrent", null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(ex -> ((ResponseStatusException) ex).getStatusCode().value())
+                .isEqualTo(HttpStatus.CONFLICT.value());
+    }
+
+    @Test
+    void checkViolationRoutedBySqlStateWhenConstraintNameAbsentMapsTo400() {
+        // Robustness: even with a null constraint name, SQLSTATE 23514
+        // (check_violation) routes to 400 rather than the 409 default.
+        when(ruleRepository.findDuplicate(eq(TENANT_ID), any(), any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(ruleRepository.save(any()))
+                .thenThrow(dataIntegrityViolation(null, "23514"));
+
+        assertThatThrownBy(() -> service.create(TENANT, nameRequest("uTorrent", null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(ex -> ((ResponseStatusException) ex).getStatusCode().value())
+                .isEqualTo(HttpStatus.BAD_REQUEST.value());
+    }
+
+    @Test
+    void unclassifiableViolationFallsBackTo409() {
+        // No constraint name + unrelated SQLSTATE → keep the historical 409
+        // default (concurrent-equivalent-create race) rather than guessing 400.
+        when(ruleRepository.findDuplicate(eq(TENANT_ID), any(), any(), any(), any()))
+                .thenReturn(Optional.empty());
+        when(ruleRepository.save(any()))
+                .thenThrow(dataIntegrityViolation(null, "40001"));
+
+        assertThatThrownBy(() -> service.create(TENANT, nameRequest("uTorrent", null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(ex -> ((ResponseStatusException) ex).getStatusCode().value())
+                .isEqualTo(HttpStatus.CONFLICT.value());
+    }
+
+    private static DataIntegrityViolationException dataIntegrityViolation(
+            String constraintName, String sqlState) {
+        java.sql.SQLException sqlEx =
+                new java.sql.SQLException("backstop violation", sqlState);
+        org.hibernate.exception.ConstraintViolationException hibernateEx =
+                new org.hibernate.exception.ConstraintViolationException(
+                        "could not execute statement", sqlEx, constraintName);
+        return new DataIntegrityViolationException("persist failed", hibernateEx);
     }
 
     @Test

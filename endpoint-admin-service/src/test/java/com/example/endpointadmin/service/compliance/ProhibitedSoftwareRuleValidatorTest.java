@@ -114,6 +114,52 @@ class ProhibitedSoftwareRuleValidatorTest {
         assertThat(ProhibitedSoftwareRuleValidator.normalize("   ")).isEmpty();
     }
 
+    // ── Normalization parity with the DB CHECK (Codex 019e763a REVISE #2) ──
+    // Java String.trim() strips EVERY char <= U+0020 (tab \t, newline \n,
+    // CR \r, space). The V19 backstop now trims with the same [\x00-\x20]
+    // range, so a pattern that the validator accepts/rejects on its trimmed
+    // form is treated identically by the DB.
+
+    @Test
+    void containsWithTrailingTabBelowMinLengthRejected() {
+        // "ab\t" → Java trim → "ab" (length 2) < MIN_CONTAINS_LENGTH. The DB
+        // CHECK over the [\x00-\x20] range rejects the same value identically
+        // (the old bare btrim() would have kept the tab and let length 3 pass
+        // — the divergence Codex flagged).
+        assertThatThrownBy(() -> validator.validate(
+                req(ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.CONTAINS, "ab\t", null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least " + ProhibitedSoftwareRuleValidator.MIN_CONTAINS_LENGTH);
+    }
+
+    @Test
+    void whitespaceOnlyTabNewlinePatternTreatedAsBlank() {
+        // A pattern of only tab/newline trims to empty → treated as absent →
+        // NAME type without a name → 400 (matches the DB blank CHECK).
+        assertThatThrownBy(() -> validator.validate(
+                req(ProhibitedSoftwareMatchType.NAME,
+                        ProhibitedSoftwareMatchMode.EXACT, "\t\n", null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("namePattern is required");
+    }
+
+    @Test
+    void normalizeStripsTabAndNewlineLikeJavaTrim() {
+        // The shared normalizer used by the matcher + dedup key folds
+        // tab/newline-padded variants to the same key (parity with the DB
+        // dedup index's [\x00-\x20] trim).
+        assertThat(ProhibitedSoftwareRuleValidator.normalize("\tuTorrent\n"))
+                .isEqualTo("utorrent");
+        assertThat(ProhibitedSoftwareRuleValidator.normalize("\t\n\r ")).isEmpty();
+    }
+
+    @Test
+    void trimToNullStripsTabAndNewline() {
+        assertThat(ProhibitedSoftwareRuleValidator.trimToNull("\tx\n")).isEqualTo("x");
+        assertThat(ProhibitedSoftwareRuleValidator.trimToNull("\t\n\r")).isNull();
+    }
+
     @Test
     void trimToNullCollapsesBlank() {
         assertThat(ProhibitedSoftwareRuleValidator.trimToNull("  x ")).isEqualTo("x");

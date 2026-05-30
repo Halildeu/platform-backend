@@ -169,6 +169,63 @@ class EndpointProhibitedSoftwareRulesPostgresIntegrationTest {
     }
 
     // ──────────────────────────────────────────────────────────────────
+    // Normalization parity with Java String.trim() (Codex 019e763a REVISE
+    // #2). The CHECK / dedup expressions now trim over the [\x00-\x20] range
+    // (same as Java String.trim()), NOT the bare btrim() that only stripped
+    // U+0020 spaces. These tests lock the previously-divergent tab/newline
+    // behaviour.
+    // ──────────────────────────────────────────────────────────────────
+
+    @Test
+    void containsWithTrailingTabBelowMinLengthRejectedByCheck() {
+        // "ab\t" — trimmed length 2 < 3 under the [\x00-\x20] range. The OLD
+        // bare btrim() kept the tab (length 3) and would have WRONGLY accepted
+        // this, diverging from the app validator. Now the DB rejects it too.
+        assertThatThrownBy(() -> insert("NAME", "CONTAINS", "ab\t", null))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining(
+                        "ck_endpoint_prohibited_software_rules_contains_minlen");
+    }
+
+    @Test
+    void tabAndNewlineOnlyNamePatternRejectedAsBlankByCheck() {
+        // A pattern of only tab/newline trims to '' under [\x00-\x20] → blank
+        // CHECK fires (the bare btrim() would have left it non-empty).
+        assertThatThrownBy(() -> insert("NAME", "EXACT", "\t\n", null))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining(
+                        "ck_endpoint_prohibited_software_rules_name_pattern_blank");
+    }
+
+    @Test
+    void delCharInPatternIsKeptNotTrimmed() {
+        // Java String.trim() KEEPS DEL (U+007F > U+0020). The DB range
+        // [\x00-\x20] also keeps it, so a trailing-DEL EXACT pattern is
+        // stored verbatim (length unchanged). Proves the range is an EXACT
+        // match to Java trim() and does NOT over-strip like [[:cntrl:]] would
+        // (which strips DEL). EXACT mode so the CONTAINS min-length is moot.
+        String withDel = "ab\u007f"; // 3 chars, trailing DEL
+        UUID id = insert("NAME", "EXACT", withDel, null);
+        assertThat(jdbc.queryForObject(
+                "SELECT length(name_pattern) FROM " + TABLE + " WHERE id = ?",
+                Integer.class, id)).isEqualTo(3);
+    }
+
+    @Test
+    void dedupFoldsTabPaddedVariantCaseInsensitively() {
+        // Same logical rule, one space-padded + lowercased, one tab-padded +
+        // uppercased → both fold to the same [\x00-\x20]-trimmed lower key →
+        // UNIQUE violation. The OLD bare-btrim index folded ONLY spaces, so a
+        // tab-padded variant would have slipped through as a false distinct.
+        UUID tenant = UUID.randomUUID();
+        insert(tenant, "NAME", "EXACT", " uTorrent ", null);
+        assertThatThrownBy(() -> insert(tenant, "NAME", "EXACT", "\tUTORRENT\t", null))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining(
+                        "uq_endpoint_prohibited_software_rules_tenant_dedup");
+    }
+
+    // ──────────────────────────────────────────────────────────────────
     // Functional UNIQUE dedup index (with NULL-folding)
     // ──────────────────────────────────────────────────────────────────
 

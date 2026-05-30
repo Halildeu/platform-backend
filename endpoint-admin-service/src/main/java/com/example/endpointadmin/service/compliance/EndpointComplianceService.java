@@ -254,12 +254,20 @@ public class EndpointComplianceService {
      */
     /**
      * Compute the catalog/policy hash for the tenant's currently
-     * enabled REQUIRED/FORBIDDEN policy rows. Used by the GET
-     * endpoints to surface a {@code policyDrift} flag: if the live
-     * hash differs from the persisted evaluation's
-     * {@code catalogPolicyHash}, the policy set has changed since the
-     * verdict was last computed and the operator should re-evaluate.
-     * Codex 019e6bdf iter-1 absorb.
+     * enabled REQUIRED/FORBIDDEN policy rows AND its enabled
+     * prohibited-software denylist rules. Used by the GET endpoints to
+     * surface a {@code policyDrift} flag: if the live hash differs from
+     * the persisted evaluation's {@code catalogPolicyHash}, the policy
+     * set has changed since the verdict was last computed and the
+     * operator should re-evaluate. Codex 019e6bdf iter-1 absorb.
+     *
+     * <p>BE-025 (Codex 019e763a REVISE #1): the prohibited-rule set is
+     * folded into the SAME hash so that adding / editing / deleting an
+     * enabled denylist rule flips {@code policyDrift=true} for a device
+     * whose last evaluation predates the change. Without this a
+     * previously-COMPLIANT device would silently keep its stale verdict
+     * (a newly-banned, already-installed app would never surface a
+     * "re-evaluate" CTA).
      */
     @Transactional(readOnly = true)
     public String computeCurrentPolicyHash(UUID tenantId) {
@@ -268,7 +276,7 @@ public class EndpointComplianceService {
                         tenantId,
                         List.of(ComplianceEnforcementMode.REQUIRED,
                                 ComplianceEnforcementMode.FORBIDDEN));
-        return computeCatalogPolicyHash(policies);
+        return computePolicyHash(tenantId, policies);
     }
 
     @Transactional(readOnly = true)
@@ -374,7 +382,10 @@ public class EndpointComplianceService {
                 snapshot, policies, matchedRequired, outdatedRequired,
                 missingRequired, forbiddenInstalled, prohibitedInstalled,
                 unsupportedDetectionPackageIds);
-        String catalogPolicyHash = computeCatalogPolicyHash(policies);
+        // BE-025 (Codex 019e763a REVISE #1): the persisted hash folds in the
+        // enabled prohibited-rule set so a later prohibited-rule change makes
+        // computeCurrentPolicyHash diverge from this stored value → drift.
+        String catalogPolicyHash = computePolicyHash(tenantId, policies);
 
         Long catalogRowVersionMax = policies.stream()
                 .map(p -> p.getCatalogItem() == null ? null : p.getCatalogItem().getVersion())
@@ -763,44 +774,120 @@ public class EndpointComplianceService {
     // ────────────────────────────────────────────────────────────────
     // Hash + evidence projection
 
-    private String computeCatalogPolicyHash(List<EndpointSoftwareCompliancePolicyItem> policies) {
+    /**
+     * Compute the deterministic SHA-256 that backs the {@code policyDrift}
+     * signal. It is a hash over a canonical-sorted projection of BOTH:
+     *
+     * <ol>
+     *   <li>the tenant's REQUIRED/FORBIDDEN catalog-bound policy rows
+     *       (the original BE-023 contract); and</li>
+     *   <li>the tenant's enabled prohibited-software denylist rules
+     *       (BE-025, Codex 019e763a REVISE #1) — so a denylist
+     *       create/update/delete changes the hash and surfaces drift for
+     *       a device whose verdict predates it.</li>
+     * </ol>
+     *
+     * <p>Both sub-projections are sorted by their row id so the hash is
+     * order-independent (it does not depend on repository result ordering),
+     * and the two are wrapped under stable keys so the combined document is
+     * itself canonical. The stored column / DTO field keeps the historical
+     * name {@code catalogPolicyHash}; its meaning is widened to "the policy
+     * set (catalog policies + prohibited rules) that produced this verdict".
+     */
+    private String computePolicyHash(
+            UUID tenantId, List<EndpointSoftwareCompliancePolicyItem> policies) {
         try {
-            List<Map<String, Object>> projection = new ArrayList<>(policies.size());
-            for (EndpointSoftwareCompliancePolicyItem policy : policies) {
-                EndpointSoftwareCatalogItem catalog = policy.getCatalogItem();
-                Map<String, Object> entry = new TreeMap<>();
-                entry.put("policyItemId", policy.getId() == null ? null : policy.getId().toString());
-                entry.put("policyRowVersion", policy.getVersion());
-                entry.put("enforcementMode", policy.getEnforcementMode().name());
-                entry.put("enabled", policy.isEnabled());
-                if (catalog != null) {
-                    entry.put("catalogItemId", catalog.getId() == null ? null : catalog.getId().toString());
-                    entry.put("catalogRowVersion", catalog.getVersion());
-                    entry.put("catalogPackageId", catalog.getPackageId());
-                    entry.put("catalogDisplayName", catalog.getDisplayName());
-                    entry.put("catalogStatus", catalog.getStatus() == null ? null : catalog.getStatus().name());
-                    entry.put("versionPolicyType",
-                            catalog.getVersionPolicyType() == null ? null : catalog.getVersionPolicyType().name());
-                    entry.put("versionPolicyValue", catalog.getVersionPolicyValue());
-                    entry.put("detectionRule", catalog.getDetectionRule() == null
-                            ? null : new TreeMap<>(catalog.getDetectionRule()));
-                }
-                projection.add(entry);
-            }
-            projection.sort(Comparator.comparing(m -> Objects.toString(m.get("policyItemId"), "")));
-            String canonical = canonicalObjectMapper.writeValueAsString(projection);
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(bytes.length * 2);
-            for (byte b : bytes) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+            Map<String, Object> document = new TreeMap<>();
+            document.put("catalogPolicies", catalogPolicyProjection(policies));
+            document.put("prohibitedRules", prohibitedRuleProjection(tenantId));
+            String canonical = canonicalObjectMapper.writeValueAsString(document);
+            return sha256Hex(canonical);
         } catch (JsonProcessingException | NoSuchAlgorithmException ex) {
-            // Fail-closed by hashing the size and a stable sentinel.
-            log.warn("BE-023 catalogPolicyHash canonicalisation failed", ex);
+            // Fail-closed by hashing the cardinality and a stable sentinel.
+            log.warn("BE-023 policyHash canonicalisation failed", ex);
             return "sha256:fallback-" + policies.size();
         }
+    }
+
+    /**
+     * Canonical-sorted projection of the REQUIRED/FORBIDDEN catalog-bound
+     * policy rows (the original BE-023 hash input, factored out so the BE-025
+     * prohibited-rule projection can be folded in alongside it).
+     */
+    private static List<Map<String, Object>> catalogPolicyProjection(
+            List<EndpointSoftwareCompliancePolicyItem> policies) {
+        List<Map<String, Object>> projection = new ArrayList<>(policies.size());
+        for (EndpointSoftwareCompliancePolicyItem policy : policies) {
+            EndpointSoftwareCatalogItem catalog = policy.getCatalogItem();
+            Map<String, Object> entry = new TreeMap<>();
+            entry.put("policyItemId", policy.getId() == null ? null : policy.getId().toString());
+            entry.put("policyRowVersion", policy.getVersion());
+            entry.put("enforcementMode", policy.getEnforcementMode().name());
+            entry.put("enabled", policy.isEnabled());
+            if (catalog != null) {
+                entry.put("catalogItemId", catalog.getId() == null ? null : catalog.getId().toString());
+                entry.put("catalogRowVersion", catalog.getVersion());
+                entry.put("catalogPackageId", catalog.getPackageId());
+                entry.put("catalogDisplayName", catalog.getDisplayName());
+                entry.put("catalogStatus", catalog.getStatus() == null ? null : catalog.getStatus().name());
+                entry.put("versionPolicyType",
+                        catalog.getVersionPolicyType() == null ? null : catalog.getVersionPolicyType().name());
+                entry.put("versionPolicyValue", catalog.getVersionPolicyValue());
+                entry.put("detectionRule", catalog.getDetectionRule() == null
+                        ? null : new TreeMap<>(catalog.getDetectionRule()));
+            }
+            projection.add(entry);
+        }
+        projection.sort(Comparator.comparing(m -> Objects.toString(m.get("policyItemId"), "")));
+        return projection;
+    }
+
+    /**
+     * BE-025 (Codex 019e763a REVISE #1) — canonical, order-independent
+     * projection of the tenant's enabled prohibited-software denylist rules
+     * that feeds the drift hash. Each entry carries the stable identity an
+     * operator could change ({@code ruleId}, {@code matchType},
+     * {@code matchMode}) plus the NORMALIZED patterns ({@code lower(trim)} via
+     * {@link ProhibitedSoftwareRuleValidator#normalize(String)}) so a pure
+     * case/whitespace edit that the matcher treats as equivalent does NOT
+     * register as drift, while a genuine pattern change does. Entries are
+     * sorted by {@code ruleId} so the projection is independent of repository
+     * ordering. An empty / absent denylist contributes an empty list (a hash
+     * input distinct from a populated one).
+     *
+     * <p>The repository is constructor-injected and non-null in production;
+     * the null guard keeps older unit fixtures that omit it from NPE-ing
+     * (they simply contribute no denylist rows to the hash).
+     */
+    private List<Map<String, Object>> prohibitedRuleProjection(UUID tenantId) {
+        if (prohibitedSoftwareRuleRepository == null) {
+            return List.of();
+        }
+        List<EndpointProhibitedSoftwareRule> rules = prohibitedSoftwareRuleRepository
+                .findByTenantIdAndEnabledTrueOrderByIdAsc(tenantId);
+        List<Map<String, Object>> projection = new ArrayList<>(rules.size());
+        for (EndpointProhibitedSoftwareRule rule : rules) {
+            Map<String, Object> entry = new TreeMap<>();
+            entry.put("ruleId", rule.getId() == null ? null : rule.getId().toString());
+            entry.put("matchType", rule.getMatchType() == null ? null : rule.getMatchType().name());
+            entry.put("matchMode", rule.getMatchMode() == null ? null : rule.getMatchMode().name());
+            entry.put("namePattern", ProhibitedSoftwareRuleValidator.normalize(rule.getNamePattern()));
+            entry.put("publisherPattern",
+                    ProhibitedSoftwareRuleValidator.normalize(rule.getPublisherPattern()));
+            projection.add(entry);
+        }
+        projection.sort(Comparator.comparing(m -> Objects.toString(m.get("ruleId"), "")));
+        return projection;
+    }
+
+    private static String sha256Hex(String canonical) throws NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] bytes = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     private Map<String, Object> buildEvidence(
@@ -820,7 +907,7 @@ public class EndpointComplianceService {
         // UI can render "satisfied via install audit X (reported_at Y)"
         // without having to walk matched.requiredOk[*].installAuditId.
         // This sits OUTSIDE catalogPolicyHash by construction —
-        // computeCatalogPolicyHash projects policies only.
+        // computePolicyHash projects policy + prohibited-rule sets only.
         List<Map<String, Object>> installAuditRefs = new ArrayList<>();
         Map<String, String> dataSourceByCatalogItemId = new LinkedHashMap<>();
         appendInstallAuditRefs(matchedRequired.values(), installAuditRefs, dataSourceByCatalogItemId);
