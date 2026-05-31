@@ -46,6 +46,18 @@
             <artifactId>poi-ooxml</artifactId>
             <version>5.2.5</version>
         </dependency>
+        <!-- poi-ooxml:5.2.5 compiles against commons-compress:1.25.0 (its
+             SXSSFWorkbook.write -> ZipArchiveOutputStream.putArchiveEntry(
+             ZipArchiveEntry) only exists from 1.25.0). A consumer whose other
+             deps pull an older commons-compress (e.g. endpoint-admin-service
+             had 1.24.0) hits a runtime NoSuchMethodError on every .xlsx export
+             — declare it explicitly so common-export carries its own POI-
+             compatible version. (#1154 PR-4 live-only catch: testai xlsx 500.) -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-compress</artifactId>
+            <version>1.25.0</version>
+        </dependency>
 
         <!-- Test -->
         <dependency>
