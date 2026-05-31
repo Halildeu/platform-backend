@@ -177,17 +177,24 @@ public class EndpointInstallAuditService {
     }
 
     private static DetectionReadout extractDetection(Map<String, Object> redactedDetails) {
-        Map<String, Object> detection = asMap(redactedDetails.get("detection"));
-        Map<String, Object> postVerification = asMap(redactedDetails.get("postVerification"));
+        // BE-028: the agent ships the AG-027 InstallResult under
+        // `details.install` (COMMAND-CONTRACT §11.2). The post-verification —
+        // and the detected package/version (postVerification.matchedPackageId /
+        // matchedVersion; the contract carries no separate top-level
+        // `detection`) — live there. Reading the old flat `details.detection` /
+        // `details.postVerification` always missed and recorded UNKNOWN.
+        Map<String, Object> install = asMap(redactedDetails.get("install"));
+        Map<String, Object> postVerification = install == null
+                ? null : asMap(install.get("postVerification"));
         Map<String, Object> evidence = postVerification == null
                 ? new LinkedHashMap<>()
                 : new LinkedHashMap<>(postVerification);
         InstallPostVerification verdict = parsePostVerification(
                 postVerification == null ? null : postVerification.get("status"));
-        String detectedPackageId = detection == null
-                ? null : asString(detection.get("packageId"));
-        String detectedVersion = detection == null
-                ? null : asString(detection.get("version"));
+        String detectedPackageId = postVerification == null
+                ? null : asString(postVerification.get("matchedPackageId"));
+        String detectedVersion = postVerification == null
+                ? null : asString(postVerification.get("matchedVersion"));
         return new DetectionReadout(verdict, detectedPackageId, detectedVersion, evidence);
     }
 

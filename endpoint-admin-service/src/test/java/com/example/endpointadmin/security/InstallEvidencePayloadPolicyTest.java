@@ -90,6 +90,43 @@ class InstallEvidencePayloadPolicyTest {
     }
 
     @Test
+    void redactPreservesInstallWrapperEvidenceAndDropsUnknownInstallKeys() {
+        // BE-028: the agent ships the AG-027 InstallResult under
+        // `details.install` (COMMAND-CONTRACT §11.2). The redaction must keep
+        // the wrapper + its authoritative postVerification while dropping
+        // unknown / forbidden install sub-keys.
+        Map<String, Object> details = baseInstallDetails();
+        Map<String, Object> install = new java.util.LinkedHashMap<>();
+        install.put("finalStatus", "SUCCEEDED_NOOP");
+        Map<String, Object> pv = new java.util.LinkedHashMap<>();
+        pv.put("status", "SATISFIED");
+        pv.put("authority", "AUTHORITATIVE");
+        pv.put("matchedPackageId", "7zip.7zip");
+        install.put("postVerification", pv);
+        install.put("processEnvironment", "SECRET=abc");   // forbidden key
+        install.put("rawSpelunk", "drop me");              // not on install allow-list
+        details.put("install", install);
+
+        Map<String, Object> redacted = policy.redact(details);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> redactedInstall =
+                (Map<String, Object>) redacted.get("install");
+        assertThat(redactedInstall).isNotNull();
+        assertThat(redactedInstall)
+                .containsKey("postVerification")
+                .containsEntry("finalStatus", "SUCCEEDED_NOOP")
+                .doesNotContainKeys("processEnvironment", "rawSpelunk");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> redactedPv =
+                (Map<String, Object>) redactedInstall.get("postVerification");
+        assertThat(redactedPv)
+                .containsEntry("status", "SATISFIED")
+                .containsEntry("authority", "AUTHORITATIVE")
+                .containsEntry("matchedPackageId", "7zip.7zip");
+    }
+
+    @Test
     void redactMasksWindowsUsersPathInValues() {
         Map<String, Object> details = baseInstallDetails();
         details.put("stdoutSummary", "extracted to C:\\Users\\Bob\\AppData\\Local done");

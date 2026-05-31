@@ -218,10 +218,15 @@ class EndpointInstallAuditServiceTest {
     }
 
     private static Map<String, Object> redactedDetailsWithStatus(String status) {
+        // BE-028: the agent ships the InstallResult under `details.install`
+        // (COMMAND-CONTRACT §11.2), so the post-verification verdict lives at
+        // details.install.postVerification.status.
         Map<String, Object> redacted = new LinkedHashMap<>();
+        Map<String, Object> install = new LinkedHashMap<>();
         Map<String, Object> postVerification = new LinkedHashMap<>();
         postVerification.put("status", status);
-        redacted.put("postVerification", postVerification);
+        install.put("postVerification", postVerification);
+        redacted.put("install", install);
         return redacted;
     }
 
@@ -287,16 +292,19 @@ class EndpointInstallAuditServiceTest {
     }
 
     private static Map<String, Object> redactedDetailsWithDetection() {
+        // BE-028: canonical wire shape — the InstallResult under
+        // `details.install`; the detected package/version are
+        // postVerification.matchedPackageId / matchedVersion.
         Map<String, Object> redacted = new LinkedHashMap<>();
-        redacted.put("stage", "post_install");
-        redacted.put("exitCode", 0);
-        Map<String, Object> detection = new LinkedHashMap<>();
-        detection.put("packageId", "7zip.7zip");
-        detection.put("version", "24.07");
-        redacted.put("detection", detection);
+        Map<String, Object> install = new LinkedHashMap<>();
+        install.put("finalStatus", "SUCCEEDED");
+        install.put("exitCode", 0);
         Map<String, Object> postVerification = new LinkedHashMap<>();
         postVerification.put("status", "SATISFIED");
-        redacted.put("postVerification", postVerification);
+        postVerification.put("matchedPackageId", "7zip.7zip");
+        postVerification.put("matchedVersion", "24.07");
+        install.put("postVerification", postVerification);
+        redacted.put("install", install);
         return redacted;
     }
 }

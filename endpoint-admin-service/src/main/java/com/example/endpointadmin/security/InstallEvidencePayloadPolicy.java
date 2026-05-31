@@ -53,10 +53,42 @@ public class InstallEvidencePayloadPolicy {
             "catalogPackageId",
             "detection",
             "postVerification",
+            // BE-028: the agent ships the AG-027 InstallResult under
+            // `details.install` (COMMAND-CONTRACT §11.2 — "shipped via
+            // CommandResult.Details.install"). Without whitelisting `install`
+            // the entire result (incl. the authoritative postVerification) was
+            // dropped to {} and the audit recorded post_verification=UNKNOWN.
+            "install",
             "stdoutSummary",
             "stderrSummary",
             "errorCode",
             "errorMessage"
+    );
+
+    /**
+     * BE-028: allow-list for the keys INSIDE {@code details.install} (the
+     * AG-027 InstallResult wire shape — COMMAND-CONTRACT §11.2). Unknown keys
+     * are dropped; forbidden keys / value patterns are still stripped by the
+     * recursive {@link #redactValue} pass.
+     */
+    private static final Set<String> ALLOWED_INSTALL_KEYS = Set.of(
+            "finalStatus",
+            "schemaVersion",
+            "supported",
+            "failedReasonCode",
+            "exitCode",
+            "durationMs",
+            "rebootRequired",
+            "killStrategy",
+            "preDetect",
+            "postVerification",
+            "egress",
+            "stdoutTail",
+            "stdoutTruncated",
+            "stdoutTotalBytes",
+            "stderrTail",
+            "stderrTruncated",
+            "stderrTotalBytes"
     );
 
     /**
@@ -144,10 +176,39 @@ public class InstallEvidencePayloadPolicy {
             if (!ALLOWED_TOP_LEVEL_KEYS.contains(key)) {
                 continue;
             }
-            Object redactedValue = redactValue(entry.getValue(), key);
+            Object redactedValue;
+            if ("install".equals(key) && entry.getValue() instanceof Map<?, ?> installMap) {
+                // BE-028: the install wrapper carries its own key allow-list.
+                redactedValue = redactInstall(installMap);
+            } else {
+                redactedValue = redactValue(entry.getValue(), key);
+            }
             out.put(key, redactedValue);
         }
         return enforceSizeCap(out);
+    }
+
+    /**
+     * BE-028: redact {@code details.install} against {@link #ALLOWED_INSTALL_KEYS}.
+     * Unknown keys are dropped; recognised values are recursively redacted by
+     * {@link #redactValue} (forbidden keys dropped, secret/path value patterns
+     * masked) so the authoritative {@code postVerification} / {@code preDetect}
+     * / {@code egress} evidence survives while raw command lines and secrets do
+     * not.
+     */
+    private Map<String, Object> redactInstall(Map<?, ?> install) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : install.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            if (FORBIDDEN_KEYS_LOWER.contains(key.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            if (!ALLOWED_INSTALL_KEYS.contains(key)) {
+                continue;
+            }
+            out.put(key, redactValue(entry.getValue(), key));
+        }
+        return out;
     }
 
     private Object redactValue(Object node, String topKey) {
