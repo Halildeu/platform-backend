@@ -1,5 +1,6 @@
 package com.serban.notify.exception;
 
+import com.serban.notify.api.NotificationIntentController;
 import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
@@ -21,28 +22,42 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * {@code server.error.include-message=always} (which exposes Spring's
  * internal exception messages on every other 4xx path too).
  *
- * <h4>Scope (narrowed per Codex 019e806a iter-1 PARTIAL #2)</h4>
- * This advice handles ONLY {@link MethodArgumentNotValidException}
- * — the case raised on {@code @Valid @RequestBody}. The companion
+ * <h4>Scope (narrowed twice, per Codex 019e806a iter-1+iter-2)</h4>
+ *
+ * <p><strong>By exception type</strong> (iter-1 PARTIAL #2): this
+ * advice handles ONLY {@link MethodArgumentNotValidException} — the
+ * case raised on {@code @Valid @RequestBody}. The companion
  * {@code ConstraintViolationException} (path / query-parameter
  * constraint failures on {@code @Validated} controllers) is
- * deliberately NOT handled here:
- * <ul>
- *   <li>InboxController, PreferenceController, InboxSseController
- *       already ship per-controller {@code @ExceptionHandler(
- *       ConstraintViolationException.class)} handlers with a different
- *       body shape ({@code {error, message}}). A global advice carrying
- *       {@code details[]} would be silently overridden by Spring's
- *       resolver (local handler always wins, regardless of advice
- *       {@code @Order}). Documenting two different body shapes for the
- *       same 400 class is a contract drift the OpenAPI cannot capture
- *       cleanly.</li>
- *   <li>If we want a uniform {@link ValidationErrorResponse} shape on
- *       the path / query side too, the right move is a separate PR
- *       that retires the per-controller handlers and migrates them to
- *       this advice (one body shape, one OpenAPI schema) — out of
- *       scope here.</li>
- * </ul>
+ * deliberately NOT handled here: InboxController, PreferenceController,
+ * and InboxSseController already ship per-controller
+ * {@code @ExceptionHandler(ConstraintViolationException.class)}
+ * handlers with a different body shape ({@code {error, message}}).
+ * Spring resolves to the controller-local handler first regardless of
+ * advice {@code @Order}, so a global advice carrying {@code details[]}
+ * would be silently overridden on those three controllers and OpenAPI
+ * would have to document two body shapes for the same 400 class.
+ *
+ * <p><strong>By controller class</strong> (iter-2 PARTIAL #1):
+ * {@code @RestControllerAdvice(assignableTypes = NotificationIntent-
+ * Controller.class)} narrows this advice to ONLY the BL-010 submit
+ * endpoint, matching the OpenAPI schema bind on
+ * {@link NotificationIntentController#submit}. Module-wide controllers
+ * (DlrController, AdminErasureController, PushSubscriptionController,
+ * AdminEmailSuppressionController, the second PreferenceController
+ * endpoint) keep their existing default-Spring 400 body until a future
+ * PR migrates them. This keeps the "OpenAPI schema bind exactly
+ * matches the advice's runtime scope" invariant — no controller
+ * silently advertising one shape while returning another.
+ *
+ * <p>If we want a uniform {@link ValidationErrorResponse} shape on the
+ * other request-body endpoints (and the path / query side), the right
+ * move is a separate PR that (a) drops {@code assignableTypes} here,
+ * (b) adds the same {@code @ApiResponse(content=@Schema(...))} binding
+ * to every {@code @Valid @RequestBody} controller, and (c) retires the
+ * per-controller {@code ConstraintViolationException} handlers and
+ * migrates them to this advice. That's a wider OpenAPI contract change
+ * that deserves its own review.
  *
  * <h4>Why not server.error.include-message=always</h4>
  * That flag exposes raw exception messages on every 4xx/5xx, including
@@ -61,7 +76,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * Codex strategic precursor thread: {@code 019e5a75} (BL-010 KC org_id
  * mapper); post-impl review thread: {@code 019e806a}.
  */
-@RestControllerAdvice
+@RestControllerAdvice(assignableTypes = NotificationIntentController.class)
 @Order(Ordered.LOWEST_PRECEDENCE)
 public class MethodArgumentNotValidAdvice {
 
