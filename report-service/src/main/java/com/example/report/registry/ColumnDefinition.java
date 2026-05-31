@@ -21,11 +21,13 @@ import java.util.Map;
  * {@code variantMap}, {@code labelMap}, {@code statusMap},
  * {@code currencyCode}, {@code decimals}, {@code suffix}, {@code format},
  * {@code defaultVariant}, {@code filterValues}. All new fields are
- * optional and annotated with {@link JsonInclude.Include#NON_NULL} via
- * the class-level annotation so legacy {@code text/number/date} columns
- * continue to emit identical wire output. See
- * {@code docs/architecture/dynamic-report-migration-d0.md §1 / §10} in
- * the platform-web repo for the contract layer mapping.
+ * optional and annotated with {@link JsonInclude.Include#NON_NULL} at
+ * the field level (NOT the class level) so legacy {@code text/number/date}
+ * columns continue to emit identical wire output for the pre-D1a
+ * nullable fields ({@code defaultAggFunc}, {@code defaultAggParams},
+ * {@code pivotValues}). See {@code docs/architecture/dynamic-report-
+ * migration-d0.md §1 / §10} in the platform-web repo for the contract
+ * layer mapping.
  *
  * <p>The {@code type} field is now fail-closed: blank/null falls back to
  * {@code "text"} for backward-compatibility with pre-PR-D1a JSON registry
