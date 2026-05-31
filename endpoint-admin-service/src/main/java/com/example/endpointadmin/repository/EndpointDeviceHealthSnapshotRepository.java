@@ -138,7 +138,8 @@ public interface EndpointDeviceHealthSnapshotRepository
     @Query(value = """
             SELECT s.*
             FROM endpoint_device_health_snapshots s
-            WHERE s.id IN (
+            WHERE s.tenant_id = :tenantId
+              AND s.id IN (
                 SELECT ranked.id
                 FROM (
                     SELECT eh.id AS id,

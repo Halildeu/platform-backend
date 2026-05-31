@@ -140,7 +140,8 @@ public interface EndpointOutdatedSoftwareSnapshotRepository
     @Query(value = """
             SELECT s.*
             FROM endpoint_outdated_software_snapshots s
-            WHERE s.id IN (
+            WHERE s.tenant_id = :tenantId
+              AND s.id IN (
                 SELECT ranked.id
                 FROM (
                     SELECT os.id AS id,
