@@ -391,8 +391,16 @@ public class InstallEvidencePayloadPolicy {
                 if (bytes.length <= maxRedactedBytes) {
                     return redacted;
                 }
-                redacted.put("install", Map.of("trimmed", true));
             }
+            // Absolute last resort (Codex 019e7f93 #3): a large ALLOWED top-level
+            // scalar (catalogPackageId, stage, catalogItemUuid, ...) can still
+            // exceed the cap after every field-level degrade. Collapse the entire
+            // row to a tiny marker so the persisted payload is ALWAYS
+            // <= maxRedactedBytes — the cap is a hard guarantee, not best-effort.
+            Map<String, Object> marker = new LinkedHashMap<>();
+            marker.put("trimmed", true);
+            marker.put("reason", "redacted_payload_size_cap");
+            return marker;
         } catch (JsonProcessingException ex) {
             // Serialization failure: replace with an explicit error marker
             // so the audit row is still written (recordInstallResult cannot
@@ -402,7 +410,6 @@ public class InstallEvidencePayloadPolicy {
             fallback.put("error", "redaction_serialization_failed");
             return fallback;
         }
-        return redacted;
     }
 
     // ────────────────────────────────────────────────────────────────

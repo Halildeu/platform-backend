@@ -169,6 +169,30 @@ class InstallEvidencePayloadPolicyTest {
     }
 
     @Test
+    void redactCollapsesToMarkerWhenAllowedTopLevelScalarExceedsCap()
+            throws Exception {
+        // BE-028 (Codex 019e7f93 #3): a large ALLOWED top-level scalar
+        // (catalogPackageId, stage, ...) is not field-capped — the absolute
+        // last-resort collapses the whole row to a tiny marker so the cap is a
+        // HARD guarantee, never best-effort.
+        Map<String, Object> details = baseInstallDetails();
+        details.put("catalogPackageId", "x".repeat(20 * 1024));
+        Map<String, Object> install = new java.util.LinkedHashMap<>();
+        install.put("finalStatus", "SUCCEEDED");
+        install.put("postVerification",
+                new java.util.LinkedHashMap<>(java.util.Map.of("satisfied", Boolean.TRUE)));
+        details.put("install", install);
+
+        Map<String, Object> redacted = policy.redact(details);
+
+        byte[] serialized = new com.fasterxml.jackson.databind.ObjectMapper()
+                .writeValueAsBytes(redacted);
+        assertThat(serialized.length)
+                .isLessThanOrEqualTo(InstallEvidencePayloadPolicy.MAX_REDACTED_BYTES_DEFAULT);
+        assertThat(redacted).containsEntry("trimmed", true);
+    }
+
+    @Test
     void redactMasksWindowsUsersPathInValues() {
         Map<String, Object> details = baseInstallDetails();
         details.put("stdoutSummary", "extracted to C:\\Users\\Bob\\AppData\\Local done");
