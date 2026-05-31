@@ -107,7 +107,10 @@ class RepositoryQueryGrammarGuardTest {
     // ---------------------------------------------------------------------
 
     private static List<Class<?>> repositoryTypes() throws Exception {
-        List<Class<?>> classes = new ArrayList<>();
+        // Deterministic ordering: Files.walk discovery order is FS-dependent;
+        // sorting by FQCN keeps the violation list (and the eventual diff in
+        // CI logs) stable across runs and OSes (Codex 019e801d hardening #1).
+        List<String> fqcns = new ArrayList<>();
         try (Stream<Path> paths = Files.walk(REPOSITORY_ROOT)) {
             for (Path path : paths
                     .filter(p -> p.toString().endsWith(".java"))
@@ -117,8 +120,16 @@ class RepositoryQueryGrammarGuardTest {
                         .replace('/', '.')
                         .replace('\\', '.')
                         .replaceAll("\\.java$", "");
-                classes.add(Class.forName(PACKAGE_ROOT + "." + dotted));
+                fqcns.add(PACKAGE_ROOT + "." + dotted);
             }
+        }
+        fqcns.sort(String::compareTo);
+        List<Class<?>> classes = new ArrayList<>(fqcns.size());
+        ClassLoader loader = Thread.currentThread().getContextClassLoader();
+        for (String fqcn : fqcns) {
+            // initialize=false: don't trigger static initializers, we only
+            // need annotation metadata (Codex 019e801d hardening #2).
+            classes.add(Class.forName(fqcn, false, loader));
         }
         return classes;
     }
@@ -286,8 +297,17 @@ class RepositoryQueryGrammarGuardTest {
                 "where lower(trim(r.namePattern)) like 'a%'",
                 "-- :looks_like_param but it's inside a literal\n"
                         + "where lower(field) = '%:notparam%'",
-                // PG native cast :hash::text — the ::text suffix is not a
-                // standalone param; lookbehind guarantees we don't double-count.
+                // Doubled-quote literal: the inner '' is an escaped single
+                // quote that stays inside the literal, so `:fake` must be
+                // masked out while `:real` outside the literal is preserved
+                // (Codex 019e801d hardening #4).
+                "where lower('it''s :fake' || cast(:real as string)) = 'x'",
+                // PG native cast :hash::text — the second ':' is not a
+                // standalone param; the BIND_PARAM lookbehind guarantees we
+                // don't double-count. (cast(:hash as string) is the JPQL
+                // form actually used in repository queries; the native cast
+                // form is not currently used in endpoint-admin, but the
+                // lookbehind keeps the guard future-proof if it ever lands.)
                 "where lower(cast(:hash as string)) = lower(s.col)",
         };
         for (String q : safe) {
