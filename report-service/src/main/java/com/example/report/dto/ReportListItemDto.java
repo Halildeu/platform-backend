@@ -16,7 +16,6 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  *       frontend favorites sanitizer + saved-filter scope binding key off.</li>
  * </ul>
  */
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ReportListItemDto(
         String key,
         String title,
@@ -25,9 +24,12 @@ public record ReportListItemDto(
         /** CNS-006 R18: report group for deny-default frontend filtering */
         String reportGroup,
         /** PR-D1a: optional alias for the web route segment (defaults to key). */
-        String routeSegment,
+        // PR-D1a (Codex 019e800b): NON_NULL field-level (not class-level)
+        // so the existing nullable `reportGroup` above continues to emit
+        // null on wire for static reports without an access config.
+        @JsonInclude(JsonInclude.Include.NON_NULL) String routeSegment,
         /** PR-D1a: optional legacy SharedReportId carry for catalog identity preservation. */
-        String sharedReportId
+        @JsonInclude(JsonInclude.Include.NON_NULL) String sharedReportId
 ) {
     /**
      * Backward-compatible 5-arg constructor for pre-PR-D1a call sites

@@ -32,7 +32,6 @@ import java.util.List;
  * <p>All three are nullable and emitted with {@link JsonInclude.Include#NON_NULL}.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ReportDefinition(
         String key,
         String version,
@@ -48,9 +47,13 @@ public record ReportDefinition(
         String defaultSort,
         String defaultSortDirection,
         AccessConfig access,
-        String routeSegment,
-        String sharedReportId,
-        List<FilterDefinition> filterDefinitions
+        // PR-D1a (Codex 019e800b): NON_NULL applied at field-level so
+        // pre-existing nullable wire fields above continue to emit `null`
+        // for legacy reports. Only the 3 new D1a fields below are absent
+        // from the wire when null.
+        @JsonInclude(JsonInclude.Include.NON_NULL) String routeSegment,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String sharedReportId,
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<FilterDefinition> filterDefinitions
 ) {
     public ReportDefinition {
         if (key == null || key.isBlank()) {

@@ -33,7 +33,6 @@ import java.util.Map;
  * (and at schema validation time). Whitelist as of PR-D1a:
  * {@code text, number, date, badge, status, currency, boolean, bold-text}.
  */
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ColumnDefinition(
         String field,
         String headerName,
@@ -46,15 +45,19 @@ public record ColumnDefinition(
         Map<String, Object> defaultAggParams,
         boolean pivotable,
         List<PivotValue> pivotValues,
-        Map<String, String> variantMap,
-        Map<String, String> labelMap,
-        Map<String, StatusMapEntry> statusMap,
-        String currencyCode,
-        Integer decimals,
-        String suffix,
-        String format,
-        String defaultVariant,
-        List<String> filterValues
+        // PR-D1a (Codex 019e800b): NON_NULL applied at field-level
+        // (not class-level) so pre-existing nullable wire fields above
+        // continue to emit `null` for legacy reports. Only the 9 new
+        // D1a fields below are absent from the wire when null.
+        @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, String> variantMap,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, String> labelMap,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Map<String, StatusMapEntry> statusMap,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String currencyCode,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Integer decimals,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String suffix,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String format,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String defaultVariant,
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<String> filterValues
 ) {
     /**
      * PR-0.4b (Codex thread {@code 019e2695}): pivot value cardinality cap.

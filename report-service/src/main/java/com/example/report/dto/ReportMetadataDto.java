@@ -15,7 +15,6 @@ import java.util.List;
  * {@code filterDefinitions} so the dynamic-report factory can reproduce
  * the static module's sidebar filter UX from backend JSON metadata.
  */
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ReportMetadataDto(
         String key,
         String title,
@@ -26,7 +25,11 @@ public record ReportMetadataDto(
         String defaultSortDirection,
         ReportCapabilitiesDto capabilities,
         /** PR-D1a: metadata-driven sidebar filter widget contract. */
-        List<FilterDefinition> filterDefinitions
+        // PR-D1a (Codex 019e800b): NON_NULL field-level so existing
+        // nullable fields (description, defaultSort, etc.) continue to
+        // emit `null` for legacy reports. Only filterDefinitions is
+        // absent from the wire when null.
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<FilterDefinition> filterDefinitions
 ) {
     /**
      * Backward-compatible 8-arg constructor for pre-PR-D1a call sites.
