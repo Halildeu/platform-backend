@@ -3,6 +3,7 @@ package com.example.endpointadmin.service;
 import com.example.endpointadmin.security.WindowsPathSafetyValidator;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -115,25 +116,29 @@ public class DetectionRuleValidator {
     private Map<String, Object> validateRegistryUninstall(Map<String, Object> raw) {
         String productCode = optionalTrimmed(raw, "productCode");
         String displayName = optionalTrimmed(raw, "displayName");
-        boolean hasProductCode = productCode != null;
-        boolean hasDisplayName = displayName != null;
 
-        // Exactly one selector family (productCode XOR displayName) — a rule
-        // with both is ambiguous; a rule with neither has no identity.
-        if (hasProductCode == hasDisplayName) {
+        // Mirror the agent (validateRegistryRule): productCode takes
+        // PRECEDENCE — if present it is the sole selector and displayName is
+        // ignored (the agent resolves productCode via a direct registry
+        // sub-key lookup). Only when productCode is absent does the
+        // displayName(+publisher) fallback apply. Neither present → the rule
+        // has no identity (Codex 019e7dce: backend must mirror the agent, not
+        // be stricter, so a productCode+displayName pair is accepted, not 400).
+        if (productCode == null && displayName == null) {
             throw new IllegalArgumentException(
-                    "Detection rule 'REGISTRY_UNINSTALL' requires exactly one of "
-                            + "'productCode' or 'displayName' (not both, not "
-                            + "neither).");
+                    "Detection rule 'REGISTRY_UNINSTALL' requires 'productCode' "
+                            + "or 'displayName'.");
         }
 
         Map<String, Object> normalized = new LinkedHashMap<>();
         normalized.put("type", "REGISTRY_UNINSTALL");
 
-        if (hasProductCode) {
+        if (productCode != null) {
             // productCode is used as a direct registry sub-key name by the
             // agent, so it must be a real MSI GUID (prevents a path separator
-            // reaching a nested registry path — Codex 019e7d82).
+            // reaching a nested registry path — Codex 019e7d82). A displayName
+            // supplied alongside is intentionally dropped (productCode wins,
+            // mirroring the agent).
             if (!isMsiProductCode(productCode)) {
                 throw new IllegalArgumentException(
                         "Detection rule 'productCode' must be an MSI GUID of the "
@@ -143,11 +148,12 @@ public class DetectionRuleValidator {
             return normalized;
         }
 
-        // DisplayName (+ Publisher) fallback.
-        if (displayName.length() > MAX_SELECTOR_LEN) {
+        // DisplayName (+ Publisher) fallback. Length caps are in UTF-8 BYTES to
+        // mirror the agent's Go len() (Codex 019e7dce), not Java char count.
+        if (utf8Len(displayName) > MAX_SELECTOR_LEN) {
             throw new IllegalArgumentException(
                     "Detection rule 'displayName' is too long (max "
-                            + MAX_SELECTOR_LEN + " chars).");
+                            + MAX_SELECTOR_LEN + " UTF-8 bytes).");
         }
         String displayNameMatch = normalizeMatchMode(raw, "displayNameMatch");
         switch (displayNameMatch) {
@@ -181,10 +187,10 @@ public class DetectionRuleValidator {
             normalized.put("allowPublisherMissing", Boolean.TRUE);
             return normalized;
         }
-        if (publisher.length() > MAX_SELECTOR_LEN) {
+        if (utf8Len(publisher) > MAX_SELECTOR_LEN) {
             throw new IllegalArgumentException(
                     "Detection rule 'publisher' is too long (max "
-                            + MAX_SELECTOR_LEN + " chars).");
+                            + MAX_SELECTOR_LEN + " UTF-8 bytes).");
         }
         String publisherMatch = normalizeMatchMode(raw, "publisherMatch");
         switch (publisherMatch) {
@@ -278,6 +284,11 @@ public class DetectionRuleValidator {
             }
         }
         return false;
+    }
+
+    /** UTF-8 byte length — mirrors the agent's Go {@code len(string)} (Codex 019e7dce). */
+    private static int utf8Len(String s) {
+        return s.getBytes(StandardCharsets.UTF_8).length;
     }
 
     /** Trimmed string value, or {@code null} if absent / not a string / blank. */

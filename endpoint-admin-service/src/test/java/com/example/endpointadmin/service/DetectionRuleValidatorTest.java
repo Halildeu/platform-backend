@@ -153,15 +153,18 @@ class DetectionRuleValidatorTest {
     }
 
     @Test
-    void rejectsRegistryUninstallWithBothProductCodeAndDisplayName() {
+    void productCodePrecedenceDropsDisplayNameWhenBothPresent() {
+        // Mirror the agent (validateRegistryRule): productCode wins; a
+        // displayName supplied alongside is ignored/dropped (Codex 019e7dce).
         Map<String, Object> raw = new HashMap<>();
         raw.put("type", "REGISTRY_UNINSTALL");
         raw.put("productCode", PRODUCT_CODE);
         raw.put("displayName", "7-Zip");
 
-        assertThatThrownBy(() -> validator.validateAndNormalize(raw))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("exactly one");
+        Map<String, Object> normalized = validator.validateAndNormalize(raw);
+
+        assertThat(normalized).containsEntry("productCode", PRODUCT_CODE);
+        assertThat(normalized).doesNotContainKeys("displayName", "displayNameMatch");
     }
 
     @Test
@@ -171,7 +174,24 @@ class DetectionRuleValidatorTest {
 
         assertThatThrownBy(() -> validator.validateAndNormalize(raw))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("exactly one");
+                .hasMessageContaining("productCode");
+    }
+
+    @Test
+    void rejectsRegistryUninstallDisplayNameExceedingUtf8ByteLimit() {
+        // 100 × '✓' (U+2713) = 300 UTF-8 bytes (> 256) but only 100 Java chars,
+        // so a char-count check would wrongly pass while the agent (Go len() =
+        // bytes) rejects. The backend must use UTF-8 byte length (Codex 019e7dce).
+        String multibyte = "✓".repeat(100);
+        Map<String, Object> raw = new HashMap<>();
+        raw.put("type", "REGISTRY_UNINSTALL");
+        raw.put("displayName", multibyte);
+        raw.put("displayNameMatch", "EXACT");
+        raw.put("publisher", "Igor Pavlov");
+
+        assertThatThrownBy(() -> validator.validateAndNormalize(raw))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("UTF-8 bytes");
     }
 
     @Test

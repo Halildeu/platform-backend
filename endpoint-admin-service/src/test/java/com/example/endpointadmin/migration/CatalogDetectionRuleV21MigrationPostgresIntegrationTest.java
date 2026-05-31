@@ -106,6 +106,26 @@ class CatalogDetectionRuleV21MigrationPostgresIntegrationTest {
     }
 
     @Test
+    void registryRowWithExistingProductCodeIsNotClobberedAndLegacyKeysStripped() {
+        // A row carrying BOTH a canonical productCode (A) and a divergent legacy
+        // GUID uninstallKeyName (B): the canonical productCode must survive
+        // (NOT be overwritten by B), and the legacy keys must be stripped
+        // (Codex 019e7dce clobber guard).
+        insertCatalogRow("v21-reg-both",
+                "{\"type\":\"REGISTRY_UNINSTALL\","
+                        + "\"productCode\":\"{11111111-1111-1111-1111-111111111111}\","
+                        + "\"hive\":\"HKLM\","
+                        + "\"uninstallKeyName\":\"{22222222-2222-2222-2222-222222222222}\"}");
+
+        runV21();
+
+        assertThat(jsonText("v21-reg-both", "productCode"))
+                .isEqualTo("{11111111-1111-1111-1111-111111111111}");
+        assertThat(jsonHasKey("v21-reg-both", "hive")).isFalse();
+        assertThat(jsonHasKey("v21-reg-both", "uninstallKeyName")).isFalse();
+    }
+
+    @Test
     void registryNonGuidUninstallKeyIsLeftForManualReauthor() {
         insertCatalogRow("v21-reg-nonguid",
                 "{\"type\":\"REGISTRY_UNINSTALL\",\"hive\":\"HKLM\","

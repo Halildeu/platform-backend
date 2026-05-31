@@ -32,12 +32,27 @@ WHERE detection_rule ->> 'type' = 'WINGET_PACKAGE'
   AND detection_rule ? 'wingetPackageId'
   AND NOT detection_rule ? 'packageId';
 
--- 2. REGISTRY_UNINSTALL: GUID uninstallKeyName -> productCode (+ drop legacy keys)
+-- 2. REGISTRY_UNINSTALL: GUID uninstallKeyName -> productCode (+ drop legacy
+--    keys). The NOT ? 'productCode' guard prevents clobbering an already-
+--    canonical productCode with a divergent legacy uninstallKeyName when a row
+--    happens to carry both (Codex 019e7dce).
 UPDATE endpoint_software_catalog_items
 SET detection_rule =
         (detection_rule - 'hive' - 'uninstallKeyName' - 'displayNameRegex')
         || jsonb_build_object('productCode', detection_rule -> 'uninstallKeyName')
 WHERE detection_rule ->> 'type' = 'REGISTRY_UNINSTALL'
   AND detection_rule ? 'uninstallKeyName'
+  AND NOT detection_rule ? 'productCode'
   AND detection_rule ->> 'uninstallKeyName'
         ~* '^\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}$';
+
+-- 3. REGISTRY_UNINSTALL rows that ALREADY carry a canonical productCode but
+--    still have leftover legacy keys: strip the legacy keys, keep productCode
+--    untouched (the complement of #2's guard — Codex 019e7dce).
+UPDATE endpoint_software_catalog_items
+SET detection_rule = detection_rule - 'hive' - 'uninstallKeyName' - 'displayNameRegex'
+WHERE detection_rule ->> 'type' = 'REGISTRY_UNINSTALL'
+  AND detection_rule ? 'productCode'
+  AND (detection_rule ? 'hive'
+       OR detection_rule ? 'uninstallKeyName'
+       OR detection_rule ? 'displayNameRegex');
