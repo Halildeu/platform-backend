@@ -106,7 +106,7 @@ public class AdminEndpointDeviceGridController {
             plan = exportService.prepareExport(context.tenantId(), context.subject(), safe);
         } catch (ExportRowLimitExceededException e) {
             return errorBody(HttpStatus.UNPROCESSABLE_ENTITY,
-                    new GridErrorResponse(ExportRowLimitExceededException.CODE, e.getMessage()));
+                    new GridErrorResponse(ExportRowLimitExceededException.CODE, e.getMessage(), e.getLimit()));
         } catch (GridQueryValidationException e) {
             return errorBody(HttpStatus.BAD_REQUEST,
                     new GridErrorResponse(e.getCode(), e.getMessage()));

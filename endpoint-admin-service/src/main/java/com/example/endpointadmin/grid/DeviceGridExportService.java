@@ -64,6 +64,13 @@ public class DeviceGridExportService {
         ExportMode mode = parseMode(req.exportMode());
         List<GridColumn> cols = builder.resolveExportColumns(mode, req.columns());
 
+        // Build (and thereby FULLY validate filter + sort + quick-filter) the
+        // export query BEFORE the preflight/audit. The count preflight alone
+        // does NOT validate sortModel (a count needs no ORDER BY), so an
+        // invalid VIEW sort must be rejected here — never recorded as an
+        // export request that was actually refused (Codex 019e7e65).
+        GridSql query = builder.buildExportQuery(tenantId, mode, req, cols);
+
         // Bounded preflight: refuse over-cap before producing any bytes.
         GridSql preflight = builder.buildCountPreflight(tenantId, mode, req, exportMax);
         Long matched = jdbc.queryForObject(preflight.sql(), preflight.params(), Long.class);
@@ -72,11 +79,11 @@ public class DeviceGridExportService {
             throw new ExportRowLimitExceededException(exportMax);
         }
 
-        // Audit the request BEFORE the stream (commits in its own tx).
+        // Audit AFTER all validation + the cap check, BEFORE the stream
+        // (commits in its own transaction).
         String modeLabel = mode.name().toLowerCase(Locale.ROOT);
         auditService.recordExportRequested(tenantId, subject, format, modeLabel, rowCount, cols.size());
 
-        GridSql query = builder.buildExportQuery(tenantId, mode, req, cols);
         List<ExportColumn> exportColumns = cols.stream()
                 .map(c -> new ExportColumn(c.colId(), c.header()))
                 .toList();

@@ -71,6 +71,24 @@ class DeviceGridExportServiceTest {
                         .isEqualTo("INVALID_EXPORT_MODE"));
     }
 
+    @Test
+    void invalidViewSort_rejected_beforePreflightAndAudit() {
+        // VIEW + invalid sort direction: the export query is built (and fully
+        // validated) before the preflight/audit, so this is a 400 that is
+        // NEVER recorded as an export request (Codex 019e7e65).
+        DeviceGridExportRequest req = new DeviceGridExportRequest("csv", "view",
+                null,
+                List.of(Map.of("colId", "hostname", "sort", "sideways")),
+                null, null);
+        assertThatThrownBy(() -> service(50000).prepareExport(TENANT, SUBJECT, req))
+                .isInstanceOf(GridQueryValidationException.class)
+                .satisfies(t -> assertThat(((GridQueryValidationException) t).getCode())
+                        .isEqualTo(DeviceGridQueryBuilder.CODE_INVALID_SORT));
+        // Neither the preflight count nor the audit ran.
+        verify(jdbc, never()).queryForObject(anyString(), any(SqlParameterSource.class), eq(Long.class));
+        verify(audit, never()).recordExportRequested(any(), any(), any(), any(), anyLong(), anyInt());
+    }
+
     // ───────────────────────── cap preflight ─────────────────────────
 
     @Test
