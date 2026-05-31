@@ -51,6 +51,12 @@ public class InstallEvidencePayloadPolicy {
             "catalogItemId",
             "catalogItemUuid",
             "catalogPackageId",
+            // LEGACY flat shape (pre-BE-028 agents / preflight-stage evidence).
+            // The canonical install verdict now lives under `details.install`
+            // (see below) and `EndpointInstallAuditService.extractDetection`
+            // reads ONLY `install`. These flat keys are kept whitelisted so a
+            // mixed-version fleet's older payloads are preserved-as-stored
+            // rather than silently dropped; they are NOT read for the verdict.
             "detection",
             "postVerification",
             // BE-028: the agent ships the AG-027 InstallResult under
@@ -67,9 +73,24 @@ public class InstallEvidencePayloadPolicy {
 
     /**
      * BE-028: allow-list for the keys INSIDE {@code details.install} (the
-     * AG-027 InstallResult wire shape — COMMAND-CONTRACT §11.2). Unknown keys
-     * are dropped; forbidden keys / value patterns are still stripped by the
-     * recursive {@link #redactValue} pass.
+     * AG-027 InstallResult wire shape — COMMAND-CONTRACT §11.2). Deliberately
+     * MINIMAL — only the install verdict + detection evidence the audit needs.
+     * Excluded on purpose (Codex 019e7f93):
+     * <ul>
+     *   <li>{@code stdoutTail}/{@code stderrTail} — raw installer output. The
+     *       backend redactor is weaker than the agent's AG-027L installer/PII
+     *       redactor, and "the backend cannot trust agent-side redaction", so
+     *       surfacing raw tails through the audit/API would risk leaking
+     *       secrets/PII the backend patterns miss. (Follow-up: add an
+     *       AG-027L-equivalent backend redactor before surfacing tails.)</li>
+     *   <li>{@code egress} — the AG-026A SourceEgressReadiness sub-tree (source
+     *       URLs, network targets). It already has a strict schema policy
+     *       ({@code WinGetEgressPayloadPolicy}) for the inventory path and is
+     *       already exposed via the preflight; the install audit does not need
+     *       to re-surface it without that strict validation.</li>
+     * </ul>
+     * Unknown keys are dropped; forbidden keys / value patterns are still
+     * stripped by the recursive {@link #redactValue} pass.
      */
     private static final Set<String> ALLOWED_INSTALL_KEYS = Set.of(
             "finalStatus",
@@ -81,14 +102,7 @@ public class InstallEvidencePayloadPolicy {
             "rebootRequired",
             "killStrategy",
             "preDetect",
-            "postVerification",
-            "egress",
-            "stdoutTail",
-            "stdoutTruncated",
-            "stdoutTotalBytes",
-            "stderrTail",
-            "stderrTruncated",
-            "stderrTotalBytes"
+            "postVerification"
     );
 
     /**

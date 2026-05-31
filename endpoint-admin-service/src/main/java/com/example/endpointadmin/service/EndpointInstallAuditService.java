@@ -189,8 +189,7 @@ public class EndpointInstallAuditService {
         Map<String, Object> evidence = postVerification == null
                 ? new LinkedHashMap<>()
                 : new LinkedHashMap<>(postVerification);
-        InstallPostVerification verdict = parsePostVerification(
-                postVerification == null ? null : postVerification.get("status"));
+        InstallPostVerification verdict = parsePostVerification(postVerification);
         String detectedPackageId = postVerification == null
                 ? null : asString(postVerification.get("matchedPackageId"));
         String detectedVersion = postVerification == null
@@ -292,10 +291,14 @@ public class EndpointInstallAuditService {
         return parsed;
     }
 
-    private static InstallPostVerification parsePostVerification(Object node) {
-        if (node == null) {
+    private static InstallPostVerification parsePostVerification(Map<String, Object> postVerification) {
+        if (postVerification == null) {
             return InstallPostVerification.UNKNOWN;
         }
+        // BE-028 (Codex 019e7f93): the AG-027 PostVerificationResult carries
+        // BOTH a 3-way `status` and a `satisfied` boolean (COMMAND-CONTRACT
+        // §11.2). Prefer the richer `status`; fall back to `satisfied`.
+        //
         // Map the agent's post-verify verdict vocabulary (install_winget.go
         // PostVerifyStatus*) onto the backend verdict enum (Codex 019e7dce):
         //   SATISFIED     -> SATISFIED
@@ -305,13 +308,25 @@ public class EndpointInstallAuditService {
         //                                  the authoritative signal in the audit)
         //   INCONCLUSIVE  -> UNKNOWN      (CONFIRM_ONLY — e.g. winget list under
         //                                  Session-0 cannot confirm/deny)
-        // The backend's own literals (SATISFIED/UNSATISFIED/UNKNOWN) still parse.
-        return switch (String.valueOf(node).trim().toUpperCase(Locale.ROOT)) {
-            case "SATISFIED" -> InstallPostVerification.SATISFIED;
-            case "UNSATISFIED", "NOT_SATISFIED" -> InstallPostVerification.UNSATISFIED;
-            case "INCONCLUSIVE", "UNKNOWN" -> InstallPostVerification.UNKNOWN;
-            default -> InstallPostVerification.UNKNOWN;
-        };
+        Object statusNode = postVerification.get("status");
+        if (statusNode != null) {
+            return switch (String.valueOf(statusNode).trim().toUpperCase(Locale.ROOT)) {
+                case "SATISFIED" -> InstallPostVerification.SATISFIED;
+                case "UNSATISFIED", "NOT_SATISFIED" -> InstallPostVerification.UNSATISFIED;
+                case "INCONCLUSIVE", "UNKNOWN" -> InstallPostVerification.UNKNOWN;
+                default -> InstallPostVerification.UNKNOWN;
+            };
+        }
+        Object satisfied = postVerification.get("satisfied");
+        if (satisfied instanceof Boolean b) {
+            return b ? InstallPostVerification.SATISFIED : InstallPostVerification.UNSATISFIED;
+        }
+        if (satisfied instanceof String s) {
+            return Boolean.parseBoolean(s.trim())
+                    ? InstallPostVerification.SATISFIED
+                    : InstallPostVerification.UNSATISFIED;
+        }
+        return InstallPostVerification.UNKNOWN;
     }
 
     private static List<String> asStringList(Object node) {

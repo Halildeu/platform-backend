@@ -105,6 +105,13 @@ class InstallEvidencePayloadPolicyTest {
         install.put("postVerification", pv);
         install.put("processEnvironment", "SECRET=abc");   // forbidden key
         install.put("rawSpelunk", "drop me");              // not on install allow-list
+        // BE-028 (Codex 019e7f93): raw installer output + the egress sub-tree
+        // are deliberately EXCLUDED from the install allow-list (weak backend
+        // redaction of raw tails / un-validated egress surface).
+        install.put("stdoutTail", "C:\\Users\\bob secret LICENSEKEY=xyz");
+        install.put("stderrTail", "err");
+        install.put("egress", new java.util.LinkedHashMap<>(java.util.Map.of(
+                "supported", Boolean.TRUE, "sources", "https://cdn.example")));
         details.put("install", install);
 
         Map<String, Object> redacted = policy.redact(details);
@@ -116,7 +123,8 @@ class InstallEvidencePayloadPolicyTest {
         assertThat(redactedInstall)
                 .containsKey("postVerification")
                 .containsEntry("finalStatus", "SUCCEEDED_NOOP")
-                .doesNotContainKeys("processEnvironment", "rawSpelunk");
+                .doesNotContainKeys("processEnvironment", "rawSpelunk",
+                        "stdoutTail", "stderrTail", "egress");
         @SuppressWarnings("unchecked")
         Map<String, Object> redactedPv =
                 (Map<String, Object>) redactedInstall.get("postVerification");

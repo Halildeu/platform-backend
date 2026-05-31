@@ -200,6 +200,33 @@ class EndpointInstallAuditServiceTest {
         assertThat(saved.getPostVerification().name()).isEqualTo("UNKNOWN");
     }
 
+    @Test
+    void recordInstallResultFallsBackToSatisfiedBooleanWhenStatusAbsent() {
+        // BE-028 (Codex 019e7f93 P0#1): a legacy / minimal agent may omit the
+        // tri-state `status` and ship only the boolean `satisfied`. The verdict
+        // must still resolve (true → SATISFIED) rather than silently UNKNOWN.
+        EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
+        stubSaveAssigningId();
+
+        EndpointInstallAudit saved = service.recordInstallResult(
+                command, dummyResult(), submitRequest(),
+                redactedDetailsWithSatisfied(true), NOW);
+
+        assertThat(saved.getPostVerification().name()).isEqualTo("SATISFIED");
+    }
+
+    @Test
+    void recordInstallResultFallsBackToUnsatisfiedBooleanWhenStatusAbsent() {
+        EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
+        stubSaveAssigningId();
+
+        EndpointInstallAudit saved = service.recordInstallResult(
+                command, dummyResult(), submitRequest(),
+                redactedDetailsWithSatisfied(false), NOW);
+
+        assertThat(saved.getPostVerification().name()).isEqualTo("UNSATISFIED");
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────
 
     private void stubSaveAssigningId() {
@@ -225,6 +252,17 @@ class EndpointInstallAuditServiceTest {
         Map<String, Object> install = new LinkedHashMap<>();
         Map<String, Object> postVerification = new LinkedHashMap<>();
         postVerification.put("status", status);
+        install.put("postVerification", postVerification);
+        redacted.put("install", install);
+        return redacted;
+    }
+
+    private static Map<String, Object> redactedDetailsWithSatisfied(boolean satisfied) {
+        // BE-028: legacy/minimal shape — no tri-state status, only the boolean.
+        Map<String, Object> redacted = new LinkedHashMap<>();
+        Map<String, Object> install = new LinkedHashMap<>();
+        Map<String, Object> postVerification = new LinkedHashMap<>();
+        postVerification.put("satisfied", satisfied);
         install.put("postVerification", postVerification);
         redacted.put("install", install);
         return redacted;
