@@ -17,11 +17,11 @@ import java.util.UUID;
  * only the scalar columns, the bounded {@code probeErrors[]}, and the child
  * {@code packages[]} list (each carrying exactly the contract package keys).
  *
- * <p>{@code possiblyTruncated} surfaces the v1 limitation signal:
- * {@code upgradeCount == maxUpgrade (512)} means the host may have more than
- * 512 pending upgrades that the agent parser capped before
- * {@code upgradeTruncated} was evaluated. Consumers should render a "possibly
- * truncated" hint when this is true.
+ * <p>{@code possiblyTruncated} surfaces the truncation hint per the rule in
+ * {@link com.example.endpointadmin.service.OutdatedSnapshotTruncation}: prefer
+ * the agent's authoritative {@code upgradeTruncated} flag (post-platform-agent
+ * #40), fall back to {@code upgradeCount >= maxUpgrade} for defence in depth.
+ * Consumers should render a "possibly truncated" hint when this is true.
  *
  * <p>{@code probeComplete=false} consumers MUST treat the snapshot as
  * "evidence incomplete" (fail-closed) and never render it as "fully up to
@@ -71,9 +71,13 @@ public record AdminOutdatedSoftwareSnapshotResponse(
                 errorDtos.add(AdminOutdatedSoftwareProbeErrorResponse.from(raw));
             }
         }
-        boolean possiblyTruncated = snapshot.getUpgradeCount() != null
-                && snapshot.getMaxUpgrade() != null
-                && snapshot.getUpgradeCount().equals(snapshot.getMaxUpgrade());
+        // #1148: prefer authoritative upgradeTruncated, fall back to
+        // upgradeCount >= maxUpgrade. Single source of truth shared across
+        // this DTO, the per-device summary, the bulk LatestEntry, and the
+        // service-level audit event.
+        boolean possiblyTruncated =
+                com.example.endpointadmin.service.OutdatedSnapshotTruncation
+                        .isPossiblyTruncated(snapshot);
         return new AdminOutdatedSoftwareSnapshotResponse(
                 snapshot.getId(),
                 snapshot.getTenantId(),

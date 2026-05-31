@@ -11,15 +11,16 @@ import java.util.UUID;
  * child {@code packages[]} array (no lazy walk across a fleet-wide
  * fetch), parity with {@link AdminDeviceHealthLatestEntry}.
  *
- * <p>{@code possiblyTruncated} is computed server-side with the SAME
- * fail-closed rule the per-device summary
- * ({@link AdminOutdatedSoftwareSnapshotSummaryResponse}) uses, widened
- * from {@code ==} to {@code >=} so an above-cap aggregate count can never
- * fail-open the hint:
- * {@code upgradeTruncated==TRUE || (upgradeCount!=null && maxUpgrade!=null
- * && upgradeCount >= maxUpgrade)}. The web column builder OR-derives the
- * same signal from {@code upgradeCount}/{@code maxUpgrade}, so the bulk
- * path and the per-device path agree.
+ * <p>{@code possiblyTruncated} is computed server-side via
+ * {@link com.example.endpointadmin.service.OutdatedSnapshotTruncation} —
+ * the single source of truth shared with the per-device summary
+ * ({@link AdminOutdatedSoftwareSnapshotSummaryResponse}), the full snapshot
+ * DTO ({@link AdminOutdatedSoftwareSnapshotResponse}), and the service-level
+ * audit event. The rule prefers the agent's authoritative
+ * {@code upgradeTruncated} flag (post-platform-agent #40) and falls back to
+ * {@code upgradeCount >= maxUpgrade} (defence-in-depth). The web column
+ * builder OR-derives the same signal from {@code upgradeCount} /
+ * {@code maxUpgrade}, so the bulk path and the per-device path agree.
  */
 public record AdminOutdatedSoftwareLatestEntry(
         UUID deviceId,
@@ -37,11 +38,12 @@ public record AdminOutdatedSoftwareLatestEntry(
      * invariant (see {@link AdminDeviceHealthLatestEntry#from}).
      */
     public static AdminOutdatedSoftwareLatestEntry from(EndpointOutdatedSoftwareSnapshot s) {
+        // #1148 DRY: delegate to OutdatedSnapshotTruncation — the single
+        // source of truth shared by this bulk LatestEntry, the full snapshot
+        // DTO, the per-device summary, and the service-level audit event.
         boolean possiblyTruncated =
-                Boolean.TRUE.equals(s.getUpgradeTruncated())
-                        || (s.getUpgradeCount() != null
-                                && s.getMaxUpgrade() != null
-                                && s.getUpgradeCount() >= s.getMaxUpgrade());
+                com.example.endpointadmin.service.OutdatedSnapshotTruncation
+                        .isPossiblyTruncated(s);
         return new AdminOutdatedSoftwareLatestEntry(
                 s.getDeviceId(),
                 s.getSupported(),

@@ -347,9 +347,9 @@ public class EndpointOutdatedSoftwareService {
 
     private OutdatedSoftwareSnapshotPersistedEvent buildAuditEvent(
             EndpointOutdatedSoftwareSnapshot snapshot, EndpointCommand command) {
-        boolean possiblyTruncated = snapshot.getUpgradeCount() != null
-                && snapshot.getMaxUpgrade() != null
-                && snapshot.getUpgradeCount().equals(snapshot.getMaxUpgrade());
+        // #1148: prefer authoritative upgradeTruncated. Same rule as the
+        // admin DTOs and the bulk LatestEntry — see OutdatedSnapshotTruncation.
+        boolean possiblyTruncated = OutdatedSnapshotTruncation.isPossiblyTruncated(snapshot);
         return new OutdatedSoftwareSnapshotPersistedEvent(
                 snapshot.getTenantId(),
                 snapshot.getDeviceId(),
