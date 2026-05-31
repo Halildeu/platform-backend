@@ -201,30 +201,72 @@ class EndpointInstallAuditServiceTest {
     }
 
     @Test
-    void recordInstallResultFallsBackToSatisfiedBooleanWhenStatusAbsent() {
-        // BE-028 (Codex 019e7f93 P0#1): a legacy / minimal agent may omit the
-        // tri-state `status` and ship only the boolean `satisfied`. The verdict
-        // must still resolve (true → SATISFIED) rather than silently UNKNOWN.
+    void recordInstallResultSatisfiedTrueIsSatisfied() {
+        // CANONICAL live wire shape (install_winget.go PostVerificationResult):
+        // only the boolean `satisfied` is shipped. true → SATISFIED.
         EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
         stubSaveAssigningId();
 
         EndpointInstallAudit saved = service.recordInstallResult(
                 command, dummyResult(), submitRequest(),
-                redactedDetailsWithSatisfied(true), NOW);
+                installVerdictDetails("SUCCEEDED", true), NOW);
 
         assertThat(saved.getPostVerification().name()).isEqualTo("SATISFIED");
     }
 
     @Test
-    void recordInstallResultFallsBackToUnsatisfiedBooleanWhenStatusAbsent() {
+    void recordInstallResultSatisfiedFalseWithFailedVerificationIsUnsatisfied() {
+        // BE-028 (Codex 019e7f93 #1): satisfied=false is an AUTHORITATIVE denial
+        // ONLY when post-verify actually ran and failed — finalStatus=FAILED_VERIFICATION.
         EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
         stubSaveAssigningId();
 
         EndpointInstallAudit saved = service.recordInstallResult(
                 command, dummyResult(), submitRequest(),
-                redactedDetailsWithSatisfied(false), NOW);
+                installVerdictDetails("FAILED_VERIFICATION", false), NOW);
 
         assertThat(saved.getPostVerification().name()).isEqualTo("UNSATISFIED");
+    }
+
+    @Test
+    void recordInstallResultSatisfiedFalseZeroValueOnInstallFailureIsUnknown() {
+        // BE-028 (Codex 019e7f93 #1): the agent's `satisfied` bool is NOT
+        // omitempty, so an early FAILED_INSTALL (post-verify never ran) still
+        // ships satisfied=false. That must be UNKNOWN, NOT a fabricated denial.
+        EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
+        stubSaveAssigningId();
+
+        EndpointInstallAudit saved = service.recordInstallResult(
+                command, dummyResult(), submitRequest(),
+                installVerdictDetails("FAILED_INSTALL", false), NOW);
+
+        assertThat(saved.getPostVerification().name()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void recordInstallResultSatisfiedFalseWithoutFinalStatusIsUnknown() {
+        EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
+        stubSaveAssigningId();
+
+        EndpointInstallAudit saved = service.recordInstallResult(
+                command, dummyResult(), submitRequest(),
+                installVerdictDetails(null, false), NOW);
+
+        assertThat(saved.getPostVerification().name()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void recordInstallResultMalformedSatisfiedIsUnknown() {
+        // BE-028 (Codex 019e7f93 #1): a malformed `satisfied` must NOT silently
+        // collapse to false→UNSATISFIED via Boolean.parseBoolean; it is UNKNOWN.
+        EndpointCommand command = installCommand("PASS", PREFLIGHT_AT.toString());
+        stubSaveAssigningId();
+
+        EndpointInstallAudit saved = service.recordInstallResult(
+                command, dummyResult(), submitRequest(),
+                installVerdictDetails("SUCCEEDED", "garbage"), NOW);
+
+        assertThat(saved.getPostVerification().name()).isEqualTo("UNKNOWN");
     }
 
     // ─── helpers ─────────────────────────────────────────────────────
@@ -245,9 +287,10 @@ class EndpointInstallAuditServiceTest {
     }
 
     private static Map<String, Object> redactedDetailsWithStatus(String status) {
-        // BE-028: the agent ships the InstallResult under `details.install`
-        // (COMMAND-CONTRACT §11.2), so the post-verification verdict lives at
-        // details.install.postVerification.status.
+        // BE-028: FORWARD-COMPAT shape — a future agent may emit a tri-state
+        // `status` under details.install.postVerification. The CURRENT agent
+        // contract (install_winget.go) does NOT ship `status`; the live verdict
+        // resolves through `satisfied` + `finalStatus` (installVerdictDetails).
         Map<String, Object> redacted = new LinkedHashMap<>();
         Map<String, Object> install = new LinkedHashMap<>();
         Map<String, Object> postVerification = new LinkedHashMap<>();
@@ -257,10 +300,15 @@ class EndpointInstallAuditServiceTest {
         return redacted;
     }
 
-    private static Map<String, Object> redactedDetailsWithSatisfied(boolean satisfied) {
-        // BE-028: legacy/minimal shape — no tri-state status, only the boolean.
+    private static Map<String, Object> installVerdictDetails(String finalStatus, Object satisfied) {
+        // BE-028: CANONICAL live wire shape — details.install.{finalStatus,
+        // postVerification.satisfied}. finalStatus disambiguates a satisfied=false
+        // authoritative denial (FAILED_VERIFICATION) from a never-ran zero-value.
         Map<String, Object> redacted = new LinkedHashMap<>();
         Map<String, Object> install = new LinkedHashMap<>();
+        if (finalStatus != null) {
+            install.put("finalStatus", finalStatus);
+        }
         Map<String, Object> postVerification = new LinkedHashMap<>();
         postVerification.put("satisfied", satisfied);
         install.put("postVerification", postVerification);
