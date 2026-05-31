@@ -60,9 +60,12 @@ import java.util.UUID;
  *
  * <p>{@code supported=false} / {@code probeComplete=false} are fail-closed:
  * persist as evidence, never render an incomplete probe as "fully up to
- * date". {@code upgradeCount == maxUpgrade} is the "possibly truncated"
- * signal (the agent parser caps before {@code upgradeTruncated} is
- * evaluated — known v1 limitation).
+ * date". The "possibly truncated" rendering hint is computed at the DTO /
+ * audit-event boundary via
+ * {@link com.example.endpointadmin.service.OutdatedSnapshotTruncation}:
+ * {@code upgradeTruncated == TRUE} (agent authoritative,
+ * post-platform-agent #40) OR {@code upgradeCount >= maxUpgrade}
+ * (defence-in-depth fallback). #1148.
  */
 @Entity
 @Table(name = "endpoint_outdated_software_snapshots",
