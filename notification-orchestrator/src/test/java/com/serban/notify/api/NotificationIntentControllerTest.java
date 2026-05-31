@@ -96,9 +96,15 @@ class NotificationIntentControllerTest extends AbstractPostgresTest {
     @Test
     void postSubmitMultipleMissingFieldsSurfaceAllInDetails() throws Exception {
         // #304: every constraint violation must appear in details[], not just
-        // the first. Empty body trips intentId + idempotencyKey + orgId +
-        // topicKey + severity + dataClassification (6 NotBlank/NotNull
-        // declarations on SubmitIntentRequest).
+        // the first. Empty body trips the SubmitIntentRequest record's
+        // NotBlank/NotNull constraints — the exact field set varies as the
+        // record evolves, so this test pins (a) details has at least 3
+        // entries and (b) the three smoke-relevant fields (intentId, orgId,
+        // topicKey) are always among them. The advice maps every FieldError
+        // to a details entry; full-field-set coverage is enforced
+        // structurally in the handler, not pinned by this assertion (which
+        // would otherwise tie this test to the record's exact field count
+        // and need updating on every field add — Codex 019e806a nit).
         String invalidJson = "{}";
         mockMvc.perform(post("/api/v1/notify/intents")
                 .header("X-Org-Id", "default")

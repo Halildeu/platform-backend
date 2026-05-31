@@ -1,8 +1,7 @@
 package com.serban.notify.exception;
 
-import jakarta.validation.ConstraintViolationException;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
@@ -16,25 +15,33 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
  * Global advice that turns Spring's bean-validation failures on
- * {@code @Valid @RequestBody} DTOs into a structured 400 response with
- * field-level error detail and a WARN log line, so future canary smoke
- * runs can diagnose payload issues without having to enable
+ * {@code @Valid @RequestBody} DTOs into a {@link ValidationErrorResponse}
+ * 400 with field-level detail and a WARN log line, so future canary
+ * smoke runs can diagnose payload issues without having to enable
  * {@code server.error.include-message=always} (which exposes Spring's
  * internal exception messages on every other 4xx path too).
  *
- * <h4>Scope</h4>
+ * <h4>Scope (narrowed per Codex 019e806a iter-1 PARTIAL #2)</h4>
+ * This advice handles ONLY {@link MethodArgumentNotValidException}
+ * — the case raised on {@code @Valid @RequestBody}. The companion
+ * {@code ConstraintViolationException} (path / query-parameter
+ * constraint failures on {@code @Validated} controllers) is
+ * deliberately NOT handled here:
  * <ul>
- *   <li>{@link MethodArgumentNotValidException} — fired when an
- *       {@code @Valid @RequestBody} DTO violates a constraint (e.g.
- *       {@code @NotBlank}, {@code @Size}, {@code @Pattern}).</li>
- *   <li>{@link ConstraintViolationException} — fired when a
- *       {@code @Validated @PathVariable} / {@code @RequestParam}
- *       violates a constraint. Most controllers historically handled
- *       this per-controller (InboxController, PreferenceController,
- *       InboxSseController); this advice provides the same shape so
- *       new controllers do not need to re-implement the boilerplate.
- *       Per-controller handlers continue to take precedence — Spring's
- *       resolver picks the closest match first.</li>
+ *   <li>InboxController, PreferenceController, InboxSseController
+ *       already ship per-controller {@code @ExceptionHandler(
+ *       ConstraintViolationException.class)} handlers with a different
+ *       body shape ({@code {error, message}}). A global advice carrying
+ *       {@code details[]} would be silently overridden by Spring's
+ *       resolver (local handler always wins, regardless of advice
+ *       {@code @Order}). Documenting two different body shapes for the
+ *       same 400 class is a contract drift the OpenAPI cannot capture
+ *       cleanly.</li>
+ *   <li>If we want a uniform {@link ValidationErrorResponse} shape on
+ *       the path / query side too, the right move is a separate PR
+ *       that retires the per-controller handlers and migrates them to
+ *       this advice (one body shape, one OpenAPI schema) — out of
+ *       scope here.</li>
  * </ul>
  *
  * <h4>Why not server.error.include-message=always</h4>
@@ -44,20 +51,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * declared on the DTO constraints, keyed by field name, so the payload
  * shape stays predictable and the security boundary stays narrow.
  *
- * <h4>Response shape</h4>
- * <pre>
- * {
- *   "error": "validation",
- *   "message": "request body failed validation; see details",
- *   "details": [
- *     { "field": "intentId", "message": "intent_id required" },
- *     { "field": "orgId",    "message": "org_id required" }
- *   ]
- * }
- * </pre>
+ * <h4>OpenAPI binding</h4>
+ * The 400 response shape is declared as {@link ValidationErrorResponse}
+ * — every {@code @ApiResponse(responseCode = "400")} that wants to
+ * advertise this shape should add
+ * {@code content = @Content(schema = @Schema(implementation = ValidationErrorResponse.class))}.
  *
- * Tracked-by: platform-backend#304, BL-010 follow-up. Codex strategic
- * precursor thread: {@code 019e5a75} (BL-010 KC org_id mapper).
+ * Tracked-by: platform-backend#304, BL-010 follow-up.
+ * Codex strategic precursor thread: {@code 019e5a75} (BL-010 KC org_id
+ * mapper); post-impl review thread: {@code 019e806a}.
  */
 @RestControllerAdvice
 @Order(Ordered.LOWEST_PRECEDENCE)
@@ -66,81 +68,64 @@ public class MethodArgumentNotValidAdvice {
     private static final Logger log = LoggerFactory.getLogger(MethodArgumentNotValidAdvice.class);
 
     /**
+     * Cap the WARN log field list to keep noise bounded on a
+     * high-volume validation 400 (Codex 019e806a hardening): even if a
+     * future DTO trips dozens of fields at once, the log line stays a
+     * single bounded message. The full count is still surfaced via
+     * {@code errorCount=N}.
+     */
+    private static final int LOG_FIELD_NAME_CAP = 10;
+
+    /**
      * Convert a {@link MethodArgumentNotValidException} into a 400 with
-     * a {@code details[]} array carrying one entry per offending field.
+     * a {@link ValidationErrorResponse} body carrying one entry per
+     * offending field plus any class-level / cross-field rules
+     * ({@code getGlobalErrors()}).
      *
-     * <p>The WARN log line includes the controller path + the offending
-     * field names but NOT the rejected values, so a leaky payload
-     * (e.g. an org_id that looks like a secret) cannot leak through
-     * the log aggregator. Caller IP + the structured details give the
-     * canary-smoke operator enough to diagnose without the full body.
+     * <p>The WARN log line carries the target method name and the
+     * (capped) offending field names but NEVER the rejected values, so
+     * a leaky payload (e.g. an org_id that looks like a secret) cannot
+     * leak through the log aggregator.
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<Map<String, Object>> handleMethodArgumentNotValid(
+    public ResponseEntity<ValidationErrorResponse> handleMethodArgumentNotValid(
             MethodArgumentNotValidException ex) {
-        var details = new java.util.ArrayList<Map<String, String>>();
+        List<ValidationErrorDetail> details = new ArrayList<>();
         for (FieldError fe : ex.getBindingResult().getFieldErrors()) {
             String msg = fe.getDefaultMessage();
-            details.add(Map.of(
-                    "field", fe.getField(),
-                    "message", msg != null ? msg : "invalid"));
+            details.add(new ValidationErrorDetail(fe.getField(), msg != null ? msg : "invalid"));
         }
-        // Also surface non-field (global / class-level) errors so a
-        // @ScriptAssert-style cross-field rule does not vanish.
+        // Surface non-field (global / class-level) errors so a
+        // @ScriptAssert-style cross-field rule does not vanish; key is
+        // the bean's objectName so the client can distinguish a
+        // per-field error from a global one.
         ex.getBindingResult().getGlobalErrors().forEach(ge -> {
             String msg = ge.getDefaultMessage();
-            details.add(Map.of(
-                    "field", ge.getObjectName(),
-                    "message", msg != null ? msg : "invalid"));
+            details.add(new ValidationErrorDetail(ge.getObjectName(), msg != null ? msg : "invalid"));
         });
 
         // Log field names only — never the rejected values (avoid
-        // payload leak through the log aggregator).
+        // payload leak through the log aggregator). Cap the field list
+        // so a malformed payload tripping dozens of fields does not
+        // blow up the log line.
         String fields = details.stream()
-                .map(d -> d.get("field"))
+                .map(ValidationErrorDetail::field)
+                .limit(LOG_FIELD_NAME_CAP)
                 .reduce((a, b) -> a + "," + b)
                 .orElse("(none)");
-        log.warn("validation failed: target={} fields=[{}] errorCount={}",
+        String overflowSuffix = details.size() > LOG_FIELD_NAME_CAP ? ",…" : "";
+        log.warn("validation failed: target={} fields=[{}{}] errorCount={}",
                 ex.getParameter().getMethod() != null
                         ? ex.getParameter().getMethod().getName()
                         : "(unknown)",
                 fields,
+                overflowSuffix,
                 details.size());
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("error", "validation");
-        body.put("message", "request body failed validation; see details");
-        body.put("details", details);
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
-    }
-
-    /**
-     * Same shape for {@link ConstraintViolationException} (path /
-     * query-parameter constraint failures on {@code @Validated}
-     * controllers). Per-controller handlers continue to take precedence
-     * because Spring resolves to the most specific handler first; this
-     * is the fallback for controllers that do not yet provide their own.
-     */
-    @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<Map<String, Object>> handleConstraintViolation(
-            ConstraintViolationException ex) {
-        var details = ex.getConstraintViolations().stream()
-                .map(cv -> Map.of(
-                        "field", cv.getPropertyPath().toString(),
-                        "message", cv.getMessage()))
-                .toList();
-
-        String fields = details.stream()
-                .map(d -> d.get("field"))
-                .reduce((a, b) -> a + "," + b)
-                .orElse("(none)");
-        log.warn("validation failed (path/query): fields=[{}] errorCount={}",
-                fields, details.size());
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("error", "validation");
-        body.put("message", "request path or query parameters failed validation; see details");
-        body.put("details", details);
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ValidationErrorResponse(
+                        "validation",
+                        "request body failed validation; see details",
+                        details));
     }
 }
