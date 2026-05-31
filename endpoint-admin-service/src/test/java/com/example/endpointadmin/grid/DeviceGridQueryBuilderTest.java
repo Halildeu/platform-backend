@@ -4,9 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.endpointadmin.grid.DeviceGridQueryBuilder.BuiltGridQuery;
-import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -86,6 +87,21 @@ class DeviceGridQueryBuilderTest {
         assertThat(q.params().getValue("p0")).isEqualTo("lab-01");
     }
 
+    @Test
+    void deviceIdTextFilter_castsUuidToText_neverLowerUuid() {
+        // device_id is a UUID column; a text filter must cast (d.id::text)
+        // so lower(...) is valid. lower(uuid) does not exist in PG and would
+        // 500 — an allowlisted column must never produce invalid SQL.
+        Map<String, Object> filter = Map.of(
+                "device_id", Map.of("filterType", "text", "type", "equals", "filter", "ABCD-1234"));
+        BuiltGridQuery q = builder().buildPageQuery(TENANT, req(filter, null, null));
+        assertThat(q.sql()).contains("lower(d.id::text) = :p0");
+        assertThat(q.sql()).doesNotContain("lower(d.id)");
+        assertThat(q.params().getValue("p0")).isEqualTo("abcd-1234");
+        // SELECT still exposes the raw UUID, not the cast.
+        assertThat(q.sql()).contains("d.id AS device_id");
+    }
+
     // ───────────────────────── set / enum / boolean ─────────────────────────
 
     @Test
@@ -146,8 +162,9 @@ class DeviceGridQueryBuilderTest {
                 "last_seen_at", Map.of("filterType", "date", "type", "equals", "dateFrom", "2026-05-31T00:00:00Z"));
         BuiltGridQuery q = builder().buildPageQuery(TENANT, req(filter, null, null));
         assertThat(q.sql()).contains("d.last_seen_at >= :p0").contains("d.last_seen_at < :p1");
-        assertThat(q.params().getValue("p0")).isEqualTo(Timestamp.from(from));
-        assertThat(q.params().getValue("p1")).isEqualTo(Timestamp.from(from.plus(Duration.ofDays(1))));
+        assertThat(q.params().getValue("p0")).isEqualTo(OffsetDateTime.ofInstant(from, ZoneOffset.UTC));
+        assertThat(q.params().getValue("p1"))
+                .isEqualTo(OffsetDateTime.ofInstant(from.plus(Duration.ofDays(1)), ZoneOffset.UTC));
     }
 
     @Test
@@ -157,8 +174,10 @@ class DeviceGridQueryBuilderTest {
                         "dateFrom", "2026-05-01T00:00:00Z", "dateTo", "2026-06-01T00:00:00Z"));
         BuiltGridQuery q = builder().buildPageQuery(TENANT, req(filter, null, null));
         assertThat(q.sql()).contains("d.last_seen_at >= :p0").contains("d.last_seen_at < :p1");
-        assertThat(q.params().getValue("p0")).isEqualTo(Timestamp.from(Instant.parse("2026-05-01T00:00:00Z")));
-        assertThat(q.params().getValue("p1")).isEqualTo(Timestamp.from(Instant.parse("2026-06-01T00:00:00Z")));
+        assertThat(q.params().getValue("p0"))
+                .isEqualTo(OffsetDateTime.ofInstant(Instant.parse("2026-05-01T00:00:00Z"), ZoneOffset.UTC));
+        assertThat(q.params().getValue("p1"))
+                .isEqualTo(OffsetDateTime.ofInstant(Instant.parse("2026-06-01T00:00:00Z"), ZoneOffset.UTC));
     }
 
     // ───────────────────────── sort ─────────────────────────
@@ -220,6 +239,24 @@ class DeviceGridQueryBuilderTest {
         Map<String, Object> filter = Map.of(
                 "hostname", Map.of("filterType", "number", "type", "greaterThan", "filter", 5));
         assertGridError(() -> builder().buildPageQuery(TENANT, req(filter, null, null)),
+                DeviceGridQueryBuilder.CODE_INVALID_FILTER);
+    }
+
+    @Test
+    void missingFilterType_rejected() {
+        // Strict fail-closed: filterType must be present (Codex 019e7e65).
+        Map<String, Object> filter = Map.of(
+                "hostname", Map.of("type", "contains", "filter", "x"));
+        assertGridError(() -> builder().buildPageQuery(TENANT, req(filter, null, null)),
+                DeviceGridQueryBuilder.CODE_INVALID_FILTER);
+    }
+
+    @Test
+    void oversizedTextFilterValue_rejected() {
+        DeviceGridQueryBuilder small = new DeviceGridQueryBuilder("endpoint_admin_service", 200, 200, 5);
+        Map<String, Object> filter = Map.of(
+                "hostname", Map.of("filterType", "text", "type", "contains", "filter", "way-too-long-value"));
+        assertGridError(() -> small.buildPageQuery(TENANT, req(filter, null, null)),
                 DeviceGridQueryBuilder.CODE_INVALID_FILTER);
     }
 

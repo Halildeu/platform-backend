@@ -2,7 +2,10 @@ package com.example.endpointadmin.grid;
 
 import com.example.endpointadmin.grid.DeviceGridColumns.ColumnType;
 import com.example.endpointadmin.grid.DeviceGridColumns.GridColumn;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
@@ -167,14 +170,17 @@ public class DeviceGridQueryBuilder {
                                   StringBuilder where, MapSqlParameterSource params, int[] seq) {
         requireFilterType(col, spec, "text");
         String type = stringField(spec, "type", col);
-        String lowerExpr = "lower(" + col.sqlExpr() + ")";
+        // Filter against filterExpr (e.g. d.id::text for the UUID device_id)
+        // so lower(...) is always valid; never the raw select expression.
+        String expr = col.filterExpr();
+        String lowerExpr = "lower(" + expr + ")";
         switch (type) {
-            case "blank" -> where.append("(").append(col.sqlExpr()).append(" IS NULL OR ")
-                    .append(col.sqlExpr()).append(" = '')");
-            case "notBlank" -> where.append("(").append(col.sqlExpr()).append(" IS NOT NULL AND ")
-                    .append(col.sqlExpr()).append(" <> '')");
+            case "blank" -> where.append("(").append(expr).append(" IS NULL OR ")
+                    .append(expr).append(" = '')");
+            case "notBlank" -> where.append("(").append(expr).append(" IS NOT NULL AND ")
+                    .append(expr).append(" <> '')");
             default -> {
-                String value = requireString(spec, "filter", col).toLowerCase();
+                String value = requireText(spec, "filter", col).toLowerCase();
                 String p = nextParam(seq);
                 switch (type) {
                     case "equals" -> {
@@ -183,13 +189,13 @@ public class DeviceGridQueryBuilder {
                     }
                     case "notEqual" -> {
                         where.append("(").append(lowerExpr).append(" <> :").append(p)
-                                .append(" OR ").append(col.sqlExpr()).append(" IS NULL)");
+                                .append(" OR ").append(expr).append(" IS NULL)");
                         params.addValue(p, value);
                     }
                     case "contains" -> likeClause(where, lowerExpr, p, params, "%" + escapeLike(value) + "%");
                     case "notContains" -> {
                         where.append("(").append(lowerExpr).append(" NOT LIKE :").append(p)
-                                .append(" ESCAPE '\\' OR ").append(col.sqlExpr()).append(" IS NULL)");
+                                .append(" ESCAPE '\\' OR ").append(expr).append(" IS NULL)");
                         params.addValue(p, "%" + escapeLike(value) + "%");
                     }
                     case "startsWith" -> likeClause(where, lowerExpr, p, params, escapeLike(value) + "%");
@@ -210,16 +216,17 @@ public class DeviceGridQueryBuilder {
                                     StringBuilder where, MapSqlParameterSource params, int[] seq) {
         requireFilterType(col, spec, "number");
         String type = stringField(spec, "type", col);
+        String expr = col.filterExpr();
         switch (type) {
-            case "blank" -> where.append(col.sqlExpr()).append(" IS NULL");
-            case "notBlank" -> where.append(col.sqlExpr()).append(" IS NOT NULL");
+            case "blank" -> where.append(expr).append(" IS NULL");
+            case "notBlank" -> where.append(expr).append(" IS NOT NULL");
             case "inRange" -> {
                 long from = requireLong(spec, "filter", col);
                 long to = requireLong(spec, "filterTo", col);
                 String pf = nextParam(seq);
                 String pt = nextParam(seq);
-                where.append("(").append(col.sqlExpr()).append(" >= :").append(pf)
-                        .append(" AND ").append(col.sqlExpr()).append(" <= :").append(pt).append(")");
+                where.append("(").append(expr).append(" >= :").append(pf)
+                        .append(" AND ").append(expr).append(" <= :").append(pt).append(")");
                 params.addValue(pf, from);
                 params.addValue(pt, to);
             }
@@ -235,7 +242,7 @@ public class DeviceGridQueryBuilder {
                     case "greaterThanOrEqual" -> " >= :";
                     default -> throw invalidType(col, type, CODE_INVALID_FILTER);
                 };
-                where.append(col.sqlExpr()).append(op).append(p);
+                where.append(expr).append(op).append(p);
                 params.addValue(p, value);
             }
         }
@@ -245,53 +252,64 @@ public class DeviceGridQueryBuilder {
                                   StringBuilder where, MapSqlParameterSource params, int[] seq) {
         requireFilterType(col, spec, "date");
         String type = stringField(spec, "type", col);
+        String expr = col.filterExpr();
         switch (type) {
-            case "blank" -> where.append(col.sqlExpr()).append(" IS NULL");
-            case "notBlank" -> where.append(col.sqlExpr()).append(" IS NOT NULL");
+            case "blank" -> where.append(expr).append(" IS NULL");
+            case "notBlank" -> where.append(expr).append(" IS NOT NULL");
             case "equals" -> {
                 // Calendar-day match [from, from+1day) — NOT +1s (Codex
                 // 019e7e65: +1s would silently drop all but the first second).
                 Instant from = requireInstant(spec, "dateFrom", col);
                 String pf = nextParam(seq);
                 String pt = nextParam(seq);
-                where.append("(").append(col.sqlExpr()).append(" >= :").append(pf)
-                        .append(" AND ").append(col.sqlExpr()).append(" < :").append(pt).append(")");
-                params.addValue(pf, java.sql.Timestamp.from(from));
-                params.addValue(pt, java.sql.Timestamp.from(from.plus(java.time.Duration.ofDays(1))));
+                where.append("(").append(expr).append(" >= :").append(pf)
+                        .append(" AND ").append(expr).append(" < :").append(pt).append(")");
+                params.addValue(pf, utc(from));
+                params.addValue(pt, utc(from.plus(Duration.ofDays(1))));
             }
             case "notEqual" -> {
                 Instant from = requireInstant(spec, "dateFrom", col);
                 String pf = nextParam(seq);
                 String pt = nextParam(seq);
-                where.append("(").append(col.sqlExpr()).append(" < :").append(pf)
-                        .append(" OR ").append(col.sqlExpr()).append(" >= :").append(pt).append(")");
-                params.addValue(pf, java.sql.Timestamp.from(from));
-                params.addValue(pt, java.sql.Timestamp.from(from.plus(java.time.Duration.ofDays(1))));
+                where.append("(").append(expr).append(" < :").append(pf)
+                        .append(" OR ").append(expr).append(" >= :").append(pt).append(")");
+                params.addValue(pf, utc(from));
+                params.addValue(pt, utc(from.plus(Duration.ofDays(1))));
             }
             case "inRange" -> {
                 Instant from = requireInstant(spec, "dateFrom", col);
                 Instant to = requireInstant(spec, "dateTo", col);
                 String pf = nextParam(seq);
                 String pt = nextParam(seq);
-                where.append("(").append(col.sqlExpr()).append(" >= :").append(pf)
-                        .append(" AND ").append(col.sqlExpr()).append(" < :").append(pt).append(")");
-                params.addValue(pf, java.sql.Timestamp.from(from));
-                params.addValue(pt, java.sql.Timestamp.from(to));
+                where.append("(").append(expr).append(" >= :").append(pf)
+                        .append(" AND ").append(expr).append(" < :").append(pt).append(")");
+                params.addValue(pf, utc(from));
+                params.addValue(pt, utc(to));
             }
             case "lessThan" -> {
                 Instant from = requireInstant(spec, "dateFrom", col);
                 String p = nextParam(seq);
-                where.append(col.sqlExpr()).append(" < :").append(p);
-                params.addValue(p, java.sql.Timestamp.from(from));
+                where.append(expr).append(" < :").append(p);
+                params.addValue(p, utc(from));
             }
             case "greaterThan" -> {
                 Instant from = requireInstant(spec, "dateFrom", col);
                 String p = nextParam(seq);
-                where.append(col.sqlExpr()).append(" > :").append(p);
-                params.addValue(p, java.sql.Timestamp.from(from));
+                where.append(expr).append(" > :").append(p);
+                params.addValue(p, utc(from));
             }
             default -> throw invalidType(col, type, CODE_INVALID_FILTER);
         }
+    }
+
+    /**
+     * Bind an instant to a {@code timestamptz} column as a timezone-aware
+     * {@link OffsetDateTime} (UTC) rather than a {@code java.sql.Timestamp},
+     * so boundary comparisons are immune to the JVM/session timezone
+     * (Codex 019e7e65).
+     */
+    private static OffsetDateTime utc(Instant instant) {
+        return OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
     }
 
     /**
@@ -316,7 +334,7 @@ public class DeviceGridQueryBuilder {
             where.append("1=0");
             return;
         }
-        StringBuilder in = new StringBuilder("(").append(col.sqlExpr()).append(" IN (");
+        StringBuilder in = new StringBuilder("(").append(col.filterExpr()).append(" IN (");
         for (int i = 0; i < values.size(); i++) {
             Object v = values.get(i);
             if (!(v instanceof String s)) {
@@ -412,7 +430,7 @@ public class DeviceGridQueryBuilder {
             if (or.length() > 0) {
                 or.append(" OR ");
             }
-            or.append("lower(").append(col.sqlExpr()).append(") LIKE :").append(p).append(" ESCAPE '\\'");
+            or.append("lower(").append(col.filterExpr()).append(") LIKE :").append(p).append(" ESCAPE '\\'");
         }
         where.append(" AND (").append(or).append(")");
     }
@@ -424,10 +442,12 @@ public class DeviceGridQueryBuilder {
     }
 
     private void requireFilterType(GridColumn col, Map<String, Object> spec, String expected) {
+        // Strict fail-closed contract: filterType MUST be present, a string,
+        // and the family this column accepts (Codex 019e7e65).
         Object ft = spec.get("filterType");
-        if (ft != null && !expected.equals(ft)) {
+        if (!(ft instanceof String s) || !expected.equals(s)) {
             throw new GridQueryValidationException(CODE_INVALID_FILTER,
-                    "Column " + col.colId() + " accepts only the '" + expected + "' filter");
+                    "Column " + col.colId() + " requires filterType '" + expected + "'");
         }
     }
 
@@ -440,11 +460,17 @@ public class DeviceGridQueryBuilder {
         return s;
     }
 
-    private String requireString(Map<String, Object> spec, String key, GridColumn col) {
+    private String requireText(Map<String, Object> spec, String key, GridColumn col) {
         Object v = spec.get(key);
         if (!(v instanceof String s) || s.isEmpty()) {
             throw new GridQueryValidationException(CODE_INVALID_FILTER,
                     "Filter value '" + key + "' is required for column " + col.colId());
+        }
+        // Cap free-text filter length (quickFilter is already capped; per
+        // Codex 019e7e65 per-column text values must be too).
+        if (s.length() > maxQuickFilterLength) {
+            throw new GridQueryValidationException(CODE_INVALID_FILTER,
+                    "Filter value for " + col.colId() + " exceeds the maximum length of " + maxQuickFilterLength);
         }
         return s;
     }

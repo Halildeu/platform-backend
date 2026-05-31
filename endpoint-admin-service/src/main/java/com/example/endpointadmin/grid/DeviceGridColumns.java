@@ -50,17 +50,32 @@ public final class DeviceGridColumns {
      *
      * @param colId          the stable client-facing column id (also the SQL
      *                       SELECT alias and the JSON row key)
-     * @param sqlExpr        trusted constant SQL expression for the column
+     * @param sqlExpr        trusted constant SQL expression for SELECT + sort
+     * @param filterExpr     trusted constant SQL expression for the WHERE
+     *                       clause — usually identical to {@code sqlExpr}, but
+     *                       a non-text column addressed by a text filter must
+     *                       cast (e.g. {@code device_id}'s UUID needs
+     *                       {@code d.id::text} so {@code lower(...)} is valid
+     *                       and a client filter can never 500)
      * @param type           filterability class
      * @param quickFilterable whether the global quick-filter scans this column
      * @param header         Turkish export header (server-resolved)
      */
-    public record GridColumn(String colId, String sqlExpr, ColumnType type,
-                             boolean quickFilterable, String header) {}
+    public record GridColumn(String colId, String sqlExpr, String filterExpr, ColumnType type,
+                             boolean quickFilterable, String header) {
+        /** Convenience: filterExpr defaults to sqlExpr (the common case). */
+        public GridColumn(String colId, String sqlExpr, ColumnType type,
+                          boolean quickFilterable, String header) {
+            this(colId, sqlExpr, sqlExpr, type, quickFilterable, header);
+        }
+    }
 
     // Order here is the canonical export column order (raw export).
     private static final List<GridColumn> COLUMNS = List.of(
-            new GridColumn("device_id", "d.id", ColumnType.TEXT, false, "Cihaz ID"),
+            // device_id is a UUID column: SELECT/sort use d.id, but a text
+            // filter must cast (d.id::text) so lower(...) is valid — an
+            // allowlisted column must never produce invalid SQL.
+            new GridColumn("device_id", "d.id", "d.id::text", ColumnType.TEXT, false, "Cihaz ID"),
             new GridColumn("hostname", "d.hostname", ColumnType.TEXT, true, "Bilgisayar Adı"),
             new GridColumn("display_name", "d.display_name", ColumnType.TEXT, true, "Görünen Ad"),
             new GridColumn("os_type", "d.os_type", ColumnType.ENUM, false, "İşletim Sistemi"),

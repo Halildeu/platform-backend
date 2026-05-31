@@ -155,6 +155,25 @@ class DeviceGridQuerySchemaQualificationPostgresIntegrationTest {
         assertThat(resp.lastRow()).isEqualTo(1L);
     }
 
+    @Test
+    void deviceIdTextFilterResolvesViaUuidCast() {
+        UUID tenant = UUID.randomUUID();
+        UUID d1 = UUID.randomUUID();
+        UUID d2 = UUID.randomUUID();
+        insertDevice(d1, tenant, "cast-host-1");
+        insertDevice(d2, tenant, "cast-host-2");
+
+        // device_id text equals must resolve via d.id::text. lower(uuid) does
+        // not exist in PG, so an un-cast text filter would 500 here.
+        DeviceGridQueryResponse resp = service().query(tenant, new DeviceGridQueryRequest(
+                0, 50,
+                Map.of("device_id", Map.of("filterType", "text", "type", "equals", "filter", d1.toString())),
+                null, null));
+
+        assertThat(resp.rows()).hasSize(1);
+        assertThat(resp.rows().get(0).get("device_id")).isEqualTo(d1);
+    }
+
     // ───────────────────────── seed helpers ─────────────────────────
 
     private void insertDevice(UUID id, UUID tenant, String hostname) {
