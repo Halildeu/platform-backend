@@ -39,9 +39,13 @@ public record AdminOutdatedSoftwareSnapshotSummaryResponse(
     public static AdminOutdatedSoftwareSnapshotSummaryResponse from(EndpointOutdatedSoftwareSnapshot snapshot) {
         int packageCount = snapshot.getPackages() != null ? snapshot.getPackages().size() : 0;
         int errorCount = snapshot.getProbeErrors() != null ? snapshot.getProbeErrors().size() : 0;
-        boolean possiblyTruncated = snapshot.getUpgradeCount() != null
-                && snapshot.getMaxUpgrade() != null
-                && snapshot.getUpgradeCount().equals(snapshot.getMaxUpgrade());
+        // #1148: prefer authoritative upgradeTruncated, fall back to
+        // upgradeCount >= maxUpgrade. Single source of truth shared across
+        // the full snapshot DTO, this summary, the bulk LatestEntry, and the
+        // service-level audit event.
+        boolean possiblyTruncated =
+                com.example.endpointadmin.service.OutdatedSnapshotTruncation
+                        .isPossiblyTruncated(snapshot);
         return new AdminOutdatedSoftwareSnapshotSummaryResponse(
                 snapshot.getId(),
                 snapshot.getDeviceId(),

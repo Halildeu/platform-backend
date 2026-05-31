@@ -29,9 +29,13 @@ import java.util.UUID;
  * @param upgradeCount         number of upgradeable packages reported
  * @param upgradeTruncated     whether the agent flagged the upgrade set as
  *                             truncated
- * @param possiblyTruncated    whether {@code upgradeCount == maxUpgrade}
- *                             (the v1 "possibly truncated" signal the agent
- *                             parser cannot self-detect)
+ * @param possiblyTruncated    whether the package list should be rendered
+ *                             with a "possibly truncated" hint per
+ *                             {@link com.example.endpointadmin.service.OutdatedSnapshotTruncation}:
+ *                             {@code upgradeTruncated == TRUE} (agent
+ *                             authoritative, post-platform-agent #40) OR
+ *                             {@code upgradeCount >= maxUpgrade}
+ *                             (defence-in-depth fallback). #1148.
  * @param sourceUsed           probe source ({@code winget | none})
  * @param payloadHashSha256    SHA-256 of the sanitized outdated-software
  *                             payload — change-detection signal
