@@ -1,6 +1,7 @@
 package com.example.report.registry;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.List;
 
 /**
@@ -8,12 +9,30 @@ import java.util.List;
  *
  * <p>Phase 2 Program 1c (2026-05-07) adds {@code contractVersion} and
  * {@code tenantBoundary} fields to the JSON schema for build-time gate
- * enforcement. These fields are NOT part of the runtime record (no behavior
- * change at this layer); {@code @JsonIgnoreProperties(ignoreUnknown = true)}
- * lets ReportRegistry continue binding 31+ migrated JSON files without
- * forcing a record signature break.
+ * enforcement. These fields are NOT part of the runtime record;
+ * {@code @JsonIgnoreProperties(ignoreUnknown = true)} lets ReportRegistry
+ * continue binding 33 migrated JSON files without forcing a record
+ * signature break.
+ *
+ * <p>PR-D1a (Codex thread {@code 019e800b}, 2026-05-31) widens the runtime
+ * record with three optional top-level fields that the dynamic-report
+ * migration sub-chain needs the backend to author / pass through:
+ * <ul>
+ *   <li>{@code routeSegment} — opt-in alias when the legacy web route
+ *       segment differs from the report key (e.g. backend key
+ *       {@code hr-compensation-detay}, frontend route {@code hr-compensation}).</li>
+ *   <li>{@code sharedReportId} — preserves catalog identity so favorites,
+ *       saved filters, export mode, and sidebar default carry through
+ *       the migration without losing user-persistent state.</li>
+ *   <li>{@code filterDefinitions} — metadata-driven sidebar widget contract
+ *       so the dynamic factory can reproduce the static module's filter
+ *       shape from JSON.</li>
+ * </ul>
+ *
+ * <p>All three are nullable and emitted with {@link JsonInclude.Include#NON_NULL}.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ReportDefinition(
         String key,
         String version,
@@ -28,7 +47,10 @@ public record ReportDefinition(
         List<ColumnDefinition> columns,
         String defaultSort,
         String defaultSortDirection,
-        AccessConfig access
+        AccessConfig access,
+        String routeSegment,
+        String sharedReportId,
+        List<FilterDefinition> filterDefinitions
 ) {
     public ReportDefinition {
         if (key == null || key.isBlank()) {
@@ -40,9 +62,6 @@ public record ReportDefinition(
         if (schemaMode == null || schemaMode.isBlank()) {
             schemaMode = "static";
         }
-        // Codex 019e0d06 iter-2 §3 absorb: dbo default sadece literal-schema
-        // modlar için. yearly + current resolver-driven; sourceSchema null
-        // kalabilir (resolver runtime'da branch.transactionSchema üretir).
         if (sourceSchema == null || sourceSchema.isBlank()) {
             if (!"yearly".equals(schemaMode) && !"current".equals(schemaMode)) {
                 sourceSchema = "dbo";
@@ -54,6 +73,26 @@ public record ReportDefinition(
         if (defaultSortDirection == null || defaultSortDirection.isBlank()) {
             defaultSortDirection = "ASC";
         }
+        if (filterDefinitions != null) {
+            filterDefinitions = filterDefinitions.isEmpty()
+                    ? null
+                    : List.copyOf(filterDefinitions);
+        }
+    }
+
+    /**
+     * Backward-compatible 14-arg constructor for pre-PR-D1a call sites
+     * (e.g. {@code DashboardQueryEngine.java:341}). The 3 new fields
+     * default to {@code null}.
+     */
+    public ReportDefinition(
+            String key, String version, String title, String description,
+            String category, String source, String sourceSchema, String schemaMode,
+            String yearColumn, String sourceQuery, List<ColumnDefinition> columns,
+            String defaultSort, String defaultSortDirection, AccessConfig access) {
+        this(key, version, title, description, category, source, sourceSchema,
+                schemaMode, yearColumn, sourceQuery, columns, defaultSort,
+                defaultSortDirection, access, null, null, null);
     }
 
     public boolean isYearlySchema() {
