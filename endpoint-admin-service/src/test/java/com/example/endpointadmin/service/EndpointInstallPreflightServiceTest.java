@@ -379,6 +379,27 @@ class EndpointInstallPreflightServiceTest {
     }
 
     @Test
+    void warnInconclusiveWhenPackageQueryNotFoundButEgressPartial() {
+        // BE-027: a package-query "not found" from a PARTIAL (timed-out) probe
+        // is INCONCLUSIVE → WARN, not BLOCK. A partial probe cannot
+        // authoritatively claim the package is absent from winget (Session-0
+        // unreliability — same philosophy as the BE-026 registry detector).
+        EndpointSoftwareInventorySnapshot snapshot = fullEvidenceSnapshot();
+        Map<String, Object> egress = new LinkedHashMap<>(packageNotFoundEgress());
+        egress.put("timeout", true);
+        snapshot.setWingetEgress(egress);
+
+        InstallPreflightResponse response = service.compute(
+                onlineDevice(), approvedCatalogItem("7zip.7zip"), snapshot);
+
+        assertThat(response.warnings())
+                .contains(Reason.WINGET_PACKAGE_QUERY_INCONCLUSIVE.code());
+        assertThat(response.blockingReasons())
+                .doesNotContain(Reason.WINGET_PACKAGE_QUERY_NOT_FOUND.code());
+        assertThat(response.decision()).isEqualTo(InstallPreflightDecision.WARN);
+    }
+
+    @Test
     void warnWhenEgressTimeoutPartial() {
         EndpointSoftwareInventorySnapshot snapshot = fullEvidenceSnapshot();
         Map<String, Object> egress = new LinkedHashMap<>(packageFoundEgress());

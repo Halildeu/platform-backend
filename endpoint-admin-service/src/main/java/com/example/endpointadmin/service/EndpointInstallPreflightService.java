@@ -115,6 +115,11 @@ public class EndpointInstallPreflightService {
         INSTALLED_STATE_UNKNOWN("installed_state_unknown"),
         ALREADY_INSTALLED_DIFFERENT_VERSION("already_installed_different_version"),
         WINGET_EGRESS_PARTIAL("winget_egress_partial"),
+        // BE-027: a package-query "not found" produced by a PARTIAL (timed-out
+        // / network-degraded) winget probe is INCONCLUSIVE, not authoritative —
+        // it warns instead of blocking (mirrors BE-026: no authoritative-
+        // negative decision on Session-0-unreliable winget evidence).
+        WINGET_PACKAGE_QUERY_INCONCLUSIVE("winget_package_query_inconclusive"),
         WINGET_SOURCE_LIST_WARNING("winget_source_list_warning");
 
         private final String code;
@@ -368,26 +373,38 @@ public class EndpointInstallPreflightService {
             blocking.add(Reason.WINGET_FIXED_PROBE_PACKAGE_MISMATCH);
             return;
         }
+        // BE-027: classify the winget egress probe's completeness FIRST. A
+        // timed-out or network-degraded probe is PARTIAL — it cannot
+        // authoritatively enumerate the winget catalog, so a package-query
+        // "not found" from it is INCONCLUSIVE rather than authoritative
+        // (mirrors BE-026: never make an authoritative-negative decision on
+        // Session-0-unreliable winget evidence).
+        boolean egressPartial = Boolean.TRUE.equals(asBool(egress.get("timeout")))
+                || hasFailedNetworkCheck(asList(asMap(egress.get("egress")), "dns"))
+                || hasFailedNetworkCheck(asList(asMap(egress.get("egress")), "tcp"))
+                || hasFailedNetworkCheck(asList(asMap(egress.get("egress")), "https"));
+
         Map<String, Object> packageQuery = asMap(egress.get("packageQuery"));
         boolean packageFound = packageQuery != null
                 && Boolean.TRUE.equals(packageQuery.get("found"));
         if (!packageFound) {
-            blocking.add(Reason.WINGET_PACKAGE_QUERY_NOT_FOUND);
+            if (egressPartial) {
+                // INCONCLUSIVE → WARN: the partial probe may simply not have
+                // enumerated the package. Let the agent attempt the install and
+                // report the real, authoritative install result (BE-026).
+                warnings.add(Reason.WINGET_PACKAGE_QUERY_INCONCLUSIVE);
+            } else {
+                // A COMPLETE probe that genuinely does not find the package
+                // BLOCKs — the install would fail at winget.
+                blocking.add(Reason.WINGET_PACKAGE_QUERY_NOT_FOUND);
+            }
         }
-        Boolean egressTimeout = asBool(egress.get("timeout"));
-        if (Boolean.TRUE.equals(egressTimeout)) {
+        if (egressPartial) {
             warnings.add(Reason.WINGET_EGRESS_PARTIAL);
         }
         String sourceListError = asString(egress.get("sourceListError"));
         if (sourceListError != null && !sourceListError.isBlank()) {
             warnings.add(Reason.WINGET_SOURCE_LIST_WARNING);
-        }
-        if (hasFailedNetworkCheck(asList(asMap(egress.get("egress")), "dns"))
-                || hasFailedNetworkCheck(asList(asMap(egress.get("egress")), "tcp"))
-                || hasFailedNetworkCheck(asList(asMap(egress.get("egress")), "https"))) {
-            if (!warnings.contains(Reason.WINGET_EGRESS_PARTIAL)) {
-                warnings.add(Reason.WINGET_EGRESS_PARTIAL);
-            }
         }
     }
 
