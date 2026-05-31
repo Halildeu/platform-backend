@@ -13,8 +13,8 @@ import org.springframework.jdbc.core.namedparam.SqlParameterSource;
  * {@code new ExportQuery(builtQuery.sql(), builtQuery.params())};
  * endpoint-admin-service builds one directly from its
  * {@code DeviceGridQueryBuilder}. Both feed the SAME exporters, so the
- * CSV/Excel byte output is identical by construction (board #1154,
- * Codex thread 019e7e35).
+ * CSV byte output and Excel worksheet content are identical by
+ * construction (board #1154, Codex thread 019e7e35).
  *
  * <p>{@code params} defaults to {@link EmptySqlParameterSource#INSTANCE}
  * when {@code null} so a caller with no bind variables never trips a NPE
