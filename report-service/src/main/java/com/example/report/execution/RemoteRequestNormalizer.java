@@ -88,18 +88,25 @@ public class RemoteRequestNormalizer {
             params.add("sort", sb.toString());
         }
 
-        // Advanced filter: serialize entire map as a single JSON-string
-        // `advancedFilter` query param.
+        // Advanced filter: serialize the caller-supplied downstream-shaped
+        // payload as a single JSON-string `advancedFilter` query param.
         //
-        // Codex 019e8306 iter-3 HIGH absorb: user-service (and the existing
-        // style-api-paged-v1 contract) expects ONE `advancedFilter` param
-        // containing URL-decoded JSON {logic, conditions}; NOT field-keyed
-        // individual params. The previous map-per-key implementation would
-        // serialize AG Grid filter model as Java Map.toString() and break
-        // downstream parsing.
+        // Codex 019e8306 iter-3 HIGH + iter-4 PARTIAL absorb:
         //
-        // See: user-service UserControllerV1.java:626 (decodeAdvancedFilter
-        // → Jackson readValue) and PR-D2.1c1 README contract.
+        // 1. Transport: ONE `advancedFilter` param (NOT field-keyed) so
+        //    user-service.UserControllerV1.decodeAdvancedFilter() can
+        //    Jackson.readValue() the URL-decoded JSON. Field-keyed map
+        //    would break downstream parsing.
+        //
+        // 2. Payload shape: the caller (PR-D2.1c2 ReportController dispatcher)
+        //    transforms the incoming AG-Grid filter model
+        //    ({colId: {type, filter, filterType, filterTo}})
+        //    into the downstream service's {logic, conditions} format
+        //    BEFORE constructing RemoteReportRequest. This normalizer is
+        //    transport-only; it serializes whatever payload the caller
+        //    provided verbatim.
+        //
+        // Contract: see RemoteReportRequest.advancedFilter() javadoc.
         if (!request.advancedFilter().isEmpty()) {
             try {
                 String json = objectMapper.writeValueAsString(request.advancedFilter());

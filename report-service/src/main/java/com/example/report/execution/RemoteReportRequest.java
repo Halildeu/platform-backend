@@ -25,10 +25,20 @@ import java.util.Map;
  *                          normalizer transforms to the downstream's
  *                          expected format (e.g. user-service uses
  *                          {@code "field,dir;field2,dir2"})
- * @param advancedFilter    Per-field AG-Grid filter model
- *                          {@code {colId: {type, filter, filterTo, filterType}}};
- *                          passed through normalized to downstream allowlisted
- *                          filter param keys
+ * @param advancedFilter    Downstream-shaped filter payload.
+ *                          <strong>Caller responsibility (PR-D2.1c2 dispatcher):</strong>
+ *                          AG-Grid filter model
+ *                          ({@code {colId: {type, filter, filterTo, filterType}}})
+ *                          must be transformed to the downstream service's
+ *                          expected format BEFORE this DTO is constructed.
+ *                          For user-service / permission-service
+ *                          {@code style-api-paged-v1} shape that is
+ *                          {@code {logic: "and"|"or", conditions: [{field, operator, value}, ...]}}.
+ *                          See ADR-0015 PR-D2.1c2 spec for the AG-Grid →
+ *                          {logic, conditions} translation table.
+ *                          {@link RemoteRequestNormalizer} serializes this
+ *                          map verbatim as the single {@code advancedFilter}
+ *                          JSON query param.
  * @param companyId         Tenant scope (X-Company-Id header, validated
  *                          by {@code CompanyHeaderScopeNarrower} at the
  *                          controller layer BEFORE forwarding)

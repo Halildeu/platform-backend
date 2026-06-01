@@ -76,23 +76,38 @@ class RemoteRequestNormalizerTest {
     }
 
     @Test
-    @DisplayName("advancedFilter serialized as single JSON-string param (Codex iter-3 HIGH absorb)")
-    void advancedFilterAsJsonString() {
+    @DisplayName("advancedFilter serialized as single JSON-string param matching user-service {logic, conditions} (Codex iter-4 PARTIAL absorb)")
+    void advancedFilterAsJsonStringLogicConditions() {
+        // Codex 019e8306 iter-4: caller (PR-D2.1c2 dispatcher) supplies
+        // downstream-shaped payload. user-service style-api-paged-v1 expects
+        // {logic, conditions} format (see UserControllerV1.decodeAdvancedFilter).
+        // This normalizer is transport-only; serializes verbatim.
+        var conditions = List.of(
+                Map.of("field", "name", "operator", "contains", "value", "ali"),
+                Map.of("field", "status", "operator", "eq", "value", "ACTIVE"));
+        var advancedFilter = new java.util.LinkedHashMap<String, Object>();
+        advancedFilter.put("logic", "and");
+        advancedFilter.put("conditions", conditions);
+
         var request = new RemoteReportRequest(
                 1, 25, null, List.of(),
-                Map.of("status", "ACTIVE", "department", "HR"),
+                advancedFilter,
                 null, null);
         var params = normalizer.toQueryParams(
                 RemoteRequestNormalizer.SHAPE_STYLE_API_PAGED_V1, request);
-        // Codex 019e8306 iter-3 HIGH absorb: user-service expects ONE
-        // advancedFilter param with URL-decoded JSON {logic, conditions}
-        // (NOT field-keyed individual params).
+
         assertThat(params).containsKey("advancedFilter");
-        assertThat(params).doesNotContainKey("status");
-        assertThat(params).doesNotContainKey("department");
+        // Caller-shaped payload NOT field-keyed; transport one param
+        assertThat(params).doesNotContainKey("logic");
+        assertThat(params).doesNotContainKey("conditions");
+
         String json = params.getFirst("advancedFilter");
-        assertThat(json).contains("\"status\":\"ACTIVE\"");
-        assertThat(json).contains("\"department\":\"HR\"");
+        // user-service contract roundtrip-able
+        assertThat(json).contains("\"logic\":\"and\"");
+        assertThat(json).contains("\"conditions\":[");
+        assertThat(json).contains("\"field\":\"name\"");
+        assertThat(json).contains("\"operator\":\"contains\"");
+        assertThat(json).contains("\"value\":\"ali\"");
     }
 
     @Test
