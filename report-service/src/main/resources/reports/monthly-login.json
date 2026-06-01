@@ -3,7 +3,7 @@
   "key": "monthly-login",
   "version": "1.0",
   "title": "Aylık Giriş Olayları",
-  "description": "Aylık kullanıcı oturum / giriş olayları görünümü. PR-D2.4 dördüncü LIVE remote-http modülü — permission-service /api/audit/events üzerinden çalışır (paged-events-total + audit-events-v1). Codex 019e83fd 'aggregation gerekli' uyarısı kabul edilerek option (a) seçildi: filter-only liste; aggregation (aylık sayım / top-user / time-series) bir sonraki sprint mart layer'a (PR-D2.5+) bırakıldı. Kullanıcı action=LOGIN / SESSION_CREATED grid filter'ı veya dateFrom/dateTo aralığı ile aylık görünüm üretir.",
+  "description": "Aylık kullanıcı oturum / giriş olayları görünümü. PR-D2.4 dördüncü LIVE remote-http modülü — permission-service /api/audit/events üzerinden çalışır (paged-events-total + audit-events-v1). Codex 019e83fd 'aggregation gerekli' uyarısı kabul edilerek option (a) seçildi: filter-only liste; aggregation (aylık sayım / top-user / time-series) bir sonraki sprint mart layer'a (PR-D2.5+) bırakıldı. Kullanıcı tekil action filtresi (örn. SESSION_CREATED veya LOGIN) ve/veya dateFrom/dateTo aralığı ile listeyi daraltır; audit-events-v1 çoklu OR koşulu desteklemediği için iki action aynı anda filtrelenemez.",
   "category": "Güvenlik",
   "schemaMode": "static",
   "tenantBoundary": {
@@ -38,7 +38,7 @@
       },
       "defaultVariant": "muted"
     },
-    {"field": "correlationId", "headerName": "Oturum ID", "type": "text", "width": 240},
+    {"field": "correlationId", "headerName": "Korelasyon ID", "type": "text", "width": 240},
     {"field": "id", "headerName": "Olay ID", "type": "text", "width": 280}
   ],
   "defaultSort": "timestamp",
