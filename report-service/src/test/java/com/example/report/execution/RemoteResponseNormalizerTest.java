@@ -150,6 +150,47 @@ class RemoteResponseNormalizerTest {
     }
 
     @Test
+    @DisplayName("non-object row → RemoteExecutionException (Codex iter-3 Low absorb)")
+    void nonObjectRowFailsClosed() throws Exception {
+        JsonNode body = mapper.readTree("""
+                {
+                  "items": [
+                    {"id": 1, "name": "Ali"},
+                    "scalar-row-string",
+                    {"id": 3, "name": "Veli"}
+                  ],
+                  "total": 3
+                }
+                """);
+        // Codex 019e8306 iter-3 Low absorb: silent drop would create
+        // total ↔ rows.size() drift. Grid contract requires object rows.
+        assertThatThrownBy(() -> normalizer.normalize(
+                RemoteResponseNormalizer.SHAPE_PAGED_ITEMS_TOTAL,
+                body, "user-service", "/api/v1/users"))
+                .isInstanceOf(RemoteExecutionException.class)
+                .hasMessageContaining("row at index 1")
+                .hasMessageContaining("not a JSON object");
+    }
+
+    @Test
+    @DisplayName("non-object row in items-array shape also fails closed")
+    void nonObjectRowFailsClosedItemsArray() throws Exception {
+        JsonNode body = mapper.readTree("""
+                [
+                  {"role": "admin"},
+                  42,
+                  {"role": "viewer"}
+                ]
+                """);
+        assertThatThrownBy(() -> normalizer.normalize(
+                RemoteResponseNormalizer.SHAPE_ITEMS_ARRAY,
+                body, "permission-service", "/api/v1/roles"))
+                .isInstanceOf(RemoteExecutionException.class)
+                .hasMessageContaining("row at index 1")
+                .hasMessageContaining("not a JSON object");
+    }
+
+    @Test
     @DisplayName("primitive values converted properly")
     void primitiveValueConversion() throws Exception {
         JsonNode body = mapper.readTree("""

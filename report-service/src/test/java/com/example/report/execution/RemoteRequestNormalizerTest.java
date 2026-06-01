@@ -76,16 +76,33 @@ class RemoteRequestNormalizerTest {
     }
 
     @Test
-    @DisplayName("advancedFilter passthrough as individual params")
-    void advancedFilterPassThrough() {
+    @DisplayName("advancedFilter serialized as single JSON-string param (Codex iter-3 HIGH absorb)")
+    void advancedFilterAsJsonString() {
         var request = new RemoteReportRequest(
                 1, 25, null, List.of(),
                 Map.of("status", "ACTIVE", "department", "HR"),
                 null, null);
         var params = normalizer.toQueryParams(
                 RemoteRequestNormalizer.SHAPE_STYLE_API_PAGED_V1, request);
-        assertThat(params.getFirst("status")).isEqualTo("ACTIVE");
-        assertThat(params.getFirst("department")).isEqualTo("HR");
+        // Codex 019e8306 iter-3 HIGH absorb: user-service expects ONE
+        // advancedFilter param with URL-decoded JSON {logic, conditions}
+        // (NOT field-keyed individual params).
+        assertThat(params).containsKey("advancedFilter");
+        assertThat(params).doesNotContainKey("status");
+        assertThat(params).doesNotContainKey("department");
+        String json = params.getFirst("advancedFilter");
+        assertThat(json).contains("\"status\":\"ACTIVE\"");
+        assertThat(json).contains("\"department\":\"HR\"");
+    }
+
+    @Test
+    @DisplayName("advancedFilter empty map omits param")
+    void advancedFilterEmptyOmitted() {
+        var request = new RemoteReportRequest(
+                1, 25, null, List.of(), Map.of(), null, null);
+        var params = normalizer.toQueryParams(
+                RemoteRequestNormalizer.SHAPE_STYLE_API_PAGED_V1, request);
+        assertThat(params).doesNotContainKey("advancedFilter");
     }
 
     @Test

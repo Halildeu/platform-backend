@@ -73,9 +73,14 @@ public record RemoteExecutorProperties(
      * One entry in the allowlist. {@link RemoteAllowlist} validates incoming
      * (service, path) tuples against this list.
      *
+     * <p>Codex 019e8306 iter-3 Medium absorb: {@code baseUrl} MUST be
+     * host+port only (no path, query, fragment, or userinfo). The
+     * {@link RemoteReportExecutor} uses {@code fromHttpUrl(baseUrl).path(path)};
+     * if baseUrl carries extra components the allowlist guarantee is leaky.
+     *
      * @param service        Logical service key (matches
      *                       {@link com.example.report.registry.ExecutionConfig#service()})
-     * @param baseUrl        HTTP base URL (host + port, no path)
+     * @param baseUrl        HTTP base URL (host + port ONLY, no path)
      * @param path           Exact allowed path (matches
      *                       {@link com.example.report.registry.ExecutionConfig#path()})
      * @param requestShape   Request parameter mapping kind (e.g. {@code style-api-paged-v1})
@@ -98,6 +103,43 @@ public record RemoteExecutorProperties(
                 throw new IllegalArgumentException(
                         "AllowlistEntry.baseUrl must start with http:// or https:// for service="
                                 + service + ": " + baseUrl);
+            }
+            // Codex 019e8306 iter-3 Medium absorb: baseUrl host+port only.
+            // URI parse must yield empty rawPath (or '/' only), no rawQuery,
+            // rawFragment, or rawUserInfo. This prevents allowlist bypass via
+            // baseUrl that smuggles an extra path segment.
+            try {
+                java.net.URI uri = new java.net.URI(baseUrl);
+                if (uri.getRawUserInfo() != null) {
+                    throw new IllegalArgumentException(
+                            "AllowlistEntry.baseUrl must not contain userinfo for service="
+                                    + service + ": " + baseUrl);
+                }
+                String rawPath = uri.getRawPath();
+                if (rawPath != null && !rawPath.isEmpty() && !rawPath.equals("/")) {
+                    throw new IllegalArgumentException(
+                            "AllowlistEntry.baseUrl must be host+port only (no path) for service="
+                                    + service + ": " + baseUrl);
+                }
+                if (uri.getRawQuery() != null) {
+                    throw new IllegalArgumentException(
+                            "AllowlistEntry.baseUrl must not contain query for service="
+                                    + service + ": " + baseUrl);
+                }
+                if (uri.getRawFragment() != null) {
+                    throw new IllegalArgumentException(
+                            "AllowlistEntry.baseUrl must not contain fragment for service="
+                                    + service + ": " + baseUrl);
+                }
+                if (uri.getHost() == null || uri.getHost().isBlank()) {
+                    throw new IllegalArgumentException(
+                            "AllowlistEntry.baseUrl must have a non-blank host for service="
+                                    + service + ": " + baseUrl);
+                }
+            } catch (java.net.URISyntaxException ex) {
+                throw new IllegalArgumentException(
+                        "AllowlistEntry.baseUrl is not a valid URI for service="
+                                + service + ": " + baseUrl, ex);
             }
             if (path == null || path.isBlank()) {
                 throw new IllegalArgumentException(

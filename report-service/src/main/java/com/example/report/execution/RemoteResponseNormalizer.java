@@ -82,7 +82,7 @@ public class RemoteResponseNormalizer {
                     "shape " + SHAPE_PAGED_ITEMS_TOTAL
                             + " 'total' must be >= 0, got " + total);
         }
-        return new RemoteReportResult(extractRows(itemsNode), total);
+        return new RemoteReportResult(extractRows(itemsNode, service, path), total);
     }
 
     private RemoteReportResult normalizeItemsArray(JsonNode body, String service, String path) {
@@ -91,29 +91,34 @@ public class RemoteResponseNormalizer {
                     "expected JSON array for shape " + SHAPE_ITEMS_ARRAY
                             + " but got " + body.getNodeType());
         }
-        List<Map<String, Object>> rows = extractRows(body);
+        List<Map<String, Object>> rows = extractRows(body, service, path);
         return new RemoteReportResult(rows, rows.size());
     }
 
     @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> extractRows(JsonNode arrayNode) {
+    private List<Map<String, Object>> extractRows(JsonNode arrayNode, String service, String path) {
         List<Map<String, Object>> rows = new ArrayList<>(arrayNode.size());
         Iterator<JsonNode> iter = arrayNode.elements();
+        int idx = 0;
         while (iter.hasNext()) {
             JsonNode row = iter.next();
             if (!row.isObject()) {
-                // Skip non-object rows (could be sparse array — caller decision).
-                continue;
+                // Codex 019e8306 iter-3 Low absorb: fail-closed on non-object
+                // rows. Silent drop would create total ↔ rows.size() drift and
+                // produce confusing empty grids. Grid contract requires object
+                // rows; non-object → RemoteExecutionException (downstreamStatus=null).
+                throw new RemoteExecutionException(service, path, null,
+                        "downstream response row at index " + idx
+                                + " is not a JSON object (got " + row.getNodeType()
+                                + "); grid contract requires object rows");
             }
-            // Use Jackson's converter to convert ObjectNode to Map<String,Object>.
-            // ObjectMapper is not injected here for simplicity; use the convertValue
-            // approach via the static Jackson default mapper.
             Map<String, Object> rowMap = new java.util.LinkedHashMap<>();
             row.fields().forEachRemaining(entry -> {
                 JsonNode value = entry.getValue();
                 rowMap.put(entry.getKey(), jsonToJava(value));
             });
             rows.add(rowMap);
+            idx++;
         }
         return rows;
     }

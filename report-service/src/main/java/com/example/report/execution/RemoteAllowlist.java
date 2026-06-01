@@ -35,12 +35,22 @@ public class RemoteAllowlist {
     /**
      * Look up an exact {@code (service, path)} match.
      *
+     * <p>Codex 019e8306 iter-3 Medium absorb: this method MUST fail-closed
+     * when {@link RemoteExecutorProperties#enabled()} is {@code false},
+     * even if the allowlist itself contains a matching entry. A deployment
+     * that seeds an allowlist but leaves the feature gate off must NOT
+     * propagate to downstream HTTP execution.
+     *
      * @return matching {@link RemoteExecutorProperties.AllowlistEntry} when
-     *         the tuple is allowed; {@link Optional#empty()} otherwise.
-     *         Empty result MUST result in a {@link RemoteAllowlistException}
-     *         at the caller (executor) layer.
+     *         the tuple is allowed AND the feature gate is on;
+     *         {@link Optional#empty()} otherwise. Empty result MUST result
+     *         in a {@link RemoteAllowlistException} at the caller (executor)
+     *         layer.
      */
     public Optional<RemoteExecutorProperties.AllowlistEntry> resolve(String service, String path) {
+        if (!properties.enabled()) {
+            return Optional.empty();
+        }
         if (service == null || service.isBlank() || path == null || path.isBlank()) {
             return Optional.empty();
         }
@@ -50,7 +60,8 @@ public class RemoteAllowlist {
     }
 
     /**
-     * Convenience guard variant: throws if the tuple is not allowed.
+     * Convenience guard variant: throws if the tuple is not allowed or
+     * the feature gate is off (see {@link #resolve(String, String)}).
      */
     public RemoteExecutorProperties.AllowlistEntry require(String service, String path) {
         return resolve(service, path)

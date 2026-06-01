@@ -1,9 +1,11 @@
 package com.example.report.execution;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Optional;
-import org.springframework.util.MultiValueMap;
-import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 
 /**
  * Maps {@link RemoteReportRequest} to downstream service query params
@@ -30,6 +32,16 @@ import org.springframework.stereotype.Component;
 public class RemoteRequestNormalizer {
 
     public static final String SHAPE_STYLE_API_PAGED_V1 = "style-api-paged-v1";
+
+    private final ObjectMapper objectMapper;
+
+    public RemoteRequestNormalizer() {
+        this.objectMapper = new ObjectMapper();
+    }
+
+    public RemoteRequestNormalizer(ObjectMapper objectMapper) {
+        this.objectMapper = (objectMapper == null) ? new ObjectMapper() : objectMapper;
+    }
 
     /**
      * Translate a normalized {@link RemoteReportRequest} into downstream
@@ -76,16 +88,27 @@ public class RemoteRequestNormalizer {
             params.add("sort", sb.toString());
         }
 
-        // Advanced filter: pass through key/value pairs as individual params.
-        // Downstream service is responsible for allowlisting which fields it
-        // honors; report-service does not enforce field allowlist here (the
-        // ExecutionConfig allowlist already gates which downstream paths
-        // can be called).
-        request.advancedFilter().forEach((key, value) -> {
-            if (value != null) {
-                params.add(key, String.valueOf(value));
+        // Advanced filter: serialize entire map as a single JSON-string
+        // `advancedFilter` query param.
+        //
+        // Codex 019e8306 iter-3 HIGH absorb: user-service (and the existing
+        // style-api-paged-v1 contract) expects ONE `advancedFilter` param
+        // containing URL-decoded JSON {logic, conditions}; NOT field-keyed
+        // individual params. The previous map-per-key implementation would
+        // serialize AG Grid filter model as Java Map.toString() and break
+        // downstream parsing.
+        //
+        // See: user-service UserControllerV1.java:626 (decodeAdvancedFilter
+        // → Jackson readValue) and PR-D2.1c1 README contract.
+        if (!request.advancedFilter().isEmpty()) {
+            try {
+                String json = objectMapper.writeValueAsString(request.advancedFilter());
+                params.add("advancedFilter", json);
+            } catch (JsonProcessingException ex) {
+                throw new IllegalArgumentException(
+                        "Failed to serialize advancedFilter to JSON: " + ex.getMessage(), ex);
             }
-        });
+        }
 
         return params;
     }
