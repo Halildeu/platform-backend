@@ -176,4 +176,45 @@ class ExecutionConfigTest {
                 .hasMessageContaining("source")
                 .hasMessageContaining("sourceQuery");
     }
+
+    // ---- Codex iter-2 non-blocking gap absorb ----- //
+
+    @Test
+    @DisplayName("ReportDefinition execution=SQL also requires source or sourceQuery (explicit)")
+    void reportDefinitionExplicitSqlRequiresSourceOrQuery() {
+        var col = new ColumnDefinition("id", "ID", "number", null, false, false, false, null, null, false, null);
+        var sqlExecution = new ExecutionConfig(ExecutionKind.SQL, null, null, null);
+
+        // Explicit SQL kind + no source + no sourceQuery → IllegalArgumentException
+        // (Codex iter-2 gap absorb: legacy invariant aynı zamanda explicit SQL'de
+        // kilitlenmeli — null-execution path'i ile aynı semantic).
+        assertThatThrownBy(() -> new ReportDefinition(
+                "broken-sql-report", "1.0", "T", "D", "C",
+                null, null, "static", null, null,
+                List.of(col), null, null, null, null, null, null, sqlExecution))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("source")
+                .hasMessageContaining("sourceQuery");
+    }
+
+    @Test
+    @DisplayName("ExecutionConfig REMOTE_HTTP rejects whitespace-only fields")
+    void executionConfigRemoteHttpRejectsWhitespace() {
+        // Codex iter-2 gap absorb: isBlank() guard'ı whitespace-only string'i
+        // de yakalamalı (sadece "" değil "   " gibi).
+        assertThatThrownBy(() -> new ExecutionConfig(ExecutionKind.REMOTE_HTTP, "   ",
+                "/api/v1/users", "paged-items-total"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("service must not be blank");
+
+        assertThatThrownBy(() -> new ExecutionConfig(ExecutionKind.REMOTE_HTTP, "user-service",
+                "   ", "paged-items-total"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("path must not be blank");
+
+        assertThatThrownBy(() -> new ExecutionConfig(ExecutionKind.REMOTE_HTTP, "user-service",
+                "/api/v1/users", "   "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("responseShape must not be blank");
+    }
 }
