@@ -98,6 +98,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
     // AG-037 hotfix-posture dependencies (Faz 22.5) added to the
     // EndpointAgentCommandService constructor.
     @Mock private com.example.endpointadmin.security.HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy;
+    @Mock private com.example.endpointadmin.security.DiagnosticsPayloadPolicy diagnosticsPayloadPolicy;
     @Mock private EndpointHotfixPostureService hotfixPostureService;
     @Mock private EndpointDiagnosticsService diagnosticsService;
 
@@ -118,6 +119,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
                 deviceHealthPayloadPolicy,
                 outdatedSoftwarePayloadPolicy,
                 hotfixPosturePayloadPolicy,
+                diagnosticsPayloadPolicy,
                 softwareInventoryService,
                 hardwareInventoryService,
                 deviceHealthService,

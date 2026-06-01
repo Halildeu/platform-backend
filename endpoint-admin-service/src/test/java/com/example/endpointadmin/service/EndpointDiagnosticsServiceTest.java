@@ -138,9 +138,11 @@ class EndpointDiagnosticsServiceTest {
     }
 
     @Test
-    void samePayloadHashDifferentLatencyDedupes() {
-        // Canonical hash EXCLUDES lastPollLatencyMs — two probes of
-        // identical state but different latency hash to the same snapshot.
+    void differentLatencyAppendsNewSnapshot() {
+        // Codex 019e82d7 iter-3 P1 #4 revise: latency now INCLUDED in
+        // canonical hash so each fresh observation appends a new snapshot
+        // and /latest reflects the most recent measured latency. Iter-2's
+        // "exclude latency from hash" caused /latest staleness.
         EndpointDevice device = seedDevice("DEV-D");
         EndpointCommand command1 = seedCommand(device);
         EndpointCommandResult result1 = seedResult(device, command1);
@@ -155,13 +157,15 @@ class EndpointDiagnosticsServiceTest {
         EndpointDiagnosticsSnapshot first = service.ingest(device, command1, result1, wrap(p1));
         EndpointDiagnosticsSnapshot second = service.ingest(device, command2, result2, wrap(p2));
 
-        assertThat(second.getId()).isEqualTo(first.getId());
-        assertThat(snapshotRepository.count()).isEqualTo(1);
+        assertThat(second.getId()).isNotEqualTo(first.getId());
+        assertThat(snapshotRepository.count()).isEqualTo(2);
+        // /latest reflects the most recent measured latency.
+        var latest = service.findLatest(TENANT_A, device.getId()).orElseThrow();
+        assertThat(latest.getLastPollLatencyMs()).isEqualTo(9999);
     }
 
     @Test
-    void samePayloadHashDifferentProbeDurationDedupes() {
-        // probeDurationMs also EXCLUDED from canonical hash.
+    void differentProbeDurationAppendsNewSnapshot() {
         EndpointDevice device = seedDevice("DEV-E");
         EndpointCommand command1 = seedCommand(device);
         EndpointCommandResult result1 = seedResult(device, command1);
@@ -175,6 +179,24 @@ class EndpointDiagnosticsServiceTest {
 
         EndpointDiagnosticsSnapshot first = service.ingest(device, command1, result1, wrap(p1));
         EndpointDiagnosticsSnapshot second = service.ingest(device, command2, result2, wrap(p2));
+
+        assertThat(second.getId()).isNotEqualTo(first.getId());
+        assertThat(snapshotRepository.count()).isEqualTo(2);
+    }
+
+    @Test
+    void identicalPayloadHashDedupesToSameSnapshot() {
+        // Pure dedupe: same canonical state including same latency +
+        // duration → same hash → no second row appended (idempotent
+        // same-observation replay).
+        EndpointDevice device = seedDevice("DEV-DEDUP");
+        EndpointCommand command1 = seedCommand(device);
+        EndpointCommandResult result1 = seedResult(device, command1);
+        EndpointCommand command2 = seedCommand(device);
+        EndpointCommandResult result2 = seedResult(device, command2);
+
+        EndpointDiagnosticsSnapshot first = service.ingest(device, command1, result1, wrap(golden()));
+        EndpointDiagnosticsSnapshot second = service.ingest(device, command2, result2, wrap(golden()));
 
         assertThat(second.getId()).isEqualTo(first.getId());
         assertThat(snapshotRepository.count()).isEqualTo(1);

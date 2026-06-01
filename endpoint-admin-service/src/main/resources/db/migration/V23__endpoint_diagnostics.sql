@@ -173,7 +173,21 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_snapshots (
 
     -- canonical-form payload hash: lowercase hex sha256 only.
     CONSTRAINT diag_snap_payload_hash_re
-        CHECK (payload_hash_sha256 ~ '^[0-9a-f]{64}$')
+        CHECK (payload_hash_sha256 ~ '^[0-9a-f]{64}$'),
+
+    -- Codex 019e82d7 iter-3 P1 #3 absorb: parity with V20 outdated-software
+    -- + V22 hotfix-posture FK shape — root tablo `endpoint_devices` ve
+    -- `endpoint_command_results` referansları ile tenant-scoped referential
+    -- integrity korunur (orphan snapshot + dangling source_command_result_id
+    -- engellenir).
+    CONSTRAINT diag_snap_device_fk
+        FOREIGN KEY (device_id, tenant_id)
+        REFERENCES endpoint_admin_service.endpoint_devices (id, tenant_id),
+
+    CONSTRAINT diag_snap_source_cmd_fk
+        FOREIGN KEY (source_command_result_id)
+        REFERENCES endpoint_admin_service.endpoint_command_results (id)
+        ON DELETE SET NULL
 );
 
 -- partial UNIQUE on source_command_result_id (one snapshot per command result,

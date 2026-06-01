@@ -526,25 +526,24 @@ class DiagnosticsPayloadPolicyTest {
     }
 
     @Test
-    void lastPollLatencyMsExcludedFromHash() {
-        // Codex 019e82d7 iter-2 #3: latency operational metric, not state
-        // identity — exclude from canonical hash so identical-state probes
-        // with different latencies don't churn history.
+    void lastPollLatencyMsIncludedInHash() {
+        // Codex 019e82d7 iter-3 P1 #4 revise: latency is INCLUDED in
+        // canonical hash so each fresh observation appends a new snapshot
+        // and /latest reflects the most recent measured latency.
         Map<String, Object> p1 = goldenWindows();
         Map<String, Object> p2 = goldenWindows();
         p2.put("lastPollLatencyMs", 999);
         assertThat(policy.projectAndHash(p1).payloadHashSha256())
-                .isEqualTo(policy.projectAndHash(p2).payloadHashSha256());
+                .isNotEqualTo(policy.projectAndHash(p2).payloadHashSha256());
     }
 
     @Test
-    void probeDurationMsExcludedFromHash() {
-        // Codex 019e82d7 iter-1 #3: timing-only, not state identity.
+    void probeDurationMsIncludedInHash() {
         Map<String, Object> p1 = goldenWindows();
         Map<String, Object> p2 = goldenWindows();
         p2.put("probeDurationMs", 9999);
         assertThat(policy.projectAndHash(p1).payloadHashSha256())
-                .isEqualTo(policy.projectAndHash(p2).payloadHashSha256());
+                .isNotEqualTo(policy.projectAndHash(p2).payloadHashSha256());
     }
 
     @Test
@@ -675,6 +674,137 @@ class DiagnosticsPayloadPolicyTest {
         assertThatThrownBy(() -> policy.projectAndHash(p))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("probeDurationMs must be >= 0");
+    }
+
+    // ------------------------------------------------------------------
+    // 11. Sanitize hook — Codex 019e82d7 iter-3 P1 #1 absorb
+    //     (type-confusion bypass closed)
+    // ------------------------------------------------------------------
+
+    @Test
+    void sanitizeAcceptsAbsentDiagnostics() {
+        // No diagnostics block — sanitize passes through unchanged.
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        inventory.put("software", List.of());
+        details.put("inventory", inventory);
+        assertThatCode(() -> policy.sanitize(details)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void sanitizeAcceptsValidNestedDiagnostics() {
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        inventory.put("diagnostics", goldenWindows());
+        details.put("inventory", inventory);
+        assertThatCode(() -> policy.sanitize(details)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void sanitizeRejectsDiagnosticsAsList() {
+        // Type-confusion bypass: a List would bypass the strict-allowlist
+        // if not sanitized at the entry layer.
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        inventory.put("diagnostics", List.of("not-a-map"));
+        details.put("inventory", inventory);
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be a Map or absent");
+    }
+
+    @Test
+    void sanitizeRejectsDiagnosticsAsString() {
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        inventory.put("diagnostics", "string-payload");
+        details.put("inventory", inventory);
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be a Map or absent");
+    }
+
+    @Test
+    void sanitizeRejectsTopLevelDiagnosticsAsList() {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("diagnostics", List.of("not-a-map"));
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be a Map or absent");
+    }
+
+    @Test
+    void sanitizeRejectsDiagnosticsWithForbiddenKey() {
+        Map<String, Object> diag = goldenWindows();
+        diag.put("apiURL", "https://leak.example.com");
+        Map<String, Object> details = new LinkedHashMap<>();
+        Map<String, Object> inventory = new LinkedHashMap<>();
+        inventory.put("diagnostics", diag);
+        details.put("inventory", inventory);
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("forbidden key");
+    }
+
+    // ------------------------------------------------------------------
+    // 12. Summary value-level denylist — Codex 019e82d7 iter-3 P1 #2
+    // ------------------------------------------------------------------
+
+    @Test
+    void lastErrorSummaryWithUrlRejected() {
+        Map<String, Object> p = goldenWindows();
+        p.put("lastError", Map.of(
+                "occurredAt", "2026-06-01T08:00:00Z",
+                "code", "X_Y_Z",
+                "summary", "see https://backend.example.com for details"));
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("forbidden value pattern");
+    }
+
+    @Test
+    void lastErrorSummaryWithBearerRejected() {
+        Map<String, Object> p = goldenWindows();
+        p.put("lastError", Map.of(
+                "occurredAt", "2026-06-01T08:00:00Z",
+                "code", "X_Y_Z",
+                "summary", "received Bearer abc123 in response"));
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("forbidden value pattern");
+    }
+
+    @Test
+    void lastErrorSummaryWithIpRejected() {
+        Map<String, Object> p = goldenWindows();
+        p.put("lastError", Map.of(
+                "occurredAt", "2026-06-01T08:00:00Z",
+                "code", "X_Y_Z",
+                "summary", "connection to 192.168.1.100 refused"));
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("forbidden value pattern");
+    }
+
+    @Test
+    void probeErrorSummaryWithTokenRejected() {
+        Map<String, Object> p = goldenWindows();
+        p.put("probeErrors", List.of(Map.of(
+                "code", "DNS_TIMEOUT",
+                "summary", "api_key=secret123")));
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("forbidden value pattern");
+    }
+
+    @Test
+    void probeErrorSummaryStaticBoundedTextOk() {
+        // Allowed static bounded operator phrasing.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeErrors", List.of(Map.of(
+                "code", "DNS_TIMEOUT",
+                "summary", "dns lookup exceeded 5 second deadline")));
+        assertThatCode(() -> policy.projectAndHash(p)).doesNotThrowAnyException();
     }
 
     // ------------------------------------------------------------------

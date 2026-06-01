@@ -44,6 +44,7 @@ public class EndpointAgentCommandService {
     private final DeviceHealthPayloadPolicy deviceHealthPayloadPolicy;
     private final OutdatedSoftwarePayloadPolicy outdatedSoftwarePayloadPolicy;
     private final HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy;
+    private final com.example.endpointadmin.security.DiagnosticsPayloadPolicy diagnosticsPayloadPolicy;
     private final EndpointSoftwareInventoryService softwareInventoryService;
     private final EndpointHardwareInventoryService hardwareInventoryService;
     private final EndpointDeviceHealthService deviceHealthService;
@@ -62,6 +63,7 @@ public class EndpointAgentCommandService {
                                        DeviceHealthPayloadPolicy deviceHealthPayloadPolicy,
                                        OutdatedSoftwarePayloadPolicy outdatedSoftwarePayloadPolicy,
                                        HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy,
+                                       com.example.endpointadmin.security.DiagnosticsPayloadPolicy diagnosticsPayloadPolicy,
                                        EndpointSoftwareInventoryService softwareInventoryService,
                                        EndpointHardwareInventoryService hardwareInventoryService,
                                        EndpointDeviceHealthService deviceHealthService,
@@ -79,6 +81,7 @@ public class EndpointAgentCommandService {
         this.deviceHealthPayloadPolicy = deviceHealthPayloadPolicy;
         this.outdatedSoftwarePayloadPolicy = outdatedSoftwarePayloadPolicy;
         this.hotfixPosturePayloadPolicy = hotfixPosturePayloadPolicy;
+        this.diagnosticsPayloadPolicy = diagnosticsPayloadPolicy;
         this.softwareInventoryService = softwareInventoryService;
         this.hardwareInventoryService = hardwareInventoryService;
         this.deviceHealthService = deviceHealthService;
@@ -200,6 +203,21 @@ public class EndpointAgentCommandService {
                 //    the transaction so neither endpoint_command_results
                 //    nor the hotfix-posture tables persist anything.
                 effectiveDetails = hotfixPosturePayloadPolicy.sanitize(effectiveDetails);
+                // 4b. Diagnostics validator/sanitizer (AG-038-be). Runs after
+                //    hotfix-posture sanitize on the sanitized form and
+                //    validates the details.inventory.diagnostics (+ redundant
+                //    top-level details.diagnostics) sub-tree against the
+                //    contract redaction boundary. Codex 019e82d7 iter-3 P1
+                //    #1 absorb: closes the type-confusion bypass where a
+                //    non-Map diagnostics value would skip AG-038 policy and
+                //    let the generic software policy miss the forbidden keys
+                //    (apiURL, host, credentialId, token, ...) the AG-038
+                //    contract guards against. A present-but-non-Map block or
+                //    any policy breach aborts the result submit with 400 and
+                //    rolls back the transaction so neither
+                //    endpoint_command_results nor the diagnostics tables
+                //    persist anything.
+                effectiveDetails = diagnosticsPayloadPolicy.sanitize(effectiveDetails);
                 // 5. Software validator (validate-only) on the sanitized form.
                 inventoryPayloadPolicy.validate(effectiveDetails);
             } catch (IllegalArgumentException ex) {

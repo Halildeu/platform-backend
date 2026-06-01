@@ -128,19 +128,29 @@ public class EndpointDiagnosticsService {
 
         UUID insertedId = repository.insertDiagnosticsSnapshotOnConflictDoNothing(snapshot);
         if (insertedId == null) {
-            // Targetless ON CONFLICT fired — sequential winner lookup.
-            if (commandResultId != null) {
-                Optional<EndpointDiagnosticsSnapshot> bySource =
-                        repository.findBySourceCommandResultId(commandResultId);
-                if (bySource.isPresent()) {
-                    log.debug("Diagnostics ingest no-op for command_result_id={} (lost source race)",
-                            commandResultId);
-                    return bySource.get();
-                }
-            }
+            // Targetless ON CONFLICT fired — Codex 019e82d7 iter-3 P2 #5
+            // absorb: source AND hash lookups BOTH run, fail loud if they
+            // resolve to different rows (impossible-invariant detector).
+            Optional<EndpointDiagnosticsSnapshot> bySource = commandResultId == null
+                    ? Optional.empty()
+                    : repository.findBySourceCommandResultId(commandResultId);
             Optional<EndpointDiagnosticsSnapshot> byHash =
                     repository.findFirstByTenantIdAndDeviceIdAndPayloadHashSha256OrderByCollectedAtDescCreatedAtDescIdDesc(
                             device.getTenantId(), device.getId(), payloadHash);
+            if (bySource.isPresent() && byHash.isPresent()
+                    && !bySource.get().getId().equals(byHash.get().getId())) {
+                // Different rows — should be physically impossible given
+                // the partial+full UNIQUE pair on the table.
+                throw new IllegalStateException(
+                        "diagnostics dual-winner invariant breach: source row "
+                                + bySource.get().getId() + " != hash row "
+                                + byHash.get().getId());
+            }
+            if (bySource.isPresent()) {
+                log.debug("Diagnostics ingest no-op for command_result_id={} (lost source race)",
+                        commandResultId);
+                return bySource.get();
+            }
             if (byHash.isPresent()) {
                 log.debug("Diagnostics ingest no-op for device_id={} (lost hash race, snapshot_id={})",
                         device.getId(), byHash.get().getId());

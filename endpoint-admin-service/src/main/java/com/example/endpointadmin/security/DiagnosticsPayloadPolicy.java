@@ -162,6 +162,18 @@ public class DiagnosticsPayloadPolicy {
             "password"
     );
 
+    /**
+     * Summary value-level denylist (Codex 019e82d7 iter-3 P1 #2 absorb).
+     * Defense-in-depth: even if agent regression accidentally includes
+     * a URL / token / authorization header in a static-phrased summary,
+     * the policy fail-closed REJECTS the payload. Matches the
+     * DeviceHealth/Outdated recursive secret-value reject pattern.
+     */
+    private static final Pattern SUMMARY_VALUE_DENYLIST_RE = Pattern.compile(
+            "(?i)(https?://|bearer\\s|authorization:|x-api-key|api[_-]?key|cookie:|session=|"
+                    + "password=|secret=|token=|private[_-]?key|client[_-]?secret|"
+                    + "\\.com|\\.net|\\.org|\\.io|\\.local|::ffff:|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})");
+
     private static final Pattern AGENT_VERSION_RE = Pattern.compile(
             "^(unknown|[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?(\\+[A-Za-z0-9.-]+)?)$");
 
@@ -185,6 +197,62 @@ public class DiagnosticsPayloadPolicy {
         ObjectMapper m = new ObjectMapper();
         m.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         this.canonicalMapper = m;
+    }
+
+    /**
+     * Pre-persist sanitizer hook — matches the AG-037
+     * {@code HotfixPosturePayloadPolicy.sanitize(details)} contract.
+     * Validates the {@code details.inventory.diagnostics} (and the
+     * redundant top-level {@code details.diagnostics}) sub-tree:
+     *
+     * <ul>
+     *   <li>Absent → unchanged.</li>
+     *   <li>Present + Map → projected via {@link #projectAndHash(Map)}
+     *       (full strict-allowlist enforcement) so any forbidden /
+     *       unknown key, type-confusion, redaction breach, regex
+     *       violation aborts the SUBMIT-result transaction with 400
+     *       BEFORE the result row or any artifact is persisted.</li>
+     *   <li>Present + NOT Map (List, String, scalar) → fail-closed
+     *       REJECT (Codex 019e82d7 iter-3 P1 #1 absorb: closes the
+     *       type-confusion bypass class that would otherwise let the
+     *       generic software policy miss AG-038-specific forbidden
+     *       keys).</li>
+     * </ul>
+     *
+     * <p>Returns the original details map verbatim; this method does
+     * NOT mutate the input. Used purely for validation in the
+     * pre-persist chain. The downstream ingest then calls
+     * {@link #projectAndHash} again to derive the canonical-form
+     * projection + hash; validating twice is cheap and keeps the
+     * security boundary independent of the ingest path.
+     */
+    public Map<String, Object> sanitize(Map<String, Object> details) {
+        if (details == null) {
+            return null;
+        }
+        Object inventoryNode = details.get("inventory");
+        if (inventoryNode instanceof Map<?, ?> inventoryMap) {
+            Object diagNode = inventoryMap.get("diagnostics");
+            validatePresentNode(diagNode, "$.inventory.diagnostics");
+        }
+        Object topNode = details.get("diagnostics");
+        validatePresentNode(topNode, "$.diagnostics");
+        return details;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void validatePresentNode(Object node, String path) {
+        if (node == null) {
+            return;
+        }
+        if (!(node instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException(
+                    "AG-038 diagnostics block at " + path
+                            + " must be a Map or absent (got " + node.getClass().getName() + ")");
+        }
+        // Full strict-allowlist validation (forbidden keys, required
+        // keys, regex, triad, etc.) — projectAndHash throws on any breach.
+        projectAndHash((Map<String, Object>) map);
     }
 
     /**
@@ -267,16 +335,20 @@ public class DiagnosticsPayloadPolicy {
         List<ProbeErrorProjection> probeErrors = projectProbeErrors(
                 diagnosticsBlock.getOrDefault("probeErrors", null));
 
-        // 7. Canonical-form hash projection (EXCLUDES lastPollLatencyMs
-        //    + probeDurationMs).
+        // 7. Canonical-form hash projection (Codex 019e82d7 iter-3 P1 #4
+        //    revise: INCLUDES lastPollLatencyMs + probeDurationMs so each
+        //    fresh observation appends a new snapshot and /latest always
+        //    reflects the most recent measurement).
         Map<String, Object> hashMap = new LinkedHashMap<>();
         hashMap.put("schemaVersion", schemaVersion);
         hashMap.put("supported", supported);
         hashMap.put("probeComplete", probeComplete);
         hashMap.put("agentVersion", agentVersion);
         hashMap.put("configHash", configHash);
+        hashMap.put("lastPollLatencyMs", lastPollLatencyMs);
         hashMap.put("backendDNSReachable", backendDnsReachable);
         hashMap.put("backendTLSValid", backendTlsValid);
+        hashMap.put("probeDurationMs", probeDurationMs);
         if (lastError != null) {
             Map<String, Object> leMap = new LinkedHashMap<>();
             leMap.put("occurredAt", DateTimeFormatter.ISO_INSTANT.format(lastError.occurredAt()));
@@ -352,6 +424,12 @@ public class DiagnosticsPayloadPolicy {
             throw new IllegalArgumentException(
                     "AG-038 diagnostics lastError.summary contains control character.");
         }
+        if (SUMMARY_VALUE_DENYLIST_RE.matcher(summary).find()) {
+            // Codex 019e82d7 iter-3 P1 #2: summary value-level redaction —
+            // raw URL / host / token / authorization / IP / domain reject.
+            throw new IllegalArgumentException(
+                    "AG-038 diagnostics lastError.summary contains forbidden value pattern (URL/token/host/IP).");
+        }
         return new LastErrorProjection(occurredAt, code, summary);
     }
 
@@ -417,6 +495,12 @@ public class DiagnosticsPayloadPolicy {
                         throw new IllegalArgumentException(
                                 "AG-038 diagnostics probeErrors[" + i
                                         + "].summary contains control character.");
+                    }
+                    if (SUMMARY_VALUE_DENYLIST_RE.matcher(s).find()) {
+                        // Codex 019e82d7 iter-3 P1 #2 absorb.
+                        throw new IllegalArgumentException(
+                                "AG-038 diagnostics probeErrors[" + i
+                                        + "].summary contains forbidden value pattern (URL/token/host/IP).");
                     }
                     summary = s;
                 }
