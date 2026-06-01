@@ -21,8 +21,11 @@ import org.springframework.util.MultiValueMap;
  * <ul>
  *   <li>{@code style-api-paged-v1} — user-service / permission-service
  *       style: {@code page}, {@code pageSize}, {@code search}, {@code sort}
- *       (comma+semicolon), advancedFilter passthrough as individual
- *       query params keyed by the colId.</li>
+ *       (comma+semicolon), and a single {@code advancedFilter} JSON query
+ *       param containing the caller-supplied downstream-shaped payload
+ *       verbatim. Caller (PR-D2.1c2 dispatcher) translates AG-Grid filter
+ *       model → {@code {logic, conditions: [{field, op, value}]}} BEFORE
+ *       constructing {@link RemoteReportRequest}.</li>
  * </ul>
  *
  * <p>Future shapes (not yet implemented): {@code style-api-paged-v2},
