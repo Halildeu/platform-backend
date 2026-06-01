@@ -37,8 +37,9 @@ import java.util.UUID;
  * backendTLSValid} (bool), {@code lastError {occurredAt, code, summary}}
  * optional + bounded ≤200 chars CRLF-stripped, {@code probeErrors[]} each
  * {code, summary?} bounded enum code + bounded text summary, and
- * {@code probeDurationMs} int (timing-only, EXCLUDED from canonical-form
- * hash). {@code DiagnosticsPayloadPolicy} fail-closed REJECTS forbidden
+ * {@code probeDurationMs} int (INCLUDED in canonical-form hash so a
+ * fresh observation appends a new snapshot per Codex iter-3 P1 #4).
+ * {@code DiagnosticsPayloadPolicy} fail-closed REJECTS forbidden
  * keys (raw apiURL, host, credentialId, token, apiKey, bearer,
  * authorization, cookie, session, secret, password) BEFORE persist.
  *
@@ -138,10 +139,12 @@ public class EndpointDiagnosticsSnapshot {
     private Integer probeDurationMs;
 
     /** SHA-256 of the canonical-form policy-projected diagnostics map.
-     *  Stored as 64-char lowercase hex. EXCLUDES wire {@code probeDurationMs}
-     *  and {@code lastPollLatencyMs} (timing/operational metric); INCLUDES
-     *  {@code lastError.occurredAt} (operational evidence per Codex
-     *  019e82d7 iter-1 #4 / iter-2 #2). */
+     *  Stored as 64-char lowercase hex. INCLUDES every persistable field
+     *  (schemaVersion, supported, probeComplete, agentVersion, configHash,
+     *  lastPollLatencyMs, probeDurationMs, backendDNSReachable,
+     *  backendTLSValid, lastError triad, probeErrors) per Codex iter-3
+     *  P1 #4 revise. {@code lastError.occurredAt} is INCLUDED as
+     *  operational evidence (per Codex 019e82d7 iter-1 #4 / iter-2 #2). */
     @Column(name = "payload_hash_sha256", nullable = false, length = 64)
     private String payloadHashSha256;
 

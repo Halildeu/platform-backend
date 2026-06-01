@@ -267,12 +267,12 @@ public class DiagnosticsPayloadPolicy {
      * carrying:
      * <ol>
      *   <li>the LinkedHashMap canonical-form projection (deterministic
-     *       insertion order; hash-domain only — EXCLUDES lastPollLatencyMs
+     *       insertion order; INCLUDES every persistable field per Codex iter-3 P1 #4 — lastPollLatencyMs
      *       and probeDurationMs);</li>
      *   <li>the SHA-256 lowercase-hex hash of the canonical JSON bytes;</li>
      *   <li>the persistable scalars + child probe-error list (full
      *       projection including lastPollLatencyMs / probeDurationMs for
-     *       persistence; just not for hashing).</li>
+     *       persistence AND hashing per Codex iter-3 P1 #4 revise).</li>
      * </ol>
      *
      * @throws IllegalArgumentException if the payload is null, the block

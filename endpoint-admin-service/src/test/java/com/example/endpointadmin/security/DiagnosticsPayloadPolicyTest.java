@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>agentVersion regex (semver+optional pre-release/build / "unknown").</li>
  *   <li>lastError triad strict (all 3 keys; nullable as whole block).</li>
  *   <li>probeErrors enum codes + bounded summary + cap.</li>
- *   <li>Canonical-form hash determinism + EXCLUDE drift fields.</li>
+ *   <li>Canonical-form hash determinism + INCLUDE all persistable fields per Codex iter-3 P1 #4.</li>
  *   <li>Control-char REJECT (CR/LF/tab/other).</li>
  * </ol>
  */
@@ -514,7 +514,7 @@ class DiagnosticsPayloadPolicyTest {
     }
 
     // ------------------------------------------------------------------
-    // 9. Canonical-form hash determinism + EXCLUDED drift fields
+    // 9. Canonical-form hash determinism + INCLUDED persistable fields (iter-3 P1 #4)
     // ------------------------------------------------------------------
 
     @Test

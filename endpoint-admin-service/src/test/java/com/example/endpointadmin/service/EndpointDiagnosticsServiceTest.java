@@ -33,9 +33,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code EndpointHotfixPostureServiceTest} H2 slice. Pins:
  *
  * <ul>
- *   <li>Canonical hash EXCLUDES lastPollLatencyMs + probeDurationMs
- *       (drift fields) — same posture with different latency/duration
- *       dedupes via hash to the same snapshot.</li>
+ *   <li>Canonical hash INCLUDES every persistable field per Codex iter-3 P1 #4 (lastPollLatencyMs + probeDurationMs
+ *       included per iter-3 P1 #4) — same posture with different
+ *       latency/duration appends new snapshot.</li>
  *   <li>Canonical hash INCLUDES lastError + probeErrors + configHash
  *       + agentVersion + reachability — change in any appends a NEW
  *       snapshot.</li>

@@ -37,7 +37,7 @@
 --     ≤200 chars CRLF-stripped + tab/control-char-stripped (policy strict)
 --   - probeErrors[] each {code, summary?} where code is bounded enum
 --     `^[A-Z][A-Z0-9_]{2,64}$` and summary same bounded-text discipline
---   - probeDurationMs int (timing-only, EXCLUDED from canonical-form hash)
+--   - probeDurationMs int (INCLUDED in canonical-form hash per Codex iter-3 P1 #4)
 --
 -- The DiagnosticsPayloadPolicy fail-closed REJECTS forbidden keys (raw
 -- apiURL, host, credentialId, token, apiKey, bearer, authorization, cookie,
@@ -92,7 +92,9 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_snapshots (
     -- live agent self-report (redacted; configHash is one-way)
     agent_version               VARCHAR(64)              NOT NULL,
     config_hash                 VARCHAR(64)              NOT NULL,
-    -- operational metric (persisted for latest UI, EXCLUDED from hash)
+    -- operational metric (persisted; INCLUDED in canonical-form hash so
+    -- a fresh observation with different latency appends a new snapshot
+    -- per Codex iter-3 P1 #4 revise)
     last_poll_latency_ms        INTEGER                  NOT NULL,
     -- backend reachability snapshot
     backend_dns_reachable       BOOLEAN                  NOT NULL,
@@ -101,7 +103,9 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_snapshots (
     last_error_occurred_at      TIMESTAMP WITH TIME ZONE NULL,
     last_error_code             VARCHAR(64)              NULL,
     last_error_summary          VARCHAR(200)             NULL,
-    -- probe execution timing (persisted, EXCLUDED from hash)
+    -- probe execution timing (persisted, INCLUDED in canonical-form hash
+    -- so a fresh observation with different duration appends a new
+    -- snapshot per Codex iter-3 P1 #4 revise)
     probe_duration_ms           INTEGER                  NOT NULL,
     -- canonical-form payload hash (lowercase hex)
     payload_hash_sha256         CHAR(64)                 NOT NULL,
