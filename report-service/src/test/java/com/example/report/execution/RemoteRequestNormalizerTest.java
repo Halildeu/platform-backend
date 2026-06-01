@@ -78,13 +78,14 @@ class RemoteRequestNormalizerTest {
     @Test
     @DisplayName("advancedFilter serialized as single JSON-string param matching user-service {logic, conditions} (Codex iter-4 PARTIAL absorb)")
     void advancedFilterAsJsonStringLogicConditions() {
-        // Codex 019e8306 iter-4: caller (PR-D2.1c2 dispatcher) supplies
-        // downstream-shaped payload. user-service style-api-paged-v1 expects
-        // {logic, conditions} format (see UserControllerV1.decodeAdvancedFilter).
-        // This normalizer is transport-only; serializes verbatim.
+        // Codex 019e8306 iter-5 absorb: user-service contract is
+        // {logic, conditions:[{field, op, value}]} (NOT 'operator' — see
+        // UserControllerV1.java:640 + UserSecurityIntegrationTest.java:237).
+        // The normalizer is transport-only; serializes verbatim. PR-D2.1c2
+        // dispatcher translates AG-Grid filter model → this shape.
         var conditions = List.of(
-                Map.of("field", "name", "operator", "contains", "value", "ali"),
-                Map.of("field", "status", "operator", "eq", "value", "ACTIVE"));
+                Map.of("field", "email", "op", "contains", "value", "ali@example.com"),
+                Map.of("field", "role", "op", "equals", "value", "ADMIN"));
         var advancedFilter = new java.util.LinkedHashMap<String, Object>();
         advancedFilter.put("logic", "and");
         advancedFilter.put("conditions", conditions);
@@ -102,12 +103,12 @@ class RemoteRequestNormalizerTest {
         assertThat(params).doesNotContainKey("conditions");
 
         String json = params.getFirst("advancedFilter");
-        // user-service contract roundtrip-able
+        // user-service UserControllerV1.decodeAdvancedFilter contract roundtrip-able
         assertThat(json).contains("\"logic\":\"and\"");
         assertThat(json).contains("\"conditions\":[");
-        assertThat(json).contains("\"field\":\"name\"");
-        assertThat(json).contains("\"operator\":\"contains\"");
-        assertThat(json).contains("\"value\":\"ali\"");
+        assertThat(json).contains("\"field\":\"email\"");
+        assertThat(json).contains("\"op\":\"contains\"");
+        assertThat(json).contains("\"value\":\"ali@example.com\"");
     }
 
     @Test

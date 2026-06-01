@@ -33,7 +33,9 @@ import java.util.Map;
  *                          expected format BEFORE this DTO is constructed.
  *                          For user-service / permission-service
  *                          {@code style-api-paged-v1} shape that is
- *                          {@code {logic: "and"|"or", conditions: [{field, operator, value}, ...]}}.
+ *                          {@code {logic: "and"|"or", conditions: [{field, op, value}, ...]}}
+ *                          (matches {@code UserControllerV1.decodeAdvancedFilter}
+ *                          parser contract).
  *                          See ADR-0015 PR-D2.1c2 spec for the AG-Grid →
  *                          {logic, conditions} translation table.
  *                          {@link RemoteRequestNormalizer} serializes this
