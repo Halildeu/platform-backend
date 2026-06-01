@@ -367,11 +367,26 @@ class AppControlPayloadPolicyTest {
 
     @Test
     void probeErrorCodeAllEightAccepted() {
+        // All 8 codes must round-trip through projectAndHash. NO_EVIDENCE
+        // requires probeComplete=false (iter-3 P2 invariant); the other
+        // 7 codes are non-critical and accepted alongside the golden
+        // probeComplete=true.
         for (String code : List.of("NO_EVIDENCE", "REGISTRY_DENIED",
                 "FILESYSTEM_DENIED", "CIP_POLICIES_DIR_UNREADABLE",
                 "APPLOCKER_KEY_UNREADABLE", "APP_ID_SVC_QUERY_FAILED",
                 "WDAC_SCALAR_UNREADABLE", "PROBE_ERRORS_TRUNCATED")) {
             Map<String, Object> p = goldenWindows();
+            if ("NO_EVIDENCE".equals(code)) {
+                p.put("supported", false);
+                p.put("probeComplete", false);
+                p.put("wdacQueryable", false);
+                p.put("appLockerQueryable", false);
+                p.put("wdacBootEnforcementPresent", null);
+                p.put("wdacActiveCipPolicyCount", null);
+                p.put("wdacLegacySipolicyPresent", null);
+                p.put("wdacMultiPolicyMode", null);
+                p.put("appLockerAppIdSvcPresent", null);
+            }
             p.put("probeErrors", List.of(Map.of("code", code)));
             assertThatCode(() -> policy.projectAndHash(p))
                     .as("code %s should be accepted", code)
@@ -390,9 +405,11 @@ class AppControlPayloadPolicyTest {
 
     @Test
     void probeErrorSourceLowercaseAccepted() {
+        // Iter-3 P2 absorb: use FILESYSTEM_DENIED (non-critical code)
+        // so probeComplete=true (from goldenWindows) is compatible.
         for (String src : List.of("wdac", "appLocker", "filesystem")) {
             Map<String, Object> p = goldenWindows();
-            p.put("probeErrors", List.of(Map.of("code", "NO_EVIDENCE", "source", src)));
+            p.put("probeErrors", List.of(Map.of("code", "FILESYSTEM_DENIED", "source", src)));
             assertThatCode(() -> policy.projectAndHash(p))
                     .as("source %s should be accepted", src)
                     .doesNotThrowAnyException();
@@ -401,8 +418,10 @@ class AppControlPayloadPolicyTest {
 
     @Test
     void probeErrorSourceUppercaseRejected() {
+        // Iter-3 P2 absorb: FILESYSTEM_DENIED to keep probeComplete
+        // invariant happy; reject targets the source case.
         Map<String, Object> p = goldenWindows();
-        p.put("probeErrors", List.of(Map.of("code", "NO_EVIDENCE", "source", "WDAC")));
+        p.put("probeErrors", List.of(Map.of("code", "FILESYSTEM_DENIED", "source", "WDAC")));
         assertThatThrownBy(() -> policy.projectAndHash(p))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("source");
@@ -441,10 +460,13 @@ class AppControlPayloadPolicyTest {
 
     @Test
     void probeErrorsCap16Enforced() {
+        // Codex iter-3 P2 absorb: use FILESYSTEM_DENIED (non-critical) so
+        // the cap check fires before the NO_EVIDENCE invariant. Cap
+        // semantic is what we're asserting here.
         Map<String, Object> p = goldenWindows();
         List<Map<String, Object>> errs = new ArrayList<>();
         for (int i = 0; i < 17; i++) {
-            errs.add(Map.of("code", "NO_EVIDENCE"));
+            errs.add(Map.of("code", "FILESYSTEM_DENIED"));
         }
         p.put("probeErrors", errs);
         assertThatThrownBy(() -> policy.projectAndHash(p))
@@ -454,15 +476,48 @@ class AppControlPayloadPolicyTest {
 
     @Test
     void probeErrorsAtCapAccepted() {
+        // Codex iter-3 P2 absorb: use FILESYSTEM_DENIED (a non-decision-
+        // critical error code the agent may emit alongside
+        // probeComplete=true). NO_EVIDENCE would now be rejected
+        // here because it is the agent's "overall probe failed" sentinel.
         Map<String, Object> p = goldenWindows();
         List<Map<String, Object>> errs = new ArrayList<>();
         for (int i = 0; i < 16; i++) {
-            errs.add(Map.of("code", "NO_EVIDENCE"));
+            errs.add(Map.of("code", "FILESYSTEM_DENIED"));
         }
         p.put("probeErrors", errs);
-        // probeComplete=true is OK here per implication; non-critical errors only.
         var proj = policy.projectAndHash(p);
         assertThat(proj.probeErrors()).hasSize(16);
+    }
+
+    @Test
+    void probeCompleteTrueWithNoEvidenceRejected() {
+        // Codex 019e840e iter-3 P2 absorb: NO_EVIDENCE is the agent's
+        // "overall probe failed" sentinel; accepting it with
+        // probeComplete=true would persist a contradictory snapshot.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeErrors", List.of(Map.of("code", "NO_EVIDENCE")));
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("NO_EVIDENCE");
+    }
+
+    @Test
+    void probeCompleteFalseWithNoEvidenceAccepted() {
+        Map<String, Object> p = goldenWindows();
+        p.put("supported", false);
+        p.put("probeComplete", false);
+        p.put("wdacQueryable", false);
+        p.put("appLockerQueryable", false);
+        p.put("wdacBootEnforcementPresent", null);
+        p.put("wdacActiveCipPolicyCount", null);
+        p.put("wdacLegacySipolicyPresent", null);
+        p.put("wdacMultiPolicyMode", null);
+        p.put("appLockerAppIdSvcPresent", null);
+        p.put("probeErrors", List.of(Map.of("code", "NO_EVIDENCE")));
+        var proj = policy.projectAndHash(p);
+        assertThat(proj.probeComplete()).isFalse();
+        assertThat(proj.probeErrors().get(0).code()).isEqualTo("NO_EVIDENCE");
     }
 
     @Test

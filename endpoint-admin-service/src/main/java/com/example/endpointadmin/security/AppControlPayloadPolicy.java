@@ -286,15 +286,29 @@ public class AppControlPayloadPolicy {
         }
         List<ProbeErrorProjection> probeErrors = projectProbeErrors(probeErrorsRaw);
 
-        // 6. probeComplete invariant (Codex iter-2 #3 absorb):
+        // 6. probeComplete invariant (Codex iter-2 #3 + iter-3 P2 absorb):
         //    probeComplete=true REQUIRES supported && wdacQueryable
-        //    && appLockerQueryable. Contract-compliant implication.
+        //    && appLockerQueryable AND no NO_EVIDENCE row in
+        //    probeErrors. NO_EVIDENCE is the agent's "overall probe
+        //    failed" sentinel (agent non-Windows stub emits it with
+        //    supported=false + probeComplete=false), so accepting it
+        //    alongside probeComplete=true would persist an internally
+        //    contradictory snapshot.
         if (probeComplete && !(supported && wdacQueryable && appLockerQueryable)) {
             throw new IllegalArgumentException(
                     "AG-041 appControl probeComplete=true requires supported && wdacQueryable && appLockerQueryable"
                             + " (got supported=" + supported
                             + ", wdacQueryable=" + wdacQueryable
                             + ", appLockerQueryable=" + appLockerQueryable + ")");
+        }
+        if (probeComplete) {
+            for (ProbeErrorProjection pe : probeErrors) {
+                if ("NO_EVIDENCE".equals(pe.code())) {
+                    throw new IllegalArgumentException(
+                            "AG-041 appControl probeComplete=true is incompatible with NO_EVIDENCE probe error"
+                                    + " (agent contract: NO_EVIDENCE = overall probe failed)");
+                }
+            }
         }
 
         // 7. Canonical hash projection — deterministic key order +
