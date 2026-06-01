@@ -81,8 +81,8 @@ BEGIN;
 -- SNAPSHOT ROOT TABLE
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE endpoint_admin_service.endpoint_diagnostics_snapshots (
-    id                          UUID                     NOT NULL DEFAULT gen_random_uuid(),
+CREATE TABLE endpoint_diagnostics_snapshots (
+    id                          UUID                     NOT NULL,
     tenant_id                   UUID                     NOT NULL,
     device_id                   UUID                     NOT NULL,
     source_command_result_id    UUID                     NULL,
@@ -194,37 +194,37 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_snapshots (
     -- delete sets source pointer NULL (history-preserving).
     CONSTRAINT diag_snap_device_fk
         FOREIGN KEY (device_id, tenant_id)
-        REFERENCES endpoint_admin_service.endpoint_devices (id, tenant_id)
+        REFERENCES endpoint_devices (id, tenant_id)
         ON DELETE CASCADE,
 
     CONSTRAINT diag_snap_source_cmd_fk
         FOREIGN KEY (source_command_result_id)
-        REFERENCES endpoint_admin_service.endpoint_command_results (id)
+        REFERENCES endpoint_command_results (id)
         ON DELETE SET NULL
 );
 
 -- partial UNIQUE on source_command_result_id (one snapshot per command result,
 -- NULL allowed for back-fill ingests).
 CREATE UNIQUE INDEX diag_snap_source_cmd_partial_uq
-    ON endpoint_admin_service.endpoint_diagnostics_snapshots (source_command_result_id)
+    ON endpoint_diagnostics_snapshots (source_command_result_id)
     WHERE source_command_result_id IS NOT NULL;
 
 -- full UNIQUE on (tenant_id, device_id, payload_hash_sha256) for canonical-
 -- form idempotency.
 CREATE UNIQUE INDEX diag_snap_tenant_device_hash_uq
-    ON endpoint_admin_service.endpoint_diagnostics_snapshots
+    ON endpoint_diagnostics_snapshots
        (tenant_id, device_id, payload_hash_sha256);
 
 -- per-device timeline lookup (latest + history paging).
 CREATE INDEX diag_snap_tenant_device_collected_at_ix
-    ON endpoint_admin_service.endpoint_diagnostics_snapshots
+    ON endpoint_diagnostics_snapshots
        (tenant_id, device_id, collected_at DESC, created_at DESC, id DESC);
 
 -- ---------------------------------------------------------------------------
 -- CHILD: PROBE ERRORS
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE endpoint_admin_service.endpoint_diagnostics_probe_errors (
+CREATE TABLE endpoint_diagnostics_probe_errors (
     id              UUID         NOT NULL DEFAULT gen_random_uuid(),
     snapshot_id     UUID         NOT NULL,
     tenant_id       UUID         NOT NULL,
@@ -236,7 +236,7 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_probe_errors (
     CONSTRAINT diag_pe_snapshot_ordinal_uq UNIQUE (snapshot_id, row_ordinal),
 
     CONSTRAINT diag_pe_snapshot_fk FOREIGN KEY (snapshot_id, tenant_id)
-        REFERENCES endpoint_admin_service.endpoint_diagnostics_snapshots (id, tenant_id)
+        REFERENCES endpoint_diagnostics_snapshots (id, tenant_id)
         ON DELETE CASCADE,
 
     CONSTRAINT diag_pe_row_ordinal_ck CHECK (row_ordinal >= 0),
@@ -257,7 +257,7 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_probe_errors (
 );
 
 CREATE INDEX diag_pe_tenant_snapshot_ix
-    ON endpoint_admin_service.endpoint_diagnostics_probe_errors
+    ON endpoint_diagnostics_probe_errors
        (tenant_id, snapshot_id, row_ordinal);
 
 COMMIT;
