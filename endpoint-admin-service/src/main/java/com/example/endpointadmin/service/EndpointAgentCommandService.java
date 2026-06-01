@@ -46,6 +46,7 @@ public class EndpointAgentCommandService {
     private final HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy;
     private final com.example.endpointadmin.security.DiagnosticsPayloadPolicy diagnosticsPayloadPolicy;
     private final com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy;
+    private final com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy;
     private final EndpointSoftwareInventoryService softwareInventoryService;
     private final EndpointHardwareInventoryService hardwareInventoryService;
     private final EndpointDeviceHealthService deviceHealthService;
@@ -53,6 +54,7 @@ public class EndpointAgentCommandService {
     private final EndpointHotfixPostureService hotfixPostureService;
     private final EndpointDiagnosticsService diagnosticsService;
     private final EndpointServicesService servicesService;
+    private final EndpointStartupExposureService startupExposureService;
     private final EndpointInstallAuditService installAuditService;
     private final Clock clock;
     private final Duration claimTtl;
@@ -67,6 +69,7 @@ public class EndpointAgentCommandService {
                                        HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy,
                                        com.example.endpointadmin.security.DiagnosticsPayloadPolicy diagnosticsPayloadPolicy,
                                        com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy,
+                                       com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy,
                                        EndpointSoftwareInventoryService softwareInventoryService,
                                        EndpointHardwareInventoryService hardwareInventoryService,
                                        EndpointDeviceHealthService deviceHealthService,
@@ -74,6 +77,7 @@ public class EndpointAgentCommandService {
                                        EndpointHotfixPostureService hotfixPostureService,
                                        EndpointDiagnosticsService diagnosticsService,
                                        EndpointServicesService servicesService,
+                                       EndpointStartupExposureService startupExposureService,
                                        EndpointInstallAuditService installAuditService,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.claim-ttl-seconds:300}") long claimTtlSeconds) {
@@ -87,6 +91,7 @@ public class EndpointAgentCommandService {
         this.hotfixPosturePayloadPolicy = hotfixPosturePayloadPolicy;
         this.diagnosticsPayloadPolicy = diagnosticsPayloadPolicy;
         this.servicesPayloadPolicy = servicesPayloadPolicy;
+        this.startupExposurePayloadPolicy = startupExposurePayloadPolicy;
         this.softwareInventoryService = softwareInventoryService;
         this.hardwareInventoryService = hardwareInventoryService;
         this.deviceHealthService = deviceHealthService;
@@ -94,6 +99,7 @@ public class EndpointAgentCommandService {
         this.hotfixPostureService = hotfixPostureService;
         this.diagnosticsService = diagnosticsService;
         this.servicesService = servicesService;
+        this.startupExposureService = startupExposureService;
         this.installAuditService = installAuditService;
         this.clock = clock;
         this.claimTtl = Duration.ofSeconds(Math.max(30L, claimTtlSeconds));
@@ -232,6 +238,15 @@ public class EndpointAgentCommandService {
                 //    canonical-order validate-then-sort + value-level
                 //    denylist + type-confusion REJECT.
                 effectiveDetails = servicesPayloadPolicy.sanitize(effectiveDetails);
+                // 4d. Startup-exposure validator/sanitizer (AG-040-be). Runs
+                //    after services sanitize on the sanitized form and
+                //    validates the details.inventory.startupExposure
+                //    sub-tree against the contract redaction boundary.
+                //    Codex 019e8387 plan iter-1 AGREE: strict-allowlist +
+                //    10-anchor Location enum + name full-path denylist +
+                //    SUMMARY_VALUE_DENYLIST_RE reuse + type-confusion
+                //    REJECT.
+                effectiveDetails = startupExposurePayloadPolicy.sanitize(effectiveDetails);
                 // 5. Software validator (validate-only) on the sanitized form.
                 inventoryPayloadPolicy.validate(effectiveDetails);
             } catch (IllegalArgumentException ex) {
@@ -383,6 +398,20 @@ public class EndpointAgentCommandService {
             if (EndpointServicesService.hasServicesBlock(effectiveDetails)) {
                 try {
                     servicesService.ingest(
+                            command.getDevice(), command, result, effectiveDetails);
+                } catch (IllegalArgumentException ex) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            ex.getMessage());
+                }
+            }
+            // AG-040-be startup-exposure ingest — same transaction,
+            // same sanitized effectiveDetails. Only runs when the
+            // sanitized payload carries a details.inventory.startupExposure
+            // block (opt-in; absent unless backend requested
+            // includeStartupExposure=true).
+            if (EndpointStartupExposureService.hasStartupExposureBlock(effectiveDetails)) {
+                try {
+                    startupExposureService.ingest(
                             command.getDevice(), command, result, effectiveDetails);
                 } catch (IllegalArgumentException ex) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
