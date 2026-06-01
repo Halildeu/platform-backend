@@ -75,7 +75,9 @@
 -- payload key named `collectedAt` would be REJECTED by the strict-allowlist
 -- policy (no silent acceptance of unknown keys).
 
-BEGIN;
+-- NOTE: No explicit BEGIN/COMMIT — Flyway wraps each migration in its own
+-- transaction. Explicit BEGIN inside a Flyway script triggers
+-- "transaction in progress" warning and leaves nested txn state inconsistent.
 
 -- ---------------------------------------------------------------------------
 -- SNAPSHOT ROOT TABLE
@@ -259,5 +261,3 @@ CREATE TABLE endpoint_diagnostics_probe_errors (
 CREATE INDEX diag_pe_tenant_snapshot_ix
     ON endpoint_diagnostics_probe_errors
        (tenant_id, snapshot_id, row_ordinal);
-
-COMMIT;
