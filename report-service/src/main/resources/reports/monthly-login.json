@@ -2,8 +2,8 @@
   "contractVersion": 1,
   "key": "monthly-login",
   "version": "1.0",
-  "title": "Aylık Giriş Olayları",
-  "description": "Aylık kullanıcı oturum / giriş olayları görünümü. PR-D2.4 dördüncü LIVE remote-http modülü — permission-service /api/audit/events üzerinden çalışır (paged-events-total + audit-events-v1). Codex 019e83fd 'aggregation gerekli' uyarısı kabul edilerek option (a) seçildi: filter-only liste; aggregation (aylık sayım / top-user / time-series) bir sonraki sprint mart layer'a (PR-D2.5+) bırakıldı. Kullanıcı tekil action filtresi (örn. SESSION_CREATED veya LOGIN) ve/veya dateFrom/dateTo aralığı ile listeyi daraltır; audit-events-v1 çoklu OR koşulu desteklemediği için iki action aynı anda filtrelenemez.",
+  "title": "Giriş & Oturum Denetim Olayları",
+  "description": "Kullanıcı giriş / oturum eylemleri (action) ve servis bazlı denetim olaylarının grid filtreli listesi. PR-D2.4 dördüncü LIVE remote-http modülü — permission-service /api/audit/events üzerinden çalışır (paged-events-total + audit-events-v1). Codex 019e83fd + 019e84bb absorb: option (a) filter-only liste; aggregation (aylık sayım / top-user / time-series) sonraki sprint mart layer'a (PR-D2.5+) bırakıldı. AY/DATE bazlı görünüm contract-level normalize (timestamp grid filter → dateFrom/dateTo query param) RemoteRequestNormalizer'ın audit-events-v1 widening sprintinde gelecek; bu PR rate-limited path ile login/session action filter'ını ve search arama'sını exercise eder. Yeni route segment 'monthly-login' frontend tarafı bağımsız capability; mevcut 'monthly-login-summary' static modülünü değiştirmez (deliberate new path, migration değil).",
   "category": "Güvenlik",
   "schemaMode": "static",
   "tenantBoundary": {
