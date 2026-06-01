@@ -100,9 +100,11 @@ class EndpointAgentCommandServiceInstallBranchTest {
     @Mock private com.example.endpointadmin.security.HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy;
     @Mock private com.example.endpointadmin.security.DiagnosticsPayloadPolicy diagnosticsPayloadPolicy;
     @Mock private com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy;
+    @Mock private com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy;
     @Mock private EndpointHotfixPostureService hotfixPostureService;
     @Mock private EndpointDiagnosticsService diagnosticsService;
     @Mock private EndpointServicesService servicesService;
+    @Mock private EndpointStartupExposureService startupExposureService;
 
     private EndpointAgentCommandService service;
 
@@ -123,6 +125,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
                 hotfixPosturePayloadPolicy,
                 diagnosticsPayloadPolicy,
                 servicesPayloadPolicy,
+                startupExposurePayloadPolicy,
                 softwareInventoryService,
                 hardwareInventoryService,
                 deviceHealthService,
@@ -130,6 +133,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
                 hotfixPostureService,
                 diagnosticsService,
                 servicesService,
+                startupExposureService,
                 installAuditService,
                 fixed,
                 300L);
