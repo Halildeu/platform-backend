@@ -133,10 +133,15 @@ CREATE TABLE endpoint_startup_exposure_apps (
         CHECK (probe_origin IN ('REGISTRY', 'SCHEDULED_TASK')),
 
     -- Name bounded length + control-char reject (DB secondary guard).
+    -- Codex 019e83a8 iter-1 P2#8 absorb: use POSIX named class
+    -- `[[:cntrl:]]` which is the canonical PG-portable form for
+    -- C0 + DEL control characters (covers 0x00-0x1F + 0x7F). The
+    -- previous `[\r\n\t\x00-\x1F\x7F]` form relied on escape semantics
+    -- that vary by PG client and was not unit-tested.
     CONSTRAINT se_app_name_len_ck
         CHECK (char_length(name) BETWEEN 1 AND 256),
     CONSTRAINT se_app_name_no_ctrl_ck
-        CHECK (name !~ '[\r\n\t\x00-\x1F\x7F]')
+        CHECK (name !~ '[[:cntrl:]]')
 );
 
 -- Index for "which devices have entry X in autorun anchor Y" fleet queries.
@@ -168,14 +173,18 @@ CREATE TABLE endpoint_startup_exposure_probe_errors (
 
     CONSTRAINT se_pe_row_ordinal_ck CHECK (row_ordinal >= 0),
 
-    -- ProbeError code bounded enum (9 codes).
+    -- ProbeError code bounded enum (10 codes; NAME_VALUE_REDACTED
+    -- added in Codex 019e83a8 iter-1 P1#2 absorb — agent emits this
+    -- code when omitting a startup entry whose name carries a
+    -- path/command fragment).
     CONSTRAINT se_pe_code_ck
         CHECK (code IN ('UNSUPPORTED_PLATFORM', 'REGISTRY_QUERY_FAILED',
                         'TASK_SCHEDULER_UNAVAILABLE',
                         'TASK_SCHEDULER_QUERY_FAILED',
                         'STARTUP_FOLDER_UNREADABLE',
                         'RDP_PROBE_FAILED', 'FIREWALL_PROBE_FAILED',
-                        'ENTRY_CAP_APPLIED', 'NO_EVIDENCE')),
+                        'ENTRY_CAP_APPLIED', 'NO_EVIDENCE',
+                        'NAME_VALUE_REDACTED')),
 
     -- source allowlist-only when present (autorun anchor enum reuse).
     CONSTRAINT se_pe_source_allowlist_ck

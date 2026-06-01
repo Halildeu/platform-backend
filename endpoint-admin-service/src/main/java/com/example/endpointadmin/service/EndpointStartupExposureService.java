@@ -69,9 +69,22 @@ public class EndpointStartupExposureService {
             Optional<EndpointStartupExposureSnapshot> existing =
                     repository.findBySourceCommandResultId(commandResultId);
             if (existing.isPresent()) {
+                // Codex 019e83a8 iter-1 P2#6 absorb: tenant/device
+                // cross-check on early short-circuit too — defends
+                // against a reused source_command_result_id whose
+                // snapshot belongs to a different tenant/device.
+                EndpointStartupExposureSnapshot bs = existing.get();
+                if (!bs.getTenantId().equals(device.getTenantId())
+                        || !bs.getDeviceId().equals(device.getId())) {
+                    throw new IllegalStateException(
+                            "startup-exposure source command-result tenant/device mismatch on early lookup: snapshot "
+                                    + bs.getId() + " (tenant=" + bs.getTenantId()
+                                    + ", device=" + bs.getDeviceId() + ") vs request (tenant="
+                                    + device.getTenantId() + ", device=" + device.getId() + ")");
+                }
                 log.debug("Startup-exposure ingest no-op for command_result_id={} (already processed)",
                         commandResultId);
-                return existing.get();
+                return bs;
             }
         }
 

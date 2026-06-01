@@ -445,6 +445,114 @@ class StartupExposurePayloadPolicyTest {
                 .hasMessageContaining("must be a Map or absent");
     }
 
+    @Test
+    void sanitizeRejectsExplicitNullTopLevel() {
+        // Codex 019e83a8 iter-1 P1#3 absorb: previously the get()-based
+        // sanitizer silently accepted explicit null for the
+        // startupExposure key because get() returns null for both
+        // absent and null-valued. containsKey() now disambiguates.
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("startupExposure", null);
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be a Map or omitted, not null");
+    }
+
+    @Test
+    void sanitizeRejectsExplicitNullNested() {
+        Map<String, Object> inv = new LinkedHashMap<>();
+        inv.put("startupExposure", null);
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("inventory", inv);
+        assertThatThrownBy(() -> policy.sanitize(details))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be a Map or omitted, not null");
+    }
+
+    // ─── 7b. Derived invariants (iter-1 P1#4 absorb) ─────────────
+
+    @Test
+    void probeCompleteTrueWithProbeErrorsRejected() {
+        // Codex 019e83a8 iter-1 P1#4 absorb: hostile or buggy agent
+        // could send probeComplete=true alongside ENTRY_CAP_APPLIED.
+        // Backend re-derives the invariant and REJECTS the inconsistency.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeComplete", true);
+        p.put("probeErrors", List.of(Map.of("code", "ENTRY_CAP_APPLIED")));
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("probeComplete invariant breach");
+    }
+
+    @Test
+    void probeCompleteFalseWithoutErrorsRejected() {
+        // Inverse: probeComplete=false but no errors AND supported=true.
+        // Either the agent is lying or something else is wrong; backend
+        // refuses to persist this evidence either way.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeComplete", false);
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("probeComplete invariant breach");
+    }
+
+    @Test
+    void unsupportedWithNonEmptyAppsRejected() {
+        // Codex 019e83a8 iter-1 P1#4 absorb: a non-Windows agent
+        // (supported=false) MUST not ship any startup apps.
+        Map<String, Object> p = goldenWindows();
+        p.put("supported", false);
+        p.put("probeComplete", false);
+        p.put("probeErrors", List.of(Map.of("code", "UNSUPPORTED_PLATFORM")));
+        // startupApps still has 3 entries from goldenWindows.
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MUST be empty when supported=false");
+    }
+
+    // ─── 7c. Number coercion drift (iter-1 P2#7 absorb) ──────────
+
+    @Test
+    void probeDurationMsAsDecimalRejected() {
+        // JSON decimal (250.0) reaches the Map as Double. We refuse
+        // to silently round; integer-typed counts only.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeDurationMs", 250.0);
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be an integer");
+    }
+
+    @Test
+    void probeDurationMsAsLargeLongRejected() {
+        // Long overflow caught & re-thrown as IllegalArgumentException
+        // so policy stage chain (which catches only IAE) doesn't leak
+        // a raw unchecked ArithmeticException to callers.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeDurationMs", 9_999_999_999L);
+        assertThatThrownBy(() -> policy.projectAndHash(p))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("out of int range");
+    }
+
+    // ─── 7d. NAME_VALUE_REDACTED enum extension (iter-1 P1#2) ─────
+
+    @Test
+    void probeErrorNameValueRedactedAccepted() {
+        // The agent-side rollout emits this code when omitting an
+        // entry whose name carries path/command fragments. Backend
+        // enum MUST accept this new code.
+        Map<String, Object> p = goldenWindows();
+        p.put("probeComplete", false);
+        p.put("probeErrors", List.of(Map.of(
+                "code", "NAME_VALUE_REDACTED",
+                "source", "HKLM_RUN",
+                "summary", "Autorun entry name redacted (path or command fragment)")));
+        var proj = policy.projectAndHash(p);
+        assertThat(proj.probeErrors()).hasSize(1);
+        assertThat(proj.probeErrors().get(0).code()).isEqualTo("NAME_VALUE_REDACTED");
+    }
+
     // ─── 8. Canonical hash stability ─────────────────────────────
 
     @Test

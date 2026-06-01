@@ -105,7 +105,12 @@ public class StartupExposurePayloadPolicy {
             "TASK_SCHEDULER_UNAVAILABLE", "TASK_SCHEDULER_QUERY_FAILED",
             "STARTUP_FOLDER_UNREADABLE",
             "RDP_PROBE_FAILED", "FIREWALL_PROBE_FAILED",
-            "ENTRY_CAP_APPLIED", "NO_EVIDENCE"
+            "ENTRY_CAP_APPLIED", "NO_EVIDENCE",
+            // Codex 019e83a8 iter-1 P1#2 absorb (agent-side rollout):
+            // agent omits entries with attacker-controllable name
+            // (drive letter / UNC / unix path / exe ext / control
+            // char) and emits this typed code instead.
+            "NAME_VALUE_REDACTED"
     );
 
     private static final Set<String> FORBIDDEN_TOP_KEYS = Set.of(
@@ -154,6 +159,11 @@ public class StartupExposurePayloadPolicy {
      * Closes the type-confusion bypass class (non-Map startupExposure
      * value skips this policy → generic software policy misses forbidden
      * keys).
+     *
+     * <p>Codex 019e83a8 iter-1 P1#3 absorb: explicit {@code null} value
+     * for the startupExposure key is REJECTED (was previously silently
+     * accepted because {@code get()} returns {@code null} both for
+     * "absent" and "explicit null"; {@code containsKey()} disambiguates).
      */
     public Map<String, Object> sanitize(Map<String, Object> details) {
         if (details == null) {
@@ -161,25 +171,31 @@ public class StartupExposurePayloadPolicy {
         }
         Object inventoryNode = details.get("inventory");
         if (inventoryNode instanceof Map<?, ?> inventoryMap) {
-            Object seNode = inventoryMap.get("startupExposure");
-            validatePresentNode(seNode, "$.inventory.startupExposure");
+            validateBlockSlot(inventoryMap, "startupExposure", "$.inventory.startupExposure");
         }
-        Object topNode = details.get("startupExposure");
-        validatePresentNode(topNode, "$.startupExposure");
+        validateBlockSlot(details, "startupExposure", "$.startupExposure");
         return details;
     }
 
     @SuppressWarnings("unchecked")
-    private void validatePresentNode(Object node, String path) {
-        if (node == null) {
+    private void validateBlockSlot(Map<?, ?> map, String key, String path) {
+        if (!map.containsKey(key)) {
+            // Absent — OK (omitempty).
             return;
         }
-        if (!(node instanceof Map<?, ?> map)) {
+        Object node = map.get(key);
+        if (node == null) {
+            // Explicit null — REJECT (Codex iter-1 P1#3 absorb).
+            throw new IllegalArgumentException(
+                    "AG-040 startupExposure block at " + path
+                            + " must be a Map or omitted, not null");
+        }
+        if (!(node instanceof Map<?, ?> mapNode)) {
             throw new IllegalArgumentException(
                     "AG-040 startupExposure block at " + path
                             + " must be a Map or absent (got " + node.getClass().getName() + ")");
         }
-        projectAndHash((Map<String, Object>) map);
+        projectAndHash((Map<String, Object>) mapNode);
     }
 
     public Projection projectAndHash(Map<String, Object> startupExposureBlock) {
@@ -226,15 +242,30 @@ public class StartupExposurePayloadPolicy {
                             + "]: " + probeDurationMs);
         }
 
-        // 5. StartupApps list validation.
+        // 5. StartupApps list validation. supported=false MUST imply
+        //    empty apps + matching scalars (Codex iter-1 P1#4 absorb —
+        //    hostile or buggy agent could send unsupported=true apps).
         List<AppProjection> apps = projectStartupApps(
-                startupExposureBlock.get("startupApps"));
+                startupExposureBlock.get("startupApps"), supported);
 
         // 6. Optional probeErrors (absent ACCEPT, explicit null REJECT, non-List REJECT).
         List<ProbeErrorProjection> probeErrors = projectProbeErrors(
                 startupExposureBlock.containsKey("probeErrors")
                         ? startupExposureBlock.get("probeErrors") : null,
                 startupExposureBlock.containsKey("probeErrors"));
+
+        // 6b. Derived invariant enforcement (Codex iter-1 P1#4 absorb):
+        //     a hostile or buggy agent could send `probeComplete=true`
+        //     even when ENTRY_CAP_APPLIED or any other probe error is
+        //     in the payload. Re-derive the contract invariant from
+        //     trust-boundary inputs (supported, probeErrors) and
+        //     compare with the claimed probeComplete.
+        boolean derivedComplete = supported && probeErrors.isEmpty();
+        if (probeComplete != derivedComplete) {
+            throw new IllegalArgumentException(
+                    "AG-040 startupExposure probeComplete invariant breach: claimed=" + probeComplete
+                            + " derived=(supported && probeErrors.isEmpty())=" + derivedComplete);
+        }
 
         // 7. Canonical hash projection (deterministic key order).
         Map<String, Object> hashMap = new LinkedHashMap<>();
@@ -273,13 +304,20 @@ public class StartupExposurePayloadPolicy {
     }
 
     @SuppressWarnings("unchecked")
-    private List<AppProjection> projectStartupApps(Object raw) {
+    private List<AppProjection> projectStartupApps(Object raw, boolean supported) {
         if (raw == null) {
             throw new IllegalArgumentException("AG-040 startupApps is null (must be array).");
         }
         if (!(raw instanceof List<?> rawList)) {
             throw new IllegalArgumentException(
                     "AG-040 startupApps must be a List (got " + raw.getClass().getName() + ")");
+        }
+        if (!supported && !rawList.isEmpty()) {
+            // Codex iter-1 P1#4 absorb: non-Windows / unsupported agent
+            // MUST not ship any startup apps. Reject hard.
+            throw new IllegalArgumentException(
+                    "AG-040 startupApps MUST be empty when supported=false; got "
+                            + rawList.size() + " entries");
         }
         if (rawList.size() > STARTUP_APPS_MAX) {
             throw new IllegalArgumentException(
@@ -441,18 +479,23 @@ public class StartupExposurePayloadPolicy {
         if (raw == null) {
             throw new IllegalArgumentException("AG-040 startupExposure " + key + " is null.");
         }
+        // Codex 019e83a8 iter-1 P2#7 absorb: drift on number coercion
+        //   (1) JSON decimal (`250.0`) — REJECT (must be Long/Int)
+        //   (2) Long overflow — IllegalArgumentException (not the
+        //       unchecked ArithmeticException leaked by toIntExact)
         if (raw instanceof Integer i) return i;
-        if (raw instanceof Long l) return Math.toIntExact(l);
         if (raw instanceof Short s) return s.intValue();
-        if (raw instanceof Number n) {
-            double d = n.doubleValue();
-            int iv = n.intValue();
-            if (d != iv) {
+        if (raw instanceof Long l) {
+            try {
+                return Math.toIntExact(l);
+            } catch (ArithmeticException ex) {
                 throw new IllegalArgumentException(
-                        "AG-040 startupExposure " + key + " must be an integer (got: " + raw + ")");
+                        "AG-040 startupExposure " + key + " out of int range: " + l, ex);
             }
-            return iv;
         }
+        // Reject Double / Float / BigDecimal etc. — agent ships
+        // integer-typed counts; decimal coercion is an unexpected
+        // shape we refuse to silently round.
         throw new IllegalArgumentException(
                 "AG-040 startupExposure " + key + " must be an integer (got: " + raw.getClass() + ")");
     }
