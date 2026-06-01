@@ -75,6 +75,20 @@ class EndpointOutdatedSoftwareDiffServiceTest {
     }
 
     @Test
+    void possiblyTruncatedDerivedFromMaxUpgradeNotJustFlag() {
+        // Codex iter-3 P1: upgradeCount >= maxUpgrade implies possiblyTruncated
+        // even when upgradeTruncated=false. OutdatedSnapshotTruncation is the
+        // single source of truth.
+        EndpointOutdatedSoftwareSnapshot to = snapshot(2, 512, false, pkg("Foo.Bar", "1.0", "2.0"));
+        to.setMaxUpgrade(512);
+        mockRepoReturnsList(List.of(to));
+        AdminOutdatedSoftwareDiffResponse response = service.diffLatest(context, DEVICE);
+        assertThat(response.status())
+                .isEqualTo(AdminOutdatedSoftwareDiffResponse.DiffStatus.INSUFFICIENT_HISTORY);
+        assertThat(response.toPossiblyTruncated()).isTrue();
+    }
+
+    @Test
     void noChange_whenIdenticalPackageMap() {
         EndpointOutdatedSoftwareSnapshot from = snapshot(1, 1, false, pkg("Foo.Bar", "1.0", "2.0"));
         EndpointOutdatedSoftwareSnapshot to = snapshot(2, 1, false, pkg("Foo.Bar", "1.0", "2.0"));

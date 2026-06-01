@@ -60,7 +60,7 @@ public class EndpointOutdatedSoftwareDiffService {
                     to.getId(),
                     to.getCollectedAt(),
                     to.getUpgradeCount(),
-                    to.getUpgradeTruncated());
+                    OutdatedSnapshotTruncation.isPossiblyTruncated(to));
         }
 
         EndpointOutdatedSoftwareSnapshot from = latestTwo.get(1);
@@ -123,7 +123,8 @@ public class EndpointOutdatedSoftwareDiffService {
                     from.getId(), to.getId(),
                     from.getCollectedAt(), to.getCollectedAt(),
                     from.getUpgradeCount(), to.getUpgradeCount(),
-                    from.getUpgradeTruncated(), to.getUpgradeTruncated());
+                    OutdatedSnapshotTruncation.isPossiblyTruncated(from),
+                    OutdatedSnapshotTruncation.isPossiblyTruncated(to));
         }
 
         return new AdminOutdatedSoftwareDiffResponse(
@@ -132,7 +133,8 @@ public class EndpointOutdatedSoftwareDiffService {
                 from.getId(), to.getId(),
                 from.getCollectedAt(), to.getCollectedAt(),
                 from.getUpgradeCount(), to.getUpgradeCount(),
-                from.getUpgradeTruncated(), to.getUpgradeTruncated(),
+                OutdatedSnapshotTruncation.isPossiblyTruncated(from),
+                OutdatedSnapshotTruncation.isPossiblyTruncated(to),
                 added, removed, versionChanged, availableVersionBumped);
     }
 
