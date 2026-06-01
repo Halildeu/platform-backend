@@ -110,7 +110,7 @@ CREATE TABLE endpoint_diagnostics_snapshots (
     -- snapshot per Codex iter-3 P1 #4 revise)
     probe_duration_ms           INTEGER                  NOT NULL,
     -- canonical-form payload hash (lowercase hex)
-    payload_hash_sha256         CHAR(64)                 NOT NULL,
+    payload_hash_sha256         VARCHAR(64)              NOT NULL,
     -- server-controlled timestamps (NOT from payload)
     collected_at                TIMESTAMP WITH TIME ZONE NOT NULL,
     created_at                  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
