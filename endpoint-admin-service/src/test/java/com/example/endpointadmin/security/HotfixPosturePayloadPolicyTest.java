@@ -537,6 +537,64 @@ class HotfixPosturePayloadPolicyTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    // ------------------------------------------------------------------
+    // 10. P2 follow-up — kbIds false-positive guard + notificationLevel
+    //     admit cases (Codex 019e822b iter-1 P2).
+    // ------------------------------------------------------------------
+
+    @Test
+    void kbIdsKeyIsNotMistakenForForbiddenSidSubstring() {
+        // Defensive: the raw-subtree denylist includes "sid" as a
+        // substring (covers wisid/sidewinder/userSid). The wire's
+        // legitimate `kbIds` key contains "ids" not "sid" — should NOT
+        // be rejected. This test pins that "kbids".contains("sid") is
+        // false (lowercased substring scan: "ids" matches but NOT "sid").
+        Map<String, Object> hp = goldenWithPending();
+        // Sanity: pending row uses kbIds — this is the canonical contract
+        // key. Must survive sanitize.
+        assertThatCode(() -> policy.sanitize(wrap(hp))).doesNotThrowAnyException();
+        Map<String, Object> sanitized = policy.sanitize(wrap(hp));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> projected =
+                (List<Map<String, Object>>) hpOf(sanitized).get("pendingUpdates");
+        assertThat(projected).hasSize(1);
+        @SuppressWarnings("unchecked")
+        List<String> kbIds = (List<String>) projected.get(0).get("kbIds");
+        assertThat(kbIds).containsExactly("KB5036899");
+    }
+
+    @Test
+    void notificationLevelZeroIsAccepted() {
+        // GPO variant '0' (Microsoft AU policy doc: "0" = automatic
+        // updates not configured per machine policy). Bounded regex
+        // accepts.
+        Map<String, Object> hp = golden();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ah = (Map<String, Object>) hp.get("agentHealth");
+        ah.put("notificationLevel", "0");
+        assertThatCode(() -> policy.sanitize(wrap(hp))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void notificationLevelPaddedDoubleZeroIsAccepted() {
+        // GPO variant '00' (some legacy registry exports pad).
+        Map<String, Object> hp = golden();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ah = (Map<String, Object>) hp.get("agentHealth");
+        ah.put("notificationLevel", "00");
+        assertThatCode(() -> policy.sanitize(wrap(hp))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void notificationLevelFourDigitIsAccepted() {
+        // Upper bound of regex `^[0-9]{1,4}$` — '1000' permitted.
+        Map<String, Object> hp = golden();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ah = (Map<String, Object>) hp.get("agentHealth");
+        ah.put("notificationLevel", "1000");
+        assertThatCode(() -> policy.sanitize(wrap(hp))).doesNotThrowAnyException();
+    }
+
     @Test
     void absentHotfixPostureBlockIsValidOptOut() {
         // No hotfixPosture at all — service ingest hook gates with
