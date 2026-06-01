@@ -99,6 +99,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
     // EndpointAgentCommandService constructor.
     @Mock private com.example.endpointadmin.security.HotfixPosturePayloadPolicy hotfixPosturePayloadPolicy;
     @Mock private EndpointHotfixPostureService hotfixPostureService;
+    @Mock private EndpointDiagnosticsService diagnosticsService;
 
     private EndpointAgentCommandService service;
 
@@ -122,6 +123,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
                 deviceHealthService,
                 outdatedSoftwareService,
                 hotfixPostureService,
+                diagnosticsService,
                 installAuditService,
                 fixed,
                 300L);

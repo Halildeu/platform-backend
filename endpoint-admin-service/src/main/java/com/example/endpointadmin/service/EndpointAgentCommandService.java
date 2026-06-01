@@ -49,6 +49,7 @@ public class EndpointAgentCommandService {
     private final EndpointDeviceHealthService deviceHealthService;
     private final EndpointOutdatedSoftwareService outdatedSoftwareService;
     private final EndpointHotfixPostureService hotfixPostureService;
+    private final EndpointDiagnosticsService diagnosticsService;
     private final EndpointInstallAuditService installAuditService;
     private final Clock clock;
     private final Duration claimTtl;
@@ -66,6 +67,7 @@ public class EndpointAgentCommandService {
                                        EndpointDeviceHealthService deviceHealthService,
                                        EndpointOutdatedSoftwareService outdatedSoftwareService,
                                        EndpointHotfixPostureService hotfixPostureService,
+                                       EndpointDiagnosticsService diagnosticsService,
                                        EndpointInstallAuditService installAuditService,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.claim-ttl-seconds:300}") long claimTtlSeconds) {
@@ -82,6 +84,7 @@ public class EndpointAgentCommandService {
         this.deviceHealthService = deviceHealthService;
         this.outdatedSoftwareService = outdatedSoftwareService;
         this.hotfixPostureService = hotfixPostureService;
+        this.diagnosticsService = diagnosticsService;
         this.installAuditService = installAuditService;
         this.clock = clock;
         this.claimTtl = Duration.ofSeconds(Math.max(30L, claimTtlSeconds));
@@ -315,6 +318,25 @@ public class EndpointAgentCommandService {
             if (EndpointHotfixPostureService.hasHotfixPostureBlock(effectiveDetails)) {
                 try {
                     hotfixPostureService.ingest(
+                            command.getDevice(), command, result, effectiveDetails);
+                } catch (IllegalArgumentException ex) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            ex.getMessage());
+                }
+            }
+            // AG-038-be agent self-diagnostics ingest — same transaction,
+            // same sanitized effectiveDetails. Only runs when the
+            // sanitized payload actually carries a
+            // details.inventory.diagnostics block (opt-in; absent unless
+            // backend requested includeDiagnostics=true). Dual idempotency
+            // (Codex 019e82d7 iter-2): targetless ON CONFLICT DO NOTHING +
+            // sequential winner lookup races both source_command_result_id
+            // and (tenant, device, hash) UNIQUEs transaction-cleanly. NO
+            // exception swallow — any policy-bypass IllegalStateException
+            // rolls full tx back.
+            if (EndpointDiagnosticsService.hasDiagnosticsBlock(effectiveDetails)) {
+                try {
+                    diagnosticsService.ingest(
                             command.getDevice(), command, result, effectiveDetails);
                 } catch (IllegalArgumentException ex) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
