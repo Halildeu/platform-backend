@@ -46,11 +46,15 @@ class ReportContractGateTest {
         // PR-D2.4 (ADR-0015): bumped 35 → 36 for monthly-login
         // (fourth remote-http, paged-events-total — Codex 019e83fd
         // "aggregation gerekli" warning kabul: option (a) filter-only).
+        // PR-D2.5 (ADR-0015): bumped 36 → 37 for weekly-audit-digest
+        // (fifth remote-http, paged-events-total — same Codex
+        // "aggregation gerekli" warning kabul; option (a) filter-only;
+        // gerçek digest mart layer post-D2.5 sprint).
         ContractReport report = ReportContractGate.create().gate();
 
         assertThat(report.reportCount())
-                .as("All 36 migrated reports plus exceptions.json (excluded) discovered by sweep")
-                .isEqualTo(36);
+                .as("All 37 migrated reports plus exceptions.json (excluded) discovered by sweep")
+                .isEqualTo(37);
 
         // Codex iter-4 §1d-AGREE: gate must produce zero unsuppressed FAILs.
         // Codex 019e3f5c: all governance debt is rule-closed (RC-001 carve-out
