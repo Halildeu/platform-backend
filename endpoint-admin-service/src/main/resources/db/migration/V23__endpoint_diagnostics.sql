@@ -51,16 +51,22 @@
 -- failed ingest). Consumers MUST NOT render an incomplete probe as "agent
 -- healthy".
 --
--- CANONICAL-FORM PAYLOAD HASH SCOPE (matches policy projection):
---   INCLUDED in hash bytes:
+-- CANONICAL-FORM PAYLOAD HASH SCOPE (matches policy projection, Codex
+-- 019e82d7 iter-3 P1 #4 revise):
+--   INCLUDED in hash bytes (every persistable field):
 --     schemaVersion, supported, probeComplete, agentVersion, configHash
---     (as-is, lowercase hex), backendDNSReachable, backendTLSValid,
---     lastError (full triad with UTC-normalized occurredAt),
---     probeErrors (ordered list with codes + summaries).
---   EXCLUDED from hash bytes (drift / timing class — persisted only):
---     lastPollLatencyMs (varies between identical-state probes; Codex
---     019e82d7 iter-2 #3), probeDurationMs (probe execution timing, not
---     state identity; Codex 019e82d7 iter-1 #3).
+--     (as-is, lowercase hex), lastPollLatencyMs, probeDurationMs,
+--     backendDNSReachable, backendTLSValid, lastError (full triad with
+--     UTC-normalized occurredAt), probeErrors (ordered list with codes +
+--     summaries).
+--   EXCLUDED from hash bytes: none. Each fresh observation appends a
+--   new snapshot and /latest reflects the most recent measured latency
+--   and duration. Iter-2's "exclude timing" heuristic was reversed in
+--   iter-3 P1 #4 because it caused /latest staleness on
+--   state-A→B→A and latency-only-change cases.
+-- Pure-dedupe / retry-idempotency: identical canonical bytes (same
+-- latency + duration + every other field) map to the existing snapshot
+-- via the pre-probe + (tenant, device, hash) UNIQUE.
 --
 -- COLLECTED_AT IS SERVER-CONTROLLED (Codex 019e82d7 iter-1 #4): the
 -- snapshot collected_at column is populated from
@@ -175,14 +181,17 @@ CREATE TABLE endpoint_admin_service.endpoint_diagnostics_snapshots (
     CONSTRAINT diag_snap_payload_hash_re
         CHECK (payload_hash_sha256 ~ '^[0-9a-f]{64}$'),
 
-    -- Codex 019e82d7 iter-3 P1 #3 absorb: parity with V20 outdated-software
-    -- + V22 hotfix-posture FK shape — root tablo `endpoint_devices` ve
-    -- `endpoint_command_results` referansları ile tenant-scoped referential
-    -- integrity korunur (orphan snapshot + dangling source_command_result_id
-    -- engellenir).
+    -- Codex 019e82d7 iter-3 P1 #3 + iter-4 P2 absorb: parity with V20
+    -- outdated-software + V22 hotfix-posture FK shape — root tablo
+    -- `endpoint_devices` ve `endpoint_command_results` referansları ile
+    -- tenant-scoped referential integrity korunur (orphan snapshot +
+    -- dangling source_command_result_id engellenir). Device delete
+    -- cascades to diagnostics history (V20/V22 parity); command-result
+    -- delete sets source pointer NULL (history-preserving).
     CONSTRAINT diag_snap_device_fk
         FOREIGN KEY (device_id, tenant_id)
-        REFERENCES endpoint_admin_service.endpoint_devices (id, tenant_id),
+        REFERENCES endpoint_admin_service.endpoint_devices (id, tenant_id)
+        ON DELETE CASCADE,
 
     CONSTRAINT diag_snap_source_cmd_fk
         FOREIGN KEY (source_command_result_id)

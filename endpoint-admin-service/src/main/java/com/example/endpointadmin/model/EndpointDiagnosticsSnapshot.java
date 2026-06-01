@@ -51,16 +51,21 @@ import java.util.UUID;
  * {@code source_command_result_id} partial UNIQUE AND
  * {@code (tenant, device, payload_hash)} full UNIQUE legs race-cleanly.
  *
- * <h3>Canonical-form payload hash scope</h3>
+ * <h3>Canonical-form payload hash scope (Codex 019e82d7 iter-3 P1 #4 revise)</h3>
  *
- * <p>INCLUDED in hash (state identity):
+ * <p>INCLUDED in canonical hash bytes (every persistable field):
  * {@code schemaVersion, supported, probeComplete, agentVersion, configHash,
- * backendDNSReachable, backendTLSValid, lastError (full triad with
- * UTC-normalized occurredAt), probeErrors (ordered list)}.
+ * lastPollLatencyMs, probeDurationMs, backendDNSReachable, backendTLSValid,
+ * lastError (full triad with UTC-normalized occurredAt), probeErrors
+ * (ordered list)}.
  *
- * <p>EXCLUDED from hash (drift / timing — persisted only):
- * {@code lastPollLatencyMs} (varies between identical-state probes per Codex
- * 019e82d7 iter-2 #3), {@code probeDurationMs} (probe execution timing).
+ * <p>EXCLUDED: none. Each fresh observation appends a new snapshot and
+ * {@code /latest} reflects the most recent measured latency/duration.
+ * Iter-2's "exclude latency/duration" heuristic was reversed in iter-3
+ * because it caused {@code /latest} staleness on state-A→B→A and
+ * latency-only-change cases. Retry-idempotent replay of identical
+ * canonical bytes is still de-duped via the pre-probe and the
+ * {@code (tenant, device, hash)} UNIQUE.
  */
 @Entity
 @Table(name = "endpoint_diagnostics_snapshots",

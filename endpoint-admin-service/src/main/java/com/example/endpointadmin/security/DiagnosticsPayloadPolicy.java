@@ -43,18 +43,25 @@ import com.fasterxml.jackson.databind.SerializationFeature;
  * ({@code lastError, probeErrors}) normalize on policy projection:
  * lastError → null, probeErrors → empty list.
  *
- * <h3>Canonical-form payload hash</h3>
+ * <h3>Canonical-form payload hash (Codex 019e82d7 iter-3 P1 #4 revise)</h3>
  *
- * <p>SHA-256 over a deterministic LinkedHashMap projection:
+ * <p>SHA-256 over a deterministic LinkedHashMap projection over ALL
+ * persistable fields. Iter-3 absorb: lastPollLatencyMs and
+ * probeDurationMs are INCLUDED so each fresh observation appends a
+ * new snapshot and {@code /latest} reflects the most recent measured
+ * latency/duration. Iter-2's "exclude timing" heuristic caused
+ * state-A→B→A and latency-only-change cases to leave {@code /latest}
+ * stale on the prior snapshot.
+ *
  * <ul>
- *   <li><strong>INCLUDED</strong>: schemaVersion, supported, probeComplete,
- *       agentVersion, configHash (as-is, lowercase hex or "unknown"),
+ *   <li><strong>INCLUDED in canonical bytes</strong>: schemaVersion,
+ *       supported, probeComplete, agentVersion, configHash (as-is,
+ *       lowercase hex or "unknown"), lastPollLatencyMs, probeDurationMs,
  *       backendDNSReachable, backendTLSValid, lastError (full triad with
  *       UTC-normalized occurredAt), probeErrors (ordered list, codes +
  *       summaries).</li>
- *   <li><strong>EXCLUDED</strong>: lastPollLatencyMs (operational metric
- *       per Codex 019e82d7 iter-2 #3), probeDurationMs (probe execution
- *       timing per Codex 019e82d7 iter-1 #3).</li>
+ *   <li><strong>EXCLUDED</strong> from hash: none. Identical canonical
+ *       bytes are retry-idempotent (existing snapshot returned).</li>
  * </ul>
  *
  * <h3>Redaction boundary (security invariant — DO NOT widen)</h3>

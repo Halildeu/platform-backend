@@ -31,12 +31,15 @@ import java.util.UUID;
  * (source FIRST, THEN hash; NOT mutually exclusive). Fail loud when
  * neither lookup resolves the winner (Codex 019e82d7 iter-2 #9).
  *
- * <h3>Canonical-form payload hash scope</h3>
+ * <h3>Canonical-form payload hash scope (Codex 019e82d7 iter-3 P1 #4 revise)</h3>
  *
  * <p>Computed by {@link DiagnosticsPayloadPolicy#projectAndHash(Map)}.
- * INCLUDES: schemaVersion, supported, probeComplete, agentVersion,
- * configHash, backendDNSReachable, backendTLSValid, lastError (UTC-
- * normalized), probeErrors. EXCLUDES: lastPollLatencyMs, probeDurationMs.
+ * INCLUDES every persistable field: schemaVersion, supported,
+ * probeComplete, agentVersion, configHash, lastPollLatencyMs,
+ * probeDurationMs, backendDNSReachable, backendTLSValid, lastError
+ * (UTC-normalized), probeErrors. EXCLUDES: none. Fresh observations
+ * (different latency/duration) append new snapshots; identical
+ * canonical bytes are retry-idempotent (same row returned).
  *
  * <h3>collectedAt provenance</h3>
  *
