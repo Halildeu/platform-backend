@@ -88,6 +88,39 @@ class AuditEventDigestServiceTest {
     }
 
     @Test
+    void acceptsExactlyMaxRangeDays() {
+        // Codex 019e8721 iter-2 P2 absorb: exact boundary tests.
+        // 366 days EXACT must be accepted.
+        Instant exactlyMax = DATE_FROM.plus(java.time.Duration.ofDays(
+                AuditEventDigestService.MAX_RANGE_DAYS));
+        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Collections.emptyList());
+        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Collections.emptyList());
+        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Collections.emptyList());
+        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(Collections.emptyList());
+
+        // Should NOT throw.
+        AuditWeeklyDigestResponse response = service.aggregate(
+                DATE_FROM, exactlyMax, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT);
+        assertThat(response.weeks()).isEmpty();
+    }
+
+    @Test
+    void rejectsMaxRangeDaysPlusOneSecond() {
+        // Codex 019e8721 iter-2 P2 absorb: 366d+1s MUST reject (previously
+        // passed due to toDays() truncation; now uses Duration.compareTo).
+        Instant tooFarByOneSecond = DATE_FROM.plus(java.time.Duration.ofDays(
+                AuditEventDigestService.MAX_RANGE_DAYS)).plusSeconds(1);
+        assertThatThrownBy(() -> service.aggregate(
+                DATE_FROM, tooFarByOneSecond, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("Date range exceeds max");
+    }
+
+    @Test
     void rejectsTopKOutOfBoundsLow() {
         assertThatThrownBy(() -> service.aggregate(
                 DATE_FROM, DATE_TO, null, null, null, null, null, 0, AuditReadScope.GENERIC_AUDIT))

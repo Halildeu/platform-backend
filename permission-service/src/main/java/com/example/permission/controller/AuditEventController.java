@@ -60,7 +60,7 @@ public class AuditEventController {
      *
      * <p>Optional filters:
      * <ul>
-     *   <li>{@code action} / {@code service} / {@code level} / {@code userEmail} / {@code search}</li>
+     *   <li>{@code action} / {@code service} / {@code level} / {@code user} (email or numeric userId) / {@code search}</li>
      *   <li>{@code topK} (default 5, max 20)</li>
      * </ul>
      *

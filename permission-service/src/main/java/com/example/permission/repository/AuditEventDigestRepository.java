@@ -16,7 +16,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * PR-D2.5a (Codex 019e8708 plan + 019e8721 post-impl REVISE absorb):
@@ -229,8 +228,14 @@ public class AuditEventDigestRepository {
                                      AuditReadScope scope) {
         query.setParameter("dateFrom", Timestamp.from(dateFrom));
         query.setParameter("dateTo", Timestamp.from(dateTo));
-        Set<String> impersonationActions = ImpersonationActionPredicate.allActions();
-        query.setParameter("impersonationActions", impersonationActions);
+        // P2 absorb (Codex 019e8721 iter-2): use Hibernate setParameterList
+        // for IN/NOT IN collection binding (Set<String> via setParameter is
+        // unreliable across JPA providers; List + setParameterList is the
+        // canonical Hibernate path).
+        java.util.List<String> impersonationActions =
+                java.util.List.copyOf(ImpersonationActionPredicate.allActions());
+        query.unwrap(org.hibernate.query.NativeQuery.class)
+                .setParameterList("impersonationActions", impersonationActions);
         if (action != null && !action.isBlank()) {
             query.setParameter("action", action);
         }
