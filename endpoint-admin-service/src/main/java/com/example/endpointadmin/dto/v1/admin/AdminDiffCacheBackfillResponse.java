@@ -8,7 +8,7 @@ import java.util.UUID;
  * BE-024c v2-c-pre-2-C-B {@code POST /api/v1/admin/diff-cache/backfill}
  * response body. Shape matches Codex 019e89a3 iter-2 absorb on
  * checked/changed semantics — {@code checked} is every refresh attempt,
- * {@code changed} is rows the writer actually mutated, {@code skippedStale}
+ * {@code changed} is rows the writer actually mutated, {@code unchanged}
  * is the source-pair guard reject (zero-churn idempotency), {@code errors}
  * is per-device exceptions caught at the batch boundary.
  *
@@ -22,7 +22,7 @@ public record AdminDiffCacheBackfillResponse(
         String scope,
         long checked,
         long changed,
-        long skippedStale,
+        long unchanged,
         long errors,
         long elapsedMs) {
 
@@ -31,7 +31,7 @@ public record AdminDiffCacheBackfillResponse(
         return new AdminDiffCacheBackfillResponse(
                 tenantId, type, scope,
                 result.checked(), result.changed(),
-                result.skippedStale(), result.errors(),
+                result.unchanged(), result.errors(),
                 result.elapsedMs());
     }
 }

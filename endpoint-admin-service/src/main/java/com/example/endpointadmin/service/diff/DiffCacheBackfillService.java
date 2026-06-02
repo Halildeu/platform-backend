@@ -1,16 +1,13 @@
 package com.example.endpointadmin.service.diff;
 
-import com.example.endpointadmin.service.EndpointOutdatedSoftwareDiffService;
-import com.example.endpointadmin.service.EndpointSoftwareInventoryDiffService;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * BE-024c v2-c-pre-2-C-B {@link DiffCacheBackfillService} — explicit
@@ -19,11 +16,17 @@ import org.springframework.transaction.annotation.Transactional;
  * cache rows lagged by a listener failure that the listener's catch-log
  * swallowed).
  *
- * <p>Each per-device refresh runs in {@link Propagation#REQUIRES_NEW} so a
- * failure on one device does not abort the rest of the batch. The writer
- * source-pair guard from v2-c-pre-2-C-A keeps the sweep idempotent — a
- * cache row already at the latest source tuple stays untouched and is
- * counted as {@code skippedStale} (zero-churn).
+ * <p>Each per-device refresh runs in {@link
+ * org.springframework.transaction.annotation.Propagation#REQUIRES_NEW} via
+ * the injected {@link DiffCacheBackfillDeviceRefresher} (Codex 019e8a09
+ * iter-1 must-fix #1: extracting the @Transactional method into a separate
+ * bean is required because Spring's proxy-based AOP bypasses
+ * @Transactional on self-invocation; calling refreshOneDevice via this
+ * separate bean ensures the transactional proxy actually fires).
+ *
+ * <p>The writer source-pair guard from v2-c-pre-2-C-A keeps the sweep
+ * idempotent — a cache row already at the latest source tuple stays
+ * untouched and is counted as {@code unchanged}.
  *
  * <p>Codex 019e89e8 iter-5 AGREE on split: this is the v2-c-pre-2-C-B
  * scope; the AFTER_COMMIT listener path from v2-c-pre-2-C-A handles the
@@ -34,27 +37,39 @@ public class DiffCacheBackfillService {
 
     private static final Logger log = LoggerFactory.getLogger(DiffCacheBackfillService.class);
 
-    private final EndpointSoftwareInventoryDiffService softwareDiffService;
-    private final EndpointOutdatedSoftwareDiffService outdatedDiffService;
-    private final DiffCacheService diffCacheService;
+    private final DiffCacheBackfillDeviceRefresher deviceRefresher;
     private final JdbcTemplate jdbc;
+    private final String schema;
 
     public DiffCacheBackfillService(
-            EndpointSoftwareInventoryDiffService softwareDiffService,
-            EndpointOutdatedSoftwareDiffService outdatedDiffService,
-            DiffCacheService diffCacheService,
-            JdbcTemplate jdbc) {
-        this.softwareDiffService = softwareDiffService;
-        this.outdatedDiffService = outdatedDiffService;
-        this.diffCacheService = diffCacheService;
+            DiffCacheBackfillDeviceRefresher deviceRefresher,
+            JdbcTemplate jdbc,
+            @Value("${spring.jpa.properties.hibernate.default_schema:endpoint_admin_service}")
+                    String schema) {
+        this.deviceRefresher = deviceRefresher;
         this.jdbc = jdbc;
+        this.schema = schema;
+    }
+
+    /**
+     * Schema-qualifies a table name with fail-closed identifier validation
+     * (Codex 019e8a09 iter-1 must-fix #2 absorb — schema must not be
+     * hardcoded; pattern mirrors {@link DiffCacheService}'s qualified()
+     * helper).
+     */
+    private String qualified(String tableName) {
+        String resolvedSchema = schema == null ? "" : schema.trim();
+        if (resolvedSchema.isBlank()) return tableName;
+        if (!resolvedSchema.matches("[A-Za-z0-9_]+")) {
+            throw new IllegalStateException("Invalid endpoint admin schema name.");
+        }
+        return resolvedSchema + "." + tableName;
     }
 
     /**
      * Backfill the diff cache for an explicit list of devices in one
-     * tenant. Each device runs in its own {@code REQUIRES_NEW} via
-     * {@link #refreshOneDevice}, so a failure on one device does not
-     * propagate to the rest.
+     * tenant. Each device runs in its own {@code REQUIRES_NEW} via the
+     * proxied refresher.
      */
     public DiffCacheBackfillResult backfillBatch(
             UUID tenantId, DiffType type, List<UUID> deviceIds) {
@@ -64,28 +79,31 @@ public class DiffCacheBackfillService {
         long start = System.nanoTime();
         long checked = 0L;
         long changed = 0L;
-        long skippedStale = 0L;
+        long unchanged = 0L;
         long errors = 0L;
         for (UUID deviceId : deviceIds) {
             checked++;
             try {
-                boolean wrote = refreshOneDevice(tenantId, deviceId, type);
+                boolean wrote = deviceRefresher.refreshDevice(tenantId, deviceId, type);
                 if (wrote) {
                     changed++;
                 } else {
-                    skippedStale++;
+                    unchanged++;
                 }
             } catch (RuntimeException ex) {
                 errors++;
-                // Redacted log per Codex iter-3 plan-time direction:
-                // tenant/device/type/error class+message only.
-                log.warn("DiffCache backfill failed tenant={} device={} type={} error={}: {}",
-                        tenantId, deviceId, type,
-                        ex.getClass().getSimpleName(), ex.getMessage());
+                // Codex 019e8a09 iter-1 must-fix #3 absorb: never log
+                // ex.getMessage() — error messages can carry raw payload
+                // fragments / SQL details / private data. errorClass +
+                // tenant/device/type is enough for an operator to
+                // correlate; full diagnostics belong behind a DEBUG flag
+                // that operators flip per-incident.
+                log.warn("DiffCache backfill failed tenant={} device={} type={} errorClass={}",
+                        tenantId, deviceId, type, ex.getClass().getSimpleName());
             }
         }
         long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
-        return new DiffCacheBackfillResult(checked, changed, skippedStale, errors, elapsedMs);
+        return new DiffCacheBackfillResult(checked, changed, unchanged, errors, elapsedMs);
     }
 
     /**
@@ -102,9 +120,10 @@ public class DiffCacheBackfillService {
         }
         DiffCacheBackfillResult acc = DiffCacheBackfillResult.empty();
         int offset = 0;
+        String devicesTable = qualified("endpoint_devices");
         while (true) {
             List<UUID> page = jdbc.query(
-                    "SELECT id FROM endpoint_admin_service.endpoint_devices "
+                    "SELECT id FROM " + devicesTable + " "
                     + "WHERE tenant_id = ? "
                     + "ORDER BY id "
                     + "LIMIT ? OFFSET ?",
@@ -121,30 +140,5 @@ public class DiffCacheBackfillService {
             offset += page.size();
         }
         return acc;
-    }
-
-    /**
-     * Refresh exactly one device's cache row for one type. Runs in its
-     * own {@link Propagation#REQUIRES_NEW} so a per-device failure stays
-     * isolated and the batch can continue.
-     *
-     * <p>Visibility: package-private so the integration test can assert
-     * the refresh path is wired through {@link DiffCacheService} (which
-     * applies the source-pair guard).
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public boolean refreshOneDevice(UUID tenantId, UUID deviceId, DiffType type) {
-        return switch (type) {
-            case SOFTWARE -> {
-                SoftwareDiffSummary summary =
-                        softwareDiffService.summarize(tenantId, deviceId);
-                yield diffCacheService.upsertSoftwareDiffCache(tenantId, deviceId, summary);
-            }
-            case OUTDATED -> {
-                OutdatedDiffSummary summary =
-                        outdatedDiffService.summarize(tenantId, deviceId);
-                yield diffCacheService.upsertOutdatedDiffCache(tenantId, deviceId, summary);
-            }
-        };
     }
 }
