@@ -41,11 +41,17 @@ import java.util.Map;
  *       agent — see {@code EndpointAdminCommandService#buildAgentDetectionRule};
  *       a one-time V21 sweep migrates surviving rows).</li>
  *   <li>{@code FILE_EXISTS} — {@code absolutePath} required, validated by
- *       {@link WindowsPathSafetyValidator}. Valid catalog rule, but NOT yet
- *       agent-installable (rejected at dispatch with a 422).</li>
+ *       {@link WindowsPathSafetyValidator}. Agent-installable since Path C2
+ *       (Codex 019e893a).</li>
  *   <li>{@code FILE_SHA256} — {@code absolutePath} required (path-safety
- *       validated) + {@code expectedSha256} (64-char hex). Valid catalog rule,
- *       not yet agent-installable.</li>
+ *       validated) + {@code expectedSha256} (64-char hex) + optional
+ *       {@code maxHashBytes} (≤ 512 MiB agent cap). Agent-installable since
+ *       Path C2.</li>
+ *   <li>{@code FILE_VERSION} — {@code absolutePath} + {@code versionPredicate}
+ *       (LATEST / EXACT / MINIMUM / RANGE) + optional {@code fileVersionField}
+ *       (FILE_VERSION default / PRODUCT_VERSION). Agent-installable since
+ *       Path C2 (reads PE VersionInfo via Win32 API — Codex 019e893a Opsiyon
+ *       C; platform-agent PR #50).</li>
  * </ul>
  *
  * <p>Explicitly rejected (raw command injection surface — Codex 019e6a3e
@@ -343,14 +349,51 @@ public class DetectionRuleValidator {
      */
     static final long FILE_MAX_HASH_BYTES_AGENT = 512L * 1024 * 1024;
 
-    /** Coerce a Number / numeric String to long; throws if neither. */
+    /**
+     * Coerce a Number / numeric String to long with INTEGER-ONLY semantics.
+     * Codex 019e893a iter-4 P1 absorb: Number.longValue() would silently
+     * truncate a fractional value (e.g. 1.5 → 1), but the agent contract
+     * is int64. Fractional doubles/floats + non-integer BigDecimals are
+     * rejected; numeric strings must match {@code ^-?\d+$}.
+     */
     private static long asLong(Object value, String errMessage) {
-        if (value instanceof Number n) {
-            return n.longValue();
+        if (value instanceof Long l) {
+            return l;
+        }
+        if (value instanceof Integer i) {
+            return i.longValue();
+        }
+        if (value instanceof Short || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof java.math.BigInteger bi) {
+            try {
+                return bi.longValueExact();
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException(errMessage);
+            }
+        }
+        if (value instanceof java.math.BigDecimal bd) {
+            try {
+                return bd.longValueExact();
+            } catch (ArithmeticException e) {
+                throw new IllegalArgumentException(errMessage);
+            }
+        }
+        if (value instanceof Float || value instanceof Double) {
+            double d = ((Number) value).doubleValue();
+            if (Math.floor(d) != d || Double.isInfinite(d) || Double.isNaN(d)) {
+                throw new IllegalArgumentException(errMessage);
+            }
+            return (long) d;
         }
         if (value instanceof String s) {
+            String trimmed = s.trim();
+            if (!trimmed.matches("-?\\d+")) {
+                throw new IllegalArgumentException(errMessage);
+            }
             try {
-                return Long.parseLong(s.trim());
+                return Long.parseLong(trimmed);
             } catch (NumberFormatException e) {
                 throw new IllegalArgumentException(errMessage);
             }

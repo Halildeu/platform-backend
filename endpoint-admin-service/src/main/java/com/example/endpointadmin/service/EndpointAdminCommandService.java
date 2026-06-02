@@ -563,16 +563,16 @@ public class EndpointAdminCommandService {
      *       forwarded verbatim (no fabrication). The registry selector IS the
      *       rule's identity, so NO {@code packageId} and NO WINGET identity
      *       invariant apply.</li>
+     *   <li>{@code FILE_EXISTS} / {@code FILE_SHA256} / {@code FILE_VERSION} —
+     *       Path C2 (Codex 019e893a Opsiyon C): forwarded via
+     *       {@link #buildFileWireRule}; catalog field {@code absolutePath} is
+     *       renamed to the agent's canonical {@code path} contract, per-type
+     *       extras (expectedSha256 + maxHashBytes for FILE_SHA256;
+     *       versionPredicate + fileVersionField for FILE_VERSION) are
+     *       forwarded verbatim from the validator-normalized payload.</li>
      * </ul>
-     * Fail-closed otherwise:
-     * <ul>
-     *   <li>{@code FILE_EXISTS} / {@code FILE_SHA256} — a valid catalog rule but
-     *       not yet agent-installable: rejected here ({@code
-     *       detection_rule_type_not_supported_by_agent}) rather than dispatched
-     *       with a fabricated rule the agent would mis-verify;</li>
-     *   <li>a missing / unknown / legacy-shape rule is rejected, never
-     *       silently coerced.</li>
-     * </ul>
+     * Fail-closed otherwise: a missing / unknown / legacy-shape rule is
+     * rejected, never silently coerced.
      */
     private static Map<String, Object> buildAgentDetectionRule(EndpointSoftwareCatalogItem catalogItem,
                                                                String agentPackageId) {

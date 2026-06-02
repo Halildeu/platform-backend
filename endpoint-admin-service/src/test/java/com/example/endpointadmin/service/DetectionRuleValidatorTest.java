@@ -384,6 +384,34 @@ class DetectionRuleValidatorTest {
                 .hasMessageContaining(">= 0");
     }
 
+    // Codex 019e893a iter-4 P1: maxHashBytes must reject fractional values.
+
+    @Test
+    void rejectsFileSha256MaxHashBytesFractional() {
+        Map<String, Object> raw = new HashMap<>();
+        raw.put("type", "FILE_SHA256");
+        raw.put("absolutePath", "C:\\Program Files\\7-Zip\\7z.exe");
+        raw.put("expectedSha256", "a".repeat(64));
+        raw.put("maxHashBytes", 1.5d); // fractional
+
+        assertThatThrownBy(() -> validator.validateAndNormalize(raw))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be an integer");
+    }
+
+    @Test
+    void rejectsFileSha256MaxHashBytesNonNumericString() {
+        Map<String, Object> raw = new HashMap<>();
+        raw.put("type", "FILE_SHA256");
+        raw.put("absolutePath", "C:\\Program Files\\7-Zip\\7z.exe");
+        raw.put("expectedSha256", "a".repeat(64));
+        raw.put("maxHashBytes", "1.5"); // numeric string but fractional
+
+        assertThatThrownBy(() -> validator.validateAndNormalize(raw))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be an integer");
+    }
+
     // ── Path C2 FILE_VERSION (Codex 019e893a Opsiyon C) ───────────────
 
     @Test
