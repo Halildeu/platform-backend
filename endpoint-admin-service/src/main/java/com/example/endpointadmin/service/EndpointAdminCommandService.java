@@ -586,16 +586,50 @@ public class EndpointAdminCommandService {
         return switch (type) {
             case "WINGET_PACKAGE" -> buildWingetWireRule(catalogRule, agentPackageId);
             case "REGISTRY_UNINSTALL" -> buildRegistryWireRule(catalogRule);
-            case "FILE_EXISTS", "FILE_SHA256" -> throw new ResponseStatusException(
-                    HttpStatus.UNPROCESSABLE_ENTITY,
-                    "detection_rule_type_not_supported_by_agent: catalog detection rule type '"
-                            + type + "' is a valid catalog rule but not agent-installable yet "
-                            + "(agent supports WINGET_PACKAGE + REGISTRY_UNINSTALL).");
+            case "FILE_EXISTS", "FILE_SHA256", "FILE_VERSION" -> buildFileWireRule(catalogRule, type);
             default -> throw new ResponseStatusException(
                     HttpStatus.UNPROCESSABLE_ENTITY,
                     "detection_rule_type_not_supported_by_agent: unknown catalog detection rule type '"
                             + type + "'.");
         };
+    }
+
+    /**
+     * Path C2 — Codex 019e893a Opsiyon C: forward FILE_EXISTS / FILE_SHA256 /
+     * FILE_VERSION to the agent (Path C1 lands the agent-side detectors).
+     * Catalog authoring stores the path as {@code absolutePath}, the agent
+     * contract field is {@code path} (mirrors the C1 {@code DetectionRule}
+     * struct); we translate at this dispatch point. The validator has already
+     * normalized + enforced predicate shape, so we copy the agent-recognised
+     * keys without re-validation.
+     */
+    private static Map<String, Object> buildFileWireRule(Map<String, Object> catalogRule, String type) {
+        Object absolutePath = catalogRule.get("absolutePath");
+        if (absolutePath == null || absolutePath.toString().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "detection_rule_type_not_supported_by_agent: " + type
+                            + " catalog rule is missing 'absolutePath'.");
+        }
+        Map<String, Object> wire = new LinkedHashMap<>();
+        wire.put("type", type);
+        // Agent contract field name is `path` (C1 DetectionRule.Path).
+        wire.put("path", absolutePath.toString());
+
+        switch (type) {
+            case "FILE_SHA256" -> {
+                copyIfPresent(catalogRule, wire, "expectedSha256");
+                // Optional per-rule cap forwarded as-is; agent re-caps.
+                copyIfPresent(catalogRule, wire, "maxHashBytes");
+            }
+            case "FILE_VERSION" -> {
+                copyIfPresent(catalogRule, wire, "versionPredicate");
+                copyIfPresent(catalogRule, wire, "fileVersionField");
+            }
+            default -> {
+                // FILE_EXISTS: path-only.
+            }
+        }
+        return wire;
     }
 
     private static Map<String, Object> buildWingetWireRule(Map<String, Object> catalogRule,

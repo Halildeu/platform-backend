@@ -77,11 +77,13 @@ public class DetectionRuleValidator {
             case "REGISTRY_UNINSTALL" -> validateRegistryUninstall(raw);
             case "FILE_EXISTS" -> validateFileExists(raw);
             case "FILE_SHA256" -> validateFileSha256(raw);
+            case "FILE_VERSION" -> validateFileVersion(raw);
             default -> throw new IllegalArgumentException(
                     "Detection rule 'type' '" + type + "' is not in the MVP "
                             + "allowlist. Allowed types: WINGET_PACKAGE, "
-                            + "REGISTRY_UNINSTALL, FILE_EXISTS, FILE_SHA256. "
-                            + "Raw command / shell variants are not accepted.");
+                            + "REGISTRY_UNINSTALL, FILE_EXISTS, FILE_SHA256, "
+                            + "FILE_VERSION. Raw command / shell variants are "
+                            + "not accepted.");
         };
     }
 
@@ -228,7 +230,132 @@ public class DetectionRuleValidator {
         normalized.put("absolutePath", absolutePath.trim());
         normalized.put("expectedSha256",
                 expectedSha256.toLowerCase(Locale.ROOT));
+        // Path C2 — Codex 019e893a Opsiyon C: optional per-rule SHA-256
+        // size cap override. The agent (C1) hard-caps at 512 MiB and
+        // rejects any value above that; backend mirrors the agent guard
+        // so catalog authoring can't ship an impossible cap.
+        Object maxHashBytesRaw = raw.get("maxHashBytes");
+        if (maxHashBytesRaw != null) {
+            long maxHashBytes = asLong(maxHashBytesRaw,
+                    "Detection rule 'maxHashBytes' must be an integer.");
+            if (maxHashBytes < 0) {
+                throw new IllegalArgumentException(
+                        "Detection rule 'maxHashBytes' must be >= 0.");
+            }
+            if (maxHashBytes > FILE_MAX_HASH_BYTES_AGENT) {
+                throw new IllegalArgumentException(
+                        "Detection rule 'maxHashBytes' (" + maxHashBytes
+                                + ") exceeds the agent hard cap ("
+                                + FILE_MAX_HASH_BYTES_AGENT + ").");
+            }
+            normalized.put("maxHashBytes", maxHashBytes);
+        }
         return normalized;
+    }
+
+    /**
+     * Path C2 — FILE_VERSION (Codex 019e893a Opsiyon C). Catalog authoring
+     * shape mirrors the agent C1 contract: {@code absolutePath} (Windows
+     * path), {@code versionPredicate} ({@code type} ∈ LATEST/EXACT/MINIMUM/
+     * RANGE + per-type {@code spec}), {@code fileVersionField} ∈
+     * FILE_VERSION (default) / PRODUCT_VERSION.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> validateFileVersion(Map<String, Object> raw) {
+        String absolutePath = requireNonBlankString(raw, "absolutePath");
+        WindowsPathSafetyValidator.validate(absolutePath);
+
+        Object predicateRaw = raw.get("versionPredicate");
+        if (!(predicateRaw instanceof Map<?, ?> predicateMap)) {
+            throw new IllegalArgumentException(
+                    "Detection rule 'versionPredicate' is required for FILE_VERSION.");
+        }
+        Map<String, Object> predicate = (Map<String, Object>) predicateMap;
+        String predicateType = optionalTrimmed(predicate, "type");
+        String predicateSpec = optionalTrimmed(predicate, "spec");
+        if (predicateType == null) {
+            predicateType = "LATEST";
+        }
+        String predicateTypeUpper = predicateType.toUpperCase(Locale.ROOT);
+        switch (predicateTypeUpper) {
+            case "LATEST":
+                predicateSpec = null;
+                break;
+            case "EXACT":
+            case "MINIMUM":
+                if (predicateSpec == null) {
+                    throw new IllegalArgumentException(
+                            "Detection rule versionPredicate." + predicateTypeUpper
+                                    + " requires a non-blank 'spec'.");
+                }
+                break;
+            case "RANGE":
+                if (predicateSpec == null) {
+                    throw new IllegalArgumentException(
+                            "Detection rule versionPredicate.RANGE requires "
+                                    + "a non-blank 'spec'.");
+                }
+                if (predicateSpec.length() < 3
+                        || (predicateSpec.charAt(0) != '['
+                            && predicateSpec.charAt(0) != '(')
+                        || (predicateSpec.charAt(predicateSpec.length() - 1) != ']'
+                            && predicateSpec.charAt(predicateSpec.length() - 1) != ')')
+                        || !predicateSpec.contains(",")) {
+                    throw new IllegalArgumentException(
+                            "Detection rule versionPredicate.RANGE 'spec' must "
+                                    + "use bracket form (e.g. '[1.0,2.0)').");
+                }
+                break;
+            default:
+                throw new IllegalArgumentException(
+                        "Detection rule versionPredicate.type '" + predicateType
+                                + "' is not in the allowlist. Allowed: LATEST, "
+                                + "EXACT, MINIMUM, RANGE.");
+        }
+
+        String field = optionalTrimmed(raw, "fileVersionField");
+        if (field == null) {
+            field = "FILE_VERSION";
+        }
+        String fieldUpper = field.toUpperCase(Locale.ROOT);
+        if (!"FILE_VERSION".equals(fieldUpper) && !"PRODUCT_VERSION".equals(fieldUpper)) {
+            throw new IllegalArgumentException(
+                    "Detection rule 'fileVersionField' must be FILE_VERSION or "
+                            + "PRODUCT_VERSION (got '" + field + "').");
+        }
+
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("type", "FILE_VERSION");
+        normalized.put("absolutePath", absolutePath.trim());
+        Map<String, Object> normalizedPredicate = new LinkedHashMap<>();
+        normalizedPredicate.put("type", predicateTypeUpper);
+        if (predicateSpec != null) {
+            normalizedPredicate.put("spec", predicateSpec);
+        }
+        normalized.put("versionPredicate", normalizedPredicate);
+        normalized.put("fileVersionField", fieldUpper);
+        return normalized;
+    }
+
+    /**
+     * Path C2 — Codex 019e893a Opsiyon C agent hard cap mirror.
+     * 512 MiB hard cap on FILE_SHA256 streaming size.
+     */
+    static final long FILE_MAX_HASH_BYTES_AGENT = 512L * 1024 * 1024;
+
+    /** Coerce a Number / numeric String to long; throws if neither. */
+    private static long asLong(Object value, String errMessage) {
+        if (value instanceof Number n) {
+            return n.longValue();
+        }
+        if (value instanceof String s) {
+            try {
+                return Long.parseLong(s.trim());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(errMessage);
+            }
+        }
+        throw new IllegalArgumentException(errMessage);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
