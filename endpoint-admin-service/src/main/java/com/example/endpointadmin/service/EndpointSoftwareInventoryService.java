@@ -12,6 +12,8 @@ import com.example.endpointadmin.repository.EndpointSoftwareInventoryStateHistor
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.WinGetEgressPayloadPolicy;
 import com.example.endpointadmin.service.compliance.SoftwareInventorySnapshotPersistedEvent;
+import com.example.endpointadmin.service.diff.DiffCacheRefreshRequested;
+import com.example.endpointadmin.service.diff.DiffType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -243,8 +245,9 @@ public class EndpointSoftwareInventoryService {
         // no async listener — lowest-risk for the BE-020/021 freeze window;
         // Codex 019e75a5 (b) absorb). Summary-only / wingetEgress-only
         // ingests do NOT append (the app state did not change).
+        boolean stateHistoryInserted = false;
         if (hasFullPayload) {
-            appendStateHistory(tenantId, device.getId(), result,
+            stateHistoryInserted = appendStateHistory(tenantId, device.getId(), result,
                     snapshot.getSchemaVersion(), fullPayloadItems, now);
         }
 
@@ -299,6 +302,19 @@ public class EndpointSoftwareInventoryService {
                 auditMetadata,
                 null,
                 null);
+
+        // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — emit
+        // AFTER_COMMIT-scoped DiffCacheRefreshRequested event ONLY when
+        // a NEW state-history row was actually inserted (i.e. real
+        // append). Duplicate source_command_result_id no-ops (via the
+        // appendStateHistory boolean refactor) and summary-only /
+        // wingetEgress-only ingests don't change the diff and MUST NOT
+        // trigger a refresh. Own event class — NOT piggybacked on the
+        // BE-023 compliance event below.
+        if (stateHistoryInserted && eventPublisher != null) {
+            eventPublisher.publishEvent(new DiffCacheRefreshRequested(
+                    tenantId, device.getId(), DiffType.SOFTWARE));
+        }
 
         // BE-023 — emit AFTER_COMMIT-scoped event so the compliance
         // evaluator runs a fresh evaluation once the snapshot row is
@@ -380,12 +396,12 @@ public class EndpointSoftwareInventoryService {
      * round-trip on the common re-delivery; the {@code ON CONFLICT} is the
      * authoritative race-safe guard.
      */
-    private void appendStateHistory(UUID tenantId,
-                                    UUID deviceId,
-                                    EndpointCommandResult result,
-                                    Integer schemaVersion,
-                                    List<EndpointSoftwareInventoryItem> items,
-                                    Instant now) {
+    private boolean appendStateHistory(UUID tenantId,
+                                       UUID deviceId,
+                                       EndpointCommandResult result,
+                                       Integer schemaVersion,
+                                       List<EndpointSoftwareInventoryItem> items,
+                                       Instant now) {
         UUID sourceResultId = result != null ? result.getId() : null;
         // Idempotency fast-path: skip the insert round-trip if this
         // command-result already produced a capture (agent SUBMIT path may
@@ -395,7 +411,7 @@ public class EndpointSoftwareInventoryService {
                 && stateHistoryRepository
                         .findBySourceCommandResultId(sourceResultId)
                         .isPresent()) {
-            return;
+            return false;
         }
 
         List<Map<String, Object>> digest = SoftwareInventoryDigest.fromItems(items);
@@ -415,6 +431,9 @@ public class EndpointSoftwareInventoryService {
         // no-op (returns false); any other V18 violation throws and rolls
         // back the whole ingest transaction (no swallow, no rollback-only
         // leak into the audit stage).
+        // BE-024c v2-c-pre-2-C-A: returns whether a NEW history row was
+        // actually inserted so the caller can gate DiffCacheRefreshRequested
+        // event publish on a genuine append (vs duplicate/no-op).
         boolean inserted =
                 stateHistoryRepository.insertIfNewSourceCommandResult(history);
         if (!inserted) {
@@ -423,6 +442,7 @@ public class EndpointSoftwareInventoryService {
                             + "device={} result={}",
                     tenantId, deviceId, sourceResultId);
         }
+        return inserted;
     }
 
     // ----------------------------------------------------------------

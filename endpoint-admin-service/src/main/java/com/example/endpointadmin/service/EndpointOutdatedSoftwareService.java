@@ -7,6 +7,8 @@ import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointOutdatedSoftwarePackage;
 import com.example.endpointadmin.model.EndpointOutdatedSoftwareSnapshot;
 import com.example.endpointadmin.repository.EndpointOutdatedSoftwareSnapshotRepository;
+import com.example.endpointadmin.service.diff.DiffCacheRefreshRequested;
+import com.example.endpointadmin.service.diff.DiffType;
 import com.example.endpointadmin.security.OutdatedSoftwarePayloadPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -190,6 +192,14 @@ public class EndpointOutdatedSoftwareService {
                 snapshot.getSupported(), snapshot.getProbeComplete(),
                 snapshot.getUpgradeCount());
         events.publishEvent(buildAuditEvent(snapshot, command));
+        // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — emit
+        // AFTER_COMMIT-scoped DiffCacheRefreshRequested event ONLY on the
+        // genuine insert path. Duplicate source_command_result_id and
+        // identical-payload return paths above already returned and
+        // never reach this publish line. Own event class — NOT
+        // piggybacked on the audit event above.
+        events.publishEvent(new DiffCacheRefreshRequested(
+                device.getTenantId(), device.getId(), DiffType.OUTDATED));
         return snapshot;
     }
 

@@ -223,7 +223,9 @@ class DiffCacheServiceUpsertPostgresIntegrationTest {
         UUID tenant = UUID.randomUUID();
         UUID device = insertDevice(tenant);
         SoftwareDiffSummary bad = new SoftwareDiffSummary(
-                AdminSoftwareInventoryDiffResponse.DiffStatus.OK, null, null, 0, 0, 0);
+                AdminSoftwareInventoryDiffResponse.DiffStatus.OK, null, null, 0, 0, 0,
+                java.time.Instant.EPOCH, java.time.Instant.EPOCH,
+                SoftwareDiffSummary.ZERO_UUID);
 
         assertThatThrownBy(() -> diffCacheService.upsertSoftwareDiffCache(tenant, device, bad))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -299,7 +301,9 @@ class DiffCacheServiceUpsertPostgresIntegrationTest {
         UUID tenant = UUID.randomUUID();
         UUID device = insertDevice(tenant);
         OutdatedDiffSummary bad = new OutdatedDiffSummary(
-                AdminOutdatedSoftwareDiffResponse.DiffStatus.OK, null, null, 0, 0, 0, 0);
+                AdminOutdatedSoftwareDiffResponse.DiffStatus.OK, null, null, 0, 0, 0, 0,
+                java.time.Instant.EPOCH, java.time.Instant.EPOCH,
+                OutdatedDiffSummary.ZERO_UUID);
 
         assertThatThrownBy(() -> diffCacheService.upsertOutdatedDiffCache(tenant, device, bad))
                 .isInstanceOf(IllegalArgumentException.class)
