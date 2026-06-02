@@ -146,35 +146,33 @@ public class DiffCacheService {
         validateSoftwareShape(summary);
 
         String table = qualified("endpoint_software_diff_cache");
-        // Codex 019e8964 iter-2 absorb: source-freshness ordering is the
-        // CALLER's contract, NOT this writer's. A `computed_at <=
-        // EXCLUDED.computed_at` predicate was added in iter-1 but Codex
-        // iter-2 correctly pointed out that it only orders wall-clock
-        // writes, NOT source-pair freshness — a stale ingest tx that reads
-        // an older history pair and calls upsert later (Instant.now() at
-        // call time) would still pass the guard and regress the cache to
-        // an older state. The correct guard is source-pair ordering
-        // (captured_at, created_at, id tuple comparison on the FK source
-        // table), but that's a non-trivial subquery that belongs in the
-        // ingest hook PR (v2-c-pre-2-B) where the source-pair freshness
-        // contract is wired up end-to-end with PG IT proof. For this
-        // dormant write primitive PR, the WHERE filter is back to
-        // "anything differs" — race-safe at row level (concurrent UPSERT
-        // for the same (tenant, device) cannot UNIQUE-collision), with
-        // the caller-side freshness contract documented at the class
-        // level and pinned by PG IT in v2-c-pre-2-B.
+        // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — full
+        // source-pair ordering tuple guard via direct EXCLUDED.source_* >=
+        // c.source_* comparison. Three guards combined:
+        //   1. Source-pair tuple guard (newer-or-same source pair only):
+        //      blocks stale-overwrites under overlapping listener tx.
+        //   2. From-downgrade guard: NOT (c.from non-null AND EXCLUDED.from
+        //      null) blocks OK -> INSUFFICIENT walking back to a less
+        //      informative row when source ids match.
+        //   3. Any-column-differs predicate: identical-payload re-ingests
+        //      become a true SQL no-op (zero WAL, zero row-version churn).
+        // Insert path bypasses the guard; initial-row source integrity is
+        // owned by the listener summarize() against latest committed state
+        // (Codex iter-4 guardrail #5).
         String sql = """
-                INSERT INTO %s (
+                INSERT INTO %s AS c (
                     id, tenant_id, device_id,
                     from_history_id, to_history_id,
                     status,
                     added_count, removed_count, version_changed_count,
+                    source_captured_at, source_created_at, source_row_id,
                     computed_at
                 ) VALUES (
                     :id, :tenantId, :deviceId,
                     :fromHistoryId, :toHistoryId,
                     :status,
                     :added, :removed, :versionChanged,
+                    :sourceCapturedAt, :sourceCreatedAt, :sourceRowId,
                     :computedAt
                 )
                 ON CONFLICT (tenant_id, device_id) DO UPDATE SET
@@ -184,20 +182,34 @@ public class DiffCacheService {
                     added_count = EXCLUDED.added_count,
                     removed_count = EXCLUDED.removed_count,
                     version_changed_count = EXCLUDED.version_changed_count,
+                    source_captured_at = EXCLUDED.source_captured_at,
+                    source_created_at = EXCLUDED.source_created_at,
+                    source_row_id = EXCLUDED.source_row_id,
                     computed_at = EXCLUDED.computed_at
-                WHERE %s.status
-                          IS DISTINCT FROM EXCLUDED.status
-                   OR %s.from_history_id
-                          IS DISTINCT FROM EXCLUDED.from_history_id
-                   OR %s.to_history_id
-                          IS DISTINCT FROM EXCLUDED.to_history_id
-                   OR %s.added_count
-                          <> EXCLUDED.added_count
-                   OR %s.removed_count
-                          <> EXCLUDED.removed_count
-                   OR %s.version_changed_count
-                          <> EXCLUDED.version_changed_count
-                """.formatted(table, table, table, table, table, table, table);
+                WHERE
+                    (   -- source-pair ordering tuple guard (Codex iter-3 #1)
+                        EXCLUDED.source_captured_at > c.source_captured_at
+                        OR (EXCLUDED.source_captured_at = c.source_captured_at
+                            AND EXCLUDED.source_created_at > c.source_created_at)
+                        OR (EXCLUDED.source_captured_at = c.source_captured_at
+                            AND EXCLUDED.source_created_at = c.source_created_at
+                            AND EXCLUDED.source_row_id >= c.source_row_id)
+                    )
+                AND
+                    (   -- from-downgrade guard (Codex iter-4 #4)
+                        NOT (c.from_history_id IS NOT NULL
+                             AND EXCLUDED.from_history_id IS NULL)
+                    )
+                AND
+                    (   -- any-column-differs (identical-payload no-op)
+                        c.status IS DISTINCT FROM EXCLUDED.status
+                        OR c.from_history_id IS DISTINCT FROM EXCLUDED.from_history_id
+                        OR c.to_history_id IS DISTINCT FROM EXCLUDED.to_history_id
+                        OR c.added_count <> EXCLUDED.added_count
+                        OR c.removed_count <> EXCLUDED.removed_count
+                        OR c.version_changed_count <> EXCLUDED.version_changed_count
+                    )
+                """.formatted(table);
 
         Query q = em.createNativeQuery(sql);
         q.setParameter("id", UUID.randomUUID());
@@ -207,6 +219,9 @@ public class DiffCacheService {
         q.setParameter("toHistoryId", summary.toHistoryId());
         q.setParameter("status", summary.status().name());
         q.setParameter("added", summary.addedCount());
+        q.setParameter("sourceCapturedAt", summary.sourceCapturedAt());
+        q.setParameter("sourceCreatedAt", summary.sourceCreatedAt());
+        q.setParameter("sourceRowId", summary.sourceRowId());
         q.setParameter("removed", summary.removedCount());
         q.setParameter("versionChanged", summary.versionChangedCount());
         q.setParameter("computedAt", Instant.now());
@@ -234,16 +249,17 @@ public class DiffCacheService {
         validateOutdatedShape(summary);
 
         String table = qualified("endpoint_outdated_software_diff_cache");
-        // Codex 019e8964 iter-2 absorb: see software UPSERT for the
-        // rationale on why source-freshness ordering belongs to the
-        // caller (v2-c-pre-2-B ingest hook) and not this writer.
+        // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — outdated
+        // mirror of the software source-pair ordering tuple guard. See
+        // software UPSERT for full rationale.
         String sql = """
-                INSERT INTO %s (
+                INSERT INTO %s AS c (
                     id, tenant_id, device_id,
                     from_snapshot_id, to_snapshot_id,
                     status,
                     added_count, removed_count, version_changed_count,
                     available_version_bumped_count,
+                    source_captured_at, source_created_at, source_row_id,
                     computed_at
                 ) VALUES (
                     :id, :tenantId, :deviceId,
@@ -251,6 +267,7 @@ public class DiffCacheService {
                     :status,
                     :added, :removed, :versionChanged,
                     :availableVersionBumped,
+                    :sourceCapturedAt, :sourceCreatedAt, :sourceRowId,
                     :computedAt
                 )
                 ON CONFLICT (tenant_id, device_id) DO UPDATE SET
@@ -261,22 +278,35 @@ public class DiffCacheService {
                     removed_count = EXCLUDED.removed_count,
                     version_changed_count = EXCLUDED.version_changed_count,
                     available_version_bumped_count = EXCLUDED.available_version_bumped_count,
+                    source_captured_at = EXCLUDED.source_captured_at,
+                    source_created_at = EXCLUDED.source_created_at,
+                    source_row_id = EXCLUDED.source_row_id,
                     computed_at = EXCLUDED.computed_at
-                WHERE %s.status
-                          IS DISTINCT FROM EXCLUDED.status
-                   OR %s.from_snapshot_id
-                          IS DISTINCT FROM EXCLUDED.from_snapshot_id
-                   OR %s.to_snapshot_id
-                          IS DISTINCT FROM EXCLUDED.to_snapshot_id
-                   OR %s.added_count
-                          <> EXCLUDED.added_count
-                   OR %s.removed_count
-                          <> EXCLUDED.removed_count
-                   OR %s.version_changed_count
-                          <> EXCLUDED.version_changed_count
-                   OR %s.available_version_bumped_count
-                          <> EXCLUDED.available_version_bumped_count
-                """.formatted(table, table, table, table, table, table, table, table);
+                WHERE
+                    (   -- source-pair ordering tuple guard
+                        EXCLUDED.source_captured_at > c.source_captured_at
+                        OR (EXCLUDED.source_captured_at = c.source_captured_at
+                            AND EXCLUDED.source_created_at > c.source_created_at)
+                        OR (EXCLUDED.source_captured_at = c.source_captured_at
+                            AND EXCLUDED.source_created_at = c.source_created_at
+                            AND EXCLUDED.source_row_id >= c.source_row_id)
+                    )
+                AND
+                    (   -- from-downgrade guard
+                        NOT (c.from_snapshot_id IS NOT NULL
+                             AND EXCLUDED.from_snapshot_id IS NULL)
+                    )
+                AND
+                    (   -- any-column-differs (identical-payload no-op)
+                        c.status IS DISTINCT FROM EXCLUDED.status
+                        OR c.from_snapshot_id IS DISTINCT FROM EXCLUDED.from_snapshot_id
+                        OR c.to_snapshot_id IS DISTINCT FROM EXCLUDED.to_snapshot_id
+                        OR c.added_count <> EXCLUDED.added_count
+                        OR c.removed_count <> EXCLUDED.removed_count
+                        OR c.version_changed_count <> EXCLUDED.version_changed_count
+                        OR c.available_version_bumped_count <> EXCLUDED.available_version_bumped_count
+                    )
+                """.formatted(table);
 
         Query q = em.createNativeQuery(sql);
         q.setParameter("id", UUID.randomUUID());
@@ -289,6 +319,9 @@ public class DiffCacheService {
         q.setParameter("removed", summary.removedCount());
         q.setParameter("versionChanged", summary.versionChangedCount());
         q.setParameter("availableVersionBumped", summary.availableVersionBumpedCount());
+        q.setParameter("sourceCapturedAt", summary.sourceCapturedAt());
+        q.setParameter("sourceCreatedAt", summary.sourceCreatedAt());
+        q.setParameter("sourceRowId", summary.sourceRowId());
         q.setParameter("computedAt", Instant.now());
 
         int affected = q.executeUpdate();
