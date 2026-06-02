@@ -41,6 +41,12 @@ public class DeviceGridExportAuditService {
         metadata.put("exportMode", exportMode);
         metadata.put("rowCount", rowCount);
         metadata.put("columnCount", columnCount);
+        // WEB-015 v2-a (Codex 019e8785 iter-2): pin both the schema
+        // version and the canonical column-ids hash so an audit row
+        // alone can detect a stale-or-tampered registry on a different
+        // pod; bumping SCHEMA_VERSION cleanly invalidates client state.
+        metadata.put("schemaVersion", DeviceGridColumns.SCHEMA_VERSION);
+        metadata.put("columnIdsHash", DeviceGridColumns.columnIdsHash());
         // Fleet-wide export ⇒ no specific device/command. correlationId/before/
         // after are unused for a read-only export event.
         auditService.record(tenantId, null, null, EVENT_TYPE, "EXPORT",

@@ -132,6 +132,93 @@ class DeviceGridExportPostgresIntegrationTest {
         assertThat(noRow[upgIdx]).isEmpty();
     }
 
+    /**
+     * WEB-015 v2-a (Codex 019e8785 iter-3 P1 absorb) — new BE-025 +
+     * AG-041 LATERAL joins must resolve under the non-public schema
+     * AND emit the expected scalar values for a device whose latest
+     * compliance evaluation carries 2 prohibitedInstalled items + a
+     * persisted app-control ENFORCE/RUNNING snapshot.
+     *
+     * <p>Also asserts the no-snapshot/no-evaluation device renders
+     * NO_EVALUATION + NULL findings + NULL app-control cells (the
+     * fail-closed "no data" semantics — never synthesized to UNKNOWN).
+     */
+    @Test
+    void v2aColumnsResolveSchemaQualified_withProhibitedAndAppControl_andFailClosedNulls() {
+        UUID tenant = UUID.randomUUID();
+        UUID withSnaps = UUID.randomUUID();
+        UUID noSnaps = UUID.randomUUID();
+        insertDevice(withSnaps, tenant, "v2a-with");
+        insertDevice(noSnaps, tenant, "v2a-without");
+
+        Instant t = Instant.parse("2026-06-02T10:00:00Z");
+        // Seed BE-025 compliance evaluation with 2 prohibitedInstalled items.
+        insertComplianceEvaluation(tenant, withSnaps, t, "UNAUTHORIZED",
+                "{\"matchedItems\":{\"prohibitedInstalled\":["
+                        + "{\"name\":\"Banned-RAT\"},"
+                        + "{\"name\":\"TeamViewer\"}"
+                        + "]}}");
+        // Seed AG-041 app-control snapshot ENFORCE / RUNNING.
+        insertAppControlSnapshot(tenant, withSnaps, t, "ENFORCE", "RUNNING");
+
+        DeviceGridQueryBuilder b = builder();
+        List<GridColumn> cols = b.resolveExportColumns(ExportMode.RAW, null);
+        GridSql q = b.buildExportQuery(tenant, ExportMode.RAW,
+                new DeviceGridExportRequest("csv", "raw", null, null, null, null), cols);
+        List<ExportColumn> exportColumns = cols.stream()
+                .map(c -> new ExportColumn(c.colId(), c.header()))
+                .toList();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        // If pe or ac LATERAL subqueries were unqualified, this would 500.
+        CsvStreamingExporter.exportWithColumns(
+                new NamedParameterJdbcTemplate(jdbc.getDataSource()),
+                new ExportQuery(q.sql(), q.params()), exportColumns, out);
+
+        byte[] bytes = out.toByteArray();
+        String csv = new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
+        String[] lines = csv.split("\\r?\\n");
+
+        // Header row carries the new server-resolved Turkish labels.
+        assertThat(lines[0])
+                .contains("Yasaklı Yazılım Durumu")
+                .contains("Uygunluk Kararı")
+                .contains("Yasaklı Yazılım Bulgu Sayısı")
+                .contains("WDAC Modu")
+                .contains("AppIDSvc Durumu");
+
+        int hostIdx = DeviceGridColumns.allColumnIds().indexOf("hostname");
+        int prohibStatusIdx =
+                DeviceGridColumns.allColumnIds().indexOf("prohibited_status");
+        int prohibDecIdx =
+                DeviceGridColumns.allColumnIds().indexOf("prohibited_decision");
+        int prohibCountIdx =
+                DeviceGridColumns.allColumnIds().indexOf("prohibited_findings_count");
+        int wdacIdx =
+                DeviceGridColumns.allColumnIds().indexOf("app_control_wdac_mode");
+        int svcIdx =
+                DeviceGridColumns.allColumnIds().indexOf("app_control_app_id_svc_state");
+
+        String[] withRow = dataRow(lines, hostIdx, "v2a-with");
+        String[] noRow = dataRow(lines, hostIdx, "v2a-without");
+
+        // Device with evaluation + app-control snapshot.
+        assertThat(withRow[prohibStatusIdx]).isEqualTo("OK");
+        assertThat(withRow[prohibDecIdx]).isEqualTo("UNAUTHORIZED");
+        assertThat(withRow[prohibCountIdx]).isEqualTo("2");
+        assertThat(withRow[wdacIdx]).isEqualTo("ENFORCE");
+        assertThat(withRow[svcIdx]).isEqualTo("RUNNING");
+
+        // No-evaluation / no-snapshot device: NO_EVALUATION + NULL cells.
+        // The CASE expression returns the literal NO_EVALUATION; the other
+        // four columns are NULL via LEFT JOIN (NOT synthesized to UNKNOWN).
+        assertThat(noRow[prohibStatusIdx]).isEqualTo("NO_EVALUATION");
+        assertThat(noRow[prohibDecIdx]).isEmpty();
+        assertThat(noRow[prohibCountIdx]).isEmpty();
+        assertThat(noRow[wdacIdx]).isEmpty();
+        assertThat(noRow[svcIdx]).isEmpty();
+    }
+
     @Test
     void preflightCountsTenantRows() {
         UUID tenant = UUID.randomUUID();
@@ -201,5 +288,56 @@ class DeviceGridExportPostgresIntegrationTest {
         s.setPayloadHashSha256("b".repeat(64));
         s.setCollectedAt(collectedAt);
         outdatedRepo.saveAndFlush(s);
+    }
+
+    /**
+     * Seed an endpoint_compliance_evaluations row with the given decision and
+     * raw JSONB evidence (the BE-025 read path that DeviceGridColumns
+     * prohibited_* columns walk via the pe LATERAL alias).
+     */
+    private void insertComplianceEvaluation(
+            UUID tenant, UUID device, Instant evaluatedAt, String decision, String evidenceJson) {
+        Timestamp ts = Timestamp.from(evaluatedAt);
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_compliance_evaluations "
+                        + "(id, tenant_id, device_id, evaluated_at, decision, "
+                        + " reasons, blocking_reasons, warnings, evidence, "
+                        + " catalog_policy_hash, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, "
+                        + "        '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, ?::jsonb, "
+                        + "        ?, ?)",
+                UUID.randomUUID(), tenant, device, ts, decision,
+                evidenceJson, "a".repeat(64), ts);
+    }
+
+    /**
+     * Seed an endpoint_app_control_snapshots row with the given WDAC mode +
+     * AppIDSvc state (the AG-041 read path that DeviceGridColumns
+     * app_control_* columns read via the ac LATERAL alias).
+     */
+    private void insertAppControlSnapshot(
+            UUID tenant, UUID device, Instant collectedAt,
+            String wdacMode, String appIdSvcState) {
+        Timestamp ts = Timestamp.from(collectedAt);
+        // V26 endpoint_app_control_snapshots is fully NOT NULL on most
+        // scalars; seed sensible defaults for the columns we don't probe
+        // (booleans = false, enums = NOT_CONFIGURED/UNKNOWN, counters = 0).
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_app_control_snapshots "
+                        + "(id, tenant_id, device_id, schema_version, supported, "
+                        + " probe_complete, wdac_queryable, app_locker_queryable, "
+                        + " wdac_mode, "
+                        + " app_locker_exe_rule, app_locker_dll_rule, "
+                        + " app_locker_script_rule, app_locker_msi_rule, "
+                        + " app_locker_appx_rule, "
+                        + " app_locker_app_id_svc_state, app_locker_app_id_svc_startup, "
+                        + " probe_duration_ms, payload_hash_sha256, collected_at) "
+                        + "VALUES (?, ?, ?, 1, true, true, true, true, "
+                        + "        ?, "
+                        + "        'NOT_CONFIGURED', 'NOT_CONFIGURED', "
+                        + "        'NOT_CONFIGURED', 'NOT_CONFIGURED', "
+                        + "        'NOT_CONFIGURED', "
+                        + "        ?, 'MANUAL', "
+                        + "        100, ?, ?)",
+                UUID.randomUUID(), tenant, device,
+                wdacMode, appIdSvcState, "c".repeat(64), ts);
     }
 }

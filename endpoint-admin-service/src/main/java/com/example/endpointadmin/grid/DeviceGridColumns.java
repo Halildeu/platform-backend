@@ -1,5 +1,9 @@
 package com.example.endpointadmin.grid;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +25,9 @@ import java.util.Map;
  * <p>The {@code sqlExpr} table aliases are fixed by
  * {@code DeviceGridQueryBuilder}: {@code d} = endpoint_devices,
  * {@code h} = latest device-health snapshot (LATERAL), {@code o} = latest
- * outdated-software snapshot (LATERAL).
+ * outdated-software snapshot (LATERAL), {@code pe} = latest compliance
+ * evaluation (LATERAL, WEB-015 v2-a / schema v3), {@code ac} = latest
+ * app-control snapshot (LATERAL, WEB-015 v2-a / schema v3).
  *
  * <p>{@code header} is the Turkish display label used by the {@code /export}
  * path (PR-2b) — it is resolved SERVER-side from this registry, never taken
@@ -30,6 +36,16 @@ import java.util.Map;
 public final class DeviceGridColumns {
 
     private DeviceGridColumns() {}
+
+    /**
+     * Device-grid query/export schema version. Bumped from 2 to 3 with
+     * WEB-015 v2-a (Codex 019e8785 iter-2): adds BE-025 prohibited-
+     * software + AG-041 app-control LATERAL summary columns.
+     */
+    public static final int SCHEMA_VERSION = 3;
+
+    /** Cached SHA-256 over the canonical, comma-joined column id list. */
+    private static volatile String CACHED_COLUMN_IDS_HASH;
 
     /** Filterability class — pins which AG Grid filter family a column accepts. */
     public enum ColumnType {
@@ -98,7 +114,33 @@ public final class DeviceGridColumns {
             new GridColumn("outdated_probe_complete", "o.probe_complete", ColumnType.BOOLEAN, false, "Güncellik Prob Tam"),
             new GridColumn("outdated_upgrade_count", "o.upgrade_count", ColumnType.NUMBER, false, "Güncellenebilir Yazılım"),
             new GridColumn("outdated_upgrade_truncated", "o.upgrade_truncated", ColumnType.BOOLEAN, false, "Güncellik Liste Kırpıldı"),
-            new GridColumn("outdated_collected_at", "o.collected_at", ColumnType.TIMESTAMP, false, "Güncellik Ölçüm Zamanı")
+            new GridColumn("outdated_collected_at", "o.collected_at", ColumnType.TIMESTAMP, false, "Güncellik Ölçüm Zamanı"),
+            // WEB-015 v2-a (schema v3) BE-025 prohibited-software latest-evaluation
+            // summary. pe.id IS NULL => status NO_EVALUATION + decision/count NULL;
+            // otherwise OK + persisted decision + JSONB-safe array length. Codex
+            // 019e8785 iter-2: read from EndpointComplianceEvaluation, NOT
+            // recompute live; mirrors BE-025 per-device GET semantics.
+            new GridColumn("prohibited_status",
+                    "CASE WHEN pe.id IS NULL THEN 'NO_EVALUATION' ELSE 'OK' END",
+                    ColumnType.ENUM, false, "Yasaklı Yazılım Durumu"),
+            new GridColumn("prohibited_decision", "pe.decision",
+                    ColumnType.ENUM, false, "Uygunluk Kararı"),
+            new GridColumn("prohibited_findings_count",
+                    "CASE"
+                            + " WHEN pe.id IS NULL THEN NULL"
+                            + " WHEN jsonb_typeof(pe.evidence #> '{matchedItems,prohibitedInstalled}') = 'array'"
+                            + "   THEN jsonb_array_length(pe.evidence #> '{matchedItems,prohibitedInstalled}')"
+                            + " ELSE 0"
+                            + " END",
+                    ColumnType.NUMBER, false, "Yasaklı Yazılım Bulgu Sayısı"),
+            // WEB-015 v2-a (schema v3) AG-041 app-control latest-snapshot summary.
+            // ac.id IS NULL => both columns NULL (NOT synthesized to UNKNOWN per
+            // Codex 019e8785 iter-2 absorb); persisted UNKNOWN remains a valid
+            // operator signal distinct from no-snapshot.
+            new GridColumn("app_control_wdac_mode", "ac.wdac_mode",
+                    ColumnType.ENUM, false, "WDAC Modu"),
+            new GridColumn("app_control_app_id_svc_state", "ac.app_locker_app_id_svc_state",
+                    ColumnType.ENUM, false, "AppIDSvc Durumu")
     );
 
     private static final Map<String, GridColumn> BY_ID;
@@ -128,5 +170,27 @@ public final class DeviceGridColumns {
     /** Whether {@code colId} is a known, allowlisted column. */
     public static boolean isKnown(String colId) {
         return colId != null && BY_ID.containsKey(colId);
+    }
+
+    /**
+     * Deterministic SHA-256 over the canonical, comma-joined column id
+     * list. Codex 019e8785 iter-2: audit metadata pins both
+     * {@link #SCHEMA_VERSION} and this hash so a stale-or-tampered
+     * registry on a different pod can be detected from the audit row
+     * alone. Computed lazily and cached (registry is immutable).
+     */
+    public static String columnIdsHash() {
+        String cached = CACHED_COLUMN_IDS_HASH;
+        if (cached != null) return cached;
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(
+                    String.join(",", allColumnIds()).getBytes(StandardCharsets.UTF_8));
+            String hex = HexFormat.of().formatHex(digest);
+            CACHED_COLUMN_IDS_HASH = hex;
+            return hex;
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable.", ex);
+        }
     }
 }
