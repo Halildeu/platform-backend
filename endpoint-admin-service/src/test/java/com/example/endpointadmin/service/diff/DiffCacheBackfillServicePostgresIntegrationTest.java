@@ -35,8 +35,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li><b>backfill creates fresh cache row</b> — device with no prior cache
  *       (only ingest path lagged) gets a cache row via the sweep.</li>
  *   <li><b>backfill is idempotent</b> — second sweep against a current cache
- *       row counts as skippedStale (writer source-pair guard reject =
- *       zero-churn).</li>
+ *       row counts as unchanged (writer source-pair guard reject = zero
+ *       churn; Codex 019e8a09 iter-1 must-fix #4 honest naming).</li>
  *   <li><b>backfillBatch explicit deviceIds</b> — scope narrows to just the
  *       provided devices, leaves the rest untouched.</li>
  *   <li><b>backfill per-device exception isolation</b> — when one device's

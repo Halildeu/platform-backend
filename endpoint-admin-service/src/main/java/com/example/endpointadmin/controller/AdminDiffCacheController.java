@@ -19,8 +19,13 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * BE-024c v2-c-pre-2-C-B {@code POST /api/v1/admin/diff-cache/backfill}
  * admin endpoint. Triggers an immediate manual backfill of the diff cache
- * for the resolved tenant (Codex 019e89a3 iter-2 absorb: response shape
- * checked/changed/skippedStale + manager-level authz).
+ * for the resolved tenant. Response shape is
+ * {@code checked / changed / unchanged / errors / elapsedMs} (Codex
+ * 019e8a09 iter-1 must-fix #4 absorb: {@code unchanged} is the truthful
+ * name — the writer's false signal conflates identical-payload no-op +
+ * stale source-pair reject + from-downgrade reject, and the response
+ * cannot disambiguate from this single counter). Manager-level authz
+ * (Codex 019e89a3 iter-2 absorb).
  *
  * <p>The scheduled {@code DiffCacheBackfillWorker} runs every 10 minutes
  * by default. This endpoint exists for operators who need to force an
