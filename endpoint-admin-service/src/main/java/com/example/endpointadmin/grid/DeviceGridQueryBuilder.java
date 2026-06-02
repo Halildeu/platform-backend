@@ -664,6 +664,26 @@ public class DeviceGridQueryBuilder {
                 + "   WHERE os.tenant_id = d.tenant_id AND os.device_id = d.id"
                 + "   ORDER BY os.collected_at DESC, os.created_at DESC, os.id DESC"
                 + "   LIMIT 1"
-                + " ) o ON true";
+                + " ) o ON true"
+                // WEB-015 v2-a (schema v3) BE-025 latest compliance evaluation.
+                // Codex 019e8785 iter-2: read persisted evaluation row, no live
+                // recompute.
+                + " LEFT JOIN LATERAL ("
+                + "   SELECT ce.id, ce.decision, ce.evidence"
+                + "   FROM " + qualified("endpoint_compliance_evaluations") + " ce"
+                + "   WHERE ce.tenant_id = d.tenant_id AND ce.device_id = d.id"
+                + "   ORDER BY ce.evaluated_at DESC, ce.id DESC"
+                + "   LIMIT 1"
+                + " ) pe ON true"
+                // WEB-015 v2-a (schema v3) AG-041 latest app-control snapshot.
+                // Codex 019e8785 iter-2: ac.id IS NULL => no-snapshot, NOT
+                // synthesized to UNKNOWN; persisted UNKNOWN is operator signal.
+                + " LEFT JOIN LATERAL ("
+                + "   SELECT acs.id, acs.wdac_mode, acs.app_locker_app_id_svc_state"
+                + "   FROM " + qualified("endpoint_app_control_snapshots") + " acs"
+                + "   WHERE acs.tenant_id = d.tenant_id AND acs.device_id = d.id"
+                + "   ORDER BY acs.collected_at DESC, acs.created_at DESC, acs.id DESC"
+                + "   LIMIT 1"
+                + " ) ac ON true";
     }
 }
