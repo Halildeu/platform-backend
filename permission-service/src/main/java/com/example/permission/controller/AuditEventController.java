@@ -76,15 +76,24 @@ public class AuditEventController {
             @RequestParam(required = false) String action,
             @RequestParam(required = false) String service,
             @RequestParam(required = false) String level,
-            @RequestParam(required = false, name = "userEmail") String userEmail,
+            // Codex 019e8721 P1 absorb: sprint contract param name is `user`
+            // (email or userId). Repository binds via OR predicate on
+            // performed_by::text + user_email; numeric values match userId,
+            // non-numeric match email.
+            @RequestParam(required = false, name = "user") String userIdentity,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Integer topK) {
 
         Instant dateFrom = parseInstantOrBadRequest(dateFromRaw, "dateFrom");
         Instant dateTo = parseInstantOrBadRequest(dateToRaw, "dateTo");
 
+        // P1 absorb: scope defaults to GENERIC_AUDIT — endpoint gated by
+        // @RequireModule(AUDIT, can_view). IMPERSONATION_AUDIT digest would
+        // be a separate endpoint @RequireModule(IMPERSONATION_AUDIT,
+        // can_view) (PR-D2.5a-followup if/when needed).
         AuditWeeklyDigestResponse response = digestService.aggregate(
-                dateFrom, dateTo, action, service, level, userEmail, search, topK);
+                dateFrom, dateTo, action, service, level, userIdentity, search, topK,
+                com.example.permission.audit.AuditReadScope.GENERIC_AUDIT);
         return ResponseEntity.ok(response);
     }
 

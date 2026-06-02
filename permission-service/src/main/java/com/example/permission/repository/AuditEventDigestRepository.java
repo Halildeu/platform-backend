@@ -1,5 +1,8 @@
 package com.example.permission.repository;
 
+import com.example.permission.audit.AuditReadScope;
+import com.example.permission.audit.ImpersonationActionPredicate;
+import com.example.permission.dto.audit.TopUser;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.Query;
@@ -13,22 +16,32 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * PR-D2.5a (Codex 019e8708 AGREE option A constrained): Native PG queries for
- * weekly audit digest aggregation.
+ * PR-D2.5a (Codex 019e8708 plan + 019e8721 post-impl REVISE absorb):
+ * Native PG queries for weekly audit digest aggregation.
  *
- * <p>Uses ISO week boundaries (Monday 00:00 UTC start). All queries push
- * filtering to the database — NO client-side aggregation over paged events
- * (Codex No Fake Work guard).
+ * <p>iter-1 absorb fixes:
+ * <ul>
+ *   <li><b>P1 read-scope leak</b>: GENERIC_AUDIT scope explicitly excludes
+ *       IMPERSONATION_* events from aggregation. Adds {@code AND
+ *       (action IS NULL OR action NOT IN (:impersonationActions))} predicate.
+ *       IMPERSONATION_AUDIT scope includes only those actions (mirror of
+ *       AuditEventService.matchesScope semantics).</li>
+ *   <li><b>P1 identity fallback</b>: Digest identity =
+ *       {@code COALESCE(performed_by::text, NULLIF(user_email, ''))}.
+ *       Legacy events with only {@code user_email} (no userId) are counted
+ *       in distinctUserCount and topUsers.</li>
+ *   <li><b>P1 timezone correctness</b>: Removed {@code AT TIME ZONE 'UTC'}
+ *       since {@code occurred_at} is {@code TIMESTAMP without time zone}
+ *       and Java {@link Instant} parameters are bound via
+ *       {@link Timestamp#from(Instant)} which writes UTC wall-clock.
+ *       PG {@code DATE_TRUNC('week', ...)} on TIMESTAMP without TZ uses
+ *       wall-clock — deterministic UTC if column written UTC.</li>
+ * </ul>
  *
- * <p>Four query orchestration:
- * <ol>
- *   <li>weekTotals: per-week total + distinct user count</li>
- *   <li>actionBreakdown: per-week action histogram</li>
- *   <li>serviceBreakdown: per-week service histogram</li>
- *   <li>topUsers: per-week top-K by event count (ROW_NUMBER tie-break)</li>
- * </ol>
+ * <p>All aggregation pushed to DB (Codex No Fake Work guard).
  */
 @Repository
 public class AuditEventDigestRepository {
@@ -36,88 +49,81 @@ public class AuditEventDigestRepository {
     @PersistenceContext
     private EntityManager entityManager;
 
-    /**
-     * Per-week total + distinct user counts.
-     *
-     * @return ordered by week_start ASC; each row: [weekStart, isoYear, isoWeek, totalCount, distinctUserCount]
-     */
     public List<Object[]> findWeeklyTotals(Instant dateFrom,
                                            Instant dateTo,
                                            String action,
                                            String service,
                                            String level,
-                                           String userEmail,
-                                           String search) {
+                                           String userIdentity,
+                                           String search,
+                                           AuditReadScope scope) {
         String sql = "SELECT " +
-                "  DATE_TRUNC('week', occurred_at AT TIME ZONE 'UTC') AS week_start, " +
-                "  EXTRACT(ISOYEAR FROM occurred_at AT TIME ZONE 'UTC')::int AS iso_year, " +
-                "  EXTRACT(WEEK FROM occurred_at AT TIME ZONE 'UTC')::int AS iso_week, " +
+                "  DATE_TRUNC('week', occurred_at) AS week_start, " +
+                "  EXTRACT(ISOYEAR FROM occurred_at)::int AS iso_year, " +
+                "  EXTRACT(WEEK FROM occurred_at)::int AS iso_week, " +
                 "  COUNT(*) AS total_count, " +
-                "  COUNT(DISTINCT performed_by) AS distinct_user_count " +
+                "  COUNT(DISTINCT COALESCE(performed_by::text, NULLIF(user_email, ''))) AS distinct_user_count " +
                 "FROM permission_audit_events " +
                 "WHERE occurred_at >= :dateFrom AND occurred_at < :dateTo " +
-                buildFilterClauses(action, service, level, userEmail, search) +
+                buildScopeClause(scope) +
+                buildFilterClauses(action, service, level, userIdentity, search) +
                 "GROUP BY week_start, iso_year, iso_week " +
                 "ORDER BY week_start ASC";
 
-        Query query = bindCommonFilters(entityManager.createNativeQuery(sql),
-                dateFrom, dateTo, action, service, level, userEmail, search);
+        Query query = bindFilters(entityManager.createNativeQuery(sql),
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = query.getResultList();
         return rows;
     }
 
-    /**
-     * Per-week action histogram (action -> count).
-     *
-     * @return ordered by week_start ASC, then action ASC; each row: [weekStart, action, count]
-     */
     public List<Object[]> findActionBreakdown(Instant dateFrom,
                                               Instant dateTo,
                                               String action,
                                               String service,
                                               String level,
-                                              String userEmail,
-                                              String search) {
+                                              String userIdentity,
+                                              String search,
+                                              AuditReadScope scope) {
         String sql = "SELECT " +
-                "  DATE_TRUNC('week', occurred_at AT TIME ZONE 'UTC') AS week_start, " +
+                "  DATE_TRUNC('week', occurred_at) AS week_start, " +
                 "  COALESCE(action, '<null>') AS action_key, " +
                 "  COUNT(*) AS action_count " +
                 "FROM permission_audit_events " +
                 "WHERE occurred_at >= :dateFrom AND occurred_at < :dateTo " +
-                buildFilterClauses(action, service, level, userEmail, search) +
+                buildScopeClause(scope) +
+                buildFilterClauses(action, service, level, userIdentity, search) +
                 "GROUP BY week_start, action_key " +
                 "ORDER BY week_start ASC, action_key ASC";
 
-        Query query = bindCommonFilters(entityManager.createNativeQuery(sql),
-                dateFrom, dateTo, action, service, level, userEmail, search);
+        Query query = bindFilters(entityManager.createNativeQuery(sql),
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = query.getResultList();
         return rows;
     }
 
-    /**
-     * Per-week service histogram (service -> count).
-     */
     public List<Object[]> findServiceBreakdown(Instant dateFrom,
                                                Instant dateTo,
                                                String action,
                                                String service,
                                                String level,
-                                               String userEmail,
-                                               String search) {
+                                               String userIdentity,
+                                               String search,
+                                               AuditReadScope scope) {
         String sql = "SELECT " +
-                "  DATE_TRUNC('week', occurred_at AT TIME ZONE 'UTC') AS week_start, " +
+                "  DATE_TRUNC('week', occurred_at) AS week_start, " +
                 "  COALESCE(service, '<null>') AS service_key, " +
                 "  COUNT(*) AS service_count " +
                 "FROM permission_audit_events " +
                 "WHERE occurred_at >= :dateFrom AND occurred_at < :dateTo " +
-                buildFilterClauses(action, service, level, userEmail, search) +
+                buildScopeClause(scope) +
+                buildFilterClauses(action, service, level, userIdentity, search) +
                 "GROUP BY week_start, service_key " +
                 "ORDER BY week_start ASC, service_key ASC";
 
-        Query query = bindCommonFilters(entityManager.createNativeQuery(sql),
-                dateFrom, dateTo, action, service, level, userEmail, search);
+        Query query = bindFilters(entityManager.createNativeQuery(sql),
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = query.getResultList();
         return rows;
@@ -126,42 +132,46 @@ public class AuditEventDigestRepository {
     /**
      * Per-week top-K users by event count.
      *
-     * <p>Deterministic tie-break: count DESC, performed_by ASC. Users with
-     * null {@code performed_by} (system/anonymous events) excluded from top-K
-     * leaderboard.
+     * <p>Identity key: {@code COALESCE(performed_by::text, NULLIF(user_email, ''))}.
+     * Deterministic tie-break: count DESC, identity_key ASC.
      *
-     * @return ordered by week_start ASC, then rank ASC; each row: [weekStart, performedBy (Long), userEmail (String), eventCount]
+     * @return rows: [weekStart, performedBy (Long, may be null), userEmail (String, may be null), eventCount]
      */
     public List<Object[]> findTopUsersPerWeek(Instant dateFrom,
                                               Instant dateTo,
                                               String action,
                                               String service,
                                               String level,
-                                              String userEmail,
+                                              String userIdentity,
                                               String search,
+                                              AuditReadScope scope,
                                               int topK) {
+        // Identity key NOT NULL guard: exclude rows where BOTH performed_by
+        // and user_email are null (truly anonymous system events).
         String sql = "SELECT week_start, performed_by, user_email, event_count " +
                 "FROM ( " +
                 "  SELECT " +
-                "    DATE_TRUNC('week', occurred_at AT TIME ZONE 'UTC') AS week_start, " +
-                "    performed_by, " +
+                "    DATE_TRUNC('week', occurred_at) AS week_start, " +
+                "    COALESCE(performed_by::text, NULLIF(user_email, '')) AS identity_key, " +
+                "    MAX(performed_by) AS performed_by, " +
                 "    MAX(user_email) AS user_email, " +
                 "    COUNT(*) AS event_count, " +
                 "    ROW_NUMBER() OVER ( " +
-                "      PARTITION BY DATE_TRUNC('week', occurred_at AT TIME ZONE 'UTC') " +
-                "      ORDER BY COUNT(*) DESC, performed_by ASC " +
+                "      PARTITION BY DATE_TRUNC('week', occurred_at) " +
+                "      ORDER BY COUNT(*) DESC, COALESCE(performed_by::text, NULLIF(user_email, '')) ASC " +
                 "    ) AS rn " +
                 "  FROM permission_audit_events " +
                 "  WHERE occurred_at >= :dateFrom AND occurred_at < :dateTo " +
-                "    AND performed_by IS NOT NULL " +
-                buildFilterClauses(action, service, level, userEmail, search) +
-                "  GROUP BY week_start, performed_by " +
+                "    AND (performed_by IS NOT NULL OR (user_email IS NOT NULL AND user_email <> '')) " +
+                buildScopeClause(scope) +
+                buildFilterClauses(action, service, level, userIdentity, search) +
+                "  GROUP BY week_start, identity_key " +
                 ") ranked " +
                 "WHERE rn <= :topK " +
                 "ORDER BY week_start ASC, rn ASC";
 
-        Query query = bindCommonFilters(entityManager.createNativeQuery(sql),
-                dateFrom, dateTo, action, service, level, userEmail, search);
+        Query query = bindFilters(entityManager.createNativeQuery(sql),
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         query.setParameter("topK", topK);
         @SuppressWarnings("unchecked")
         List<Object[]> rows = query.getResultList();
@@ -170,10 +180,21 @@ public class AuditEventDigestRepository {
 
     // ──────────────────────────────────────────────────────────────────────
 
+    /**
+     * P1 read-scope clause (Codex 019e8721 absorb): GENERIC_AUDIT excludes
+     * IMPERSONATION_* actions; IMPERSONATION_AUDIT includes only those.
+     */
+    private static String buildScopeClause(AuditReadScope scope) {
+        return switch (scope) {
+            case GENERIC_AUDIT -> "AND (action IS NULL OR action NOT IN (:impersonationActions)) ";
+            case IMPERSONATION_AUDIT -> "AND action IN (:impersonationActions) ";
+        };
+    }
+
     private static String buildFilterClauses(String action,
                                              String service,
                                              String level,
-                                             String userEmail,
+                                             String userIdentity,
                                              String search) {
         StringBuilder sb = new StringBuilder();
         if (action != null && !action.isBlank()) {
@@ -185,26 +206,31 @@ public class AuditEventDigestRepository {
         if (level != null && !level.isBlank()) {
             sb.append("AND level = :level ");
         }
-        if (userEmail != null && !userEmail.isBlank()) {
-            sb.append("AND user_email = :userEmail ");
+        if (userIdentity != null && !userIdentity.isBlank()) {
+            // Identity filter: try numeric -> performed_by; else string -> user_email.
+            // SQL handles both via OR — Java caller binds :userIdAsLong (nullable) +
+            // :userEmail (nullable). Server-side normalization happens in caller.
+            sb.append("AND (performed_by::text = :userIdentity OR user_email = :userIdentity) ");
         }
         if (search != null && !search.isBlank()) {
-            // Loose search across user_email and details for parity with /api/audit/events
             sb.append("AND (user_email ILIKE :search OR details ILIKE :search) ");
         }
         return sb.toString();
     }
 
-    private static Query bindCommonFilters(Query query,
-                                           Instant dateFrom,
-                                           Instant dateTo,
-                                           String action,
-                                           String service,
-                                           String level,
-                                           String userEmail,
-                                           String search) {
+    private static Query bindFilters(Query query,
+                                     Instant dateFrom,
+                                     Instant dateTo,
+                                     String action,
+                                     String service,
+                                     String level,
+                                     String userIdentity,
+                                     String search,
+                                     AuditReadScope scope) {
         query.setParameter("dateFrom", Timestamp.from(dateFrom));
         query.setParameter("dateTo", Timestamp.from(dateTo));
+        Set<String> impersonationActions = ImpersonationActionPredicate.allActions();
+        query.setParameter("impersonationActions", impersonationActions);
         if (action != null && !action.isBlank()) {
             query.setParameter("action", action);
         }
@@ -214,8 +240,8 @@ public class AuditEventDigestRepository {
         if (level != null && !level.isBlank()) {
             query.setParameter("level", level);
         }
-        if (userEmail != null && !userEmail.isBlank()) {
-            query.setParameter("userEmail", userEmail);
+        if (userIdentity != null && !userIdentity.isBlank()) {
+            query.setParameter("userIdentity", userIdentity);
         }
         if (search != null && !search.isBlank()) {
             query.setParameter("search", "%" + search + "%");
@@ -224,29 +250,24 @@ public class AuditEventDigestRepository {
     }
 
     /**
-     * Convert a {@link Timestamp} (PG TIMESTAMP) to {@link Instant} treating
-     * the value as UTC (no local timezone shift). The native query selects
-     * {@code DATE_TRUNC('week', occurred_at AT TIME ZONE 'UTC')} which returns
-     * a timestamp WITHOUT timezone marker on most JDBC drivers; we interpret
-     * it as UTC explicitly to avoid host-timezone drift.
+     * Convert a {@link Timestamp} (PG TIMESTAMP without time zone) to
+     * {@link Instant} treating the wall-clock value as UTC.
+     *
+     * <p>Java code writes {@code Timestamp.from(instant)} which stores the
+     * UTC wall-clock; the inverse read here recovers the {@link Instant}
+     * without host-timezone drift regardless of JVM default timezone.
      */
     public static Instant timestampToInstantUtc(Timestamp ts) {
         if (ts == null) return null;
-        // Treat the wall-clock value as UTC, NOT local.
         return OffsetDateTime.of(ts.toLocalDateTime(), ZoneOffset.UTC).toInstant();
     }
 
-    /**
-     * Build a fresh dense map preserving insertion order for stable JSON
-     * serialization.
-     */
     public static <K, V> Map<K, V> linkedMap() {
         return new LinkedHashMap<>();
     }
 
     /**
-     * Helper: convert a raw breakdown row list into per-week dense maps.
-     * Row shape: [weekStart (Timestamp), key (String), count (Number)].
+     * Bucket per-week breakdown rows into {@code weekStart -> (key -> count)}.
      */
     public static Map<Instant, Map<String, Long>> bucketBreakdown(List<Object[]> rows) {
         Map<Instant, Map<String, Long>> out = new LinkedHashMap<>();
@@ -260,18 +281,19 @@ public class AuditEventDigestRepository {
     }
 
     /**
-     * Helper: convert top-users rows into per-week ordered lists.
-     * Row shape: [weekStart (Timestamp), performedBy (Number), userEmail (String), eventCount (Number)].
+     * Bucket top-users rows into {@code weekStart -> List<TopUser>}.
+     * Row shape: [weekStart, performedBy (Number, may be null), userEmail
+     * (String, may be null), eventCount].
      */
-    public static Map<Instant, List<com.example.permission.dto.audit.TopUser>> bucketTopUsers(List<Object[]> rows) {
-        Map<Instant, List<com.example.permission.dto.audit.TopUser>> out = new LinkedHashMap<>();
+    public static Map<Instant, List<TopUser>> bucketTopUsers(List<Object[]> rows) {
+        Map<Instant, List<TopUser>> out = new LinkedHashMap<>();
         for (Object[] r : rows) {
             Instant weekStart = timestampToInstantUtc((Timestamp) r[0]);
             Long performedBy = r[1] == null ? null : ((Number) r[1]).longValue();
             String userEmail = (String) r[2];
             long count = ((Number) r[3]).longValue();
             out.computeIfAbsent(weekStart, k -> new ArrayList<>())
-                    .add(new com.example.permission.dto.audit.TopUser(performedBy, userEmail, count));
+                    .add(new TopUser(performedBy, userEmail, count));
         }
         return out;
     }

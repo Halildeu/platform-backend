@@ -1,5 +1,6 @@
 package com.example.permission.service;
 
+import com.example.permission.audit.AuditReadScope;
 import com.example.permission.dto.audit.AuditWeeklyDigestResponse;
 import com.example.permission.dto.audit.TopUser;
 import com.example.permission.dto.audit.WeeklyDigestBucket;
@@ -71,9 +72,10 @@ public class AuditEventDigestService {
                                                String action,
                                                String service,
                                                String level,
-                                               String userEmail,
+                                               String userIdentity,
                                                String search,
-                                               Integer topKRaw) {
+                                               Integer topKRaw,
+                                               AuditReadScope scope) {
         // ── Validation (fail-closed, 400 on violation) ────────────────────
         if (dateFrom == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -87,10 +89,12 @@ public class AuditEventDigestService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "dateFrom must be strictly before dateTo");
         }
-        long rangeDays = Duration.between(dateFrom, dateTo).toDays();
-        if (rangeDays > MAX_RANGE_DAYS) {
+        // P2 absorb (Codex 019e8721): full Duration compare, not toDays() truncation
+        Duration range = Duration.between(dateFrom, dateTo);
+        Duration maxRange = Duration.ofDays(MAX_RANGE_DAYS);
+        if (range.compareTo(maxRange) > 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Date range exceeds max " + MAX_RANGE_DAYS + " days (got " + rangeDays + ")");
+                    "Date range exceeds max " + MAX_RANGE_DAYS + " days (got " + range + ")");
         }
 
         int topK = topKRaw == null ? DEFAULT_TOP_K : topKRaw;
@@ -99,15 +103,20 @@ public class AuditEventDigestService {
                     "topK out of bounds [1, " + MAX_TOP_K + "] (got " + topK + ")");
         }
 
+        if (scope == null) {
+            // Default to GENERIC_AUDIT — never silently expand caller's view.
+            scope = AuditReadScope.GENERIC_AUDIT;
+        }
+
         // ── Run 4 native queries ──────────────────────────────────────────
         List<Object[]> totalRows = digestRepository.findWeeklyTotals(
-                dateFrom, dateTo, action, service, level, userEmail, search);
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         List<Object[]> actionRows = digestRepository.findActionBreakdown(
-                dateFrom, dateTo, action, service, level, userEmail, search);
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         List<Object[]> serviceRows = digestRepository.findServiceBreakdown(
-                dateFrom, dateTo, action, service, level, userEmail, search);
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope);
         List<Object[]> topUserRows = digestRepository.findTopUsersPerWeek(
-                dateFrom, dateTo, action, service, level, userEmail, search, topK);
+                dateFrom, dateTo, action, service, level, userIdentity, search, scope, topK);
 
         // ── Merge into per-week buckets (preserves week_start ASC order) ──
         Map<Instant, Map<String, Long>> actionByWeek =
@@ -160,8 +169,9 @@ public class AuditEventDigestService {
         if (action != null && !action.isBlank()) filterEcho.put("action", action);
         if (service != null && !service.isBlank()) filterEcho.put("service", service);
         if (level != null && !level.isBlank()) filterEcho.put("level", level);
-        if (userEmail != null && !userEmail.isBlank()) filterEcho.put("userEmail", userEmail);
+        if (userIdentity != null && !userIdentity.isBlank()) filterEcho.put("user", userIdentity);
         if (search != null && !search.isBlank()) filterEcho.put("search", search);
+        filterEcho.put("scope", scope.name());
 
         return new AuditWeeklyDigestResponse(weeks, filterEcho, Instant.now());
     }

@@ -1,5 +1,6 @@
 package com.example.permission.service;
 
+import com.example.permission.audit.AuditReadScope;
 import com.example.permission.dto.audit.AuditWeeklyDigestResponse;
 import com.example.permission.repository.AuditEventDigestRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,7 +49,7 @@ class AuditEventDigestServiceTest {
     @Test
     void rejectsNullDateFrom() {
         assertThatThrownBy(() -> service.aggregate(
-                null, DATE_TO, null, null, null, null, null, null))
+                null, DATE_TO, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("dateFrom required");
     }
@@ -56,7 +57,7 @@ class AuditEventDigestServiceTest {
     @Test
     void rejectsNullDateTo() {
         assertThatThrownBy(() -> service.aggregate(
-                DATE_FROM, null, null, null, null, null, null, null))
+                DATE_FROM, null, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("dateTo required");
     }
@@ -65,13 +66,13 @@ class AuditEventDigestServiceTest {
     void rejectsDateFromEqualsOrAfterDateTo() {
         Instant equal = DATE_FROM;
         assertThatThrownBy(() -> service.aggregate(
-                DATE_FROM, equal, null, null, null, null, null, null))
+                DATE_FROM, equal, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("strictly before");
 
         Instant earlier = DATE_FROM.minusSeconds(1);
         assertThatThrownBy(() -> service.aggregate(
-                DATE_FROM, earlier, null, null, null, null, null, null))
+                DATE_FROM, earlier, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("strictly before");
     }
@@ -81,7 +82,7 @@ class AuditEventDigestServiceTest {
         Instant tooFar = DATE_FROM.plusSeconds(
                 (AuditEventDigestService.MAX_RANGE_DAYS + 1) * 86_400L);
         assertThatThrownBy(() -> service.aggregate(
-                DATE_FROM, tooFar, null, null, null, null, null, null))
+                DATE_FROM, tooFar, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("Date range exceeds max");
     }
@@ -89,7 +90,7 @@ class AuditEventDigestServiceTest {
     @Test
     void rejectsTopKOutOfBoundsLow() {
         assertThatThrownBy(() -> service.aggregate(
-                DATE_FROM, DATE_TO, null, null, null, null, null, 0))
+                DATE_FROM, DATE_TO, null, null, null, null, null, 0, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("topK out of bounds");
     }
@@ -98,24 +99,24 @@ class AuditEventDigestServiceTest {
     void rejectsTopKOutOfBoundsHigh() {
         assertThatThrownBy(() -> service.aggregate(
                 DATE_FROM, DATE_TO, null, null, null, null, null,
-                AuditEventDigestService.MAX_TOP_K + 1))
+                AuditEventDigestService.MAX_TOP_K + 1, AuditReadScope.GENERIC_AUDIT))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("topK out of bounds");
     }
 
     @Test
     void emptyResultReturns200WithEmptyWeeks() {
-        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
-        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
-        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
-        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(Collections.emptyList());
 
         AuditWeeklyDigestResponse response = service.aggregate(
-                DATE_FROM, DATE_TO, null, null, null, null, null, null);
+                DATE_FROM, DATE_TO, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT);
 
         assertThat(response.weeks()).isEmpty();
         assertThat(response.computedAt()).isNotNull();
@@ -131,31 +132,31 @@ class AuditEventDigestServiceTest {
         Timestamp weekStartTs = Timestamp.valueOf("2026-05-25 00:00:00");
 
         // findWeeklyTotals returns one row: [weekStart, isoYear, isoWeek, totalCount, distinctUserCount]
-        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.<Object[]>of(new Object[]{weekStartTs, 2026, 22, 1247L, 38L}));
 
         // Action breakdown: 2 actions in this week
-        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.<Object[]>of(
                         new Object[]{weekStartTs, "LOGIN", 800L},
                         new Object[]{weekStartTs, "LOGOUT", 447L}
                 ));
 
         // Service breakdown: 1 service
-        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(List.<Object[]>of(
                         new Object[]{weekStartTs, "auth-service", 1247L}
                 ));
 
         // Top users: 2 users
-        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(
                         new Object[]{weekStartTs, 1L, "admin@example.com", 412L},
                         new Object[]{weekStartTs, 2L, "user2@example.com", 200L}
                 ));
 
         AuditWeeklyDigestResponse response = service.aggregate(
-                DATE_FROM, DATE_TO, null, null, null, null, null, null);
+                DATE_FROM, DATE_TO, null, null, null, null, null, null, AuditReadScope.GENERIC_AUDIT);
 
         assertThat(response.weeks()).hasSize(1);
         var bucket = response.weeks().get(0);
@@ -177,17 +178,17 @@ class AuditEventDigestServiceTest {
 
     @Test
     void filterEchoIncludesOnlyProvidedFilters() {
-        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findWeeklyTotals(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
-        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findActionBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
-        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any()))
+        when(repository.findServiceBreakdown(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
-        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), anyInt()))
+        when(repository.findTopUsersPerWeek(any(), any(), any(), any(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(Collections.emptyList());
 
         AuditWeeklyDigestResponse response = service.aggregate(
-                DATE_FROM, DATE_TO, "LOGIN", null, "INFO", null, "search-term", 10);
+                DATE_FROM, DATE_TO, "LOGIN", null, "INFO", null, "search-term", 10, AuditReadScope.GENERIC_AUDIT);
 
         assertThat(response.filterEcho())
                 .containsEntry("action", "LOGIN")
