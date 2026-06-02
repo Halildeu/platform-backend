@@ -248,13 +248,22 @@ class DiffCacheConstraintsPostgresIntegrationTest {
                                       String status,
                                       int addedCount, int removedCount, int versionChangedCount) {
         Timestamp now = Timestamp.from(Instant.parse("2026-06-02T10:00:00Z"));
+        // V28 source-pair ordering tuple columns (BE-024c v2-c-pre-2-C-A) are
+        // NOT NULL post-migration. Constraint tests focus on the older
+        // CHECK/UNIQUE invariants — feed the legacy epoch/zero sentinel so
+        // the INSERT satisfies V28 NOT NULL without changing what the test
+        // asserts about.
+        Timestamp epoch = Timestamp.from(Instant.EPOCH);
+        UUID zeroUuid = UUID.fromString("00000000-0000-0000-0000-000000000000");
         jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_software_diff_cache "
                         + "(id, tenant_id, device_id, from_history_id, to_history_id, "
                         + " status, added_count, removed_count, version_changed_count, "
+                        + " source_captured_at, source_created_at, source_row_id, "
                         + " computed_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 id, tenant, device, fromHistoryId, toHistoryId,
-                status, addedCount, removedCount, versionChangedCount, now);
+                status, addedCount, removedCount, versionChangedCount,
+                epoch, epoch, zeroUuid, now);
     }
 
     private void insertOutdatedCache(UUID id, UUID tenant, UUID device,
@@ -264,13 +273,20 @@ class DiffCacheConstraintsPostgresIntegrationTest {
                                       int versionChangedCount,
                                       int availableVersionBumpedCount) {
         Timestamp now = Timestamp.from(Instant.parse("2026-06-02T10:00:00Z"));
+        // V28 source-pair ordering tuple columns — see note in
+        // insertSoftwareCache above.
+        Timestamp epoch = Timestamp.from(Instant.EPOCH);
+        UUID zeroUuid = UUID.fromString("00000000-0000-0000-0000-000000000000");
         jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_outdated_software_diff_cache "
                         + "(id, tenant_id, device_id, from_snapshot_id, to_snapshot_id, "
                         + " status, added_count, removed_count, version_changed_count, "
-                        + " available_version_bumped_count, computed_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        + " available_version_bumped_count, "
+                        + " source_captured_at, source_created_at, source_row_id, "
+                        + " computed_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 id, tenant, device, fromSnapshotId, toSnapshotId,
                 status, addedCount, removedCount,
-                versionChangedCount, availableVersionBumpedCount, now);
+                versionChangedCount, availableVersionBumpedCount,
+                epoch, epoch, zeroUuid, now);
     }
 }

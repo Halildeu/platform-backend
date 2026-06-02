@@ -256,6 +256,73 @@ class DiffCacheServiceSourceOrderingPostgresIntegrationTest {
         assertThat(row.get("to_snapshot_id")).isEqualTo(sNewerCreated);
     }
 
+    // ─────────────────────────── Category B+ — row_id tiebreaker (Codex 019e89e8 iter-5) ─────────────────────────
+
+    @Test
+    void software_sameCapturedAtSameCreatedAt_smallerRowId_isBlockedAsStale() {
+        // Codex 019e89e8 iter-5 narrow-required test: same captured_at,
+        // same created_at, only source_row_id (the to_history_id) decides
+        // ordering via the third tuple component
+        //   `EXCLUDED.source_row_id >= c.source_row_id`.
+        // Uses deterministic UUIDs so PostgreSQL UUID ordering is
+        // intentional — `...002` > `...001` lexicographically.
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(tenant);
+        Instant captured = Instant.parse("2026-06-02T10:00:00Z");
+        Instant created = Instant.parse("2026-06-02T10:00:01Z");
+        // From-history is unrelated; gen normally so it doesn't collide
+        // with the to-history sentinels.
+        UUID hFrom = insertSoftwareHistory(tenant, device, captured, created);
+        UUID hSmallerRow = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UUID hLargerRow  = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        insertSoftwareHistoryWithId(tenant, device, hSmallerRow, captured, created);
+        insertSoftwareHistoryWithId(tenant, device, hLargerRow, captured, created);
+
+        // Cache the larger-row tuple first.
+        diffCacheService.upsertSoftwareDiffCache(tenant, device,
+                SoftwareDiffSummary.ok(hFrom, hLargerRow, 9, 0, 0, captured, created));
+
+        // Stale attempt: smaller row_id with same (captured, created) tuple.
+        // Guard: EXCLUDED.source_row_id >= c.source_row_id —
+        // `...001` >= `...002` is false → blocked.
+        boolean wrote = diffCacheService.upsertSoftwareDiffCache(tenant, device,
+                SoftwareDiffSummary.ok(hFrom, hSmallerRow, 0, 0, 0, captured, created));
+
+        assertThat(wrote).as("same captured_at + same created_at smaller row_id must be blocked")
+                .isFalse();
+        Map<String, Object> row = readSoftwareCacheRow(tenant, device);
+        assertThat(row.get("to_history_id")).isEqualTo(hLargerRow);
+        assertThat(row.get("source_row_id")).isEqualTo(hLargerRow);
+        assertThat(row.get("added_count")).isEqualTo(9);
+    }
+
+    @Test
+    void outdated_sameCollectedAtSameCreatedAt_smallerRowId_isBlockedAsStale() {
+        // Outdated mirror — SQL is duplicated in a second UPSERT path
+        // (Codex 019e89e8 iter-5 explicit ask).
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(tenant);
+        Instant collected = Instant.parse("2026-06-02T10:00:00Z");
+        Instant created = Instant.parse("2026-06-02T10:00:01Z");
+        UUID sFrom = insertOutdatedSnapshot(tenant, device, collected, created);
+        UUID sSmallerRow = UUID.fromString("00000000-0000-0000-0000-000000000011");
+        UUID sLargerRow  = UUID.fromString("00000000-0000-0000-0000-000000000012");
+        insertOutdatedSnapshotWithId(tenant, device, sSmallerRow, collected, created);
+        insertOutdatedSnapshotWithId(tenant, device, sLargerRow,  collected, created);
+
+        diffCacheService.upsertOutdatedDiffCache(tenant, device,
+                OutdatedDiffSummary.ok(sFrom, sLargerRow, 6, 5, 4, 3, collected, created));
+
+        boolean wrote = diffCacheService.upsertOutdatedDiffCache(tenant, device,
+                OutdatedDiffSummary.ok(sFrom, sSmallerRow, 0, 0, 0, 0, collected, created));
+
+        assertThat(wrote).as("outdated same collected_at + same created_at smaller row_id block")
+                .isFalse();
+        Map<String, Object> row = readOutdatedCacheRow(tenant, device);
+        assertThat(row.get("to_snapshot_id")).isEqualTo(sLargerRow);
+        assertThat(row.get("source_row_id")).isEqualTo(sLargerRow);
+    }
+
     // ─────────────────────────── seed helpers ─────────────────────────
 
     private UUID insertDevice(UUID tenant) {
@@ -275,7 +342,19 @@ class DiffCacheServiceSourceOrderingPostgresIntegrationTest {
      */
     private UUID insertSoftwareHistory(UUID tenant, UUID device,
                                         Instant capturedAt, Instant createdAt) {
-        UUID id = UUID.randomUUID();
+        return insertSoftwareHistoryWithId(tenant, device, UUID.randomUUID(),
+                capturedAt, createdAt);
+    }
+
+    /**
+     * Variant that lets the caller pin the row id — used by the Cat B+
+     * row_id tiebreaker tests so PostgreSQL UUID ordering is intentional
+     * and the guard's {@code EXCLUDED.source_row_id >= c.source_row_id}
+     * third-tuple-component is exercised deterministically (Codex 019e89e8
+     * iter-5 explicit ask).
+     */
+    private UUID insertSoftwareHistoryWithId(UUID tenant, UUID device, UUID id,
+                                              Instant capturedAt, Instant createdAt) {
         Timestamp captured = Timestamp.from(capturedAt);
         Timestamp created = Timestamp.from(createdAt);
         String seed = id.toString().toLowerCase().replaceAll("[^0-9a-f]", "");
@@ -292,7 +371,13 @@ class DiffCacheServiceSourceOrderingPostgresIntegrationTest {
 
     private UUID insertOutdatedSnapshot(UUID tenant, UUID device,
                                          Instant collectedAt, Instant createdAt) {
-        UUID id = UUID.randomUUID();
+        return insertOutdatedSnapshotWithId(tenant, device, UUID.randomUUID(),
+                collectedAt, createdAt);
+    }
+
+    /** Variant for the Cat B+ row_id tiebreaker outdated mirror. */
+    private UUID insertOutdatedSnapshotWithId(UUID tenant, UUID device, UUID id,
+                                               Instant collectedAt, Instant createdAt) {
         Timestamp collected = Timestamp.from(collectedAt);
         Timestamp created = Timestamp.from(createdAt);
         String hash = id.toString().replace("-", "");
