@@ -317,6 +317,65 @@ class DeviceGridExportPostgresIntegrationTest {
     }
 
     @Test
+    void v2bLateralsApplyCreatedAtTiebreaker_whenCollectedAtTies() {
+        // Codex 019e87bc iter-2 must_fix verify: when two diagnostics
+        // snapshots share collected_at but have distinct created_at, the
+        // grid must surface the LATER created_at (canonical contract
+        // `collected_at DESC, created_at DESC, id DESC`). A missing
+        // tiebreaker would leave the row choice up to the PG planner —
+        // and silently disagree with drawer /latest.
+        UUID tenant = UUID.randomUUID();
+        UUID device = UUID.randomUUID();
+        insertDevice(device, tenant, "tiebreak");
+
+        Instant sameCollected = Instant.parse("2026-06-02T11:00:00Z");
+        Instant earlierCreated = Instant.parse("2026-06-02T11:00:30Z");
+        Instant laterCreated = Instant.parse("2026-06-02T11:01:00Z");
+
+        // Two diagnostics rows: same collected_at, different created_at +
+        // distinct latency. The LATER created_at MUST be the one the
+        // LATERAL returns. Use the raw INSERT path so we can pin
+        // created_at deterministically (the helper would default it to
+        // now()).
+        insertDiagnosticsSnapshotWithCreatedAt(tenant, device, sameCollected,
+                100, "DNS_TIMEOUT", sameCollected.minusSeconds(5),
+                "early", earlierCreated, "1");
+        insertDiagnosticsSnapshotWithCreatedAt(tenant, device, sameCollected,
+                999, "NEXT_COMMAND_TIMEOUT", sameCollected.minusSeconds(5),
+                "late", laterCreated, "2");
+
+        DeviceGridQueryBuilder b = builder();
+        List<GridColumn> cols = b.resolveExportColumns(ExportMode.RAW, null);
+        GridSql q = b.buildExportQuery(tenant, ExportMode.RAW,
+                new DeviceGridExportRequest("csv", "raw", null, null, null, null), cols);
+        List<ExportColumn> exportColumns = cols.stream()
+                .map(c -> new ExportColumn(c.colId(), c.header()))
+                .toList();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        CsvStreamingExporter.exportWithColumns(
+                new NamedParameterJdbcTemplate(jdbc.getDataSource()),
+                new ExportQuery(q.sql(), q.params()), exportColumns, out);
+        byte[] bytes = out.toByteArray();
+        String csv = new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
+        String[] lines = csv.split("\\r?\\n");
+
+        int hostIdx = DeviceGridColumns.allColumnIds().indexOf("hostname");
+        int latencyIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("diagnostics_last_poll_latency_ms");
+        int codeIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("diagnostics_last_error_code");
+
+        String[] row = dataRow(lines, hostIdx, "tiebreak");
+        assertThat(row[latencyIdx])
+                .as("created_at tiebreaker must surface the LATER snapshot's latency")
+                .isEqualTo("999");
+        assertThat(row[codeIdx])
+                .as("created_at tiebreaker must surface the LATER snapshot's error code")
+                .isEqualTo("NEXT_COMMAND_TIMEOUT");
+    }
+
+    @Test
     void preflightCountsTenantRows() {
         UUID tenant = UUID.randomUUID();
         insertDevice(UUID.randomUUID(), tenant, "p1");
@@ -477,6 +536,48 @@ class DeviceGridExportPostgresIntegrationTest {
                 lastPollLatencyMs,
                 lastErrorCode, errAt,
                 lastErrorSummary, "d".repeat(64), coll);
+    }
+
+    /**
+     * Tiebreaker-friendly variant of {@link #insertDiagnosticsSnapshot} that
+     * pins {@code created_at} deterministically. The base helper relies on
+     * the V23 default {@code DEFAULT now()} which collapses two inserts in
+     * the same statement-set to the same value and defeats the tiebreaker
+     * assertion. Codex 019e87bc iter-2 verify lane only.
+     */
+    private void insertDiagnosticsSnapshotWithCreatedAt(
+            UUID tenant, UUID device, Instant collectedAt,
+            int lastPollLatencyMs, String lastErrorCode,
+            Instant lastErrorOccurredAt, String lastErrorSummary,
+            Instant createdAt, String payloadHashSeed) {
+        Timestamp coll = Timestamp.from(collectedAt);
+        Timestamp errAt = Timestamp.from(lastErrorOccurredAt);
+        Timestamp created = Timestamp.from(createdAt);
+        // payload_hash_sha256 must be unique per (tenant, device) under the
+        // V23 idempotency UNIQUE. Vary the seed across the two seeded rows.
+        String payloadHash = payloadHashSeed.repeat(64).substring(0, 64);
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_diagnostics_snapshots "
+                        + "(id, tenant_id, device_id, schema_version, "
+                        + " supported, probe_complete, "
+                        + " agent_version, config_hash, last_poll_latency_ms, "
+                        + " backend_dns_reachable, backend_tls_valid, "
+                        + " last_error_code, last_error_occurred_at, "
+                        + " last_error_summary, "
+                        + " probe_duration_ms, payload_hash_sha256, "
+                        + " collected_at, created_at) "
+                        + "VALUES (?, ?, ?, 1, "
+                        + "        true, true, "
+                        + "        '0.1.0-test', 'unknown', ?, "
+                        + "        true, true, "
+                        + "        ?, ?, "
+                        + "        ?, "
+                        + "        50, ?, "
+                        + "        ?, ?)",
+                UUID.randomUUID(), tenant, device,
+                lastPollLatencyMs,
+                lastErrorCode, errAt,
+                lastErrorSummary, payloadHash,
+                coll, created);
     }
 
     /**

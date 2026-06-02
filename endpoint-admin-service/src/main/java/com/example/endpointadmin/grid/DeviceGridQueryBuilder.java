@@ -699,7 +699,12 @@ public class DeviceGridQueryBuilder {
                 + "          ds.last_error_occurred_at"
                 + "   FROM " + qualified("endpoint_diagnostics_snapshots") + " ds"
                 + "   WHERE ds.tenant_id = d.tenant_id AND ds.device_id = d.id"
-                + "   ORDER BY ds.collected_at DESC, ds.id DESC"
+                // Codex 019e87bc iter-2 must_fix: canonical latest contract is
+                // `collected_at DESC, created_at DESC, id DESC` (the V23 index
+                // shape + the repository order — see EndpointDiagnosticsSnapshotRepository).
+                // Missing the created_at tiebreaker would let drawer /latest
+                // and grid render different snapshots when two share collected_at.
+                + "   ORDER BY ds.collected_at DESC, ds.created_at DESC, ds.id DESC"
                 + "   LIMIT 1"
                 + " ) dx ON true"
                 // WEB-015 v2-b (schema v4) AG-040 latest startup-exposure
@@ -717,7 +722,9 @@ public class DeviceGridQueryBuilder {
                 + "          ses.windows_firewall_event_log_enabled"
                 + "   FROM " + qualified("endpoint_startup_exposure_snapshots") + " ses"
                 + "   WHERE ses.tenant_id = d.tenant_id AND ses.device_id = d.id"
-                + "   ORDER BY ses.collected_at DESC, ses.id DESC"
+                // Codex 019e87bc iter-2 must_fix: canonical latest contract +
+                // V25 index shape + EndpointStartupExposureSnapshotRepository.
+                + "   ORDER BY ses.collected_at DESC, ses.created_at DESC, ses.id DESC"
                 + "   LIMIT 1"
                 + " ) sx ON true"
                 // WEB-015 v2-b (schema v4) AG-039 latest services snapshot.
@@ -749,7 +756,9 @@ public class DeviceGridQueryBuilder {
                 + "          ) AS critical_stopped_count"
                 + "   FROM " + qualified("endpoint_services_snapshots") + " s"
                 + "   WHERE s.tenant_id = d.tenant_id AND s.device_id = d.id"
-                + "   ORDER BY s.collected_at DESC, s.id DESC"
+                // Codex 019e87bc iter-2 must_fix: canonical latest contract +
+                // V24 index shape + EndpointServicesSnapshotRepository.
+                + "   ORDER BY s.collected_at DESC, s.created_at DESC, s.id DESC"
                 + "   LIMIT 1"
                 + " ) se ON true";
     }
