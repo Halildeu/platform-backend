@@ -142,13 +142,12 @@ public class EndpointSoftwareInventoryDiffService {
                 removedCount++;
             }
         }
-        if (addedCount == 0 && removedCount == 0 && versionChangedCount == 0) {
-            // Digest hash differed but key-by-key compare yields no delta
-            // (e.g. only display_name was re-titled — KEY_VERSION unchanged).
-            // The cache row's non-OK counts-zero constraint already accepts
-            // status=OK with all zeros, but NO_CHANGE is semantically truer.
-            return SoftwareDiffSummary.noChange(previous.getId(), latest.getId());
-        }
+        // Codex 019e88b5 iter-6 must_fix #1 — drawer parity. The canonical
+        // computeDiff() always returns OK once the digest-hash fast path is
+        // skipped, even when the per-key walk yields empty lists (e.g. only
+        // display_name re-titled — KEY_VERSION unchanged). The summary MUST
+        // match that semantics so a future v2-d grid cannot show NO_CHANGE
+        // while the drawer endpoint shows OK for the same source pair.
         return SoftwareDiffSummary.ok(
                 previous.getId(), latest.getId(),
                 addedCount, removedCount, versionChangedCount);
