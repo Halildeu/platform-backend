@@ -60,6 +60,16 @@ public class EndpointOutdatedSoftwareDiffCacheRow {
     @Column(name = "computed_at", nullable = false)
     private Instant computedAt;
 
+    // BE-024c v2-c-pre-2-C-A V28 source-pair ordering tuple columns.
+    @Column(name = "source_captured_at", nullable = false)
+    private Instant sourceCapturedAt;
+
+    @Column(name = "source_created_at", nullable = false)
+    private Instant sourceCreatedAt;
+
+    @Column(name = "source_row_id", nullable = false)
+    private UUID sourceRowId;
+
     @Column(name = "created_at", nullable = false, updatable = false, insertable = false)
     private Instant createdAt;
 
@@ -101,6 +111,19 @@ public class EndpointOutdatedSoftwareDiffCacheRow {
 
     public Instant getComputedAt() { return computedAt; }
     public void setComputedAt(Instant computedAt) { this.computedAt = computedAt; }
+
+    public Instant getSourceCapturedAt() { return sourceCapturedAt; }
+    public void setSourceCapturedAt(Instant sourceCapturedAt) {
+        this.sourceCapturedAt = sourceCapturedAt;
+    }
+
+    public Instant getSourceCreatedAt() { return sourceCreatedAt; }
+    public void setSourceCreatedAt(Instant sourceCreatedAt) {
+        this.sourceCreatedAt = sourceCreatedAt;
+    }
+
+    public UUID getSourceRowId() { return sourceRowId; }
+    public void setSourceRowId(UUID sourceRowId) { this.sourceRowId = sourceRowId; }
 
     public Instant getCreatedAt() { return createdAt; }
 }

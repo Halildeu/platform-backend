@@ -146,6 +146,26 @@ class EndpointAdminAuthorizationAnnotationTest {
         }
     }
 
+    /**
+     * BE-024c v2-c-pre-2-C-B {@code POST /api/v1/admin/diff-cache/backfill}
+     * (Codex 019e8a09 iter-2 must-fix #5): the manual backfill endpoint
+     * writes to {@code endpoint_software_diff_cache} +
+     * {@code endpoint_outdated_software_diff_cache}, so reuses the existing
+     * {@code module:endpoint-admin} MANAGER relation. No new RBAC scope
+     * opens. This reflection guard catches an accidental drop of the
+     * @RequireModule annotation or a regression to VIEWER (which would let
+     * a read-only operator force a cache mutation).
+     */
+    @Test
+    void diffCacheControllerPostRoutesRequireManagerRelation() {
+        for (Method method :
+                AdminDiffCacheController.class.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(PostMapping.class)) {
+                assertMethodRequires(method, EndpointAdminAuthz.MANAGER);
+            }
+        }
+    }
+
     private void assertClassRequires(Class<?> controllerClass, String relation) {
         RequireModule annotation = controllerClass.getAnnotation(RequireModule.class);
         assertThat(annotation).isNotNull();
