@@ -254,6 +254,46 @@ class DiffCacheBackfillServicePostgresIntegrationTest {
     }
 
     @Test
+    void backfillBatch_oneDeviceThrows_continuesAndCountsError() {
+        // Codex 019e8a09 iter-3 follow-up: Javadoc claims "per-device
+        // exception isolation" coverage but tests didn't directly
+        // exercise that path. Drop in a device id that does NOT exist
+        // in endpoint_devices (real DB-level FK ↔ summary() exception)
+        // alongside a valid device — the per-device catch must isolate
+        // the failure and let the valid device backfill, errors count
+        // goes up by exactly one.
+        UUID tenant = UUID.randomUUID();
+        final UUID[] holder = new UUID[1];
+        Instant t = Instant.parse("2026-06-02T10:00:00Z");
+        seedCommit(() -> {
+            holder[0] = insertDevice(tenant);
+            insertSoftwareHistory(tenant, holder[0], t, t);
+            insertSoftwareHistory(tenant, holder[0], t.plusSeconds(60), t.plusSeconds(60));
+        });
+        UUID validDevice = holder[0];
+        // Synthetic device id not present in endpoint_devices — the
+        // refresher's summary path WILL still run (it reads from
+        // state_history); the upsert that follows hits the swdc_device_fk
+        // foreign-key violation because the FK targets endpoint_devices
+        // (tenant_id, id), and no row exists for this synthetic device.
+        UUID ghostDevice = UUID.fromString("ffffffff-ffff-ffff-ffff-fffffffffff0");
+
+        DiffCacheBackfillResult result = backfillService.backfillBatch(
+                tenant, DiffType.SOFTWARE, List.of(validDevice, ghostDevice));
+
+        assertThat(result.checked()).as("both devices counted").isEqualTo(2L);
+        // The valid device backfilled OR was idempotent (depending on
+        // whether the per-device REQUIRES_NEW commits before the ghost
+        // device's exception). Allow both — what we care about is that
+        // the valid device's refresh didn't abort and the error count
+        // is exactly one.
+        assertThat(result.changed() + result.unchanged())
+                .as("valid device produced a deterministic write outcome").isEqualTo(1L);
+        assertThat(result.errors()).as("ghost device counted as exactly one error")
+                .isEqualTo(1L);
+    }
+
+    @Test
     void backfillTenant_invalidPageSize_throws() {
         UUID tenant = UUID.randomUUID();
         // pageSize=0 invalid.
