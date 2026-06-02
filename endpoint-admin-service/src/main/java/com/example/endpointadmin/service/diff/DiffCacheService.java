@@ -201,13 +201,21 @@ public class DiffCacheService {
                              AND EXCLUDED.from_history_id IS NULL)
                     )
                 AND
-                    (   -- any-column-differs (identical-payload no-op)
+                    (   -- any-column-differs (identical-payload no-op).
+                        -- Codex 019e89a3 iter-4 absorb: source_* tuple
+                        -- columns are part of the diff so a row stamped
+                        -- with the wrong tuple (e.g. by a legacy epoch-
+                        -- factory call site) self-heals on the next
+                        -- production refresh.
                         c.status IS DISTINCT FROM EXCLUDED.status
                         OR c.from_history_id IS DISTINCT FROM EXCLUDED.from_history_id
                         OR c.to_history_id IS DISTINCT FROM EXCLUDED.to_history_id
                         OR c.added_count <> EXCLUDED.added_count
                         OR c.removed_count <> EXCLUDED.removed_count
                         OR c.version_changed_count <> EXCLUDED.version_changed_count
+                        OR c.source_captured_at IS DISTINCT FROM EXCLUDED.source_captured_at
+                        OR c.source_created_at  IS DISTINCT FROM EXCLUDED.source_created_at
+                        OR c.source_row_id      IS DISTINCT FROM EXCLUDED.source_row_id
                     )
                 """.formatted(table);
 
@@ -297,7 +305,9 @@ public class DiffCacheService {
                              AND EXCLUDED.from_snapshot_id IS NULL)
                     )
                 AND
-                    (   -- any-column-differs (identical-payload no-op)
+                    (   -- any-column-differs (identical-payload no-op).
+                        -- Codex 019e89a3 iter-4 absorb: source_* tuple
+                        -- columns are part of the diff (mirror of software).
                         c.status IS DISTINCT FROM EXCLUDED.status
                         OR c.from_snapshot_id IS DISTINCT FROM EXCLUDED.from_snapshot_id
                         OR c.to_snapshot_id IS DISTINCT FROM EXCLUDED.to_snapshot_id
@@ -305,6 +315,9 @@ public class DiffCacheService {
                         OR c.removed_count <> EXCLUDED.removed_count
                         OR c.version_changed_count <> EXCLUDED.version_changed_count
                         OR c.available_version_bumped_count <> EXCLUDED.available_version_bumped_count
+                        OR c.source_captured_at IS DISTINCT FROM EXCLUDED.source_captured_at
+                        OR c.source_created_at  IS DISTINCT FROM EXCLUDED.source_created_at
+                        OR c.source_row_id      IS DISTINCT FROM EXCLUDED.source_row_id
                     )
                 """.formatted(table);
 
