@@ -116,6 +116,49 @@ class DiffCacheRefreshListenerPostgresIntegrationTest {
     @Test
     void software_eventPublish_listenerFiresAfterCommit_cachePopulated() {
         UUID tenant = UUID.randomUUID();
+        final UUID[] holder = new UUID[3];
+        Instant t1 = Instant.parse("2026-06-02T10:00:00Z");
+        Instant t2 = Instant.parse("2026-06-02T10:01:00Z");
+        seedCommit(() -> {
+            holder[0] = insertDevice(tenant);
+            holder[1] = insertSoftwareHistory(tenant, holder[0], t1, t1);
+            holder[2] = insertSoftwareHistory(tenant, holder[0], t2, t2);
+        });
+        UUID device = holder[0];
+        UUID h2 = holder[2];
+
+        // Before publish: no cache row.
+        assertThat(readSoftwareCacheRow(tenant, device)).as("no cache row pre-publish").isNull();
+
+        // Publish event. Listener should fire AFTER_COMMIT and refresh
+        // service should populate the cache row.
+        publishWithCommit(new DiffCacheRefreshRequested(tenant, device, DiffType.SOFTWARE));
+
+        // After publish: cache row exists with the LATEST committed
+        // source tuple — exact tuple assertions per Codex 019e8a25
+        // iter-1 low absorb (don't just check existence).
+        Map<String, Object> row = readSoftwareCacheRow(tenant, device);
+        assertThat(row).as("listener populated cache row").isNotNull();
+        assertThat(row.get("status")).isIn("OK", "NO_CHANGE");
+        assertThat(row.get("to_history_id"))
+                .as("to_history_id points to latest source row h2").isEqualTo(h2);
+        assertThat(row.get("source_captured_at"))
+                .as("source_captured_at matches h2.captured_at")
+                .isEqualTo(Timestamp.from(t2));
+        assertThat(row.get("source_created_at"))
+                .as("source_created_at matches h2.created_at")
+                .isEqualTo(Timestamp.from(t2));
+        assertThat(row.get("source_row_id"))
+                .as("source_row_id matches h2.id").isEqualTo(h2);
+    }
+
+    @Test
+    void software_eventPublishedThenRolledBack_listenerDoesNotFire() {
+        // Codex 019e8a25 iter-1 nice-to-have counter-test: AFTER_COMMIT
+        // phase must NOT fire when the outer transaction rolls back.
+        // Proves the listener is really AFTER_COMMIT-bound (not a
+        // synchronous @EventListener that fires inline on publish).
+        UUID tenant = UUID.randomUUID();
         final UUID[] holder = new UUID[1];
         Instant t1 = Instant.parse("2026-06-02T10:00:00Z");
         Instant t2 = Instant.parse("2026-06-02T10:01:00Z");
@@ -126,38 +169,50 @@ class DiffCacheRefreshListenerPostgresIntegrationTest {
         });
         UUID device = holder[0];
 
-        // Before publish: no cache row.
-        assertThat(readSoftwareCacheRow(tenant, device)).as("no cache row pre-publish").isNull();
+        // Publish then setRollbackOnly — outer tx rolls back, AFTER_COMMIT
+        // should NOT fire, cache row should NOT be populated.
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.executeWithoutResult(status -> {
+            eventPublisher.publishEvent(
+                    new DiffCacheRefreshRequested(tenant, device, DiffType.SOFTWARE));
+            status.setRollbackOnly();
+        });
 
-        // Publish event. Listener should fire AFTER_COMMIT and refresh
-        // service should populate the cache row.
-        publishWithCommit(new DiffCacheRefreshRequested(tenant, device, DiffType.SOFTWARE));
-
-        // After publish: cache row exists with correct tuple.
-        Map<String, Object> row = readSoftwareCacheRow(tenant, device);
-        assertThat(row).as("listener populated cache row").isNotNull();
-        assertThat(row.get("status")).isIn("OK", "NO_CHANGE");
+        assertThat(readSoftwareCacheRow(tenant, device))
+                .as("rolled-back publish must NOT populate cache (AFTER_COMMIT contract)")
+                .isNull();
     }
 
     @Test
     void outdated_eventPublish_listenerFiresAfterCommit_cachePopulated() {
         UUID tenant = UUID.randomUUID();
-        final UUID[] holder = new UUID[1];
+        final UUID[] holder = new UUID[3];
         Instant t1 = Instant.parse("2026-06-02T10:00:00Z");
         Instant t2 = Instant.parse("2026-06-02T10:01:00Z");
         seedCommit(() -> {
             holder[0] = insertDevice(tenant);
-            insertOutdatedSnapshot(tenant, holder[0], t1, t1);
-            insertOutdatedSnapshot(tenant, holder[0], t2, t2);
+            holder[1] = insertOutdatedSnapshot(tenant, holder[0], t1, t1);
+            holder[2] = insertOutdatedSnapshot(tenant, holder[0], t2, t2);
         });
         UUID device = holder[0];
+        UUID s2 = holder[2];
 
         assertThat(readOutdatedCacheRow(tenant, device)).as("no outdated cache row pre-publish").isNull();
 
         publishWithCommit(new DiffCacheRefreshRequested(tenant, device, DiffType.OUTDATED));
 
+        // Codex 019e8a25 iter-1 low absorb: assert exact source tuple
+        // (latest committed snapshot s2), not just row existence.
         Map<String, Object> row = readOutdatedCacheRow(tenant, device);
         assertThat(row).as("listener populated outdated cache row").isNotNull();
+        assertThat(row.get("to_snapshot_id"))
+                .as("to_snapshot_id points to latest source s2").isEqualTo(s2);
+        assertThat(row.get("source_captured_at"))
+                .as("source_captured_at matches s2.collected_at")
+                .isEqualTo(Timestamp.from(t2));
+        assertThat(row.get("source_row_id"))
+                .as("source_row_id matches s2.id").isEqualTo(s2);
     }
 
     @Test
@@ -259,7 +314,8 @@ class DiffCacheRefreshListenerPostgresIntegrationTest {
     private Map<String, Object> readSoftwareCacheRow(UUID tenant, UUID device) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT status, from_history_id, to_history_id, added_count, "
-                + "removed_count, version_changed_count, source_captured_at "
+                + "removed_count, version_changed_count, source_captured_at, "
+                + "source_created_at, source_row_id "
                 + "FROM " + SCHEMA + ".endpoint_software_diff_cache "
                 + "WHERE tenant_id = ? AND device_id = ?",
                 tenant, device);
@@ -268,7 +324,8 @@ class DiffCacheRefreshListenerPostgresIntegrationTest {
 
     private Map<String, Object> readOutdatedCacheRow(UUID tenant, UUID device) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT status, from_snapshot_id, to_snapshot_id "
+                "SELECT status, from_snapshot_id, to_snapshot_id, "
+                + "source_captured_at, source_created_at, source_row_id "
                 + "FROM " + SCHEMA + ".endpoint_outdated_software_diff_cache "
                 + "WHERE tenant_id = ? AND device_id = ?",
                 tenant, device);

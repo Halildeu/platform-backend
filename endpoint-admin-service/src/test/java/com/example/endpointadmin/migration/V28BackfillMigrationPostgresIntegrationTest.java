@@ -192,6 +192,76 @@ class V28BackfillMigrationPostgresIntegrationTest {
     }
 
     @Test
+    void outdated_noHistoryStatus_backfillsEpochZeroSentinel() {
+        // Codex 019e8a25 iter-1 medium absorb: outdated sentinel SQL is
+        // a separate block from software's; software_noHistoryStatus_*
+        // does NOT prove this branch works. Mirror test for outdated.
+        DriverManagerDataSource ds = freshDataSource();
+        resetSchemaToV27(ds);
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(jdbc, tenant);
+
+        UUID cacheId = UUID.randomUUID();
+        Timestamp now = Timestamp.from(Instant.parse("2026-06-02T10:02:00Z"));
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_outdated_software_diff_cache "
+                        + "(id, tenant_id, device_id, from_snapshot_id, to_snapshot_id, "
+                        + " status, added_count, removed_count, version_changed_count, "
+                        + " available_version_bumped_count, computed_at) "
+                        + "VALUES (?, ?, ?, NULL, NULL, 'NO_HISTORY', 0, 0, 0, 0, ?)",
+                cacheId, tenant, device, now);
+
+        runV28(ds);
+
+        Map<String, Object> row = jdbc.queryForList(
+                "SELECT source_captured_at, source_created_at, source_row_id "
+                + "FROM " + SCHEMA + ".endpoint_outdated_software_diff_cache WHERE id = ?",
+                cacheId).get(0);
+        assertThat(row.get("source_captured_at"))
+                .isEqualTo(Timestamp.from(Instant.parse("1970-01-01T00:00:00Z")));
+        assertThat(row.get("source_created_at"))
+                .isEqualTo(Timestamp.from(Instant.parse("1970-01-01T00:00:00Z")));
+        assertThat(row.get("source_row_id"))
+                .isEqualTo(UUID.fromString("00000000-0000-0000-0000-000000000000"));
+    }
+
+    @Test
+    void outdated_okWithOrphanToSnapshotId_failLoudRaiseException() {
+        // Codex 019e8a25 iter-1 nice-to-have: outdated fail-loud RAISE
+        // mirror. Same DROP CONSTRAINT pattern to bypass FK so orphan
+        // can be inserted.
+        DriverManagerDataSource ds = freshDataSource();
+        resetSchemaToV27(ds);
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(jdbc, tenant);
+        UUID ghostSnapshotId = UUID.fromString("ffffffff-ffff-ffff-ffff-fffffffffffd");
+
+        jdbc.execute("ALTER TABLE " + SCHEMA + ".endpoint_outdated_software_diff_cache "
+                + "DROP CONSTRAINT IF EXISTS osdc_to_snapshot_fk");
+
+        UUID cacheId = UUID.randomUUID();
+        Timestamp now = Timestamp.from(Instant.parse("2026-06-02T10:02:00Z"));
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_outdated_software_diff_cache "
+                        + "(id, tenant_id, device_id, from_snapshot_id, to_snapshot_id, "
+                        + " status, added_count, removed_count, version_changed_count, "
+                        + " available_version_bumped_count, computed_at) "
+                        + "VALUES (?, ?, ?, NULL, ?, 'INSUFFICIENT_HISTORY', 0, 0, 0, 0, ?)",
+                cacheId, tenant, device, ghostSnapshotId, now);
+
+        try {
+            runV28(ds);
+            assertThat(false).as("expected V28 to fail-loud on orphan to_snapshot_id").isTrue();
+        } catch (RuntimeException expected) {
+            assertThat(expected.getMessage())
+                    .as("V28 RAISE EXCEPTION for outdated orphan path")
+                    .contains("V28 migration failed");
+        }
+    }
+
+    @Test
     void software_okWithOrphanToHistoryId_failLoudRaiseException() {
         // Cache row with status=OK but to_history_id pointing to a
         // deleted (orphan) history row. The V28 JOIN cannot populate the
