@@ -220,6 +220,103 @@ class DeviceGridExportPostgresIntegrationTest {
     }
 
     @Test
+    void v2bColumnsResolveSchemaQualified_withDiagnosticsStartupServices_andCaseGuardNulls() {
+        // WEB-015 v2-b (Codex 019e87bc iter-1 AGREE absorb): seeds two devices,
+        // device-A with a diagnostics + startup-exposure + services snapshot
+        // (all fail-closed but populated), device-B with NONE of them. Asserts:
+        //   * the 6 new v2-b colId headers appear in canonical order in raw CSV;
+        //   * device-A row carries the LATERAL-projected scalar values
+        //     (latency 187 ms, error code NEXT_COMMAND_TIMEOUT,
+        //      rdp_enabled true, firewall_event_log false, stopped_count 1);
+        //   * device-B (no snapshot) renders NULL for every v2-b column —
+        //     LEFT JOIN-supplied NULL OR the CASE guard's NULL branch
+        //     (CASE WHEN sx.id IS NULL ... or se.id IS NULL ... THEN NULL).
+        UUID tenant = UUID.randomUUID();
+        UUID withSnaps = UUID.randomUUID();
+        UUID withoutSnaps = UUID.randomUUID();
+        insertDevice(withSnaps, tenant, "v2b-with");
+        insertDevice(withoutSnaps, tenant, "v2b-without");
+
+        Instant t = Instant.parse("2026-06-02T10:00:00Z");
+        insertDiagnosticsSnapshot(tenant, withSnaps, t, 187, "NEXT_COMMAND_TIMEOUT",
+                Instant.parse("2026-06-02T09:55:00Z"), "Probe exceeded budget");
+        insertStartupExposureSnapshot(tenant, withSnaps, t, true, true, true, false);
+        // Services snapshot with the canonical 6-allowlist; one entry STOPPED.
+        UUID svcSnap = insertServicesSnapshot(tenant, withSnaps, t, true, true);
+        insertServicesEntry(tenant, svcSnap, "WinDefend", "RUNNING", true, 0);
+        insertServicesEntry(tenant, svcSnap, "wuauserv", "RUNNING", true, 1);
+        insertServicesEntry(tenant, svcSnap, "BITS", "STOPPED", true, 2);
+        insertServicesEntry(tenant, svcSnap, "EventLog", "RUNNING", true, 3);
+        insertServicesEntry(tenant, svcSnap, "EndpointAgent", "RUNNING", true, 4);
+        insertServicesEntry(tenant, svcSnap, "MpsSvc", "RUNNING", true, 5);
+
+        DeviceGridQueryBuilder b = builder();
+        List<GridColumn> cols = b.resolveExportColumns(ExportMode.RAW, null);
+        GridSql q = b.buildExportQuery(tenant, ExportMode.RAW,
+                new DeviceGridExportRequest("csv", "raw", null, null, null, null), cols);
+        List<ExportColumn> exportColumns = cols.stream()
+                .map(c -> new ExportColumn(c.colId(), c.header()))
+                .toList();
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        // If dx / sx / se LATERAL subqueries (or the inner services_entries
+        // count) were unqualified, this would 500 ("relation … does not exist").
+        CsvStreamingExporter.exportWithColumns(
+                new NamedParameterJdbcTemplate(jdbc.getDataSource()),
+                new ExportQuery(q.sql(), q.params()), exportColumns, out);
+
+        byte[] bytes = out.toByteArray();
+        String csv = new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
+        String[] lines = csv.split("\\r?\\n");
+
+        // Header parity: the 6 new Turkish labels appear in canonical order.
+        String header = lines[0];
+        assertThat(header)
+                .contains("Ajan Son Poll Gecikmesi (ms)")
+                .contains("Ajan Son Hata Kodu")
+                .contains("Ajan Son Hata Zamanı")
+                .contains("Başlangıç RDP Etkin")
+                .contains("Başlangıç Firewall Olay Günlüğü")
+                .contains("Kritik Durdurulmuş Servis Sayısı");
+
+        int hostIdx = DeviceGridColumns.allColumnIds().indexOf("hostname");
+        int latencyIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("diagnostics_last_poll_latency_ms");
+        int codeIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("diagnostics_last_error_code");
+        int errAtIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("diagnostics_last_error_at");
+        int rdpIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("startup_rdp_enabled");
+        int fwIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("startup_windows_firewall_event_log_enabled");
+        int stoppedIdx = DeviceGridColumns.allColumnIds()
+                .indexOf("services_critical_stopped_count");
+
+        String[] withRow = dataRow(lines, hostIdx, "v2b-with");
+        String[] noRow = dataRow(lines, hostIdx, "v2b-without");
+
+        // Device-A (populated snapshots).
+        assertThat(withRow[latencyIdx]).isEqualTo("187");
+        assertThat(withRow[codeIdx]).isEqualTo("NEXT_COMMAND_TIMEOUT");
+        assertThat(withRow[errAtIdx]).isNotEmpty();
+        assertThat(withRow[rdpIdx]).isEqualToIgnoringCase("true");
+        assertThat(withRow[fwIdx]).isEqualToIgnoringCase("false");
+        assertThat(withRow[stoppedIdx]).isEqualTo("1");
+
+        // Device-B (no snapshot): every v2-b cell empty.
+        //  * diagnostics columns NULL via LEFT JOIN (dx.id IS NULL);
+        //  * startup + services columns NULL via the CASE guard
+        //    (sx.id IS NULL / se.id IS NULL → NULL).
+        assertThat(noRow[latencyIdx]).isEmpty();
+        assertThat(noRow[codeIdx]).isEmpty();
+        assertThat(noRow[errAtIdx]).isEmpty();
+        assertThat(noRow[rdpIdx]).isEmpty();
+        assertThat(noRow[fwIdx]).isEmpty();
+        assertThat(noRow[stoppedIdx]).isEmpty();
+    }
+
+    @Test
     void preflightCountsTenantRows() {
         UUID tenant = UUID.randomUUID();
         insertDevice(UUID.randomUUID(), tenant, "p1");
@@ -339,5 +436,118 @@ class DeviceGridExportPostgresIntegrationTest {
                         + "        100, ?, ?)",
                 UUID.randomUUID(), tenant, device,
                 wdacMode, appIdSvcState, "c".repeat(64), ts);
+    }
+
+    /**
+     * Seed an endpoint_diagnostics_snapshots row with the given last-poll
+     * latency, last-error-code, and last-error-occurred-at (the AG-038 read
+     * path that DeviceGridColumns diagnostics_* columns walk via the dx
+     * LATERAL alias).
+     *
+     * <p>Codex 019e87bc iter-1 must_fix #2: error code is constrained only by
+     * the V23 lexical regex `^[A-Z][A-Z0-9_]{2,64}$`; the IT seeds the real
+     * code "NEXT_COMMAND_TIMEOUT" the agent emits to keep the surface
+     * honest.
+     */
+    private void insertDiagnosticsSnapshot(
+            UUID tenant, UUID device, Instant collectedAt,
+            int lastPollLatencyMs, String lastErrorCode,
+            Instant lastErrorOccurredAt, String lastErrorSummary) {
+        Timestamp coll = Timestamp.from(collectedAt);
+        Timestamp errAt = Timestamp.from(lastErrorOccurredAt);
+        // V23 endpoint_diagnostics_snapshots — minimal but legal row. The
+        // all-or-none CHECK on the last_error triad (code + occurred_at +
+        // summary) holds because we set all three.
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_diagnostics_snapshots "
+                        + "(id, tenant_id, device_id, schema_version, "
+                        + " supported, probe_complete, "
+                        + " agent_version, config_hash, last_poll_latency_ms, "
+                        + " backend_dns_reachable, backend_tls_valid, "
+                        + " last_error_code, last_error_occurred_at, "
+                        + " last_error_summary, "
+                        + " probe_duration_ms, payload_hash_sha256, collected_at) "
+                        + "VALUES (?, ?, ?, 1, "
+                        + "        true, true, "
+                        + "        '0.1.0-test', 'unknown', ?, "
+                        + "        true, true, "
+                        + "        ?, ?, "
+                        + "        ?, "
+                        + "        50, ?, ?)",
+                UUID.randomUUID(), tenant, device,
+                lastPollLatencyMs,
+                lastErrorCode, errAt,
+                lastErrorSummary, "d".repeat(64), coll);
+    }
+
+    /**
+     * Seed an endpoint_startup_exposure_snapshots row with the given
+     * supported / probe_complete + the two flat exposure scalars (the AG-040
+     * read path that DeviceGridColumns startup_* columns walk via the sx
+     * LATERAL alias).
+     *
+     * <p>Codex 019e87bc iter-1 must_fix #4: the V25 boolean columns are NOT
+     * NULL, so the IT seeds them explicitly to exercise both the false
+     * (firewall_event_log) and the true (rdp_enabled) paths and assert the
+     * grid does NOT collapse them to the same value.
+     */
+    private void insertStartupExposureSnapshot(
+            UUID tenant, UUID device, Instant collectedAt,
+            boolean supported, boolean probeComplete,
+            boolean rdpEnabled, boolean firewallEventLogEnabled) {
+        Timestamp coll = Timestamp.from(collectedAt);
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_startup_exposure_snapshots "
+                        + "(id, tenant_id, device_id, schema_version, "
+                        + " supported, probe_complete, "
+                        + " rdp_enabled, windows_firewall_event_log_enabled, "
+                        + " probe_duration_ms, payload_hash_sha256, collected_at) "
+                        + "VALUES (?, ?, ?, 1, "
+                        + "        ?, ?, "
+                        + "        ?, ?, "
+                        + "        100, ?, ?)",
+                UUID.randomUUID(), tenant, device,
+                supported, probeComplete,
+                rdpEnabled, firewallEventLogEnabled,
+                "e".repeat(64), coll);
+    }
+
+    /**
+     * Seed an endpoint_services_snapshots row with the given supported +
+     * probe_complete (the AG-039 read path that DeviceGridColumns
+     * services_critical_stopped_count reads via the se LATERAL alias, plus
+     * the precomputed `critical_stopped_count` subquery).
+     */
+    private UUID insertServicesSnapshot(
+            UUID tenant, UUID device, Instant collectedAt,
+            boolean supported, boolean probeComplete) {
+        UUID snapshotId = UUID.randomUUID();
+        Timestamp coll = Timestamp.from(collectedAt);
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_services_snapshots "
+                        + "(id, tenant_id, device_id, schema_version, "
+                        + " supported, probe_complete, "
+                        + " probe_duration_ms, payload_hash_sha256, collected_at) "
+                        + "VALUES (?, ?, ?, 1, "
+                        + "        ?, ?, "
+                        + "        100, ?, ?)",
+                snapshotId, tenant, device,
+                supported, probeComplete,
+                "f".repeat(64), coll);
+        return snapshotId;
+    }
+
+    /**
+     * Seed an endpoint_services_entries row for the canonical 6-allowlist
+     * (the AG-039 services_critical_stopped_count subquery counts rows
+     * with present=true AND state='STOPPED').
+     */
+    private void insertServicesEntry(
+            UUID tenant, UUID snapshotId,
+            String name, String state, boolean present, int rowOrdinal) {
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_services_entries "
+                        + "(id, tenant_id, snapshot_id, row_ordinal, "
+                        + " name, present, state, startup_mode) "
+                        + "VALUES (?, ?, ?, ?, "
+                        + "        ?, ?, ?, 'AUTO')",
+                UUID.randomUUID(), tenant, snapshotId, rowOrdinal,
+                name, present, state);
     }
 }
