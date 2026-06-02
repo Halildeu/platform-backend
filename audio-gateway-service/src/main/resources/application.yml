@@ -39,7 +39,7 @@ management:
       percentiles-histogram:
         http.server.requests: true
 
-# Audio Gateway contract limits (Codex 019e879c bounds)
+# Audio Gateway contract limits (Codex 019e879c bounds + 019e8846 iter-1 absorb)
 audio:
   gateway:
     contract:
@@ -51,6 +51,12 @@ audio:
       admission-queue-capacity: 1000
     stt:
       dispatch-mode: noop            # noop | redis | http (PR-queue-01)
+    jwt:
+      # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
+      # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".
+      # Absent claim → fail-closed 403 (sessiz "unknown" YASAK).
+      tenant-claim: companyId
+      user-claim: userId
 
 logging:
   level:

@@ -15,3 +15,6 @@ audio:
       max-buffered-seconds: ${AUDIO_GATEWAY_MAX_BUFFERED_SECONDS:30}
       max-session-minutes: ${AUDIO_GATEWAY_MAX_SESSION_MINUTES:120}
       admission-queue-capacity: ${AUDIO_GATEWAY_QUEUE_CAPACITY:1000}
+    jwt:
+      tenant-claim: ${AUDIO_GATEWAY_JWT_TENANT_CLAIM:companyId}
+      user-claim: ${AUDIO_GATEWAY_JWT_USER_CLAIM:userId}

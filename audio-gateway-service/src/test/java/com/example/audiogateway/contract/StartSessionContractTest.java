@@ -1,31 +1,27 @@
 package com.example.audiogateway.contract;
 
 import com.example.audiogateway.dto.AudioFormat;
+import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
 
 /**
- * Audio Gateway Contract 1.0 — 5 senaryo contract test.
+ * Audio Gateway Contract 1.0 — 8 senaryo + canonical ErrorResponse body assert.
  *
- * <p>1. invalid JWT → 401
- * <p>2. missing language → 400 (validation)
- * <p>3. unsupported audio format → 415
- * <p>4. unsupported sample rate → 400
- * <p>5. stereo (channels=2) → 400 (PoC mono only)
- *
- * <p>Plus correlation_id propagation, response header verify.
- *
- * <p>3-AI mutabakat trail: Codex {@code 019e879c} + Mavis {@code msg 78} AGREE.
+ * <p>Codex {@code 019e8846} iter-1 REVISE absorb:
+ * - {@code mockJwt()} ile gerçek JWT principal (claim'ler test edilebilir)
+ * - Exact status assertion (401/403/415/400/200)
+ * - Canonical ErrorResponse body kontrol (code namespace)
+ * - {@code companyId}/{@code userId} backend pattern uyumlu (common-auth)
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = {
@@ -36,96 +32,130 @@ class StartSessionContractTest {
     @Autowired
     private WebTestClient client;
 
-    @Test
-    void invalidJwt_returns401() {
-        final StartSessionRequest req = new StartSessionRequest(
+    private StartSessionRequest validRequest() {
+        return new StartSessionRequest(
                 "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV,
                 16000, 1, null);
+    }
 
+    @Test
+    void noAuth_returns401() {
         client.post()
                 .uri("/api/meeting-audio/sessions")
-                .header("Authorization", "Bearer not-a-real-jwt")
-                .bodyValue(req)
+                .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isUnauthorized();
     }
 
     @Test
-    @WithMockUser
-    void missingLanguage_returns400() {
-        // language null → @NotBlank fails
-        final Map<String, Object> body = Map.of(
-                "meetingId", "MTG-2026-0001",
-                "deviceId", "device-1",
-                // no language
-                "audioFormat", "WAV",
-                "sampleRateHz", 16000,
-                "channels", 1
-        );
-
-        client.post()
+    void jwtMissingCompanyIdClaim_returns403() {
+        client.mutateWith(mockJwt().jwt(jwt -> jwt.claim("userId", 42L)))
+                .post()
                 .uri("/api/meeting-audio/sessions")
-                .bodyValue(body)
+                .bodyValue(validRequest())
                 .exchange()
-                .expectStatus().is4xxClientError();
+                .expectStatus().isForbidden()
+                .expectBody(ErrorResponse.class)
+                .value(err -> {
+                    assertThat(err.code()).isEqualTo(ErrorResponse.CODE_MEETING_FORBIDDEN);
+                    assertThat(err.message()).contains("companyId");
+                    assertThat(err.retryable()).isFalse();
+                });
     }
 
     @Test
-    @WithMockUser
+    void jwtMissingUserIdClaim_returns403() {
+        client.mutateWith(mockJwt().jwt(jwt -> jwt.claim("companyId", 1L)))
+                .post()
+                .uri("/api/meeting-audio/sessions")
+                .bodyValue(validRequest())
+                .exchange()
+                .expectStatus().isForbidden()
+                .expectBody(ErrorResponse.class)
+                .value(err -> {
+                    assertThat(err.code()).isEqualTo(ErrorResponse.CODE_MEETING_FORBIDDEN);
+                    assertThat(err.message()).contains("userId");
+                });
+    }
+
+    @Test
     void unsupportedAudioFormat_returns415() {
         final StartSessionRequest req = new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.MP3,  // not in CLIENT_ALLOWED
+                "MTG-2026-0001", "device-1", "tr", AudioFormat.MP3,
                 16000, 1, null);
 
-        client.post()
+        client.mutateWith(mockJwt().jwt(j -> j.claim("companyId", 1L).claim("userId", 42L)))
+                .post()
                 .uri("/api/meeting-audio/sessions")
                 .bodyValue(req)
                 .exchange()
-                .expectStatus().is4xxClientError();  // 415 or 400
+                .expectStatus().isEqualTo(415)
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_FORMAT_REJECTED));
     }
 
     @Test
-    @WithMockUser
     void unsupportedSampleRate_returns400() {
         final StartSessionRequest req = new StartSessionRequest(
                 "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV,
-                22050,  // not in ALLOWED_SAMPLE_RATES {16000, 48000}
-                1, null);
+                22050, 1, null);
 
-        client.post()
+        client.mutateWith(mockJwt().jwt(j -> j.claim("companyId", 1L).claim("userId", 42L)))
+                .post()
                 .uri("/api/meeting-audio/sessions")
                 .bodyValue(req)
                 .exchange()
-                .expectStatus().is4xxClientError();
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> {
+                    assertThat(err.code()).isEqualTo(ErrorResponse.CODE_FORMAT_REJECTED);
+                    assertThat(err.message()).contains("22050");
+                });
     }
 
     @Test
-    @WithMockUser
     void stereoChannel_returns400() {
         final StartSessionRequest req = new StartSessionRequest(
                 "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV,
-                16000, 2,  // PoC mono only
-                null);
+                16000, 2, null);
 
-        client.post()
+        client.mutateWith(mockJwt().jwt(j -> j.claim("companyId", 1L).claim("userId", 42L)))
+                .post()
                 .uri("/api/meeting-audio/sessions")
                 .bodyValue(req)
                 .exchange()
-                .expectStatus().is4xxClientError();
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_FORMAT_REJECTED));
     }
 
     @Test
-    @WithMockUser
-    void correlationIdPropagation_echoesHeader() {
-        final StartSessionRequest req = new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV,
-                16000, 1, null);
-        final String corrId = "test-corr-id-12345678-1234-1234-1234-123456789012";
+    void happyPath_returns200_withSessionAndCorrelationId() {
+        client.mutateWith(mockJwt().jwt(j -> j.claim("companyId", 1L).claim("userId", 42L)))
+                .post()
+                .uri("/api/meeting-audio/sessions")
+                .bodyValue(validRequest())
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(StartSessionResponse.class)
+                .value(resp -> {
+                    assertThat(resp.sessionId()).startsWith("SES-");
+                    assertThat(resp.correlationId()).isNotNull();
+                    assertThat(resp.websocketUrl()).contains(resp.sessionId());
+                    assertThat(resp.chunkUploadUrl()).contains(resp.sessionId());
+                    assertThat(resp.sessionStartMs()).isPositive();
+                });
+    }
 
-        client.post()
+    @Test
+    void correlationIdPropagation_echoesHeader() {
+        final String corrId = "c0ffee01-1234-1234-1234-123456789012";
+
+        client.mutateWith(mockJwt().jwt(j -> j.claim("companyId", 1L).claim("userId", 42L)))
+                .post()
                 .uri("/api/meeting-audio/sessions")
                 .header("X-Correlation-Id", corrId)
-                .bodyValue(req)
+                .bodyValue(validRequest())
                 .exchange()
                 .expectHeader().valueEquals("X-Correlation-Id", corrId);
     }

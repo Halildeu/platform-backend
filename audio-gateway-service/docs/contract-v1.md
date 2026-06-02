@@ -111,12 +111,21 @@ Gateway derives identity from JWT and propagates internal headers to STT service
 | `X-Meeting-Id` | Client request body (validated against meeting access) | Meeting binding |
 | `X-Session-Id` | Gateway-generated | Per-recording session |
 | `X-Device-Id` | Client request body | Mobile device |
-| `X-Tenant-Id` | **JWT claim `tenantId`** | Multi-tenant boundary |
-| `X-User-Id` | **JWT `sub`** | Audit trail |
+| `X-Tenant-Id` | **JWT claim** (default `companyId`, configurable `audio.gateway.jwt.tenant-claim`) | Multi-tenant boundary; absent → 403 fail-closed |
+| `X-User-Id` | **JWT claim** (default `userId`, configurable `audio.gateway.jwt.user-claim`) | Audit trail; absent → 403 fail-closed |
 | `language` | Client request body (forwarded) | ISO 639-1 |
 | `audio_metadata` | Gateway-built JSON: `{format, sampleRateHz, channels, durationMs, chunkSeq}` | Per-chunk meta |
 
 **Critical**: `X-Tenant-Id` / `X-User-Id` are **JWT-derived, NEVER client-trusted**. Client payload `tenantId` field rejected silently (Codex `019e879c` RED).
+
+**Claim naming** (Codex `019e8846` iter-1 absorb): backend canonical pattern (`common-auth/AuthenticatedUserLookupService`) uses `companyId` (Long, multi-tenant) + `userId` (Long). Defaults:
+
+| Env | Default |
+|---|---|
+| `AUDIO_GATEWAY_JWT_TENANT_CLAIM` | `companyId` |
+| `AUDIO_GATEWAY_JWT_USER_CLAIM` | `userId` |
+
+Custom Keycloak realm uses other names → override via env. **Absent claim → fail-closed 403** (sessiz "unknown" YASAK).
 
 ---
 
