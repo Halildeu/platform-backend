@@ -63,8 +63,12 @@ public class EndpointOutdatedSoftwareDiffService {
             return OutdatedDiffSummary.noHistory();
         }
         EndpointOutdatedSoftwareSnapshot to = latestTwo.get(0);
+        // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — pass the
+        // latest source row's (collected_at, created_at) tuple so the cache
+        // writer source-pair ordering guard can reject stale refreshes.
         if (latestTwo.size() == 1) {
-            return OutdatedDiffSummary.insufficientHistory(to.getId());
+            return OutdatedDiffSummary.insufficientHistory(to.getId(),
+                    to.getCollectedAt(), to.getCreatedAt());
         }
         EndpointOutdatedSoftwareSnapshot from = latestTwo.get(1);
 
@@ -103,11 +107,13 @@ public class EndpointOutdatedSoftwareDiffService {
 
         int totalDelta = addedCount + removedCount + versionChangedCount + availableVersionBumpedCount;
         if (totalDelta == 0) {
-            return OutdatedDiffSummary.noChange(from.getId(), to.getId());
+            return OutdatedDiffSummary.noChange(from.getId(), to.getId(),
+                    to.getCollectedAt(), to.getCreatedAt());
         }
         return OutdatedDiffSummary.ok(
                 from.getId(), to.getId(),
-                addedCount, removedCount, versionChangedCount, availableVersionBumpedCount);
+                addedCount, removedCount, versionChangedCount, availableVersionBumpedCount,
+                to.getCollectedAt(), to.getCreatedAt());
     }
 
     @Transactional(readOnly = true)

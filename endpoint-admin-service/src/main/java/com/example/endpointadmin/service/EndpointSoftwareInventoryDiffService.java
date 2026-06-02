@@ -107,15 +107,21 @@ public class EndpointSoftwareInventoryDiffService {
             return SoftwareDiffSummary.noHistory();
         }
         EndpointSoftwareInventoryStateHistory latest = latestTwo.get(0);
+        // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — pass the
+        // latest source row's (captured_at, created_at) tuple to the cache
+        // writer so the source-pair ordering guard can reject stale
+        // refresh-overwrites. The row id itself is already the to_history_id.
         if (latestTwo.size() == 1) {
-            return SoftwareDiffSummary.insufficientHistory(latest.getId());
+            return SoftwareDiffSummary.insufficientHistory(latest.getId(),
+                    latest.getCapturedAt(), latest.getCreatedAt());
         }
         EndpointSoftwareInventoryStateHistory previous = latestTwo.get(1);
 
         // Fast path: byte-identical re-collect.
         if (previous.getAppsDigestHash() != null
                 && previous.getAppsDigestHash().equals(latest.getAppsDigestHash())) {
-            return SoftwareDiffSummary.noChange(previous.getId(), latest.getId());
+            return SoftwareDiffSummary.noChange(previous.getId(), latest.getId(),
+                    latest.getCapturedAt(), latest.getCreatedAt());
         }
 
         // Count-only walk — same algorithm as computeDiff() but never
@@ -150,7 +156,8 @@ public class EndpointSoftwareInventoryDiffService {
         // while the drawer endpoint shows OK for the same source pair.
         return SoftwareDiffSummary.ok(
                 previous.getId(), latest.getId(),
-                addedCount, removedCount, versionChangedCount);
+                addedCount, removedCount, versionChangedCount,
+                latest.getCapturedAt(), latest.getCreatedAt());
     }
 
     /**
