@@ -12,6 +12,8 @@ import com.example.endpointadmin.repository.EndpointSoftwareInventoryStateHistor
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.WinGetEgressPayloadPolicy;
 import com.example.endpointadmin.service.compliance.SoftwareInventorySnapshotPersistedEvent;
+import com.example.endpointadmin.service.diff.DiffCacheRefreshRequested;
+import com.example.endpointadmin.service.diff.DiffType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -299,6 +301,18 @@ public class EndpointSoftwareInventoryService {
                 auditMetadata,
                 null,
                 null);
+
+        // BE-024c v2-c-pre-2-B (Codex 019e8964 iter-4 AGREE) — emit a
+        // separate AFTER_COMMIT-scoped diff cache refresh event ONLY
+        // when a NEW state-history row was just appended. Summary-only
+        // ingests and wingetEgress-only ingests do NOT change the diff
+        // and therefore MUST NOT trigger a refresh (otherwise listener
+        // churn rises without semantic delta). Own event class — NOT
+        // piggybacked on the BE-023 compliance event below.
+        if (hasFullPayload && eventPublisher != null) {
+            eventPublisher.publishEvent(new DiffCacheRefreshRequested(
+                    tenantId, device.getId(), DiffType.SOFTWARE));
+        }
 
         // BE-023 — emit AFTER_COMMIT-scoped event so the compliance
         // evaluator runs a fresh evaluation once the snapshot row is
