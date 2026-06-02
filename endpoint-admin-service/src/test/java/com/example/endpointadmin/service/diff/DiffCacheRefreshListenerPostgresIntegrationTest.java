@@ -211,6 +211,9 @@ class DiffCacheRefreshListenerPostgresIntegrationTest {
         assertThat(row.get("source_captured_at"))
                 .as("source_captured_at matches s2.collected_at")
                 .isEqualTo(Timestamp.from(t2));
+        assertThat(row.get("source_created_at"))
+                .as("source_created_at matches s2.created_at")
+                .isEqualTo(Timestamp.from(t2));
         assertThat(row.get("source_row_id"))
                 .as("source_row_id matches s2.id").isEqualTo(s2);
     }
