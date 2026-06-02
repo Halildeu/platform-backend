@@ -162,8 +162,12 @@ public class EndpointComplianceGapService {
         }
 
         // ── Build filter echo ─────────────────────────────────────────────
+        // Codex 019e88b0 P2-low absorb: gapTypes as sorted List (not Set) for
+        // deterministic JSON output. UI cache keys + audit diffs need stable order.
         Map<String, Object> filterEcho = new LinkedHashMap<>();
-        filterEcho.put("gapTypes", gapTypeWires);
+        List<String> sortedGapTypes = new ArrayList<>(gapTypeWires);
+        Collections.sort(sortedGapTypes);
+        filterEcho.put("gapTypes", sortedGapTypes);
         filterEcho.put("freshnessWindow", effectiveWindow.toString());
         filterEcho.put("page", safePage);
         filterEcho.put("pageSize", safePageSize);
