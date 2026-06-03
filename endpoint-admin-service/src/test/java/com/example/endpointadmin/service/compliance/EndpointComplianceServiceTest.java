@@ -119,7 +119,7 @@ class EndpointComplianceServiceTest {
 
     @Test
     void deviceNotFoundThrows404() {
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID))
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID))
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.evaluateForAdmin(TENANT, DEVICE_ID))
@@ -816,7 +816,7 @@ class EndpointComplianceServiceTest {
 
     @Test
     void evaluateForEventReturnsEmptyOnDeviceMissing() {
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID))
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID))
                 .thenReturn(Optional.empty());
 
         Optional<ComplianceEvaluationOutcome> outcome =
@@ -959,7 +959,7 @@ class EndpointComplianceServiceTest {
         setField(device, "id", DEVICE_ID);
         setField(device, "tenantId", TENANT_ID);
         device.setStatus(DeviceStatus.ONLINE);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID))
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID))
                 .thenReturn(Optional.of(device));
     }
 

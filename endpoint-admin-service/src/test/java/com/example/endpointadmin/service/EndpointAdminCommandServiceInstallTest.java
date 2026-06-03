@@ -107,7 +107,7 @@ class EndpointAdminCommandServiceInstallTest {
     void createInstallReturnsExistingCommandWithoutRunningPreflight() {
         EndpointDevice device = testDevice(DEVICE_ID);
         EndpointSoftwareCatalogItem catalog = testCatalog();
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
 
@@ -132,7 +132,7 @@ class EndpointAdminCommandServiceInstallTest {
     void createInstallRejectsIdempotencyKeyReusedWithDifferentDevice() {
         EndpointDevice device = testDevice(DEVICE_ID);
         EndpointSoftwareCatalogItem catalog = testCatalog();
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
 
@@ -153,7 +153,7 @@ class EndpointAdminCommandServiceInstallTest {
     void createInstallRejectsIdempotencyKeyReusedWithDifferentCatalog() {
         EndpointDevice device = testDevice(DEVICE_ID);
         EndpointSoftwareCatalogItem catalog = testCatalog();
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
 
@@ -175,7 +175,7 @@ class EndpointAdminCommandServiceInstallTest {
     void createInstallThrowsInstallBlockedExceptionOnBlockPreflight() {
         EndpointDevice device = testDevice(DEVICE_ID);
         EndpointSoftwareCatalogItem catalog = testCatalog();
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -198,7 +198,7 @@ class EndpointAdminCommandServiceInstallTest {
     void createInstallQueuesCommandWithBackendControlledPayloadOnPass() {
         EndpointDevice device = testDevice(DEVICE_ID);
         EndpointSoftwareCatalogItem catalog = testCatalog();
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -258,7 +258,7 @@ class EndpointAdminCommandServiceInstallTest {
         EndpointDevice device = testDevice(DEVICE_ID);
         EndpointSoftwareCatalogItem catalog = testCatalog();
         catalog.setSilentArgsPolicy(CatalogSilentArgsPolicy.VENDOR_RECOMMENDED);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -296,7 +296,7 @@ class EndpointAdminCommandServiceInstallTest {
         rule.put("type", "FILE_EXISTS");
         rule.put("absolutePath", "C:\\Program Files\\7-Zip\\7z.exe");
         catalog.setDetectionRule(rule);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -339,7 +339,7 @@ class EndpointAdminCommandServiceInstallTest {
         rule.put("expectedSha256", "a".repeat(64));
         rule.put("maxHashBytes", 256 * 1024L);
         catalog.setDetectionRule(rule);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -385,7 +385,7 @@ class EndpointAdminCommandServiceInstallTest {
         rule.put("versionPredicate", predicate);
         rule.put("fileVersionField", "PRODUCT_VERSION");
         catalog.setDetectionRule(rule);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -431,7 +431,7 @@ class EndpointAdminCommandServiceInstallTest {
         rule.put("publisher", "Igor Pavlov");
         rule.put("publisherMatch", "EXACT");
         catalog.setDetectionRule(rule);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
@@ -474,7 +474,7 @@ class EndpointAdminCommandServiceInstallTest {
         rule.put("type", "WINGET_PACKAGE");
         rule.put("wingetPackageId", "Some.Other.Package"); // drifted from packageId 7zip.7zip
         catalog.setDetectionRule(rule);
-        when(deviceRepository.findByTenantIdAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
         when(catalogRepository.findByTenantIdAndCatalogItemId(TENANT_ID, CATALOG_SLUG))
                 .thenReturn(Optional.of(catalog));
         when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,

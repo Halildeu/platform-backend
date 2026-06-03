@@ -168,7 +168,7 @@ public class EndpointInstallPreflightService {
                     HttpStatus.BAD_REQUEST, "catalogItemId query parameter is required.");
         }
         EndpointDevice device = deviceRepository
-                .findByTenantIdAndId(context.tenantId(), deviceId)
+                .findVisibleToOrgAndId(context.tenantId(), deviceId)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "Device not found."));
         EndpointSoftwareCatalogItem catalogItem = catalogRepository

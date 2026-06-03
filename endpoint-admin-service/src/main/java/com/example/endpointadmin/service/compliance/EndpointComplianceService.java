@@ -214,7 +214,7 @@ public class EndpointComplianceService {
     public Optional<EndpointDeviceComplianceState> getLatest(AdminTenantContext tenant, UUID deviceId) {
         // Validate device tenant ownership (404 if absent) so the
         // caller cannot probe state for foreign devices.
-        deviceRepository.findByTenantIdAndId(tenant.tenantId(), deviceId)
+        deviceRepository.findVisibleToOrgAndId(tenant.tenantId(), deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Device not found."));
         return stateRepository.findByTenantIdAndDeviceId(tenant.tenantId(), deviceId);
     }
@@ -239,7 +239,7 @@ public class EndpointComplianceService {
     @Transactional(readOnly = true)
     public Page<EndpointComplianceEvaluation> listDeviceHistory(
             AdminTenantContext tenant, UUID deviceId, Pageable pageable) {
-        deviceRepository.findByTenantIdAndId(tenant.tenantId(), deviceId)
+        deviceRepository.findVisibleToOrgAndId(tenant.tenantId(), deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Device not found."));
         // Faz 21.1 PR2b-iv.a (Codex 019e8d12 D′ AGREE): canonical effective-org
         // read — accepts both canonical rows (org_id = tenant_id) and legacy
@@ -319,7 +319,7 @@ public class EndpointComplianceService {
 
     private ComplianceEvaluationOutcome evaluateInternal(
             UUID tenantId, UUID deviceId, boolean forceAdmin) {
-        EndpointDevice device = deviceRepository.findByTenantIdAndId(tenantId, deviceId)
+        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Device not found."));
 
         boolean locked = tryAcquireLock(tenantId, deviceId);

@@ -286,7 +286,7 @@ public class EndpointMaintenanceTokenService {
         if (deviceId == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Endpoint device id is required.");
         }
-        return deviceRepository.findByTenantIdAndId(tenantId, deviceId)
+        return deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
     }
 
