@@ -593,8 +593,11 @@ public class EndpointComplianceService {
         // fallback (deterministic selector). The repository query
         // already restricts to SUCCEEDED + SATISFIED and rejects
         // rows committed at or after evaluationStartedAt.
+        // Faz 21.1 PR2b-iv.e-B — effective-org compliance evaluator
+        // selector. policy.getTenantId() is the canonical org id
+        // (PR2b-ii canonical write at source).
         Optional<EndpointInstallAudit> auditOpt = installAuditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         policy.getTenantId(), deviceId, catalog.getId(), evaluationStartedAt);
         if (auditOpt.isEmpty()) {
             ctx.addReason(ComplianceReason.MISSING_REQUIRED_APP);

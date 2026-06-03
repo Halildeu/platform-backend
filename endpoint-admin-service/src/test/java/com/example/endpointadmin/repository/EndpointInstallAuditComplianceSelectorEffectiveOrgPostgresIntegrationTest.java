@@ -1,0 +1,360 @@
+package com.example.endpointadmin.repository;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.example.endpointadmin.model.CommandResultStatus;
+import com.example.endpointadmin.model.EndpointInstallAudit;
+import com.example.endpointadmin.model.InstallPostVerification;
+import com.example.endpointadmin.model.InstallPreflightDecisionRecorded;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+/**
+ * Faz 21.1 PR2b-iv.e-B regression guard —
+ * {@link EndpointInstallAuditRepository} compliance evaluator
+ * selector + AG-028 uninstall provenance guard migrated to the
+ * canonical effective-org filter (Codex 019e8dde Option B sub-slice
+ * e-B AGREE; slice c iter-1 index-friendly form).
+ *
+ * <p>Canonical predicate:
+ * <pre>
+ *   WHERE a.tenant_id = :orgId
+ *     AND (a.org_id = :orgId OR a.org_id IS NULL)
+ *     AND a.device_id = :deviceId
+ *     AND a.catalog_item_id = :catalogItemId
+ *     AND a.result_status = SUCCEEDED
+ *     AND a.post_verification = SATISFIED
+ *     [+ a.created_at < :before for selector]
+ * </pre>
+ *
+ * <p>Eight assertions covering both methods:
+ * <ol>
+ *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: canonical row
+ *       returns true.</li>
+ *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: legacy NULL row
+ *       returns true via OR-fallback (V29 trigger bypass + UPDATE +
+ *       pre-assert).</li>
+ *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: cross-org returns
+ *       false.</li>
+ *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: FAILED + SATISFIED
+ *       (wrong status) returns false.</li>
+ *   <li>findLatestSucceededSatisfiedByOrgDeviceCatalogBefore: canonical
+ *       row matched via wrapper.</li>
+ *   <li>findLatestSucceededSatisfiedByOrgDeviceCatalogBefore: legacy
+ *       NULL row matched via wrapper.</li>
+ *   <li>findLatestSucceededSatisfiedByOrgDeviceCatalogBefore: cross-org
+ *       miss returns empty.</li>
+ *   <li>findLatestSucceededSatisfiedByOrgDeviceCatalogBefore: strict
+ *       {@code < before} — audit row created AFTER {@code before} is
+ *       NOT returned (deterministic selector cannot observe its own
+ *       evaluation row).</li>
+ * </ol>
+ */
+@Testcontainers
+@DataJpaTest
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+class EndpointInstallAuditComplianceSelectorEffectiveOrgPostgresIntegrationTest {
+
+    private static final String SCHEMA = "endpoint_admin_service";
+
+    @Container
+    @SuppressWarnings("resource")
+    static final PostgreSQLContainer<?> POSTGRES =
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                    .withDatabaseName("endpoint_admin")
+                    .withUsername("test")
+                    .withPassword("test");
+
+    @DynamicPropertySource
+    static void registerProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.datasource.driver-class-name",
+                () -> "org.postgresql.Driver");
+        registry.add("spring.flyway.enabled", () -> "true");
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
+        registry.add("spring.flyway.default-schema", () -> SCHEMA);
+        registry.add("spring.flyway.schemas", () -> SCHEMA);
+        registry.add("spring.jpa.properties.hibernate.default_schema",
+                () -> SCHEMA);
+    }
+
+    @Autowired
+    private EndpointInstallAuditRepository repository;
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    // ───────────────────────── existsSucceededSatisfied (AG-028 Phase 1b) ─────────────────────────
+
+    @Test
+    void exists_canonicalRow_returnsTrue() {
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.exists.canon");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-exists-canon");
+        persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+
+        boolean exists = repository
+                .existsSucceededSatisfiedByOrgDeviceCatalog(orgA, deviceId, catalogId);
+
+        assertThat(exists).isTrue();
+    }
+
+    @Test
+    void exists_legacyNullRow_returnsTrueViaOrFallback() {
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.exists.legacy");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-exists-legacy");
+        UUID auditId = persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+        makeAuditOrgIdNull(auditId);
+
+        Boolean orgIdIsNull = jdbc.queryForObject(
+                "SELECT org_id IS NULL FROM " + SCHEMA
+                        + ".endpoint_install_audit WHERE id = ?",
+                Boolean.class, auditId);
+        assertThat(orgIdIsNull)
+                .as("legacy NULL fixture pre-assert: DISABLE TRIGGER USER held")
+                .isTrue();
+
+        boolean exists = repository
+                .existsSucceededSatisfiedByOrgDeviceCatalog(orgA, deviceId, catalogId);
+
+        assertThat(exists)
+                .as("legacy NULL row matches via OR-fallback (provenance guard)")
+                .isTrue();
+    }
+
+    @Test
+    void exists_crossOrg_returnsFalse() {
+        UUID orgA = UUID.randomUUID();
+        UUID orgB = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.exists.cross");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-exists-cross");
+        persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+
+        boolean exists = repository
+                .existsSucceededSatisfiedByOrgDeviceCatalog(orgB, deviceId, catalogId);
+
+        assertThat(exists).isFalse();
+    }
+
+    @Test
+    void exists_failedSatisfied_returnsFalse() {
+        // V12 result_status enum includes FAILED. A SUCCEEDED gate must
+        // reject FAILED rows even when post_verification is SATISFIED.
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.exists.failed");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-exists-failed");
+        persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.FAILED, InstallPostVerification.SATISFIED);
+
+        boolean exists = repository
+                .existsSucceededSatisfiedByOrgDeviceCatalog(orgA, deviceId, catalogId);
+
+        assertThat(exists).isFalse();
+    }
+
+    // ───────────────────────── findLatestSucceededSatisfied... (compliance evaluator selector) ─────────────────────────
+
+    @Test
+    void selector_canonicalRow_matchedViaWrapper() {
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.sel.canon");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-sel-canon");
+        UUID auditId = persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+
+        Optional<EndpointInstallAudit> hit = repository
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                        orgA, deviceId, catalogId,
+                        Instant.parse("2999-12-31T23:59:59Z"));
+
+        assertThat(hit).isPresent()
+                .hasValueSatisfying(a -> assertThat(a.getId()).isEqualTo(auditId));
+    }
+
+    @Test
+    void selector_legacyNullRow_matchedViaOrFallback() {
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.sel.legacy");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-sel-legacy");
+        UUID auditId = persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+        makeAuditOrgIdNull(auditId);
+
+        Optional<EndpointInstallAudit> hit = repository
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                        orgA, deviceId, catalogId,
+                        Instant.parse("2999-12-31T23:59:59Z"));
+
+        assertThat(hit).isPresent()
+                .hasValueSatisfying(a -> assertThat(a.getId()).isEqualTo(auditId));
+    }
+
+    @Test
+    void selector_crossOrg_returnsEmpty() {
+        UUID orgA = UUID.randomUUID();
+        UUID orgB = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.sel.cross");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-sel-cross");
+        persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+
+        Optional<EndpointInstallAudit> hit = repository
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                        orgB, deviceId, catalogId,
+                        Instant.parse("2999-12-31T23:59:59Z"));
+
+        assertThat(hit).isEmpty();
+    }
+
+    @Test
+    void selector_strictBeforeBound_excludesRowsCreatedAtOrAfterBefore() {
+        // The deterministic-selector contract: created_at < before so the
+        // compliance evaluator cannot observe its own evaluation row.
+        // Seed an audit row, derive its created_at from the DB, pass
+        // before = created_at exactly: row MUST NOT match.
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.sel.strict");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-sel-strict");
+        UUID auditId = persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
+
+        Instant createdAt = jdbc.queryForObject(
+                "SELECT created_at FROM " + SCHEMA
+                        + ".endpoint_install_audit WHERE id = ?",
+                Instant.class, auditId);
+
+        Optional<EndpointInstallAudit> hitExact = repository
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                        orgA, deviceId, catalogId, createdAt);
+        Optional<EndpointInstallAudit> hitAfter = repository
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                        orgA, deviceId, catalogId, createdAt.plusSeconds(1));
+
+        assertThat(hitExact)
+                .as("strict < before: row whose created_at == before is NOT returned")
+                .isEmpty();
+        assertThat(hitAfter)
+                .as("row whose created_at < before is returned")
+                .isPresent()
+                .hasValueSatisfying(a -> assertThat(a.getId()).isEqualTo(auditId));
+    }
+
+    // ───────────────────────── Seed helpers (mirror e-A) ─────────────────────────
+
+    private UUID seedDevice(UUID tenantId) {
+        UUID id = UUID.randomUUID();
+        Timestamp now = Timestamp.from(Instant.now());
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_devices "
+                        + "(id, tenant_id, hostname, machine_fingerprint, status, "
+                        + " os_type, os_version, agent_version, created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                id, tenantId, "host-" + id, "fp-" + id, "ONLINE",
+                "WINDOWS", "Windows 11", "1.0.0", now, now, 0L);
+        return id;
+    }
+
+    private UUID seedCatalog(UUID tenantId, String packageId) {
+        UUID id = UUID.randomUUID();
+        Timestamp now = Timestamp.from(Instant.now());
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_software_catalog_items ("
+                        + "id, tenant_id, catalog_item_id, status, provider, source_type,"
+                        + " source_name, source_trust, package_id, display_name, publisher,"
+                        + " version_policy_type, version_policy_value, installer_type,"
+                        + " silent_args_policy, sha256, provenance, detection_rule,"
+                        + " risk_tier, enabled, created_by_subject, created_at,"
+                        + " last_updated_by_subject, last_updated_at, version) "
+                        + "VALUES (?, ?, ?, 'APPROVED', 'WINGET', 'WINGET', 'winget',"
+                        + " 'WINGET_COMMUNITY_REVIEWED', ?, ?, ?, 'LATEST', NULL,"
+                        + " 'WINGET_SILENT', 'DEFAULT', NULL, NULL,"
+                        + " '{\"type\":\"WINGET_PACKAGE\"}'::jsonb, 'LOW', true,"
+                        + " 'creator', ?, 'creator', ?, 0)",
+                id, tenantId, packageId, packageId, "DisplayName-" + packageId,
+                "Publisher", now, now);
+        return id;
+    }
+
+    private UUID seedCommand(UUID tenantId, UUID deviceId, String commandType,
+                             String idempotencyKey) {
+        UUID id = UUID.randomUUID();
+        Timestamp now = Timestamp.from(Instant.now());
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_commands ("
+                        + "id, tenant_id, device_id, command_type, idempotency_key, "
+                        + " issued_by_subject, issued_at, created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                id, tenantId, deviceId, commandType, idempotencyKey,
+                "issuer@example.com", now, now, now, 0L);
+        return id;
+    }
+
+    private UUID persistAuditCanonical(UUID tenantId, UUID deviceId,
+            UUID commandId, UUID catalogItemId,
+            CommandResultStatus resultStatus,
+            InstallPostVerification postVerification) {
+        Instant now = Instant.now();
+        EndpointInstallAudit audit = new EndpointInstallAudit();
+        audit.setTenantId(tenantId);
+        audit.setOrgId(tenantId);  // canonical write parity (PR2b-ii)
+        audit.setDeviceId(deviceId);
+        audit.setCommandId(commandId);
+        audit.setCatalogItemId(catalogItemId);
+        audit.setCatalogPackageId("pkg-" + catalogItemId);
+        audit.setCatalogRowVersion(0L);
+        audit.setPreflightDecision(InstallPreflightDecisionRecorded.PASS);
+        audit.setPreflightDecisionAt(now);
+        audit.setActorSubject("actor@example.com");
+        audit.setResultStatus(resultStatus);
+        audit.setReportedAt(now);
+        audit.setPostVerification(postVerification);
+        EndpointInstallAudit saved = repository.saveAndFlush(audit);
+        return saved.getId();
+    }
+
+    private void makeAuditOrgIdNull(UUID auditId) {
+        // DISABLE TRIGGER USER essential (slice e-A iter-1 Codex comment
+        // correction): with V29 BEFORE UPDATE trigger enabled, UPDATE
+        // org_id = NULL would be silently refilled back to tenant_id.
+        jdbc.execute("ALTER TABLE " + SCHEMA
+                + ".endpoint_install_audit DISABLE TRIGGER USER");
+        try {
+            jdbc.update("UPDATE " + SCHEMA
+                            + ".endpoint_install_audit SET org_id = NULL WHERE id = ?",
+                    auditId);
+        } finally {
+            jdbc.execute("ALTER TABLE " + SCHEMA
+                    + ".endpoint_install_audit ENABLE TRIGGER USER");
+        }
+    }
+}
