@@ -27,8 +27,9 @@ import java.util.UUID;
  * (= legacy {@code tenantId}); V30 CHECK guarantees a written row's
  * {@code org_id} matches its {@code tenant_id} when both are populated.
  *
- * <p>Hostname / machineFingerprint / hostnameAsc / statusIn methods stay
- * on the derived form pending PR2b-iv.b2 / b3 / b4 sub-slices.
+ * <p>hostnameAsc / statusIn methods stay on the derived form pending
+ * PR2b-iv.b3 / b4 sub-slices. b1 (id) and b2 (hostname + fingerprint)
+ * MERGED 2026-06-03.
  */
 public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, UUID> {
 
@@ -48,9 +49,39 @@ public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, 
     Optional<EndpointDevice> findVisibleToOrgAndId(
             @Param("orgId") UUID orgId, @Param("id") UUID id);
 
-    Optional<EndpointDevice> findByTenantIdAndHostname(UUID tenantId, String hostname);
+    /**
+     * Canonical PR2b-iv.b2 read — effective-org device-by-hostname
+     * adoption/discovery resolver (Codex 019e8d1d B-B sub-slice b2 AGREE).
+     * Used by enrollment/auto-enroll flow as the hostname-fallback half
+     * of the fingerprint-first/hostname-fallback adoption order.
+     * Replaces the pre-PR2b-iv {@code findByTenantIdAndHostname} derived
+     * method.
+     */
+    @Query("""
+            select d
+            from EndpointDevice d
+            where (d.orgId = :orgId or (d.orgId is null and d.tenantId = :orgId))
+              and d.hostname = :hostname
+            """)
+    Optional<EndpointDevice> findVisibleToOrgAndHostname(
+            @Param("orgId") UUID orgId, @Param("hostname") String hostname);
 
-    Optional<EndpointDevice> findByTenantIdAndMachineFingerprint(UUID tenantId, String machineFingerprint);
+    /**
+     * Canonical PR2b-iv.b2 read — effective-org device-by-machine
+     * fingerprint adoption/discovery resolver (Codex 019e8d1d B-B
+     * sub-slice b2 AGREE). Used by enrollment/auto-enroll flow as the
+     * fingerprint-first half of the fingerprint-first/hostname-fallback
+     * adoption order. Replaces the pre-PR2b-iv
+     * {@code findByTenantIdAndMachineFingerprint} derived method.
+     */
+    @Query("""
+            select d
+            from EndpointDevice d
+            where (d.orgId = :orgId or (d.orgId is null and d.tenantId = :orgId))
+              and d.machineFingerprint = :machineFingerprint
+            """)
+    Optional<EndpointDevice> findVisibleToOrgAndMachineFingerprint(
+            @Param("orgId") UUID orgId, @Param("machineFingerprint") String machineFingerprint);
 
     List<EndpointDevice> findByTenantIdAndStatusIn(UUID tenantId, Collection<DeviceStatus> statuses);
 

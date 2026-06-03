@@ -26,9 +26,13 @@ public class EndpointDeviceService {
     public EndpointDevice upsertFromEnrollment(UUID tenantId,
                                                ConsumeEnrollmentRequest request,
                                                Instant now) {
+        // Faz 21.1 PR2b-iv.b2 (Codex 019e8d1d AGREE): canonical effective-org
+        // adoption resolver. Fingerprint-first / hostname-fallback order
+        // preserved exactly; both lookups now use parenthesized OR pattern
+        // (canonical post-PR2b-ii rows + legacy NULL rows both reachable).
         EndpointDevice device = repository
-                .findByTenantIdAndMachineFingerprint(tenantId, request.machineFingerprint())
-                .or(() -> repository.findByTenantIdAndHostname(tenantId, request.hostname()))
+                .findVisibleToOrgAndMachineFingerprint(tenantId, request.machineFingerprint())
+                .or(() -> repository.findVisibleToOrgAndHostname(tenantId, request.hostname()))
                 .orElseGet(EndpointDevice::new);
 
         if (device.getId() == null) {

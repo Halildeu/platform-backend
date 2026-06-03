@@ -243,13 +243,24 @@ public class MachineCertAutoEnrollService {
     private EndpointDevice adoptOrCreateDevice(UUID tenantId,
                                                 AutoEnrollmentRequest request,
                                                 Instant now) {
+        // Faz 21.1 PR2b-iv.b2 (Codex 019e8d1d AGREE): canonical effective-org
+        // adoption resolver. Fingerprint-first / hostname-fallback order
+        // preserved exactly; both lookups now use parenthesized OR pattern
+        // (canonical post-PR2b-ii rows + legacy NULL rows both reachable).
         EndpointDevice device = deviceRepository
-                .findByTenantIdAndMachineFingerprint(tenantId, request.machineFingerprint())
-                .or(() -> deviceRepository.findByTenantIdAndHostname(tenantId, request.hostname()))
+                .findVisibleToOrgAndMachineFingerprint(tenantId, request.machineFingerprint())
+                .or(() -> deviceRepository.findVisibleToOrgAndHostname(tenantId, request.hostname()))
                 .orElseGet(EndpointDevice::new);
 
         if (device.getId() == null) {
+            // Faz 21.1 PR2b-iv.b2 must-fix (Codex 019e8d1d): canonical write
+            // path service must set BOTH org_id + tenant_id (Option A inline
+            // pattern, same as PR2b-ii EndpointDeviceService:39-40). Without
+            // this explicit setOrgId, the row depended on V29 trigger silent
+            // compensation — which Codex 019e8d12 explicitly disallows as
+            // "canonical write path service sets both" iddiası için yeterli.
             device.setTenantId(tenantId);
+            device.setOrgId(tenantId);
             device.setEnrolledAt(now);
         }
         device.setHostname(request.hostname());
