@@ -3,6 +3,7 @@ package com.example.audiogateway.contract;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.ChunkAdmissionResponse;
 import com.example.audiogateway.dto.ErrorResponse;
+import com.example.audiogateway.dto.FinishResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
@@ -402,8 +403,14 @@ class ChunkAdmissionContractTest {
 
     // ---------------- Concurrent finish + admitChunk race (Codex iter-3 P1) -----
 
+    /**
+     * Codex {@code 019e8d78} iter-4 sıkılaştırma absorb: {@code Future.get()} ile assertion
+     * exception ana thread'e taşınır; finish synchronized sonrası final state deterministik
+     * {@code FINISHED} olmalı (synchronized monitor altında finish her zaman terminal state
+     * yazar; admitChunk stale snapshot'tan terminal overwrite edemez).
+     */
     @Test
-    void concurrentFinishAndChunk_neverOverwritesTerminalState() throws Exception {
+    void concurrentFinishAndChunk_finishWinsTerminalDeterministic() throws Exception {
         final String sid = startFresh(1L, 42L, "chunk-race-fix-001-aaa");
         // First chunk to enter STREAMING
         chunkRequest(1L, 42L, sid, "chunk-race-seq0-fix-001abc",
@@ -414,49 +421,55 @@ class ChunkAdmissionContractTest {
         final java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
 
-        final Runnable finishTask = () -> {
-            try {
-                start.await();
-                asUser(1L, 42L)
-                        .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                        .header(IDEMP_HEADER, "chunk-race-finish-fix-001a")
-                        .exchange()
-                        .expectStatus().value(s -> assertThat(s).isIn(200, 409));
-            } catch (Exception ex) {
-                throw new RuntimeException(ex);
-            }
+        final java.util.concurrent.Callable<Integer> finishTask = () -> {
+            start.await();
+            return asUser(1L, 42L)
+                    .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
+                    .header(IDEMP_HEADER, "chunk-race-finish-fix-001a")
+                    .exchange()
+                    .returnResult(FinishResponse.class)
+                    .getStatus().value();
         };
 
-        final Runnable chunkTask = () -> {
-            try {
-                start.await();
-                chunkRequest(1L, 42L, sid, "chunk-race-seq1-fix-001abc",
-                        1, payload(80), AudioFormat.WAV, 16000, 1)
-                        .exchange()
-                        .expectStatus().value(s -> assertThat(s).isIn(200, 409));
-            } catch (Exception ex) {
-                throw new RuntimeException(ex);
-            }
+        final java.util.concurrent.Callable<Integer> chunkTask = () -> {
+            start.await();
+            return chunkRequest(1L, 42L, sid, "chunk-race-seq1-fix-001abc",
+                    1, payload(80), AudioFormat.WAV, 16000, 1)
+                    .exchange()
+                    .returnResult(ChunkAdmissionResponse.class)
+                    .getStatus().value();
         };
 
-        pool.submit(finishTask);
-        pool.submit(chunkTask);
+        final java.util.concurrent.Future<Integer> finishFuture = pool.submit(finishTask);
+        final java.util.concurrent.Future<Integer> chunkFuture = pool.submit(chunkTask);
         start.countDown();
-        pool.shutdown();
-        assertThat(pool.awaitTermination(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
 
-        // Terminal state assertion: status FINISHED veya STREAMING
-        // (race sonucu hangisi olursa olsun, terminal FINISHED geri STREAMING olmasın)
+        final int finishStatus = finishFuture.get(15, java.util.concurrent.TimeUnit.SECONDS);
+        final int chunkStatus = chunkFuture.get(15, java.util.concurrent.TimeUnit.SECONDS);
+        pool.shutdown();
+        assertThat(pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        // Finish her zaman 200 (synchronized monitor altında garantili — synchronized finish
+        // ve admitChunk aynı lock üzerinde sırayla çalışır; finish call asla CAS fail etmez)
+        assertThat(finishStatus)
+                .as("Finish should always succeed (200) under synchronized monitor")
+                .isEqualTo(200);
+        // Chunk 200 (chunk önce çalıştıysa STREAMING'e yazdı) veya 409 (finish önce çalıştıysa
+        // INVALID_TRANSITION — chunk FINISHED state'de reddedildi)
+        assertThat(chunkStatus)
+                .as("Chunk response is 200 (chunk önce) veya 409 (finish önce → INVALID_TRANSITION)")
+                .isIn(200, 409);
+
+        // Terminal state assertion: synchronized fix sonrası final state HER ZAMAN FINISHED
+        // (finish call her zaman terminal yazar; admitChunk stale snapshot'tan overwrite edemez)
         asUser(1L, 42L)
                 .get().uri(SESSIONS_PATH + "/" + sid + "/status")
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(StatusResponse.class)
-                .value(resp -> {
-                    assertThat(resp.state())
-                            .as("Terminal state must be deterministic (FINISHED veya STREAMING; race sonucu)")
-                            .isIn("FINISHED", "STREAMING");
-                });
+                .value(resp -> assertThat(resp.state())
+                        .as("Terminal state deterministic FINISHED after synchronized finish")
+                        .isEqualTo("FINISHED"));
     }
 
     // ---------------- Invalid state (FINISHED) ----------------
