@@ -97,6 +97,16 @@ public class EndpointOutdatedSoftwarePackage {
         if (snapshot != null && tenantId == null) {
             tenantId = snapshot.getTenantId();
         }
+        // Codex 019e8cac iter-1 absorb: mirror orgId from the snapshot's
+        // effective org at insert time. Because the column is
+        // updatable=false, this is the ONLY safe write site for orgId on
+        // this child table; later setOrgId() calls during UPDATE will be
+        // silently ignored by Hibernate. Falling back to tenantId via
+        // getEffectiveOrgId() keeps legacy snapshots (orgId NULL on parent)
+        // working until PR2b-ii canonicalizes the snapshot write path.
+        if (snapshot != null && orgId == null) {
+            orgId = snapshot.getEffectiveOrgId();
+        }
     }
 
     public UUID getId() {
@@ -115,6 +125,13 @@ public class EndpointOutdatedSoftwarePackage {
         this.snapshot = snapshot;
         if (snapshot != null) {
             this.tenantId = snapshot.getTenantId();
+            // Codex 019e8cac iter-1 absorb: mirror orgId alongside tenantId
+            // at setSnapshot time. updatable=false means setOrgId() during
+            // update is a no-op; eager mirror at setSnapshot covers the
+            // insert path even if onPersist mutates fewer fields.
+            if (this.orgId == null) {
+                this.orgId = snapshot.getEffectiveOrgId();
+            }
         }
     }
 
