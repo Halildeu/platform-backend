@@ -194,14 +194,14 @@ class V29OrgIdCompatLayerPostgresIntegrationTest {
     }
 
     @Test
-    void explicitDualWriteMismatch_rejectedByV30CheckConstraint() {
-        // V29 PR1 documented this drift case as accepted (trigger is purely
-        // additive). V30 PR2a added CHECK (org_id IS NULL OR org_id = tenant_id)
-        // which now REJECTS the mismatch.
-        //
-        // After V30 lands, this assertion verifies the binding contract:
-        // a writer supplying both columns with different values is rejected
-        // by the DB check constraint with SQLSTATE 23514.
+    void explicitDualWriteMismatch_headStateBehaviorPostV30() {
+        // Codex iter-1 F4 absorb: this test runs against Flyway head state
+        // (V29 + V30 both applied). The canonical reject assertion lives in
+        // V30OrgIdCheckConstraintPostgresIntegrationTest. This test
+        // documents that the V29 trigger by itself (purely additive) is NOT
+        // sufficient to enforce equality — only the V30 CHECK constraint is.
+        // At Flyway head, mismatch reject is observable via this test as a
+        // sanity smoke; the binding assertion lives with V30.
         var tenantId = java.util.UUID.randomUUID();
         var orgIdInput = java.util.UUID.randomUUID();
         var hostname = "v29-trigger-dual-mismatch-" + tenantId;
@@ -211,7 +211,7 @@ class V29OrgIdCompatLayerPostgresIntegrationTest {
                         + "(id, tenant_id, org_id, hostname, os_type) "
                         + "VALUES (gen_random_uuid(), ?, ?, ?, 'LINUX')",
                 tenantId, orgIdInput, hostname))
-                .as("V30 CHECK constraint must reject mismatch dual-write")
+                .as("Head-state: V29 trigger alone NOT sufficient; V30 CHECK rejects mismatch (canonical assertion in V30 test)")
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 

@@ -111,6 +111,30 @@ class V30OrgIdCheckConstraintPostgresIntegrationTest {
     }
 
     @Test
+    void allSevenConstraintsHaveCorrectExpression() {
+        // Codex iter-1 P1 absorb: verify the actual CHECK expression on each
+        // of the 7 tables, not just constraint existence. pg_get_constraintdef
+        // returns the canonical SQL form; we match on both required predicate
+        // parts so the constraint body cannot silently drift.
+        for (String[] row : TABLE_AND_CONSTRAINT) {
+            String table = row[0];
+            String constraint = row[1];
+            String definition = jdbcTemplate.queryForObject(
+                    "SELECT pg_get_constraintdef(c.oid) "
+                            + "FROM pg_constraint c "
+                            + "JOIN pg_class t ON c.conrelid = t.oid "
+                            + "WHERE t.relname = ? AND c.conname = ?",
+                    String.class, table, constraint);
+            assertThat(definition)
+                    .as("Constraint %s on %s body must reference org_id IS NULL", constraint, table)
+                    .containsIgnoringCase("org_id IS NULL");
+            assertThat(definition)
+                    .as("Constraint %s on %s body must reference org_id = tenant_id", constraint, table)
+                    .containsIgnoringCase("org_id = tenant_id");
+        }
+    }
+
+    @Test
     void legacyInsertWithTenantIdOnly_passesCheckViaTrigger() {
         // V29 trigger fills org_id from tenant_id → CHECK passes (org_id = tenant_id).
         UUID tenantId = UUID.randomUUID();
@@ -150,6 +174,9 @@ class V30OrgIdCheckConstraintPostgresIntegrationTest {
     void mismatchInsertWithDifferentColumns_isRejectedByCheckConstraint() {
         // V29 PR1 documented drift case (Codex iter-1 P1); V30 binding
         // upgrade now REJECTS this with SQLSTATE 23514 (check_violation).
+        // Codex iter-1 F2 absorb: assert canonical SQLSTATE via
+        // SQLException.getSQLState(), not message-text (brittle across
+        // wrapping + localization).
         UUID tenantId = UUID.randomUUID();
         UUID orgIdMismatch = UUID.randomUUID();
         String hostname = "v30-mismatch-" + tenantId;
@@ -160,15 +187,9 @@ class V30OrgIdCheckConstraintPostgresIntegrationTest {
                         + "VALUES (gen_random_uuid(), ?, ?, ?, 'LINUX')",
                 tenantId, orgIdMismatch, hostname))
                 .isInstanceOf(DataIntegrityViolationException.class)
-                .satisfies(throwable -> {
-                    // PostgreSQL check_violation SQLSTATE = 23514
-                    String message = throwable.getCause() != null
-                            ? throwable.getCause().getMessage()
-                            : throwable.getMessage();
-                    assertThat(message)
-                            .as("Mismatch must be rejected by org_id_tenant_id_match check constraint")
-                            .containsAnyOf("org_id_tenant_id_match", "org_id_match");
-                });
+                .satisfies(throwable -> assertThat(rootSqlState(throwable))
+                        .as("Mismatch must be rejected with SQLSTATE 23514 (PG check_violation)")
+                        .isEqualTo("23514"));
     }
 
     @Test
@@ -188,6 +209,25 @@ class V30OrgIdCheckConstraintPostgresIntegrationTest {
         assertThatThrownBy(() -> jdbcTemplate.update(
                 "UPDATE endpoint_devices SET org_id = ? WHERE hostname = ?",
                 badOrgId, hostname))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(throwable -> assertThat(rootSqlState(throwable))
+                        .as("UPDATE mismatch must be rejected with SQLSTATE 23514 (PG check_violation)")
+                        .isEqualTo("23514"));
+    }
+
+    /**
+     * Codex iter-1 F2 helper — traverse to root SQLException and return its
+     * SQLSTATE. Spring's DataIntegrityViolationException wraps the original
+     * driver error; the canonical PG check_violation code is 23514.
+     */
+    private static String rootSqlState(Throwable throwable) {
+        Throwable cur = throwable;
+        while (cur != null) {
+            if (cur instanceof java.sql.SQLException sqlEx) {
+                return sqlEx.getSQLState();
+            }
+            cur = cur.getCause();
+        }
+        return null;
     }
 }

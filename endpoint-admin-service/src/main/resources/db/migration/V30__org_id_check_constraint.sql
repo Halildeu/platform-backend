@@ -4,12 +4,28 @@
 -- tenant-scoped endpoint tables introduced by V29. Pattern:
 --   1) ADD CONSTRAINT ... NOT VALID — applies to new + updated rows
 --      immediately; skips full-table validation scan (cheap)
---   2) VALIDATE CONSTRAINT — full-table validation in a separate, kontrolu
---      step
+--   2) VALIDATE CONSTRAINT — full-table validation in a separate ALTER
+--      statement
+--
+-- IMPORTANT (Codex 019e8ca1 iter-1 F3 absorb): the NOT VALID + VALIDATE
+-- separation is a SQL-level idiom (two ALTER statements). Both run in
+-- this single Flyway migration (one transaction/deploy unit). The
+-- semantic value is observable separation in the migration script (each
+-- step explicit; rollback narrows to what failed); it is NOT a multi-
+-- migration operator checkpoint. If a true operator checkpoint is needed
+-- (e.g. for huge tables where VALIDATE scan must be scheduled), split
+-- Phase 1 into V30 and Phase 2 into V31.
 --
 -- Precondition (PR1 V29 guarantee): mismatch=0 across all 7 tables at the
 -- time V29 ran. V30 VALIDATE step re-enforces this on the live snapshot
 -- before the constraint is marked valid.
+--
+-- Operator pre-merge evidence (Codex 019e8ca1 iter-1 F6):
+--   Run mismatch=0 probe on live prod data IMMEDIATELY before V30 deploys.
+--   V30 intentionally fails (RAISE in VALIDATE step) if PR1's documented
+--   drift case occurred between V29 and V30 deploys. The audit script
+--   docs/scripts/faz-21/audit-and-check.sh (PR-3 A in sister repo
+--   platform-k8s-gitops) can produce this evidence with multi-DB.
 --
 -- Behavior after V30 lands:
 --   - Legacy writer (tenant_id only): BEFORE INSERT/UPDATE trigger (V29)
