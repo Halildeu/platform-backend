@@ -194,31 +194,25 @@ class V29OrgIdCompatLayerPostgresIntegrationTest {
     }
 
     @Test
-    void explicitDualWriteMismatch_documentedDrift() {
-        // Writer supplies different tenant_id and org_id (this is the documented
-        // drift case Codex flagged — trigger is purely additive, not enforcing
-        // equality). PR1 accepts this drift; PR2 should add CHECK constraint
-        // or fail-loud trigger upgrade.
+    void explicitDualWriteMismatch_rejectedByV30CheckConstraint() {
+        // V29 PR1 documented this drift case as accepted (trigger is purely
+        // additive). V30 PR2a added CHECK (org_id IS NULL OR org_id = tenant_id)
+        // which now REJECTS the mismatch.
+        //
+        // After V30 lands, this assertion verifies the binding contract:
+        // a writer supplying both columns with different values is rejected
+        // by the DB check constraint with SQLSTATE 23514.
         var tenantId = java.util.UUID.randomUUID();
         var orgIdInput = java.util.UUID.randomUUID();
         var hostname = "v29-trigger-dual-mismatch-" + tenantId;
 
-        jdbcTemplate.update(
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO endpoint_devices "
                         + "(id, tenant_id, org_id, hostname, os_type) "
                         + "VALUES (gen_random_uuid(), ?, ?, ?, 'LINUX')",
-                tenantId, orgIdInput, hostname);
-
-        var orgIdStored = jdbcTemplate.queryForObject(
-                "SELECT org_id FROM endpoint_devices WHERE hostname = ?",
-                java.util.UUID.class, hostname);
-
-        // PR1 behaviour: trigger does NOT enforce equality; documented drift.
-        // PR2 binding: add CHECK (org_id IS NULL OR org_id = tenant_id) or
-        // strict fail-loud trigger to reject this case.
-        assertThat(orgIdStored)
-                .as("PR1 trigger is purely additive; mismatch stored as-is (PR2 will enforce equality)")
-                .isEqualTo(orgIdInput);
+                tenantId, orgIdInput, hostname))
+                .as("V30 CHECK constraint must reject mismatch dual-write")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     @Test
