@@ -107,6 +107,9 @@ public class AudioGatewayProperties {
      * RedisStreamsAudioChunkDispatcher bean register).
      */
     public static class Dispatcher {
+        /** Supported modes in PR-gw-01B3. PR-gw-01C ekleyecek: redis. */
+        private static final java.util.Set<String> SUPPORTED_MODES_B3 = java.util.Set.of("noop");
+
         private String mode = "noop";
         private long queueFullRetryAfterSeconds = 5L;
         private long unavailableRetryAfterSeconds = 30L;
@@ -117,6 +120,20 @@ public class AudioGatewayProperties {
 
         public void setMode(final String mode) {
             this.mode = mode;
+        }
+
+        /**
+         * Codex {@code 019e8df2} iter-3 P1.2 absorb: fail-fast unsupported mode.
+         * {@code mode=redis} sessiz NoOp ile çalışmasın — operator truth drift önlemi.
+         */
+        @jakarta.annotation.PostConstruct
+        public void validate() {
+            if (!SUPPORTED_MODES_B3.contains(mode)) {
+                throw new IllegalStateException(
+                        "audio.gateway.dispatcher.mode='" + mode + "' not supported in PR-gw-01B3 — "
+                        + "only 'noop' currently. 'redis' arrives in PR-gw-01C with cross-server "
+                        + "Streams producer. Supported: " + SUPPORTED_MODES_B3);
+            }
         }
 
         public long getQueueFullRetryAfterSeconds() {

@@ -242,9 +242,7 @@ public class AudioSessionController {
                             corrId, false)));
         }
         if (!tenantId.equals(existing.tenantId()) || !userId.equals(existing.userId())) {
-            safeAudit(new AuditEvent.ChunkAdmissionRejected(
-                    sessionId, tenantId, userId, chunkSeq, 403,
-                    ErrorResponse.CODE_MEETING_FORBIDDEN, null, corrId, Instant.now().toEpochMilli()));
+            // Codex iter-3 P1.3 absorb: 403 owner mismatch = authz boundary, B3 audit DIŞI
             return Mono.just(ResponseEntity
                     .status(HttpStatus.FORBIDDEN)
                     .body(ErrorResponse.of(
@@ -317,6 +315,10 @@ public class AudioSessionController {
                 .onErrorResume(ex -> {
                     if (ex.getClass().getSimpleName().contains("DataBufferLimit")
                             || ex.getMessage() != null && ex.getMessage().contains("limit")) {
+                        // Codex iter-3 P1.4 absorb: bounded read limit 413 path da audit
+                        safeAudit(new AuditEvent.ChunkAdmissionRejected(
+                                sessionId, tenantId, userId, capturedChunkSeq, 413,
+                                ErrorResponse.CODE_OVERSIZE, null, corrId, Instant.now().toEpochMilli()));
                         return Mono.just(ResponseEntity
                                 .status(HttpStatus.PAYLOAD_TOO_LARGE)
                                 .body(ErrorResponse.of(
@@ -324,6 +326,9 @@ public class AudioSessionController {
                                         "Chunk body exceeds bounded read limit (" + maxAllowed + ")",
                                         corrId, false)));
                     }
+                    safeAudit(new AuditEvent.ChunkAdmissionRejected(
+                            sessionId, tenantId, userId, capturedChunkSeq, 400,
+                            ErrorResponse.CODE_VALIDATION, null, corrId, Instant.now().toEpochMilli()));
                     return Mono.just(ResponseEntity
                             .status(HttpStatus.BAD_REQUEST)
                             .body(ErrorResponse.of(
@@ -350,16 +355,13 @@ public class AudioSessionController {
                                 ErrorResponse.CODE_SESSION_NOT_FOUND,
                                 "Session not found", corrId, false));
             }
-            case ChunkOutcome.OwnerMismatch om -> {
-                safeAudit(new AuditEvent.ChunkAdmissionRejected(
-                        sessionId, tenantId, userId, chunkSeq, 403,
-                        ErrorResponse.CODE_MEETING_FORBIDDEN, null, corrId, ts));
-                yield ResponseEntity
-                        .status(HttpStatus.FORBIDDEN)
-                        .body(ErrorResponse.of(
-                                ErrorResponse.CODE_MEETING_FORBIDDEN,
-                                "Session owner mismatch", corrId, false));
-            }
+            case ChunkOutcome.OwnerMismatch om ->
+                    // Codex iter-3 P1.3 absorb: 403 owner mismatch B3 audit DIŞI
+                    ResponseEntity
+                            .status(HttpStatus.FORBIDDEN)
+                            .body(ErrorResponse.of(
+                                    ErrorResponse.CODE_MEETING_FORBIDDEN,
+                                    "Session owner mismatch", corrId, false));
             case ChunkOutcome.InvalidState is -> {
                 safeAudit(new AuditEvent.ChunkAdmissionRejected(
                         sessionId, tenantId, userId, chunkSeq, 409,
