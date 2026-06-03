@@ -65,6 +65,14 @@ public class EndpointOutdatedSoftwarePackage {
     @Column(name = "tenant_id", nullable = false, updatable = false)
     private UUID tenantId;
 
+    /**
+     * Faz 21.1 PR2b-i org_id compat field (Codex 019e8cac Option A).
+     * Mirrors {@link #tenantId} updatable=false constraint — once written,
+     * the parent snapshot's tenant scope is immutable.
+     */
+    @Column(name = "org_id", updatable = false)
+    private UUID orgId;
+
     /** Stable winget package id ({@code ^\S+$}). The ONLY package
      * identifier inside the redaction boundary. */
     @Column(name = "package_id", nullable = false, length = 256)
@@ -116,6 +124,20 @@ public class EndpointOutdatedSoftwarePackage {
 
     public void setTenantId(UUID tenantId) {
         this.tenantId = tenantId;
+    }
+
+    /** Faz 21.1 PR2b-i org_id accessor (Codex 019e8cac Option A). */
+    public UUID getOrgId() {
+        return orgId;
+    }
+
+    public void setOrgId(UUID orgId) {
+        this.orgId = orgId;
+    }
+
+    /** Faz 21.1 PR2b-i effective-org accessor: orgId fallback to tenantId. */
+    public UUID getEffectiveOrgId() {
+        return orgId != null ? orgId : tenantId;
     }
 
     public String getPackageId() {
