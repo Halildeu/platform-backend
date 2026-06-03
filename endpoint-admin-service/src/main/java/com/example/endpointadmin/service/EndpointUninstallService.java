@@ -85,10 +85,12 @@ public class EndpointUninstallService {
     static final String EVENT_APPROVED_DISPATCHED = "ENDPOINT_UNINSTALL_REQUEST_APPROVED_DISPATCHED";
     static final String EVENT_APPROVAL_REJECTED_MAKER_CHECKER =
             "ENDPOINT_UNINSTALL_REQUEST_APPROVAL_REJECTED_MAKER_CHECKER";
-    static final String EVENT_APPROVAL_REJECTED_CAPABILITY =
-            "ENDPOINT_UNINSTALL_REQUEST_APPROVAL_REJECTED_CAPABILITY";
-    static final String EVENT_APPROVAL_REJECTED_HEARTBEAT =
-            "ENDPOINT_UNINSTALL_REQUEST_APPROVAL_REJECTED_HEARTBEAT";
+    // Codex iter-1 nit #4 absorb (thread `019e8dcd`): no event constants for
+    // capability / heartbeat rejects — those audits would roll back with the
+    // validation throw under default `@Transactional` semantics. Operators
+    // observe these rejects via the API response code (422 / 424) and the
+    // request stays in PENDING_APPROVAL for retry. Only the adversarial
+    // maker-checker reject is made durable (BE-014A {@code noRollbackFor}).
 
     private static final String ACTION_PROPOSE = "PROPOSE_ENDPOINT_UNINSTALL";
     private static final String ACTION_APPROVE = "APPROVE_ENDPOINT_UNINSTALL";
@@ -216,12 +218,15 @@ public class EndpointUninstallService {
 
         // (3) Provenance gate — 422 NO_PROVENANCE if the platform never
         // observed a SUCCEEDED + SATISFIED install for this (device, catalog).
-        // {@code Instant.MAX} → see-the-current-row-but-not-after; the gate is
-        // strictly existence, not a deterministic-selector check.
-        Optional<?> provenance = installAuditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
-                        tenantId, deviceId, catalogItem.getId(), Instant.MAX);
-        if (provenance.isEmpty()) {
+        // Uses a dedicated existence query (Codex post-impl iter-1 absorb,
+        // thread `019e8dcd` must-fix #1) — the prior
+        // `findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(Instant.MAX)`
+        // was unsafe because {@code Instant.MAX} (year 1000000000) is outside
+        // Postgres {@code timestamptz} range and risks bind-time overflow.
+        boolean hasProvenance = installAuditRepository
+                .existsSucceededSatisfiedByTenantDeviceCatalog(
+                        tenantId, deviceId, catalogItem.getId());
+        if (!hasProvenance) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "No prior install provenance for this device + catalog. "
                             + "AG-028 only uninstalls software the platform installed.");
@@ -300,8 +305,14 @@ public class EndpointUninstallService {
         UUID tenantId = context.tenantId();
         String subject = resolveSubject(context);
 
+        // PESSIMISTIC_WRITE on the request row — Codex post-impl iter-1
+        // absorb (thread `019e8dcd` must-fix #2). Serialises concurrent
+        // approvers so the second one observes the state already advanced
+        // past PENDING_APPROVAL and rejects with a clean 409, instead of
+        // racing through to the command idempotency-key unique constraint
+        // and surfacing as a 500.
         EndpointUninstallRequest req = requestRepository
-                .findByTenantIdAndId(tenantId, requestId)
+                .findByTenantIdAndIdForUpdate(tenantId, requestId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Uninstall request not found in tenant scope."));
         if (!Objects.equals(req.getDeviceId(), deviceId)) {
@@ -353,16 +364,30 @@ public class EndpointUninstallService {
                             + "Re-propose after Phase 0 flag-flip flow.");
         }
 
-        // (5) Capability + heartbeat guard.
+        // (5) Capability + heartbeat guard — Codex post-impl iter-1 absorb
+        // (thread `019e8dcd` must-fix #3). Both freshness AND capability are
+        // read from the SAME single most-recent heartbeat row, so stale
+        // capability data cannot be paired with a fresh-via-enrollment
+        // {@code device.lastSeenAt} timestamp.
         Instant now = Instant.now(clock);
-        assertHeartbeatFresh(req, device, now, subject);
-        assertCapabilityAdvertised(req, device, subject);
+        assertHeartbeatFreshAndCapable(req, device, now, subject);
 
-        // (6) Build dispatch payload — server-derived.
+        // (6) Transition request state BEFORE building the dispatch payload
+        // so {@code approvedBy} is non-null in the payload Codex iter-1
+        // (must-fix #4).
+        req.setState(UninstallRequestState.APPROVED);
+        req.setApprovedBy(subject);
+        req.setStateUpdatedAt(now);
+
+        // (7) Build dispatch payload — server-derived. Uses the SHARED
+        // {@code EndpointAdminCommandService.buildAgentDetectionRule} so the
+        // catalog-shape → agent-wire-shape translation (FILE_*
+        // {@code absolutePath → path}, WINGET identity invariant) is
+        // identical to the install path (Codex iter-1 must-fix #5).
         Map<String, Object> payload = buildUninstallPayload(catalogItem, req,
                 trimToNull(body == null ? null : body.reason()));
 
-        // (7) Create the UNINSTALL_SOFTWARE command — the agent will claim it
+        // (8) Create the UNINSTALL_SOFTWARE command — the agent will claim it
         // via the existing endpoint_commands queue + lifecycle. Approval gate
         // already satisfied at this layer so the command is NOT_REQUIRED.
         String commandIdempotencyKey = "admin-uninstall-cmd:" + req.getId();
@@ -383,11 +408,8 @@ public class EndpointUninstallService {
         command.setIssuedAt(now);
         EndpointCommand savedCommand = commandRepository.saveAndFlush(command);
 
-        // (8) Transition request state.
-        req.setState(UninstallRequestState.APPROVED);
+        // (9) Persist the command ref on the request row.
         req.setCommandId(savedCommand.getId());
-        req.setApprovedBy(subject);
-        req.setStateUpdatedAt(now);
         EndpointUninstallRequest savedReq = requestRepository.save(req);
 
         auditService.record(
@@ -462,69 +484,57 @@ public class EndpointUninstallService {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // Capability / heartbeat helpers
+    // Capability + heartbeat helpers
 
-    private void assertHeartbeatFresh(EndpointUninstallRequest req,
-                                      EndpointDevice device,
-                                      Instant now,
-                                      String approver) {
-        Instant lastSeen = device.getLastSeenAt();
-        boolean fresh = lastSeen != null
-                && Duration.between(lastSeen, now).compareTo(heartbeatFreshnessTtl) <= 0;
+    /**
+     * Verify both heartbeat freshness AND capability advertisement from the
+     * SAME most-recent heartbeat row (Codex post-impl iter-1 absorb, thread
+     * `019e8dcd` must-fix #3).
+     *
+     * <p>Reading {@code device.lastSeenAt} would be misleading because the
+     * field is updated by non-heartbeat paths too (enrollment / cert rotate
+     * via {@code MachineCertAutoEnrollService} + {@code EndpointDeviceService}
+     * etc.). Pairing a fresh-via-enrollment timestamp with an old
+     * capability-advertising heartbeat would let an unsupported agent
+     * accidentally pass the gate.
+     *
+     * <p>The audit emits are intentionally OMITTED here because they would
+     * roll back with the throw (no {@code noRollbackFor} clause). For
+     * adversarial events (maker-checker) we use BE-014A; for validation
+     * rejects (capability / heartbeat) the operator's retry path is the
+     * observability signal — they see the 422/424 and the request stays in
+     * PENDING_APPROVAL for retry once the agent reconnects.
+     */
+    private void assertHeartbeatFreshAndCapable(EndpointUninstallRequest req,
+                                                EndpointDevice device,
+                                                Instant now,
+                                                String approver) {
+        Optional<EndpointHeartbeat> latest = heartbeatRepository
+                .findFirstByDevice_IdOrderByReceivedAtDesc(device.getId());
+        Instant receivedAt = latest.map(EndpointHeartbeat::getReceivedAt).orElse(null);
+        boolean fresh = receivedAt != null
+                && Duration.between(receivedAt, now).compareTo(heartbeatFreshnessTtl) <= 0;
         if (!fresh) {
-            auditService.record(
-                    req.getTenantId(),
-                    device,
-                    null,
-                    EVENT_APPROVAL_REJECTED_HEARTBEAT,
-                    ACTION_APPROVE,
-                    approver,
-                    req.getIdempotencyKey(),
-                    Map.of("requestId", req.getId().toString(),
-                            "lastSeenAt", String.valueOf(lastSeen),
-                            "ttl", heartbeatFreshnessTtl.toString()),
-                    null,
-                    null);
-            // 424 FAILED_DEPENDENCY = upstream agent not reachable; retryable
-            // (not terminal — caller can re-approve after the agent reconnects).
+            // 424 FAILED_DEPENDENCY — upstream agent not reachable; retryable
+            // non-terminal.
             throw new ResponseStatusException(HttpStatus.FAILED_DEPENDENCY,
-                    "Agent heartbeat is stale (lastSeenAt="
-                            + lastSeen + ", ttl=" + heartbeatFreshnessTtl
+                    "Agent heartbeat is stale (receivedAt="
+                            + receivedAt + ", ttl=" + heartbeatFreshnessTtl
                             + "). Retry after the agent reconnects.");
         }
-    }
-
-    private void assertCapabilityAdvertised(EndpointUninstallRequest req,
-                                            EndpointDevice device,
-                                            String approver) {
-        List<EndpointHeartbeat> latest = heartbeatRepository
-                .findTop20ByDevice_IdOrderByReceivedAtDesc(device.getId());
-        boolean advertised = latest.stream()
-                .findFirst()
-                .map(hb -> hb.getPayload())
+        boolean advertised = latest
+                .map(EndpointHeartbeat::getPayload)
                 .map(payload -> payload.get(HEARTBEAT_CAPABILITIES_KEY))
                 .map(this::containsRequiredCapability)
                 .orElse(false);
         if (!advertised) {
-            auditService.record(
-                    req.getTenantId(),
-                    device,
-                    null,
-                    EVENT_APPROVAL_REJECTED_CAPABILITY,
-                    ACTION_APPROVE,
-                    approver,
-                    req.getIdempotencyKey(),
-                    Map.of("requestId", req.getId().toString(),
-                            "requiredCapability", requiredCapability,
-                            "advertised", false),
-                    null,
-                    null);
             // 422 retryable non-terminal — the agent might advertise the
             // capability on its next heartbeat (Phase 2 lands the agent-side
             // write).
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "Agent does not advertise the '" + requiredCapability
-                            + "' capability. Upgrade the agent and retry approve.");
+                            + "' capability on the most recent heartbeat. "
+                            + "Upgrade the agent and retry approve.");
         }
     }
 
@@ -568,9 +578,15 @@ public class EndpointUninstallService {
                 ? null : catalogItem.getSourceType().name());
         payload.put("installerType", catalogItem.getInstallerType() == null
                 ? null : catalogItem.getInstallerType().name());
-        // Same detection rule the install path forwards — the agent uses it
-        // to authoritatively verify ABSENCE (probeState=ABSENT after kill).
-        payload.put("detectionRule", catalogItem.getDetectionRule());
+        // SHARED catalog-shape → agent-wire-shape translation (Codex post-impl
+        // iter-1 must-fix #5 absorb, thread `019e8dcd`). The uninstall agent
+        // uses identical detection-rule semantics for the authoritative
+        // absence probe; forwarding the raw catalog rule would skip the
+        // FILE_* {@code absolutePath → path} rename and the WINGET identity
+        // invariant (Codex 019e77bd). Sharing the install helper guarantees
+        // both surfaces stay aligned on the wire contract.
+        payload.put("detectionRule", EndpointAdminCommandService
+                .buildAgentDetectionRule(catalogItem, catalogItem.getPackageId()));
         payload.put("uninstallSupported", catalogItem.isUninstallSupported());
         payload.put("uninstallProtected", catalogItem.isUninstallProtected());
         payload.put("createdBy", req.getCreatedBy());

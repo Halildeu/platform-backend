@@ -14,8 +14,9 @@ import jakarta.validation.constraints.Size;
  *
  * <p>Caller-supplied {@code idempotencyKey} is bounded so the canonical
  * {@code admin-uninstall:{deviceId(36)}:{catalogUuid(36)}:{key}} string
- * fits the {@code endpoint_commands.idempotency_key VARCHAR(128)}
- * column (Phase 1a V32 + parity with the install path).
+ * fits the {@code endpoint_uninstall_requests.idempotency_key VARCHAR(128)}
+ * column (Codex post-impl iter-1 nit absorb — corrected from earlier
+ * {@code endpoint_commands.idempotency_key} mislabel).
  */
 public record AdminUninstallRequestCreate(
         @NotBlank
@@ -23,10 +24,14 @@ public record AdminUninstallRequestCreate(
         String catalogItemId,
 
         // Canonical idempotency key
-        // `admin-uninstall:{deviceId(36)}:{catalogUuid(36)}:{body}` has
-        // a fixed prefix of 90 characters. The DB column is VARCHAR(128),
-        // so the supplied key must fit in 40 characters; anything
-        // longer is SHA-256-prefix-hashed by the service layer.
+        // `admin-uninstall:{deviceId(36)}:{catalogUuid(36)}:{body}` has a
+        // fixed prefix of 90 characters
+        // (16 [admin-uninstall:] + 36 [UUID] + 1 [:] + 36 [UUID] + 1 [:]).
+        // The DB column is VARCHAR(128), so the body MUST fit 38 chars to
+        // keep the canonical string ≤ 128. The @Size(max=40) bound is the
+        // DTO ceiling; the service SHA-256-prefix-hashes anything > 38 so
+        // a programmatic caller bypassing the DTO still produces a fitting
+        // canonical key (parity with the install path).
         @Size(max = 40)
         String idempotencyKey,
 

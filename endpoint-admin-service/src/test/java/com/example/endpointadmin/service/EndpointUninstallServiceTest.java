@@ -16,6 +16,7 @@ import com.example.endpointadmin.model.CatalogVersionPolicyType;
 import com.example.endpointadmin.model.CommandResultStatus;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointAuditEvent;
+import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointHeartbeat;
 import com.example.endpointadmin.model.EndpointInstallAudit;
@@ -25,6 +26,7 @@ import com.example.endpointadmin.model.InstallPreflightDecisionRecorded;
 import com.example.endpointadmin.model.OsType;
 import com.example.endpointadmin.model.UninstallRequestState;
 import com.example.endpointadmin.repository.EndpointAuditEventRepository;
+import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointHeartbeatRepository;
 import com.example.endpointadmin.repository.EndpointInstallAuditRepository;
@@ -110,6 +112,8 @@ class EndpointUninstallServiceTest {
     private EndpointHeartbeatRepository heartbeatRepository;
     @Autowired
     private EndpointAuditEventRepository auditEventRepository;
+    @Autowired
+    private EndpointCommandRepository commandRepository;
 
     // ─────────────────────────────────────────────────────────────────
     // Happy path
@@ -150,6 +154,46 @@ class EndpointUninstallServiceTest {
         assertThat(approved.state()).isEqualTo(UninstallRequestState.APPROVED);
         assertThat(approved.commandId()).isNotNull();
         assertThat(approved.approvedBy()).isEqualTo(SUBJECT_BOB);
+
+        // Codex post-impl iter-1 must-fix #4 absorb: the dispatched command
+        // payload must carry approvedBy (it was previously read BEFORE the
+        // setApprovedBy call, so it would land as null on the wire).
+        EndpointCommand dispatched = commandRepository.findById(approved.commandId()).orElseThrow();
+        assertThat(dispatched.getPayload())
+                .as("approvedBy must be set in the dispatched command payload "
+                        + "(Codex iter-1 must-fix #4)")
+                .containsEntry("approvedBy", SUBJECT_BOB)
+                .containsEntry("createdBy", SUBJECT_ALICE)
+                .containsEntry("intent", "UNINSTALL");
+    }
+
+    @Test
+    void approve_doubleApproveSequential_secondCallReturns409() {
+        // Codex post-impl iter-1 must-fix #2 absorb: the PESSIMISTIC_WRITE
+        // lock + state guard guarantees that a second approver on an already-
+        // approved request gets a clean 409, not a 500 from the
+        // endpoint_commands idempotency-key unique constraint.
+        Fixture f = setupFullFixture(TENANT, SUBJECT_ALICE, "7zip-double-approve");
+
+        AdminUninstallRequestResponse proposed = uninstallService.propose(
+                new AdminTenantContext(TENANT, SUBJECT_ALICE),
+                f.deviceId(),
+                new AdminUninstallRequestCreate(f.catalogSlug(), null, "first"));
+        uninstallService.approve(
+                new AdminTenantContext(TENANT, SUBJECT_BOB),
+                f.deviceId(),
+                proposed.requestId(),
+                new AdminUninstallRequestApproval("first approve"));
+
+        // A second admin (charlie) attempts to approve the now-APPROVED row.
+        assertThatThrownBy(() -> uninstallService.approve(
+                new AdminTenantContext(TENANT, "charlie@example.com"),
+                f.deviceId(),
+                proposed.requestId(),
+                new AdminUninstallRequestApproval("second approve")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT)
+                .hasMessageContaining("PENDING_APPROVAL");
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -339,15 +383,20 @@ class EndpointUninstallServiceTest {
 
     @Test
     void approve_staleHeartbeat_throws424_retryable() {
-        // Seed device with a STALE lastSeenAt (older than 5min TTL).
-        UUID deviceId = seedDeviceWithStaleLastSeen(TENANT, "stale-hb",
-                Instant.now().minusSeconds(900));   // 15 minutes ago
+        // Codex post-impl iter-1 absorb (thread `019e8dcd` must-fix #3):
+        // freshness now reads `heartbeat.receivedAt` (NOT device.lastSeenAt
+        // which is also touched by enrollment / cert-rotate paths). Seed a
+        // STALE heartbeat row so the assertion exercises the right gate.
+        UUID deviceId = seedDevice(TENANT, "stale-hb");
         UUID catalogUuid = seedApprovedUninstallableCatalog(TENANT, "stale-hb-7zip");
         seedProvenance(TENANT, deviceId, catalogUuid);
-        // Even though lastSeenAt is stale, push a capability heartbeat (which
-        // won't unstale lastSeenAt — that is driven separately by the agent
-        // heartbeat handler).
-        seedHeartbeatWithCapability(TENANT, deviceId);
+        // Stale heartbeat (15 minutes ago) WITH the capability advertised —
+        // the gate rejects on the freshness check BEFORE the capability check,
+        // so we should still get 424 even though the capability would have
+        // passed.
+        seedHeartbeat(TENANT, deviceId,
+                Instant.now().minusSeconds(900),
+                Map.of("capabilities", List.of("UNINSTALL_SOFTWARE")));
 
         AdminUninstallRequestResponse proposed = uninstallService.propose(
                 new AdminTenantContext(TENANT, SUBJECT_ALICE),

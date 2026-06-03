@@ -608,8 +608,17 @@ public class EndpointAdminCommandService {
      * </ul>
      * Fail-closed otherwise: a missing / unknown / legacy-shape rule is
      * rejected, never silently coerced.
+     *
+     * <p>AG-028 Phase 1b (Codex post-impl iter-1 absorb, thread `019e8dcd`
+     * must-fix #5) — visibility widened to {@code public static} so the
+     * dedicated uninstall dispatch ({@code EndpointUninstallService}) can
+     * reuse the SAME catalog-shape → agent-wire-shape translation. The
+     * uninstall agent uses identical detection-rule semantics for the
+     * authoritative absence check; forwarding raw catalog rules would skip
+     * the {@code absolutePath → path} translation for FILE_* and the WINGET
+     * identity invariant.
      */
-    private static Map<String, Object> buildAgentDetectionRule(EndpointSoftwareCatalogItem catalogItem,
+    public static Map<String, Object> buildAgentDetectionRule(EndpointSoftwareCatalogItem catalogItem,
                                                                String agentPackageId) {
         Map<String, Object> catalogRule = catalogItem.getDetectionRule();
         Object typeObj = catalogRule == null ? null : catalogRule.get("type");
