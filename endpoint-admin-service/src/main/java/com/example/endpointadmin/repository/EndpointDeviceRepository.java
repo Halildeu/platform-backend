@@ -27,9 +27,10 @@ import java.util.UUID;
  * (= legacy {@code tenantId}); V30 CHECK guarantees a written row's
  * {@code org_id} matches its {@code tenant_id} when both are populated.
  *
- * <p>statusIn stays on the derived form pending PR2b-iv.b4 sub-slice.
- * b1 (id), b2 (hostname + fingerprint), and b3 (hostnameAsc listing)
- * implemented in PR2b-iv.b1 (#397), PR2b-iv.b2 (#398), and PR2b-iv.b3.
+ * <p>b1 (id), b2 (hostname + fingerprint), b3 (hostnameAsc listing), and
+ * b4 (statusIn) implemented in PR2b-iv.b1 (#397), PR2b-iv.b2 (#398),
+ * PR2b-iv.b3 (#400), and PR2b-iv.b4 — closing the EndpointDeviceRepository
+ * effective-org migration arc for the V29-eligible methods.
  */
 public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, UUID> {
 
@@ -83,8 +84,6 @@ public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, 
     Optional<EndpointDevice> findVisibleToOrgAndMachineFingerprint(
             @Param("orgId") UUID orgId, @Param("machineFingerprint") String machineFingerprint);
 
-    List<EndpointDevice> findByTenantIdAndStatusIn(UUID tenantId, Collection<DeviceStatus> statuses);
-
     /**
      * Canonical PR2b-iv.b3 read — effective-org device listing sorted by
      * hostname ascending (Codex 019e8d1d B-B sub-slice b3 AGREE; P1
@@ -99,4 +98,21 @@ public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, 
             order by d.hostname asc
             """)
     List<EndpointDevice> findVisibleToOrgOrderByHostnameAsc(@Param("orgId") UUID orgId);
+
+    /**
+     * Canonical PR2b-iv.b4 read — effective-org device listing filtered by
+     * status set (Codex 019e8d1d B-B sub-slice b4 AGREE; P1 parenthesized
+     * OR pattern + IN clause). Currently used by repository-domain tests;
+     * the derived {@code findByTenantIdAndStatusIn} had no production
+     * service callsite but the repository API contract is preserved
+     * (test migration absorbed here rather than dropping the method).
+     */
+    @Query("""
+            select d
+            from EndpointDevice d
+            where (d.orgId = :orgId or (d.orgId is null and d.tenantId = :orgId))
+              and d.status in :statuses
+            """)
+    List<EndpointDevice> findVisibleToOrgAndStatusIn(
+            @Param("orgId") UUID orgId, @Param("statuses") Collection<DeviceStatus> statuses);
 }
