@@ -100,7 +100,13 @@ class EndpointDomainRepositoryTest {
         deviceRepository.saveAndFlush(online);
         deviceRepository.saveAndFlush(offline);
 
-        assertThat(deviceRepository.findByTenantIdAndStatusIn(tenantId, java.util.List.of(DeviceStatus.ONLINE)))
+        // Faz 21.1 PR2b-iv.b4 (Codex 019e8d1d AGREE): test migrated from
+        // derived `findByTenantIdAndStatusIn` to canonical `findVisibleToOrg
+        // AndStatusIn` (effective-org filter + IN clause). The test intent
+        // (tenant-scoped status filter) is preserved; orgId == tenantId
+        // because the device() helper now writes both columns equally per
+        // PR2b-ii canonical write pattern.
+        assertThat(deviceRepository.findVisibleToOrgAndStatusIn(tenantId, java.util.List.of(DeviceStatus.ONLINE)))
                 .extracting(EndpointDevice::getHostname)
                 .containsExactly("win-online");
     }
@@ -108,6 +114,11 @@ class EndpointDomainRepositoryTest {
     private EndpointDevice device(UUID tenantId, String hostname, String fingerprint) {
         EndpointDevice device = new EndpointDevice();
         device.setTenantId(tenantId);
+        // Faz 21.1 PR2b-iv.b4 — canonical write pattern (PR2b-ii Option A
+        // inline): set both columns equally so the test fixture aligns
+        // with the production write path rather than relying on V29
+        // trigger silent compensation.
+        device.setOrgId(tenantId);
         device.setHostname(hostname);
         device.setOsType(hostname.startsWith("mac") ? OsType.MACOS : OsType.WINDOWS);
         device.setOsVersion("test-os");
