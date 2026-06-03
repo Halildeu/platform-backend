@@ -245,6 +245,12 @@ class EndpointSoftwareInventoryStateHistoryEffectiveOrgPostgresIntegrationTest {
         UUID orgA = UUID.randomUUID();
         UUID deviceId = ensureDevice(orgA);
 
+        // Codex 019e8dbb post-impl REVISE absorb #3 — disjoint timestamps
+        // so the page test asserts not only the count over the OR-fallback
+        // but also that the caller-supplied Pageable Sort
+        // (captured_at DESC, created_at DESC, id DESC) is applied to the
+        // content side of the Page. Canonical row is newer; legacy NULL
+        // row is older — newer first under the HISTORY_SORT.
         UUID canonical = UUID.randomUUID();
         UUID legacy = UUID.randomUUID();
         insertHistoryCanonical(canonical, orgA, deviceId,
@@ -259,9 +265,12 @@ class EndpointSoftwareInventoryStateHistoryEffectiveOrgPostgresIntegrationTest {
                         orgA, deviceId, PageRequest.of(0, 10, HISTORY_SORT));
 
         assertThat(page.getContent())
-                .as("page contains both canonical and legacy rows under the same org")
+                .as("page returns rows in HISTORY_SORT order: newer canonical "
+                        + "first, older legacy NULL second — proves the "
+                        + "Pageable Sort is applied to the content side and "
+                        + "is not silently dropped by the countQuery sibling")
                 .extracting(EndpointSoftwareInventoryStateHistory::getId)
-                .containsExactlyInAnyOrder(canonical, legacy);
+                .containsExactly(canonical, legacy);
         assertThat(page.getTotalElements())
                 .as("countQuery sibling totals over the OR-fallback predicate")
                 .isEqualTo(2L);
