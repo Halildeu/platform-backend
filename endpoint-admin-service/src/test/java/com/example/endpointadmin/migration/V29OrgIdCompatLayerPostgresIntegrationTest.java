@@ -194,31 +194,25 @@ class V29OrgIdCompatLayerPostgresIntegrationTest {
     }
 
     @Test
-    void explicitDualWriteMismatch_documentedDrift() {
-        // Writer supplies different tenant_id and org_id (this is the documented
-        // drift case Codex flagged — trigger is purely additive, not enforcing
-        // equality). PR1 accepts this drift; PR2 should add CHECK constraint
-        // or fail-loud trigger upgrade.
+    void explicitDualWriteMismatch_headStateBehaviorPostV30() {
+        // Codex iter-1 F4 absorb: this test runs against Flyway head state
+        // (V29 + V30 both applied). The canonical reject assertion lives in
+        // V30OrgIdCheckConstraintPostgresIntegrationTest. This test
+        // documents that the V29 trigger by itself (purely additive) is NOT
+        // sufficient to enforce equality — only the V30 CHECK constraint is.
+        // At Flyway head, mismatch reject is observable via this test as a
+        // sanity smoke; the binding assertion lives with V30.
         var tenantId = java.util.UUID.randomUUID();
         var orgIdInput = java.util.UUID.randomUUID();
         var hostname = "v29-trigger-dual-mismatch-" + tenantId;
 
-        jdbcTemplate.update(
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> jdbcTemplate.update(
                 "INSERT INTO endpoint_devices "
                         + "(id, tenant_id, org_id, hostname, os_type) "
                         + "VALUES (gen_random_uuid(), ?, ?, ?, 'LINUX')",
-                tenantId, orgIdInput, hostname);
-
-        var orgIdStored = jdbcTemplate.queryForObject(
-                "SELECT org_id FROM endpoint_devices WHERE hostname = ?",
-                java.util.UUID.class, hostname);
-
-        // PR1 behaviour: trigger does NOT enforce equality; documented drift.
-        // PR2 binding: add CHECK (org_id IS NULL OR org_id = tenant_id) or
-        // strict fail-loud trigger to reject this case.
-        assertThat(orgIdStored)
-                .as("PR1 trigger is purely additive; mismatch stored as-is (PR2 will enforce equality)")
-                .isEqualTo(orgIdInput);
+                tenantId, orgIdInput, hostname))
+                .as("Head-state: V29 trigger alone NOT sufficient; V30 CHECK rejects mismatch (canonical assertion in V30 test)")
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     @Test
