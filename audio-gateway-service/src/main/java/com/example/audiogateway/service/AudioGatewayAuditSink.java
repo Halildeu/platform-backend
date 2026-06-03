@@ -27,11 +27,21 @@ public interface AudioGatewayAuditSink {
     sealed interface AuditEvent {
 
         /**
-         * Chunk admission rejection — emitted for 413 OVERSIZE / 415 FORMAT_REJECTED /
-         * 409 INVALID_TRANSITION+OUT_OF_ORDER+IDEMPOTENCY_CONFLICT / 429 QUEUE_FULL /
-         * 503 STT_UNAVAILABLE rejections. Auth failures (401/403) B3 DEĞİL.
+         * Chunk admission rejection — emitted for B3 admission boundary rejections.
          *
-         * @param retryAfterSeconds {@code null} for non-retryable rejections (413/415/409);
+         * <p><b>Emit boundary (Codex {@code 019e8df2} iter-3 P1.3 absorb):</b>
+         * 400 invalid headers / format mismatch / body-read-error +
+         * 404 session not found +
+         * 413 OVERSIZE (declared or actual or bounded-read-limit) +
+         * 415 FORMAT_REJECTED +
+         * 409 INVALID_TRANSITION / OUT_OF_ORDER / IDEMPOTENCY_CONFLICT +
+         * 429 QUEUE_FULL (dispatcher) +
+         * 503 STT_UNAVAILABLE (dispatcher).
+         *
+         * <p><b>Authz failures (401 AUTH_INVALID, 403 owner mismatch / MEETING_FORBIDDEN)
+         * B3 DIŞI</b> — auth audit ayrı security/audit boundary (separate PR).
+         *
+         * @param retryAfterSeconds {@code null} for non-retryable rejections (400/404/413/415/409);
          *                          positive long for 429/503 dispatcher retry hints
          */
         record ChunkAdmissionRejected(

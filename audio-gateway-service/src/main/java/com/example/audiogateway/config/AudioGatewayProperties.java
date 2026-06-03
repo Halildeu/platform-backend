@@ -14,6 +14,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "audio.gateway")
 public class AudioGatewayProperties {
 
+    /**
+     * Codex {@code 019e8df2} iter-4 P1.2 absorb: nested {@code @PostConstruct} bean lifecycle
+     * callback olarak çağrılmaz; outer {@code AudioGatewayProperties} bean üzerinde tetikle.
+     */
+    @jakarta.annotation.PostConstruct
+    public void validate() {
+        dispatcher.validate();
+    }
+
+
     private final Contract contract = new Contract();
     private final Bounds bounds = new Bounds();
     private final Dispatcher dispatcher = new Dispatcher();
@@ -123,10 +133,10 @@ public class AudioGatewayProperties {
         }
 
         /**
-         * Codex {@code 019e8df2} iter-3 P1.2 absorb: fail-fast unsupported mode.
-         * {@code mode=redis} sessiz NoOp ile çalışmasın — operator truth drift önlemi.
+         * Codex {@code 019e8df2} iter-3+iter-4 P1.2 absorb: fail-fast unsupported mode.
+         * Outer {@link AudioGatewayProperties#validate()} tetikler (nested
+         * {@code @PostConstruct} bean lifecycle olarak çağrılmaz).
          */
-        @jakarta.annotation.PostConstruct
         public void validate() {
             if (!SUPPORTED_MODES_B3.contains(mode)) {
                 throw new IllegalStateException(
