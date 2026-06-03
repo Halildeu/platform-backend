@@ -159,16 +159,21 @@ public class DiffCacheService {
         // Insert path bypasses the guard; initial-row source integrity is
         // owned by the listener summarize() against latest committed state
         // (Codex iter-4 guardrail #5).
+        // Faz 21.1 PR2c — canonical org_id write at source: include
+        // org_id = tenant_id in both the INSERT column list and the
+        // ON CONFLICT DO UPDATE SET (so re-upserts also align org_id).
+        // V31 trigger fills org_id when caller omits, but PR2b-ii
+        // Option A inline direction is to set it explicitly at source.
         String sql = """
                 INSERT INTO %s AS c (
-                    id, tenant_id, device_id,
+                    id, tenant_id, org_id, device_id,
                     from_history_id, to_history_id,
                     status,
                     added_count, removed_count, version_changed_count,
                     source_captured_at, source_created_at, source_row_id,
                     computed_at
                 ) VALUES (
-                    :id, :tenantId, :deviceId,
+                    :id, :tenantId, :tenantId, :deviceId,
                     :fromHistoryId, :toHistoryId,
                     :status,
                     :added, :removed, :versionChanged,
@@ -176,6 +181,7 @@ public class DiffCacheService {
                     :computedAt
                 )
                 ON CONFLICT (tenant_id, device_id) DO UPDATE SET
+                    org_id = EXCLUDED.org_id,
                     from_history_id = EXCLUDED.from_history_id,
                     to_history_id = EXCLUDED.to_history_id,
                     status = EXCLUDED.status,
@@ -260,9 +266,11 @@ public class DiffCacheService {
         // BE-024c v2-c-pre-2-C-A (Codex 019e89a3 iter-3 AGREE) — outdated
         // mirror of the software source-pair ordering tuple guard. See
         // software UPSERT for full rationale.
+        // Faz 21.1 PR2c — outdated mirror of the canonical org_id write
+        // (see software UPSERT comment above for full rationale).
         String sql = """
                 INSERT INTO %s AS c (
-                    id, tenant_id, device_id,
+                    id, tenant_id, org_id, device_id,
                     from_snapshot_id, to_snapshot_id,
                     status,
                     added_count, removed_count, version_changed_count,
@@ -270,7 +278,7 @@ public class DiffCacheService {
                     source_captured_at, source_created_at, source_row_id,
                     computed_at
                 ) VALUES (
-                    :id, :tenantId, :deviceId,
+                    :id, :tenantId, :tenantId, :deviceId,
                     :fromSnapshotId, :toSnapshotId,
                     :status,
                     :added, :removed, :versionChanged,
@@ -279,6 +287,7 @@ public class DiffCacheService {
                     :computedAt
                 )
                 ON CONFLICT (tenant_id, device_id) DO UPDATE SET
+                    org_id = EXCLUDED.org_id,
                     from_snapshot_id = EXCLUDED.from_snapshot_id,
                     to_snapshot_id = EXCLUDED.to_snapshot_id,
                     status = EXCLUDED.status,
