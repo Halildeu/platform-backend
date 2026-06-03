@@ -44,10 +44,16 @@ import static org.mockito.Mockito.when;
  * <ul>
  *   <li>finalStatus → resultStatus mapping for every closed enum value
  *       (including unknown / null fallback to PARTIAL_INCONCLUSIVE).</li>
- *   <li>Verification override matrix:
- *     SKIP_ALREADY_ABSENT → ABSENT_VERIFIED;
- *     FAILED_UNSUPPORTED_PLATFORM / FAILED_UNSUPPORTED_VERIFICATION → NOT_RUN;
- *     other → policy.deriveVerification.
+ *   <li>Verification cross-field consistency matrix (Codex 019e8f9c REVISE
+ *     absorb): verification is forced DETERMINISTICALLY from resultStatus,
+ *     NOT read independently from probeState. SUCCEEDED_VERIFIED /
+ *     SKIP_ALREADY_ABSENT → ABSENT_VERIFIED; FAILED_VERIFY_GHOST →
+ *     PRESENT_VERIFIED; PARTIAL_RESIDUE → RESIDUE_PRESENT;
+ *     PARTIAL_INCONCLUSIVE / FAILED_PRECHECK_INCONCLUSIVE → VERIFY_INCONCLUSIVE;
+ *     FAILED_UNSUPPORTED_* → NOT_RUN; FAILED_EXIT → deriveVerification CLAMPED
+ *     (only MATCHED→PRESENT_VERIFIED survives, else VERIFY_INCONCLUSIVE).
+ *     Contradiction cases (e.g. FAILED_VERIFY_GHOST+probeState=ABSENT) resolve
+ *     to the status-consistent verification, never a contradictory verdict.
  *   </li>
  *   <li>Audit row written + Endpoint request transitioned to TERMINAL.</li>
  *   <li>BE-016 hash-chain audit event {@code ENDPOINT_UNINSTALL_RESULT_RECORDED}
