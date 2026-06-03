@@ -16,7 +16,7 @@ public class AudioGatewayProperties {
 
     private final Contract contract = new Contract();
     private final Bounds bounds = new Bounds();
-    private final Stt stt = new Stt();
+    private final Dispatcher dispatcher = new Dispatcher();
     private final Jwt jwt = new Jwt();
     private final Idempotency idempotency = new Idempotency();
 
@@ -28,8 +28,8 @@ public class AudioGatewayProperties {
         return bounds;
     }
 
-    public Stt getStt() {
-        return stt;
+    public Dispatcher getDispatcher() {
+        return dispatcher;
     }
 
     public Jwt getJwt() {
@@ -100,15 +100,39 @@ public class AudioGatewayProperties {
         }
     }
 
-    public static class Stt {
-        private String dispatchMode = "noop";
+    /**
+     * Dispatcher config — Codex {@code 019e8df2} iter-2 AGREE PR-gw-01B3:
+     * {@code audio.gateway.dispatcher.mode} canonical (eski {@code audio.gateway.stt.dispatch-mode}
+     * retire); {@code mode=noop} default; {@code mode=redis} PR-gw-01C scope (yeni
+     * RedisStreamsAudioChunkDispatcher bean register).
+     */
+    public static class Dispatcher {
+        private String mode = "noop";
+        private long queueFullRetryAfterSeconds = 5L;
+        private long unavailableRetryAfterSeconds = 30L;
 
-        public String getDispatchMode() {
-            return dispatchMode;
+        public String getMode() {
+            return mode;
         }
 
-        public void setDispatchMode(final String dispatchMode) {
-            this.dispatchMode = dispatchMode;
+        public void setMode(final String mode) {
+            this.mode = mode;
+        }
+
+        public long getQueueFullRetryAfterSeconds() {
+            return queueFullRetryAfterSeconds;
+        }
+
+        public void setQueueFullRetryAfterSeconds(final long queueFullRetryAfterSeconds) {
+            this.queueFullRetryAfterSeconds = queueFullRetryAfterSeconds;
+        }
+
+        public long getUnavailableRetryAfterSeconds() {
+            return unavailableRetryAfterSeconds;
+        }
+
+        public void setUnavailableRetryAfterSeconds(final long unavailableRetryAfterSeconds) {
+            this.unavailableRetryAfterSeconds = unavailableRetryAfterSeconds;
         }
     }
 
