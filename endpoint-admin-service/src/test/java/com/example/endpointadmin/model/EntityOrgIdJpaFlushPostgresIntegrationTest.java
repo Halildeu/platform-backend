@@ -104,7 +104,22 @@ class EntityOrgIdJpaFlushPostgresIntegrationTest {
     }
 
     @Test
-    void endpointDeviceLegacyWriteOnlyTenantId_getEffectiveOrgIdFallsBack() {
+    void getEffectiveOrgIdHelper_pureEntityFallsBackToTenantId() {
+        // Pure entity behavior — no DB round-trip, no V29 trigger. Codex
+        // iter-2 absorb: verifies the in-memory contract that
+        // getEffectiveOrgId() returns tenantId when orgId is null.
+        UUID tenant = UUID.randomUUID();
+        EndpointDevice device = new EndpointDevice();
+        device.setTenantId(tenant);
+        // orgId intentionally left null
+        assertThat(device.getOrgId()).isNull();
+        assertThat(device.getEffectiveOrgId())
+                .as("Pure-entity fallback: orgId NULL → returns tenantId")
+                .isEqualTo(tenant);
+    }
+
+    @Test
+    void endpointDeviceLegacyTriggerFillsOrgIdOnReRead() {
         // Service code that has NOT yet been migrated to canonical write
         // (PR2b-ii pending) only sets tenantId. JPA persists with orgId
         // null; V29 trigger fills it at INSERT; getEffectiveOrgId() helper
