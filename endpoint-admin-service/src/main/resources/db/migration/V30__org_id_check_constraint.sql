@@ -22,8 +22,9 @@
 --
 -- Operator pre-merge evidence (Codex 019e8ca1 iter-1 F6):
 --   Run mismatch=0 probe on live prod data IMMEDIATELY before V30 deploys.
---   V30 intentionally fails (RAISE in VALIDATE step) if PR1's documented
---   drift case occurred between V29 and V30 deploys. The audit script
+--   V30 intentionally errors (VALIDATE CONSTRAINT fails with SQLSTATE
+--   23514 check_violation) if PR1's documented drift case occurred
+--   between V29 and V30 deploys. The audit script
 --   docs/scripts/faz-21/audit-and-check.sh (PR-3 A in sister repo
 --   platform-k8s-gitops) can produce this evidence with multi-DB.
 --
