@@ -62,7 +62,7 @@ public class EndpointDeviceService {
     }
 
     public EndpointDeviceDto getDevice(UUID tenantId, UUID deviceId) {
-        EndpointDevice device = repository.findByTenantIdAndId(tenantId, deviceId)
+        EndpointDevice device = repository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Endpoint device not found."));
         return toDto(device);
     }

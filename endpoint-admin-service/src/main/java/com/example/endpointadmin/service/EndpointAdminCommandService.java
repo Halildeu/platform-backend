@@ -117,7 +117,7 @@ public class EndpointAdminCommandService {
         }
 
         UUID tenantId = context.tenantId();
-        EndpointDevice device = deviceRepository.findByTenantIdAndId(tenantId, deviceId)
+        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
         Instant now = Instant.now(clock);
         Instant visibleAfterAt = request.visibleAfterAt() == null ? now : request.visibleAfterAt();
@@ -273,7 +273,7 @@ public class EndpointAdminCommandService {
 
     @Transactional(readOnly = true)
     public List<EndpointCommandDto> listDeviceCommands(AdminTenantContext context, UUID deviceId) {
-        deviceRepository.findByTenantIdAndId(context.tenantId(), deviceId)
+        deviceRepository.findVisibleToOrgAndId(context.tenantId(), deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
         return commandRepository.findByTenantIdAndDevice_IdOrderByIssuedAtDesc(context.tenantId(), deviceId)
                 .stream()
@@ -370,7 +370,7 @@ public class EndpointAdminCommandService {
         }
 
         UUID tenantId = context.tenantId();
-        EndpointDevice device = deviceRepository.findByTenantIdAndId(tenantId, deviceId)
+        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
         EndpointSoftwareCatalogItem catalogItem = catalogRepository
                 .findByTenantIdAndCatalogItemId(tenantId, slug)
