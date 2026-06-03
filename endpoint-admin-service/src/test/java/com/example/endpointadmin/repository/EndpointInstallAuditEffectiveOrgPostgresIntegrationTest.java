@@ -142,6 +142,11 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
 
     @Test
     void deviceHistoryPage_canonicalAndLegacyRows_sumOverOrFallback() {
+        // Codex 019e8dde iter-1 REVISE #1 hardening: disjoint reportedAt
+        // values + containsExactly(canonical newer, legacy older) so the
+        // inline ORDER BY a.reportedAt DESC contract is pinned by the
+        // test (a regression removing the sort from the @Query would
+        // fail this assertion).
         UUID orgA = UUID.randomUUID();
         UUID deviceId = seedDevice(orgA);
         UUID catalogId = seedCatalog(orgA, "pkg.deviceHist");
@@ -149,10 +154,12 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
                 "INSTALL_SOFTWARE", "key-canonical");
         UUID commandLegacy = seedCommand(orgA, deviceId,
                 "INSTALL_SOFTWARE", "key-legacy");
+        Instant newer = Instant.parse("2026-06-03T10:00:00Z");
+        Instant older = Instant.parse("2026-06-03T09:00:00Z");
         UUID auditCanonical = persistAuditCanonical(
-                orgA, deviceId, commandCanonical, catalogId);
+                orgA, deviceId, commandCanonical, catalogId, newer);
         UUID auditLegacy = persistAuditCanonical(
-                orgA, deviceId, commandLegacy, catalogId);
+                orgA, deviceId, commandLegacy, catalogId, older);
         makeAuditOrgIdNull(auditLegacy);
 
         Page<EndpointInstallAudit> page = repository
@@ -161,8 +168,10 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
 
         assertThat(page.getContent())
                 .extracting(EndpointInstallAudit::getId)
-                .as("page returns both canonical and legacy NULL rows under same org")
-                .containsExactlyInAnyOrder(auditCanonical, auditLegacy);
+                .as("page returns rows in ORDER BY reportedAt DESC: "
+                        + "canonical (newer) first, legacy NULL (older) second — "
+                        + "proves the inline sort + OR-fallback both hold")
+                .containsExactly(auditCanonical, auditLegacy);
         assertThat(page.getTotalElements())
                 .as("countQuery sibling totals over the OR-fallback predicate")
                 .isEqualTo(2L);
@@ -190,6 +199,10 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
 
     @Test
     void tenantWideHistoryPage_includesMultipleDevicesUnderSameOrg() {
+        // Codex 019e8dde iter-1 REVISE #1 hardening: 2 devices under
+        // same org, disjoint reportedAt, containsExactly(newer, older)
+        // pins the inline ORDER BY reportedAt DESC on the tenant-wide
+        // query (a regression removing the sort would fail this).
         UUID orgA = UUID.randomUUID();
         UUID device1 = seedDevice(orgA);
         UUID device2 = seedDevice(orgA);
@@ -198,15 +211,21 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
                 "INSTALL_SOFTWARE", "key-d1");
         UUID command2 = seedCommand(orgA, device2,
                 "INSTALL_SOFTWARE", "key-d2");
-        UUID audit1 = persistAuditCanonical(orgA, device1, command1, catalogId);
-        UUID audit2 = persistAuditCanonical(orgA, device2, command2, catalogId);
+        Instant newer = Instant.parse("2026-06-03T10:00:00Z");
+        Instant older = Instant.parse("2026-06-03T09:00:00Z");
+        UUID auditNewer = persistAuditCanonical(
+                orgA, device1, command1, catalogId, newer);
+        UUID auditOlder = persistAuditCanonical(
+                orgA, device2, command2, catalogId, older);
 
         Page<EndpointInstallAudit> page = repository
                 .findVisibleToOrgOrderByReportedAtDesc(orgA, PageRequest.of(0, 10));
 
         assertThat(page.getContent())
                 .extracting(EndpointInstallAudit::getId)
-                .containsExactlyInAnyOrder(audit1, audit2);
+                .as("page returns rows in ORDER BY reportedAt DESC: "
+                        + "newer device's audit first, older device's audit second")
+                .containsExactly(auditNewer, auditOlder);
         assertThat(page.getTotalElements()).isEqualTo(2L);
     }
 
@@ -299,11 +318,19 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
     /**
      * Persist a canonical audit row via the JPA repository — V29 trigger
      * fills org_id from tenant_id, so the row lands canonical
-     * (org_id = tenant_id).
+     * (org_id = tenant_id). Default `reportedAt` is "now"; the overload
+     * with explicit `reportedAt` is used by Page sort tests to seed
+     * disjoint timestamps and assert `ORDER BY reportedAt DESC`
+     * content-side semantics.
      */
     private UUID persistAuditCanonical(UUID tenantId, UUID deviceId,
             UUID commandId, UUID catalogItemId) {
-        Instant now = Instant.now();
+        return persistAuditCanonical(tenantId, deviceId, commandId,
+                catalogItemId, Instant.now());
+    }
+
+    private UUID persistAuditCanonical(UUID tenantId, UUID deviceId,
+            UUID commandId, UUID catalogItemId, Instant reportedAt) {
         EndpointInstallAudit audit = new EndpointInstallAudit();
         audit.setTenantId(tenantId);
         // Faz 21.1 PR2b-iv.e-A — explicit canonical write (PR2b-ii
@@ -316,10 +343,10 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
         audit.setCatalogPackageId("pkg-" + catalogItemId);
         audit.setCatalogRowVersion(0L);
         audit.setPreflightDecision(InstallPreflightDecisionRecorded.PASS);
-        audit.setPreflightDecisionAt(now);
+        audit.setPreflightDecisionAt(reportedAt);
         audit.setActorSubject("actor@example.com");
         audit.setResultStatus(CommandResultStatus.SUCCEEDED);
-        audit.setReportedAt(now);
+        audit.setReportedAt(reportedAt);
         audit.setPostVerification(InstallPostVerification.SATISFIED);
         EndpointInstallAudit saved = repository.saveAndFlush(audit);
         return saved.getId();
@@ -327,14 +354,18 @@ class EndpointInstallAuditEffectiveOrgPostgresIntegrationTest {
 
     /**
      * Force the legacy NULL shape on an existing audit row by stripping
-     * {@code org_id} via direct UPDATE. The V29 trigger fires on
-     * INSERT/UPDATE that targets the {@code org_id} column transitioning
-     * from NULL → tenant; UPDATE that sets {@code org_id = NULL}
-     * explicitly is the legitimate "row landed pre-PR1" shape — we
-     * bypass the trigger by setting it from a non-NULL value back to
-     * NULL within the UPDATE itself (the trigger only refills NULLs at
-     * INSERT/UPDATE time on the same statement, not retroactively on
-     * a single-column SET NULL).
+     * {@code org_id} via direct UPDATE. {@code DISABLE TRIGGER USER} is
+     * essential here, NOT a defensive belt-and-suspenders (Codex
+     * 019e8dde iter-1 REVISE #2 correction):
+     *
+     * <p>V29's {@code BEFORE INSERT OR UPDATE} function fires on every
+     * UPDATE that touches an org_id-bearing row. With the trigger
+     * enabled, {@code UPDATE ... SET org_id = NULL} would be silently
+     * rewritten by the trigger back to {@code org_id = tenant_id}
+     * (the trigger checks {@code NEW.org_id IS NULL} and refills it).
+     * The {@code DISABLE TRIGGER USER} guard is what makes the
+     * {@code UPDATE org_id = NULL} actually persist as NULL — exactly
+     * what the legacy fixture needs.
      */
     private void makeAuditOrgIdNull(UUID auditId) {
         jdbc.execute("ALTER TABLE " + SCHEMA
