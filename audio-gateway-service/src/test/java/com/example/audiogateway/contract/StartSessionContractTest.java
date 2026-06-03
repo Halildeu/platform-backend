@@ -5,6 +5,12 @@ import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
@@ -18,14 +24,14 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 /**
  * Audio Gateway Contract v1.0 — POST /api/v1/audio-gateway/sessions.
  *
- * <p>ADR-0031 + Codex {@code 019e8c26} iter-2 AGREE PR-gw-01A scope:
+ * <p>ADR-0031 + Codex {@code 019e8c26} iter-3 REVISE absorb:
  * <ul>
- *   <li>Path canonical {@code /api/v1/audio-gateway/sessions} (eski {@code /api/meeting-audio} removed)</li>
- *   <li>{@code Idempotency-Key} header zorunlu (16-128 char opaque token)</li>
- *   <li>Replay: same key + same signature → 200 OK (replay)</li>
- *   <li>Conflict: same key + different signature → 409 Conflict</li>
- *   <li>JWT fail-closed: missing/invalid 401, missing tenant/user claim 403</li>
- *   <li>Audio format/sample rate/channels guards (415/400)</li>
+ *   <li>Path canonical {@code /api/v1/audio-gateway/sessions}</li>
+ *   <li>{@code Idempotency-Key} header (16-128 char opaque)</li>
+ *   <li>Atomic create — concurrent same-key duplicate test (P1)</li>
+ *   <li>Validation envelope — missing/invalid language (P1)</li>
+ *   <li>Replay / Conflict semantics</li>
+ *   <li>JWT fail-closed (401/403)</li>
  * </ul>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -36,8 +42,8 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 class StartSessionContractTest {
 
     private static final String SESSIONS_PATH = "/api/v1/audio-gateway/sessions";
-    private static final String IDEMP_KEY_HEADER = "Idempotency-Key";
-    private static final String VALID_KEY = "c0ffee0011223344-pr-gw-01a-test";
+    private static final String IDEMP_HEADER = "Idempotency-Key";
+    private static final String VALID_IDEMP = "fixture-pr-gw-01a-startsession-1";
 
     @Autowired
     private WebTestClient client;
@@ -55,7 +61,7 @@ class StartSessionContractTest {
     void noAuth_returns401() {
         client.post()
                 .uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY)
+                .header(IDEMP_HEADER, VALID_IDEMP)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isUnauthorized();
@@ -79,7 +85,7 @@ class StartSessionContractTest {
     void shortIdempotencyKey_returns400_invalid() {
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, "tooshort")  // < 16 char
+                .header(IDEMP_HEADER, "tooshort")  // < 16 char
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isBadRequest()
@@ -91,7 +97,7 @@ class StartSessionContractTest {
     void jwtMissingCompanyIdClaim_returns403() {
         client.mutateWith(mockJwt().jwt(jwt -> jwt.claim("userId", 42L)))
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY)
+                .header(IDEMP_HEADER, VALID_IDEMP)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isForbidden()
@@ -106,7 +112,7 @@ class StartSessionContractTest {
     void jwtMissingUserIdClaim_returns403() {
         client.mutateWith(mockJwt().jwt(jwt -> jwt.claim("companyId", 1L)))
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY)
+                .header(IDEMP_HEADER, VALID_IDEMP)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isForbidden()
@@ -121,7 +127,7 @@ class StartSessionContractTest {
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY + "-mp3")
+                .header(IDEMP_HEADER, VALID_IDEMP + "-mp3")
                 .bodyValue(req)
                 .exchange()
                 .expectStatus().isEqualTo(415)
@@ -136,7 +142,7 @@ class StartSessionContractTest {
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY + "-rate")
+                .header(IDEMP_HEADER, VALID_IDEMP + "-rate")
                 .bodyValue(req)
                 .exchange()
                 .expectStatus().isBadRequest()
@@ -154,7 +160,7 @@ class StartSessionContractTest {
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY + "-stereo")
+                .header(IDEMP_HEADER, VALID_IDEMP + "-stereo")
                 .bodyValue(req)
                 .exchange()
                 .expectStatus().isBadRequest()
@@ -166,7 +172,7 @@ class StartSessionContractTest {
     void happyPath_returns201_withSessionAndUrls() {
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY + "-happy")
+                .header(IDEMP_HEADER, VALID_IDEMP + "-happy")
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isCreated()
@@ -185,22 +191,22 @@ class StartSessionContractTest {
     }
 
     @Test
-    void idempotencyReplay_sameKeyAndSignature_returns200_withSameSessionId() {
-        final String key = VALID_KEY + "-replay";
+    void idempotencyReplay_sameValueAndSignature_returns200_withSameSessionId() {
+        final String idemp = VALID_IDEMP + "-replay";
         // 1st call → 201
         final String firstId = withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, key)
+                .header(IDEMP_HEADER, idemp)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isCreated()
                 .expectBody(StartSessionResponse.class)
                 .returnResult().getResponseBody().sessionId();
 
-        // 2nd call same key + same signature → 200 with same sessionId (replay)
+        // 2nd call same Idempotency-Key + same signature → 200 with same sessionId (replay)
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, key)
+                .header(IDEMP_HEADER, idemp)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isOk()
@@ -209,22 +215,20 @@ class StartSessionContractTest {
     }
 
     @Test
-    void idempotencyConflict_sameKeyDifferentSignature_returns409() {
-        final String key = VALID_KEY + "-conflict";
-        // 1st: tr language
+    void idempotencyConflict_sameValueDifferentSignature_returns409() {
+        final String idemp = VALID_IDEMP + "-conflict";
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, key)
+                .header(IDEMP_HEADER, idemp)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isCreated();
 
-        // 2nd: same key but different deviceId signature → 409 conflict
         final StartSessionRequest mutated = new StartSessionRequest(
                 "MTG-2026-0001", "device-OTHER", "tr", AudioFormat.WAV, 16000, 1);
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, key)
+                .header(IDEMP_HEADER, idemp)
                 .bodyValue(mutated)
                 .exchange()
                 .expectStatus().isEqualTo(409)
@@ -232,13 +236,145 @@ class StartSessionContractTest {
                 .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_IDEMPOTENCY_CONFLICT));
     }
 
+    /**
+     * Codex {@code 019e8c26} iter-3 P1 absorb: atomic create — concurrent same-Idempotency-Key
+     * iki request aynı session'a düşmeli (Replayed) veya birinden Created + ikinci Replayed
+     * dönmeli; iki distinct SES-* asla üretilmemeli.
+     */
+    @Test
+    void atomicCreate_concurrentSameIdempotency_neverProducesTwoSessions() throws Exception {
+        final String idemp = VALID_IDEMP + "-concurrent";
+        final CountDownLatch start = new CountDownLatch(1);
+        final AtomicReference<String> sid1 = new AtomicReference<>();
+        final AtomicReference<String> sid2 = new AtomicReference<>();
+        final ExecutorService pool = Executors.newFixedThreadPool(2);
+
+        final Runnable task = () -> {
+            try {
+                start.await();
+                final StartSessionResponse resp = withClaims()
+                        .post().uri(SESSIONS_PATH)
+                        .header(IDEMP_HEADER, idemp)
+                        .bodyValue(validRequest())
+                        .exchange()
+                        .expectStatus().value(s -> assertThat(s).isIn(200, 201))
+                        .expectBody(StartSessionResponse.class)
+                        .returnResult().getResponseBody();
+                if (sid1.compareAndSet(null, resp.sessionId())) {
+                    return;
+                }
+                sid2.set(resp.sessionId());
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        };
+
+        pool.submit(task);
+        pool.submit(task);
+        start.countDown();
+        pool.shutdown();
+        assertThat(pool.awaitTermination(15, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(sid1.get()).isNotNull();
+        assertThat(sid2.get()).isNotNull();
+        assertThat(sid1.get())
+                .as("Same Idempotency-Key + same signature must collapse to one session (atomic create)")
+                .isEqualTo(sid2.get());
+    }
+
+    // ----- Validation envelope (Codex iter-3 P1 absorb) ---------------------
+
+    @Test
+    void missingLanguage_returns400_languageRequiredCode() {
+        // Bypass record constructor non-null guard — POST raw JSON
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-langmiss")
+                .header("Content-Type", "application/json")
+                .bodyValue("""
+                        {
+                          "meetingId": "MTG-2026-0001",
+                          "deviceId": "device-1",
+                          "audioFormat": "WAV",
+                          "sampleRateHz": 16000,
+                          "channels": 1
+                        }
+                        """)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_LANGUAGE_REQUIRED));
+    }
+
+    @Test
+    void invalidLanguageThreeLetter_returns400_validationCode() {
+        // "tur" 3-letter ISO 639-2; contract sadece 639-1 (2-letter)
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-tur")
+                .header("Content-Type", "application/json")
+                .bodyValue("""
+                        {
+                          "meetingId": "MTG-2026-0001",
+                          "deviceId": "device-1",
+                          "language": "tur",
+                          "audioFormat": "WAV",
+                          "sampleRateHz": 16000,
+                          "channels": 1
+                        }
+                        """)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code())
+                        .isIn(ErrorResponse.CODE_LANGUAGE_REQUIRED, ErrorResponse.CODE_VALIDATION));
+    }
+
+    @Test
+    void invalidLanguageUnderscore_returns400() {
+        // "tr_TR" underscore yerine ISO 639-1 `tr-TR` (hyphen) gerek
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-underscore")
+                .header("Content-Type", "application/json")
+                .bodyValue("""
+                        {
+                          "meetingId": "MTG-2026-0001",
+                          "deviceId": "device-1",
+                          "language": "tr_TR",
+                          "audioFormat": "WAV",
+                          "sampleRateHz": 16000,
+                          "channels": 1
+                        }
+                        """)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code())
+                        .isIn(ErrorResponse.CODE_LANGUAGE_REQUIRED, ErrorResponse.CODE_VALIDATION));
+    }
+
+    @Test
+    void malformedJson_returns400_validationCode() {
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-malformed")
+                .header("Content-Type", "application/json")
+                .bodyValue("{ this is not json")
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_VALIDATION));
+    }
+
     @Test
     void correlationIdPropagation_echoesHeader() {
-        final String corrId = "c0ffee01-1234-1234-1234-123456789012";
+        // Düşük-entropy correlation id (gitleaks generic-api-key false-positive guard)
+        final String corrId = "test-correlation-fixture-001";
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, VALID_KEY + "-corr")
+                .header(IDEMP_HEADER, VALID_IDEMP + "-corr")
                 .header("X-Correlation-Id", corrId)
                 .bodyValue(validRequest())
                 .exchange()

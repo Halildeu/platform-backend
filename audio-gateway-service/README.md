@@ -59,9 +59,9 @@ Mobile/Web hiçbir zaman platform-ai'a doğrudan bağlanmaz (Codex/Mavis RED).
 ## Build
 
 ```bash
-cd audio-gateway-service
-./mvnw clean test
-./mvnw spring-boot:run
+# Root'tan (Codex `019e8c26` iter-3 doc fix — module altında wrapper yok)
+./mvnw -pl audio-gateway-service test -DfailIfNoTests=false
+./mvnw -pl audio-gateway-service spring-boot:run
 ```
 
 ## Endpoints

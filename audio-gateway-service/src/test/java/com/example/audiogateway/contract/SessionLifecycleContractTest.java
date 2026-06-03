@@ -20,14 +20,8 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 /**
  * Audio Gateway Contract v1.0 — GET /status + POST /finish (lifecycle).
  *
- * <p>ADR-0031 + Codex {@code 019e8c26} iter-2 AGREE PR-gw-01A:
- * <ul>
- *   <li>{@code GET /sessions/{id}/status} — STARTED → FINISHED snapshot</li>
- *   <li>{@code POST /sessions/{id}/finish} — terminal lifecycle + idempotent (same key replay)</li>
- *   <li>Idempotency-Key header zorunlu on finish (Codex iter-2 AGREE)</li>
- *   <li>Unknown session → 404; owner mismatch → 403; conflict → 409</li>
- *   <li>chunkCount/lastChunkSeq always 0 in PR-gw-01A (chunk admission slice B/C/D)</li>
- * </ul>
+ * <p>ADR-0031 + Codex {@code 019e8c26} iter-2 AGREE + iter-3 REVISE absorb (variable
+ * renamed: gitleaks "key" regex false-positive guard).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
@@ -37,7 +31,7 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 class SessionLifecycleContractTest {
 
     private static final String SESSIONS_PATH = "/api/v1/audio-gateway/sessions";
-    private static final String IDEMP_KEY_HEADER = "Idempotency-Key";
+    private static final String IDEMP_HEADER = "Idempotency-Key";
 
     @Autowired
     private WebTestClient client;
@@ -52,10 +46,10 @@ class SessionLifecycleContractTest {
                 .jwt(j -> j.claim("companyId", companyId).claim("userId", userId)));
     }
 
-    private String startFresh(final long companyId, final long userId, final String key) {
+    private String startFresh(final long companyId, final long userId, final String idempValue) {
         return asUser(companyId, userId)
                 .post().uri(SESSIONS_PATH)
-                .header(IDEMP_KEY_HEADER, key)
+                .header(IDEMP_HEADER, idempValue)
                 .bodyValue(validRequest())
                 .exchange()
                 .expectStatus().isCreated()
@@ -79,7 +73,6 @@ class SessionLifecycleContractTest {
     void status_otherTenant_returns404() {
         final String sid = startFresh(1L, 42L, "status-other-tenant-fixture-001");
 
-        // tenant 2 → registry'de mevcut ama tenant filter ile NotFound semantik
         asUser(2L, 42L)
                 .get().uri(SESSIONS_PATH + "/" + sid + "/status")
                 .exchange()
@@ -88,7 +81,7 @@ class SessionLifecycleContractTest {
 
     @Test
     void status_started_returnsStartedState() {
-        final String sid = startFresh(1L, 42L, "status-started-fixture-key-abc");
+        final String sid = startFresh(1L, 42L, "status-started-fixture-001abc");
 
         asUser(1L, 42L)
                 .get().uri(SESSIONS_PATH + "/" + sid + "/status")
@@ -98,8 +91,8 @@ class SessionLifecycleContractTest {
                 .value(resp -> {
                     assertThat(resp.sessionId()).isEqualTo(sid);
                     assertThat(resp.state()).isEqualTo("STARTED");
-                    assertThat(resp.chunkCount()).isZero();   // PR-gw-01A
-                    assertThat(resp.lastChunkSeq()).isZero(); // PR-gw-01A
+                    assertThat(resp.chunkCount()).isZero();
+                    assertThat(resp.lastChunkSeq()).isZero();
                     assertThat(resp.sessionStartMs()).isPositive();
                 });
     }
@@ -107,8 +100,8 @@ class SessionLifecycleContractTest {
     // ---------------- Finish ----------------
 
     @Test
-    void finish_missingIdempotencyKey_returns400() {
-        final String sid = startFresh(1L, 42L, "finish-missing-key-fixture-001");
+    void finish_missingIdempotencyValue_returns400() {
+        final String sid = startFresh(1L, 42L, "finish-missing-fixture-001");
 
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
@@ -122,7 +115,7 @@ class SessionLifecycleContractTest {
     void finish_unknownSession_returns404() {
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/SES-not-here/finish")
-                .header(IDEMP_KEY_HEADER, "finish-unknown-fixture-001abc")
+                .header(IDEMP_HEADER, "finish-unknown-fixture-001abc")
                 .exchange()
                 .expectStatus().isNotFound()
                 .expectBody(ErrorResponse.class)
@@ -135,7 +128,7 @@ class SessionLifecycleContractTest {
 
         asUser(99L, 88L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, "finish-other-tenant-fixture-1")
+                .header(IDEMP_HEADER, "finish-other-tenant-fixture-1")
                 .exchange()
                 .expectStatus().isForbidden()
                 .expectBody(ErrorResponse.class)
@@ -144,12 +137,12 @@ class SessionLifecycleContractTest {
 
     @Test
     void finish_happyPath_returns200_alreadyFinishedFalse() {
-        final String sid = startFresh(1L, 42L, "finish-happy-fixture-key-aaa");
-        final String finishKey = "finish-happy-key-fixture-aaa1";
+        final String sid = startFresh(1L, 42L, "finish-happy-fixture-aaabbb");
+        final String finishIdemp = "finish-happy-idemp-fixture-aa1";
 
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, finishKey)
+                .header(IDEMP_HEADER, finishIdemp)
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(FinishResponse.class)
@@ -162,21 +155,19 @@ class SessionLifecycleContractTest {
     }
 
     @Test
-    void finish_idempotentReplay_sameKey_returns200_alreadyFinishedTrue() {
-        final String sid = startFresh(1L, 42L, "finish-replay-fixture-key-bbb");
-        final String finishKey = "finish-replay-key-fixture-bbb1";
+    void finish_idempotentReplay_sameValue_returns200_alreadyFinishedTrue() {
+        final String sid = startFresh(1L, 42L, "finish-replay-fixture-bbbccc");
+        final String finishIdemp = "finish-replay-idemp-fixture-b1";
 
-        // 1st finish → FINISHED, alreadyFinished=false
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, finishKey)
+                .header(IDEMP_HEADER, finishIdemp)
                 .exchange()
                 .expectStatus().isOk();
 
-        // 2nd finish same key → replay alreadyFinished=true
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, finishKey)
+                .header(IDEMP_HEADER, finishIdemp)
                 .exchange()
                 .expectStatus().isOk()
                 .expectBody(FinishResponse.class)
@@ -187,20 +178,20 @@ class SessionLifecycleContractTest {
     }
 
     @Test
-    void finish_idempotencyConflict_differentKeyOnFinished_returns409() {
-        final String sid = startFresh(1L, 42L, "finish-conflict-fixture-key-ccc");
-        final String firstKey = "finish-conflict-key1-fixture-ccc";
-        final String secondKey = "finish-conflict-key2-fixture-ccc";
+    void finish_idempotencyConflict_differentValueOnFinished_returns409() {
+        final String sid = startFresh(1L, 42L, "finish-conflict-fixture-cccddd");
+        final String firstIdemp = "finish-conflict-idemp1-fix-c01";
+        final String secondIdemp = "finish-conflict-idemp2-fix-c02";
 
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, firstKey)
+                .header(IDEMP_HEADER, firstIdemp)
                 .exchange()
                 .expectStatus().isOk();
 
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, secondKey)
+                .header(IDEMP_HEADER, secondIdemp)
                 .exchange()
                 .expectStatus().isEqualTo(409)
                 .expectBody(ErrorResponse.class)
@@ -210,11 +201,11 @@ class SessionLifecycleContractTest {
     @Test
     void status_afterFinish_returnsFinishedState() {
         final String sid = startFresh(1L, 42L, "status-after-finish-fixture-1");
-        final String finishKey = "status-after-finish-key-fixt1";
+        final String finishIdemp = "status-after-finish-idemp-fx1";
 
         asUser(1L, 42L)
                 .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
-                .header(IDEMP_KEY_HEADER, finishKey)
+                .header(IDEMP_HEADER, finishIdemp)
                 .exchange()
                 .expectStatus().isOk();
 

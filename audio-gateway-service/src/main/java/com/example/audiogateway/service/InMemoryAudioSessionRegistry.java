@@ -5,6 +5,9 @@ import com.example.audiogateway.service.AudioSessionRegistry.CreateOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.FinishOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.SessionCreateCommand;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
@@ -16,27 +19,45 @@ import org.springframework.stereotype.Service;
 /**
  * Bounded in-memory implementation of {@link AudioSessionRegistry}.
  *
- * <p>PR-gw-01A scope: no Redis, no persistence. Restart loses all sessions — explicit
- * contract documented (Codex {@code 019e8c26} iter-2 AGREE). Slice PR-gw-01C migrates to
- * Redis Streams + consumer group.
+ * <p>PR-gw-01A scope (Codex {@code 019e8c26} iter-3 REVISE absorb): no Redis, no persistence;
+ * restart loses all sessions. Durability sonraki slice'da Redis Streams (PR-gw-01C) ile gelir.
  *
  * <p>Idempotency replay: key = {@code tenantId|userId|"POST"|"/sessions"|idempotencyKey};
- * value = sessionId. Bounded by {@code audio.gateway.idempotency.replay-cache-size}.
- * When cap reached, oldest entry evicted (LRU approximation via insertion order).
+ * value = sessionId + signature. Bounded by {@code audio.gateway.idempotency.replay-cache-size}.
+ * When cap reached, oldest entry evicted via {@link LinkedHashMap} insertion-order policy
+ * (synchronized for thread-safety).
+ *
+ * <p><b>Concurrency contract (Codex iter-3 P1 absorb):</b> {@code create(...)} is fully
+ * {@code synchronized} on the monitor; concurrent calls with the same Idempotency-Key cannot
+ * produce two distinct sessions. Capacity check is in the same critical section so the
+ * registry never exceeds {@code maxActiveSessions}. Finish path uses CAS
+ * ({@code sessions.replace(id, existing, finished)}) which is safe lock-free.
  */
 @Service
 public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
 
     private final AudioGatewayProperties props;
     private final ConcurrentMap<String, SessionRecord> sessions = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, IdempotencyEntry> startReplay = new ConcurrentHashMap<>();
+    /**
+     * Insertion-order bounded replay cache (Codex iter-3 P2 absorb). Synchronized via
+     * {@link Collections#synchronizedMap} because {@link LinkedHashMap} is not thread-safe.
+     */
+    private final Map<String, IdempotencyEntry> startReplay;
 
     public InMemoryAudioSessionRegistry(final AudioGatewayProperties props) {
         this.props = props;
+        final int cap = Math.max(1, props.getIdempotency().getReplayCacheSize());
+        this.startReplay = Collections.synchronizedMap(
+                new LinkedHashMap<String, IdempotencyEntry>(cap, 0.75f, false) {
+                    @Override
+                    protected boolean removeEldestEntry(final Map.Entry<String, IdempotencyEntry> eldest) {
+                        return size() > cap;
+                    }
+                });
     }
 
     @Override
-    public CreateOutcome create(final SessionCreateCommand cmd) {
+    public synchronized CreateOutcome create(final SessionCreateCommand cmd) {
         final String idempKey = startReplayKey(cmd.tenantId(), cmd.userId(), cmd.idempotencyKey());
         final String signature = startSignature(cmd);
 
@@ -50,7 +71,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
                 return new CreateOutcome.Replayed(rec);
             }
             // record evicted but replay cache still present → treat as fresh create
-            startReplay.remove(idempKey, existing);
+            startReplay.remove(idempKey);
         }
 
         if (sessions.size() >= props.getBounds().getMaxActiveSessions()) {
@@ -64,13 +85,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
                 cmd.idempotencyKey(), cmd.sessionStartMs(),
                 SessionState.STARTED, null, 0L, cmd.sessionStartMs());
 
-        // Race guard: putIfAbsent on session id (UUID collision practically nil)
         sessions.put(sessionId, rec);
-
-        // Cache idempotency replay; evict oldest if over cap
-        if (startReplay.size() >= props.getIdempotency().getReplayCacheSize()) {
-            startReplay.keySet().stream().findFirst().ifPresent(startReplay::remove);
-        }
         startReplay.put(idempKey, new IdempotencyEntry(sessionId, signature));
 
         return new CreateOutcome.Created(rec);
@@ -93,7 +108,6 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
             return new FinishOutcome.OwnerMismatch();
         }
         if (existing.state() == SessionState.FINISHED) {
-            // Idempotent replay only if same finish key; otherwise conflict
             if (Objects.equals(existing.finishIdempotencyKey(), finishIdempotencyKey)) {
                 return new FinishOutcome.AlreadyFinished(existing);
             }
@@ -102,7 +116,6 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
 
         final long now = System.currentTimeMillis();
         final SessionRecord finished = existing.withFinish(finishIdempotencyKey, now);
-        // CAS-like: only replace if state was not FINISHED (concurrent finish race protection)
         if (!sessions.replace(sessionId, existing, finished)) {
             final SessionRecord current = sessions.get(sessionId);
             if (current != null && current.state() == SessionState.FINISHED

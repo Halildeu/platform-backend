@@ -19,6 +19,7 @@ public record ErrorResponse(
 
     public static final String CODE_AUTH_INVALID = "AUDIO_GATEWAY_AUTH_INVALID";
     public static final String CODE_LANGUAGE_REQUIRED = "AUDIO_GATEWAY_LANGUAGE_REQUIRED";
+    public static final String CODE_VALIDATION = "AUDIO_GATEWAY_VALIDATION";
     public static final String CODE_FORMAT_REJECTED = "AUDIO_GATEWAY_FORMAT_REJECTED";
     public static final String CODE_OVERSIZE = "AUDIO_GATEWAY_OVERSIZE";
     public static final String CODE_QUEUE_FULL = "AUDIO_GATEWAY_QUEUE_FULL";
