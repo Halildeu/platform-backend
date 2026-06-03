@@ -1,7 +1,7 @@
 package com.example.endpointadmin.service;
 
 import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.UUID;
 
@@ -12,20 +12,28 @@ import java.util.UUID;
  * <p>Thrown by
  * {@link CatalogUninstallSettingsChangeRequestService#approve} when the
  * approver subject equals the proposer subject (V31 DB CHECK
- * {@code ck_catalog_unins_change_maker_checker} also rejects it). Annotated
- * for 403 FORBIDDEN HTTP response.
+ * {@code ck_catalog_unins_change_maker_checker} also rejects it).
+ *
+ * <p>Subclasses {@link ResponseStatusException} (not just a
+ * {@code @ResponseStatus(FORBIDDEN)} marker) because the repo's
+ * {@code GlobalExceptionHandler} has a catch-all
+ * {@code @ExceptionHandler(Exception.class)} that would otherwise map this
+ * to HTTP 500. The Spring MVC dispatcher resolves a
+ * {@code ResponseStatusException} explicitly to its declared status code,
+ * bypassing the catch-all. Mirrors the BE-020
+ * {@link com.example.endpointadmin.exception.CatalogMakerCheckerViolationException}
+ * pattern (Codex iter-2 absorb).
  *
  * <p>BE-014A {@code noRollbackFor} pattern: the service annotation excludes
  * this exception from rollback so the durable
  * {@code ENDPOINT_CATALOG_UNINSTALL_SETTINGS_APPROVAL_REJECTED_MAKER_CHECKER}
  * audit row written before the throw survives the rejected transaction.
  *
- * <p>This is a checked-status runtime exception with a stable HTTP status
- * mapping via {@link ResponseStatus}.
+ * <p>Maps to HTTP 403 (Forbidden) — distinct from BE-020's 422 to keep
+ * the AG-028 surface distinct from catalog-creation maker-checker.
  */
-@ResponseStatus(HttpStatus.FORBIDDEN)
 public class CatalogUninstallSettingsMakerCheckerViolationException
-        extends RuntimeException {
+        extends ResponseStatusException {
 
     private final UUID requestId;
     private final String proposedBy;
@@ -33,8 +41,9 @@ public class CatalogUninstallSettingsMakerCheckerViolationException
 
     public CatalogUninstallSettingsMakerCheckerViolationException(
             UUID requestId, String proposedBy, String approverSubject) {
-        super("Maker-checker violation: approver must differ from proposer "
-                + "(requestId=" + requestId + ").");
+        super(HttpStatus.FORBIDDEN,
+                "Maker-checker violation: approver must differ from proposer "
+                        + "(requestId=" + requestId + ").");
         this.requestId = requestId;
         this.proposedBy = proposedBy;
         this.approverSubject = approverSubject;

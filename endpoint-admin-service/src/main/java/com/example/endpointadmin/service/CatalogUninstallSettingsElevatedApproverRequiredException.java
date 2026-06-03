@@ -1,7 +1,7 @@
 package com.example.endpointadmin.service;
 
 import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.UUID;
 
@@ -17,22 +17,27 @@ import java.util.UUID;
  * Until the platform exposes a super-admin role surface this guard rejects
  * with 403 FORBIDDEN.
  *
+ * <p>Subclasses {@link ResponseStatusException} (not just a
+ * {@code @ResponseStatus(FORBIDDEN)} marker) because the repo's
+ * {@code GlobalExceptionHandler} catch-all would otherwise map this to
+ * HTTP 500 (Codex iter-2 absorb).
+ *
  * <p>BE-014A {@code noRollbackFor} pattern: the service annotation excludes
  * this exception from rollback so the durable
  * {@code ENDPOINT_CATALOG_UNINSTALL_SETTINGS_APPROVAL_REJECTED_ELEVATED_REQUIRED}
  * audit row written before the throw survives the rejected transaction.
  */
-@ResponseStatus(HttpStatus.FORBIDDEN)
 public class CatalogUninstallSettingsElevatedApproverRequiredException
-        extends RuntimeException {
+        extends ResponseStatusException {
 
     private final UUID requestId;
     private final String approverSubject;
 
     public CatalogUninstallSettingsElevatedApproverRequiredException(
             UUID requestId, String approverSubject) {
-        super("Unprotecting an uninstall-protected catalog row requires "
-                + "elevated approver role (requestId=" + requestId + ").");
+        super(HttpStatus.FORBIDDEN,
+                "Unprotecting an uninstall-protected catalog row requires "
+                        + "elevated approver role (requestId=" + requestId + ").");
         this.requestId = requestId;
         this.approverSubject = approverSubject;
     }
