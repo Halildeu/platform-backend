@@ -36,8 +36,8 @@ public class EndpointSoftwareDiffCacheRow {
 
     /**
      * Faz 21.1 PR2c — endpoint org_id canonicalize compat field.
-     * Nullable until cleanup PR drops tenant_id. V31 trigger fills this
-     * from tenant_id when caller leaves it null; V31 CHECK enforces
+     * Nullable until cleanup PR drops tenant_id. V33 trigger fills this
+     * from tenant_id when caller leaves it null; V33 CHECK enforces
      * org_id IS NULL OR org_id = tenant_id (V30 mirror).
      */
     @Column(name = "org_id")

@@ -19,7 +19,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * Faz 21.1 PR2c regression guard — V31 cache table org_id compat
+ * Faz 21.1 PR2c regression guard — V33 cache table org_id compat
  * migration mirrors V29 (source tables) + V30 (CHECK constraint) onto
  * the two diff-cache tables (V27/V28 lineage):
  *
@@ -31,24 +31,30 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li>CHECK org_id IS NULL OR org_id = tenant_id (V30 pattern)</li>
  * </ul>
  *
- * <p>Eight assertions covering both cache tables:
+ * <p>Eight assertions covering both cache tables (Codex 019e8e29 iter-1
+ * REVISE #4 absorb: backfill is NOT asserted here because
+ * {@code @DataJpaTest} runs all migrations including V33 at context
+ * boot, so this PG IT only exercises the post-V33 trigger + CHECK +
+ * canonical write paths. Backfill correctness for pre-V33 rows is a
+ * deploy-time migration property; covered by V29 charter pre-flight
+ * evidence at staging-sw rollout):
  * <ol>
  *   <li>Software diff cache: ADD COLUMN org_id exists and is nullable.</li>
- *   <li>Software diff cache: backfill applied (org_id = tenant_id on
- *       pre-V31 rows).</li>
  *   <li>Software diff cache: trigger fills org_id from tenant_id when
  *       INSERT omits.</li>
  *   <li>Software diff cache: CHECK rejects mismatched org_id.</li>
+ *   <li>Software diff cache: canonical write (org_id = tenant_id
+ *       explicit) accepted.</li>
  *   <li>Outdated diff cache: ADD COLUMN org_id exists and is nullable.</li>
- *   <li>Outdated diff cache: backfill applied.</li>
  *   <li>Outdated diff cache: trigger fills org_id.</li>
  *   <li>Outdated diff cache: CHECK rejects mismatched org_id.</li>
+ *   <li>Outdated diff cache: canonical write accepted.</li>
  * </ol>
  */
 @Testcontainers
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-class V31DiffCacheOrgIdCompatPostgresIntegrationTest {
+class V33DiffCacheOrgIdCompatPostgresIntegrationTest {
 
     private static final String SCHEMA = "endpoint_admin_service";
 
@@ -87,7 +93,7 @@ class V31DiffCacheOrgIdCompatPostgresIntegrationTest {
                         + "WHERE table_schema = ? AND table_name = ? AND column_name = 'org_id'",
                 Boolean.class, SCHEMA, "endpoint_software_diff_cache");
         assertThat(isNullable)
-                .as("org_id column is nullable in pre-cleanup state (per V31 charter)")
+                .as("org_id column is nullable in pre-cleanup state (per V33 charter)")
                 .isTrue();
     }
 
@@ -98,7 +104,7 @@ class V31DiffCacheOrgIdCompatPostgresIntegrationTest {
         UUID rowId = UUID.randomUUID();
         Timestamp now = Timestamp.from(Instant.now());
 
-        // Legacy writer pattern: omit org_id; V31 trigger should fill it.
+        // Legacy writer pattern: omit org_id; V33 trigger should fill it.
         jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_software_diff_cache "
                         + "(id, tenant_id, device_id, "
                         + " status, added_count, removed_count, version_changed_count, "
@@ -112,7 +118,7 @@ class V31DiffCacheOrgIdCompatPostgresIntegrationTest {
                         + ".endpoint_software_diff_cache WHERE id = ?",
                 UUID.class, rowId);
         assertThat(storedOrgId)
-                .as("V31 trigger fills org_id from tenant_id when caller omits")
+                .as("V33 trigger fills org_id from tenant_id when caller omits")
                 .isEqualTo(tenant);
     }
 
