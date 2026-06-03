@@ -59,7 +59,10 @@ public class EndpointDeviceService {
     }
 
     public List<EndpointDeviceDto> listDevices(UUID tenantId) {
-        return repository.findByTenantIdOrderByHostnameAsc(tenantId)
+        // Faz 21.1 PR2b-iv.b3 (Codex 019e8d1d AGREE): canonical effective-org
+        // listing — admin device list sorted by hostname ASC; accepts both
+        // canonical and legacy NULL rows via parenthesized OR.
+        return repository.findVisibleToOrgOrderByHostnameAsc(tenantId)
                 .stream()
                 .map(this::toDto)
                 .toList();

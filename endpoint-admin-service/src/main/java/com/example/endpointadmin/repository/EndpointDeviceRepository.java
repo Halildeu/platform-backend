@@ -27,9 +27,9 @@ import java.util.UUID;
  * (= legacy {@code tenantId}); V30 CHECK guarantees a written row's
  * {@code org_id} matches its {@code tenant_id} when both are populated.
  *
- * <p>hostnameAsc / statusIn methods stay on the derived form pending
- * PR2b-iv.b3 / b4 sub-slices. b1 (id) and b2 (hostname + fingerprint)
- * implemented in PR2b-iv.b1 (#397) and PR2b-iv.b2 (#398).
+ * <p>statusIn stays on the derived form pending PR2b-iv.b4 sub-slice.
+ * b1 (id), b2 (hostname + fingerprint), and b3 (hostnameAsc listing)
+ * implemented in PR2b-iv.b1 (#397), PR2b-iv.b2 (#398), and PR2b-iv.b3.
  */
 public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, UUID> {
 
@@ -85,5 +85,18 @@ public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, 
 
     List<EndpointDevice> findByTenantIdAndStatusIn(UUID tenantId, Collection<DeviceStatus> statuses);
 
-    List<EndpointDevice> findByTenantIdOrderByHostnameAsc(UUID tenantId);
+    /**
+     * Canonical PR2b-iv.b3 read — effective-org device listing sorted by
+     * hostname ascending (Codex 019e8d1d B-B sub-slice b3 AGREE; P1
+     * parenthesized OR pattern). Used by the admin device list endpoint.
+     * Replaces the pre-PR2b-iv {@code findByTenantIdOrderByHostnameAsc}
+     * derived method.
+     */
+    @Query("""
+            select d
+            from EndpointDevice d
+            where (d.orgId = :orgId or (d.orgId is null and d.tenantId = :orgId))
+            order by d.hostname asc
+            """)
+    List<EndpointDevice> findVisibleToOrgOrderByHostnameAsc(@Param("orgId") UUID orgId);
 }
