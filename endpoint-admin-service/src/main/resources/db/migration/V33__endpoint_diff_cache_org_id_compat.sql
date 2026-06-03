@@ -1,4 +1,4 @@
--- V31 — Faz 21.1 PR2c endpoint diff cache org_id canonicalize
+-- V33 — Faz 21.1 PR2c endpoint diff cache org_id canonicalize
 --
 -- Adds `org_id` UUID column alongside existing `tenant_id` column on the
 -- two diff-cache tables (V27/V28 lineage). Mirrors V29 (which migrated
@@ -14,7 +14,7 @@
 --   - PR2b-iv source-side read migration arc (10 sub-slices, this
 --     session) covered cache-aware READS via COALESCE in
 --     DiffCacheBackfillWorker + AdminDiffCacheController (PR2b-iii).
---     PR2c is the cache-side WRITE foundation: V31 ADD COLUMN +
+--     PR2c is the cache-side WRITE foundation: V33 ADD COLUMN +
 --     BACKFILL + TRIGGER + CHECK, then code-side canonical write.
 --
 -- Pre-flight evidence requirements (per V29 charter):
