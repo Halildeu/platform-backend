@@ -29,7 +29,7 @@ import java.util.UUID;
  *
  * <p>hostnameAsc / statusIn methods stay on the derived form pending
  * PR2b-iv.b3 / b4 sub-slices. b1 (id) and b2 (hostname + fingerprint)
- * MERGED 2026-06-03.
+ * implemented in PR2b-iv.b1 (#397) and PR2b-iv.b2 (#398).
  */
 public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, UUID> {
 
