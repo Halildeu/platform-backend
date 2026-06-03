@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code post_verification_evidence} (object), and
  *       {@code redacted_payload} (object);</li>
  *   <li>The {@link
- *       EndpointInstallAuditRepository#findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+ *       EndpointInstallAuditRepository#findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
  *       UUID, UUID, UUID, Instant)} selector ordering against the same
  *       partial index the production query path uses.</li>
  * </ul>
@@ -561,7 +561,7 @@ class EndpointInstallAuditPostgresIntegrationTest {
                 base.minusSeconds(3600)).getId();
 
         Optional<EndpointInstallAudit> winner = auditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         tenantA, deviceA, catalogA, base);
         assertThat(winner).isPresent();
         assertThat(winner.get().getId()).isEqualTo(a4);
@@ -569,14 +569,14 @@ class EndpointInstallAuditPostgresIntegrationTest {
         // Strict `<` semantics: a cutoff equal to t4 must skip t4 and
         // pick t1 (the prior qualifying row).
         Optional<EndpointInstallAudit> priorWinner = auditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         tenantA, deviceA, catalogA, base.minusSeconds(3600));
         assertThat(priorWinner).isPresent();
         assertThat(priorWinner.get().getId()).isEqualTo(a1);
 
         // Cutoff before any qualifying audit returns empty.
         Optional<EndpointInstallAudit> noneYet = auditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         tenantA, deviceA, catalogA, base.minusSeconds(4 * 3600));
         assertThat(noneYet).isEmpty();
     }
@@ -596,7 +596,7 @@ class EndpointInstallAuditPostgresIntegrationTest {
 
         // tenant B sees nothing for tenant A's (device, catalog).
         Optional<EndpointInstallAudit> none = auditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         tenantB, deviceA, catalogA, Instant.now());
         assertThat(none).isEmpty();
     }

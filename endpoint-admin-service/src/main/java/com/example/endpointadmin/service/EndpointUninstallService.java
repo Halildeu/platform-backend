@@ -255,8 +255,11 @@ public class EndpointUninstallService {
         // `findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(Instant.MAX)`
         // was unsafe because {@code Instant.MAX} (year 1000000000) is outside
         // Postgres {@code timestamptz} range and risks bind-time overflow.
+        // Faz 21.1 PR2b-iv.e-B — effective-org provenance guard. tenantId
+        // here is the canonical org id (PR2b-ii canonical write at source);
+        // legacy NULL rows still visible via OR-fallback inside the @Query.
         boolean hasProvenance = installAuditRepository
-                .existsSucceededSatisfiedByTenantDeviceCatalog(
+                .existsSucceededSatisfiedByOrgDeviceCatalog(
                         tenantId, deviceId, catalogItem.getId());
         if (!hasProvenance) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,

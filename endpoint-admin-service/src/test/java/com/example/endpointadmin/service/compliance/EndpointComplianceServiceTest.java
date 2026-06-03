@@ -867,7 +867,7 @@ class EndpointComplianceServiceTest {
                 buildAudit(catalog.getId(), "24.07",
                         NOW.minusSeconds(60));    // within 15-min grace
         when(installAuditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         eq(TENANT_ID), eq(DEVICE_ID), eq(catalog.getId()), any()))
                 .thenReturn(Optional.of(audit));
         mockSaveEvaluationEcho();
@@ -897,7 +897,7 @@ class EndpointComplianceServiceTest {
                 buildAudit(catalog.getId(), "24.07",
                         NOW.minus(Duration.ofHours(1)));    // grace = 15min → contradicted
         when(installAuditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         eq(TENANT_ID), eq(DEVICE_ID), eq(catalog.getId()), any()))
                 .thenReturn(Optional.of(audit));
         mockSaveEvaluationEcho();
@@ -925,7 +925,7 @@ class EndpointComplianceServiceTest {
                 buildAudit(catalog.getId(), "20.0",
                         NOW.minusSeconds(60));
         when(installAuditRepository
-                .findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
+                .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
                         eq(TENANT_ID), eq(DEVICE_ID), eq(catalog.getId()), any()))
                 .thenReturn(Optional.of(audit));
         mockSaveEvaluationEcho();

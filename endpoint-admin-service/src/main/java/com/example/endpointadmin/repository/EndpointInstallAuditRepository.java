@@ -32,14 +32,15 @@ import java.util.UUID;
  * {@code tenant_id NOT NULL} so legacy NULL fallback survives.
  *
  * <p>The compliance evaluator deterministic-selector query
- * {@link #findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(UUID, UUID, UUID, Instant)}
+ * {@link #findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(UUID, UUID, UUID, Instant)}
  * uses {@code created_at < before} (database commit timestamp) so the
  * selector cannot observe its own evaluation's audit row. The matching
  * partial index {@code idx_endpoint_install_audit_eval_selector} (V12)
- * keeps this read on the hot path. The compliance selector + the
- * existence guard are migrated in sub-slice e-B (separate PR — Codex
- * 019e8dde sub-slice split because they share the compliance evaluator
- * review surface, not the admin visibility surface).
+ * keeps this read on the hot path. Faz 21.1 PR2b-iv.e-B migrated the
+ * compliance selector + the existence guard to the same effective-org
+ * filter (Codex 019e8dde Option B; review surface shared with
+ * compliance evaluator + uninstall provenance, not with admin
+ * visibility).
  *
  * <p>{@link #findByCommandId(UUID)} is NOT migrated — V12
  * {@code command_id UNIQUE} (plus composite FK to
@@ -131,7 +132,7 @@ public interface EndpointInstallAuditRepository extends JpaRepository<EndpointIn
     /**
      * AG-028 Phase 1b — destructive-side existence gate. Returns {@code true}
      * if at least one prior SUCCEEDED + SATISFIED install audit row exists for
-     * the given {@code (tenant, device, catalog)}. Used by
+     * the given {@code (org, device, catalog)}. Used by
      * {@code EndpointUninstallService.propose} to enforce the "platform only
      * uninstalls what the platform installed" provenance invariant.
      *
@@ -142,29 +143,48 @@ public interface EndpointInstallAuditRepository extends JpaRepository<EndpointIn
      * a DB range error. A dedicated existence query is the right shape (no
      * deterministic-selector window, no upper bound, no select-list overhead).
      *
-     * <p>NOT migrated in slice e-A; sub-slice e-B (separate PR) folds
-     * this and the compliance selector into the effective-org form
-     * together because they share the same review surface (compliance /
-     * uninstall provenance under V12 partial index).
+     * <p>Faz 21.1 PR2b-iv.e-B — effective-org filter added (Codex
+     * 019e8dde sub-slice e-B AGREE; slice c iter-1 index-friendly form
+     * preserved). V12 partial index
+     * {@code idx_endpoint_install_audit_eval_selector} backs the
+     * non-org-scoped portion of the predicate; the org_id OR-fallback
+     * is layered as a row filter on top.
      */
     @Query("""
             select case when count(audit) > 0 then true else false end
             from EndpointInstallAudit audit
-            where audit.tenantId = :tenantId
+            where audit.tenantId = :orgId
+              and (audit.orgId = :orgId or audit.orgId is null)
               and audit.deviceId = :deviceId
               and audit.catalogItemId = :catalogItemId
               and audit.resultStatus = com.example.endpointadmin.model.CommandResultStatus.SUCCEEDED
               and audit.postVerification = com.example.endpointadmin.model.InstallPostVerification.SATISFIED
             """)
-    boolean existsSucceededSatisfiedByTenantDeviceCatalog(
-            @Param("tenantId") UUID tenantId,
+    boolean existsSucceededSatisfiedByOrgDeviceCatalog(
+            @Param("orgId") UUID orgId,
             @Param("deviceId") UUID deviceId,
             @Param("catalogItemId") UUID catalogItemId);
 
+    /**
+     * Compliance evaluator deterministic-selector query. {@code created_at
+     * < before} (database commit timestamp) so the selector cannot
+     * observe its own evaluation's audit row. V12 partial index
+     * {@code idx_endpoint_install_audit_eval_selector}
+     * ({@code (tenant_id, device_id, catalog_item_id, created_at DESC)}
+     * partial-predicate {@code result_status = 'SUCCEEDED' AND
+     * post_verification = 'SATISFIED'}) backs the hot path.
+     *
+     * <p>Faz 21.1 PR2b-iv.e-B — effective-org filter added (Codex
+     * 019e8dde sub-slice e-B AGREE). The
+     * {@code (audit.orgId = :orgId OR audit.orgId IS NULL)} branch is
+     * row-filter (not in partial index) but V30 invariant guarantees
+     * semantic equivalence with the prior tenant-only form.
+     */
     @Query("""
             select audit
             from EndpointInstallAudit audit
-            where audit.tenantId = :tenantId
+            where audit.tenantId = :orgId
+              and (audit.orgId = :orgId or audit.orgId is null)
               and audit.deviceId = :deviceId
               and audit.catalogItemId = :catalogItemId
               and audit.resultStatus = com.example.endpointadmin.model.CommandResultStatus.SUCCEEDED
@@ -173,18 +193,24 @@ public interface EndpointInstallAuditRepository extends JpaRepository<EndpointIn
             order by audit.createdAt desc
             """)
     java.util.List<EndpointInstallAudit>
-        findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
-                @Param("tenantId") UUID tenantId,
+        findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                @Param("orgId") UUID orgId,
                 @Param("deviceId") UUID deviceId,
                 @Param("catalogItemId") UUID catalogItemId,
                 @Param("before") Instant before,
                 Pageable pageable);
 
+    /**
+     * Portable LIMIT 1 default wrapper for the compliance evaluator
+     * selector (Codex 019e8dde AGREE — same idiom as slice d-A / d-B /
+     * e-A wrappers; avoids the {@code @Query Optional
+     * NonUniqueResultException} class entirely).
+     */
     default Optional<EndpointInstallAudit>
-        findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
-                UUID tenantId, UUID deviceId, UUID catalogItemId, Instant before) {
-        var page = findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(
-                tenantId, deviceId, catalogItemId, before,
+        findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                UUID orgId, UUID deviceId, UUID catalogItemId, Instant before) {
+        var page = findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(
+                orgId, deviceId, catalogItemId, before,
                 org.springframework.data.domain.PageRequest.of(0, 1));
         return page.isEmpty() ? Optional.empty() : Optional.of(page.get(0));
     }
