@@ -27,17 +27,22 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * latest-then-history (capped) and page-history reads migrated from
  * derived {@code findByTenantIdAndDeviceId*} to explicit {@code @Query}
  * with the canonical effective-org filter (Codex 019e8d1d B-C sub-slice
- * AGREE + P1 parenthesized OR).
+ * AGREE + 019e8dbb post-impl REVISE #1 absorb — index-friendly form
+ * that keeps the (tenant_id, device_id, captured_at, created_at, id)
+ * composite index usable; V30 CHECK guarantees semantic equivalence
+ * with the prior parenthesized form).
  *
  * <p>Canonical predicates:
  * <pre>
  *   findVisibleToOrgAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc
- *       WHERE (org_id = :orgId OR (org_id IS NULL AND tenant_id = :orgId))
+ *       WHERE tenant_id = :orgId
+ *         AND (org_id = :orgId OR org_id IS NULL)
  *         AND device_id = :deviceId
  *       ORDER BY captured_at DESC, created_at DESC, id DESC
  *
  *   findVisibleToOrgAndDeviceId  (Page, ordering supplied by caller Pageable)
- *       WHERE (org_id = :orgId OR (org_id IS NULL AND tenant_id = :orgId))
+ *       WHERE tenant_id = :orgId
+ *         AND (org_id = :orgId OR org_id IS NULL)
  *         AND device_id = :deviceId
  * </pre>
  *
