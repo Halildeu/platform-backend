@@ -172,7 +172,7 @@ class EndpointSoftwareInventoryStateHistoryAtomicityPostgresIntegrationTest {
                 .findBySourceCommandResultId(resultId).isPresent() ? 1L : 0L);
         assertThat(forResult).isEqualTo(1L);
         long forDevice = tx.execute(s -> historyRepository
-                .findByTenantIdAndDeviceId(TENANT, f.deviceId,
+                .findVisibleToOrgAndDeviceId(TENANT, f.deviceId,
                         org.springframework.data.domain.PageRequest.of(0, 10))
                 .getTotalElements());
         assertThat(forDevice).as("no-op duplicate must not add a second row")
@@ -202,7 +202,7 @@ class EndpointSoftwareInventoryStateHistoryAtomicityPostgresIntegrationTest {
                 details));
 
         long rows = tx.execute(s -> historyRepository
-                .findByTenantIdAndDeviceId(TENANT, f.deviceId,
+                .findVisibleToOrgAndDeviceId(TENANT, f.deviceId,
                         org.springframework.data.domain.PageRequest.of(0, 10))
                 .getTotalElements());
         assertThat(rows).as("idempotent re-ingest must not double-write")
@@ -253,7 +253,7 @@ class EndpointSoftwareInventoryStateHistoryAtomicityPostgresIntegrationTest {
                 .as("companion snapshot must roll back with the failed history")
                 .isFalse();
         long historyForDevice = verifyTx.execute(s -> historyRepository
-                .findByTenantIdAndDeviceId(TENANT, f.deviceId,
+                .findVisibleToOrgAndDeviceId(TENANT, f.deviceId,
                         org.springframework.data.domain.PageRequest.of(0, 10))
                 .getTotalElements());
         assertThat(historyForDevice)

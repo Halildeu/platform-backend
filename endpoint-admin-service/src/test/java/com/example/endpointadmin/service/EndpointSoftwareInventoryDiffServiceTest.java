@@ -204,7 +204,7 @@ class EndpointSoftwareInventoryDiffServiceTest {
         flushAndClear();
 
         assertThat(historyRepository
-                .findByTenantIdAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
+                .findVisibleToOrgAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
                         TENANT_A, device.getId(),
                         org.springframework.data.domain.PageRequest.of(0, 10)))
                 .isEmpty();
@@ -270,7 +270,7 @@ class EndpointSoftwareInventoryDiffServiceTest {
         flushAndClear();
 
         long captures = historyRepository
-                .findByTenantIdAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
+                .findVisibleToOrgAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
                         TENANT_A, device.getId(),
                         org.springframework.data.domain.PageRequest.of(0, 10))
                 .size();
@@ -341,6 +341,9 @@ class EndpointSoftwareInventoryDiffServiceTest {
         EndpointSoftwareInventoryStateHistory h =
                 new EndpointSoftwareInventoryStateHistory();
         h.setTenantId(TENANT_A);
+        // Faz 21.1 PR2b-iv.c — canonical write fixture for the history row
+        // too; matches the production ingest path's PR2b-ii write.
+        h.setOrgId(TENANT_A);
         h.setDeviceId(deviceId);
         h.setSchemaVersion(1);
         h.setAppsDigest(digest);
@@ -387,6 +390,12 @@ class EndpointSoftwareInventoryDiffServiceTest {
     private EndpointDevice persistDevice(UUID tenantId, String hostname) {
         EndpointDevice device = new EndpointDevice();
         device.setTenantId(tenantId);
+        // Faz 21.1 PR2b-iv.c — canonical write fixture (PR2b-ii Option A
+        // inline); H2 has no V29 trigger so without an explicit set the
+        // row would land with org_id NULL and only the OR-fallback branch
+        // would be exercised. Setting both columns equally lets the
+        // canonical org_id branch run through the H2 suite as well.
+        device.setOrgId(tenantId);
         device.setHostname(hostname + "-" + UUID.randomUUID());
         device.setMachineFingerprint("fp-" + UUID.randomUUID());
         device.setOsType(OsType.WINDOWS);
