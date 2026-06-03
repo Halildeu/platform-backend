@@ -139,6 +139,7 @@ CREATE TRIGGER endpoint_app_control_snap_org_id_compat
 DO $$
 DECLARE
     mismatch_count BIGINT;
+    tenant_id_null_count BIGINT;
     table_name TEXT;
     target_tables TEXT[] := ARRAY[
         'endpoint_devices',
@@ -155,6 +156,15 @@ BEGIN
             INTO mismatch_count;
         IF mismatch_count > 0 THEN
             RAISE EXCEPTION 'V29 backfill mismatch on table %: % rows have tenant_id != org_id (or org_id NULL)', table_name, mismatch_count;
+        END IF;
+        -- Codex iter-1 P1 absorb: also probe tenant_id NULL rows so the
+        -- post-backfill invariant set is explicit. Current schema has
+        -- tenant_id NOT NULL on these tables; this check formalizes that
+        -- invariant for future schema drift detection.
+        EXECUTE format('SELECT count(*) FROM %I WHERE tenant_id IS NULL', table_name)
+            INTO tenant_id_null_count;
+        IF tenant_id_null_count > 0 THEN
+            RAISE EXCEPTION 'V29 backfill mismatch on table %: % rows have tenant_id NULL (unexpected; tenant_id MUST be NOT NULL on these tables)', table_name, tenant_id_null_count;
         END IF;
     END LOOP;
 END $$;

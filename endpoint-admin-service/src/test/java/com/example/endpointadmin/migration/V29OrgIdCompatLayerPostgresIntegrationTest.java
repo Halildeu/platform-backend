@@ -144,4 +144,110 @@ class V29OrgIdCompatLayerPostgresIntegrationTest {
                     .isZero();
         }
     }
+
+    // ============================================================
+    // Codex iter-1 P1 absorb — live DML trigger behavior tests.
+    // ============================================================
+
+    @Test
+    void legacyInsertWithOnlyTenantId_triggerFillsOrgId() {
+        // Insert a fresh endpoint_devices row with tenant_id only; trigger
+        // must auto-fill org_id from tenant_id.
+        var tenantId = java.util.UUID.randomUUID();
+        var hostname = "v29-trigger-legacy-" + tenantId;
+
+        jdbcTemplate.update(
+                "INSERT INTO endpoint_devices "
+                        + "(id, tenant_id, hostname, os_type) "
+                        + "VALUES (gen_random_uuid(), ?, ?, 'LINUX')",
+                tenantId, hostname);
+
+        var orgId = jdbcTemplate.queryForObject(
+                "SELECT org_id FROM endpoint_devices WHERE hostname = ?",
+                java.util.UUID.class, hostname);
+
+        assertThat(orgId)
+                .as("Legacy insert with only tenant_id must auto-fill org_id")
+                .isEqualTo(tenantId);
+    }
+
+    @Test
+    void explicitDualWriteEqual_preservesOrgId() {
+        // Writer supplies both tenant_id and org_id with the same value;
+        // trigger should be a no-op (org_id already set).
+        var tenantId = java.util.UUID.randomUUID();
+        var hostname = "v29-trigger-dual-equal-" + tenantId;
+
+        jdbcTemplate.update(
+                "INSERT INTO endpoint_devices "
+                        + "(id, tenant_id, org_id, hostname, os_type) "
+                        + "VALUES (gen_random_uuid(), ?, ?, ?, 'LINUX')",
+                tenantId, tenantId, hostname);
+
+        var orgId = jdbcTemplate.queryForObject(
+                "SELECT org_id FROM endpoint_devices WHERE hostname = ?",
+                java.util.UUID.class, hostname);
+
+        assertThat(orgId)
+                .as("Explicit equal dual-write must preserve org_id (trigger no-op)")
+                .isEqualTo(tenantId);
+    }
+
+    @Test
+    void explicitDualWriteMismatch_documentedDrift() {
+        // Writer supplies different tenant_id and org_id (this is the documented
+        // drift case Codex flagged — trigger is purely additive, not enforcing
+        // equality). PR1 accepts this drift; PR2 should add CHECK constraint
+        // or fail-loud trigger upgrade.
+        var tenantId = java.util.UUID.randomUUID();
+        var orgIdInput = java.util.UUID.randomUUID();
+        var hostname = "v29-trigger-dual-mismatch-" + tenantId;
+
+        jdbcTemplate.update(
+                "INSERT INTO endpoint_devices "
+                        + "(id, tenant_id, org_id, hostname, os_type) "
+                        + "VALUES (gen_random_uuid(), ?, ?, ?, 'LINUX')",
+                tenantId, orgIdInput, hostname);
+
+        var orgIdStored = jdbcTemplate.queryForObject(
+                "SELECT org_id FROM endpoint_devices WHERE hostname = ?",
+                java.util.UUID.class, hostname);
+
+        // PR1 behaviour: trigger does NOT enforce equality; documented drift.
+        // PR2 binding: add CHECK (org_id IS NULL OR org_id = tenant_id) or
+        // strict fail-loud trigger to reject this case.
+        assertThat(orgIdStored)
+                .as("PR1 trigger is purely additive; mismatch stored as-is (PR2 will enforce equality)")
+                .isEqualTo(orgIdInput);
+    }
+
+    @Test
+    void updateClearingOrgId_triggerRefillsOnNextWrite() {
+        // Set org_id back to null, then UPDATE another column; trigger fires
+        // BEFORE UPDATE → refills org_id from tenant_id.
+        var tenantId = java.util.UUID.randomUUID();
+        var hostname = "v29-trigger-update-refill-" + tenantId;
+
+        jdbcTemplate.update(
+                "INSERT INTO endpoint_devices "
+                        + "(id, tenant_id, hostname, os_type) "
+                        + "VALUES (gen_random_uuid(), ?, ?, 'LINUX')",
+                tenantId, hostname);
+
+        // Force org_id back to NULL via direct SQL (bypassing trigger semantics
+        // is not possible since the trigger fires on UPDATE; the IF guard
+        // protects this case — UPDATE SET org_id=NULL fires trigger which then
+        // sees org_id IS NULL and fills it again from tenant_id).
+        jdbcTemplate.update(
+                "UPDATE endpoint_devices SET org_id = NULL WHERE hostname = ?",
+                hostname);
+
+        var orgId = jdbcTemplate.queryForObject(
+                "SELECT org_id FROM endpoint_devices WHERE hostname = ?",
+                java.util.UUID.class, hostname);
+
+        assertThat(orgId)
+                .as("UPDATE SET org_id=NULL must re-trigger fill from tenant_id (compat layer invariant)")
+                .isEqualTo(tenantId);
+    }
 }
