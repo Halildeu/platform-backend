@@ -316,11 +316,16 @@ class EndpointOutdatedSoftwareSnapshotEffectiveOrgPostgresIntegrationTest {
 
     private void insertSnapshotCanonical(UUID id, UUID org, UUID deviceId,
             Instant collectedAt, Instant createdAt) {
+        // V20 NOT NULL columns include probe_complete, max_upgrade,
+        // source_used (CHECK 'winget' | 'none'); the canonical SUCCEED
+        // shape is supported=true, probe_complete=true, source_used='winget'.
         jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_outdated_software_snapshots "
                         + "(id, tenant_id, org_id, device_id, schema_version, "
-                        + " supported, upgrade_count, upgrade_truncated, "
+                        + " supported, probe_complete, upgrade_count, "
+                        + " upgrade_truncated, max_upgrade, source_used, "
                         + " payload_hash_sha256, collected_at, created_at) "
-                        + "VALUES (?, ?, ?, ?, 1, true, 0, false, ?, ?, ?)",
+                        + "VALUES (?, ?, ?, ?, 1, true, true, 0, false, 0, "
+                        + "  'winget', ?, ?, ?)",
                 id, org, org, deviceId, VALID_HASH,
                 Timestamp.from(collectedAt),
                 Timestamp.from(createdAt));
@@ -333,9 +338,11 @@ class EndpointOutdatedSoftwareSnapshotEffectiveOrgPostgresIntegrationTest {
         try {
             jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_outdated_software_snapshots "
                             + "(id, tenant_id, org_id, device_id, schema_version, "
-                            + " supported, upgrade_count, upgrade_truncated, "
+                            + " supported, probe_complete, upgrade_count, "
+                            + " upgrade_truncated, max_upgrade, source_used, "
                             + " payload_hash_sha256, collected_at, created_at) "
-                            + "VALUES (?, ?, NULL, ?, 1, true, 0, false, ?, ?, ?)",
+                            + "VALUES (?, ?, NULL, ?, 1, true, true, 0, false, 0, "
+                            + "  'winget', ?, ?, ?)",
                     id, tenant, deviceId, VALID_HASH,
                     Timestamp.from(collectedAt),
                     Timestamp.from(createdAt));

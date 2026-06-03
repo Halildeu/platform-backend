@@ -7,8 +7,6 @@ import com.example.endpointadmin.model.EndpointOutdatedSoftwareSnapshot;
 import com.example.endpointadmin.repository.EndpointOutdatedSoftwareSnapshotRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import org.junit.jupiter.api.Test;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
