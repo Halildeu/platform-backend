@@ -67,8 +67,11 @@ public class EndpointSoftwareInventoryDiffService {
     @Transactional(readOnly = true)
     public AdminSoftwareInventoryDiffResponse diffLatest(
             AdminTenantContext context, UUID deviceId) {
+        // Faz 21.1 PR2b-iv.c — effective-org read; orgId == tenantId for
+        // canonical rows (PR2b-ii write path), legacy NULL rows still
+        // visible via OR fallback inside the @Query.
         List<EndpointSoftwareInventoryStateHistory> latestTwo = historyRepository
-                .findByTenantIdAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
+                .findVisibleToOrgAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
                         context.tenantId(), deviceId, PageRequest.of(0, 2));
 
         if (latestTwo.isEmpty()) {
@@ -99,8 +102,11 @@ public class EndpointSoftwareInventoryDiffService {
      */
     @Transactional(readOnly = true)
     public SoftwareDiffSummary summarize(UUID tenantId, UUID deviceId) {
+        // Faz 21.1 PR2b-iv.c — effective-org read; the cache write path
+        // already validates tenant scope upstream so {@code tenantId} here
+        // is the canonical org id (= legacy tenant id).
         List<EndpointSoftwareInventoryStateHistory> latestTwo = historyRepository
-                .findByTenantIdAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
+                .findVisibleToOrgAndDeviceIdOrderByCapturedAtDescCreatedAtDescIdDesc(
                         tenantId, deviceId, PageRequest.of(0, 2));
 
         if (latestTwo.isEmpty()) {
@@ -168,7 +174,10 @@ public class EndpointSoftwareInventoryDiffService {
     public Page<EndpointSoftwareInventoryStateHistory> history(
             AdminTenantContext context, UUID deviceId, int page, int size) {
         Pageable pageable = PageRequest.of(page, size, HISTORY_SORT);
-        return historyRepository.findByTenantIdAndDeviceId(
+        // Faz 21.1 PR2b-iv.c — effective-org read with countQuery sibling
+        // so total/totalPages compute over the same OR-fallback predicate
+        // instead of slipping back to the tenant-only branch.
+        return historyRepository.findVisibleToOrgAndDeviceId(
                 context.tenantId(), deviceId, pageable);
     }
 
