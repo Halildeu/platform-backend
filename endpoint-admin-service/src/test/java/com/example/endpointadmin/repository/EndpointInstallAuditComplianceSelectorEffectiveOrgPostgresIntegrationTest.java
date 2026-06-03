@@ -39,7 +39,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *     [+ a.created_at < :before for selector]
  * </pre>
  *
- * <p>Eight assertions covering both methods:
+ * <p>Nine assertions covering both methods:
  * <ol>
  *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: canonical row
  *       returns true.</li>
@@ -49,7 +49,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: cross-org returns
  *       false.</li>
  *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: FAILED + SATISFIED
- *       (wrong status) returns false.</li>
+ *       (wrong status) returns false — result_status filter guard.</li>
+ *   <li>existsSucceededSatisfiedByOrgDeviceCatalog: SUCCEEDED +
+ *       UNSATISFIED returns false — post_verification filter guard
+ *       (Codex 019e8dde iter-1 REVISE #2).</li>
  *   <li>findLatestSucceededSatisfiedByOrgDeviceCatalogBefore: canonical
  *       row matched via wrapper.</li>
  *   <li>findLatestSucceededSatisfiedByOrgDeviceCatalogBefore: legacy
