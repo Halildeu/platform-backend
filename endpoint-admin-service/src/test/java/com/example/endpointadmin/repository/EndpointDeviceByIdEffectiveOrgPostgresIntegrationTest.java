@@ -136,7 +136,9 @@ class EndpointDeviceByIdEffectiveOrgPostgresIntegrationTest {
         Optional<EndpointDevice> miss = repository.findVisibleToOrgAndId(orgA, deviceB);
         assertThat(miss)
                 .as("orgA MUST NOT see orgB's device via the OR fallback "
-                        + "(tenant boundary still enforced by AND id predicate)")
+                        + "(the parenthesized effective-org predicate keeps the "
+                        + "tenant boundary; orgA's filter never matches orgB's "
+                        + "org_id nor orgB's tenant_id)")
                 .isEmpty();
     }
 
