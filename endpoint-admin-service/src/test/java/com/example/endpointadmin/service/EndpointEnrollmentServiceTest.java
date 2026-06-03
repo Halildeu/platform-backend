@@ -89,7 +89,7 @@ class EndpointEnrollmentServiceTest {
 
         assertThat(enrollment.getStatus()).isEqualTo(EnrollmentStatus.CONSUMED);
         assertThat(enrollment.getDevice().getId()).isEqualTo(consumed.getDeviceId());
-        assertThat(deviceRepository.findByTenantIdAndMachineFingerprint(TENANT_ID, "fp-001")).isPresent();
+        assertThat(deviceRepository.findVisibleToOrgAndMachineFingerprint(TENANT_ID, "fp-001")).isPresent();
         assertThat(credential.getEncryptedSecret()).doesNotContain(consumed.getSecret());
         assertThat(secretProtector.reveal(credential.getEncryptedSecret())).isEqualTo(consumed.getSecret());
         assertThat(auditRepository.findTop50ByTenantIdOrderByOccurredAtDesc(TENANT_ID))
