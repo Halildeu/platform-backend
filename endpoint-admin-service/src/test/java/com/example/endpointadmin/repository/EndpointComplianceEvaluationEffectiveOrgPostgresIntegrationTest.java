@@ -4,8 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.endpointadmin.model.ComplianceDecision;
 import com.example.endpointadmin.model.EndpointComplianceEvaluation;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Optional;
@@ -86,8 +84,6 @@ class EndpointComplianceEvaluationEffectiveOrgPostgresIntegrationTest {
     private EndpointComplianceEvaluationRepository repository;
     @Autowired
     private JdbcTemplate jdbc;
-    @PersistenceContext
-    private EntityManager entityManager;
 
     // ───────────────────────── Assertion 1: canonical row read ─────────────────────────
 

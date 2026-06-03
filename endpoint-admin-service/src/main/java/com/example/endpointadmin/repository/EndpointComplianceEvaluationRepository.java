@@ -63,13 +63,15 @@ public interface EndpointComplianceEvaluationRepository
      * derived method.
      */
     /**
-     * Returns the single latest row as a list (size 0 or 1) — JPA cannot
-     * express {@code LIMIT 1} portably on a plain {@code @Query}, so
-     * callers use {@link #findLatestVisibleToOrg(UUID, UUID)} which wraps
-     * a {@link org.springframework.data.domain.PageRequest#of(int, int)
-     * PageRequest(0, 1)} around the underlying query. Keeping the
-     * list-typed variant package-private prevents accidental misuse from
-     * outside the repository module.
+     * Paginated effective-org latest history with explicit
+     * {@code evaluatedAt DESC, id DESC} tiebreaker — the underlying
+     * query for {@link #findFirstVisibleToOrgAndDeviceIdOrderByEvaluatedAtDesc}.
+     * Called via that default-method wrapper with
+     * {@link org.springframework.data.domain.PageRequest#of(int, int)
+     * PageRequest(0, 1)} so plain JPQL can express {@code LIMIT 1}
+     * portably (Codex 019e8d1d AGREE — default-method PageRequest
+     * idiom over schema-qualified native LIMIT to avoid the
+     * non-public-schema bug class).
      */
     @Query("""
             select e
