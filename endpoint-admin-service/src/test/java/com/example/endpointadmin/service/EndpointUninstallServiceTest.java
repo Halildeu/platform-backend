@@ -522,10 +522,17 @@ class EndpointUninstallServiceTest {
             // authoritatively certify ABSENT_VERIFIED post-uninstall. Re-author
             // to authoritative REGISTRY_UNINSTALL rule for the happy-path
             // fixture.
+            // Codex post-impl iter-1 nit (thread `019e8de2`): canonical shape
+            // for the validator-normalized REGISTRY_UNINSTALL rule. Without
+            // `publisher` the validator requires `allowPublisherMissing=true`;
+            // add the canonical publisher pair so the fixture mirrors a
+            // production-authored row exactly.
             Map<String, Object> authoritativeRule = new HashMap<>();
             authoritativeRule.put("type", "REGISTRY_UNINSTALL");
             authoritativeRule.put("displayName", "7-Zip");
             authoritativeRule.put("displayNameMatch", "EXACT");
+            authoritativeRule.put("publisher", "Igor Pavlov");
+            authoritativeRule.put("publisherMatch", "EXACT");
             approved.setDetectionRule(authoritativeRule);
         }
         catalogRepository.saveAndFlush(approved);
