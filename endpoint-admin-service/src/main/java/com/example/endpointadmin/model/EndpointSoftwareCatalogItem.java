@@ -129,6 +129,15 @@ public class EndpointSoftwareCatalogItem {
     @Column(name = "enabled", nullable = false)
     private boolean enabled = false;
 
+    // AG-028 — Managed Uninstall flags (Faz 22.5.6).
+    // Both default FALSE in V31; flips on APPROVED rows must go through
+    // CatalogUninstallSettingsChangeRequest propose/approve maker-checker flow.
+    @Column(name = "uninstall_supported", nullable = false)
+    private boolean uninstallSupported = false;
+
+    @Column(name = "uninstall_protected", nullable = false)
+    private boolean uninstallProtected = false;
+
     @Column(name = "created_by_subject", nullable = false, length = 255)
     private String createdBySubject;
 
@@ -333,6 +342,23 @@ public class EndpointSoftwareCatalogItem {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    // AG-028 — Managed Uninstall flag accessors.
+    public boolean isUninstallSupported() {
+        return uninstallSupported;
+    }
+
+    public void setUninstallSupported(boolean uninstallSupported) {
+        this.uninstallSupported = uninstallSupported;
+    }
+
+    public boolean isUninstallProtected() {
+        return uninstallProtected;
+    }
+
+    public void setUninstallProtected(boolean uninstallProtected) {
+        this.uninstallProtected = uninstallProtected;
     }
 
     public String getCreatedBySubject() {
