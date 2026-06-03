@@ -147,7 +147,24 @@ public class CatalogUninstallSettingsChangeRequestService {
         return AdminCatalogUninstallSettingsChangeRequestResponse.from(saved);
     }
 
-    @Transactional
+    /**
+     * Approve a PROPOSED change-request and apply the catalog flag flip
+     * in the same transaction.
+     *
+     * <p>BE-014A {@code noRollbackFor} pattern (Codex post-impl iter-1
+     * absorb): both maker-checker violation and elevated-approver-required
+     * deny paths write a durable audit row before throwing. Without the
+     * exclusion the audit insert would roll back with the rejected
+     * transaction, defeating the audit-trail purpose. The two custom
+     * exceptions {@link CatalogUninstallSettingsMakerCheckerViolationException}
+     * and {@link CatalogUninstallSettingsElevatedApproverRequiredException}
+     * carry HTTP 403 via {@code @ResponseStatus} so the controller surface
+     * stays identical.
+     */
+    @Transactional(noRollbackFor = {
+            CatalogUninstallSettingsMakerCheckerViolationException.class,
+            CatalogUninstallSettingsElevatedApproverRequiredException.class
+    })
     public AdminCatalogUninstallSettingsChangeRequestResponse approve(
             AdminTenantContext context,
             UUID catalogItemId,
@@ -172,7 +189,7 @@ public class CatalogUninstallSettingsChangeRequestService {
         if (req.getProposedBy().equals(subject)) {
             // Maker-checker violation — DB CHECK also rejects, but we emit
             // a durable audit event so the rejection is recorded even when
-            // the transaction rolls back.
+            // the transaction rolls back (BE-014A noRollbackFor pattern).
             auditService.record(
                     tenantId,
                     null,
@@ -186,14 +203,23 @@ public class CatalogUninstallSettingsChangeRequestService {
                             "proposedBy", req.getProposedBy()),
                     null,
                     null);
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Maker-checker violation: approver must differ from proposer.");
+            throw new CatalogUninstallSettingsMakerCheckerViolationException(
+                    req.getId(), req.getProposedBy(), subject);
         }
 
         EndpointSoftwareCatalogItem catalog = catalogRepository
                 .findByTenantIdAndId(tenantId, catalogItemId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Catalog item not found in tenant scope."));
+        // Catalog state revalidation between propose and approve — Codex
+        // post-impl iter-1 absorb: propose-then-revoke race must not allow
+        // flag flip on a REVOKED/DRAFT row.
+        if (catalog.getStatus() != CatalogItemStatus.APPROVED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Catalog item is no longer APPROVED; current status="
+                            + catalog.getStatus()
+                            + ". Re-propose after the row returns to APPROVED.");
+        }
         // Elevated-approver service guard for unprotect transitions
         // (uninstall_protected: true → false). Codex iter-2 P0 #4 absorb.
         requireElevatedIfUnprotect(req, catalog, subject);
@@ -342,8 +368,8 @@ public class CatalogUninstallSettingsChangeRequestService {
                             "transition", "PROTECTED_TRUE_TO_FALSE"),
                     null,
                     null);
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Unprotecting an uninstall-protected catalog row requires elevated approver role.");
+            throw new CatalogUninstallSettingsElevatedApproverRequiredException(
+                    req.getId(), subject);
         }
     }
 

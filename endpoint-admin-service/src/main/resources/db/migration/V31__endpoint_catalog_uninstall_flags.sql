@@ -113,7 +113,11 @@ CREATE TABLE catalog_uninstall_settings_change_requests (
                 AND approved_at IS NOT NULL
                 AND applied_at IS NOT NULL)
          OR (state = 'REJECTED'
-                AND reject_reason IS NOT NULL)
+                AND approved_by IS NULL
+                AND approved_at IS NULL
+                AND applied_at IS NULL
+                AND reject_reason IS NOT NULL
+                AND btrim(reject_reason) <> '')
         )
 );
 
