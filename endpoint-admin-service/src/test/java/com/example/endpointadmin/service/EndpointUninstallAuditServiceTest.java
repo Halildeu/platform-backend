@@ -191,18 +191,76 @@ class EndpointUninstallAuditServiceTest {
     }
 
     @Test
-    void unknownFinalStatus_fallsBackToPartialInconclusive() {
+    void unknownFinalStatus_fallsBackToPartialInconclusiveAndVerifyInconclusive() {
         // Agent ships a literal not in the closed UninstallResultStatus
-        // allow-list. The audit row MUST land with the fail-closed fallback
-        // PARTIAL_INCONCLUSIVE (NEVER something that could be read as ABSENT).
+        // allow-list, with probeState=ABSENT. Codex 019e8f9c REVISE absorb:
+        // verification is forced from resultStatus, NOT read independently from
+        // probeState — so protocol drift can NEVER certify ABSENT_VERIFIED.
+        // resultStatus → fail-closed PARTIAL_INCONCLUSIVE, which forces
+        // verification → VERIFY_INCONCLUSIVE.
         runMappingScenario(
                 "SUCCEEDED_BUT_DRIFTED",
                 "ABSENT",
                 EndpointUninstallAuditService.FALLBACK_RESULT_STATUS,
-                UninstallVerification.ABSENT_VERIFIED /* policy resolves to ABSENT
-                given probeState=ABSENT; the fail-closed property is on resultStatus,
-                not verification, because verification is governed by the policy
-                chain rather than the agent finalStatus drift */);
+                UninstallVerification.VERIFY_INCONCLUSIVE);
+    }
+
+    // ── Codex 019e8f9c REVISE: cross-field consistency clamps ──────────
+
+    @Test
+    void contradictoryGhostWithAbsentProbe_forcesPresentVerified() {
+        // FAILED_VERIFY_GHOST = winget exit=0 but package STILL detected. If a
+        // drifted agent also ships probeState=ABSENT (contradiction), the
+        // verification MUST stay PRESENT_VERIFIED (forced from resultStatus),
+        // never ABSENT_VERIFIED.
+        runMappingScenario(
+                "FAILED_VERIFY_GHOST",
+                "ABSENT",
+                UninstallResultStatus.FAILED_VERIFY_GHOST,
+                UninstallVerification.PRESENT_VERIFIED);
+    }
+
+    @Test
+    void contradictorySucceededWithMatchedProbe_forcesAbsentVerified() {
+        // SUCCEEDED_VERIFIED is the agent's authoritative "removed + verified
+        // absent" classification. Even if a drifted probeState=MATCHED rides
+        // along, verification is forced to ABSENT_VERIFIED (consistent with the
+        // status), not independently derived to PRESENT_VERIFIED.
+        runMappingScenario(
+                "SUCCEEDED_VERIFIED",
+                "MATCHED",
+                UninstallResultStatus.SUCCEEDED_VERIFIED,
+                UninstallVerification.ABSENT_VERIFIED);
+    }
+
+    @Test
+    void contradictoryResidueWithAbsentProbe_forcesResiduePresent() {
+        runMappingScenario(
+                "PARTIAL_RESIDUE",
+                "ABSENT",
+                UninstallResultStatus.PARTIAL_RESIDUE,
+                UninstallVerification.RESIDUE_PRESENT);
+    }
+
+    @Test
+    void failedExitWithAbsentProbe_clampsToVerifyInconclusive() {
+        // A non-zero exit must NEVER read as ABSENT_VERIFIED. Even if the
+        // probeState somehow resolves to ABSENT, the FAILED_EXIT clamp forces
+        // VERIFY_INCONCLUSIVE.
+        runMappingScenario(
+                "FAILED_EXIT",
+                "ABSENT",
+                UninstallResultStatus.FAILED_EXIT,
+                UninstallVerification.VERIFY_INCONCLUSIVE);
+    }
+
+    @Test
+    void failedExitWithErrorProbe_clampsToVerifyInconclusive() {
+        runMappingScenario(
+                "FAILED_EXIT",
+                "ERROR",
+                UninstallResultStatus.FAILED_EXIT,
+                UninstallVerification.VERIFY_INCONCLUSIVE);
     }
 
     @Test

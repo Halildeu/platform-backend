@@ -36,24 +36,35 @@ import java.util.UUID;
  * by transitioning {@code EndpointUninstallRequest.state} to
  * {@link UninstallRequestState#TERMINAL}.
  *
- * <p>Mapping (Codex Phase 2 plan thread {@code 019e8de2} iter-2 + iter-3 AGREE):
+ * <p>Verification is a DETERMINISTIC function of {@code resultStatus} (a
+ * cross-field consistency matrix), NOT an independent read of the agent
+ * {@code probeState}. The agent's {@code finalStatus} is itself computed from
+ * {@code probeState} + exit code (Phase 2A exit-code decision tree), so deriving
+ * verification independently would, under agent drift / wire tampering, produce a
+ * semantically contradictory pair — e.g. {@code FAILED_VERIFY_GHOST /
+ * ABSENT_VERIFIED} or an unknown-status {@code ABSENT_VERIFIED} (Codex post-impl
+ * thread {@code 019e8f9c} REVISE absorb). Forcing verification from the
+ * authoritative {@code resultStatus} is lossless in correct operation (each
+ * status maps 1:1 to a verification) and fail-closed under drift (never certifies
+ * a strong verdict that contradicts the status).
  *
  * <table>
- *   <tr><th>agent finalStatus</th><th>resultStatus</th><th>verification</th></tr>
- *   <tr><td>SUCCEEDED_VERIFIED</td><td>SUCCEEDED_VERIFIED</td><td>ABSENT_VERIFIED (deriveVerification)</td></tr>
- *   <tr><td>SKIP_ALREADY_ABSENT</td><td>SKIP_ALREADY_ABSENT</td><td>ABSENT_VERIFIED (override)</td></tr>
- *   <tr><td>PARTIAL_RESIDUE</td><td>PARTIAL_RESIDUE</td><td>RESIDUE_PRESENT (deriveVerification)</td></tr>
- *   <tr><td>PARTIAL_INCONCLUSIVE</td><td>PARTIAL_INCONCLUSIVE</td><td>VERIFY_INCONCLUSIVE (deriveVerification)</td></tr>
- *   <tr><td>FAILED_VERIFY_GHOST</td><td>FAILED_VERIFY_GHOST</td><td>PRESENT_VERIFIED (deriveVerification)</td></tr>
- *   <tr><td>FAILED_EXIT</td><td>FAILED_EXIT</td><td>deriveVerification (likely PRESENT_VERIFIED / VERIFY_INCONCLUSIVE)</td></tr>
+ *   <tr><th>agent finalStatus</th><th>resultStatus</th><th>verification (forced from resultStatus)</th></tr>
+ *   <tr><td>SUCCEEDED_VERIFIED</td><td>SUCCEEDED_VERIFIED</td><td>ABSENT_VERIFIED</td></tr>
+ *   <tr><td>SKIP_ALREADY_ABSENT</td><td>SKIP_ALREADY_ABSENT</td><td>ABSENT_VERIFIED</td></tr>
+ *   <tr><td>PARTIAL_RESIDUE</td><td>PARTIAL_RESIDUE</td><td>RESIDUE_PRESENT</td></tr>
+ *   <tr><td>PARTIAL_INCONCLUSIVE</td><td>PARTIAL_INCONCLUSIVE</td><td>VERIFY_INCONCLUSIVE</td></tr>
+ *   <tr><td>FAILED_VERIFY_GHOST</td><td>FAILED_VERIFY_GHOST</td><td>PRESENT_VERIFIED</td></tr>
+ *   <tr><td>FAILED_EXIT</td><td>FAILED_EXIT</td><td>probeState MATCHED→PRESENT_VERIFIED, else VERIFY_INCONCLUSIVE (clamp: a non-zero exit NEVER reads ABSENT)</td></tr>
  *   <tr><td>FAILED_PRECHECK_INCONCLUSIVE</td><td>FAILED_PRECHECK_INCONCLUSIVE</td><td>VERIFY_INCONCLUSIVE</td></tr>
- *   <tr><td>FAILED_UNSUPPORTED_PLATFORM</td><td>FAILED_UNSUPPORTED_PLATFORM</td><td>NOT_RUN (override)</td></tr>
- *   <tr><td>FAILED_UNSUPPORTED_VERIFICATION</td><td>FAILED_UNSUPPORTED_VERIFICATION</td><td>NOT_RUN (override)</td></tr>
+ *   <tr><td>FAILED_UNSUPPORTED_PLATFORM</td><td>FAILED_UNSUPPORTED_PLATFORM</td><td>NOT_RUN</td></tr>
+ *   <tr><td>FAILED_UNSUPPORTED_VERIFICATION</td><td>FAILED_UNSUPPORTED_VERIFICATION</td><td>NOT_RUN</td></tr>
  *   <tr><td>unknown / missing</td><td>{@link #FALLBACK_RESULT_STATUS}</td><td>VERIFY_INCONCLUSIVE (fail-closed)</td></tr>
  * </table>
  *
  * <p>Cross-AI plan-time Codex consensus thread {@code 019e8de2-cf3c-7d80-8a31-823fafcbc3ed}
- * iter-2 AGREE.
+ * iter-2 AGREE; post-impl consistency-matrix REVISE absorb thread
+ * {@code 019e8f9c-2a1b-77e0-a426-4757796c8495}.
  */
 @Service
 public class EndpointUninstallAuditService {
@@ -223,33 +234,63 @@ public class EndpointUninstallAuditService {
     }
 
     /**
-     * Resolve {@link UninstallVerification} from the (resultStatus, probeState)
-     * pair. Override rules (Codex iter-3):
+     * Resolve {@link UninstallVerification} as a DETERMINISTIC function of the
+     * authoritative {@code resultStatus} (cross-field consistency matrix), NOT
+     * an independent read of {@code probeState} (Codex post-impl thread
+     * {@code 019e8f9c} REVISE absorb).
      *
-     * <ul>
-     *   <li>{@code SKIP_ALREADY_ABSENT} → {@link UninstallVerification#ABSENT_VERIFIED}
-     *       (pre-probe was authoritative ABSENT; no-mutation preserves info via
-     *       resultStatus).</li>
-     *   <li>{@code FAILED_UNSUPPORTED_PLATFORM} → {@link UninstallVerification#NOT_RUN}
-     *       (no probe ran).</li>
-     *   <li>{@code FAILED_UNSUPPORTED_VERIFICATION} → {@link UninstallVerification#NOT_RUN}
-     *       (rejected at adapter top before any probe ran).</li>
-     *   <li>Everything else delegates to
-     *       {@link UninstallEvidencePayloadPolicy#deriveVerification(Map)}
-     *       which is fail-closed on missing / unknown probeState.</li>
-     * </ul>
+     * <p>Rationale: the agent's {@code finalStatus} (→ {@code resultStatus}) is
+     * itself derived from {@code probeState} + exit code on the agent side, so
+     * the two signals cannot legitimately disagree. Reading {@code probeState}
+     * independently would, under drift / agent-bug / wire tampering, emit a
+     * contradictory audit pair — e.g. {@code FAILED_VERIFY_GHOST /
+     * ABSENT_VERIFIED} (status says "still present", verification says "gone") or
+     * an unknown-status {@code ABSENT_VERIFIED}. Forcing verification from
+     * {@code resultStatus} is lossless in correct operation and fail-closed under
+     * drift: a destructive-op audit NEVER certifies {@code ABSENT_VERIFIED}
+     * unless the agent authoritatively classified the operation as absent
+     * (SUCCEEDED_VERIFIED / SKIP_ALREADY_ABSENT).
+     *
+     * <p>{@code FAILED_EXIT} is the only status that delegates to
+     * {@link UninstallEvidencePayloadPolicy#deriveVerification(Map)}, because a
+     * non-zero exit legitimately carries two distinguishable sub-states — the
+     * package was still detected ({@code PRESENT_VERIFIED}) vs. post-verify could
+     * not tell ({@code VERIFY_INCONCLUSIVE}). The result is CLAMPED: anything
+     * that would read as absence / residue / not-run is downgraded to
+     * {@code VERIFY_INCONCLUSIVE}, so a failed exit can never be certified as
+     * {@code ABSENT_VERIFIED}.
      */
     UninstallVerification resolveVerification(
             UninstallResultStatus resultStatus,
             Map<String, Object> redactedDetails) {
         switch (resultStatus) {
+            case SUCCEEDED_VERIFIED:
             case SKIP_ALREADY_ABSENT:
                 return UninstallVerification.ABSENT_VERIFIED;
+            case FAILED_VERIFY_GHOST:
+                return UninstallVerification.PRESENT_VERIFIED;
+            case PARTIAL_RESIDUE:
+                return UninstallVerification.RESIDUE_PRESENT;
+            case PARTIAL_INCONCLUSIVE:
+            case FAILED_PRECHECK_INCONCLUSIVE:
+                return UninstallVerification.VERIFY_INCONCLUSIVE;
             case FAILED_UNSUPPORTED_PLATFORM:
             case FAILED_UNSUPPORTED_VERIFICATION:
                 return UninstallVerification.NOT_RUN;
+            case FAILED_EXIT:
+                // Post-verify ran but could not confirm ABSENT. probeState
+                // distinguishes "still present" from "could not tell". Clamp
+                // anything that would certify absence / residue / not-run to
+                // the fail-closed VERIFY_INCONCLUSIVE — a non-zero exit must
+                // NEVER read as ABSENT_VERIFIED.
+                UninstallVerification derived = policy.deriveVerification(redactedDetails);
+                return derived == UninstallVerification.PRESENT_VERIFIED
+                        ? UninstallVerification.PRESENT_VERIFIED
+                        : UninstallVerification.VERIFY_INCONCLUSIVE;
             default:
-                return policy.deriveVerification(redactedDetails);
+                // Unreachable today (all enum values + FALLBACK covered), but a
+                // defensive fail-closed for a future UninstallResultStatus add.
+                return UninstallVerification.VERIFY_INCONCLUSIVE;
         }
     }
 
