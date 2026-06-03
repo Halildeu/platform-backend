@@ -143,7 +143,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     }
 
     @Override
-    public FinishOutcome finish(final String sessionId, final String finishIdempotencyKey,
+    public synchronized FinishOutcome finish(final String sessionId, final String finishIdempotencyKey,
                                 final Long tenantId, final Long userId) {
         final SessionRecord existing = sessions.get(sessionId);
         if (existing == null) {

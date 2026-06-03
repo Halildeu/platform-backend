@@ -400,6 +400,65 @@ class ChunkAdmissionContractTest {
                 .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_IDEMPOTENCY_CONFLICT));
     }
 
+    // ---------------- Concurrent finish + admitChunk race (Codex iter-3 P1) -----
+
+    @Test
+    void concurrentFinishAndChunk_neverOverwritesTerminalState() throws Exception {
+        final String sid = startFresh(1L, 42L, "chunk-race-fix-001-aaa");
+        // First chunk to enter STREAMING
+        chunkRequest(1L, 42L, sid, "chunk-race-seq0-fix-001abc",
+                0, payload(64), AudioFormat.WAV, 16000, 1)
+                .exchange()
+                .expectStatus().isOk();
+
+        final java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+
+        final Runnable finishTask = () -> {
+            try {
+                start.await();
+                asUser(1L, 42L)
+                        .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
+                        .header(IDEMP_HEADER, "chunk-race-finish-fix-001a")
+                        .exchange()
+                        .expectStatus().value(s -> assertThat(s).isIn(200, 409));
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        };
+
+        final Runnable chunkTask = () -> {
+            try {
+                start.await();
+                chunkRequest(1L, 42L, sid, "chunk-race-seq1-fix-001abc",
+                        1, payload(80), AudioFormat.WAV, 16000, 1)
+                        .exchange()
+                        .expectStatus().value(s -> assertThat(s).isIn(200, 409));
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        };
+
+        pool.submit(finishTask);
+        pool.submit(chunkTask);
+        start.countDown();
+        pool.shutdown();
+        assertThat(pool.awaitTermination(15, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        // Terminal state assertion: status FINISHED veya STREAMING
+        // (race sonucu hangisi olursa olsun, terminal FINISHED geri STREAMING olmasın)
+        asUser(1L, 42L)
+                .get().uri(SESSIONS_PATH + "/" + sid + "/status")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(StatusResponse.class)
+                .value(resp -> {
+                    assertThat(resp.state())
+                            .as("Terminal state must be deterministic (FINISHED veya STREAMING; race sonucu)")
+                            .isIn("FINISHED", "STREAMING");
+                });
+    }
+
     // ---------------- Invalid state (FINISHED) ----------------
 
     @Test

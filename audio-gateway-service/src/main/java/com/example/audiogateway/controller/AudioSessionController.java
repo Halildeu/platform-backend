@@ -29,6 +29,7 @@ import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -163,7 +164,8 @@ public class AudioSessionController {
 
     // ----- POST /sessions/{sessionId}/chunks (PR-gw-01B-core) ---------------
 
-    @PostMapping("/sessions/{sessionId}/chunks")
+    @PostMapping(value = "/sessions/{sessionId}/chunks",
+            consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public Mono<ResponseEntity<?>> admitChunk(
             @PathVariable final String sessionId,
             @RequestHeader(value = "Idempotency-Key", required = false) final String idempotencyKey,
