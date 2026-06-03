@@ -177,6 +177,27 @@ class EndpointInstallAuditComplianceSelectorEffectiveOrgPostgresIntegrationTest 
         assertThat(exists).isFalse();
     }
 
+    @Test
+    void exists_succeededUnsatisfied_returnsFalse() {
+        // Codex 019e8dde iter-1 REVISE #2 — guard the SECOND predicate
+        // (post_verification = SATISFIED) independently of the first
+        // (result_status = SUCCEEDED). A SUCCEEDED + UNSATISFIED row
+        // must NOT pass the existence gate; AG-028 destructive uninstall
+        // provenance requires BOTH predicates to hold.
+        UUID orgA = UUID.randomUUID();
+        UUID deviceId = seedDevice(orgA);
+        UUID catalogId = seedCatalog(orgA, "pkg.exists.unsatisfied");
+        UUID commandId = seedCommand(orgA, deviceId,
+                "INSTALL_SOFTWARE", "key-exists-unsatisfied");
+        persistAuditCanonical(orgA, deviceId, commandId, catalogId,
+                CommandResultStatus.SUCCEEDED, InstallPostVerification.UNSATISFIED);
+
+        boolean exists = repository
+                .existsSucceededSatisfiedByOrgDeviceCatalog(orgA, deviceId, catalogId);
+
+        assertThat(exists).isFalse();
+    }
+
     // ───────────────────────── findLatestSucceededSatisfied... (compliance evaluator selector) ─────────────────────────
 
     @Test
@@ -251,10 +272,15 @@ class EndpointInstallAuditComplianceSelectorEffectiveOrgPostgresIntegrationTest 
         UUID auditId = persistAuditCanonical(orgA, deviceId, commandId, catalogId,
                 CommandResultStatus.SUCCEEDED, InstallPostVerification.SATISFIED);
 
-        Instant createdAt = jdbc.queryForObject(
+        // Codex 019e8dde iter-1 REVISE #1 — PostgreSQL JDBC 42.7.x does
+        // not expose an Instant branch in getObject(idx, Class<?>); read
+        // a Timestamp and convert. The toInstant() reflects the row's
+        // committed timestamp regardless of session TZ.
+        Timestamp createdAtTs = jdbc.queryForObject(
                 "SELECT created_at FROM " + SCHEMA
                         + ".endpoint_install_audit WHERE id = ?",
-                Instant.class, auditId);
+                Timestamp.class, auditId);
+        Instant createdAt = createdAtTs.toInstant();
 
         Optional<EndpointInstallAudit> hitExact = repository
                 .findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(

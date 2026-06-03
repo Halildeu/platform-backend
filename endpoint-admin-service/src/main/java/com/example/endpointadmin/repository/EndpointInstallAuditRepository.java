@@ -32,14 +32,15 @@ import java.util.UUID;
  * {@code tenant_id NOT NULL} so legacy NULL fallback survives.
  *
  * <p>The compliance evaluator deterministic-selector query
- * {@link #findLatestSucceededSatisfiedByTenantDeviceCatalogBefore(UUID, UUID, UUID, Instant)}
+ * {@link #findLatestSucceededSatisfiedByOrgDeviceCatalogBefore(UUID, UUID, UUID, Instant)}
  * uses {@code created_at < before} (database commit timestamp) so the
  * selector cannot observe its own evaluation's audit row. The matching
  * partial index {@code idx_endpoint_install_audit_eval_selector} (V12)
- * keeps this read on the hot path. The compliance selector + the
- * existence guard are migrated in sub-slice e-B (separate PR — Codex
- * 019e8dde sub-slice split because they share the compliance evaluator
- * review surface, not the admin visibility surface).
+ * keeps this read on the hot path. Faz 21.1 PR2b-iv.e-B migrated the
+ * compliance selector + the existence guard to the same effective-org
+ * filter (Codex 019e8dde Option B; review surface shared with
+ * compliance evaluator + uninstall provenance, not with admin
+ * visibility).
  *
  * <p>{@link #findByCommandId(UUID)} is NOT migrated — V12
  * {@code command_id UNIQUE} (plus composite FK to
