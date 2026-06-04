@@ -147,7 +147,16 @@ class EndpointInstallAuditPostgresIntegrationTest {
                         + "WHERE conrelid = 'public.endpoint_install_audit'::regclass "
                         + "AND contype = 'f'",
                 String.class);
+        // V48 (Faz 21.1 C4 step-8) flipped all 3 install_audit FKs from
+        // tenant-composite to org-composite. This migration IT runs the full
+        // chain (incl. V48), so the live FKs are the org-keyed names; the
+        // legacy tenant-keyed FKs are dropped. ON DELETE preserved per edge
+        // (device/command CASCADE, catalog RESTRICT).
         assertThat(foreignKeys).contains(
+                "install_audit_command_org_fk",
+                "install_audit_device_org_fk",
+                "install_audit_catalog_org_fk");
+        assertThat(foreignKeys).doesNotContain(
                 "fk_endpoint_install_audit_command",
                 "fk_endpoint_install_audit_device",
                 "fk_endpoint_install_audit_catalog");
