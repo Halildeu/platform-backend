@@ -58,7 +58,7 @@ public final class DeviceGridColumns {
      *       for cache columns): BE-024c DiffCache 9 cache-fed colIds —
      *       4 software_diff_* + 5 outdated_diff_* from
      *       endpoint_software_diff_cache + endpoint_outdated_software_diff_cache
-     *       (plain LEFT JOIN; cache UNIQUE per (tenant_id, device_id)). Cache-
+     *       (plain LEFT JOIN; cache UNIQUE per (org_id, device_id), Faz 21.1 C2a). Cache-
      *       absent device returns NULL for the 9 colIds; cache-present row
      *       with status=NO_HISTORY returns 'NO_HISTORY' + counts=0. Grid
      *       stays read-only — no auto-backfill on query (canonical drawer
@@ -243,7 +243,7 @@ public final class DeviceGridColumns {
             // endpoint_software_diff_cache (alias sdc) and
             // endpoint_outdated_software_diff_cache (alias odc), plain LEFT
             // JOIN'd by DeviceGridQueryBuilder.buildFromAndJoins via the
-            // UNIQUE(tenant_id, device_id) index.
+            // UNIQUE(org_id, device_id) index (Faz 21.1 C2a/V35).
             //
             // Cache-absent device → status / counts return NULL (read-model
             // "not yet computed" — distinct from 'NO_HISTORY' which is a real
