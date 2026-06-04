@@ -3,9 +3,11 @@
 --
 -- BOUNDARY: this migration flips the diff-cache UPSERT IDENTITY from
 -- tenant-keyed to org-keyed (UNIQUE conflict target), and adds the cache
--- non-null org_id evidence the org identity requires. It intentionally
--- does NOT recreate the cache FOREIGN KEYS as org-composite, does NOT
--- drop the old tenant-keyed UNIQUE, and does NOT touch tenant_id.
+-- non-null org_id evidence the org identity requires. It DOES drop the old
+-- tenant-keyed UNIQUE via an atomic swap (Phase 2 — required so a single
+-- (org_id, device_id) arbiter exists for ON CONFLICT; see header below). It
+-- intentionally does NOT recreate the cache FOREIGN KEYS as org-composite
+-- (deferred to C2b) and does NOT touch the tenant_id column.
 --
 -- WHY the cache FK flip is DEFERRED to C2b (Codex 019e919e REVISE):
 --   A cache FK (child_col, org_id) -> parent(id, org_id) depends on the

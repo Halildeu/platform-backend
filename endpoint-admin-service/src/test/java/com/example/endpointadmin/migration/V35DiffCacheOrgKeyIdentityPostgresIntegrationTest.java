@@ -23,14 +23,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * (Codex 019e919e REVISE → AGREE). V35 flips the cache UPSERT identity from
  * tenant-keyed to org-keyed and adds the cache non-null org_id evidence the
  * org identity requires, WITHOUT recreating the cache FKs as org-composite
- * (deferred to C2b) and WITHOUT dropping the old tenant-keyed UNIQUE
- * (rollback safety).
+ * (deferred to C2b). It DOES drop the old tenant-keyed UNIQUE via an atomic
+ * swap — a single (org_id, device_id) arbiter is required for concurrent
+ * ON CONFLICT (two redundant uniques trip the non-arbiter under a race).
  *
  * <p>Asserts (both cache tables):
  * <ol>
  *   <li>cache non-null CHECK exists AND is VALIDATED (convalidated=true);</li>
  *   <li>new UNIQUE(org_id, device_id) exists;</li>
- *   <li>old UNIQUE(tenant_id, device_id) STILL exists (rollback safety);</li>
+ *   <li>old UNIQUE(tenant_id, device_id) is DROPPED (single ON CONFLICT arbiter);</li>
  *   <li>the old tenant-composite cache FKs STILL exist (FK flip = C2b);</li>
  *   <li>duplicate (org_id, device_id) is REJECTED (23505 unique_violation);</li>
  *   <li>a trigger-disabled org_id NULL insert is REJECTED (23514) — the

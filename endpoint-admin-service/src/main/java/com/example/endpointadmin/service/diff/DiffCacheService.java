@@ -165,16 +165,13 @@ public class DiffCacheService {
         // canonical org_id write at the INSERT path: include
         // org_id = tenant_id in the INSERT column list so genuinely-new
         // rows land canonical immediately.
-        // ON CONFLICT DO UPDATE SET also includes org_id = EXCLUDED.org_id
-        // BUT the SET only applies when the WHERE clause below (source-
-        // pair / from-downgrade / any-column-differs guards) returns true.
-        // No-op conflicts (identical payload) do NOT refresh org_id from
-        // this code path — the V33 trigger handles legacy NULL re-fill
-        // independently on every INSERT/UPDATE. Combined with the
-        // migration backfill, the test cluster reaches mismatch=0 even
-        // without an explicit drift heal here; the cleanup PR will
-        // sequence the schema migration (conflict target + UNIQUE +
-        // FK + repository + grid join) before tenant_id drop.
+        // Faz 21.1 C2a (V35, Codex 019e919e): the ON CONFLICT arbiter is
+        // (org_id, device_id) — org_id is part of the conflict key, so the
+        // DO UPDATE SET no longer carries org_id (it can never change on a
+        // conflict). org_id is written canonically (= tenantId) in the
+        // INSERT column list above; the V33 trigger is the belt-and-braces
+        // legacy NULL re-fill. C2a keeps tenant_id + the 6 tenant-composite
+        // cache FKs; the FK org-composite flip + tenant_id drop are C2b/C4.
         String sql = """
                 INSERT INTO %s AS c (
                     id, tenant_id, org_id, device_id,

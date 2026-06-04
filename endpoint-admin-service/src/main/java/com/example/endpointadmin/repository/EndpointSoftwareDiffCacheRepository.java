@@ -13,8 +13,8 @@ import org.springframework.stereotype.Repository;
  * backfill (Codex iter-2 UPSERT pattern).
  *
  * <p>One canonical row per {@code (orgId, deviceId)} per the V35 UNIQUE
- * (Faz 21.1 C2a; org_id = tenantId canonically; the V27 tenant-keyed
- * UNIQUE is retained for rollback compatibility).
+ * (Faz 21.1 C2a; org_id = tenantId canonically; the V27 tenant-keyed UNIQUE
+ * was dropped by V35's atomic swap so a single ON CONFLICT arbiter exists).
  */
 @Repository
 public interface EndpointSoftwareDiffCacheRepository

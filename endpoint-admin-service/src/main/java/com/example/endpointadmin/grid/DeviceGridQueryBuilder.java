@@ -754,8 +754,8 @@ public class DeviceGridQueryBuilder {
                 + " ) dx ON true"
                 // WEB-015 v2-d (schema v5) BE-024c DiffCache summary cache
                 // tables. Plain LEFT JOIN (not LATERAL) — cache UNIQUE per
-                // (tenant_id, device_id) already guarantees one row per
-                // device. Cache-absent device → 9 cache colIds return NULL
+                // (org_id, device_id) (Faz 21.1 C2a/V35) already guarantees
+                // one row per device. Cache-absent device → 9 cache colIds return NULL
                 // (read-model "not yet computed"; distinct from 'NO_HISTORY'
                 // which is a real cache row state meaning "device has 0
                 // history rows"). Grid stays read-only — the canonical
