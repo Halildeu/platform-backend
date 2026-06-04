@@ -4,7 +4,9 @@ import dev.openfga.sdk.api.client.OpenFgaClient;
 import dev.openfga.sdk.api.client.model.ClientCheckRequest;
 import dev.openfga.sdk.api.client.model.ClientExpandRequest;
 import dev.openfga.sdk.api.client.model.ClientListObjectsRequest;
+import dev.openfga.sdk.api.client.model.ClientReadRequest;
 import dev.openfga.sdk.api.client.model.ClientWriteRequest;
+import dev.openfga.sdk.api.configuration.ClientReadOptions;
 import dev.openfga.sdk.api.client.model.ClientBatchCheckItem;
 import dev.openfga.sdk.api.client.model.ClientBatchCheckRequest;
 import dev.openfga.sdk.api.client.model.ClientBatchCheckResponse;
@@ -16,6 +18,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -267,6 +271,76 @@ public class OpenFgaAuthzService {
                 })
                 .filter(id -> id != null)
                 .collect(Collectors.toSet());
+    }
+
+    /**
+     * Read a user's ACTUAL stored relationship tuples for the given object
+     * types via the OpenFGA Read API, returned as delete-ready keys.
+     *
+     * <p>Unlike {@link #listObjects} this does NOT evaluate computed /
+     * hierarchical relations or the deny-wins {@code but not blocked}
+     * exclusion — it returns the <em>literal stored</em> tuples. That property
+     * is required for a correct "delete-all-then-resync" feature-tuple refresh:
+     * deriving delete targets from the database (current role permissions) can
+     * never represent a {@code (type,key)} grant or an entire role that was
+     * <em>removed</em>, so those tuples were orphaned in OpenFGA and a revoked
+     * (or even disabled) user silently kept {@code can_manage}/{@code can_view}
+     * access (AG-028 privilege-revocation gap, platform-k8s-gitops #1272).
+     *
+     * <p>The Read filter is {@code {user:"user:<id>", object:"<type>:"}} per
+     * object type (type-bound object, user-scoped), paginated via the
+     * continuation token. Only the supplied {@code objectTypes} are read, so
+     * callers control the blast radius (e.g. feature types only, never scope
+     * tuples).
+     *
+     * @return delete-ready {@link ClientTupleKeyWithoutCondition} list; empty
+     *         when OpenFGA is disabled or the user has no stored tuples.
+     * @throws RuntimeException if a Read call fails — fail-loud, so a revoke
+     *         refresh never silently skips orphan cleanup (the caller can let
+     *         the durable outbox poller retry).
+     */
+    public List<ClientTupleKeyWithoutCondition> readUserTuples(String userId, Collection<String> objectTypes) {
+        if (!enabled || objectTypes == null || objectTypes.isEmpty()) {
+            return List.of();
+        }
+        String userRef = "user:" + userId;
+        List<ClientTupleKeyWithoutCondition> out = new ArrayList<>();
+        for (String objectType : objectTypes) {
+            String continuationToken = null;
+            do {
+                try {
+                    var request = new ClientReadRequest()
+                            .user(userRef)
+                            ._object(objectType + ":");
+                    var options = new ClientReadOptions().pageSize(100);
+                    if (continuationToken != null && !continuationToken.isEmpty()) {
+                        options.continuationToken(continuationToken);
+                    }
+                    var response = client.read(request, options).get();
+                    var tuples = response.getTuples();
+                    if (tuples != null) {
+                        for (var tuple : tuples) {
+                            var key = tuple.getKey();
+                            if (key == null || key.getObject() == null || key.getRelation() == null) {
+                                continue;
+                            }
+                            String object = key.getObject();
+                            int sep = object.indexOf(':');
+                            if (sep < 0) continue;
+                            out.add(deleteTupleKey(userId, key.getRelation(),
+                                    object.substring(0, sep), object.substring(sep + 1)));
+                        }
+                    }
+                    continuationToken = response.getContinuationToken();
+                } catch (Exception e) {
+                    log.error("OpenFGA readUserTuples failed: user:{} type:{} — {}",
+                            userId, objectType, e.getMessage());
+                    throw new RuntimeException("Failed to read user tuples for orphan cleanup", e);
+                }
+            } while (continuationToken != null && !continuationToken.isEmpty());
+        }
+        log.debug("OpenFGA readUserTuples: user:{} types:{} → {} tuples", userId, objectTypes, out.size());
+        return out;
     }
 
     /**

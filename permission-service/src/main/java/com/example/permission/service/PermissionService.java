@@ -38,53 +38,25 @@ public class PermissionService {
     private final AuditEventService auditEventService;
     private final ObjectMapper objectMapper;
     private final OpenFgaAuthzService authzService;
+    private final TupleSyncService tupleSyncService;
 
-    /**
-     * @deprecated STORY-0318: Use TupleSyncService for tuple management.
-     * Kept for backward compat with legacy assignRole() flow.
-     */
-    private static final Map<String, String> PERM_TO_MODULE = Map.ofEntries(
-            Map.entry("VIEW_USERS", "USER_MANAGEMENT"),
-            Map.entry("MANAGE_USERS", "USER_MANAGEMENT"),
-            Map.entry("VIEW_ACCESS", "ACCESS"),
-            Map.entry("MANAGE_ACCESS", "ACCESS"),
-            Map.entry("VIEW_AUDIT", "AUDIT"),
-            Map.entry("VIEW_PURCHASE", "PURCHASE"),
-            Map.entry("APPROVE_PURCHASE", "PURCHASE"),
-            Map.entry("VIEW_WAREHOUSE", "WAREHOUSE"),
-            Map.entry("MANAGE_WAREHOUSE", "WAREHOUSE"),
-            Map.entry("VIEW_REPORT", "REPORT"),
-            Map.entry("MANAGE_REPORT", "REPORT")
-    );
-
-    /**
-     * @deprecated STORY-0318: Use TupleSyncService for tuple management.
-     * Kept for backward compat with legacy assignRole() flow.
-     */
-    private static final Map<String, String> PERM_TO_RELATION = Map.ofEntries(
-            Map.entry("VIEW_USERS", "can_view"),
-            Map.entry("MANAGE_USERS", "can_manage"),
-            Map.entry("VIEW_ACCESS", "can_view"),
-            Map.entry("MANAGE_ACCESS", "can_manage"),
-            Map.entry("VIEW_AUDIT", "can_view"),
-            Map.entry("VIEW_PURCHASE", "can_view"),
-            Map.entry("APPROVE_PURCHASE", "can_manage"),
-            Map.entry("VIEW_WAREHOUSE", "can_view"),
-            Map.entry("MANAGE_WAREHOUSE", "can_manage"),
-            Map.entry("VIEW_REPORT", "can_view"),
-            Map.entry("MANAGE_REPORT", "can_manage")
-    );
+    // Legacy permission-code → OpenFGA module-tuple mapping moved to
+    // LegacyPermissionTupleMapper (AG-028 #1272, Codex Option B) so the legacy
+    // WRITE path here and the granule-refresh spare-set in TupleSyncService
+    // share one source and cannot drift.
 
     public PermissionService(UserRoleAssignmentRepository assignmentRepository,
                              RoleRepository roleRepository,
                              AuditEventService auditEventService,
                              ObjectMapper objectMapper,
-                             @org.springframework.lang.Nullable OpenFgaAuthzService authzService) {
+                             @org.springframework.lang.Nullable OpenFgaAuthzService authzService,
+                             @org.springframework.lang.Nullable TupleSyncService tupleSyncService) {
         this.assignmentRepository = assignmentRepository;
         this.roleRepository = roleRepository;
         this.auditEventService = auditEventService;
         this.objectMapper = objectMapper;
         this.authzService = authzService;
+        this.tupleSyncService = tupleSyncService;
     }
 
     /**
@@ -104,18 +76,18 @@ public class PermissionService {
         for (var rp : role.getRolePermissions()) {
             // Granule-only rolePermission: permission entity null, tuple sync TupleSyncService tarafından yapılır
             if (rp.getPermission() == null) continue;
-            String code = rp.getPermission().getCode().toUpperCase(Locale.ROOT);
-            String module = PERM_TO_MODULE.get(code);
-            String relation = PERM_TO_RELATION.get(code);
-            if (module == null || relation == null) continue;
+            LegacyPermissionTupleMapper.LegacyTuple t =
+                    LegacyPermissionTupleMapper.toTuple(rp.getPermission().getCode());
+            if (t == null) continue;
             try {
                 if (write) {
-                    authzService.writeTuple(String.valueOf(userId), relation, "module", module);
+                    authzService.writeTuple(String.valueOf(userId), t.relation(), t.objectType(), t.objectId());
                 } else {
-                    authzService.deleteTuple(String.valueOf(userId), relation, "module", module);
+                    authzService.deleteTuple(String.valueOf(userId), t.relation(), t.objectType(), t.objectId());
                 }
             } catch (Exception e) {
-                log.warn("OpenFGA tuple sync failed for user:{} {}:{} — {}", userId, relation, module, e.getMessage());
+                log.warn("OpenFGA legacy tuple sync failed for user:{} {} {}:{} — {}",
+                        userId, t.relation(), t.objectType(), t.objectId(), e.getMessage());
             }
         }
     }
@@ -294,6 +266,14 @@ public class PermissionService {
         if (auditIdForResponse != null) {
             response.setAuditId(auditIdForResponse);
         }
+
+        // AG-028 #1272 (Codex Option B): reconcile the user's feature tuples
+        // after the role change / duplicate-assignment cleanup (in-tx, fail-loud)
+        // so de-assigned roles' stale granule tuples are deleted and the new
+        // role's granule tuples are written.
+        if (tupleSyncService != null) {
+            tupleSyncService.refreshFeatureTuples(String.valueOf(request.getUserId()));
+        }
         return response;
     }
 
@@ -325,10 +305,22 @@ public class PermissionService {
                 beforeSnapshot,
                 snapshotAssignment(revokedAssignment)
         );
-        // Sync to OpenFGA — delete module tuples for user
+        // Sync to OpenFGA — delete legacy module tuples for user
         syncTuplesToOpenFga(assignment.getUserId(), assignment.getRole(), false);
 
         PermissionAuditEvent saved = auditEventService.recordEvent(auditEvent);
+
+        // AG-028 #1272 (Codex Option B): granule-aware OpenFGA reconciliation.
+        // syncTuplesToOpenFga above is a no-op for granule rows; reconcile the
+        // user's feature tuples from their REMAINING active roles so a revoked
+        // granule grant's tuple is deleted. In-tx + fail-loud → an FGA failure
+        // rolls back this revoke so a retry re-attempts atomically (never a
+        // revoked-assignment-with-live-tuple split state). Central chokepoint
+        // shared by DELETE /roles/{id}/members/{id} and DELETE
+        // /permissions/assignments/{id}.
+        if (tupleSyncService != null) {
+            tupleSyncService.refreshFeatureTuples(String.valueOf(assignment.getUserId()));
+        }
         return saved != null && saved.getId() != null ? saved.getId().toString() : null;
     }
 

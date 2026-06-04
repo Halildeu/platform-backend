@@ -353,6 +353,10 @@ public class AuthorizationControllerV1 {
     /**
      * Assign roles + scopes to a user.
      */
+    // AG-028 #1272 (Codex Option B): transactional so the deactivate-old +
+    // assignRole + refreshFeatureTuples chain is atomic — an OpenFGA failure
+    // rolls back the assignment replacement and the client retries.
+    @Transactional
     @PostMapping("/users/{userId}/assignments")
     public ResponseEntity<Map<String, Object>> assignUserRolesAndScopes(
             @PathVariable Long userId,
@@ -386,9 +390,11 @@ public class AuthorizationControllerV1 {
             );
         }
 
-        // Refresh feature tuples (union of all roles, deny-wins — skip individual version increment)
-        List<RolePermission> allPermissions = rolePermissionRepository.findByRoleIdIn(roleIds);
-        tupleSyncService.syncFeatureTuplesForUser(String.valueOf(userId), allPermissions, true);
+        // AG-028 #1272 (Codex Option B): full reconcile (delete stale + rewrite
+        // granule desired) instead of write-only sync, so de-assigned roles'
+        // stale tuples are deleted on this REPLACE. skip=true → the single
+        // version bump below covers it.
+        tupleSyncService.refreshFeatureTuples(String.valueOf(userId), true);
 
         // P0: Single version increment after all tuple syncs complete
         authzVersionService.incrementVersion();
