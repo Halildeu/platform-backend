@@ -221,8 +221,11 @@ public class AccessControllerV1 {
     @DeleteMapping("/{roleId}/members/{userId}")
     @RequireModule(value = "ACCESS", relation = "can_manage")
     public ResponseEntity<Void> removeRoleMember(@PathVariable Long roleId, @PathVariable Long userId) {
-        var assignments = assignmentRepository.findActiveAssignments(userId);
-        assignments.stream()
+        // AG-028 revoke-orphan fix (platform-k8s-gitops #1272): the granule-aware
+        // OpenFGA reconciliation runs inside PermissionService.revokeRole (the
+        // central chokepoint shared with DELETE /permissions/assignments/{id}),
+        // in-transaction + fail-loud, so the revoked grant's tuples are deleted.
+        assignmentRepository.findActiveAssignments(userId).stream()
                 .filter(a -> a.getRole().getId().equals(roleId))
                 .forEach(a -> permissionService.revokeRole(a.getId(), null));
         return ResponseEntity.noContent().build();

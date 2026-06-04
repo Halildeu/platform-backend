@@ -120,6 +120,14 @@ public class AccessRoleService {
                 "memberCount", assignmentRepository.countByRoleAndActiveTrue(role)
         );
 
+        // AG-028 #1272 (Codex Option B): capture affected members BEFORE
+        // deactivation so we can reconcile their feature tuples after the role
+        // and its granules are gone.
+        List<Long> affectedUserIds = assignmentRepository.findByRoleAndActiveTrue(role).stream()
+                .map(a -> a.getUserId())
+                .distinct()
+                .toList();
+
         // Deactivate all assignments
         assignmentRepository.findByRoleAndActiveTrue(role).forEach(assignment -> {
             assignment.setActive(false);
@@ -143,6 +151,15 @@ public class AccessRoleService {
                         null
                 )
         );
+
+        // AG-028 #1272: reconcile each former member's feature tuples (in-tx,
+        // fail-loud) so the deleted role's granule tuples are removed unless
+        // still justified by another active role; single version bump after.
+        if (tupleSyncService != null) {
+            for (Long uid : affectedUserIds) {
+                tupleSyncService.refreshFeatureTuples(String.valueOf(uid), true);
+            }
+        }
         authzVersionService.incrementVersion();
     }
 
@@ -195,12 +212,17 @@ public class AccessRoleService {
         return new RoleCloneResponseDto(dto, auditId);
     }
 
+    // AG-028 #1272 (Codex Option B): already @Transactional — the per-user
+    // OpenFGA reconciliation below rolls back with the legacy permission change
+    // on failure.
     @Transactional
     public BulkPermissionsResponseDto bulkUpdateModuleLevel(List<Long> roleIds, String moduleKey, String moduleLabel, String level, Long performedBy) {
         if (roleIds == null || roleIds.isEmpty()) {
             return new BulkPermissionsResponseDto(List.of(), null);
         }
         Set<Long> updated = new LinkedHashSet<>();
+        // Members of the roles we actually change → reconcile their tuples after.
+        Set<Long> affectedUserIds = new LinkedHashSet<>();
 
         for (Long roleId : roleIds) {
             roleRepository.findById(roleId).ifPresent(role -> {
@@ -209,6 +231,8 @@ public class AccessRoleService {
                     role.setUpdatedAt(Instant.now());
                     roleRepository.save(role);
                     updated.add(role.getId());
+                    assignmentRepository.findByRoleAndActiveTrue(role)
+                            .forEach(a -> affectedUserIds.add(a.getUserId()));
                 }
             });
         }
@@ -227,6 +251,19 @@ public class AccessRoleService {
                 )
         );
 
+        // AG-028 #1272: this is a LEGACY permission mutation. Per affected user:
+        // (1) refresh deletes any legacy relation no longer in the complete
+        // desired set (VIEW→NONE, or the old relation on VIEW→MANAGE / MANAGE→VIEW);
+        // (2) writeLegacyTuplesForUser writes the current aggregate legacy desired
+        // (covers add/upgrade, which the granule refresh does not write). Both
+        // fail-loud → in-tx rollback on OpenFGA failure. Single version bump after.
+        if (tupleSyncService != null) {
+            for (Long uid : affectedUserIds) {
+                String u = String.valueOf(uid);
+                tupleSyncService.refreshFeatureTuples(u, true);
+                tupleSyncService.writeLegacyTuplesForUser(u, true);
+            }
+        }
         authzVersionService.incrementVersion();
         String auditId = audit != null && audit.getId() != null ? audit.getId().toString() : null;
         return new BulkPermissionsResponseDto(new ArrayList<>(updated), auditId);

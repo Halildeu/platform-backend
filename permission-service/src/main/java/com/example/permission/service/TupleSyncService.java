@@ -71,59 +71,74 @@ public class TupleSyncService {
     }
 
     public void syncFeatureTuplesForUser(String userId, List<RolePermission> allPermissions, boolean skipVersionIncrement) {
-        Map<String, ResolvedGrant> effective = resolveEffectiveGrants(allPermissions);
         boolean anyWriteFailed = false;
-
-        for (var entry : effective.entrySet()) {
-            String compositeKey = entry.getKey();
-            ResolvedGrant grant = entry.getValue();
-            String[] parts = compositeKey.split(":", 2);
-            PermissionType type = PermissionType.valueOf(parts[0]);
-            String key = parts[1];
-
-            // R16 PR-B-2 (Codex 019e27f5): key-aware mapping. REPORT permission
-            // key'i `reports.<GROUP>` ise object_type = "report_group" + key
-            // suffix; aksi halde legacy "report" type devam.
-            TupleMapping mapping = toTupleMapping(type, key, grant.grantType());
-            if (mapping == null) continue;
-
-            // R16 PR-B-2: report_group için object_id key suffix (FINANCE_REPORTS),
-            // diğerleri için raw key (FIN_ANALYTICS, MODULE_X, vb.).
-            String objectId = "report_group".equals(mapping.objectType())
-                    ? normalizeReportGroupKey(key)
-                    : key;
-
+        for (DesiredTuple t : granuleDesiredTuples(allPermissions)) {
             try {
-                authzService.writeTuple(userId, mapping.relation(), mapping.objectType(), objectId);
-
-                // CNS-20260415-004 Codex bulgu #3: Eskiden DENY icin ikinci "blocked"
-                // tuple yazilirdi. Ancak toTupleMapping(DENY) zaten "blocked" relation
-                // donduruyor (MODULE → "blocked"/"module"; ACTION → "blocked"/"action";
-                // REPORT → "blocked"/"report"). Yukaridaki writeTuple cagrisi zaten
-                // blocked tuple'ini yaziyor → duplicate write. Kaldirildi.
+                authzService.writeTuple(userId, t.relation(), t.objectType(), t.objectId());
             } catch (Exception e) {
                 anyWriteFailed = true;
-                log.warn("OpenFGA tuple write failed for user:{} {}:{} — {}", userId, mapping.relation(), objectId, e.getMessage());
+                log.warn("OpenFGA feature tuple write failed for user:{} {} {}:{} — {}",
+                        userId, t.relation(), t.objectType(), t.objectId(), e.getMessage());
             }
         }
-        // P0 fail-closed: only bump version if ALL OpenFGA writes succeeded
-        if (!skipVersionIncrement && !anyWriteFailed) {
+        // Fail-loud (AG-028 #1272, Codex Option B): a reconciliation that could
+        // not write all granted tuples MUST NOT be reported as success — the
+        // in-tx caller rolls back, or propagateRoleChange's outbox retries.
+        // Idempotent "already exists" writes are swallowed inside writeTuple and
+        // never set anyWriteFailed, so only genuine failures throw here.
+        if (anyWriteFailed) {
+            throw new RuntimeException("OpenFGA feature tuple write failed for user:" + userId);
+        }
+        if (!skipVersionIncrement) {
             authzVersionService.incrementVersion();
             if (scopeContextCache != null) scopeContextCache.evictUser(userId);
-        } else if (anyWriteFailed) {
-            log.warn("Skipping version bump for user:{} — OpenFGA writes had failures", userId);
         }
     }
 
     /**
-     * Delete all feature tuples for a user, then re-sync from current role assignments.
+     * Compute the user's DESIRED granule feature tuples from the deny-wins
+     * effective grants. Single source for both the WRITE path
+     * ({@link #syncFeatureTuplesForUser}) and the spare-set in
+     * {@link #deleteStaleFeatureTuples}, so the two never drift.
+     *
+     * <p>R16 PR-B-2 (Codex 019e27f5): {@code reports.<GROUP>} keys map to the
+     * {@code report_group} type with a normalized object id.
      */
-    @Transactional(readOnly = true)
+    private List<DesiredTuple> granuleDesiredTuples(List<RolePermission> allPermissions) {
+        List<DesiredTuple> out = new ArrayList<>();
+        for (var entry : resolveEffectiveGrants(allPermissions).entrySet()) {
+            String[] parts = entry.getKey().split(":", 2);
+            PermissionType type = PermissionType.valueOf(parts[0]);
+            String key = parts[1];
+            TupleMapping mapping = toTupleMapping(type, key, entry.getValue().grantType());
+            if (mapping == null) continue;
+            String objectId = "report_group".equals(mapping.objectType())
+                    ? normalizeReportGroupKey(key)
+                    : key;
+            out.add(new DesiredTuple(mapping.relation(), mapping.objectType(), objectId));
+        }
+        return out;
+    }
+
+    /**
+     * Reconcile the user's granule feature tuples to their CURRENT active roles
+     * (Codex Option B, AG-028 #1272): delete the OpenFGA tuples this permission
+     * system OWNS that are no longer justified, then (re)write the granule
+     * desired set. The delete spare-set is granule-desired ∪ legacy-desired, so a
+     * mixed legacy+granule user never loses legacy {@code module:*} tuples that
+     * this method does not re-write (legacy positive writes stay owned by the
+     * legacy path / {@link #writeLegacyTuplesForUser}).
+     */
+    @Transactional
     public void refreshFeatureTuples(String userId) {
         refreshFeatureTuples(userId, false);
     }
 
-    @Transactional(readOnly = true)
+    // read-write @Transactional (was readOnly=true): the !skip path bumps
+    // authz_sync_version (an UPDATE), which a read-only tx rejects — the OI-03
+    // Bug 4 (Codex 019da431) trap already fixed on propagateRoleChange.
+    // Self-invocation from propagateRoleChange (skip=true) joins that tx.
+    @Transactional
     public void refreshFeatureTuples(String userId, boolean skipVersionIncrement) {
         Long numericUserId = Long.parseLong(userId);
         List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(numericUserId);
@@ -131,15 +146,62 @@ public class TupleSyncService {
                 .map(a -> a.getRole().getId())
                 .distinct()
                 .toList();
+        List<RolePermission> allPermissions = roleIds.isEmpty()
+                ? List.of()
+                : rolePermissionRepository.findByRoleIdIn(roleIds);
 
-        if (roleIds.isEmpty()) {
-            deleteAllFeatureTuples(userId);
-            return;
+        // B: delete owned stored tuples no longer justified, then (re)write
+        // granule desired. Both fail-loud — a partial failure rolls back the
+        // in-tx caller (revoke/replace/delete) or keeps the role-change outbox
+        // PENDING for retry.
+        deleteStaleFeatureTuples(userId, allPermissions);
+        syncFeatureTuplesForUser(userId, allPermissions, true);
+
+        if (!skipVersionIncrement) {
+            authzVersionService.incrementVersion();
+            if (scopeContextCache != null) scopeContextCache.evictUser(userId);
         }
+    }
 
-        List<RolePermission> allPermissions = rolePermissionRepository.findByRoleIdIn(roleIds);
-        deleteAllFeatureTuples(userId);
-        syncFeatureTuplesForUser(userId, allPermissions, skipVersionIncrement);
+    /**
+     * Write the user's aggregate LEGACY desired module tuples (fail-loud). Used
+     * by legacy permission paths (e.g. {@code PATCH /roles/{id}/permissions/
+     * bulk}) where {@link #refreshFeatureTuples} deletes a stale legacy relation
+     * but does not write the new one (B keeps legacy positive writes out of the
+     * granule refresh). Reuses {@link LegacyPermissionTupleMapper} so the mapping
+     * matches the refresh spare-set and the {@code PermissionService} write path.
+     */
+    @Transactional
+    public void writeLegacyTuplesForUser(String userId, boolean skipVersionIncrement) {
+        Long numericUserId = Long.parseLong(userId);
+        List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(numericUserId);
+        List<Long> roleIds = assignments.stream().map(a -> a.getRole().getId()).distinct().toList();
+        List<RolePermission> allPermissions = roleIds.isEmpty()
+                ? List.of()
+                : rolePermissionRepository.findByRoleIdIn(roleIds);
+
+        boolean anyWriteFailed = false;
+        Set<String> written = new HashSet<>();
+        for (RolePermission rp : allPermissions) {
+            if (rp.getPermission() == null) continue;
+            LegacyPermissionTupleMapper.LegacyTuple t =
+                    LegacyPermissionTupleMapper.toTuple(rp.getPermission().getCode());
+            if (t == null || !written.add(t.canonical())) continue;
+            try {
+                authzService.writeTuple(userId, t.relation(), t.objectType(), t.objectId());
+            } catch (Exception e) {
+                anyWriteFailed = true;
+                log.warn("OpenFGA legacy tuple write failed for user:{} {} {}:{} — {}",
+                        userId, t.relation(), t.objectType(), t.objectId(), e.getMessage());
+            }
+        }
+        if (anyWriteFailed) {
+            throw new RuntimeException("OpenFGA legacy tuple write failed for user:" + userId);
+        }
+        if (!skipVersionIncrement) {
+            authzVersionService.incrementVersion();
+            if (scopeContextCache != null) scopeContextCache.evictUser(userId);
+        }
     }
 
     /**
@@ -160,12 +222,22 @@ public class TupleSyncService {
 
         log.info("Propagating role {} change to {} users", roleId, userIds.size());
 
+        // AG-028 #1272 (Codex Option B): attempt ALL users, but if any user's
+        // reconciliation fails, throw BEFORE the version bump so the fast path
+        // does NOT mark the outbox DONE — RoleChangeEventHandler.onRoleChange
+        // leaves the entry PENDING and the poller retries (idempotent).
+        List<Long> failedUsers = new java.util.ArrayList<>();
         for (Long numericUserId : userIds) {
             try {
                 refreshFeatureTuples(String.valueOf(numericUserId), true);
             } catch (Exception e) {
+                failedUsers.add(numericUserId);
                 log.error("Failed to refresh tuples for user:{} after role:{} change", numericUserId, roleId, e);
             }
+        }
+        if (!failedUsers.isEmpty()) {
+            throw new RuntimeException("Role " + roleId
+                    + " tuple propagation failed for users " + failedUsers + " — outbox will retry");
         }
         authzVersionService.incrementVersion();
         if (scopeContextCache != null) scopeContextCache.evictAll();
@@ -255,81 +327,86 @@ public class TupleSyncService {
     }
 
     /**
-     * Delete known feature tuples for a user before re-sync.
-     * Uses batch deleteTuples for efficiency.
+     * Object types whose tuples are managed by feature-grant sync (module /
+     * action / report / report_group). Scope tuples (company / project /
+     * warehouse / branch) are managed separately by {@link #syncScopeTuples}
+     * and MUST NOT be touched by a feature refresh — so the ground-truth Read is
+     * scoped to exactly these types.
      */
-    private void deleteAllFeatureTuples(String userId) {
-        Long numericUserId = Long.parseLong(userId);
-        List<UserRoleAssignment> assignments = assignmentRepository.findActiveAssignments(numericUserId);
-        List<Long> roleIds = assignments.stream().map(a -> a.getRole().getId()).distinct().toList();
-        if (roleIds.isEmpty()) return;
+    private static final java.util.List<String> FEATURE_OBJECT_TYPES =
+            java.util.List.of("module", "action", "report", "report_group");
 
-        List<RolePermission> allPerms = rolePermissionRepository.findByRoleIdIn(roleIds);
+    /**
+     * Relations this permission system OWNS per feature object type. The
+     * reconcile delete is filtered to these so a future unrelated direct-user
+     * relation on the same object types is never swept (Codex Option B point 2).
+     */
+    private static final Map<String, Set<String>> OWNED_RELATIONS = Map.of(
+            "module", Set.of("can_view", "can_edit", "can_manage", "blocked"),
+            "action", Set.of("allowed", "blocked"),
+            "report", Set.of("can_view", "can_edit", "blocked"),
+            "report_group", Set.of("can_view", "can_edit", "blocked"));
 
-        // 2026-04-18 OI-03 Bug 5 (Codex 019da431): stale-relation cleanup.
-        // Previous code deleted only the CURRENT grant's mapped relation (e.g.
-        // can_view for VIEW grant). On transitions like VIEW→DENY or MANAGE→VIEW
-        // the old relation tuple (can_view / can_manage) would remain in
-        // OpenFGA and surface as a phantom allow. Fix: for every
-        // (permissionType, permissionKey) pair present in the user's active
-        // roles, delete ALL possible relations for that type so the subsequent
-        // write phase re-applies exactly the current grant's mapping. Uses the
-        // already-defined but previously-unused `getRelationsForType` helper.
-        //
-        // Dedupe key: canonical string "userId|relation|objectType:objectId".
-        // SDK model classes (ClientTupleKey / ClientTupleKeyWithoutCondition)
-        // do NOT override equals/hashCode, so LinkedHashSet<ClientTuple*> would
-        // silently leak duplicates (iter-2 REVISE).
-        java.util.LinkedHashMap<String, ClientTupleKeyWithoutCondition> dedupe = new java.util.LinkedHashMap<>();
-        for (RolePermission rp : allPerms) {
-            if (rp.getPermissionType() == null || rp.getPermissionKey() == null) continue;
-            // R16 PR-B-2 (Codex 019e27f5): key-aware cleanup. report_group
-            // tuple'ları normalize edilmiş key (FINANCE_REPORTS) ile yazıldığı
-            // için delete tarafında da aynı normalizasyon uygulanmalı; legacy
-            // report tuple'ları raw key (FIN_ANALYTICS) korur.
-            String objectType = objectTypeForPermissionType(rp.getPermissionType(), rp.getPermissionKey());
-            if (objectType == null) continue;
-            String objectId = "report_group".equals(objectType)
-                    ? normalizeReportGroupKey(rp.getPermissionKey())
-                    : rp.getPermissionKey();
-            for (String relation : getRelationsForType(rp.getPermissionType())) {
-                String canonical = userId + "|" + relation + "|" + objectType + ":" + objectId;
-                dedupe.putIfAbsent(canonical, OpenFgaAuthzService.deleteTupleKey(
-                        userId, relation, objectType, objectId));
-            }
+    /** A desired feature tuple ({@code objectType:objectId#relation}). */
+    private record DesiredTuple(String relation, String objectType, String objectId) {
+        /** Canonical {@code relation|objectType:objectId} identity. */
+        String canonical() {
+            return relation + "|" + objectType + ":" + objectId;
         }
-
-        if (dedupe.isEmpty()) return;
-        var deleteTuples = new ArrayList<>(dedupe.values());
-        try {
-            // 2026-04-18 OI-03 Bug 3 (Codex 019da431): OpenFgaAuthzService.deleteTuples
-            // is now idempotent — "tuple does not exist" errors are swallowed and
-            // per-tuple fallback retries surviving entries.
-            authzService.deleteTuples(deleteTuples);
-            log.debug("OpenFGA batch feature delete: {} tuples for user:{}", deleteTuples.size(), userId);
-        } catch (Exception e) {
-            log.debug("OpenFGA batch feature delete (partial no-op) for user:{} ({} tuples) — {}",
-                    userId, deleteTuples.size(), e.getMessage());
-        }
-    }
-
-    private String objectTypeForPermissionType(PermissionType type) {
-        return objectTypeForPermissionType(type, null);
     }
 
     /**
-     * R16 PR-B-2 (Codex 019e27f5 önerisi) — key-aware mapping.
-     *
-     * <p>{@code PermissionType.REPORT} + key {@code reports.<GROUP>} (or raw
-     * GROUP key) → {@code report_group} OpenFGA type. Aksi halde legacy
-     * {@code report} type. Diğer types değişmez.
+     * Delete the user's stored feature tuples that this system OWNS and that are
+     * NO LONGER justified by their current active roles (Codex Option B, AG-028
+     * #1272). The spare-set is {@code granuleDesired ∪ legacyDesired} compared by
+     * EXACT tuple identity (user+relation+type+id) — so a tuple still granted by
+     * another active role, or a legacy {@code module:*} tuple this method does
+     * not re-write, is preserved. Fail-loud: a genuine {@code deleteTuples}
+     * failure propagates (missing-tuple is idempotent inside deleteTuples) so a
+     * partial cleanup is never reported as success.
      */
-    private String objectTypeForPermissionType(PermissionType type, String key) {
-        return switch (type) {
-            case MODULE -> "module";
-            case ACTION -> "action";
-            case REPORT -> isReportGroupKey(key) ? "report_group" : "report";
-        };
+    private void deleteStaleFeatureTuples(String userId, List<RolePermission> allPermissions) {
+        Set<String> completeDesired = new HashSet<>();
+        for (DesiredTuple t : granuleDesiredTuples(allPermissions)) {
+            completeDesired.add(t.canonical());
+        }
+        completeDesired.addAll(legacyDesiredCanonical(allPermissions));
+
+        List<ClientTupleKeyWithoutCondition> stored = authzService.readUserTuples(userId, FEATURE_OBJECT_TYPES);
+        List<ClientTupleKeyWithoutCondition> toDelete = new ArrayList<>();
+        for (ClientTupleKeyWithoutCondition t : stored) {
+            String object = t.getObject();      // e.g. "module:ACCESS"
+            String relation = t.getRelation();
+            if (object == null || relation == null) continue;
+            int sep = object.indexOf(':');
+            if (sep < 0) continue;
+            String objectType = object.substring(0, sep);
+            Set<String> owned = OWNED_RELATIONS.get(objectType);
+            if (owned == null || !owned.contains(relation)) continue; // never sweep foreign relations
+            if (!completeDesired.contains(relation + "|" + object)) {
+                toDelete.add(t);
+            }
+        }
+        if (toDelete.isEmpty()) return;
+        authzService.deleteTuples(toDelete);
+        log.debug("OpenFGA feature reconcile: deleted {} stale tuples for user:{}", toDelete.size(), userId);
+    }
+
+    /**
+     * The user's LEGACY desired module tuples (canonical identity) from their
+     * active legacy FK permission rows, via {@link LegacyPermissionTupleMapper}.
+     * Used only to SPARE legacy tuples from the reconcile delete — legacy WRITES
+     * stay owned by the legacy path (B).
+     */
+    private Set<String> legacyDesiredCanonical(List<RolePermission> allPermissions) {
+        Set<String> out = new HashSet<>();
+        for (RolePermission rp : allPermissions) {
+            if (rp.getPermission() == null) continue;
+            LegacyPermissionTupleMapper.LegacyTuple t =
+                    LegacyPermissionTupleMapper.toTuple(rp.getPermission().getCode());
+            if (t != null) out.add(t.canonical());
+        }
+        return out;
     }
 
     /**
@@ -355,15 +432,6 @@ public class TupleSyncService {
     public static String normalizeReportGroupKey(String key) {
         if (key == null) return null;
         return key.startsWith(REPORTS_PREFIX) ? key.substring(REPORTS_PREFIX.length()) : key;
-    }
-
-    private List<String> getRelationsForType(PermissionType type) {
-        return switch (type) {
-            case MODULE -> List.of("can_manage", "can_edit", "can_view", "blocked");
-            case ACTION -> List.of("allowed", "blocked");
-            case REPORT -> List.of("can_edit", "can_view", "blocked");
-            // PAGE, FIELD removed in V10 migration (TB-21)
-        };
     }
 
     /**

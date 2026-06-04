@@ -46,6 +46,9 @@ class PermissionServiceTest {
     @Mock
     private com.example.commonauth.openfga.OpenFgaAuthzService authzService;
 
+    @Mock
+    private TupleSyncService tupleSyncService;
+
     private ObjectMapper objectMapper;
 
     private PermissionService permissionService;
@@ -53,7 +56,7 @@ class PermissionServiceTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        permissionService = new PermissionService(assignmentRepository, roleRepository, auditEventService, objectMapper, authzService);
+        permissionService = new PermissionService(assignmentRepository, roleRepository, auditEventService, objectMapper, authzService, tupleSyncService);
     }
 
     @Test
@@ -130,6 +133,24 @@ class PermissionServiceTest {
         request.setRoleId(3L);
         request.setAssignedBy(999L);
         return request;
+    }
+
+    // AG-028 #1272: revokeRole is the central chokepoint that reconciles the
+    // user's feature tuples via TupleSyncService.
+    @Test
+    void revokeRole_reconcilesUserTuples() {
+        Role role = buildRoleWithPermissions(3L, "MANAGER", "VIEW_USERS");
+        UserRoleAssignment assignment = new UserRoleAssignment();
+        assignment.setUserId(9003L);
+        assignment.setRole(role);
+        assignment.setActive(true);
+        when(assignmentRepository.findById(77L)).thenReturn(Optional.of(assignment));
+        when(assignmentRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        permissionService.revokeRole(77L, null);
+
+        // central chokepoint: the granule-aware reconciliation runs in revokeRole
+        verify(tupleSyncService).refreshFeatureTuples("9003");
     }
 
     private Role buildRoleWithPermissions(Long roleId, String name, String... permissionCodes) {
