@@ -16,7 +16,9 @@ import org.springframework.stereotype.Repository;
 public interface EndpointOutdatedSoftwareDiffCacheRepository
         extends JpaRepository<EndpointOutdatedSoftwareDiffCacheRow, UUID> {
 
-    Optional<EndpointOutdatedSoftwareDiffCacheRow> findByTenantIdAndDeviceId(UUID tenantId, UUID deviceId);
+    // Faz 21.1 C2a (Codex 019e919e): cache identity is org-keyed (V35 UNIQUE
+    // (org_id, device_id)). org_id = tenantId canonically.
+    Optional<EndpointOutdatedSoftwareDiffCacheRow> findByOrgIdAndDeviceId(UUID orgId, UUID deviceId);
 
     long countByTenantId(UUID tenantId);
 }

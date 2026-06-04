@@ -39,12 +39,14 @@ import org.springframework.transaction.annotation.Transactional;
  * <h2>Why native ON CONFLICT UPSERT, not JPA save()</h2>
  *
  * <p>v2-c-pre-2 ingest hooks fire from {@code @Transactional} ingest paths
- * that may run concurrently for the same {@code (tenantId, deviceId)} when
+ * that may run concurrently for the same {@code (orgId, deviceId)} when
  * two captures arrive back-to-back. JPA {@code save()} would either
- * (a) INSERT and fail on the {@code swdc_tenant_device_uq} UNIQUE collision
- * or (b) SELECT + UPDATE and race against a parallel INSERT. PostgreSQL's
- * {@code INSERT ... ON CONFLICT DO UPDATE} closes the race in one round-trip
- * atomic at the storage layer — Codex 019e88b5 iter-2 must_fix #2.
+ * (a) INSERT and fail on the {@code swdc_org_id_device_id_key} UNIQUE
+ * collision (Faz 21.1 C2a org-keyed cache identity, V35) or (b) SELECT +
+ * UPDATE and race against a parallel INSERT. PostgreSQL's
+ * {@code INSERT ... ON CONFLICT (org_id, device_id) DO UPDATE} closes the
+ * race in one round-trip atomic at the storage layer — Codex 019e88b5
+ * iter-2 must_fix #2; single org-keyed arbiter per Codex 019e919e.
  *
  * <h2>Identical-payload no-op semantics</h2>
  *
@@ -189,8 +191,7 @@ public class DiffCacheService {
                     :sourceCapturedAt, :sourceCreatedAt, :sourceRowId,
                     :computedAt
                 )
-                ON CONFLICT (tenant_id, device_id) DO UPDATE SET
-                    org_id = EXCLUDED.org_id,
+                ON CONFLICT (org_id, device_id) DO UPDATE SET
                     from_history_id = EXCLUDED.from_history_id,
                     to_history_id = EXCLUDED.to_history_id,
                     status = EXCLUDED.status,
@@ -297,8 +298,7 @@ public class DiffCacheService {
                     :sourceCapturedAt, :sourceCreatedAt, :sourceRowId,
                     :computedAt
                 )
-                ON CONFLICT (tenant_id, device_id) DO UPDATE SET
-                    org_id = EXCLUDED.org_id,
+                ON CONFLICT (org_id, device_id) DO UPDATE SET
                     from_snapshot_id = EXCLUDED.from_snapshot_id,
                     to_snapshot_id = EXCLUDED.to_snapshot_id,
                     status = EXCLUDED.status,

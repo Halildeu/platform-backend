@@ -158,19 +158,22 @@ class DiffCacheConstraintsPostgresIntegrationTest {
     }
 
     @Test
-    void softwareCache_tenantDeviceUnique_rejectsDuplicate() {
+    void softwareCache_orgDeviceUnique_rejectsDuplicate() {
         UUID tenant = UUID.randomUUID();
         UUID device = insertDevice(tenant);
 
         insertSoftwareCache(UUID.randomUUID(), tenant, device,
                 null, null, "NO_HISTORY", 0, 0, 0);
 
-        // Second row with the same (tenant, device) → swdc_tenant_device_uq.
+        // Faz 21.1 C2a (V35): cache identity is org-keyed. The old
+        // swdc_tenant_device_uq was swapped for swdc_org_id_device_id_key
+        // (org_id = tenant_id via the V33 trigger), so a second row with the
+        // same (org_id, device_id) now trips the org-keyed UNIQUE.
         assertThatThrownBy(() -> insertSoftwareCache(
                 UUID.randomUUID(), tenant, device,
                 null, null, "NO_HISTORY", 0, 0, 0))
                 .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("swdc_tenant_device_uq");
+                .hasMessageContaining("swdc_org_id_device_id_key");
     }
 
     @Test

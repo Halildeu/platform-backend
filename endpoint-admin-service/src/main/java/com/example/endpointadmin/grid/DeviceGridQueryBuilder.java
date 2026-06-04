@@ -767,10 +767,17 @@ public class DeviceGridQueryBuilder {
                 // routed through the existing qualified() helper, NOT
                 // hardcoded; the DeviceGridQueryBuilderTest pins this with
                 // a custom-schema instance.
+                // Faz 21.1 C2a (Codex 019e919e): cache identity is org-keyed.
+                // The cache is written org-canonical (org_id = tenantId, non-null,
+                // V35 CHECK), but a LEGACY device row can still carry org_id NULL
+                // (visible via the device effective-org OR-fallback). Join on
+                // org_id = COALESCE(d.org_id, d.tenant_id) so legacy devices still
+                // attach their cache, while cross-org isolation holds (a foreign
+                // org's cache row has a different org_id and never attaches).
                 + " LEFT JOIN " + qualified("endpoint_software_diff_cache") + " sdc"
-                + "   ON sdc.tenant_id = d.tenant_id AND sdc.device_id = d.id"
+                + "   ON sdc.org_id = COALESCE(d.org_id, d.tenant_id) AND sdc.device_id = d.id"
                 + " LEFT JOIN " + qualified("endpoint_outdated_software_diff_cache") + " odc"
-                + "   ON odc.tenant_id = d.tenant_id AND odc.device_id = d.id"
+                + "   ON odc.org_id = COALESCE(d.org_id, d.tenant_id) AND odc.device_id = d.id"
                 // WEB-015 v2-b (schema v4) AG-040 latest startup-exposure
                 // snapshot. Codex 019e87bc iter-1 must_fix #4: V25 boolean
                 // columns are NOT NULL (fail-closed evidence), so the grid
