@@ -86,17 +86,21 @@ class EndpointComplianceStatePostgresIntegrationTest {
                         + "'public.endpoint_software_compliance_policy_items'::regclass "
                         + "AND contype = 'f'",
                 String.class);
-        assertThat(foreignKeys).contains(
-                "fk_endpoint_software_compliance_policy_items_catalog");
+        // V50 (Faz 21.1 C4 step-10) flipped this FK from (catalog_item_id,
+        // tenant_id) to (catalog_item_id, org_id); the migration IT runs the full
+        // chain incl. V50, so the live FK is the org-keyed name (CASCADE preserved),
+        // and the legacy tenant-keyed FK is dropped.
+        assertThat(foreignKeys).contains("compliance_policy_items_catalog_org_fk");
+        assertThat(foreignKeys).doesNotContain("fk_endpoint_software_compliance_policy_items_catalog");
 
         // The composite FK targets two columns. pg_constraint.confkey
         // is the array of column ordinals on the target relation.
         List<Object> confKeys = jdbcTemplate.queryForList(
                 "SELECT confkey FROM pg_catalog.pg_constraint "
-                        + "WHERE conname = 'fk_endpoint_software_compliance_policy_items_catalog'",
+                        + "WHERE conname = 'compliance_policy_items_catalog_org_fk'",
                 Object.class);
         assertThat(confKeys).hasSize(1);
-        // Sanity: column ordinal array length == 2 (id + tenant_id pair).
+        // Sanity: column ordinal array length == 2 (id + org_id pair).
         assertThat(confKeys.get(0).toString()).matches("\\{\\d+,\\d+\\}");
     }
 
@@ -122,8 +126,13 @@ class EndpointComplianceStatePostgresIntegrationTest {
                         + "'public.endpoint_software_catalog_items'::regclass) "
                         + "AND contype = 'u'",
                 String.class);
+        // V50 swapped the compliance_policy_items business unique tenant→org-keyed.
+        // The catalog (id, tenant_id) unique is retained for A6 (V47 added the
+        // (id, org_id) one alongside it).
         assertThat(uniques).contains(
                 "uq_endpoint_software_catalog_items_id_tenant",
+                "uq_endpoint_software_compliance_policy_items_org_catalog");
+        assertThat(uniques).doesNotContain(
                 "uq_endpoint_software_compliance_policy_items_tenant_catalog");
     }
 
@@ -143,9 +152,9 @@ class EndpointComplianceStatePostgresIntegrationTest {
         insertCatalog(tenantA, catalogA, "tenantA.app");
 
         // Attempt to insert a policy row in tenant B that references
-        // the catalog row of tenant A. The composite FK
-        // (catalog_item_id, tenant_id) -> endpoint_software_catalog_items
-        // (id, tenant_id) must reject the INSERT.
+        // the catalog row of tenant A. The composite FK (org_id = tenant_id;
+        // V50 flipped it to (catalog_item_id, org_id) -> catalog(id, org_id))
+        // must reject the INSERT.
         assertThatThrownBy(() -> insertPolicy(tenantB, catalogA))
                 .isInstanceOf(DataAccessException.class);
     }

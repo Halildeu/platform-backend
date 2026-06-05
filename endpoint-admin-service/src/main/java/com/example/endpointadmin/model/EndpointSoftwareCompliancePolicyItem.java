@@ -48,10 +48,14 @@ import java.util.UUID;
  */
 @Entity
 @Table(name = "endpoint_software_compliance_policy_items",
+        // Faz 21.1 C4 V50: business arbiter is org-keyed (single-arbiter swap;
+        // the legacy (tenant_id, catalog_item_id) unique was dropped). org_id is
+        // a mapped field canonicalized to tenant_id in prePersist/preUpdate so the
+        // arbiter holds on the H2 create-drop test path too. Reads tenant-keyed (A5).
         uniqueConstraints = {
                 @UniqueConstraint(
-                        name = "uq_endpoint_software_compliance_policy_items_tenant_catalog",
-                        columnNames = {"tenant_id", "catalog_item_id"})
+                        name = "uq_endpoint_software_compliance_policy_items_org_catalog",
+                        columnNames = {"org_id", "catalog_item_id"})
         },
         indexes = {
                 @Index(name = "idx_endpoint_software_compliance_policy_items_tenant_enabled_mode",
@@ -65,6 +69,17 @@ public class EndpointSoftwareCompliancePolicyItem {
 
     @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
+
+    /**
+     * Faz 21.1 C4 V50 org_id compat field (Option A). Mapped to the V50
+     * {@code org_id} column; nullable in JPA (VALIDATED CHECK is the live
+     * enforcement, SET NOT NULL deferred to A6). Canonicalized to {@code tenantId}
+     * in prePersist/preUpdate so the org-keyed business arbiter
+     * {@code (org_id, catalog_item_id)} holds on the H2 create-drop test path too.
+     * Reads tenant-keyed (A5); {@link #getEffectiveOrgId()} resolves legacy rows.
+     */
+    @Column(name = "org_id")
+    private UUID orgId;
 
     /**
      * Composite-FK link to {@link EndpointSoftwareCatalogItem}:
@@ -121,11 +136,20 @@ public class EndpointSoftwareCompliancePolicyItem {
         if (lastUpdatedAt == null) {
             lastUpdatedAt = now;
         }
+        canonicalizeOrgId();
     }
 
     @PreUpdate
     void preUpdate() {
         lastUpdatedAt = Instant.now();
+        canonicalizeOrgId();
+    }
+
+    /** Faz 21.1 C4 V50 canonical org_id write (mirrors the DB compat trigger): org_id = tenant_id when null. */
+    private void canonicalizeOrgId() {
+        if (orgId == null && tenantId != null) {
+            orgId = tenantId;
+        }
     }
 
     public UUID getId() {
@@ -134,6 +158,20 @@ public class EndpointSoftwareCompliancePolicyItem {
 
     public UUID getTenantId() {
         return tenantId;
+    }
+
+    /** Faz 21.1 C4 V50 org_id accessor (may be null on legacy rows; use {@link #getEffectiveOrgId()}). */
+    public UUID getOrgId() {
+        return orgId;
+    }
+
+    public void setOrgId(UUID orgId) {
+        this.orgId = orgId;
+    }
+
+    /** Faz 21.1 C4 V50 effective-org accessor: orgId fallback to tenantId. */
+    public UUID getEffectiveOrgId() {
+        return orgId != null ? orgId : tenantId;
     }
 
     public void setTenantId(UUID tenantId) {
