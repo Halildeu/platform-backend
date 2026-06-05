@@ -7,6 +7,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
@@ -55,6 +56,17 @@ public class CatalogUninstallSettingsChangeRequest {
 
     @Column(name = "tenant_id", nullable = false)
     private UUID tenantId;
+
+    /**
+     * Faz 21.1 C4 V50 org_id compat field (Option A). Mapped to the V50
+     * {@code org_id} column; nullable in JPA (VALIDATED CHECK is the live
+     * enforcement, SET NOT NULL deferred to A6). Canonicalized to {@code tenantId}
+     * in prePersist (org_id is set once at insert = tenant_id and never changes).
+     * The catalog FK is org-composite (V50); reads tenant-keyed (A5);
+     * {@link #getEffectiveOrgId()} resolves legacy rows.
+     */
+    @Column(name = "org_id")
+    private UUID orgId;
 
     @Column(name = "catalog_item_id", nullable = false)
     private UUID catalogItemId;
@@ -113,6 +125,22 @@ public class CatalogUninstallSettingsChangeRequest {
         if (state == null) {
             state = CatalogUninstallSettingsChangeRequestState.PROPOSED;
         }
+        canonicalizeOrgId();
+    }
+
+    @PreUpdate
+    void preUpdate() {
+        // cuscr is mutable (PROPOSED → APPROVED/APPLIED/REJECTED). org_id is set
+        // once at insert (= tenant_id) and never changes; this keeps it canonical
+        // through state transitions for the org-keyed one-open partial unique (V50).
+        canonicalizeOrgId();
+    }
+
+    /** Faz 21.1 C4 V50 canonical org_id write (mirrors the DB compat trigger): org_id = tenant_id when null. */
+    private void canonicalizeOrgId() {
+        if (orgId == null && tenantId != null) {
+            orgId = tenantId;
+        }
     }
 
     @Override
@@ -132,6 +160,11 @@ public class CatalogUninstallSettingsChangeRequest {
     public void setId(UUID id) { this.id = id; }
     public UUID getTenantId() { return tenantId; }
     public void setTenantId(UUID tenantId) { this.tenantId = tenantId; }
+    /** Faz 21.1 C4 V50 org_id accessor (may be null on legacy rows; use {@link #getEffectiveOrgId()}). */
+    public UUID getOrgId() { return orgId; }
+    public void setOrgId(UUID orgId) { this.orgId = orgId; }
+    /** Faz 21.1 C4 V50 effective-org accessor: orgId fallback to tenantId. */
+    public UUID getEffectiveOrgId() { return orgId != null ? orgId : tenantId; }
     public UUID getCatalogItemId() { return catalogItemId; }
     public void setCatalogItemId(UUID catalogItemId) { this.catalogItemId = catalogItemId; }
     public CatalogUninstallSettingsField getField() { return field; }
