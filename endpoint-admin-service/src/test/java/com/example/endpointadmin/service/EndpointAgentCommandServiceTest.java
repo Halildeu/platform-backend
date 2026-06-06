@@ -19,6 +19,7 @@ import com.example.endpointadmin.testsupport.IsolatedH2DataJpaTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -152,6 +153,29 @@ class EndpointAgentCommandServiceTest {
         commandRepository.saveAndFlush(activeInstallCommand(other, "install-active", 10));
         EndpointCommand waitingInstall = commandRepository.saveAndFlush(
                 installCommand(device, "install-waiting", 20));
+
+        Optional<AgentCommandResponse> response = commandService.claimNext(principal(device));
+
+        assertThat(response).isEmpty();
+        EndpointCommand reloaded = commandRepository.findById(waitingInstall.getId()).orElseThrow();
+        assertThat(reloaded.getStatus()).isEqualTo(CommandStatus.QUEUED);
+        assertThat(reloaded.getLockedBy()).isNull();
+        assertThat(reloaded.getAttemptCount()).isZero();
+    }
+
+    @Test
+    void claimNextClampsInvalidInstallThrottleToOne() {
+        // BE-028 safety invariant: a misconfigured max-concurrent value below
+        // one must not disable the install throttle. The service clamps to one,
+        // so a single active tenant install still blocks a second install claim.
+        ReflectionTestUtils.setField(commandService, "installMaxConcurrent", 0);
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-INSTALL-CLAMP"));
+        EndpointDevice other = device(DeviceStatus.ONLINE, "PC-INSTALL-CLAMP-OTHER");
+        other.setTenantId(device.getTenantId());
+        other = deviceRepository.saveAndFlush(other);
+        commandRepository.saveAndFlush(activeInstallCommand(other, "install-active-clamp", 10));
+        EndpointCommand waitingInstall = commandRepository.saveAndFlush(
+                installCommand(device, "install-waiting-clamp", 20));
 
         Optional<AgentCommandResponse> response = commandService.claimNext(principal(device));
 
