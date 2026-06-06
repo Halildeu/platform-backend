@@ -73,6 +73,10 @@ public class EndpointAdminCommandService {
      *       {@code POST /api/v1/admin/endpoint-devices/{deviceId}/uninstalls}
      *       (AG-028 Phase 1b). The generic path would bypass the propose/approve
      *       maker-checker + capability/provenance gates.</li>
+     *   <li>{@link CommandType#UPDATE_AGENT} — dedicated path:
+     *       signed self-update release surface (AG-029/BE-030). The generic
+     *       path would accept arbitrary caller payload instead of resolving
+     *       release catalog, trust metadata, maker-checker and audit state.</li>
      * </ul>
      *
      * <p>Migrates the prior INSTALL_SOFTWARE 409 to 422 — semantically the
@@ -84,7 +88,8 @@ public class EndpointAdminCommandService {
      */
     private static final Set<CommandType> DEDICATED_PATH_ONLY = EnumSet.of(
             CommandType.INSTALL_SOFTWARE,
-            CommandType.UNINSTALL_SOFTWARE);
+            CommandType.UNINSTALL_SOFTWARE,
+            CommandType.UPDATE_AGENT);
 
     private final EndpointCommandRepository commandRepository;
     private final EndpointCommandResultRepository resultRepository;
@@ -373,6 +378,8 @@ public class EndpointAdminCommandService {
                         "POST /api/v1/admin/endpoint-devices/{deviceId}/installs";
                 case UNINSTALL_SOFTWARE ->
                         "POST /api/v1/admin/endpoint-devices/{deviceId}/uninstalls";
+                case UPDATE_AGENT ->
+                        "(dedicated signed self-update release surface; not the generic command endpoint)";
                 default -> "(its dedicated REST surface)";
             };
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
