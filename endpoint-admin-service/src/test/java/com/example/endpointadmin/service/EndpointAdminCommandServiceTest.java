@@ -250,6 +250,33 @@ class EndpointAdminCommandServiceTest {
     }
 
     @Test
+    void createCommandRejectsUpdateAgentOnGenericEndpoint() {
+        // AG-029: UPDATE_AGENT is a signed self-update command and must not
+        // be accepted with arbitrary caller payload through the generic admin
+        // command surface. The dedicated backend surface will own release
+        // catalog/trust metadata, maker-checker, audit, and DB CHECK migration
+        // once the BE-026..BE-029 migration stack has settled.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(TENANT_ID, "PC-UPDATE"));
+        CreateEndpointCommandRequest request = new CreateEndpointCommandRequest(
+                CommandType.UPDATE_AGENT,
+                "update-agent-generic-001",
+                "should be rejected",
+                Map.of("downloadUrl", "https://example.invalid/agent.exe"),
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+
+        assertThatThrownBy(() -> commandService.createCommand(adminContext(), device.getId(), request))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.UNPROCESSABLE_ENTITY)
+                .hasMessageContaining("UPDATE_AGENT must be created via")
+                .hasMessageContaining("dedicated signed self-update");
+    }
+
+    @Test
     void createCommandRejectsDisabledSensitiveCommandType() {
         EndpointDevice device = deviceRepository.saveAndFlush(device(TENANT_ID, "PC-001"));
         CreateEndpointCommandRequest request = new CreateEndpointCommandRequest(
