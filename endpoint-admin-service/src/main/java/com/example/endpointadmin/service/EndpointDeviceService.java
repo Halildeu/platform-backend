@@ -9,6 +9,7 @@ import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -16,11 +17,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 @Service
 public class EndpointDeviceService {
+
+    private static final Pattern DEVICE_TAG_PATTERN = Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
 
     private final EndpointDeviceRepository repository;
 
@@ -79,6 +83,7 @@ public class EndpointDeviceService {
         return toDto(device);
     }
 
+    @Transactional
     public EndpointDeviceDto updateRolloutAssignment(UUID tenantId, UUID deviceId,
                                                      UpdateDeviceRolloutRequest request) {
         if (request == null) {
@@ -123,7 +128,7 @@ public class EndpointDeviceService {
             if (tag.isEmpty()) {
                 continue;
             }
-            if (!tag.matches("[a-z0-9][a-z0-9._-]{0,63}")) {
+            if (!DEVICE_TAG_PATTERN.matcher(tag).matches()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "Device tags must be lowercase slug values up to 64 characters.");
             }
