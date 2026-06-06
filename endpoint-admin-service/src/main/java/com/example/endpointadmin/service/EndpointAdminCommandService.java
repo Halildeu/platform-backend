@@ -84,7 +84,8 @@ public class EndpointAdminCommandService {
      */
     private static final Set<CommandType> DEDICATED_PATH_ONLY = EnumSet.of(
             CommandType.INSTALL_SOFTWARE,
-            CommandType.UNINSTALL_SOFTWARE);
+            CommandType.UNINSTALL_SOFTWARE,
+            CommandType.UPDATE_AGENT);
 
     private final EndpointCommandRepository commandRepository;
     private final EndpointCommandResultRepository resultRepository;
@@ -373,6 +374,8 @@ public class EndpointAdminCommandService {
                         "POST /api/v1/admin/endpoint-devices/{deviceId}/installs";
                 case UNINSTALL_SOFTWARE ->
                         "POST /api/v1/admin/endpoint-devices/{deviceId}/uninstalls";
+                case UPDATE_AGENT ->
+                        "(dedicated signed self-update release surface; not the generic command endpoint)";
                 default -> "(its dedicated REST surface)";
             };
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
