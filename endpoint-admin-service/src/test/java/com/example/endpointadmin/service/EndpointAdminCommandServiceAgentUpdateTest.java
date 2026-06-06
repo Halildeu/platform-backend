@@ -134,6 +134,7 @@ class EndpointAdminCommandServiceAgentUpdateTest {
                 .containsEntry("claimedSignerThumbprint", "B".repeat(40))
                 .containsEntry("signingTier", "TRUSTED")
                 .containsEntry("maxBytes", 25_000_000L)
+                .containsEntry("requiredDeploymentRing", "PILOT")
                 .containsEntry("reason", "pilot self-update smoke");
         verify(auditService).record(
                 any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
@@ -215,6 +216,30 @@ class EndpointAdminCommandServiceAgentUpdateTest {
 
         assertThat(dto.id()).isEqualTo(COMMAND_ID);
         assertThat(dto.payload()).containsEntry("signingTier", "LAB_ONLY_EVIDENCE");
+        verify(commandRepository, never()).saveAndFlush(any(EndpointCommand.class));
+    }
+
+    @Test
+    void createAgentUpdateRejectsIdempotencyReplayWithDifferentScheduleOrRing() {
+        EndpointDevice device = device();
+        EndpointAgentUpdateRelease release = approvedRelease(AgentUpdateSigningTier.LAB_ONLY_EVIDENCE);
+        EndpointCommand existing = existingUpdateCommand(device, release);
+        when(deviceRepository.findVisibleToOrgAndId(TENANT_ID, DEVICE_ID)).thenReturn(Optional.of(device));
+        when(agentUpdateReleaseRepository.findByTenantIdAndReleaseId(TENANT_ID, "agent-0.2.0"))
+                .thenReturn(Optional.of(release));
+        when(heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(DEVICE_ID))
+                .thenReturn(Optional.of(heartbeat(NOW.minusSeconds(30), Map.of("UPDATE_AGENT", true))));
+        when(commandRepository.findByTenantIdAndIdempotencyKey(TENANT_ID,
+                "admin-update-agent:" + DEVICE_ID + ":" + RELEASE_UUID + ":client-key-1"))
+                .thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.createAgentUpdate(TENANT, DEVICE_ID,
+                new CreateAgentUpdateRequest("agent-0.2.0", "client-key-1",
+                        "pilot self-update smoke", DeploymentRing.PILOT,
+                        NOW.plus(Duration.ofMinutes(10)), NOW.plus(Duration.ofHours(1)))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT)
+                .hasMessageContaining("Idempotency key is already used");
         verify(commandRepository, never()).saveAndFlush(any(EndpointCommand.class));
     }
 

@@ -456,7 +456,8 @@ public class EndpointAdminCommandService {
         Instant visibleAfterAt = resolveInstallVisibleAfterAt(now, request.notBefore());
         validateExpiry(visibleAfterAt, request.expiresAt());
 
-        Map<String, Object> payload = buildAgentUpdatePayload(release, device, reason);
+        Map<String, Object> payload = buildAgentUpdatePayload(release, device, reason,
+                request.requiredDeploymentRing(), request.notBefore(), request.expiresAt());
         String idempotencyKey = resolveAgentUpdateIdempotencyKey(
                 deviceId, release.getId(), request.idempotencyKey());
         var existing = commandRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
@@ -1121,7 +1122,10 @@ public class EndpointAdminCommandService {
 
     private Map<String, Object> buildAgentUpdatePayload(EndpointAgentUpdateRelease release,
                                                         EndpointDevice device,
-                                                        String reason) {
+                                                        String reason,
+                                                        DeploymentRing requiredDeploymentRing,
+                                                        Instant notBefore,
+                                                        Instant expiresAt) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("releaseId", release.getReleaseId());
         payload.put("channel", release.getChannel().name());
@@ -1133,6 +1137,15 @@ public class EndpointAdminCommandService {
         payload.put("signingTier", agentWireSigningTier(release.getSigningTier()));
         payload.put("maxBytes", release.getMaxBytes());
         payload.put("reason", reason);
+        if (requiredDeploymentRing != null) {
+            payload.put("requiredDeploymentRing", requiredDeploymentRing.name());
+        }
+        if (notBefore != null) {
+            payload.put("notBefore", notBefore.toString());
+        }
+        if (expiresAt != null) {
+            payload.put("expiresAt", expiresAt.toString());
+        }
         return payload;
     }
 
