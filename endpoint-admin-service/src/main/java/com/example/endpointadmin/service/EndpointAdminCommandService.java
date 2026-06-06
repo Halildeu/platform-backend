@@ -72,6 +72,10 @@ public class EndpointAdminCommandService {
      *       {@code POST /api/v1/admin/endpoint-devices/{deviceId}/uninstalls}
      *       (AG-028 Phase 1b). The generic path would bypass the propose/approve
      *       maker-checker + capability/provenance gates.</li>
+     *   <li>{@link CommandType#UPDATE_AGENT} — dedicated path:
+     *       signed self-update release surface (AG-029/BE-030). The generic
+     *       path would accept arbitrary caller payload instead of resolving
+     *       release catalog, trust metadata, maker-checker and audit state.</li>
      * </ul>
      *
      * <p>Migrates the prior INSTALL_SOFTWARE 409 to 422 — semantically the
