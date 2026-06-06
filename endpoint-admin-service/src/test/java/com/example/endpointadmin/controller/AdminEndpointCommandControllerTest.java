@@ -23,6 +23,7 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -132,6 +133,26 @@ class AdminEndpointCommandControllerTest {
                 .andExpect(jsonPath("$.approvalStatus").value("APPROVED"));
 
         verify(commandService).approveCommand(eq(context), eq(COMMAND_ID), any());
+    }
+
+    @Test
+    void createAgentUpdateRejectsCallerSuppliedTrustFields() throws Exception {
+        mockMvc.perform(post("/api/v1/admin/endpoint-devices/{deviceId}/agent-updates", DEVICE_ID)
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "releaseId": "agent-0.2.0",
+                                  "idempotencyKey": "ag029-smoke-001",
+                                  "reason": "AG-029 live smoke",
+                                  "binaryUrl": "https://attacker.example.invalid/endpoint-agent.exe",
+                                  "claimedSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                  "claimedSignerThumbprint": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                                  "signingTier": "TRUSTED"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
+
+        verify(commandService, never()).createAgentUpdate(any(), any(), any());
     }
 
     private AdminTenantContext adminContext() {

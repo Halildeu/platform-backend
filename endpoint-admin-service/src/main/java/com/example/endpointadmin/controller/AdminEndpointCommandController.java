@@ -2,13 +2,17 @@ package com.example.endpointadmin.controller;
 
 import com.example.commonauth.openfga.RequireModule;
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
+import com.example.endpointadmin.dto.v1.admin.CreateAgentUpdateRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandDto;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.EndpointAdminAuthz;
 import com.example.endpointadmin.security.TenantContextResolver;
 import com.example.endpointadmin.service.EndpointAdminCommandService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Valid;
+import jakarta.validation.Validator;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -20,19 +24,36 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/admin")
 public class AdminEndpointCommandController {
 
+    private static final Set<String> CREATE_AGENT_UPDATE_ALLOWED_FIELDS = Set.of(
+            "releaseId",
+            "idempotencyKey",
+            "reason",
+            "requiredDeploymentRing",
+            "notBefore",
+            "expiresAt");
+
     private final EndpointAdminCommandService commandService;
     private final TenantContextResolver tenantContextResolver;
+    private final ObjectMapper objectMapper;
+    private final Validator validator;
 
     public AdminEndpointCommandController(EndpointAdminCommandService commandService,
-                                          TenantContextResolver tenantContextResolver) {
+                                          TenantContextResolver tenantContextResolver,
+                                          ObjectMapper objectMapper,
+                                          Validator validator) {
         this.commandService = commandService;
         this.tenantContextResolver = tenantContextResolver;
+        this.objectMapper = objectMapper;
+        this.validator = validator;
     }
 
     @PostMapping("/endpoint-devices/{deviceId}/commands")
@@ -41,6 +62,21 @@ public class AdminEndpointCommandController {
                                             @Valid @RequestBody CreateEndpointCommandRequest request) {
         AdminTenantContext context = tenantContextResolver.resolveRequired();
         return commandService.createCommand(context, deviceId, request);
+    }
+
+    /**
+     * BE-032 — dedicated UPDATE_AGENT dispatch surface. The service resolves
+     * release trust metadata from the approved release catalog; the generic
+     * command endpoint intentionally rejects caller-supplied UPDATE_AGENT
+     * payloads.
+     */
+    @PostMapping("/endpoint-devices/{deviceId}/agent-updates")
+    @RequireModule(value = EndpointAdminAuthz.MODULE, relation = EndpointAdminAuthz.MANAGER)
+    public EndpointCommandDto createAgentUpdate(@PathVariable UUID deviceId,
+                                                @RequestBody Map<String, Object> requestBody) {
+        AdminTenantContext context = tenantContextResolver.resolveRequired();
+        CreateAgentUpdateRequest request = parseCreateAgentUpdateRequest(requestBody);
+        return commandService.createAgentUpdate(context, deviceId, request);
     }
 
     @PostMapping("/endpoint-commands")
@@ -85,5 +121,42 @@ public class AdminEndpointCommandController {
     public EndpointCommandDto getCommand(@PathVariable UUID commandId) {
         AdminTenantContext context = tenantContextResolver.resolveRequired();
         return commandService.getCommand(context, commandId);
+    }
+
+    private CreateAgentUpdateRequest parseCreateAgentUpdateRequest(
+            Map<String, Object> requestBody) {
+        if (requestBody == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Agent update request body is required.");
+        }
+        Set<String> unsupported = requestBody.keySet().stream()
+                .filter(key -> !CREATE_AGENT_UPDATE_ALLOWED_FIELDS.contains(key))
+                .collect(Collectors.toCollection(java.util.TreeSet::new));
+        if (!unsupported.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Agent update request contains unsupported field(s): "
+                            + String.join(", ", unsupported));
+        }
+
+        CreateAgentUpdateRequest request;
+        try {
+            request = objectMapper.convertValue(requestBody,
+                    CreateAgentUpdateRequest.class);
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Agent update request body could not be parsed.", ex);
+        }
+
+        Set<ConstraintViolation<CreateAgentUpdateRequest>> violations =
+                validator.validate(request);
+        if (!violations.isEmpty()) {
+            String message = violations.stream()
+                    .map(violation -> violation.getPropertyPath()
+                            + ": " + violation.getMessage())
+                    .sorted()
+                    .collect(Collectors.joining("; "));
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+        }
+        return request;
     }
 }
