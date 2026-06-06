@@ -2,6 +2,7 @@ package com.example.endpointadmin.controller;
 
 import com.example.commonauth.openfga.RequireModule;
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
+import com.example.endpointadmin.dto.v1.admin.CreateAgentUpdateRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandDto;
 import com.example.endpointadmin.security.AdminTenantContext;
@@ -41,6 +42,20 @@ public class AdminEndpointCommandController {
                                             @Valid @RequestBody CreateEndpointCommandRequest request) {
         AdminTenantContext context = tenantContextResolver.resolveRequired();
         return commandService.createCommand(context, deviceId, request);
+    }
+
+    /**
+     * BE-032 — dedicated UPDATE_AGENT dispatch surface. The service resolves
+     * release trust metadata from the approved release catalog; the generic
+     * command endpoint intentionally rejects caller-supplied UPDATE_AGENT
+     * payloads.
+     */
+    @PostMapping("/endpoint-devices/{deviceId}/agent-updates")
+    @RequireModule(value = EndpointAdminAuthz.MODULE, relation = EndpointAdminAuthz.MANAGER)
+    public EndpointCommandDto createAgentUpdate(@PathVariable UUID deviceId,
+                                                @Valid @RequestBody CreateAgentUpdateRequest request) {
+        AdminTenantContext context = tenantContextResolver.resolveRequired();
+        return commandService.createAgentUpdate(context, deviceId, request);
     }
 
     @PostMapping("/endpoint-commands")

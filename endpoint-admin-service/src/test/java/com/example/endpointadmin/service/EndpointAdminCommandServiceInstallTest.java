@@ -16,10 +16,12 @@ import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.CatalogSilentArgsPolicy;
 import com.example.endpointadmin.model.EndpointSoftwareCatalogItem;
+import com.example.endpointadmin.repository.EndpointAgentUpdateReleaseRepository;
 import com.example.endpointadmin.repository.EndpointCommandApprovalRepository;
 import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointCommandResultRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
+import com.example.endpointadmin.repository.EndpointHeartbeatRepository;
 import com.example.endpointadmin.repository.EndpointSoftwareCatalogItemRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +32,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HashMap;
@@ -91,6 +94,8 @@ class EndpointAdminCommandServiceInstallTest {
     @Mock private EndpointCommandApprovalRepository approvalRepository;
     @Mock private EndpointDeviceRepository deviceRepository;
     @Mock private EndpointSoftwareCatalogItemRepository catalogRepository;
+    @Mock private EndpointAgentUpdateReleaseRepository agentUpdateReleaseRepository;
+    @Mock private EndpointHeartbeatRepository heartbeatRepository;
     @Mock private EndpointInstallPreflightService preflightService;
     @Mock private EndpointAuditService auditService;
 
@@ -101,8 +106,9 @@ class EndpointAdminCommandServiceInstallTest {
         Clock fixed = Clock.fixed(NOW, ZoneOffset.UTC);
         service = new EndpointAdminCommandService(
                 commandRepository, resultRepository, approvalRepository,
-                deviceRepository, catalogRepository, preflightService,
-                auditService, fixed,
+                deviceRepository, catalogRepository, agentUpdateReleaseRepository,
+                heartbeatRepository, preflightService,
+                auditService, fixed, Duration.ofMinutes(5),
                 Set.of(CommandType.COLLECT_INVENTORY));
     }
 

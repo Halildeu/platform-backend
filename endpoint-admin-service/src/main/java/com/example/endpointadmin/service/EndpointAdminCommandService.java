@@ -1,6 +1,7 @@
 package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
+import com.example.endpointadmin.dto.v1.admin.CreateAgentUpdateRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateInstallRequest;
 import com.example.endpointadmin.dto.v1.admin.EndpointCommandDto;
@@ -10,19 +11,25 @@ import com.example.endpointadmin.dto.v1.admin.InstallPreflightResponse.InstallPr
 import com.example.endpointadmin.exception.InstallBlockedException;
 import com.example.endpointadmin.model.ApprovalDecision;
 import com.example.endpointadmin.model.ApprovalStatus;
+import com.example.endpointadmin.model.AgentUpdateReleaseStatus;
+import com.example.endpointadmin.model.AgentUpdateSigningTier;
 import com.example.endpointadmin.model.CommandStatus;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.DeploymentRing;
+import com.example.endpointadmin.model.EndpointAgentUpdateRelease;
 import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointCommandApproval;
 import com.example.endpointadmin.model.EndpointCommandResult;
 import com.example.endpointadmin.model.EndpointDevice;
+import com.example.endpointadmin.model.EndpointHeartbeat;
 import com.example.endpointadmin.model.CatalogSilentArgsPolicy;
 import com.example.endpointadmin.model.EndpointSoftwareCatalogItem;
+import com.example.endpointadmin.repository.EndpointAgentUpdateReleaseRepository;
 import com.example.endpointadmin.repository.EndpointCommandApprovalRepository;
 import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointCommandResultRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
+import com.example.endpointadmin.repository.EndpointHeartbeatRepository;
 import com.example.endpointadmin.repository.EndpointSoftwareCatalogItemRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,6 +41,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -96,9 +104,12 @@ public class EndpointAdminCommandService {
     private final EndpointCommandApprovalRepository approvalRepository;
     private final EndpointDeviceRepository deviceRepository;
     private final EndpointSoftwareCatalogItemRepository catalogRepository;
+    private final EndpointAgentUpdateReleaseRepository agentUpdateReleaseRepository;
+    private final EndpointHeartbeatRepository heartbeatRepository;
     private final EndpointInstallPreflightService preflightService;
     private final EndpointAuditService auditService;
     private final Clock clock;
+    private final Duration updateAgentHeartbeatFreshnessTtl;
 
     /**
      * BE-017 — command types an admin may create. Defaults to
@@ -114,9 +125,13 @@ public class EndpointAdminCommandService {
                                        EndpointCommandApprovalRepository approvalRepository,
                                        EndpointDeviceRepository deviceRepository,
                                        EndpointSoftwareCatalogItemRepository catalogRepository,
+                                       EndpointAgentUpdateReleaseRepository agentUpdateReleaseRepository,
+                                       EndpointHeartbeatRepository heartbeatRepository,
                                        EndpointInstallPreflightService preflightService,
                                        EndpointAuditService auditService,
                                        Clock clock,
+                                       @Value("${endpoint-admin.agent-updates.heartbeat-freshness-ttl:PT5M}")
+                                       Duration updateAgentHeartbeatFreshnessTtl,
                                        @Value("${endpoint-admin.commands.admin-creatable-types:COLLECT_INVENTORY}")
                                        Set<CommandType> adminCreatableTypes) {
         this.commandRepository = commandRepository;
@@ -124,9 +139,13 @@ public class EndpointAdminCommandService {
         this.approvalRepository = approvalRepository;
         this.deviceRepository = deviceRepository;
         this.catalogRepository = catalogRepository;
+        this.agentUpdateReleaseRepository = agentUpdateReleaseRepository;
+        this.heartbeatRepository = heartbeatRepository;
         this.preflightService = preflightService;
         this.auditService = auditService;
         this.clock = clock;
+        this.updateAgentHeartbeatFreshnessTtl = updateAgentHeartbeatFreshnessTtl == null
+                ? Duration.ofMinutes(5) : updateAgentHeartbeatFreshnessTtl;
         this.adminCreatableTypes = (adminCreatableTypes == null || adminCreatableTypes.isEmpty())
                 ? EnumSet.of(CommandType.COLLECT_INVENTORY)
                 : EnumSet.copyOf(adminCreatableTypes);
@@ -391,6 +410,117 @@ public class EndpointAdminCommandService {
     }
 
     // ────────────────────────────────────────────────────────────────
+    // BE-032 — dedicated UPDATE_AGENT creation path
+
+    /**
+     * BE-032 — create an UPDATE_AGENT command from the approved release catalog.
+     *
+     * <p>The caller supplies only releaseId, schedule, reason and idempotency.
+     * Binary URL, hash, signer thumbprint, signing tier, target version and
+     * max-bytes are resolved from an APPROVED+enabled catalog row. The agent
+     * still enforces local host/signer/lab-tier policy; this method prevents the
+     * backend from accepting arbitrary update payloads through either the
+     * generic command endpoint or this dedicated surface.
+     */
+    @Transactional
+    public EndpointCommandDto createAgentUpdate(AdminTenantContext context,
+                                                UUID deviceId,
+                                                CreateAgentUpdateRequest request) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Agent update request is required.");
+        }
+        String releaseId = trimToNull(request.releaseId());
+        if (releaseId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "releaseId is required.");
+        }
+        String reason = trimToNull(request.reason());
+        if (reason == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A reason is required for agent update.");
+        }
+
+        UUID tenantId = context.tenantId();
+        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
+        validateRequiredDeploymentRing(device, request.requiredDeploymentRing());
+        EndpointAgentUpdateRelease release = agentUpdateReleaseRepository
+                .findByTenantIdAndReleaseId(tenantId, releaseId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Agent update release not found."));
+        if (release.getStatus() != AgentUpdateReleaseStatus.APPROVED || !release.isEnabled()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Agent update release must be APPROVED and enabled before dispatch.");
+        }
+
+        Instant now = Instant.now(clock);
+        assertUpdateAgentHeartbeatFreshAndCapable(device, now);
+        Instant visibleAfterAt = resolveInstallVisibleAfterAt(now, request.notBefore());
+        validateExpiry(visibleAfterAt, request.expiresAt());
+
+        Map<String, Object> payload = buildAgentUpdatePayload(release, device, reason);
+        String idempotencyKey = resolveAgentUpdateIdempotencyKey(
+                deviceId, release.getId(), request.idempotencyKey());
+        var existing = commandRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
+        if (existing.isPresent()) {
+            validateIdempotentReplay(existing.get(), deviceId, CommandType.UPDATE_AGENT, payload);
+            return toDto(existing.get());
+        }
+
+        String subject = resolveSubject(context);
+        EndpointCommand command = new EndpointCommand();
+        command.setTenantId(tenantId);
+        command.setDevice(device);
+        command.setCommandType(CommandType.UPDATE_AGENT);
+        command.setIdempotencyKey(idempotencyKey);
+        command.setStatus(CommandStatus.QUEUED);
+        command.setApprovalStatus(ApprovalStatus.NOT_REQUIRED);
+        command.setPayload(payload);
+        command.setPriority(100);
+        command.setAttemptCount(0);
+        command.setMaxAttempts(1);
+        command.setVisibleAfterAt(visibleAfterAt);
+        command.setExpiresAt(request.expiresAt());
+        command.setIssuedBySubject(subject);
+        command.setIssuedAt(now);
+
+        EndpointCommand saved = commandRepository.saveAndFlush(command);
+
+        Map<String, Object> auditMetadata = new LinkedHashMap<>();
+        auditMetadata.put("commandType", saved.getCommandType().name());
+        auditMetadata.put("idempotencyKey", saved.getIdempotencyKey());
+        auditMetadata.put("releaseId", release.getReleaseId());
+        auditMetadata.put("releaseUuid", release.getId().toString());
+        auditMetadata.put("targetVersion", release.getTargetVersion());
+        auditMetadata.put("channel", release.getChannel().name());
+        auditMetadata.put("signingTier", release.getSigningTier().name());
+        auditMetadata.put("releaseRowVersion", release.getVersion());
+        auditMetadata.put("deviceDeploymentRing", device.getDeploymentRing().name());
+        if (request.requiredDeploymentRing() != null) {
+            auditMetadata.put("requiredDeploymentRing", request.requiredDeploymentRing().name());
+        }
+        if (request.notBefore() != null) {
+            auditMetadata.put("notBefore", request.notBefore().toString());
+        }
+        if (request.expiresAt() != null) {
+            auditMetadata.put("expiresAt", request.expiresAt().toString());
+        }
+        auditMetadata.put("reason", reason);
+
+        auditService.record(
+                tenantId,
+                device,
+                saved,
+                "ENDPOINT_AGENT_UPDATE_COMMAND_CREATED",
+                "CREATE_AGENT_UPDATE_COMMAND",
+                subject,
+                idempotencyKey,
+                auditMetadata,
+                null,
+                Map.of("status", saved.getStatus().name(),
+                        "approvalStatus", saved.getApprovalStatus().name()));
+
+        return toDto(saved);
+    }
+
     // BE-021 — dedicated INSTALL_SOFTWARE creation path
 
     /**
@@ -829,6 +959,16 @@ public class EndpointAdminCommandService {
         return "admin-install:" + deviceId + ":" + catalogUuid + ":" + key;
     }
 
+    private String resolveAgentUpdateIdempotencyKey(UUID deviceId, UUID releaseUuid, String requestedKey) {
+        String key = trimToNull(requestedKey);
+        if (key == null) {
+            key = UUID.randomUUID().toString();
+        } else if (key.length() > 31) {
+            key = sha256Prefix(key);
+        }
+        return "admin-update-agent:" + deviceId + ":" + releaseUuid + ":" + key;
+    }
+
     private static String sha256Prefix(String value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -932,6 +1072,75 @@ public class EndpointAdminCommandService {
     private static void applyCollectInventoryOptIns(Map<String, Object> payload) {
         payload.putIfAbsent("includeDeviceHealth", true);
         payload.putIfAbsent("includeOutdatedSoftware", true);
+    }
+
+    private void assertUpdateAgentHeartbeatFreshAndCapable(EndpointDevice device,
+                                                           Instant now) {
+        var latest = heartbeatRepository.findFirstByDevice_IdOrderByReceivedAtDesc(device.getId());
+        Instant receivedAt = latest.map(EndpointHeartbeat::getReceivedAt).orElse(null);
+        boolean fresh = receivedAt != null
+                && Duration.between(receivedAt, now).compareTo(updateAgentHeartbeatFreshnessTtl) <= 0;
+        if (!fresh) {
+            throw new ResponseStatusException(HttpStatus.FAILED_DEPENDENCY,
+                    "Agent heartbeat is stale (receivedAt="
+                            + receivedAt + ", ttl=" + updateAgentHeartbeatFreshnessTtl
+                            + "). Retry after the agent reconnects.");
+        }
+        boolean advertised = latest
+                .map(EndpointHeartbeat::getPayload)
+                .map(payload -> payload.get("capabilities"))
+                .map(node -> containsCapability(node, CommandType.UPDATE_AGENT.name()))
+                .orElse(false);
+        if (!advertised) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Agent does not advertise the '" + CommandType.UPDATE_AGENT.name()
+                            + "' capability on the most recent heartbeat. "
+                            + "Upgrade/configure the agent and retry.");
+        }
+    }
+
+    private boolean containsCapability(Object capabilitiesNode, String requiredCapability) {
+        if (capabilitiesNode == null) {
+            return false;
+        }
+        if (capabilitiesNode instanceof Iterable<?> iterable) {
+            for (Object item : iterable) {
+                if (item != null && requiredCapability.equalsIgnoreCase(
+                        String.valueOf(item).trim())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (capabilitiesNode instanceof Map<?, ?> map) {
+            Object val = map.get(requiredCapability);
+            return val instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(val));
+        }
+        return false;
+    }
+
+    private Map<String, Object> buildAgentUpdatePayload(EndpointAgentUpdateRelease release,
+                                                        EndpointDevice device,
+                                                        String reason) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("releaseId", release.getReleaseId());
+        payload.put("channel", release.getChannel().name());
+        payload.put("ring", device.getDeploymentRing().name());
+        payload.put("targetVersion", release.getTargetVersion());
+        payload.put("binaryUrl", release.getBinaryUrl());
+        payload.put("claimedSha256", release.getSha256());
+        payload.put("claimedSignerThumbprint", release.getSignerThumbprint());
+        payload.put("signingTier", agentWireSigningTier(release.getSigningTier()));
+        payload.put("maxBytes", release.getMaxBytes());
+        payload.put("reason", reason);
+        return payload;
+    }
+
+    private String agentWireSigningTier(AgentUpdateSigningTier tier) {
+        if (tier == AgentUpdateSigningTier.TRUSTED_SIGNED) {
+            return "TRUSTED";
+        }
+        return "LAB_ONLY_EVIDENCE";
     }
 
     private Map<String, Object> createAuditMetadata(EndpointCommand command,
