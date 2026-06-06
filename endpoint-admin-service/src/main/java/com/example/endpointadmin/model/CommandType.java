@@ -18,5 +18,9 @@ public enum CommandType {
     // generic /commands surface MUST reject it (Phase 1b
     // EndpointAdminCommandService.validateCommandType DEDICATED_PATH_ONLY
     // extension).
-    UNINSTALL_SOFTWARE
+    UNINSTALL_SOFTWARE,
+    // AG-029 (Faz 22.5.7) — signed agent self-update. Backend source now
+    // recognizes the command type so generic command creation can reject it
+    // fail-closed until the dedicated release-catalog/trust surface lands.
+    UPDATE_AGENT
 }
