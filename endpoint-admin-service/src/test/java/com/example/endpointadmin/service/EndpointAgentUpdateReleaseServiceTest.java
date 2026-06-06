@@ -83,6 +83,55 @@ class EndpointAgentUpdateReleaseServiceTest {
     }
 
     @Test
+    void createReleaseNormalizesColonSeparatedSha256Thumbprint() {
+        String colonSeparatedSha256Thumbprint = String.join(":",
+                "AA", "AA", "AA", "AA", "AA", "AA", "AA", "AA",
+                "AA", "AA", "AA", "AA", "AA", "AA", "AA", "AA",
+                "AA", "AA", "AA", "AA", "AA", "AA", "AA", "AA",
+                "AA", "AA", "AA", "AA", "AA", "AA", "AA", "AA");
+        AdminAgentUpdateReleaseRequest request =
+                new AdminAgentUpdateReleaseRequest(
+                        "sha256-thumbprint",
+                        AgentUpdateChannel.PILOT,
+                        "0.2.0",
+                        "https://downloads.example.com/endpoint-agent.exe",
+                        null,
+                        SHA256,
+                        null,
+                        colonSeparatedSha256Thumbprint,
+                        AgentUpdateSigningTier.TRUSTED_SIGNED,
+                        25_000_000,
+                        null);
+
+        AdminAgentUpdateReleaseResponse response = releaseService.createRelease(
+                context(TENANT_A, SUBJECT_ALICE),
+                request);
+
+        assertThat(response.signerThumbprint()).isEqualTo("A".repeat(64));
+    }
+
+    @Test
+    void createReleaseRejectsOverlongThumbprintBeforePersistence() {
+        AdminAgentUpdateReleaseRequest bad = new AdminAgentUpdateReleaseRequest(
+                "bad-thumbprint",
+                AgentUpdateChannel.PILOT,
+                "0.2.0",
+                "https://downloads.example.com/endpoint-agent.exe",
+                null,
+                SHA256,
+                null,
+                "A".repeat(65),
+                AgentUpdateSigningTier.TRUSTED_SIGNED,
+                25_000_000,
+                null);
+
+        assertThatThrownBy(() -> releaseService.createRelease(
+                context(TENANT_A, SUBJECT_ALICE), bad))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("signerThumbprint must be a 40 or 64");
+    }
+
+    @Test
     void createReleaseRejectsSignedUrlLikeQueryParameters() {
         AdminAgentUpdateReleaseRequest bad = new AdminAgentUpdateReleaseRequest(
                 "bad-url",
