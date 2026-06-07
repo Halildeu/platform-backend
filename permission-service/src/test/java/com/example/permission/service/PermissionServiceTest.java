@@ -1,6 +1,7 @@
 package com.example.permission.service;
 
 import com.example.permission.dto.PermissionAssignRequest;
+import com.example.permission.dto.PermissionAssignmentUpdateRequest;
 import com.example.permission.dto.PermissionResponse;
 import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
@@ -43,9 +44,9 @@ class PermissionServiceTest {
     @Mock
     private AuditEventService auditEventService;
 
-    @Mock
-    private com.example.commonauth.openfga.OpenFgaAuthzService authzService;
-
+    // #1275 (Codex 019ea233): PermissionService no longer depends on
+    // OpenFgaAuthzService — all OpenFGA tuple sync flows through the fail-loud
+    // aggregate TupleSyncService paths, so there is no direct authz mock here.
     @Mock
     private TupleSyncService tupleSyncService;
 
@@ -56,7 +57,7 @@ class PermissionServiceTest {
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper();
-        permissionService = new PermissionService(assignmentRepository, roleRepository, auditEventService, objectMapper, authzService, tupleSyncService);
+        permissionService = new PermissionService(assignmentRepository, roleRepository, auditEventService, objectMapper, tupleSyncService);
     }
 
     @Test
@@ -98,10 +99,12 @@ class PermissionServiceTest {
         assertThat(savedAssignment.getAssignedBy()).isEqualTo(request.getAssignedBy());
 
         verify(auditEventService).recordEvent(any());
-        // #1274 grant-add correctness: assignRole must refresh the granule spare-set so a
-        // member added after the role's granules exist gets the granule tuples immediately
-        // (the legacy syncTuplesToOpenFga is a no-op for granule rows).
-        verify(tupleSyncService).refreshFeatureTuples(String.valueOf(request.getUserId()));
+        // #1275 (Codex 019ea233): assignRole is a GAIN path — it goes through the shared
+        // fail-loud aggregate reconcile (folds in the #1274 grant-add correctness: a member
+        // added after the role's granules exist gets the feature tuples immediately).
+        verify(tupleSyncService).refreshFeatureAndLegacyTuplesForUser(String.valueOf(request.getUserId()));
+        // and never the removed fail-silent per-role legacy delete path
+        verify(tupleSyncService, never()).refreshFeatureTuples(anyString());
     }
 
     @Test
@@ -153,8 +156,99 @@ class PermissionServiceTest {
 
         permissionService.revokeRole(77L, null);
 
-        // central chokepoint: the granule-aware reconciliation runs in revokeRole
+        // central chokepoint: the granule-aware reconciliation runs in revokeRole.
+        // #1275 (Codex 019ea233): revoke is a pure-REMOVE path — refreshFeatureTuples'
+        // spare-set deletes the stale legacy + granule tuples; NO positive legacy write
+        // and NO GAIN reconcile is performed.
         verify(tupleSyncService).refreshFeatureTuples("9003");
+        verify(tupleSyncService, never()).writeLegacyTuplesForUser(anyString(), anyBoolean());
+        verify(tupleSyncService, never()).refreshFeatureAndLegacyTuplesForUser(anyString());
+    }
+
+    // #1275 (Codex 019ea233): updateAssignment role-swap is ALSO a GAIN path — the
+    // swapped-in role's legacy module:* tuples must be written, which the pre-fix
+    // refreshFeatureTuples-only call never did (it deletes stale legacy but writes no
+    // positive legacy). Verify the swap now routes through the shared GAIN reconcile.
+    @Test
+    void updateAssignment_roleSwap_runsGainReconcile() {
+        PermissionAssignmentUpdateRequest request = new PermissionAssignmentUpdateRequest();
+        request.setUserId(101L);
+        request.setCompanyId(202L);
+        request.setProjectId(303L);
+        request.setWarehouseId(404L);
+        request.setRoleId(3L);            // swap-IN role
+        request.setPerformedBy(999L);
+
+        Role newRole = buildRoleWithPermissions(3L, "MANAGER", "MANAGE_USERS");
+        Role oldRole = buildRoleWithPermissions(5L, "VIEWER", "VIEW_USERS");
+        UserRoleAssignment existing = new UserRoleAssignment();
+        existing.setId(42L);
+        existing.setUserId(101L);
+        existing.setRole(oldRole);
+        existing.setActive(true);
+
+        when(roleRepository.findById(3L)).thenReturn(Optional.of(newRole));
+        when(assignmentRepository.findActiveAssignments(101L, 202L, 303L, 404L))
+                .thenReturn(java.util.List.of(existing));
+        when(assignmentRepository.save(any(UserRoleAssignment.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(auditEventService.recordEvent(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        permissionService.updateAssignment(request);
+
+        // GAIN reconcile writes the swapped-in role's legacy + granule tuples, fail-loud.
+        verify(tupleSyncService).refreshFeatureAndLegacyTuplesForUser("101");
+        verify(tupleSyncService, never()).refreshFeatureTuples(anyString());
+    }
+
+    // #1275 fail-loud (Codex 019ea233): a genuine OpenFGA failure in the GAIN reconcile
+    // must NOT be swallowed (the removed syncTuplesToOpenFga only log.warn'd) — it
+    // propagates so the @Transactional assignRole rolls back rather than committing a DB
+    // assignment with no tuple (the split-state this fix exists to prevent).
+    @Test
+    void assignRole_propagatesOpenFgaFailure() {
+        PermissionAssignRequest request = buildRequest();
+        Role role = buildRoleWithPermissions(3L, "MANAGER", "MANAGE_USERS");
+        when(roleRepository.findById(request.getRoleId())).thenReturn(Optional.of(role));
+        when(assignmentRepository.findActiveAssignment(
+                request.getUserId(),
+                request.getCompanyId(),
+                request.getRoleId(),
+                request.getProjectId(),
+                request.getWarehouseId()
+        )).thenReturn(Optional.empty());
+        when(assignmentRepository.save(any(UserRoleAssignment.class))).thenAnswer(invocation -> {
+            UserRoleAssignment a = invocation.getArgument(0);
+            a.setId(42L);
+            return a;
+        });
+        when(auditEventService.recordEvent(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        doThrow(new RuntimeException("OpenFGA write failed"))
+                .when(tupleSyncService).refreshFeatureAndLegacyTuplesForUser(anyString());
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> permissionService.assignRole(request));
+        assertThat(ex.getMessage()).contains("OpenFGA write failed");
+    }
+
+    // #1275 fail-loud (Codex 019ea233): the revoke REMOVE reconcile is also fail-loud —
+    // a genuine OpenFGA failure propagates so revokeRole rolls back (never a
+    // revoked-assignment-with-live-tuple split state).
+    @Test
+    void revokeRole_propagatesOpenFgaFailure() {
+        Role role = buildRoleWithPermissions(3L, "MANAGER", "VIEW_USERS");
+        UserRoleAssignment assignment = new UserRoleAssignment();
+        assignment.setUserId(9003L);
+        assignment.setRole(role);
+        assignment.setActive(true);
+        when(assignmentRepository.findById(77L)).thenReturn(Optional.of(assignment));
+        when(assignmentRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        doThrow(new RuntimeException("OpenFGA delete failed"))
+                .when(tupleSyncService).refreshFeatureTuples("9003");
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> permissionService.revokeRole(77L, null));
+        assertThat(ex.getMessage()).contains("OpenFGA delete failed");
     }
 
     private Role buildRoleWithPermissions(Long roleId, String name, String... permissionCodes) {
@@ -220,10 +314,11 @@ class PermissionServiceTest {
 
         verify(assignmentRepository).save(any(UserRoleAssignment.class));
         verify(auditEventService).recordEvent(any());
-        // #1274 targeted regression: this is the exact case the bug bit — a granule-only
-        // role, where legacy syncTuplesToOpenFga writes nothing, so assignRole MUST refresh
-        // the granule spare-set or the new member gets no feature tuples until the next event.
-        verify(tupleSyncService).refreshFeatureTuples(String.valueOf(request.getUserId()));
+        // #1274 + #1275 targeted regression: this is the exact case the bug bit — a
+        // granule-only role, where the (now-removed) legacy syncTuplesToOpenFga wrote
+        // nothing, so assignRole MUST run the shared GAIN reconcile or the new member gets
+        // no feature tuples until the next event.
+        verify(tupleSyncService).refreshFeatureAndLegacyTuplesForUser(String.valueOf(request.getUserId()));
     }
 
     private Role buildRoleWithGranules(Long roleId, String name) {
