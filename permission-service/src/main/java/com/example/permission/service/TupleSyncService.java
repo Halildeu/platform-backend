@@ -164,6 +164,35 @@ public class TupleSyncService {
     }
 
     /**
+     * GAIN-reconcile for a user who gained or swapped a role (#1275, Codex
+     * 019ea233): the fail-loud Option-A end-state that replaces
+     * {@code PermissionService.syncTuplesToOpenFga}'s fail-silent per-role legacy
+     * write. Mirrors {@link AccessRoleService#applyBulkPermissions}'s composition
+     * so the three legacy-mutating paths (bulk permissions, assignRole,
+     * updateAssignment) share ONE ordering and ONE version bump:
+     * <ol>
+     *   <li>{@link #refreshFeatureTuples} deletes any owned tuple (granule OR
+     *       legacy {@code module:*}) no longer justified by the user's current
+     *       active roles, then writes the granule desired set;</li>
+     *   <li>{@link #writeLegacyTuplesForUser} writes the aggregate legacy desired
+     *       set — the positive legacy {@code module:*} writes the granule refresh
+     *       deliberately does NOT perform (add/upgrade).</li>
+     * </ol>
+     * Both steps are fail-loud, so a genuine OpenFGA failure rolls back the in-tx
+     * caller (assignRole/updateAssignment). The single version bump + cache evict
+     * run once, AFTER both tuple sets are consistent. Pure-REMOVE paths
+     * (revokeRole) do NOT use this — {@link #refreshFeatureTuples} alone deletes
+     * the stale legacy tuple via its spare-set and needs no positive legacy write.
+     */
+    @Transactional
+    public void refreshFeatureAndLegacyTuplesForUser(String userId) {
+        refreshFeatureTuples(userId, true);
+        writeLegacyTuplesForUser(userId, true);
+        authzVersionService.incrementVersion();
+        if (scopeContextCache != null) scopeContextCache.evictUser(userId);
+    }
+
+    /**
      * Write the user's aggregate LEGACY desired module tuples (fail-loud). Used
      * by legacy permission paths (e.g. {@code PATCH /roles/{id}/permissions/
      * bulk}) where {@link #refreshFeatureTuples} deletes a stale legacy relation

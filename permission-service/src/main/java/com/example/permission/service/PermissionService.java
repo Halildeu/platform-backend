@@ -10,7 +10,6 @@ import com.example.permission.repository.RoleRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.example.commonauth.openfga.OpenFgaAuthzService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -37,7 +36,6 @@ public class PermissionService {
     private final RoleRepository roleRepository;
     private final AuditEventService auditEventService;
     private final ObjectMapper objectMapper;
-    private final OpenFgaAuthzService authzService;
     private final TupleSyncService tupleSyncService;
 
     // Legacy permission-code → OpenFGA module-tuple mapping moved to
@@ -49,48 +47,21 @@ public class PermissionService {
                              RoleRepository roleRepository,
                              AuditEventService auditEventService,
                              ObjectMapper objectMapper,
-                             @org.springframework.lang.Nullable OpenFgaAuthzService authzService,
                              @org.springframework.lang.Nullable TupleSyncService tupleSyncService) {
         this.assignmentRepository = assignmentRepository;
         this.roleRepository = roleRepository;
         this.auditEventService = auditEventService;
         this.objectMapper = objectMapper;
-        this.authzService = authzService;
         this.tupleSyncService = tupleSyncService;
     }
 
-    /**
-     * Sync role permissions to OpenFGA tuples for a user (LEGACY PATH).
-     *
-     * CNS-20260416-001 B3 fix: Granule-only roles (created via
-     * AccessControllerV1.updateRoleGranules) populate type/key/grant but leave
-     * the legacy {@code permission} relation NULL. This legacy sync path is
-     * kept for backward-compat with permission-registry roles; granule-aware
-     * sync is handled separately by
-     * {@link com.example.permission.service.TupleSyncService#syncFeatureTuplesForUser}.
-     * Without this null guard, assigning canary/granule-only roles triggers
-     * NPE at {@code rp.getPermission().getCode()}.
-     */
-    private void syncTuplesToOpenFga(Long userId, Role role, boolean write) {
-        if (role.getRolePermissions() == null) return;
-        for (var rp : role.getRolePermissions()) {
-            // Granule-only rolePermission: permission entity null, tuple sync TupleSyncService tarafından yapılır
-            if (rp.getPermission() == null) continue;
-            LegacyPermissionTupleMapper.LegacyTuple t =
-                    LegacyPermissionTupleMapper.toTuple(rp.getPermission().getCode());
-            if (t == null) continue;
-            try {
-                if (write) {
-                    authzService.writeTuple(String.valueOf(userId), t.relation(), t.objectType(), t.objectId());
-                } else {
-                    authzService.deleteTuple(String.valueOf(userId), t.relation(), t.objectType(), t.objectId());
-                }
-            } catch (Exception e) {
-                log.warn("OpenFGA legacy tuple sync failed for user:{} {} {}:{} — {}",
-                        userId, t.relation(), t.objectType(), t.objectId(), e.getMessage());
-            }
-        }
-    }
+    // #1275 (Codex 019ea233): the fail-silent per-role legacy WRITE/DELETE path
+    // syncTuplesToOpenFga(userId, role, write) is GONE. It swallowed genuine
+    // OpenFGA write/delete failures (log.warn only) so the DB tx committed with no
+    // tuple (split state), and its per-role delete had no spare-set (multi-role
+    // over-delete). All legacy module:* tuple sync now flows through the fail-loud
+    // aggregate TupleSyncService paths (refreshFeatureAndLegacyTuplesForUser /
+    // refreshFeatureTuples), so PermissionService no longer touches OpenFgaAuthzService directly.
 
     @Transactional(readOnly = true)
     public boolean hasPermission(Long userId,
@@ -167,16 +138,15 @@ public class PermissionService {
         );
         PermissionAuditEvent savedEvent = auditEventService.recordEvent(auditEvent);
 
-        // Sync to OpenFGA — write module tuples for user
-        syncTuplesToOpenFga(request.getUserId(), role, true);
-        // #1274 grant-add correctness (Codex 019e93bc): the legacy syncTuplesToOpenFga
-        // above is a no-op for granule rolePermission rows, so a member added AFTER the
-        // role's granules already exist would NOT receive the granule feature tuples until
-        // the next RoleChangeEvent. Refresh the granule spare-set now — the same fail-loud
-        // granule path updateAssignment/revoke already use. Missing access, not retained,
-        // so this only tightens correctness (no security regression).
+        // OpenFGA GAIN-reconcile (#1275 Option A, Codex 019ea233): a new active role.
+        // refreshFeatureAndLegacyTuplesForUser writes the AGGREGATE legacy desired set
+        // (the new role's module:* tuples, which the granule refresh does not write) AND
+        // the granule desired set, both fail-loud, single version bump. This folds in
+        // #1274 grant-add correctness (Codex 019e93bc): a member added AFTER the role's
+        // granules exist gets the granule feature tuples immediately, instead of waiting
+        // for the next RoleChangeEvent. Replaces the removed fail-silent syncTuplesToOpenFga.
         if (tupleSyncService != null) {
-            tupleSyncService.refreshFeatureTuples(String.valueOf(request.getUserId()));
+            tupleSyncService.refreshFeatureAndLegacyTuplesForUser(String.valueOf(request.getUserId()));
         }
 
         PermissionResponse response = toResponse(savedAssignment);
@@ -276,12 +246,15 @@ public class PermissionService {
             response.setAuditId(auditIdForResponse);
         }
 
-        // AG-028 #1272 (Codex Option B): reconcile the user's feature tuples
-        // after the role change / duplicate-assignment cleanup (in-tx, fail-loud)
-        // so de-assigned roles' stale granule tuples are deleted and the new
-        // role's granule tuples are written.
+        // OpenFGA GAIN-reconcile (#1275 Option A, Codex 019ea233): a role SWAP is a
+        // GAIN path too — the swapped-in role may carry legacy FK permissions whose
+        // module:* tuples the granule refresh does NOT write. The shared GAIN reconcile
+        // writes the swapped-in role's legacy + granule tuples and deletes the
+        // swapped-out role's stale tuples (spare-set), in-tx + fail-loud. Closes the
+        // pre-fix gap where updateAssignment wrote granule but never the new legacy
+        // module:* tuple (previously this called only refreshFeatureTuples).
         if (tupleSyncService != null) {
-            tupleSyncService.refreshFeatureTuples(String.valueOf(request.getUserId()));
+            tupleSyncService.refreshFeatureAndLegacyTuplesForUser(String.valueOf(request.getUserId()));
         }
         return response;
     }
@@ -314,19 +287,18 @@ public class PermissionService {
                 beforeSnapshot,
                 snapshotAssignment(revokedAssignment)
         );
-        // Sync to OpenFGA — delete legacy module tuples for user
-        syncTuplesToOpenFga(assignment.getUserId(), assignment.getRole(), false);
-
         PermissionAuditEvent saved = auditEventService.recordEvent(auditEvent);
 
-        // AG-028 #1272 (Codex Option B): granule-aware OpenFGA reconciliation.
-        // syncTuplesToOpenFga above is a no-op for granule rows; reconcile the
-        // user's feature tuples from their REMAINING active roles so a revoked
-        // granule grant's tuple is deleted. In-tx + fail-loud → an FGA failure
-        // rolls back this revoke so a retry re-attempts atomically (never a
-        // revoked-assignment-with-live-tuple split state). Central chokepoint
-        // shared by DELETE /roles/{id}/members/{id} and DELETE
-        // /permissions/assignments/{id}.
+        // OpenFGA REMOVE-reconcile (#1275 Option A, Codex 019ea233): a pure-removal
+        // path. The fail-silent per-role legacy delete (syncTuplesToOpenFga ...,false)
+        // is GONE — refreshFeatureTuples reconciles from the user's REMAINING active
+        // roles so the revoked role's stale tuples (granule AND legacy module:*) are
+        // deleted via the spare-set, while a tuple still justified by another active
+        // role is PRESERVED (fixes the latent multi-role over-delete the old per-role
+        // delete had). No positive legacy write is needed on removal. In-tx + fail-loud
+        // → an FGA failure rolls back this revoke so a retry re-attempts atomically
+        // (never a revoked-assignment-with-live-tuple split state). Central chokepoint
+        // shared by DELETE /roles/{id}/members/{id} and DELETE /permissions/assignments/{id}.
         if (tupleSyncService != null) {
             tupleSyncService.refreshFeatureTuples(String.valueOf(assignment.getUserId()));
         }
