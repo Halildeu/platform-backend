@@ -329,15 +329,40 @@ class UserServiceTest {
      * so a deleted-but-enabled account cannot be read or used to authenticate.
      */
     @Test
-    void findByEmail_isActiveOnly_usesActiveRepoMethod() {
+    void findByEmail_isActiveOnlyIgnoreCase() {
         User active = new User();
         active.setId(3L);
         active.setEmail("live@example.com");
-        when(userRepository.findActiveByEmail("live@example.com")).thenReturn(java.util.Optional.of(active));
+        // Mixed-case lookup must resolve the canonical lowercase row (Codex
+        // 019ea6f6 iter-2) and never use the raw/exact repo methods.
+        when(userRepository.findActiveByEmailIgnoreCase("Live@Example.com"))
+                .thenReturn(java.util.Optional.of(active));
 
-        assertTrue(userService.findByEmail("live@example.com").isPresent());
-        verify(userRepository).findActiveByEmail("live@example.com");
-        verify(userRepository, never()).findByEmail("live@example.com");
+        assertTrue(userService.findByEmail("Live@Example.com").isPresent());
+        verify(userRepository).findActiveByEmailIgnoreCase("Live@Example.com");
+        verify(userRepository, never()).findByEmail(any());
+        verify(userRepository, never()).findActiveByEmail(any());
+    }
+
+    /**
+     * Codex 019ea6f6 iter-2: create paths store the canonical lowercase email
+     * so the ignore-case active lookup (and thus local login) resolves
+     * consistently — no mixed-case authn regression.
+     */
+    @Test
+    void registerUserPublic_canonicalizesEmailToLowercase() {
+        RegisterRequest req = new RegisterRequest();
+        req.setName("Mixed Case");
+        req.setEmail("Mixed@Case.COM");
+        req.setPassword("pw123456");
+        when(userRepository.findByEmailIgnoreCase("mixed@case.com")).thenReturn(java.util.Optional.empty());
+        when(passwordEncoder.encode("pw123456")).thenReturn("hashed");
+        ArgumentCaptor<User> saved = ArgumentCaptor.forClass(User.class);
+        when(userRepository.save(saved.capture())).thenAnswer(inv -> inv.getArgument(0));
+
+        userService.registerUserPublic(req);
+
+        assertEquals("mixed@case.com", saved.getValue().getEmail());
     }
 
     /**

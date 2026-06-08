@@ -964,6 +964,34 @@ class UserControllerV1Test {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * Codex 019ea6f6 iter-2 regression guard: create/provision stores canonical
+     * lowercase email; the active by-email lookup is ignore-case, so a
+     * mixed-case query resolves the row (no authn/read regression). After
+     * soft-delete the same mixed-case lookup is 404 (active-only).
+     */
+    @Test
+    void getUserByEmail_mixedCaseLookup_resolvesActiveThenTombstone404() throws Exception {
+        User caller = ensureUserExists("mixedcase-admin@example.com");
+        User target = ensureUserExists("mixedlogin@example.com"); // stored lowercase
+        String token = issueToken(caller.getEmail());
+
+        mockMvc.perform(get("/api/v1/users/by-email")
+                        .param("email", "MixedLogin@Example.COM")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("mixedlogin@example.com")));
+
+        mockMvc.perform(delete("/api/v1/users/{id}", target.getId())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/users/by-email")
+                        .param("email", "MixedLogin@Example.COM")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isNotFound());
+    }
+
     @Test
     void restoreUser_notDeleted_returns409() throws Exception {
         User admin = ensureUserExists("restore-noop-admin@example.com");

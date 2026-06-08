@@ -661,9 +661,15 @@ public class UserService implements UserDetailsService { // UserDetailsService a
      * used to authenticate (defends the deleted-but-enabled local-login path).
      * Identity resolution and restore use tombstone-aware repository methods
      * directly, not this service method.
+     *
+     * <p>Ignore-case (Codex 019ea6f6 iter-2): create/provision paths now store
+     * the canonical lowercase email, so this lookup must be case-insensitive —
+     * otherwise a mixed-case local login ({@code User@X}) would 404 against the
+     * canonical {@code user@x} row (an authn regression). The repository
+     * {@code findActiveByEmailIgnoreCase} keeps it active-only AND case-folded.
      */
     public Optional<User> findByEmail(String email) {
-        return userRepository.findActiveByEmail(email);
+        return userRepository.findActiveByEmailIgnoreCase(email);
     }
 
     @Transactional
@@ -1603,9 +1609,11 @@ public class UserService implements UserDetailsService { // UserDetailsService a
      */
     @Override
     public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
-        // Active-only (Codex 019ea573, #770 Phase 2): a soft-deleted account
-        // cannot authenticate via local username/password login.
-        return userRepository.findActiveByEmail(email)
+        // Active-only + ignore-case (Codex 019ea573 + 019ea6f6 iter-2): a
+        // soft-deleted account cannot authenticate via local login, and the
+        // lookup is case-insensitive so a mixed-case username still matches the
+        // canonical lowercase row (consistent with write-time canonicalization).
+        return userRepository.findActiveByEmailIgnoreCase(email)
                 .orElseThrow(() -> new UsernameNotFoundException("Kullanıcı bulunamadı: " + email));
     }
 }
