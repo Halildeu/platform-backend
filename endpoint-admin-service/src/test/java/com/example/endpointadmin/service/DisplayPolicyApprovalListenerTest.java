@@ -2,13 +2,18 @@ package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.event.CommandApprovalDecidedEvent;
 import com.example.endpointadmin.model.ApprovalDecision;
+import com.example.endpointadmin.model.ApprovalStatus;
+import com.example.endpointadmin.model.CommandStatus;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.DisplayPolicyOperation;
+import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointDisplayPolicy;
 import com.example.endpointadmin.model.EndpointDisplayPolicyRevision;
 import com.example.endpointadmin.model.WallpaperStyle;
+import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointDisplayPolicyRepository;
 import com.example.endpointadmin.repository.EndpointDisplayPolicyRevisionRepository;
+import org.springframework.web.server.ResponseStatusException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -46,6 +51,7 @@ class DisplayPolicyApprovalListenerTest {
     private static final UUID TENANT = UUID.randomUUID();
     private static final UUID DEVICE_ID = UUID.randomUUID();
     private static final UUID COMMAND_ID = UUID.randomUUID();
+    private static final UUID PRIOR_CMD = UUID.randomUUID();
     private static final UUID REVISION_ID = UUID.randomUUID();
     private static final Instant NOW = Instant.parse("2026-06-09T10:00:00Z");
     private static final String APPROVER = "bob@example.com";
@@ -53,15 +59,21 @@ class DisplayPolicyApprovalListenerTest {
 
     @Mock private EndpointDisplayPolicyRevisionRepository revisionRepository;
     @Mock private EndpointDisplayPolicyRepository policyRepository;
+    @Mock private EndpointCommandRepository commandRepository;
+    @Mock private EndpointAuditService auditService;
 
     private DisplayPolicyApprovalListener listener;
 
     @BeforeEach
     void setUp() {
         listener = new DisplayPolicyApprovalListener(
-                revisionRepository, policyRepository, Clock.fixed(NOW, ZoneOffset.UTC));
+                revisionRepository, policyRepository, commandRepository, auditService,
+                Clock.fixed(NOW, ZoneOffset.UTC));
         when(policyRepository.findByTenantIdAndDeviceId(TENANT, DEVICE_ID)).thenReturn(Optional.empty());
         when(policyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        // No prior approved display-policy command by default (no supersede).
+        when(commandRepository.findActiveDisplayPolicyCommandIdsForDevice(DEVICE_ID, COMMAND_ID))
+                .thenReturn(List.of());
     }
 
     @Test
@@ -146,6 +158,58 @@ class DisplayPolicyApprovalListenerTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("expected exactly 1 revision");
         verify(policyRepository, never()).save(any());
+    }
+
+    @Test
+    void approve_supersedesPriorApprovedQueuedCommand() {
+        when(revisionRepository.findByTenantIdAndCommandId(TENANT, COMMAND_ID))
+                .thenReturn(List.of(enforceRevision()));
+        // A prior APPROVED + QUEUED display-policy command exists for the device.
+        when(commandRepository.findActiveDisplayPolicyCommandIdsForDevice(DEVICE_ID, COMMAND_ID))
+                .thenReturn(List.of(PRIOR_CMD));
+        EndpointCommand prior = priorCommand(CommandStatus.QUEUED);
+        when(commandRepository.findByIdAndDeviceIdForUpdate(PRIOR_CMD, DEVICE_ID))
+                .thenReturn(Optional.of(prior));
+
+        listener.onCommandApprovalDecided(approve());
+
+        // the stale approved-queued command is cancelled, and current is promoted
+        ArgumentCaptor<EndpointCommand> cap = ArgumentCaptor.forClass(EndpointCommand.class);
+        verify(commandRepository, times(1)).save(cap.capture());
+        assertThat(cap.getValue().getStatus()).isEqualTo(CommandStatus.CANCELLED);
+        verify(policyRepository, times(1)).save(any());
+    }
+
+    @Test
+    void approve_priorApprovedInFlight_throws409AndDoesNotPromote() {
+        when(revisionRepository.findByTenantIdAndCommandId(TENANT, COMMAND_ID))
+                .thenReturn(List.of(enforceRevision()));
+        when(commandRepository.findActiveDisplayPolicyCommandIdsForDevice(DEVICE_ID, COMMAND_ID))
+                .thenReturn(List.of(PRIOR_CMD));
+        when(commandRepository.findByIdAndDeviceIdForUpdate(PRIOR_CMD, DEVICE_ID))
+                .thenReturn(Optional.of(priorCommand(CommandStatus.DELIVERED))); // in-flight
+
+        assertThatThrownBy(() -> listener.onCommandApprovalDecided(approve()))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("being applied");
+        verify(commandRepository, never()).save(any()); // in-flight NOT cancelled
+        verify(policyRepository, never()).save(any());   // current NOT promoted → approval rolls back
+    }
+
+    private static EndpointCommand priorCommand(CommandStatus status) {
+        EndpointCommand c = new EndpointCommand();
+        c.setCommandType(CommandType.SET_DISPLAY_POLICY);
+        c.setApprovalStatus(ApprovalStatus.APPROVED);
+        c.setStatus(status);
+        c.setIdempotencyKey("display-policy:" + PRIOR_CMD);
+        try {
+            java.lang.reflect.Field f = EndpointCommand.class.getDeclaredField("id");
+            f.setAccessible(true);
+            f.set(c, PRIOR_CMD);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
+        return c;
     }
 
     private static CommandApprovalDecidedEvent approve() {

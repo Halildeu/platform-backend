@@ -2,25 +2,34 @@ package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.event.CommandApprovalDecidedEvent;
 import com.example.endpointadmin.model.ApprovalDecision;
+import com.example.endpointadmin.model.ApprovalStatus;
+import com.example.endpointadmin.model.CommandStatus;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.DisplayPolicyOperation;
+import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointDisplayPolicy;
 import com.example.endpointadmin.model.EndpointDisplayPolicyRevision;
+import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointDisplayPolicyRepository;
 import com.example.endpointadmin.repository.EndpointDisplayPolicyRevisionRepository;
 import org.springframework.context.event.EventListener;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * #508 slice-2b — promotes a SET_DISPLAY_POLICY revision to the current
  * desired-state row when (and only when) a second admin APPROVES the backing
- * maker-checker command (Codex 019ea911 RED-fix).
+ * maker-checker command (Codex 019ea911 RED-fix), and enforces per-device
+ * single-flight at that approval (Codex 019ea92f).
  *
  * <p><b>Why a listener, not a PUT-time write:</b> the dual-control approve
  * surface ({@code EndpointAdminCommandService.approveCommand}) is generic and
@@ -30,39 +39,51 @@ import java.util.List;
  * Instead PUT/DELETE write only a revision + a PENDING command; this listener
  * reacts to the approval decision:
  * <ul>
- *   <li><b>APPROVE</b> → upsert the current row from the backing REVISION (never
- *       from the command payload), flipping ENFORCE ⇄ CLEAR in place.</li>
- *   <li><b>REJECT</b> → no-op; the proposal dies, current stays unchanged.</li>
+ *   <li><b>APPROVE</b> → (1) supersede any prior approved-but-undispatched
+ *       display-policy command for the device so the agent never has two
+ *       non-terminal commands to order, then (2) upsert the current row from the
+ *       backing REVISION, flipping ENFORCE ⇄ CLEAR in place.</li>
+ *   <li><b>REJECT</b> → no-op; the proposal dies, current stays unchanged, and
+ *       a previously-approved command keeps its delivery (a rejected proposal
+ *       must NOT suppress the currently-approved desired state).</li>
  * </ul>
  *
- * <p><b>Transaction contract (Codex must-fix #3):</b> {@code @EventListener} is
- * synchronous (no async multicaster configured) and
- * {@code @Transactional(MANDATORY)} forces it to run inside the approve
- * transaction — so a thrown exception here rolls the approval back atomically.
- * It never uses {@code @TransactionalEventListener(AFTER_COMMIT)} (which cannot
- * roll back).
+ * <p><b>Single-flight (Codex 019ea92f):</b> supersede happens at APPROVAL time,
+ * not at propose time — a still-PENDING/rejectable proposal must never cancel
+ * the delivery of the currently-approved policy. At approval we cancel a prior
+ * APPROVED+QUEUED command under a row lock; if a prior approved command is
+ * already in-flight (DELIVERED/ACKED/RUNNING) we throw, which rolls back THIS
+ * approval (the checker retries once the in-flight command terminalizes — a
+ * bounded wait, not an offline dead-lock).
  *
- * <p><b>No device lock (Codex must-fix #2):</b> the listener takes NO
- * pessimistic lock. The one-open-proposal-per-device invariant (enforced at PUT
- * under the device write-lock) guarantees ≤1 PENDING SET_DISPLAY_POLICY command
- * per device ⇒ ≤1 concurrent approve per device ⇒ no current-row race; the
- * {@code @Version} optimistic lock is the belt-and-suspenders. Acquiring a
- * device lock here would invert the approve path's command→device order versus
- * PUT's device→command order and risk a deadlock.
+ * <p><b>Transaction contract (Codex must-fix #3):</b> {@code @EventListener} is
+ * synchronous and {@code @Transactional(MANDATORY)} forces it into the approve
+ * transaction, so any throw here rolls the approval back atomically. It never
+ * uses {@code @TransactionalEventListener(AFTER_COMMIT)} (which cannot roll
+ * back).
  */
 @Component
 public class DisplayPolicyApprovalListener {
 
+    static final String EVENT_SUPERSEDED = "ENDPOINT_DISPLAY_POLICY_COMMAND_SUPERSEDED";
+    private static final String ACTION_SUPERSEDE = "SUPERSEDE_ENDPOINT_DISPLAY_POLICY_COMMAND";
+
     private final EndpointDisplayPolicyRevisionRepository revisionRepository;
     private final EndpointDisplayPolicyRepository policyRepository;
+    private final EndpointCommandRepository commandRepository;
+    private final EndpointAuditService auditService;
     private final Clock clock;
 
     public DisplayPolicyApprovalListener(
             EndpointDisplayPolicyRevisionRepository revisionRepository,
             EndpointDisplayPolicyRepository policyRepository,
+            EndpointCommandRepository commandRepository,
+            EndpointAuditService auditService,
             Clock clock) {
         this.revisionRepository = revisionRepository;
         this.policyRepository = policyRepository;
+        this.commandRepository = commandRepository;
+        this.auditService = auditService;
         this.clock = clock;
     }
 
@@ -74,7 +95,7 @@ public class DisplayPolicyApprovalListener {
         }
         if (event.decision() != ApprovalDecision.APPROVE) {
             // REJECT (or any non-approve): the proposal is dead; current truth
-            // is left untouched so a rejected policy never takes effect.
+            // is left untouched and a previously-approved command keeps delivery.
             return;
         }
 
@@ -89,13 +110,56 @@ public class DisplayPolicyApprovalListener {
                             + event.commandId() + " but found " + revisions.size() + ".");
         }
         EndpointDisplayPolicyRevision revision = revisions.get(0);
+        Instant now = Instant.now(clock);
 
+        // Per-device single-flight: supersede any OTHER approved-queued
+        // display-policy command (or 409 if one is mid-apply) BEFORE promoting,
+        // so a throw rolls back this whole approval.
+        supersedePriorApprovedCommands(event.tenantId(), revision.getDeviceId(),
+                event.commandId(), now, event.decidedBySubject());
+
+        promoteCurrent(event, revision, now);
+    }
+
+    private void supersedePriorApprovedCommands(UUID tenantId, UUID deviceId,
+                                                UUID approvedCommandId, Instant now, String subject) {
+        for (UUID otherId :
+                commandRepository.findActiveDisplayPolicyCommandIdsForDevice(deviceId, approvedCommandId)) {
+            EndpointCommand other =
+                    commandRepository.findByIdAndDeviceIdForUpdate(otherId, deviceId).orElse(null);
+            if (other == null || other.getApprovalStatus() != ApprovalStatus.APPROVED) {
+                // A still-PENDING separate proposal (not deliverable) or an
+                // already-resolved row — leave it; only enacted (APPROVED)
+                // commands threaten ordering.
+                continue;
+            }
+            if (other.getStatus() == CommandStatus.QUEUED) {
+                other.setStatus(CommandStatus.CANCELLED);
+                other.setCancelledAt(now);
+                commandRepository.save(other);
+                auditService.record(tenantId, null, other, EVENT_SUPERSEDED, ACTION_SUPERSEDE, subject,
+                        other.getIdempotencyKey(),
+                        Map.of("supersededCommandId", other.getId().toString(),
+                                "supersededByCommandId", approvedCommandId.toString()),
+                        null, null);
+            } else {
+                // APPROVED + in-flight (DELIVERED/ACKED/RUNNING): cannot supersede
+                // a command the agent is applying. Roll back this approval; the
+                // checker retries once it terminalizes (bounded by the claim lease).
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "An older display-policy command is currently being applied on this device; "
+                                + "retry the approval shortly.");
+            }
+        }
+    }
+
+    private void promoteCurrent(CommandApprovalDecidedEvent event,
+                                EndpointDisplayPolicyRevision revision, Instant now) {
         EndpointDisplayPolicy current = policyRepository
                 .findByTenantIdAndDeviceId(event.tenantId(), revision.getDeviceId())
                 .orElseGet(EndpointDisplayPolicy::new);
 
         boolean isNew = current.getId() == null;
-        Instant now = Instant.now(clock);
 
         current.setTenantId(revision.getTenantId());
         current.setDeviceId(revision.getDeviceId());

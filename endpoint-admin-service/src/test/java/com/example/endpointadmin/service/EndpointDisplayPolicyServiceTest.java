@@ -96,10 +96,6 @@ class EndpointDisplayPolicyServiceTest {
 
         when(revisionRepository.findOpenProposals(TENANT, DEVICE_ID)).thenReturn(List.of());
         when(policyRepository.findByTenantIdAndDeviceId(TENANT, DEVICE_ID)).thenReturn(Optional.empty());
-        // Default open-proposal command (COMMAND_ID) is PENDING — used by the
-        // supersede/block guard's row-locked load.
-        when(commandRepository.findByIdAndDeviceIdForUpdate(COMMAND_ID, DEVICE_ID))
-                .thenReturn(Optional.of(pendingCommand()));
         when(revisionRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         when(commandRepository.saveAndFlush(any())).thenAnswer(inv -> {
             EndpointCommand c = inv.getArgument(0);
@@ -287,10 +283,11 @@ class EndpointDisplayPolicyServiceTest {
     }
 
     @Test
-    void clear_openProposalApprovedEnforce_supersedesWithoutConflict() {
-        // The dead-lock regression the PG IT caught: an ENFORCE was approved
-        // (enacted into current) but its command is still QUEUED for the agent.
-        // A CLEAR must NOT 409 — it supersedes the enacted ENFORCE.
+    void clear_openProposalApprovedEnforce_allowedAtProposeNoSupersedeYet() {
+        // After enforce→approve (current=ENFORCE, command APPROVED+QUEUED), a CLEAR
+        // is ALLOWED at propose time and DOES NOT cancel the approved command here
+        // — supersede is deferred to the CLEAR's own approval (Codex 019ea92f), so
+        // a not-yet-approved/rejectable CLEAR never suppresses approved delivery.
         EndpointDisplayPolicyRevision openApproved = approvedEnforceOpenProposal();
         when(revisionRepository.findOpenProposals(TENANT, DEVICE_ID)).thenReturn(List.of(openApproved));
         EndpointDisplayPolicy current = new EndpointDisplayPolicy();
@@ -306,7 +303,7 @@ class EndpointDisplayPolicyServiceTest {
 
         verify(revisionRepository, times(1)).saveAndFlush(any());
         verify(commandRepository, times(1)).saveAndFlush(any()); // new CLEAR command
-        verify(commandRepository, times(1)).save(any());          // stale ENFORCE command cancelled
+        verify(commandRepository, never()).save(any());           // NOTHING cancelled at propose time
         assertThat(res.openProposal().operation()).isEqualTo("CLEAR");
     }
 
@@ -325,22 +322,7 @@ class EndpointDisplayPolicyServiceTest {
     }
 
     @Test
-    void clear_openProposalApprovedButInFlight_throws409Retryable() {
-        // Single-flight guard (Codex 019ea92f): an APPROVED command already
-        // claimed by the agent (DELIVERED) must NOT be superseded mid-apply.
-        EndpointDisplayPolicyRevision inflight = inflightEnforceOpenProposal();
-        when(revisionRepository.findOpenProposals(TENANT, DEVICE_ID)).thenReturn(List.of(inflight));
-
-        assertThatThrownBy(() -> service.clear(context, DEVICE_ID, new ClearDisplayPolicyRequest("undo")))
-                .isInstanceOf(ResponseStatusException.class)
-                .hasMessageContaining("409")
-                .hasMessageContaining("being applied");
-        verify(commandRepository, never()).saveAndFlush(any()); // no new proposal
-        verify(commandRepository, never()).save(any());          // in-flight NOT cancelled
-    }
-
-    @Test
-    void enforce_openProposalApprovedDifferent_supersedesWithoutConflict() {
+    void enforce_openProposalApprovedDifferent_allowedAtProposeNoSupersedeYet() {
         EndpointDisplayPolicyRevision openApproved = approvedEnforceOpenProposal();
         when(revisionRepository.findOpenProposals(TENANT, DEVICE_ID)).thenReturn(List.of(openApproved));
         // new ENFORCE has a different hash than the approved open proposal ("c"*64).
@@ -348,6 +330,7 @@ class EndpointDisplayPolicyServiceTest {
         AdminDisplayPolicyResponse res = service.enforce(context, DEVICE_ID, enforceRequest());
 
         verify(commandRepository, times(1)).saveAndFlush(any());
+        verify(commandRepository, never()).save(any()); // no propose-time cancel
         assertThat(res.openProposal().operation()).isEqualTo("ENFORCE");
     }
 
@@ -447,26 +430,8 @@ class EndpointDisplayPolicyServiceTest {
         r.setScreensaverEnabled(true);
         r.setPolicyHashSha256("c".repeat(64));
         r.setCommandId(APPROVED_CMD);
-        when(commandRepository.findByIdAndDeviceIdForUpdate(APPROVED_CMD, DEVICE_ID))
+        when(commandRepository.findByTenantIdAndId(TENANT, APPROVED_CMD))
                 .thenReturn(Optional.of(approvedCommand()));
-        return r;
-    }
-
-    private EndpointDisplayPolicyRevision inflightEnforceOpenProposal() {
-        EndpointDisplayPolicyRevision r = new EndpointDisplayPolicyRevision();
-        r.setId(UUID.randomUUID());
-        r.setTenantId(TENANT);
-        r.setDeviceId(DEVICE_ID);
-        r.setOperation(DisplayPolicyOperation.ENFORCE);
-        r.setPolicyHashSha256("e".repeat(64));
-        r.setCommandId(APPROVED_CMD);
-        EndpointCommand inflight = new EndpointCommand();
-        inflight.setCommandType(CommandType.SET_DISPLAY_POLICY);
-        inflight.setApprovalStatus(ApprovalStatus.APPROVED);
-        inflight.setStatus(CommandStatus.DELIVERED); // agent is applying it now
-        setCommandId(inflight, APPROVED_CMD);
-        when(commandRepository.findByIdAndDeviceIdForUpdate(APPROVED_CMD, DEVICE_ID))
-                .thenReturn(Optional.of(inflight));
         return r;
     }
 

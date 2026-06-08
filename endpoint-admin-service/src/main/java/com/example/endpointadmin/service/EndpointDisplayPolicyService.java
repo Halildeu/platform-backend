@@ -72,10 +72,8 @@ public class EndpointDisplayPolicyService {
 
     static final String EVENT_ENFORCE_PROPOSED = "ENDPOINT_DISPLAY_POLICY_ENFORCE_PROPOSED";
     static final String EVENT_CLEAR_PROPOSED = "ENDPOINT_DISPLAY_POLICY_CLEAR_PROPOSED";
-    static final String EVENT_SUPERSEDED = "ENDPOINT_DISPLAY_POLICY_COMMAND_SUPERSEDED";
     private static final String ACTION_ENFORCE = "PROPOSE_ENDPOINT_DISPLAY_POLICY_ENFORCE";
     private static final String ACTION_CLEAR = "PROPOSE_ENDPOINT_DISPLAY_POLICY_CLEAR";
-    private static final String ACTION_SUPERSEDE = "SUPERSEDE_ENDPOINT_DISPLAY_POLICY_COMMAND";
 
     /** Heartbeat payload key under which the agent advertises capabilities. */
     private static final String HEARTBEAT_CAPABILITIES_KEY = "capabilities";
@@ -162,11 +160,21 @@ public class EndpointDisplayPolicyService {
                     && hash.equals(openRev.getPolicyHashSha256())) {
                 return replay(deviceId, tenantId, openRev);
             }
-            // A different op/hash: resolve the open proposal, keeping per-device
-            // single-flight. PENDING → 409 (resolve the maker-checker first);
-            // APPROVED+QUEUED → supersede (cancel the stale command);
-            // APPROVED+in-flight → 409 retryable. (Codex 019ea92f)
-            supersedeOpenProposalOrBlock(tenantId, deviceId, openRev, now, subject);
+            // A different op/hash: block ONLY while the open proposal is still
+            // awaiting maker-checker approval (PENDING) — two pending approvals
+            // for one device are ambiguous. An already-APPROVED proposal is the
+            // enacted current truth; this new operation is a fresh maker-checker
+            // proposal and DOES NOT cancel anything here. Per-device single-flight
+            // is enforced at APPROVAL time by DisplayPolicyApprovalListener (it
+            // supersedes the prior approved-queued command, or 409s if it is
+            // mid-apply). Doing it here would let an unapproved/rejected proposal
+            // suppress delivery of the currently-approved desired state
+            // (Codex 019ea92f).
+            if (isAwaitingApproval(tenantId, openRev)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "A different display-policy proposal is pending approval for this device; "
+                                + "approve or reject it first.");
+            }
         }
 
         // No open proposal → idempotent no-op if the already-approved current
@@ -226,9 +234,13 @@ public class EndpointDisplayPolicyService {
             if (openRev.getOperation() == DisplayPolicyOperation.CLEAR) {
                 return replay(deviceId, tenantId, openRev);
             }
-            // Open ENFORCE proposal: PENDING → 409; APPROVED+QUEUED → supersede;
-            // APPROVED+in-flight → 409 retryable (see enforce()).
-            supersedeOpenProposalOrBlock(tenantId, deviceId, openRev, now, subject);
+            // Open ENFORCE proposal: block only while still PENDING; an approved
+            // ENFORCE is superseded at the CLEAR's approval time (see enforce()).
+            if (isAwaitingApproval(tenantId, openRev)) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "A different display-policy proposal is pending approval for this device; "
+                                + "approve or reject it first.");
+            }
         }
 
         EndpointDisplayPolicy current =
@@ -302,55 +314,16 @@ public class EndpointDisplayPolicyService {
     }
 
     /**
-     * Resolve a DIFFERENT open proposal before a new one is created, guaranteeing
-     * per-device single-flight for SET_DISPLAY_POLICY (Codex 019ea92f) so the
-     * agent never has two non-terminal display-policy commands to order:
-     *
-     * <ul>
-     *   <li><b>PENDING</b> (awaiting maker-checker) → 409: two pending approvals
-     *       for one device are ambiguous; the operator resolves the open one
-     *       first.</li>
-     *   <li><b>APPROVED + QUEUED</b> (enacted into current, not yet claimed by
-     *       the agent) → <b>supersede</b>: cancel the stale queued command under
-     *       a row lock so at most one non-terminal command survives, then let the
-     *       caller create the new proposal.</li>
-     *   <li><b>APPROVED + in-flight</b> (DELIVERED/ACKED/RUNNING) → 409 retryable:
-     *       the agent is applying it now; it terminalizes within the claim lease,
-     *       after which the new operation proceeds. This is a bounded wait, not
-     *       an offline-agent dead-lock.</li>
-     * </ul>
-     *
-     * <p>Fail-closed: an unresolvable command is treated as PENDING (block). The
-     * command row is loaded {@code PESSIMISTIC_WRITE} so the cancel cannot race a
-     * concurrent agent claim — if the agent claimed it first (now in-flight), we
-     * observe that and fall to the retryable 409 instead of cancelling delivered
-     * work.
+     * True if the open proposal's backing command is still awaiting maker-checker
+     * approval (PENDING). An open proposal whose command is APPROVED is the
+     * enacted current truth and does NOT block a new (superseding) proposal here
+     * — per-device single-flight is enforced at APPROVAL time by
+     * {@code DisplayPolicyApprovalListener}. Fail-closed: an unresolvable command
+     * is treated as pending so we never silently bypass an unverifiable proposal.
      */
-    private void supersedeOpenProposalOrBlock(UUID tenantId, UUID deviceId,
-                                              EndpointDisplayPolicyRevision openRev,
-                                              Instant now, String subject) {
-        EndpointCommand cmd = openRev.getCommandId() == null ? null
-                : commandRepository.findByIdAndDeviceIdForUpdate(openRev.getCommandId(), deviceId)
-                        .orElse(null);
-        if (cmd == null || cmd.getApprovalStatus() == ApprovalStatus.PENDING) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "A different display-policy proposal is pending approval for this device; "
-                            + "approve or reject it first.");
-        }
-        if (cmd.getStatus() == CommandStatus.QUEUED) {
-            cmd.setStatus(CommandStatus.CANCELLED);
-            cmd.setCancelledAt(now);
-            commandRepository.save(cmd);
-            auditService.record(tenantId, null, cmd, EVENT_SUPERSEDED, ACTION_SUPERSEDE, subject,
-                    cmd.getIdempotencyKey(),
-                    Map.of("supersededCommandId", cmd.getId().toString(),
-                            "supersededRevisionId", openRev.getId().toString()),
-                    null, null);
-            return;
-        }
-        // APPROVED but already claimed by the agent (DELIVERED/ACKED/RUNNING).
-        throw new ResponseStatusException(HttpStatus.CONFLICT,
-                "A display-policy command is currently being applied on this device; retry shortly.");
+    private boolean isAwaitingApproval(UUID tenantId, EndpointDisplayPolicyRevision openRev) {
+        EndpointCommand cmd = loadCommand(tenantId, openRev.getCommandId());
+        return cmd == null || cmd.getApprovalStatus() == ApprovalStatus.PENDING;
     }
 
     /**
