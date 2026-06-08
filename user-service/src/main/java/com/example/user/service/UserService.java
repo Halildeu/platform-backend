@@ -648,11 +648,6 @@ public class UserService implements UserDetailsService { // UserDetailsService a
     }
 
     /**
-     * Email adresine göre kullanıcıyı bulur.
-     * @param email Aranacak email adresi.
-     * @return Opsiyonel olarak User nesnesi.
-     */
-    /**
      * Email lookup backing read + internal-credential surfaces. Active-only
      * (Codex 019ea573, #770 Phase 2): a soft-deleted user is never returned,
      * so the V1 + legacy {@code GET /by-email} reads AND the auth-service
