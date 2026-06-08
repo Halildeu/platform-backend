@@ -38,6 +38,7 @@ class ComplianceGapRepositoryTenantIsolationPostgresIntegrationTest {
     private static final Instant COLLECTED_AT = Instant.parse("2026-06-09T10:00:00Z");
     private static final Instant FRESHNESS_THRESHOLD = Instant.parse("2026-06-08T10:00:00Z");
     private static final Set<String> RDP = Set.of("rdp_enabled");
+    private static final Set<String> PENDING = Set.of("pending_security_updates");
 
     @Container
     @SuppressWarnings("resource")
@@ -94,6 +95,35 @@ class ComplianceGapRepositoryTenantIsolationPostgresIntegrationTest {
         assertThat(repository.countGapDevices(tenantB, FRESHNESS_THRESHOLD, RDP)).isZero();
     }
 
+    @Test
+    void pendingUpdatesGap_isVisibleToOwningTenant_andInvisibleToOtherTenant() {
+        UUID tenantA = UUID.randomUUID();
+        UUID tenantB = UUID.randomUUID();
+        UUID deviceA = UUID.randomUUID();
+        UUID deviceB = UUID.randomUUID();
+
+        insertDevice(deviceA, tenantA, "tenantA-pending-device");
+        insertDevice(deviceB, tenantB, "tenantB-clean-device");
+        insertHotfixPendingUpdates(deviceA, tenantA);
+
+        // Tenant A sees its own pending-security-updates gap (hotfix path).
+        List<Object[]> tenantARows =
+                repository.findGapDevices(tenantA, FRESHNESS_THRESHOLD, PENDING, 50, 0);
+        assertThat(tenantARows)
+                .as("tenant A must see its own pending-security-updates device")
+                .hasSize(1);
+        assertThat(String.valueOf(tenantARows.get(0)[0])).isEqualTo(deviceA.toString());
+        assertThat(repository.countGapDevices(tenantA, FRESHNESS_THRESHOLD, PENDING)).isEqualTo(1L);
+
+        // Tenant B MUST NOT see tenant A's hotfix snapshot (cross-leak guard).
+        List<Object[]> tenantBRows =
+                repository.findGapDevices(tenantB, FRESHNESS_THRESHOLD, PENDING, 50, 0);
+        assertThat(tenantBRows)
+                .as("tenant B must NOT see tenant A's pending gap — tenant boundary fail-closed")
+                .isEmpty();
+        assertThat(repository.countGapDevices(tenantB, FRESHNESS_THRESHOLD, PENDING)).isZero();
+    }
+
     // ───────────────────────── Seed helpers ─────────────────────────
 
     private void insertDevice(UUID id, UUID tenant, String hostname) {
@@ -117,6 +147,28 @@ class ComplianceGapRepositoryTenantIsolationPostgresIntegrationTest {
                         + " probe_complete, rdp_enabled, windows_firewall_event_log_enabled, "
                         + " probe_duration_ms, payload_hash_sha256, collected_at) "
                         + "VALUES (?, ?, ?, 1, TRUE, TRUE, TRUE, FALSE, 10, ?, ?)",
+                UUID.randomUUID(), tenant, deviceId,
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                collected);
+    }
+
+    /**
+     * Seeds a hotfix-posture snapshot with {@code pending_total_count > 0}
+     * (triggers the PENDING_SECURITY_UPDATES gap). Source-used + service-state
+     * values use the V22 CHECK-constrained enums; {@code org_id} is filled by
+     * the V43 compat trigger; redacted_payload / probe_errors / created_at /
+     * updated_at / version use their column defaults.
+     */
+    private void insertHotfixPendingUpdates(UUID deviceId, UUID tenant) {
+        Timestamp collected = Timestamp.from(COLLECTED_AT);
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_hotfix_posture_snapshots "
+                        + "(id, tenant_id, device_id, schema_version, supported, probe_complete, "
+                        + " installed_count, max_installed, installed_truncated, "
+                        + " pending_total_count, max_pending, pending_truncated, "
+                        + " installed_source_used, pending_source_used, health_source_used, "
+                        + " payload_hash_sha256, wua_service_state, bits_service_state, collected_at) "
+                        + "VALUES (?, ?, ?, 1, TRUE, TRUE, 0, 256, FALSE, 5, 256, FALSE, "
+                        + " 'wua', 'wua', 'service', ?, 'RUNNING', 'RUNNING', ?)",
                 UUID.randomUUID(), tenant, deviceId,
                 "0000000000000000000000000000000000000000000000000000000000000000",
                 collected);
