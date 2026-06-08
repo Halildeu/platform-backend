@@ -19,7 +19,6 @@ import com.example.endpointadmin.model.CommandStatus;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.DeploymentRing;
 import com.example.endpointadmin.model.EndpointAgentUpdateRelease;
-import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointCommandApproval;
 import com.example.endpointadmin.model.EndpointCommandResult;
@@ -182,15 +181,13 @@ public class EndpointAdminCommandService {
         }
 
         UUID tenantId = context.tenantId();
-        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
-        // Codex 019ea789 must-fix: new-op fail-closed. A DECOMMISSIONED device
-        // accepts no new commands (the decommission cascade already cancelled
-        // any pending ones); only an admin reactivate restores command queueing.
-        if (device.getStatus() == DeviceStatus.DECOMMISSIONED) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Endpoint device is decommissioned; commands cannot be queued.");
-        }
+        // Codex 019ea789 iter-2 must-fix: load under PESSIMISTIC_WRITE (shared
+        // write guard) so this create serialises against an in-flight
+        // decommission + its cascade, and fail-close 409 on a DECOMMISSIONED
+        // device. A plain read could observe the pre-decommission status and
+        // slip new work past the cascade sweep.
+        EndpointDevice device =
+                EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
         Instant now = Instant.now(clock);
         Instant visibleAfterAt = request.visibleAfterAt() == null ? now : request.visibleAfterAt();
         validateExpiry(visibleAfterAt, request.expiresAt());
@@ -462,15 +459,11 @@ public class EndpointAdminCommandService {
         }
 
         UUID tenantId = context.tenantId();
-        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
-        // Codex 019ea789 post-impl must-fix: update-agent is a separate dispatch
-        // path from createCommand — fail-closed on a DECOMMISSIONED device so a
-        // later reactivate cannot resurrect stale admin intent.
-        if (device.getStatus() == DeviceStatus.DECOMMISSIONED) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Endpoint device is decommissioned; agent updates cannot be dispatched.");
-        }
+        // Codex 019ea789 iter-2 must-fix: lock + fail-close 409 (shared write
+        // guard) so update-agent serialises with decommission, like every
+        // device-work create path.
+        EndpointDevice device =
+                EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
         validateRequiredDeploymentRing(device, request.requiredDeploymentRing());
         EndpointAgentUpdateRelease release = agentUpdateReleaseRepository
                 .findByTenantIdAndReleaseId(tenantId, releaseId)
@@ -577,8 +570,12 @@ public class EndpointAdminCommandService {
         }
 
         UUID tenantId = context.tenantId();
-        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
+        // Codex 019ea789 iter-2 must-fix: createLocalPasswordChange was the one
+        // device-work create path with NO decommission guard — and it mints a
+        // one-time secret (exactly what the cascade clears). Lock + fail-close
+        // 409 via the shared write guard.
+        EndpointDevice device =
+                EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
         Instant now = Instant.now(clock);
         Instant visibleAfterAt = resolveInstallVisibleAfterAt(now, request.notBefore());
         Instant expiresAt = request.expiresAt() == null
@@ -662,8 +659,11 @@ public class EndpointAdminCommandService {
         }
 
         UUID tenantId = context.tenantId();
-        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
+        // Codex 019ea789 iter-2 must-fix: lock + fail-close 409 (shared write
+        // guard) so install create serialises with decommission, before catalog
+        // resolution / preflight.
+        EndpointDevice device =
+                EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
         validateRequiredDeploymentRing(device, request.requiredDeploymentRing());
         EndpointSoftwareCatalogItem catalogItem = catalogRepository
                 .findByTenantIdAndCatalogItemId(tenantId, slug)
