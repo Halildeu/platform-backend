@@ -19,6 +19,7 @@ import com.example.endpointadmin.model.CommandStatus;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.DeploymentRing;
 import com.example.endpointadmin.model.EndpointAgentUpdateRelease;
+import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointCommandApproval;
 import com.example.endpointadmin.model.EndpointCommandResult;
@@ -183,6 +184,13 @@ public class EndpointAdminCommandService {
         UUID tenantId = context.tenantId();
         EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
+        // Codex 019ea789 must-fix: new-op fail-closed. A DECOMMISSIONED device
+        // accepts no new commands (the decommission cascade already cancelled
+        // any pending ones); only an admin reactivate restores command queueing.
+        if (device.getStatus() == DeviceStatus.DECOMMISSIONED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Endpoint device is decommissioned; commands cannot be queued.");
+        }
         Instant now = Instant.now(clock);
         Instant visibleAfterAt = request.visibleAfterAt() == null ? now : request.visibleAfterAt();
         validateExpiry(visibleAfterAt, request.expiresAt());

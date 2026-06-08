@@ -252,6 +252,16 @@ public class MachineCertAutoEnrollService {
                 .or(() -> deviceRepository.findVisibleToOrgAndHostname(tenantId, request.hostname()))
                 .orElseGet(EndpointDevice::new);
 
+        // Codex 019ea789 must-fix: mTLS auto-enroll must NOT revive a
+        // decommissioned device — this path authenticates by client cert, NOT
+        // the HMAC credential, so the auth-layer gate does not cover it. A
+        // matched DECOMMISSIONED identity is rejected (409); only an admin
+        // reactivate revives it.
+        if (device.getId() != null && device.getStatus() == DeviceStatus.DECOMMISSIONED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Endpoint device is decommissioned; admin reactivation is required before re-enrollment.");
+        }
+
         if (device.getId() == null) {
             // Faz 21.1 PR2b-iv.b2 must-fix (Codex 019e8d1d): canonical write
             // path service must set BOTH org_id + tenant_id (Option A inline
