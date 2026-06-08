@@ -29,6 +29,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -106,6 +107,7 @@ public class EndpointHardwareInventoryService {
             if (existing.isPresent()) {
                 log.debug("Hardware ingest no-op for command_result_id={} (already processed)",
                         commandResultId);
+                reconcileDeviceDomainProjection(device);
                 return existing.get();
             }
         }
@@ -135,6 +137,7 @@ public class EndpointHardwareInventoryService {
         if (identical.isPresent()) {
             log.debug("Hardware ingest no-op for device_id={} (payload hash unchanged, snapshot_id={})",
                     device.getId(), identical.get().getId());
+            reconcileDeviceDomainProjection(device);
             return identical.get();
         }
 
@@ -150,9 +153,16 @@ public class EndpointHardwareInventoryService {
             log.info("Hardware inventory snapshot persisted device_id={} snapshot_id={} schema={}",
                     device.getId(), persisted.getId(), persisted.getSchemaVersion());
             events.publishEvent(buildAuditEvent(persisted, command));
+            reconcileDeviceDomainProjection(device);
             return persisted;
         } catch (DataIntegrityViolationException race) {
             // Defence-in-depth for concurrent SUBMIT-result deliveries.
+            // NOTE: no reconcileDeviceDomainProjection() here on purpose —
+            // the constraint violation has poisoned this Hibernate session
+            // (rollback-only), so a device write would fail at commit. The
+            // transaction that WON the race persisted the snapshot in its own
+            // ingest() and reconciled the domain cache there; this loser just
+            // reads back and returns the winner's row.
             if (commandResultId != null) {
                 return repository.findBySourceCommandResultId(commandResultId)
                         .orElseThrow(() -> race);
@@ -164,6 +174,63 @@ public class EndpointHardwareInventoryService {
     public Optional<EndpointHardwareInventorySnapshot> findLatest(UUID tenantId, UUID deviceId) {
         return repository.findFirstByTenantIdAndDeviceIdOrderByCollectedAtDescCreatedAtDescIdDesc(
                 tenantId, deviceId);
+    }
+
+    /**
+     * Cross-device domain filter (Faz 22.5, board #517; Codex 019ea83c
+     * AGREE Option A). Keep the {@code endpoint_devices.domain_name}
+     * indexed grid filter CACHE in sync with the canonical domain truth.
+     *
+     * <p>The hardware inventory snapshot is canonical — the Donanım drawer
+     * reads the latest snapshot's tri-state domain. {@code
+     * endpoint_devices.domain_name} is a denormalized, indexed
+     * ({@code idx_endpoint_devices_domain}) cache the device-grid SSRM
+     * query filters on ({@code d.domain_name}). The agent never carries the
+     * domain at enrollment, so without this reconcile the column stays null
+     * and the cross-device domain filter is dead.
+     *
+     * <p>Driven off {@link #findLatest} (NOT the snapshot in hand) so the
+     * cache always reflects the LATEST inventory domain regardless of which
+     * ingest path fired or out-of-order re-delivery. Called on the clean
+     * ingest paths — both no-op idempotency early-returns and the
+     * new-snapshot path — so a device with byte-identical inventory still
+     * self-heals a stale/null cache; the race-catch path is intentionally
+     * excluded (poisoned/rollback-only session — the winning transaction
+     * reconciles).
+     *
+     * <p>Org-safe without an explicit WHERE org guard: {@code device} is
+     * the managed, agent-authenticated {@code command.getDevice()} the
+     * caller resolved in this same {@code @Transactional}; mutating that
+     * specific entity cannot reach another org's row. The in-memory set
+     * (Hibernate dirty-check, not a bulk UPDATE) keeps the managed entity
+     * and the flushed row consistent — it survives even if the caller
+     * dirties other device columns in the same transaction.
+     */
+    private void reconcileDeviceDomainProjection(EndpointDevice device) {
+        String projected = projectDomainFilterCache(
+                findLatest(device.getTenantId(), device.getId()).orElse(null));
+        if (!Objects.equals(device.getDomainName(), projected)) {
+            device.setDomainName(projected);
+        }
+    }
+
+    /**
+     * Fail-clear projection rule (Codex 019ea83c): a domain-joined host
+     * with a non-blank domain projects {@code trim + lowercase}; workgroup
+     * ({@code domain_joined == false}), unknown ({@code domain_joined ==
+     * null}), a null snapshot, and a blank domain all project {@code null}.
+     * The filter cache must never carry a stale domain when the latest
+     * truth says workgroup/unknown — "leave-as-is on unknown" is rejected.
+     */
+    static String projectDomainFilterCache(EndpointHardwareInventorySnapshot latest) {
+        if (latest == null || !Boolean.TRUE.equals(latest.getDomainJoined())) {
+            return null;
+        }
+        String domain = latest.getDomainName();
+        if (domain == null || domain.isBlank()) {
+            return null;
+        }
+        return domain.trim().toLowerCase(Locale.ROOT);
     }
 
     public Page<EndpointHardwareInventorySnapshot> findHistory(

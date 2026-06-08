@@ -474,6 +474,105 @@ class EndpointHardwareInventoryServiceTest {
         return service.ingest(device, command, result, details);
     }
 
+    // ------------------------------------------------------------------
+    // Cross-device domain filter cache projection (Faz 22.5, board #517;
+    // Codex 019ea83c AGREE Option A). endpoint_devices.domain_name is an
+    // indexed grid filter cache fed from the canonical inventory snapshot.
+    // ------------------------------------------------------------------
+
+    @Test
+    void ingestProjectsDomainJoinedDomainOntoDeviceCacheTrimmedAndLowercased() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-DOMAIN");
+        assertThat(device.getDomainName()).as("enrollment leaves cache null").isNull();
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+
+        Map<String, Object> hw = baseHardware();
+        hw.put("collectedAt", collectedAtMinutesAgo(10));
+        hw.put("domainJoined", true);
+        hw.put("domainName", "  ACIK.Local  ");
+
+        service.ingest(device, command, result, effectiveDetailsWithHardware(hw));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(deviceRepository.findById(device.getId()).orElseThrow().getDomainName())
+                .isEqualTo("acik.local");
+    }
+
+    @Test
+    void ingestProjectsNullForWorkgroupDevice() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-WORKGROUP");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+
+        Map<String, Object> hw = baseHardware();
+        hw.put("collectedAt", collectedAtMinutesAgo(10));
+        hw.put("domainJoined", false);
+        hw.put("domainName", "WORKGROUP");
+
+        service.ingest(device, command, result, effectiveDetailsWithHardware(hw));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(deviceRepository.findById(device.getId()).orElseThrow().getDomainName())
+                .as("workgroup must not leak a domain into the filter cache")
+                .isNull();
+    }
+
+    @Test
+    void noOpReIngestSelfHealsStaleNullDomainCache() {
+        EndpointDevice device = persistDevice(TENANT_A, "PC-SELFHEAL");
+        EndpointCommand command = persistCommand(device);
+        EndpointCommandResult result = persistResult(command);
+        Map<String, Object> hw = baseHardware();
+        hw.put("collectedAt", collectedAtMinutesAgo(10));
+        hw.put("domainJoined", true);
+        hw.put("domainName", "acik.local");
+
+        service.ingest(device, command, result, effectiveDetailsWithHardware(hw));
+        entityManager.flush();
+
+        // Simulate a pre-feature row whose cache is stale-null while the
+        // canonical snapshot already carries the domain.
+        device.setDomainName(null);
+        deviceRepository.saveAndFlush(device);
+        entityManager.clear();
+
+        // Re-deliver the SAME command-result → source_command_result_id
+        // no-op early-return path must still reconcile the cache.
+        EndpointDevice managed = deviceRepository.findById(device.getId()).orElseThrow();
+        service.ingest(managed, command, result, effectiveDetailsWithHardware(hw));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(deviceRepository.findById(device.getId()).orElseThrow().getDomainName())
+                .as("no-op ingest self-heals the stale cache")
+                .isEqualTo("acik.local");
+    }
+
+    @Test
+    void projectDomainFilterCacheRuleMatrix() {
+        assertThat(EndpointHardwareInventoryService.projectDomainFilterCache(null)).isNull();
+        assertThat(EndpointHardwareInventoryService.projectDomainFilterCache(
+                snapshotWithDomain(null, "acik.local"))).as("unknown → null").isNull();
+        assertThat(EndpointHardwareInventoryService.projectDomainFilterCache(
+                snapshotWithDomain(false, "acik.local"))).as("workgroup → null").isNull();
+        assertThat(EndpointHardwareInventoryService.projectDomainFilterCache(
+                snapshotWithDomain(true, "   "))).as("joined+blank → null").isNull();
+        assertThat(EndpointHardwareInventoryService.projectDomainFilterCache(
+                snapshotWithDomain(true, null))).as("joined+null → null").isNull();
+        assertThat(EndpointHardwareInventoryService.projectDomainFilterCache(
+                snapshotWithDomain(true, "  ACIK.Local  "))).isEqualTo("acik.local");
+    }
+
+    private static EndpointHardwareInventorySnapshot snapshotWithDomain(Boolean joined, String domain) {
+        EndpointHardwareInventorySnapshot s = new EndpointHardwareInventorySnapshot();
+        s.setDomainJoined(joined);
+        s.setDomainName(domain);
+        return s;
+    }
+
     private EndpointDevice persistDevice(UUID tenantId, String hostname) {
         EndpointDevice device = new EndpointDevice();
         device.setTenantId(tenantId);
