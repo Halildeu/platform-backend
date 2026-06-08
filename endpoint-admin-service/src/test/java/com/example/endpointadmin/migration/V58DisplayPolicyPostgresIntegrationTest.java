@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.UUID;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -78,15 +79,21 @@ class V58DisplayPolicyPostgresIntegrationTest {
         UUID device = insertDevice(jdbc, tenant);
         UUID rev = insertEnforceRevision(jdbc, tenant, device);
 
+        // The append-only trigger RAISEs (SQLSTATE P0001) → Spring maps it to the
+        // broader DataAccessException (not the 23xxx-only
+        // DataIntegrityViolationException used by the FK/CHECK paths), mirroring
+        // the V56 endpoint_device_lifecycle_audit append-only contract.
         assertThatThrownBy(() -> jdbc.update(
                 "UPDATE " + SCHEMA + ".endpoint_display_policy_revisions SET reason = 'x' WHERE id = ?",
                 rev))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("append-only");
 
         assertThatThrownBy(() -> jdbc.update(
                 "DELETE FROM " + SCHEMA + ".endpoint_display_policy_revisions WHERE id = ?",
                 rev))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("append-only");
     }
 
     @Test
