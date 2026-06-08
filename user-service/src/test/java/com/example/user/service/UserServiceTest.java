@@ -155,7 +155,12 @@ class UserServiceTest {
 
         Pageable pageable = PageRequest.of(0, 10);
         java.util.List<User> users = java.util.List.of(user, user);
-        when(userRepository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(users, pageable, users.size()));
+        // Soft-delete (Codex 019ea573, #770 Phase 2): every list query — even a
+        // superadmin's — now carries the UserSpecifications.notDeleted() seed,
+        // so it goes through the Specification overload (tombstones excluded)
+        // rather than the bare findAll(Pageable).
+        when(userRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(users, pageable, users.size()));
 
         Page<User> result = userService.searchUsers(null, null, null, null, pageable);
 
@@ -285,6 +290,36 @@ class UserServiceTest {
         // runbook (RB-kc-subject-backfill.md) is run. New callers SHOULD
         // supply the value at provision time.
         assertNull(savedUser.getValue().getKcSubject());
+    }
+
+    /**
+     * No-resurrection guard (Codex 019ea573, #770 Phase 2): the internal
+     * provision path must never silently reactivate/mutate a soft-deleted
+     * tombstone. Re-admitting the identity is an explicit admin restore,
+     * surfaced as 409 USER_DELETED_RESTORE_REQUIRED — and the row is never
+     * written.
+     */
+    @Test
+    void provisionFromKeycloak_softDeletedRow_throws409_noResurrection() {
+        User tombstone = new User();
+        tombstone.setId(7L);
+        tombstone.setEmail("ghost@example.com");
+        tombstone.setName("Ghost");
+        tombstone.setDeletedAt(java.time.LocalDateTime.now());
+
+        KeycloakUserProvisionRequest request = new KeycloakUserProvisionRequest();
+        request.setEmail("ghost@example.com");
+        request.setName("Resurrected?");
+        request.setEnabled(true);
+
+        when(userRepository.findByEmail("ghost@example.com")).thenReturn(java.util.Optional.of(tombstone));
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+                () -> userService.provisionFromKeycloak(request));
+        assertEquals(409, ex.getStatusCode().value());
+        org.assertj.core.api.Assertions.assertThat(ex.getReason()).contains("USER_DELETED_RESTORE_REQUIRED");
+        // The tombstone is never written (no reactivation / no name change).
+        verify(userRepository, never()).save(any(User.class));
     }
 
     @Test

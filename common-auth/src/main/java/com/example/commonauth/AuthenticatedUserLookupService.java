@@ -17,13 +17,31 @@ public class AuthenticatedUserLookupService {
     private static final Logger log = LoggerFactory.getLogger(AuthenticatedUserLookupService.class);
     private static final Pattern QUALIFIED_TABLE_NAME =
             Pattern.compile("[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?");
+    private static final Pattern COLUMN_NAME =
+            Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
     private final JdbcTemplate jdbcTemplate;
     private final String userTable;
+    private final String softDeleteColumn;
 
     public AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable) {
+        this(jdbcTemplate, userTable, null);
+    }
+
+    /**
+     * @param softDeleteColumn optional soft-delete tombstone column. When
+     *        non-blank, the email→userId lookup appends {@code AND <col> IS
+     *        NULL} so a soft-deleted identity never resolves a numeric
+     *        userId in the OpenFGA authz context (Codex 019ea573, #770
+     *        Phase 2). Pass {@code null}/blank (or use the 2-arg constructor)
+     *        for tables without a soft-delete column — the filter is then
+     *        omitted and behaviour is unchanged (backward compatible). The
+     *        value is validated as a bare SQL identifier (no injection).
+     */
+    public AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable, String softDeleteColumn) {
         this.jdbcTemplate = jdbcTemplate;
         this.userTable = normalizeTableName(userTable);
+        this.softDeleteColumn = normalizeSoftDeleteColumn(softDeleteColumn);
     }
 
     public ResolvedAuthenticatedUser resolve(Jwt jwt) {
@@ -59,7 +77,8 @@ public class AuthenticatedUserLookupService {
             log.debug("Authenticated user lookup local tablo mevcut değil; SQL lookup atlanacak. table={}", userTable);
             return null;
         }
-        String sql = "select id from " + userTable + " where lower(email) = ? limit 1";
+        String softDeleteFilter = softDeleteColumn == null ? "" : " and " + softDeleteColumn + " is null";
+        String sql = "select id from " + userTable + " where lower(email) = ?" + softDeleteFilter + " limit 1";
         List<Map<String, Object>> rows;
         try {
             rows = jdbcTemplate.queryForList(sql, email.toLowerCase(Locale.ROOT));
@@ -150,6 +169,17 @@ public class AuthenticatedUserLookupService {
         String value = raw == null ? "" : raw.trim();
         if (!QUALIFIED_TABLE_NAME.matcher(value).matches()) {
             throw new IllegalArgumentException("Invalid authz user table reference: " + raw);
+        }
+        return value;
+    }
+
+    private static String normalizeSoftDeleteColumn(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.isEmpty()) {
+            return null;
+        }
+        if (!COLUMN_NAME.matcher(value).matches()) {
+            throw new IllegalArgumentException("Invalid soft-delete column reference: " + raw);
         }
         return value;
     }
