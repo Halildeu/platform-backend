@@ -132,6 +132,15 @@ public class MachineCertAutoEnrollService {
                         ));
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "TENANT_BOUNDARY");
             }
+            // Codex 019ea789 post-impl must-fix: the already-enrolled active-cert
+            // path must ALSO reject a DECOMMISSIONED device — it returns early
+            // without reaching adoptOrCreateDevice (where the no-revive guard
+            // lives). Only an admin reactivate revives the device.
+            if (active.getDevice() != null
+                    && active.getDevice().getStatus() == DeviceStatus.DECOMMISSIONED) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Endpoint device is decommissioned; admin reactivation is required before re-enrollment.");
+            }
             recordSuccess(tenantId, active.getDevice(), parsed, request, "already-enrolled");
             return new Outcome(
                     HttpStatus.OK,

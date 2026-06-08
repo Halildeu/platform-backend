@@ -70,6 +70,7 @@ public class EndpointDeviceLifecycleService {
      */
     @Transactional
     public EndpointDeviceDto decommission(UUID tenantId, String actorSubject, UUID deviceId, String reason) {
+        requireActor(actorSubject);
         String trimmedReason = requireReason(reason);
         EndpointDevice device = loadForUpdate(tenantId, deviceId);
         DeviceStatus from = device.getStatus();
@@ -103,6 +104,7 @@ public class EndpointDeviceLifecycleService {
      */
     @Transactional
     public EndpointDeviceDto reactivate(UUID tenantId, String actorSubject, UUID deviceId, String reason) {
+        requireActor(actorSubject);
         String trimmedReason = requireReason(reason);
         EndpointDevice device = loadForUpdate(tenantId, deviceId);
         DeviceStatus from = device.getStatus();
@@ -143,6 +145,15 @@ public class EndpointDeviceLifecycleService {
         return deviceRepository.findVisibleToOrgAndIdForUpdate(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Endpoint device not found."));
+    }
+
+    private void requireActor(String actorSubject) {
+        // Codex 019ea789 post-impl polish: the lifecycle audit actor_subject is
+        // NOT NULL — reject a blank/absent admin subject before any mutation.
+        if (actorSubject == null || actorSubject.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,
+                    "An authenticated admin subject is required.");
+        }
     }
 
     private String requireReason(String reason) {

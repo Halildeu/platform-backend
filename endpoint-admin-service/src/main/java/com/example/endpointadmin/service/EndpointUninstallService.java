@@ -8,6 +8,7 @@ import com.example.endpointadmin.model.ApprovalStatus;
 import com.example.endpointadmin.model.CatalogItemStatus;
 import com.example.endpointadmin.model.CommandStatus;
 import com.example.endpointadmin.model.CommandType;
+import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointHeartbeat;
@@ -198,6 +199,14 @@ public class EndpointUninstallService {
                 .findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Endpoint device not found."));
+        // Codex 019ea789 post-impl must-fix: a DECOMMISSIONED device accepts no
+        // new uninstall proposals (the decommission cascade already finalized
+        // open requests); a later reactivate must not resurrect stale destructive
+        // intent. Only an admin reactivate restores the propose path.
+        if (device.getStatus() == DeviceStatus.DECOMMISSIONED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Endpoint device is decommissioned; uninstall cannot be proposed.");
+        }
         EndpointSoftwareCatalogItem catalogItem = catalogRepository
                 .findByTenantIdAndCatalogItemId(tenantId, slug)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,

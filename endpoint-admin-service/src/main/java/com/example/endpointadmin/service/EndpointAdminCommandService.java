@@ -464,6 +464,13 @@ public class EndpointAdminCommandService {
         UUID tenantId = context.tenantId();
         EndpointDevice device = deviceRepository.findVisibleToOrgAndId(tenantId, deviceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
+        // Codex 019ea789 post-impl must-fix: update-agent is a separate dispatch
+        // path from createCommand — fail-closed on a DECOMMISSIONED device so a
+        // later reactivate cannot resurrect stale admin intent.
+        if (device.getStatus() == DeviceStatus.DECOMMISSIONED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Endpoint device is decommissioned; agent updates cannot be dispatched.");
+        }
         validateRequiredDeploymentRing(device, request.requiredDeploymentRing());
         EndpointAgentUpdateRelease release = agentUpdateReleaseRepository
                 .findByTenantIdAndReleaseId(tenantId, releaseId)
