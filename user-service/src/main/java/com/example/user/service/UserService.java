@@ -188,7 +188,10 @@ public class UserService implements UserDetailsService { // UserDetailsService a
     }
 
     public User updateUser(Long userId, UpdateUserRequest updateRequest) {
-        User user = userRepository.findById(userId)
+        // Active-only (Codex 019ea573, #770 Phase 2): a soft-deleted user
+        // cannot be mutated through any update path (V1 prechecks, but the
+        // legacy PUT /api/users/{id} calls this directly — fail-closed here).
+        User user = userRepository.findActiveById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("Kullanıcı bulunamadı: " + userId));
 
         if (updateRequest.getName() != null && !updateRequest.getName().isBlank()) {
@@ -221,13 +224,17 @@ public class UserService implements UserDetailsService { // UserDetailsService a
      * @return Kaydedilen User nesnesi.
      */
     public User registerUser(RegisterRequest registerRequest) {
-        if (userRepository.existsByEmail(registerRequest.getEmail())) {
+        String email = canonicalEmail(registerRequest.getEmail());
+        // Ignore-case existence (Codex 019ea573, #770 Phase 2): a same-email
+        // tombstone in ANY casing blocks create, so a case-variant cannot
+        // resurrect a soft-deleted identity into a fresh active row.
+        if (!StringUtils.hasText(email) || userRepository.findByEmailIgnoreCase(email).isPresent()) {
             throw new IllegalStateException("Bu email adresi zaten kullanılıyor.");
         }
 
         User newUser = new User();
         newUser.setName(registerRequest.getName());
-        newUser.setEmail(registerRequest.getEmail());
+        newUser.setEmail(email);
         // Parolayı şifreleyerek kaydediyoruz.
         newUser.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
         newUser.setSessionTimeoutMinutes(User.DEFAULT_SESSION_TIMEOUT_MINUTES);
@@ -245,13 +252,16 @@ public class UserService implements UserDetailsService { // UserDetailsService a
      * Hesap başlangıçta pasif (enabled=false) bırakılır, doğrulama sonrası admin tarafından aktifleştirilir.
      */
     public User registerUserPublic(RegisterRequest registerRequest) {
-        if (userRepository.existsByEmail(registerRequest.getEmail())) {
+        String email = canonicalEmail(registerRequest.getEmail());
+        // Ignore-case existence (Codex 019ea573, #770 Phase 2): same-email
+        // tombstone (any casing) blocks public register — no resurrection.
+        if (!StringUtils.hasText(email) || userRepository.findByEmailIgnoreCase(email).isPresent()) {
             throw new IllegalStateException("Bu email adresi zaten kullanılıyor.");
         }
 
         User newUser = new User();
         newUser.setName(registerRequest.getName());
-        newUser.setEmail(registerRequest.getEmail());
+        newUser.setEmail(email);
         newUser.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
         newUser.setEnabled(false);
         newUser.setRole("USER");
@@ -265,7 +275,9 @@ public class UserService implements UserDetailsService { // UserDetailsService a
     }
 
     public void activateUser(Long userId) {
-        User user = userRepository.findById(userId)
+        // Active-only (Codex 019ea573, #770 Phase 2): a stale email-verification
+        // token must not re-enable a soft-deleted tombstone.
+        User user = userRepository.findActiveById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("Kullanıcı bulunamadı: " + userId));
 
         if (!user.isEnabled()) {
@@ -275,7 +287,9 @@ public class UserService implements UserDetailsService { // UserDetailsService a
     }
 
     public void updatePasswordInternal(Long userId, String rawPassword) {
-        User user = userRepository.findById(userId)
+        // Active-only (Codex 019ea573, #770 Phase 2): a soft-deleted account's
+        // password must not be reset (no silent credential revival).
+        User user = userRepository.findActiveById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("Kullanıcı bulunamadı: " + userId));
 
         user.setPassword(passwordEncoder.encode(rawPassword));
@@ -284,7 +298,8 @@ public class UserService implements UserDetailsService { // UserDetailsService a
 
     @Transactional
     public void updateLastLogin(Long userId) {
-        User user = userRepository.findById(userId)
+        // Active-only (Codex 019ea573, #770 Phase 2): never touch a tombstone.
+        User user = userRepository.findActiveById(userId)
                 .orElseThrow(() -> new IllegalArgumentException("Kullanıcı bulunamadı: " + userId));
 
         user.setLastLogin(LocalDateTime.now());
@@ -294,12 +309,14 @@ public class UserService implements UserDetailsService { // UserDetailsService a
 
     @Transactional
     public User provisionFromKeycloak(KeycloakUserProvisionRequest request) {
-        String email = request.getEmail().trim();
-        Optional<User> existing = userRepository.findByEmail(email);
-        // No-resurrection guard (Codex 019ea573, #770 Phase 2): a soft-deleted
-        // row must never be silently reactivated/mutated by the internal
-        // provision path. Re-admitting the identity is an explicit admin
-        // restore, surfaced here as 409 USER_DELETED_RESTORE_REQUIRED.
+        String email = canonicalEmail(request.getEmail());
+        // Ignore-case lookup (Codex 019ea573, #770 Phase 2): catch a same-email
+        // tombstone regardless of casing so a mixed-case re-provision cannot
+        // create a duplicate active row alongside the soft-deleted one.
+        Optional<User> existing = userRepository.findByEmailIgnoreCase(email);
+        // No-resurrection guard: a soft-deleted row must never be silently
+        // reactivated/mutated by the internal provision path. Re-admitting the
+        // identity is an explicit admin restore → 409 USER_DELETED_RESTORE_REQUIRED.
         if (existing.isPresent() && existing.get().isDeleted()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "USER_DELETED_RESTORE_REQUIRED");
         }
@@ -594,6 +611,13 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         try {
             return requiresNewTransactionTemplate.execute(status -> {
                 User row = userRepository.findById(emailRow.getId()).orElse(emailRow);
+                // No-resurrection race guard (Codex 019ea573, #770 Phase 2): if
+                // the row was soft-deleted between the initial match and this
+                // backfill transaction, do not write to / version-bump the
+                // tombstone. The CurrentUserResolver choke point then blocks it.
+                if (row.isDeleted()) {
+                    return row;
+                }
                 if (!StringUtils.hasText(row.getKcSubject())) {
                     row.setKcSubject(kcSubject);
                     return userRepository.saveAndFlush(row);
@@ -628,16 +652,17 @@ public class UserService implements UserDetailsService { // UserDetailsService a
      * @param email Aranacak email adresi.
      * @return Opsiyonel olarak User nesnesi.
      */
-    public Optional<User> findByEmail(String email) {
-        return userRepository.findByEmail(email);
-    }
-
     /**
-     * Active-only (non-tombstoned) email lookup for read surfaces
-     * ({@code GET /by-email}) — a soft-deleted user is not returned
-     * (Codex 019ea573, #770 Phase 2).
+     * Email lookup backing read + internal-credential surfaces. Active-only
+     * (Codex 019ea573, #770 Phase 2): a soft-deleted user is never returned,
+     * so the V1 + legacy {@code GET /by-email} reads AND the auth-service
+     * internal credential endpoint ({@code GET /api/users/internal/by-email})
+     * all fail-closed for a tombstone — a deleted account cannot be read or
+     * used to authenticate (defends the deleted-but-enabled local-login path).
+     * Identity resolution and restore use tombstone-aware repository methods
+     * directly, not this service method.
      */
-    public Optional<User> findActiveByEmail(String email) {
+    public Optional<User> findByEmail(String email) {
         return userRepository.findActiveByEmail(email);
     }
 

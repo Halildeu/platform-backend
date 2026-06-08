@@ -106,7 +106,7 @@ class UserServiceTest {
         // --- ARRANGE (Hazırlık) ---
         // Mockito'ya, userRepository.existsByEmail metodu çağrıldığında
         // ne olursa olsun 'false' döndürmesini söylüyoruz.
-        when(userRepository.existsByEmail("test@example.com")).thenReturn(false);
+        when(userRepository.findByEmailIgnoreCase("test@example.com")).thenReturn(java.util.Optional.empty());
 
         // Parola şifreleme metodunun sahte bir şifrelenmiş değer döndürmesini sağlıyoruz.
         when(passwordEncoder.encode("password123")).thenReturn("hashed_password");
@@ -131,7 +131,7 @@ class UserServiceTest {
         // --- ARRANGE (Hazırlık) ---
         // Bu senaryoda, email'in zaten var olduğunu varsayıyoruz.
         // Mockito'ya, existsByEmail çağrıldığında 'true' döndürmesini söylüyoruz.
-        when(userRepository.existsByEmail("test@example.com")).thenReturn(true);
+        when(userRepository.findByEmailIgnoreCase("test@example.com")).thenReturn(java.util.Optional.of(user));
 
         // --- ACT & ASSERT (Eylem ve Doğrulama) ---
         // registerUser metodunun bir IllegalStateException fırlatıp fırlatmadığını test ediyoruz.
@@ -228,7 +228,7 @@ class UserServiceTest {
         request.setRole("USER");
         request.setKcSubject("kc-subject-uuid-fresh");
 
-        when(userRepository.findByEmail("new.user@example.com")).thenReturn(java.util.Optional.empty());
+        when(userRepository.findByEmailIgnoreCase("new.user@example.com")).thenReturn(java.util.Optional.empty());
         when(passwordEncoder.encode(any(String.class))).thenReturn("random-encoded");
         ArgumentCaptor<User> savedUser = ArgumentCaptor.forClass(User.class);
         when(userRepository.save(savedUser.capture())).thenAnswer(inv -> inv.getArgument(0));
@@ -257,7 +257,7 @@ class UserServiceTest {
         // kcSubject intentionally left null — older callers that don't
         // know about the field must NOT wipe a backfilled subject.
 
-        when(userRepository.findByEmail("existing@example.com")).thenReturn(java.util.Optional.of(existing));
+        when(userRepository.findByEmailIgnoreCase("existing@example.com")).thenReturn(java.util.Optional.of(existing));
         ArgumentCaptor<User> savedUser = ArgumentCaptor.forClass(User.class);
         when(userRepository.save(savedUser.capture())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -277,7 +277,7 @@ class UserServiceTest {
         request.setEnabled(true);
         // kcSubject left null
 
-        when(userRepository.findByEmail("legacy@example.com")).thenReturn(java.util.Optional.empty());
+        when(userRepository.findByEmailIgnoreCase("legacy@example.com")).thenReturn(java.util.Optional.empty());
         when(passwordEncoder.encode(any(String.class))).thenReturn("random-encoded");
         ArgumentCaptor<User> savedUser = ArgumentCaptor.forClass(User.class);
         when(userRepository.save(savedUser.capture())).thenAnswer(inv -> inv.getArgument(0));
@@ -308,17 +308,75 @@ class UserServiceTest {
         tombstone.setDeletedAt(java.time.LocalDateTime.now());
 
         KeycloakUserProvisionRequest request = new KeycloakUserProvisionRequest();
-        request.setEmail("ghost@example.com");
+        request.setEmail("Ghost@Example.COM"); // mixed-case → canonical → ignore-case tombstone hit (finding 3)
         request.setName("Resurrected?");
         request.setEnabled(true);
 
-        when(userRepository.findByEmail("ghost@example.com")).thenReturn(java.util.Optional.of(tombstone));
+        when(userRepository.findByEmailIgnoreCase("ghost@example.com")).thenReturn(java.util.Optional.of(tombstone));
 
         ResponseStatusException ex = assertThrows(ResponseStatusException.class,
                 () -> userService.provisionFromKeycloak(request));
         assertEquals(409, ex.getStatusCode().value());
         org.assertj.core.api.Assertions.assertThat(ex.getReason()).contains("USER_DELETED_RESTORE_REQUIRED");
         // The tombstone is never written (no reactivation / no name change).
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    /**
+     * Finding 2+4 (Codex thread 019ea6f6 REVISE): the shared by-email service
+     * method — backing V1/legacy GET /by-email AND the auth-service internal
+     * credential endpoint (/api/users/internal/by-email) — must be active-only
+     * so a deleted-but-enabled account cannot be read or used to authenticate.
+     */
+    @Test
+    void findByEmail_isActiveOnly_usesActiveRepoMethod() {
+        User active = new User();
+        active.setId(3L);
+        active.setEmail("live@example.com");
+        when(userRepository.findActiveByEmail("live@example.com")).thenReturn(java.util.Optional.of(active));
+
+        assertTrue(userService.findByEmail("live@example.com").isPresent());
+        verify(userRepository).findActiveByEmail("live@example.com");
+        verify(userRepository, never()).findByEmail("live@example.com");
+    }
+
+    /**
+     * Finding 3 (Codex 019ea6f6): a soft-deleted email (any casing) blocks
+     * re-registration via the ignore-case existence check — no case-variant
+     * resurrection into a fresh active row.
+     */
+    @Test
+    void registerUser_existingTombstoneAnyCase_blocks() {
+        User tombstone = new User();
+        tombstone.setEmail("test@example.com");
+        tombstone.setDeletedAt(java.time.LocalDateTime.now());
+        when(userRepository.findByEmailIgnoreCase("test@example.com")).thenReturn(java.util.Optional.of(tombstone));
+
+        assertThrows(IllegalStateException.class, () -> userService.registerUser(registerRequest));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    /**
+     * Finding 5 (Codex 019ea6f6): a stale email-verification token must not
+     * re-enable a soft-deleted tombstone — activateUser is active-only.
+     */
+    @Test
+    void activateUser_softDeleted_failsClosed() {
+        when(userRepository.findActiveById(99L)).thenReturn(java.util.Optional.empty());
+        assertThrows(IllegalArgumentException.class, () -> userService.activateUser(99L));
+        verify(userRepository, never()).save(any(User.class));
+    }
+
+    /**
+     * Finding 5 (Codex 019ea6f6): the legacy PUT /api/users/{id} calls
+     * updateUser directly (no controller precheck) — it must fail-closed for a
+     * tombstone so a deleted user cannot be mutated.
+     */
+    @Test
+    void updateUser_softDeleted_failsClosed() {
+        when(userRepository.findActiveById(99L)).thenReturn(java.util.Optional.empty());
+        assertThrows(IllegalArgumentException.class,
+                () -> userService.updateUser(99L, new com.example.user.dto.UpdateUserRequest()));
         verify(userRepository, never()).save(any(User.class));
     }
 
@@ -329,7 +387,7 @@ class UserServiceTest {
         // kc_subject null. Future callers that need impersonable users
         // must go through /internal/provision with a kcSubject value, or
         // run the backfill runbook afterwards.
-        when(userRepository.existsByEmail(any(String.class))).thenReturn(false);
+        when(userRepository.findByEmailIgnoreCase(any(String.class))).thenReturn(java.util.Optional.empty());
         when(passwordEncoder.encode(any(String.class))).thenReturn("hashed");
         ArgumentCaptor<User> savedUser = ArgumentCaptor.forClass(User.class);
         when(userRepository.save(savedUser.capture())).thenAnswer(inv -> inv.getArgument(0));

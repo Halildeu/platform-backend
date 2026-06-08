@@ -58,13 +58,27 @@ public class AuthenticatedUserLookupService {
                 tryParseLong(subject)
         );
 
+        // Soft-delete (Codex 019ea573, #770 Phase 2): when a soft-delete column
+        // is configured, a numeric id taken from a CLAIM (userId / uid /
+        // numeric sub) is NOT yet DB-verified — a still-valid JWT issued before
+        // (or after) the soft-delete would otherwise resolve a tombstoned
+        // user:<id> into the authz context. Validate it against the table; if
+        // it is a tombstone (or no longer present), suppress it so neither the
+        // numericUserId nor the responseUserId echoes a deleted identity. The
+        // email path below already filters tombstones via lookupUserIdByEmail.
+        boolean suppressedDeletedNumeric = false;
         if (numericUserId == null && email != null) {
             numericUserId = lookupUserIdByEmail(email);
+        } else if (numericUserId != null && softDeleteColumn != null && !isActiveById(numericUserId)) {
+            numericUserId = null;
+            suppressedDeletedNumeric = true;
         }
 
         String responseUserId = numericUserId != null
                 ? Long.toString(numericUserId)
-                : firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject);
+                : (suppressedDeletedNumeric
+                        ? null
+                        : firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject));
 
         return new ResolvedAuthenticatedUser(numericUserId, responseUserId, email);
     }
@@ -91,6 +105,28 @@ public class AuthenticatedUserLookupService {
         }
         Object idValue = rows.get(0).get("id");
         return idValue instanceof Number number ? number.longValue() : null;
+    }
+
+    /**
+     * Confirms the given numeric id is an <em>active</em> (non-tombstoned)
+     * row, used to validate a numeric claim when a soft-delete column is
+     * configured (Codex 019ea573, #770 Phase 2). Fail-open: when the column
+     * is unset or the table cannot be queried it returns {@code true} (no
+     * suppression) — the user-service {@code CurrentUserResolver} choke point
+     * remains the authoritative gate, this is defense-in-depth for the authz
+     * context.
+     */
+    private boolean isActiveById(long userId) {
+        if (softDeleteColumn == null || !hasQueryableLocalUserTable()) {
+            return true;
+        }
+        String sql = "select id from " + userTable + " where id = ? and " + softDeleteColumn + " is null limit 1";
+        try {
+            return !jdbcTemplate.queryForList(sql, userId).isEmpty();
+        } catch (DataAccessException ex) {
+            log.warn("Authenticated user active-by-id check failed. id={} cause={}", userId, ex.getMessage());
+            return true;
+        }
     }
 
     private boolean hasQueryableLocalUserTable() {
