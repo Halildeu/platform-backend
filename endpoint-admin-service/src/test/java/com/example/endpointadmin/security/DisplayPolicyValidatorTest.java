@@ -184,4 +184,33 @@ class DisplayPolicyValidatorTest {
                         "a".repeat(64), "image/svg+xml"))))
                 .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("contentType");
     }
+
+    // ---- Codex 019ea8be post-impl REVISE: canonical-form / DB-contract guards ----
+
+    @Test
+    void scrPathLeadingTrailingWhitespaceRejected() {
+        assertThatThrownBy(() -> DisplayPolicyValidator.validateScrPath(" " + SCR + " "))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("whitespace");
+    }
+
+    @Test
+    void parseStyleReturnsCanonicalEnum() {
+        org.assertj.core.api.Assertions.assertThat(DisplayPolicyValidator.parseStyle("fill"))
+                .isEqualTo(com.example.endpointadmin.model.WallpaperStyle.FILL);
+    }
+
+    @Test
+    void blankAssetRefPresentRejected() {
+        // wallpaper not enabled, but a blank assetRef is still present → reject
+        assertThatThrownBy(() -> DisplayPolicyValidator.validate(
+                enforce(null, new Wallpaper(false, null, null, "   ", null, null))))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("assetRef");
+    }
+
+    @Test
+    void reasonTooLongRejected() {
+        var req = new SetDisplayPolicyRequest(DisplayPolicyOperation.CLEAR, "x".repeat(513), null, null);
+        assertThatThrownBy(() -> DisplayPolicyValidator.validate(req))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("512");
+    }
 }

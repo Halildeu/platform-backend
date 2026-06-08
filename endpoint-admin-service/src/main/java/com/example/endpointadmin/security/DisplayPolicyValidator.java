@@ -46,6 +46,8 @@ public final class DisplayPolicyValidator {
 
     private static final int MAX_ASSET_REF_LEN = 512;
 
+    private static final int MAX_REASON_LEN = 512;
+
     private DisplayPolicyValidator() {
     }
 
@@ -60,6 +62,10 @@ public final class DisplayPolicyValidator {
         }
         if (isBlank(req.reason())) {
             throw new IllegalArgumentException("reason is required.");
+        }
+        if (req.reason().length() > MAX_REASON_LEN) {
+            throw new IllegalArgumentException(
+                    "reason must be at most " + MAX_REASON_LEN + " chars.");
         }
 
         if (req.operation() == DisplayPolicyOperation.CLEAR) {
@@ -121,6 +127,13 @@ public final class DisplayPolicyValidator {
             throw new IllegalArgumentException(
                     "screensaver.scrPath is required when the screensaver is enabled.");
         }
+        // exact-allowlist contract: no leading/trailing whitespace so the
+        // validated value IS the canonical allowlisted path (slice-2b persists
+        // it verbatim).
+        if (!scrPath.equals(scrPath.strip())) {
+            throw new IllegalArgumentException(
+                    "screensaver.scrPath must not have leading or trailing whitespace.");
+        }
         String trimmed = scrPath.trim();
         if (trimmed.startsWith("\\\\")) {
             throw new IllegalArgumentException("screensaver.scrPath must not be a UNC path.");
@@ -159,9 +172,16 @@ public final class DisplayPolicyValidator {
         } else if (w.style() != null) {
             validateStyle(w.style());
         }
-        if (w.assetRef() != null && w.assetRef().length() > MAX_ASSET_REF_LEN) {
-            throw new IllegalArgumentException(
-                    "wallpaper.assetRef must be at most " + MAX_ASSET_REF_LEN + " chars.");
+        if (w.assetRef() != null) {
+            // present assetRef must be non-blank (a blank value would otherwise
+            // count as a "meaningful" ENFORCE field yet carry nothing).
+            if (isBlank(w.assetRef())) {
+                throw new IllegalArgumentException("wallpaper.assetRef must not be blank.");
+            }
+            if (w.assetRef().length() > MAX_ASSET_REF_LEN) {
+                throw new IllegalArgumentException(
+                        "wallpaper.assetRef must be at most " + MAX_ASSET_REF_LEN + " chars.");
+            }
         }
         if (w.assetSha256() != null && !SHA256.matcher(w.assetSha256()).matches()) {
             throw new IllegalArgumentException(
@@ -176,11 +196,20 @@ public final class DisplayPolicyValidator {
 
     /** Fail-closed: the style must be a known {@link WallpaperStyle}. */
     public static void validateStyle(String style) {
+        parseStyle(style);
+    }
+
+    /**
+     * Fail-closed canonical parse: returns the {@link WallpaperStyle} for a
+     * case-insensitive name, else throws. slice-2b persists {@code .name()} so
+     * the stored value matches the V58 uppercase style CHECK domain.
+     */
+    public static WallpaperStyle parseStyle(String style) {
         if (isBlank(style)) {
             throw new IllegalArgumentException("wallpaper.style is required.");
         }
         try {
-            WallpaperStyle.valueOf(style.trim().toUpperCase(Locale.ROOT));
+            return WallpaperStyle.valueOf(style.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException ex) {
             throw new IllegalArgumentException(
                     "wallpaper.style must be one of CENTER, STRETCH, FIT, FILL, SPAN.");
