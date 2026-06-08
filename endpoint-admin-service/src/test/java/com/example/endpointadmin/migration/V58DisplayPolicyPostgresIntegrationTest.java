@@ -143,6 +143,90 @@ class V58DisplayPolicyPostgresIntegrationTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    @Test
+    void revisionCommandIdCrossOrgRejected() {
+        JdbcTemplate jdbc = migratedJdbc();
+        UUID tenantA = UUID.randomUUID();
+        UUID deviceA = insertDevice(jdbc, tenantA);
+        UUID tenantB = UUID.randomUUID();
+        UUID deviceB = insertDevice(jdbc, tenantB);
+        UUID commandB = insertCommandReturningId(jdbc, tenantB, deviceB, "SET_DISPLAY_POLICY");
+
+        // a revision under tenantA links a command owned by tenantB → composite
+        // FK (command_id, org_id) has no (commandB, tenantA) parent → violation
+        assertThatThrownBy(() -> insertEnforceRevisionWithCommand(jdbc, tenantA, deviceA, commandB))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void duplicateCommandIdRejected() {
+        JdbcTemplate jdbc = migratedJdbc();
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(jdbc, tenant);
+        UUID command = insertCommandReturningId(jdbc, tenant, device, "SET_DISPLAY_POLICY");
+
+        insertEnforceRevisionWithCommand(jdbc, tenant, device, command);
+        // a second revision linking the same command → ux_edpr_command violation
+        assertThatThrownBy(() -> insertEnforceRevisionWithCommand(jdbc, tenant, device, command))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void enforcePolicyWithClearedAtRejected() {
+        JdbcTemplate jdbc = migratedJdbc();
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(jdbc, tenant);
+        UUID rev = insertEnforceRevision(jdbc, tenant, device);
+        Timestamp now = Timestamp.from(Instant.now());
+
+        // operation=ENFORCE with cleared_at set → ck_edp_operation_cleared_state
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO " + SCHEMA + ".endpoint_display_policies "
+                        + "(id, tenant_id, device_id, scope_type, operation, current_revision_id, "
+                        + " screensaver_enabled, policy_hash_sha256, cleared_at, cleared_by_subject, "
+                        + " created_by_subject, created_at, last_updated_by_subject, last_updated_at) "
+                        + "VALUES (?, ?, ?, 'DEVICE', 'ENFORCE', ?, true, ?, ?, 'checker', "
+                        + " 'maker', ?, 'maker', ?)",
+                UUID.randomUUID(), tenant, device, rev, HASH, now, now, now))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void emptyEnforceRevisionRejected() {
+        JdbcTemplate jdbc = migratedJdbc();
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(jdbc, tenant);
+
+        // operation=ENFORCE with no desired-state snapshot → ck_edpr_enforce_not_empty
+        assertThatThrownBy(() -> jdbc.update(
+                "INSERT INTO " + SCHEMA + ".endpoint_display_policy_revisions "
+                        + "(id, tenant_id, device_id, scope_type, operation, "
+                        + " policy_hash_sha256, reason, created_by_subject, created_at) "
+                        + "VALUES (?, ?, ?, 'DEVICE', 'ENFORCE', ?, 'empty', 'maker', ?)",
+                UUID.randomUUID(), tenant, device, HASH, Timestamp.from(Instant.now())))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void lastEnforcementStatusDomainEnforced() {
+        JdbcTemplate jdbc = migratedJdbc();
+        UUID tenant = UUID.randomUUID();
+        UUID device = insertDevice(jdbc, tenant);
+        UUID rev = insertEnforceRevision(jdbc, tenant, device);
+
+        // invalid status → ck_edp_last_enforcement_status reject
+        assertThatThrownBy(() -> insertActivePolicyWithStatus(jdbc, tenant, device, rev, "BOGUS"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        // a valid status persists
+        insertActivePolicyWithStatus(jdbc, tenant, device, rev, "SUCCEEDED");
+        Integer ok = jdbc.queryForObject(
+                "SELECT count(*) FROM " + SCHEMA + ".endpoint_display_policies "
+                        + "WHERE device_id = ? AND last_enforcement_status = 'SUCCEEDED'",
+                Integer.class, device);
+        assertThat(ok).isEqualTo(1);
+    }
+
     // ------------------------------------------------------------------
     // seed helpers — org_id filled by endpoint_org_id_compat_fill() trigger
     // ------------------------------------------------------------------
@@ -159,10 +243,37 @@ class V58DisplayPolicyPostgresIntegrationTest {
     }
 
     private void insertCommand(JdbcTemplate jdbc, UUID tenant, UUID device, String type) {
+        insertCommandReturningId(jdbc, tenant, device, type);
+    }
+
+    private UUID insertCommandReturningId(JdbcTemplate jdbc, UUID tenant, UUID device, String type) {
+        UUID id = UUID.randomUUID();
         jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_commands "
                         + "(id, tenant_id, device_id, command_type, idempotency_key, "
                         + " issued_by_subject) VALUES (?, ?, ?, ?, ?, 'maker')",
-                UUID.randomUUID(), tenant, device, type, "idem-" + UUID.randomUUID());
+                id, tenant, device, type, "idem-" + UUID.randomUUID());
+        return id;
+    }
+
+    private void insertEnforceRevisionWithCommand(JdbcTemplate jdbc, UUID tenant, UUID device, UUID commandId) {
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_display_policy_revisions "
+                        + "(id, tenant_id, device_id, scope_type, operation, "
+                        + " screensaver_enabled, policy_hash_sha256, reason, command_id, "
+                        + " created_by_subject, created_at) "
+                        + "VALUES (?, ?, ?, 'DEVICE', 'ENFORCE', true, ?, 'r', ?, 'maker', ?)",
+                UUID.randomUUID(), tenant, device, HASH, commandId, Timestamp.from(Instant.now()));
+    }
+
+    private void insertActivePolicyWithStatus(JdbcTemplate jdbc, UUID tenant, UUID device,
+                                              UUID revId, String status) {
+        Timestamp now = Timestamp.from(Instant.now());
+        jdbc.update("INSERT INTO " + SCHEMA + ".endpoint_display_policies "
+                        + "(id, tenant_id, device_id, scope_type, operation, current_revision_id, "
+                        + " screensaver_enabled, policy_hash_sha256, last_enforcement_status, "
+                        + " created_by_subject, created_at, last_updated_by_subject, last_updated_at) "
+                        + "VALUES (?, ?, ?, 'DEVICE', 'ENFORCE', ?, true, ?, ?, "
+                        + " 'maker', ?, 'maker', ?)",
+                UUID.randomUUID(), tenant, device, revId, HASH, status, now, now);
     }
 
     private UUID insertEnforceRevision(JdbcTemplate jdbc, UUID tenant, UUID device) {

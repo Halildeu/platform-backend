@@ -89,9 +89,26 @@ CREATE TABLE endpoint_display_policy_revisions (
         CHECK (org_id IS NULL OR org_id = tenant_id),
     CONSTRAINT endpoint_display_policy_revisions_org_id_not_null
         CHECK (org_id IS NOT NULL),
+    -- an ENFORCE revision must carry at least one desired-state value; an empty
+    -- ENFORCE would be an ambiguous no-op that is neither CLEAR nor a policy.
+    CONSTRAINT ck_edpr_enforce_not_empty CHECK (
+        operation <> 'ENFORCE' OR (
+            screensaver_enabled IS NOT NULL OR screensaver_timeout_seconds IS NOT NULL
+            OR screensaver_secure IS NOT NULL OR screensaver_scr_path IS NOT NULL
+            OR wallpaper_enabled IS NOT NULL OR wallpaper_style IS NOT NULL
+            OR wallpaper_user_cannot_change IS NOT NULL OR wallpaper_asset_ref IS NOT NULL
+            OR wallpaper_asset_sha256 IS NOT NULL OR wallpaper_content_type IS NOT NULL
+        )
+    ),
     CONSTRAINT fk_edpr_device
         FOREIGN KEY (device_id, org_id)
-        REFERENCES endpoint_devices (id, org_id)
+        REFERENCES endpoint_devices (id, org_id),
+    -- org-composite provenance link to the generated maker-checker command
+    -- (append-only: slice-2 pre-generates both UUIDs or inserts the command
+    -- first, then the revision with command_id already populated).
+    CONSTRAINT fk_edpr_command
+        FOREIGN KEY (command_id, org_id)
+        REFERENCES endpoint_commands (id, org_id)
 );
 
 DROP TRIGGER IF EXISTS endpoint_display_policy_revisions_org_id_compat ON endpoint_display_policy_revisions;
@@ -100,6 +117,11 @@ CREATE TRIGGER endpoint_display_policy_revisions_org_id_compat BEFORE INSERT OR 
 
 CREATE INDEX idx_edpr_org_device_created
     ON endpoint_display_policy_revisions (org_id, device_id, created_at DESC);
+
+-- One revision per command (a maker-checker command backs exactly one revision).
+CREATE UNIQUE INDEX ux_edpr_command
+    ON endpoint_display_policy_revisions (org_id, command_id)
+    WHERE command_id IS NOT NULL;
 
 -- Append-only guard: reuse the shared append-only trigger if present, else a
 -- local BEFORE UPDATE/DELETE RAISE. The revision table must never be mutated.
@@ -179,6 +201,30 @@ CREATE TABLE endpoint_display_policies (
             AND wallpaper_user_cannot_change IS NULL AND wallpaper_asset_ref IS NULL
             AND wallpaper_asset_sha256 IS NULL AND wallpaper_content_type IS NULL
         )
+    ),
+    -- operation <-> lifecycle inverse: an ENFORCE row is active (not cleared),
+    -- a CLEAR row is cleared. Closes the gap where ENFORCE + cleared_at could
+    -- masquerade as an inactive policy (CLEAR removes managed keys; an
+    -- enabled=false snapshot is a managed-disabled ENFORCE, distinct from CLEAR).
+    CONSTRAINT ck_edp_operation_cleared_state CHECK (
+        (operation = 'ENFORCE' AND cleared_at IS NULL AND cleared_by_subject IS NULL)
+        OR (operation = 'CLEAR' AND cleared_at IS NOT NULL AND cleared_by_subject IS NOT NULL)
+    ),
+    -- an ENFORCE row must carry at least one desired-state value (no empty no-op)
+    CONSTRAINT ck_edp_enforce_not_empty CHECK (
+        operation <> 'ENFORCE' OR (
+            screensaver_enabled IS NOT NULL OR screensaver_timeout_seconds IS NOT NULL
+            OR screensaver_secure IS NOT NULL OR screensaver_scr_path IS NOT NULL
+            OR wallpaper_enabled IS NOT NULL OR wallpaper_style IS NOT NULL
+            OR wallpaper_user_cannot_change IS NOT NULL OR wallpaper_asset_ref IS NOT NULL
+            OR wallpaper_asset_sha256 IS NOT NULL OR wallpaper_content_type IS NOT NULL
+        )
+    ),
+    -- enforcement-result vocabulary (set by future command-result handling;
+    -- aligned with CommandResultStatus). Defined now so slice-2 cannot drift.
+    CONSTRAINT ck_edp_last_enforcement_status CHECK (
+        last_enforcement_status IS NULL
+        OR last_enforcement_status IN ('SUCCEEDED', 'FAILED', 'PARTIAL', 'UNSUPPORTED')
     ),
     CONSTRAINT endpoint_display_policies_org_id_match
         CHECK (org_id IS NULL OR org_id = tenant_id),
