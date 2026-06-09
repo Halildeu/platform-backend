@@ -26,6 +26,9 @@ class EndpointAdminAuthorizationAnnotationTest {
         // would let any read-scoped caller create queue items.
         assertClassRequires(AdminRolloutFailureController.class, EndpointAdminAuthz.VIEWER);
         assertClassRequires(AdminRolloutFailureSeedController.class, EndpointAdminAuthz.MANAGER);
+        // §9.3 metrics-snapshot write = MANAGER; §9.4 escalation preview = VIEWER.
+        assertClassRequires(AdminRolloutWaveMetricsController.class, EndpointAdminAuthz.MANAGER);
+        assertClassRequires(AdminRolloutFailureEscalationController.class, EndpointAdminAuthz.VIEWER);
     }
 
     @Test
