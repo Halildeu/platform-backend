@@ -25,6 +25,7 @@ public record AgentHeartbeatRequest(
         @NotBlank
         @Size(max = 128)
         String agentVersion,
+        @Size(max = 255) String activeUser,
 
         @Size(max = 255)
         String osVersion,

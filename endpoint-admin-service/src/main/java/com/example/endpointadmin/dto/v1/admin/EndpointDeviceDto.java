@@ -16,6 +16,7 @@ public record EndpointDeviceDto(
         OsType osType,
         String osVersion,
         String agentVersion,
+        String activeUser,
         String machineFingerprint,
         String domainName,
         DeploymentRing deploymentRing,

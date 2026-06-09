@@ -73,6 +73,17 @@ public class EndpointDevice {
     @Column(name = "agent_version", length = 128)
     private String agentVersion;
 
+    @Column(name = "active_user", length = 255)
+    private String activeUser;
+
+    public String getActiveUser() {
+        return activeUser;
+    }
+
+    public void setActiveUser(String activeUser) {
+        this.activeUser = activeUser;
+    }
+
     @Column(name = "machine_fingerprint", length = 512)
     private String machineFingerprint;
 

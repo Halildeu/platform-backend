@@ -65,6 +65,7 @@ public class EndpointDeviceService {
         device.setOsType(request.osType());
         device.setOsVersion(request.osVersion());
         device.setAgentVersion(request.agentVersion());
+        device.setActiveUser(request.activeUser());
         device.setMachineFingerprint(request.machineFingerprint());
         device.setDomainName(request.domainName());
         device.setStatus(DeviceStatus.ONLINE);
@@ -114,6 +115,7 @@ public class EndpointDeviceService {
                 device.getOsType(),
                 device.getOsVersion(),
                 device.getAgentVersion(),
+                device.getActiveUser(),
                 device.getMachineFingerprint(),
                 device.getDomainName(),
                 device.getDeploymentRing(),
