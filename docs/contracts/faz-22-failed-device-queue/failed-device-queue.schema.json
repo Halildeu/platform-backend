@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://platform.local/contracts/faz-22-failed-device-queue.schema.json",
+  "title": "Failed-Device Queue Contract (Faz 22.5, #520)",
+  "description": "Machine-enforced contract for the 50->800 rollout failed-device queue. v1 GATE: schema only; live ingest/enforcement deferred (see failed-device-queue-contract.md §9). Cross-AI design: Codex 019eaac8.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "queueItem", "event", "waveFailureReport"],
+  "properties": {
+    "schemaVersion": { "const": "failed-device-queue/v1" },
+    "failureClass": { "$ref": "#/$defs/failureClass" },
+    "queueState": { "$ref": "#/$defs/queueState" },
+    "queueItem": { "$ref": "#/$defs/queueItem" },
+    "event": { "$ref": "#/$defs/event" },
+    "waveFailureReport": { "$ref": "#/$defs/waveFailureReport" }
+  },
+  "$defs": {
+    "failureClass": {
+      "type": "string",
+      "enum": ["DNS_EDGE_MTLS", "CERT_IDENTITY", "INSTALLER_MSI", "SERVICE_HMAC_MODE", "BACKEND_RESULT_SUBMIT", "EDR_NETWORK"]
+    },
+    "queueState": {
+      "type": "string",
+      "enum": ["new", "retrying", "quarantined", "escalated", "resolved", "waived"]
+    },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "stopLineStatus": { "type": "string", "enum": ["clear", "stop_expansion", "required_review"] },
+    "uuid": { "type": "string", "format": "uuid" },
+    "hashHex": { "type": "string", "pattern": "^[0-9a-f]{8,64}$" },
+    "evidence": {
+      "description": "Per-class allowlisted redacted evidence. additionalProperties:false forbids raw last_error / tokens / PEM / full identifiers leaking in.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["class", "endpoint_host_hash", "edge_target", "observed_at"],
+          "properties": {
+            "class": { "const": "DNS_EDGE_MTLS" },
+            "endpoint_host_hash": { "$ref": "#/$defs/hashHex" },
+            "edge_target": { "type": "string" },
+            "dns_error_code": { "type": ["string", "null"] },
+            "tls_alert": { "type": ["string", "null"] },
+            "mtls_peer_cert_fingerprint_prefix": { "type": ["string", "null"] },
+            "observed_at": { "type": "string", "format": "date-time" },
+            "source": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["class", "device_id", "enrollment_status"],
+          "properties": {
+            "class": { "const": "CERT_IDENTITY" },
+            "device_id": { "$ref": "#/$defs/uuid" },
+            "cert_fingerprint_prefix": { "type": ["string", "null"] },
+            "issuer_id": { "type": ["string", "null"] },
+            "subject_san_hash": { "type": ["string", "null"] },
+            "enrollment_status": { "type": "string" },
+            "cert_not_before": { "type": ["string", "null"], "format": "date-time" },
+            "cert_not_after": { "type": ["string", "null"], "format": "date-time" },
+            "audit_event_id": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["class", "device_id", "msi_exit_code"],
+          "properties": {
+            "class": { "const": "INSTALLER_MSI" },
+            "device_id": { "$ref": "#/$defs/uuid" },
+            "msi_product_code": { "type": ["string", "null"] },
+            "msi_exit_code": { "type": "integer" },
+            "agent_version": { "type": ["string", "null"] },
+            "installer_phase": { "type": ["string", "null"] },
+            "log_excerpt_redacted": { "type": ["string", "null"] },
+            "gpo_assignment_id": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["class", "device_id", "service_state", "agent_mode"],
+          "properties": {
+            "class": { "const": "SERVICE_HMAC_MODE" },
+            "device_id": { "$ref": "#/$defs/uuid" },
+            "service_state": { "type": "string" },
+            "agent_mode": { "type": "string" },
+            "hmac_error_code": { "type": ["string", "null"] },
+            "last_heartbeat_at": { "type": ["string", "null"], "format": "date-time" },
+            "command_id": { "type": ["string", "null"] },
+            "agent_version": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["class", "device_id", "result_submit_http_status"],
+          "properties": {
+            "class": { "const": "BACKEND_RESULT_SUBMIT" },
+            "device_id": { "$ref": "#/$defs/uuid" },
+            "command_id": { "type": ["string", "null"] },
+            "result_submit_http_status": { "type": "integer" },
+            "backend_error_code": { "type": ["string", "null"] },
+            "request_id": { "type": ["string", "null"] },
+            "received_at": { "type": ["string", "null"], "format": "date-time" },
+            "idempotency_key_hash": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["class", "device_id", "edr_vendor"],
+          "properties": {
+            "class": { "const": "EDR_NETWORK" },
+            "device_id": { "$ref": "#/$defs/uuid" },
+            "network_segment_id": { "type": ["string", "null"] },
+            "edr_vendor": { "type": "string" },
+            "blocked_process_hash_prefix": { "type": ["string", "null"] },
+            "blocked_destination": { "type": ["string", "null"] },
+            "firewall_rule_id": { "type": ["string", "null"] },
+            "last_successful_contact_at": { "type": ["string", "null"], "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "queueItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "org_id", "rollout_id", "wave_id", "device_id", "current_class", "current_state", "retry_count", "max_retries", "first_detected_at", "last_observed_at", "last_transition_at", "evidence_redacted", "owner_role", "classification_confidence", "version"],
+      "properties": {
+        "id": { "$ref": "#/$defs/uuid" },
+        "org_id": { "$ref": "#/$defs/uuid" },
+        "rollout_id": { "type": "string" },
+        "wave_id": { "type": "string" },
+        "device_id": { "$ref": "#/$defs/uuid" },
+        "current_class": { "$ref": "#/$defs/failureClass" },
+        "current_state": { "$ref": "#/$defs/queueState" },
+        "retry_count": { "type": "integer", "minimum": 0 },
+        "max_retries": { "type": "integer", "minimum": 0 },
+        "first_detected_at": { "type": "string", "format": "date-time" },
+        "last_observed_at": { "type": "string", "format": "date-time" },
+        "last_transition_at": { "type": "string", "format": "date-time" },
+        "evidence_redacted": { "$ref": "#/$defs/evidence" },
+        "owner_role": { "type": "string" },
+        "stop_line_contribution": { "type": ["boolean", "null"] },
+        "escalation_issue_url": { "type": ["string", "null"], "format": "uri" },
+        "waiver_reason": { "type": ["string", "null"] },
+        "waived_by": { "type": ["string", "null"] },
+        "waived_until": { "type": ["string", "null"], "format": "date-time" },
+        "resolved_at": { "type": ["string", "null"], "format": "date-time" },
+        "resolution_summary": { "type": ["string", "null"] },
+        "classification_confidence": { "$ref": "#/$defs/confidence" },
+        "classifier_version": { "type": ["string", "null"] },
+        "version": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Append-only audit ledger row. Every state transition writes one (no silent transitions).",
+      "required": ["id", "failure_id", "event_type", "to_state", "class", "actor_type", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/uuid" },
+        "failure_id": { "$ref": "#/$defs/uuid" },
+        "event_type": { "type": "string", "enum": ["detected", "transition", "retry", "reclassified", "escalated", "waived", "reopened", "resolved"] },
+        "from_state": { "oneOf": [{ "$ref": "#/$defs/queueState" }, { "type": "null" }] },
+        "to_state": { "$ref": "#/$defs/queueState" },
+        "class": { "$ref": "#/$defs/failureClass" },
+        "source_signal": { "type": ["string", "null"] },
+        "redacted_evidence": { "oneOf": [{ "$ref": "#/$defs/evidence" }, { "type": "null" }] },
+        "actor_type": { "type": "string", "enum": ["auto", "operator", "system"] },
+        "actor_subject_hash": { "type": ["string", "null"] },
+        "classification_confidence": { "oneOf": [{ "$ref": "#/$defs/confidence" }, { "type": "null" }] },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "waveFailureReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Wave artifact export. stop_line_status is backend-COMPUTED (evaluator deferred, see contract §9.3).",
+      "required": ["schemaVersion", "rollout_id", "wave_id", "generated_at", "active_wave_size", "fleet_size", "wave_failed_count", "wave_failed_percent", "stale_24h_count", "stale_24h_percent", "stop_line_status", "per_class_counts", "enforcement"],
+      "properties": {
+        "schemaVersion": { "const": "failed-device-queue/v1" },
+        "rollout_id": { "type": "string" },
+        "wave_id": { "type": "string" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "active_wave_size": { "type": "integer", "minimum": 0 },
+        "fleet_size": { "type": "integer", "minimum": 0 },
+        "wave_failed_count": { "type": "integer", "minimum": 0 },
+        "wave_failed_percent": { "type": "number", "minimum": 0 },
+        "stale_24h_count": { "type": "integer", "minimum": 0 },
+        "stale_24h_percent": { "type": "number", "minimum": 0 },
+        "stop_line_status": { "$ref": "#/$defs/stopLineStatus" },
+        "per_class_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "DNS_EDGE_MTLS": { "type": "integer", "minimum": 0 },
+            "CERT_IDENTITY": { "type": "integer", "minimum": 0 },
+            "INSTALLER_MSI": { "type": "integer", "minimum": 0 },
+            "SERVICE_HMAC_MODE": { "type": "integer", "minimum": 0 },
+            "BACKEND_RESULT_SUBMIT": { "type": "integer", "minimum": 0 },
+            "EDR_NETWORK": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "sample_items": { "type": "array", "items": { "$ref": "#/$defs/queueItem" } },
+        "escalation_issue_refs": { "type": "array", "items": { "type": "string", "format": "uri" } },
+        "enforcement": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Honesty flags — v1 GATE has NO live enforcement. These MUST be false until the deferred follow-ups (contract §9) land.",
+          "required": ["live_ingest", "threshold_evaluator", "github_escalation_generator"],
+          "properties": {
+            "live_ingest": { "const": false },
+            "threshold_evaluator": { "const": false },
+            "github_escalation_generator": { "const": false }
+          }
+        }
+      }
+    }
+  }
+}
