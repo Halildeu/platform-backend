@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.model.RolloutFailureClass;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -60,7 +61,10 @@ public class FailedDeviceQueueSchemaValidator {
      * contract (wrong/missing class discriminator, off-allowlist key, missing
      * required field, non-redacted log excerpt, bad hash format, ...).
      */
-    public void validateEvidence(Map<String, Object> evidence) {
+    public void validateEvidence(RolloutFailureClass expectedClass, Map<String, Object> evidence) {
+        if (expectedClass == null) {
+            throw new IllegalArgumentException("failed-device-queue expectedClass is required");
+        }
         if (evidence == null) {
             throw new IllegalArgumentException("failed-device-queue evidence is required");
         }
@@ -69,6 +73,15 @@ public class FailedDeviceQueueSchemaValidator {
         if (!errors.isEmpty()) {
             throw new IllegalArgumentException(
                     "failed-device-queue evidence violates the contract schema: " + summarize(errors));
+        }
+        // Class binding (Codex 019eaaf3 must-fix 1): the evidence discriminator must
+        // match the aggregate's current_class — a valid-but-wrong-class evidence is
+        // rejected (the schema only binds evidence.class to its OWN shape).
+        Object evidenceClass = evidence.get("class");
+        if (!expectedClass.name().equals(evidenceClass)) {
+            throw new IllegalArgumentException(
+                    "failed-device-queue evidence.class (" + evidenceClass
+                            + ") does not match the failure class (" + expectedClass.name() + ")");
         }
     }
 

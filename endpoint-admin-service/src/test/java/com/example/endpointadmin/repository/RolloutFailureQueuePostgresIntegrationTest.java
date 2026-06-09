@@ -97,7 +97,7 @@ class RolloutFailureQueuePostgresIntegrationTest {
     void schemaValidatorRejectsOffAllowlistEvidence() {
         Map<String, Object> bad = hmacEvidence(UUID.randomUUID());
         bad.put("raw_last_error", "secret leaked");
-        assertThatThrownBy(() -> VALIDATOR.validateEvidence(bad))
+        assertThatThrownBy(() -> VALIDATOR.validateEvidence(RolloutFailureClass.SERVICE_HMAC_MODE, bad))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -167,12 +167,33 @@ class RolloutFailureQueuePostgresIntegrationTest {
         assertThat(report.thresholdEvaluation().reason()).isEqualTo("threshold_evaluator_deferred");
     }
 
+    @Test
+    void eventCannotAttachToAParentAggregateInAnotherOrg() {
+        UUID tenantA = UUID.randomUUID();
+        EndpointRolloutFailure agg = seedActive(tenantA, "rollout-g", "wave-1", UUID.randomUUID(),
+                RolloutFailureState.NEW);
+        // an event under a DIFFERENT org pointing at org-A's aggregate must be rejected
+        // by the org-composite FK (Codex 019eaaf3 must-fix 2).
+        EndpointRolloutFailureEvent crossOrg = new EndpointRolloutFailureEvent();
+        crossOrg.setId(UUID.randomUUID());
+        crossOrg.setTenantId(UUID.randomUUID()); // org B != org A
+        crossOrg.setFailureId(agg.getId());
+        crossOrg.setEventType(RolloutFailureEventType.TRANSITION);
+        crossOrg.setFromState(RolloutFailureState.NEW);
+        crossOrg.setToState(RolloutFailureState.RETRYING);
+        crossOrg.setFailureClass(RolloutFailureClass.SERVICE_HMAC_MODE);
+        crossOrg.setRedactedEvidence(hmacEvidence(UUID.randomUUID()));
+        crossOrg.setActorType(RolloutFailureActorType.SYSTEM);
+        assertThatThrownBy(() -> eventRepository.saveAndFlush(crossOrg))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
     // ---- fixture writer (goes through the SAME validator as a future ingest) ----
 
     private EndpointRolloutFailure seedActive(UUID tenant, String rolloutId, String waveId, UUID device,
                                               RolloutFailureState state) {
         Map<String, Object> evidence = hmacEvidence(device);
-        VALIDATOR.validateEvidence(evidence); // fail-closed before persist
+        VALIDATOR.validateEvidence(RolloutFailureClass.SERVICE_HMAC_MODE, evidence); // fail-closed before persist
 
         Instant now = Instant.now();
         EndpointRolloutFailure agg = new EndpointRolloutFailure();

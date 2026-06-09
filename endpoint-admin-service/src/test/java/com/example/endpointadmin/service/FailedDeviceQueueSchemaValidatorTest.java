@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.model.RolloutFailureClass;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -58,14 +59,14 @@ class FailedDeviceQueueSchemaValidatorTest {
 
     @Test
     void acceptsAllowlistedPerClassEvidence() {
-        VALIDATOR.validateEvidence(goodHmacEvidence());
+        VALIDATOR.validateEvidence(RolloutFailureClass.SERVICE_HMAC_MODE, goodHmacEvidence());
     }
 
     @Test
     void rejectsOffAllowlistKey() {
         Map<String, Object> bad = goodHmacEvidence();
         bad.put("raw_last_error", "secret token leaked");
-        assertThatThrownBy(() -> VALIDATOR.validateEvidence(bad))
+        assertThatThrownBy(() -> VALIDATOR.validateEvidence(RolloutFailureClass.SERVICE_HMAC_MODE, bad))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("contract schema");
     }
@@ -74,7 +75,7 @@ class FailedDeviceQueueSchemaValidatorTest {
     void rejectsMissingRequiredField() {
         Map<String, Object> bad = goodHmacEvidence();
         bad.remove("agent_version");
-        assertThatThrownBy(() -> VALIDATOR.validateEvidence(bad))
+        assertThatThrownBy(() -> VALIDATOR.validateEvidence(RolloutFailureClass.SERVICE_HMAC_MODE, bad))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -83,8 +84,17 @@ class FailedDeviceQueueSchemaValidatorTest {
         // SERVICE_HMAC_MODE body but tagged as an INSTALLER_MSI class.
         Map<String, Object> bad = goodHmacEvidence();
         bad.put("class", "INSTALLER_MSI");
-        assertThatThrownBy(() -> VALIDATOR.validateEvidence(bad))
+        assertThatThrownBy(() -> VALIDATOR.validateEvidence(RolloutFailureClass.SERVICE_HMAC_MODE, bad))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsCurrentClassMismatchEvenWhenTheEvidenceShapeIsValid() {
+        // valid SERVICE_HMAC_MODE evidence, but the aggregate claims INSTALLER_MSI.
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                () -> VALIDATOR.validateEvidence(RolloutFailureClass.INSTALLER_MSI, goodHmacEvidence()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not match the failure class");
     }
 
     private static String sha256(byte[] bytes) throws Exception {

@@ -64,6 +64,9 @@ CREATE TABLE endpoint_rollout_failure (
     updated_at                  TIMESTAMPTZ     NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_endpoint_rollout_failure PRIMARY KEY (id),
+    -- org-composite target so the event ledger FK can bind an event to its
+    -- parent's org (Codex 019eaaf3 must-fix 2 — no cross-org event attach).
+    CONSTRAINT uq_endpoint_rollout_failure_id_org UNIQUE (id, org_id),
     CONSTRAINT chk_erf_class
         CHECK (current_class IN ('DNS_EDGE_MTLS','CERT_IDENTITY','INSTALLER_MSI','SERVICE_HMAC_MODE','BACKEND_RESULT_SUBMIT','EDR_NETWORK')),
     CONSTRAINT chk_erf_state
@@ -109,7 +112,12 @@ CREATE TABLE endpoint_rollout_failure_event (
     created_at                  TIMESTAMPTZ     NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_endpoint_rollout_failure_event PRIMARY KEY (id),
-    CONSTRAINT fk_erfe_failure FOREIGN KEY (failure_id) REFERENCES endpoint_rollout_failure (id) ON DELETE CASCADE,
+    -- org-composite FK: an event can only attach to a parent aggregate in the
+    -- SAME org (Codex 019eaaf3 must-fix 2 — no cross-org event attach).
+    CONSTRAINT fk_erfe_failure FOREIGN KEY (failure_id, org_id)
+        REFERENCES endpoint_rollout_failure (id, org_id) ON DELETE CASCADE,
+    CONSTRAINT chk_erfe_subject_hash
+        CHECK (actor_subject_hash IS NULL OR actor_subject_hash ~ '^[0-9a-f]{8,64}$'),
     CONSTRAINT chk_erfe_event_type
         CHECK (event_type IN ('detected','transition','retry','reclassified','escalated','waived','reopened','resolved')),
     CONSTRAINT chk_erfe_from_state
