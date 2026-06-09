@@ -129,6 +129,7 @@ class EndpointAgentCommandServiceUninstallBranchTest {
                 uninstallPolicy,
                 uninstallAuditService,
                 commandSecretService,
+                event -> { },
                 fixed,
                 300L);
     }
