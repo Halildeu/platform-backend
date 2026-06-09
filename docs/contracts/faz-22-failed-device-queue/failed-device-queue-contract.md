@@ -109,8 +109,11 @@ terminal-immutable: a fresh failing observation reopens to `new` (audited).
 
 ## 5. Retry policy (per-class catalog)
 
-Each class+error-code carries: `retryable: true|false|conditional`,
-`max_retries`, `backoff`, `terminal_state_after_exhaustion`, `first_action_owner`.
+**v1 scope:** the table below is the **class-level default** policy. A per-
+error-code catalog (`retryable: true|false|conditional`, `backoff`,
+`terminal_state_after_exhaustion` keyed on the specific error code) is **deferred**
+to the ingest follow-up (§9.2) — the schema carries only `retry_count`/`max_retries`
+in v1. Do not cite an error-code catalog as existing.
 
 | Class | max_retries | Notes |
 |---|---|---|
@@ -191,6 +194,15 @@ must be cited as deferred wherever the contract is referenced:
 5. UI/reporting surface (if needed).
 
 ## 10. Honesty guards (contract self-check)
+
+**Machine-enforced** (not prose): `validate.py` proves the schema is valid Draft
+2020-12, the example validates against `$defs/waveFailureReport`, and a battery
+of NEGATIVE cases are REJECTED — class-binding (`current_class` ≠ `evidence.class`),
+the §4 transition matrix (e.g. `waived→resolved`, `resolved→new` without
+`reopened`), missing required evidence, a raw `last_error` injection, a
+non-redaction-marker `log_excerpt`, and an `enforcement` flag flipped true.
+Run `python3 validate.py` (13/13 must pass). The schema thus carries the
+contract's claims; the table below is the residual prose-level review checklist.
 
 A reference to this contract is **dishonest/unenforceable** if it:
 - says "STOP expansion enforced" before §9.3 lands (correct: "defined; enforcement deferred");
