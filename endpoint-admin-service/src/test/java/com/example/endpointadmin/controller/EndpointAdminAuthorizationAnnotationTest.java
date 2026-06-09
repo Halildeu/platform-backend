@@ -20,6 +20,15 @@ class EndpointAdminAuthorizationAnnotationTest {
     }
 
     @Test
+    void rolloutFailureControllersSeparateReadAndWriteRelations() {
+        // #528 read foundation = VIEWER at class level; #527 slice-1b seed write
+        // = MANAGER at class level. A regression to VIEWER on the seed controller
+        // would let any read-scoped caller create queue items.
+        assertClassRequires(AdminRolloutFailureController.class, EndpointAdminAuthz.VIEWER);
+        assertClassRequires(AdminRolloutFailureSeedController.class, EndpointAdminAuthz.MANAGER);
+    }
+
+    @Test
     void enrollmentControllerSeparatesReadAndWriteRelations() throws Exception {
         assertMethodRequires(AdminEndpointEnrollmentController.class, "createEnrollment", EndpointAdminAuthz.MANAGER);
         assertMethodRequires(AdminEndpointEnrollmentController.class, "listEnrollments", EndpointAdminAuthz.VIEWER);
