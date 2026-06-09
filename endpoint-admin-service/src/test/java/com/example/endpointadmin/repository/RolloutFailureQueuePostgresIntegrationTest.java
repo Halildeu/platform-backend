@@ -74,6 +74,7 @@ class RolloutFailureQueuePostgresIntegrationTest {
 
     @Autowired private EndpointRolloutFailureRepository failureRepository;
     @Autowired private EndpointRolloutFailureEventRepository eventRepository;
+    @Autowired private com.example.endpointadmin.repository.EndpointRolloutWaveMetricsSnapshotRepository snapshotRepository;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private EntityManager em;
 
@@ -157,14 +158,15 @@ class RolloutFailureQueuePostgresIntegrationTest {
         em.flush();
         em.clear();
 
-        RolloutFailureQueueReadService read = new RolloutFailureQueueReadService(failureRepository, eventRepository);
+        RolloutFailureQueueReadService read = new RolloutFailureQueueReadService(failureRepository, eventRepository,
+                new com.example.endpointadmin.service.rolloutfailure.WaveStopLineEvaluator(snapshotRepository));
         WaveFailureQueueReportResponse report = read.waveReport(tenant, "rollout-f", "wave-1", Instant.now());
 
         assertThat(report.activeCount()).isEqualTo(2);
         assertThat(report.activeCountByClass()).containsEntry("SERVICE_HMAC_MODE", 2L);
         assertThat(report.thresholdEvaluation().available()).isFalse();
         assertThat(report.thresholdEvaluation().enforcementFlag()).isFalse();
-        assertThat(report.thresholdEvaluation().reason()).isEqualTo("threshold_evaluator_deferred");
+        assertThat(report.thresholdEvaluation().reason()).isEqualTo("metrics_snapshot_missing");
     }
 
     @Test
