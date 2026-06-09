@@ -22,10 +22,11 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * #527 slice-1 — READ projection over the failed-device rollout queue. No write
- * path (ingest is slice-2). The wave report is a queue projection (active counts
- * only); it never emits an enforced stop_line_status — the threshold evaluator is
- * deferred (contract §9.3), surfaced as {@code thresholdEvaluation.available=false}.
+ * #527 — READ projection over the failed-device rollout queue (active counts by
+ * class/state). The wave report's thresholdEvaluation is now COMPUTED + ADVISORY
+ * (§9.3): when an orchestrator metrics snapshot exists, {@link WaveStopLineEvaluator}
+ * computes §6's stop_line_status (enforcement still deferred — enforcementFlag is
+ * always false); with no snapshot it is {@code available=false} / deferred.
  */
 @Service
 public class RolloutFailureQueueReadService {
@@ -34,11 +35,14 @@ public class RolloutFailureQueueReadService {
 
     private final EndpointRolloutFailureRepository failureRepository;
     private final EndpointRolloutFailureEventRepository eventRepository;
+    private final com.example.endpointadmin.service.rolloutfailure.WaveStopLineEvaluator stopLineEvaluator;
 
     public RolloutFailureQueueReadService(EndpointRolloutFailureRepository failureRepository,
-                                          EndpointRolloutFailureEventRepository eventRepository) {
+                                          EndpointRolloutFailureEventRepository eventRepository,
+                                          com.example.endpointadmin.service.rolloutfailure.WaveStopLineEvaluator stopLineEvaluator) {
         this.failureRepository = failureRepository;
         this.eventRepository = eventRepository;
+        this.stopLineEvaluator = stopLineEvaluator;
     }
 
     /** Active items for a wave, optionally filtered by class / device. */
@@ -87,7 +91,7 @@ public class RolloutFailureQueueReadService {
         return new WaveFailureQueueReportResponse(
                 SCHEMA_VERSION, rolloutId, waveId, generatedAt,
                 active.size(), byClass, byState, stopLineContribution,
-                WaveThresholdEvaluation.deferred());
+                stopLineEvaluator.evaluate(tenantId, rolloutId, waveId, active.size()));
     }
 
     private static RolloutFailureItemResponse toItem(EndpointRolloutFailure f) {
