@@ -23,6 +23,7 @@ public record ConsumeEnrollmentRequest(
         @NotBlank
         @Size(max = 128)
         String agentVersion,
+        String activeUser,
 
         @NotBlank
         @Size(max = 512)

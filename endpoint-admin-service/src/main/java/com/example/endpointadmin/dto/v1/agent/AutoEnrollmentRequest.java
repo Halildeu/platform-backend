@@ -39,6 +39,7 @@ public record AutoEnrollmentRequest(
         @NotBlank
         @Size(max = 128)
         String agentVersion,
+        String activeUser,
 
         @Min(1)
         Integer schemaVersion

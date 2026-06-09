@@ -286,6 +286,7 @@ public class MachineCertAutoEnrollService {
         device.setOsType(parseOsType(request.osName()));
         device.setOsVersion(composeOsVersion(request.osVersion(), request.osBuild()));
         device.setAgentVersion(request.agentVersion());
+        device.setActiveUser(request.activeUser());
         device.setMachineFingerprint(request.machineFingerprint());
         device.setDomainName(request.domain());
         device.setStatus(DeviceStatus.ONLINE);

@@ -121,6 +121,7 @@ public final class DeviceGridColumns {
             new GridColumn("os_type", "d.os_type", ColumnType.ENUM, false, "İşletim Sistemi"),
             new GridColumn("os_version", "d.os_version", ColumnType.TEXT, true, "OS Sürümü"),
             new GridColumn("agent_version", "d.agent_version", ColumnType.TEXT, true, "Ajan Sürümü"),
+            new GridColumn("active_user", "d.active_user", ColumnType.TEXT, true, "Aktif Kullanıcı"),
             new GridColumn("domain_name", "d.domain_name", ColumnType.TEXT, true, "Etki Alanı"),
             new GridColumn("status", "d.status", ColumnType.ENUM, false, "Durum"),
             new GridColumn("last_seen_at", "d.last_seen_at", ColumnType.TIMESTAMP, false, "Son Görülme"),

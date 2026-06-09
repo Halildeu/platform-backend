@@ -54,11 +54,15 @@ public class EndpointHeartbeatService {
         }
 
         String agentVersion = trimToNull(request.agentVersion());
+        String activeUser = trimToNull(request.activeUser());
         String osVersion = trimToNull(request.osVersion());
         OsType osType = request.resolvedOsType();
 
         device.setStatus(DeviceStatus.ONLINE);
         device.setLastSeenAt(now);
+        if (activeUser != null) {
+            device.setActiveUser(activeUser);
+        }
         if (agentVersion != null) {
             device.setAgentVersion(agentVersion);
         }
