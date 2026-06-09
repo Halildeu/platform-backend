@@ -76,8 +76,8 @@ except Exception as ex:
 results.append(ok("example export validates (waveFailureReport)", valid("waveFailureReport", EXAMPLE)))
 results.append(ok("good queueItem validates", valid("queueItem", GOOD_ITEM)))
 results.append(ok("good event new->retrying validates", valid("event", event())))
-results.append(ok("good detected event (no from_state) validates",
-                  valid("event", event(event_type="detected", from_state=None))))
+results.append(ok("good detected event (-> new, no from_state) validates",
+                  valid("event", event(event_type="detected", from_state=None, to_state="new"))))
 
 # 3. NEGATIVE cases must be REJECTED
 bad_class_item = dict(GOOD_ITEM, current_class="DNS_EDGE_MTLS")  # evidence is still HMAC
@@ -89,6 +89,10 @@ results.append(ok("REJECT: transition resolved->new without reopened/source_sign
                   not valid("event", event(from_state="resolved", to_state="new", event_type="transition"))))
 results.append(ok("REJECT: non-detected event missing from_state",
                   not valid("event", event(from_state=None))))
+results.append(ok("REJECT: detected event jumping to a non-new state",
+                  not valid("event", event(event_type="detected", from_state=None, to_state="waived"))))
+results.append(ok("REJECT: detected event carrying a from_state",
+                  not valid("event", event(event_type="detected", from_state="new", to_state="new"))))
 
 raw_leak = dict(HMAC_EV); raw_leak["raw_last_error"] = "secret token leaked"
 results.append(ok("REJECT: evidence carrying raw_last_error (allowlist)", not valid("evidence", raw_leak)))

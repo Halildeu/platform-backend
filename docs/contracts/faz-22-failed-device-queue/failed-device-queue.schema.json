@@ -187,6 +187,7 @@
       },
       "allOf": [
         { "if": { "properties": { "event_type": { "not": { "const": "detected" } } } }, "then": { "required": ["from_state"], "properties": { "from_state": { "$ref": "#/$defs/queueState" } } } },
+        { "if": { "required": ["event_type"], "properties": { "event_type": { "const": "detected" } } }, "then": { "properties": { "to_state": { "const": "new" }, "from_state": { "type": "null" } } } },
         { "if": { "required": ["from_state"], "properties": { "from_state": { "const": "new" } } }, "then": { "properties": { "to_state": { "enum": ["retrying", "quarantined", "escalated", "resolved", "waived"] } } } },
         { "if": { "required": ["from_state"], "properties": { "from_state": { "const": "retrying" } } }, "then": { "properties": { "to_state": { "enum": ["retrying", "quarantined", "escalated", "resolved", "waived"] } } } },
         { "if": { "required": ["from_state"], "properties": { "from_state": { "const": "quarantined" } } }, "then": { "properties": { "to_state": { "enum": ["retrying", "escalated", "resolved", "waived"] } } } },
