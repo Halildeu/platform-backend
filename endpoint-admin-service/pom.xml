@@ -175,6 +175,14 @@
             <version>1.78.1</version>
             <scope>test</scope>
         </dependency>
+        <!-- #527: validate failed-device-queue evidence against the merged
+             contract JSON schema (Draft 2020-12) at the service boundary. Same
+             version as report-service. -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <version>1.5.4</version>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
