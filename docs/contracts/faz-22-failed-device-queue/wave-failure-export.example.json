@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "failed-device-queue/v1",
+  "rollout_id": "rollout-2026-q3-agent-0.2.x",
+  "wave_id": "wave-02-pilot-50",
+  "generated_at": "2026-06-09T04:30:00Z",
+  "active_wave_size": 50,
+  "fleet_size": 800,
+  "wave_failed_count": 4,
+  "wave_failed_percent": 8.0,
+  "stale_24h_count": 9,
+  "stale_24h_percent": 1.125,
+  "stop_line_status": "stop_expansion",
+  "per_class_counts": {
+    "DNS_EDGE_MTLS": 1,
+    "CERT_IDENTITY": 0,
+    "INSTALLER_MSI": 1,
+    "SERVICE_HMAC_MODE": 2,
+    "BACKEND_RESULT_SUBMIT": 0,
+    "EDR_NETWORK": 0
+  },
+  "sample_items": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "org_id": "00000000-0000-0000-0000-000000000001",
+      "rollout_id": "rollout-2026-q3-agent-0.2.x",
+      "wave_id": "wave-02-pilot-50",
+      "device_id": "d0efb00a-681a-4e32-b7de-a27ef94f2977",
+      "current_class": "SERVICE_HMAC_MODE",
+      "current_state": "retrying",
+      "retry_count": 1,
+      "max_retries": 2,
+      "first_detected_at": "2026-06-09T03:55:00Z",
+      "last_observed_at": "2026-06-09T04:25:00Z",
+      "last_transition_at": "2026-06-09T04:25:00Z",
+      "evidence_redacted": {
+        "class": "SERVICE_HMAC_MODE",
+        "device_id": "d0efb00a-681a-4e32-b7de-a27ef94f2977",
+        "service_state": "running",
+        "agent_mode": "hmac",
+        "hmac_error_code": "HMAC_CONN_RESET",
+        "last_heartbeat_at": "2026-06-09T04:00:25Z",
+        "command_id": null,
+        "agent_version": "0.2.0"
+      },
+      "owner_role": "endpoint-agent operator",
+      "stop_line_contribution": true,
+      "escalation_issue_url": null,
+      "waiver_reason": null,
+      "waived_by": null,
+      "waived_until": null,
+      "resolved_at": null,
+      "resolution_summary": null,
+      "classification_confidence": "high",
+      "classifier_version": "rules-v1",
+      "version": 2
+    },
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "org_id": "00000000-0000-0000-0000-000000000001",
+      "rollout_id": "rollout-2026-q3-agent-0.2.x",
+      "wave_id": "wave-02-pilot-50",
+      "device_id": "07330828-a336-4025-8b60-cf2000f8b882",
+      "current_class": "INSTALLER_MSI",
+      "current_state": "escalated",
+      "retry_count": 2,
+      "max_retries": 2,
+      "first_detected_at": "2026-06-09T02:10:00Z",
+      "last_observed_at": "2026-06-09T03:40:00Z",
+      "last_transition_at": "2026-06-09T03:45:00Z",
+      "evidence_redacted": {
+        "class": "INSTALLER_MSI",
+        "device_id": "07330828-a336-4025-8b60-cf2000f8b882",
+        "msi_product_code": "{A1B2C3D4-0000-0000-0000-000000000000}",
+        "msi_exit_code": 1603,
+        "agent_version": "0.2.0",
+        "installer_phase": "InstallFinalize",
+        "log_excerpt_redacted": "[redacted: fatal during InstallFinalize, exit 1603]",
+        "gpo_assignment_id": "gpo-agent-pilot-02"
+      },
+      "owner_role": "endpoint packaging / IT desktop",
+      "stop_line_contribution": true,
+      "escalation_issue_url": "https://github.com/Halildeu/platform-k8s-gitops/issues/9001",
+      "waiver_reason": null,
+      "waived_by": null,
+      "waived_until": null,
+      "resolved_at": null,
+      "resolution_summary": null,
+      "classification_confidence": "high",
+      "classifier_version": "rules-v1",
+      "version": 4
+    }
+  ],
+  "escalation_issue_refs": [
+    "https://github.com/Halildeu/platform-k8s-gitops/issues/9001"
+  ],
+  "enforcement": {
+    "live_ingest": false,
+    "threshold_evaluator": false,
+    "github_escalation_generator": false
+  }
+}
