@@ -147,6 +147,7 @@ class EndpointEnrollmentServiceTest {
                 OsType.WINDOWS,
                 "Windows 11 Pro",
                 "0.1.0",
+                null,
                 fingerprint,
                 "corp.local"
         );
