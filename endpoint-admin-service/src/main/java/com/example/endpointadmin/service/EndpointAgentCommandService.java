@@ -70,6 +70,7 @@ public class EndpointAgentCommandService {
     private final UninstallEvidencePayloadPolicy uninstallEvidencePayloadPolicy;
     private final EndpointUninstallAuditService uninstallAuditService;
     private final EndpointCommandSecretService commandSecretService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
     private final Clock clock;
     private final Duration claimTtl;
 
@@ -114,6 +115,7 @@ public class EndpointAgentCommandService {
                                        UninstallEvidencePayloadPolicy uninstallEvidencePayloadPolicy,
                                        EndpointUninstallAuditService uninstallAuditService,
                                        EndpointCommandSecretService commandSecretService,
+                                       org.springframework.context.ApplicationEventPublisher eventPublisher,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.claim-ttl-seconds:300}") long claimTtlSeconds) {
         this.commandRepository = commandRepository;
@@ -141,6 +143,7 @@ public class EndpointAgentCommandService {
         this.uninstallEvidencePayloadPolicy = uninstallEvidencePayloadPolicy;
         this.uninstallAuditService = uninstallAuditService;
         this.commandSecretService = commandSecretService;
+        this.eventPublisher = eventPublisher;
         this.clock = clock;
         this.claimTtl = Duration.ofSeconds(Math.max(30L, claimTtlSeconds));
     }
@@ -391,6 +394,18 @@ public class EndpointAgentCommandService {
 
         commandRepository.saveAndFlush(command);
         resultRepository.saveAndFlush(result);
+
+        // Faz 22.5 #527 §9.2: a terminal NON-success result is an auto-ingest
+        // candidate for the rollout failed-device queue. Publish within this
+        // transaction; the AFTER_COMMIT listener classifies + seeds advisorily
+        // (its own transaction, exceptions swallowed) so it never affects this
+        // result submission. Success results are not candidates.
+        if (request.status() != CommandResultStatus.SUCCEEDED) {
+            eventPublisher.publishEvent(
+                    new com.example.endpointadmin.service.rolloutfailure.CommandResultFailedEvent(
+                            command.getTenantId(), command.getDevice().getId(),
+                            result.getId(), command.getCommandType()));
+        }
 
         // BE-020I + BE-022: only ingest inventory on a SUCCEEDED
         // COLLECT_INVENTORY result. Both ingest paths receive the

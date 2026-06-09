@@ -18,4 +18,12 @@ public interface EndpointRolloutFailureRepository extends JpaRepository<Endpoint
 
     List<EndpointRolloutFailure> findByTenantIdAndRolloutIdAndWaveIdOrderByLastTransitionAtDesc(
             UUID tenantId, String rolloutId, String waveId);
+
+    /**
+     * #527 §9.2 auto-ingest — device-scoped lookup. The auto-ingest virtual wave
+     * ({@code <failureClass>}) is NOT bounded like a real 50..800 rollout wave,
+     * so the in-memory full-wave scan is replaced with a device-targeted query.
+     */
+    List<EndpointRolloutFailure> findByTenantIdAndRolloutIdAndWaveIdAndDeviceId(
+            UUID tenantId, String rolloutId, String waveId, UUID deviceId);
 }

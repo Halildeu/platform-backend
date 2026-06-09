@@ -10,4 +10,7 @@ import java.util.UUID;
 public interface EndpointRolloutFailureEventRepository extends JpaRepository<EndpointRolloutFailureEvent, UUID> {
 
     List<EndpointRolloutFailureEvent> findByTenantIdAndFailureIdOrderByCreatedAtAsc(UUID tenantId, UUID failureId);
+
+    /** #527 §9.2 auto-ingest — source-result replay/double-listener idempotency guard. */
+    boolean existsByTenantIdAndFailureIdAndSourceSignal(UUID tenantId, UUID failureId, String sourceSignal);
 }
