@@ -62,7 +62,12 @@ jobs:
           if-no-files-found: warn
 
       - name: Sticky PR comment
-        if: always() && github.event_name == 'pull_request'
+        # Fork PRs run with a read-only GITHUB_TOKEN — comment creation 403s
+        # ("Resource not accessible by integration") and false-reds the job even
+        # when the gate test itself passed (live case: PR #534). Skip for forks;
+        # the gate verdict still fails the job via "Propagate gate failure" and
+        # the uploaded artifact carries the report for reviewers.
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: report-contract-gate
