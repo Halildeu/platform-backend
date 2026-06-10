@@ -117,12 +117,34 @@ public class AudioGatewayProperties {
      * RedisStreamsAudioChunkDispatcher bean register).
      */
     public static class Dispatcher {
-        /** Supported modes in PR-gw-01B3. PR-gw-01C ekleyecek: redis. */
-        private static final java.util.Set<String> SUPPORTED_MODES_B3 = java.util.Set.of("noop");
+        /**
+         * Supported modes. PR-gw-01B3 shipped {@code noop}; PR-gw-01C (#106) adds
+         * {@code redis} — the cross-server Redis Streams producer.
+         */
+        private static final java.util.Set<String> SUPPORTED_MODES = java.util.Set.of("noop", "redis");
 
         private String mode = "noop";
         private long queueFullRetryAfterSeconds = 5L;
         private long unavailableRetryAfterSeconds = 30L;
+
+        // PR-gw-01C (#106) Redis Streams producer config — no hard-coded values.
+        // Partition-based keys (Codex 019e97bb iter-1 absorb + ADR-0031 D3):
+        // audio:chunks:p00..p31, key = prefix + hash(tenantId+sessionId) % partitionCount.
+        // Per-tenant keys were rejected: 100+ tenants explode the Redis keyspace and
+        // defeat consumer-group horizontal scale.
+        private String streamKeyPrefix = "audio:chunks:p";
+        private int partitionCount = 32;
+        private long streamMaxLen = 10_000L;
+
+        // P2-1 (review iter-2): Codex 8-scenario 429/503 + Retry-After enumeration.
+        // Consumer-lag gate is producer-side XPENDING introspection on the
+        // live-stt-v1 consumer group (ADR-0031 D3); transient cluster failover
+        // gets a short retry (5s) vs hard outage (30s).
+        private String consumerGroup = "live-stt-v1";
+        private long consumerLagPendingThreshold = 10_000L;
+        private long consumerLagRetryAfterSeconds = 10L;
+        private long consumerIdleThresholdMs = 60_000L;
+        private long failoverRetryAfterSeconds = 5L;
 
         public String getMode() {
             return mode;
@@ -138,12 +160,49 @@ public class AudioGatewayProperties {
          * {@code @PostConstruct} bean lifecycle olarak çağrılmaz).
          */
         public void validate() {
-            if (!SUPPORTED_MODES_B3.contains(mode)) {
+            if (!SUPPORTED_MODES.contains(mode)) {
                 throw new IllegalStateException(
-                        "audio.gateway.dispatcher.mode='" + mode + "' not supported in PR-gw-01B3 — "
-                        + "only 'noop' currently. 'redis' arrives in PR-gw-01C with cross-server "
-                        + "Streams producer. Supported: " + SUPPORTED_MODES_B3);
+                        "audio.gateway.dispatcher.mode='" + mode + "' not supported — "
+                        + "supported modes: " + SUPPORTED_MODES);
             }
+            if (streamMaxLen <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.dispatcher.stream-max-len must be positive, got " + streamMaxLen);
+            }
+            // %02d key suffix formatting caps the usable partition range at 100.
+            if (partitionCount < 1 || partitionCount > 100) {
+                throw new IllegalStateException(
+                        "audio.gateway.dispatcher.partition-count must be in [1,100], got " + partitionCount);
+            }
+            if (consumerLagPendingThreshold <= 0 || consumerIdleThresholdMs <= 0
+                    || consumerLagRetryAfterSeconds <= 0 || failoverRetryAfterSeconds <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.dispatcher consumer-lag/failover thresholds must be positive");
+            }
+        }
+
+        public int getPartitionCount() {
+            return partitionCount;
+        }
+
+        public void setPartitionCount(final int partitionCount) {
+            this.partitionCount = partitionCount;
+        }
+
+        public String getStreamKeyPrefix() {
+            return streamKeyPrefix;
+        }
+
+        public void setStreamKeyPrefix(final String streamKeyPrefix) {
+            this.streamKeyPrefix = streamKeyPrefix;
+        }
+
+        public long getStreamMaxLen() {
+            return streamMaxLen;
+        }
+
+        public void setStreamMaxLen(final long streamMaxLen) {
+            this.streamMaxLen = streamMaxLen;
         }
 
         public long getQueueFullRetryAfterSeconds() {
@@ -160,6 +219,46 @@ public class AudioGatewayProperties {
 
         public void setUnavailableRetryAfterSeconds(final long unavailableRetryAfterSeconds) {
             this.unavailableRetryAfterSeconds = unavailableRetryAfterSeconds;
+        }
+
+        public String getConsumerGroup() {
+            return consumerGroup;
+        }
+
+        public void setConsumerGroup(final String consumerGroup) {
+            this.consumerGroup = consumerGroup;
+        }
+
+        public long getConsumerLagPendingThreshold() {
+            return consumerLagPendingThreshold;
+        }
+
+        public void setConsumerLagPendingThreshold(final long consumerLagPendingThreshold) {
+            this.consumerLagPendingThreshold = consumerLagPendingThreshold;
+        }
+
+        public long getConsumerLagRetryAfterSeconds() {
+            return consumerLagRetryAfterSeconds;
+        }
+
+        public void setConsumerLagRetryAfterSeconds(final long consumerLagRetryAfterSeconds) {
+            this.consumerLagRetryAfterSeconds = consumerLagRetryAfterSeconds;
+        }
+
+        public long getConsumerIdleThresholdMs() {
+            return consumerIdleThresholdMs;
+        }
+
+        public void setConsumerIdleThresholdMs(final long consumerIdleThresholdMs) {
+            this.consumerIdleThresholdMs = consumerIdleThresholdMs;
+        }
+
+        public long getFailoverRetryAfterSeconds() {
+            return failoverRetryAfterSeconds;
+        }
+
+        public void setFailoverRetryAfterSeconds(final long failoverRetryAfterSeconds) {
+            this.failoverRetryAfterSeconds = failoverRetryAfterSeconds;
         }
     }
 
