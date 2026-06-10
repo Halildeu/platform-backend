@@ -35,7 +35,14 @@ public class PermissionCatalogService {
             // mega-menü yalnız bir UI gruplamasıdır, authorization boundary
             // değil; bu yüzden tek HR modülü değil iki ayrı modül kullanılır.
             new ModuleCatalogItem("SUGGESTIONS", "Öneri ve Fikir", List.of("VIEW", "MANAGE")),
-            new ModuleCatalogItem("ETHIC", "Etik Raporlama", List.of("VIEW", "MANAGE"))
+            new ModuleCatalogItem("ETHIC", "Etik Raporlama", List.of("VIEW", "MANAGE")),
+            // Faz 22.5 GA (gitops#1440): endpoint-admin module joins the catalog so
+            // the access UI role drawer can grant it (until now grants required an
+            // out-of-band OpenFGA tuple seed — RB-22-1-1) and /authz/me resolves it
+            // for tuple-holders. Deliberately NOT seeded into the ADMIN role by
+            // PermissionDataInitializer: owner decision (2026-06-10) keeps device
+            // management opt-in per user/role, not blanket-admin.
+            new ModuleCatalogItem("ENDPOINT_ADMIN", "Cihaz Kayıt Yönetimi", List.of("VIEW", "MANAGE"))
     );
 
     private static final List<ActionCatalogItem> ACTIONS = List.of(
