@@ -51,6 +51,19 @@ class PermissionCatalogServiceModulesTest {
     }
 
     @Test
+    void catalogExposesEndpointAdminModule() {
+        // Faz 22.5 GA (gitops#1440): without this entry the access UI role
+        // drawer cannot grant ENDPOINT_ADMIN and /authz/me never resolves it
+        // (the resolver iterates getModuleKeys()) — grants then require an
+        // out-of-band OpenFGA tuple seed.
+        ModuleCatalogItem endpointAdmin = module("ENDPOINT_ADMIN")
+                .orElseThrow(() -> new AssertionError("ENDPOINT_ADMIN module missing from catalog"));
+        assertThat(endpointAdmin.label()).isEqualTo("Cihaz Kayıt Yönetimi");
+        assertThat(endpointAdmin.levels()).containsExactly("VIEW", "MANAGE");
+        assertThat(service.getModuleKeys()).contains("ENDPOINT_ADMIN");
+    }
+
+    @Test
     void moduleKeysHaveNoDuplicates() {
         List<String> keys = service.getModuleKeys();
         assertThat(keys).doesNotHaveDuplicates();
