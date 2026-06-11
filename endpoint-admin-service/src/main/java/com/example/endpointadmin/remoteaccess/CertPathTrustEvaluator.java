@@ -4,11 +4,15 @@ import java.security.GeneralSecurityException;
 import java.security.cert.CertPath;
 import java.security.cert.CertPathValidator;
 import java.security.cert.CertPathValidatorException;
+import java.security.cert.CertStore;
 import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CertificateRevokedException;
+import java.security.cert.CollectionCertStoreParameters;
 import java.security.cert.PKIXParameters;
+import java.security.cert.PKIXRevocationChecker;
 import java.security.cert.TrustAnchor;
+import java.security.cert.X509CRL;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.Date;
@@ -43,10 +47,11 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
     private final Set<TrustAnchor> trustAnchors;
     private final boolean revocationEnabled;
     private final boolean requireClientAuth;
+    private final List<X509CRL> crls;
 
     /** Secure-by-default: enforces the {@code clientAuth} EKU + {@code digitalSignature} key-usage. */
     public CertPathTrustEvaluator(Set<TrustAnchor> trustAnchors, boolean revocationEnabled) {
-        this(trustAnchors, revocationEnabled, true);
+        this(trustAnchors, revocationEnabled, true, List.of());
     }
 
     /**
@@ -58,11 +63,22 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
      */
     public CertPathTrustEvaluator(Set<TrustAnchor> trustAnchors, boolean revocationEnabled,
                                   boolean requireClientAuth) {
+        this(trustAnchors, revocationEnabled, requireClientAuth, List.of());
+    }
+
+    /**
+     * @param crls the CRLs consulted when {@code revocationEnabled} (B1.4b). Offline, CRL-only, NO network
+     *             fallback: a revoked serial → REVOKED; if revocation is enabled but no CRL covers the cert
+     *             → UNDETERMINED → UNKNOWN (fail-closed, no grace — B1.2 doctrine). Live OCSP is a later seam.
+     */
+    public CertPathTrustEvaluator(Set<TrustAnchor> trustAnchors, boolean revocationEnabled,
+                                  boolean requireClientAuth, List<X509CRL> crls) {
         // copy defensively; an empty anchor set is allowed here (→ NOT_TRUSTED at evaluate-time). The B1.4a-3
         // driver adds the fail-FAST startup check so a REAL_PKI runtime can't BOOT with no anchors.
         this.trustAnchors = trustAnchors == null ? Set.of() : Set.copyOf(trustAnchors);
         this.revocationEnabled = revocationEnabled;
         this.requireClientAuth = requireClientAuth;
+        this.crls = crls == null ? List.of() : List.copyOf(crls);
     }
 
     @Override
@@ -83,9 +99,30 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
         try {
             CertPath path = CertificateFactory.getInstance(X509).generateCertPath(chain);
             PKIXParameters params = new PKIXParameters(trustAnchors);
-            params.setRevocationEnabled(revocationEnabled); // false in B1.4a; B1.4b turns CRL/OCSP on
             params.setDate(Date.from(now)); // validate AT the heartbeat's clock, not the JVM wall-clock
-            CertPathValidator.getInstance(PKIX).validate(path, params);
+            CertPathValidator cpv = CertPathValidator.getInstance(PKIX);
+            if (revocationEnabled) {
+                // B1.4b: OFFLINE CRL revocation — CRL-only, NO network fallback (no live OCSP / CRL-DP fetch),
+                // and ONLY_END_ENTITY: only the LEAF (the agent cert — the thing that gets compromised + must
+                // be revocable fast) is checked against the CRL. The CA/intermediate certs are not CRL-checked
+                // here — a compromised CA is handled out-of-band (removed from the trust anchors / intermediates),
+                // and requiring a separate root-CRL for every path cert would otherwise make the leaf
+                // UNDETERMINED. A revoked leaf serial → REVOKED; with NO_FALLBACK and no CRL covering the leaf
+                // the verdict is UNDETERMINED_REVOCATION_STATUS → UNKNOWN (fail-closed, no grace — B1.2 doctrine).
+                PKIXRevocationChecker rc = (PKIXRevocationChecker) cpv.getRevocationChecker();
+                rc.setOptions(java.util.EnumSet.of(
+                        PKIXRevocationChecker.Option.PREFER_CRLS,
+                        PKIXRevocationChecker.Option.NO_FALLBACK,
+                        PKIXRevocationChecker.Option.ONLY_END_ENTITY));
+                params.addCertPathChecker(rc);
+                if (!crls.isEmpty()) {
+                    params.addCertStore(CertStore.getInstance(
+                            "Collection", new CollectionCertStoreParameters(crls)));
+                }
+            } else {
+                params.setRevocationEnabled(false); // B1.4a path: chain + validity only, no revocation
+            }
+            cpv.validate(path, params);
             // a fully built + valid path — but a valid chain to a trusted root is NOT enough: the leaf must be
             // PURPOSED for TLS client auth (Codex 019eb6d9). PKIX does not enforce the application purpose, so a
             // server / e-mail / code-signing cert that legitimately chains to the fleet CA must still be rejected.
