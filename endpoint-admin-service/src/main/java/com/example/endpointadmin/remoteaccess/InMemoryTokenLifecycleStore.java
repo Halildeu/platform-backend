@@ -65,6 +65,9 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
         if (jti == null || jti.isBlank()) {
             return MutationOutcome.NOOP;
         }
+        if (!available) {
+            return MutationOutcome.STORE_UNAVAILABLE; // a failed revoke surfaces (no silent NOOP)
+        }
         MutationOutcome[] result = new MutationOutcome[]{MutationOutcome.NOOP};
         // Revocation always wins (even over EXPIRED) — forensic clarity + authoritative kill.
         entries.compute(jti, (k, current) -> {
@@ -81,6 +84,9 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
     public MutationOutcome expire(String jti) {
         if (jti == null || jti.isBlank()) {
             return MutationOutcome.NOOP;
+        }
+        if (!available) {
+            return MutationOutcome.STORE_UNAVAILABLE;
         }
         MutationOutcome[] result = new MutationOutcome[]{MutationOutcome.NOOP};
         entries.compute(jti, (k, current) -> {
