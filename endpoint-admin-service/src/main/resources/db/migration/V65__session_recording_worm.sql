@@ -16,7 +16,10 @@ CREATE TABLE session_recording_entry (
     entry_hash        CHAR(64)     NOT NULL,
     recorded_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
     PRIMARY KEY (chain_id, seq),
-    CONSTRAINT uq_session_recording_entry_hash UNIQUE (entry_hash),
+    -- uniqueness is scoped PER-CHAIN (Codex 019eb7d6): a GLOBAL UNIQUE(entry_hash) would FALSELY collide two
+    -- different sessions whose first entry has the same (seq/timestamp/kind/content) — the entry hash is over
+    -- those fields, NOT the chain_id — and a false collision would fail-closed-kill the second session.
+    CONSTRAINT uq_session_recording_entry_hash UNIQUE (chain_id, entry_hash),
     CONSTRAINT chk_session_recording_seq_nonneg CHECK (seq >= 0),
     -- the chain link + entry hashes are always 64-char lowercase-hex SHA-256 (CertThumbprint.ofDer);
     -- content_hash is caller-supplied (a content digest in prod) and deliberately NOT format-constrained.
@@ -35,6 +38,13 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_session_recording_worm
     BEFORE UPDATE OR DELETE ON session_recording_entry
     FOR EACH ROW EXECUTE FUNCTION session_recording_no_mutate();
+
+-- TRUNCATE bypasses row-level triggers (Codex 019eb7d6), so block it at the statement level too. DROP TABLE
+-- and superuser bypass are a DB role/privilege concern (an append-only role with UPDATE/DELETE/TRUNCATE
+-- REVOKEd + a retention-lock) layered by the operator — out of this migration's scope, noted.
+CREATE TRIGGER trg_session_recording_no_truncate
+    BEFORE TRUNCATE ON session_recording_entry
+    FOR EACH STATEMENT EXECUTE FUNCTION session_recording_no_mutate();
 
 COMMENT ON TABLE session_recording_entry IS
     'Faz 22.6 C: durable WORM recording hash-chain (ADR-0033 §6, ADR-0034 D3). Append-only — UPDATE/DELETE '

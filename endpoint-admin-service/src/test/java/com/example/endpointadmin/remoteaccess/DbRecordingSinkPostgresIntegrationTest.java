@@ -123,6 +123,26 @@ class DbRecordingSinkPostgresIntegrationTest {
     }
 
     @Test
+    void theWormTriggerBlocksTruncate() throws RecordingSinkException {
+        DbRecordingSink sink = new DbRecordingSink("sess-worm-t", jdbc, SCHEMA);
+        sink.append(chainOf(1).entries().get(0));
+        assertThrows(DataAccessException.class,
+                () -> jdbc.execute("TRUNCATE " + SCHEMA + ".session_recording_entry"));
+    }
+
+    @Test
+    void twoDifferentChainsMayShareTheSameFirstEntryHash() throws RecordingSinkException {
+        // Codex 019eb7d6: identical first entries in DIFFERENT sessions share an entry_hash (it is NOT
+        // chain-scoped). The per-chain UNIQUE must NOT collide them — a global UNIQUE(entry_hash) would
+        // false-kill the second session. Both appends must succeed.
+        Entry shared = chainOf(1).entries().get(0);
+        new DbRecordingSink("chain-a", jdbc, SCHEMA).append(shared);
+        new DbRecordingSink("chain-b", jdbc, SCHEMA).append(shared);
+        assertEquals(1, readBack("chain-a").size());
+        assertEquals(1, readBack("chain-b").size());
+    }
+
+    @Test
     void aSessionRecorderBackedByTheDbSinkRecordsAndStaysHealthy() throws GeneralSecurityException {
         var kpg = KeyPairGenerator.getInstance("EC");
         kpg.initialize(new ECGenParameterSpec("secp256r1"));
