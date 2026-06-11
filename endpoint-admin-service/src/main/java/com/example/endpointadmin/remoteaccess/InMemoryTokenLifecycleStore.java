@@ -113,17 +113,24 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
 
     @Override
     public TokenLiveCheckResult isTokenLive(String jti, Instant now) {
+        return status(jti, now).liveness();
+    }
+
+    @Override
+    public TokenStatus status(String jti, Instant now) {
         if (jti == null || jti.isBlank() || now == null) {
-            return TokenLiveCheckResult.INVALID;
+            return new TokenStatus(TokenLiveCheckResult.INVALID, null);
         }
         if (!available) {
-            return TokenLiveCheckResult.STORE_UNAVAILABLE; // fail-closed
+            return new TokenStatus(TokenLiveCheckResult.STORE_UNAVAILABLE, null); // fail-closed
         }
+        // ONE map read serves both liveness and binding — atomic snapshot of the entry (B1.1c: no window
+        // in which the binding is read under a different store state than the liveness).
         Entry e = entries.get(jti);
         if (e == null) {
-            return TokenLiveCheckResult.NOT_FOUND;
+            return new TokenStatus(TokenLiveCheckResult.NOT_FOUND, null);
         }
-        return switch (e.state()) {
+        TokenLiveCheckResult liveness = switch (e.state()) {
             case REVOKED -> TokenLiveCheckResult.REVOKED;
             case EXPIRED -> TokenLiveCheckResult.EXPIRED;
             case INVALID, UNSEEN -> TokenLiveCheckResult.INVALID;
@@ -132,6 +139,7 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
                     ? TokenLiveCheckResult.LIVE
                     : TokenLiveCheckResult.EXPIRED;
         };
+        return new TokenStatus(liveness, e.boundThumbprint());
     }
 
     @Override

@@ -23,6 +23,7 @@ import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP_PURGED_ROWS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.HARD_KILL_POLL_RECOVERY;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.HARD_KILL_TOTAL;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.LEGACY_UNBOUND_ISSUANCE;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.REVOCATION_CLOCK_SKEW;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.REVOCATION_LATENCY_MS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.REVOCATION_NEGATIVE_LATENCY;
@@ -67,11 +68,13 @@ public class ScheduledRevocationDriver {
     private final InMemoryTokenRevocationFeed feed;
     private final RemoteSessionRevocationReconciler reconciler;
     private final RemoteSessionTokenCleanup cleanup;
+    private final CertBoundConsumeGate consumeGate;
     private final Timer revocationLatency;
 
     public ScheduledRevocationDriver(
             JdbcTemplate jdbc,
             MeterRegistry meters,
+            RemoteAccessProperties properties,
             @Value("${spring.jpa.properties.hibernate.default_schema:endpoint_admin_service}") String schema,
             @Value("${endpoint-admin.remote-access.max-heartbeat-age-ms:15000}") long maxHeartbeatAgeMs) {
         this.jdbc = jdbc;
@@ -84,12 +87,17 @@ public class ScheduledRevocationDriver {
         // remote-access bean leaks into the context while disabled. Registry + feed are local to this
         // replica (the single-owner locality the lock-free model relies on).
         TokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, schema);
+        CertBindingGuard.Policy certPolicy = properties.getCertBinding().policy();
         RemoteSessionHeartbeat heartbeat = new RemoteSessionHeartbeat(
-                store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs));
+                store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy);
         this.registry = new InMemorySessionRegistry();
         this.feed = new InMemoryTokenRevocationFeed();
         this.reconciler = new RemoteSessionRevocationReconciler(store, heartbeat);
         this.cleanup = new RemoteSessionTokenCleanup(jdbc, schema);
+        // The connect-time consume enforcement (B1.1c): the C/D tunnel runtime consumes ONLY through this
+        // gate, so the cert-binding policy + the legacy-unbound migration meter are already live wiring.
+        this.consumeGate = new CertBoundConsumeGate(
+                store, certPolicy, () -> meters.counter(LEGACY_UNBOUND_ISSUANCE).increment());
         this.revocationLatency = Timer.builder(REVOCATION_LATENCY_MS)
                 .description("t0(revoked_at) → hard-kill decision latency (SLO P95 ≤ 5s)")
                 .publishPercentiles(0.95, 0.99)
@@ -104,6 +112,11 @@ public class ScheduledRevocationDriver {
     /** The revocation feed — an operator-abort / policy-change publishes a {@code RevocationEvent} here. */
     public InMemoryTokenRevocationFeed feed() {
         return feed;
+    }
+
+    /** The cert-binding consume gate (B1.1c) — the C/D tunnel runtime claims connect tokens ONLY here. */
+    public CertBoundConsumeGate consumeGate() {
+        return consumeGate;
     }
 
     @PostConstruct

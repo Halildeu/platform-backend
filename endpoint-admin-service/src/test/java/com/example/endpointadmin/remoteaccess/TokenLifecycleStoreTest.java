@@ -125,11 +125,11 @@ class TokenLifecycleStoreTest {
         store.consume("jti-live", EXP, T0);
         RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
         RemoteSessionPreconditions healthy = new RemoteSessionPreconditions(
-                true, true, true, store.isTokenLive("jti-live", T0).isLive(), true, true);
+                true, true, true, store.isTokenLive("jti-live", T0).isLive(), true, true, true);
         assertEquals(RemoteSessionState.ACTIVE, sm.reevaluateActive(RemoteSessionState.ACTIVE, healthy).target());
         store.revoke("jti-live");
         RemoteSessionPreconditions afterRevoke = new RemoteSessionPreconditions(
-                true, true, true, store.isTokenLive("jti-live", T0).isLive(), true, true);
+                true, true, true, store.isTokenLive("jti-live", T0).isLive(), true, true, true);
         RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(RemoteSessionState.ACTIVE, afterRevoke);
         assertEquals(RemoteSessionState.ABORTED, r.target());
         assertEquals(RemoteSessionStateMachine.KillReason.TOKEN_REVOKED, r.reason());

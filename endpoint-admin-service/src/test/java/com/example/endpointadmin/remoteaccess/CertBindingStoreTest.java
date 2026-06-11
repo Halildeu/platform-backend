@@ -52,4 +52,38 @@ class CertBindingStoreTest {
     void unknownJtiHasNoBinding() {
         assertEquals(Optional.empty(), new InMemoryTokenLifecycleStore().boundThumbprint("nope"));
     }
+
+    // ---- B1.1c: status() — the atomic liveness+binding enforcement read ----
+
+    @Test
+    void statusReturnsLivenessAndBindingFromOneAtomicRead() {
+        InMemoryTokenLifecycleStore s = new InMemoryTokenLifecycleStore();
+        s.consume("jti-5", EXP, T, "thumb-abc");
+        TokenLifecycleStore.TokenStatus bound = s.status("jti-5", T.plusSeconds(1));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.LIVE, bound.liveness());
+        assertEquals("thumb-abc", bound.boundThumbprint());
+
+        s.consume("jti-6", EXP, T); // legacy-unbound
+        TokenLifecycleStore.TokenStatus unbound = s.status("jti-6", T.plusSeconds(1));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.LIVE, unbound.liveness());
+        // LIVE ⇒ the row was read ⇒ null binding authoritatively means legacy-unbound
+        assertEquals(null, unbound.boundThumbprint());
+    }
+
+    @Test
+    void statusFailsClosedOnPartitionUnknownAndRevoked() {
+        InMemoryTokenLifecycleStore s = new InMemoryTokenLifecycleStore();
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.NOT_FOUND, s.status("nope", T).liveness());
+
+        s.consume("jti-7", EXP, T, "thumb-xyz");
+        s.revoke("jti-7");
+        TokenLifecycleStore.TokenStatus revoked = s.status("jti-7", T.plusSeconds(1));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.REVOKED, revoked.liveness());
+        assertEquals("thumb-xyz", revoked.boundThumbprint()); // binding preserved for audit
+
+        s.setAvailable(false);
+        TokenLifecycleStore.TokenStatus down = s.status("jti-7", T.plusSeconds(2));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.STORE_UNAVAILABLE, down.liveness());
+        assertEquals(null, down.boundThumbprint()); // never a stale binding under a partition
+    }
 }

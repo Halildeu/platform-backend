@@ -139,10 +139,29 @@ class RemoteSessionNegativeTest {
     void recorderUnavailableBlocksActive() {
         RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
         RemoteSessionPreconditions noRecorder =
-                new RemoteSessionPreconditions(true, true, true, true, true, false);
+                new RemoteSessionPreconditions(true, true, true, true, true, true, false);
         assertFalse(sm.canActivate(RemoteSessionState.RECORDING_READY, noRecorder));
         assertEquals(RemoteSessionState.FAILED_RECORDING,
                 sm.transition(RemoteSessionState.RECORDING_READY, RemoteSessionState.ACTIVE, noRecorder));
+    }
+
+    // ---- 4b. cert-binding deny (B1.1c): no ACTIVE for an unbound/mismatched cert binding ----
+    @Test
+    void certBindingLossBlocksActiveFailClosed() {
+        RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
+        // a legacy-unbound token under REQUIRE_BOUND, or a bound token without its exact presented
+        // cert, surfaces as certBound=false → never ACTIVE, hard FAILED_CERT_BINDING outcome
+        RemoteSessionPreconditions certLost =
+                new RemoteSessionPreconditions(true, true, true, true, false, true, true);
+        assertFalse(sm.canActivate(RemoteSessionState.RECORDING_READY, certLost));
+        assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_CERT_BINDING,
+                sm.evaluateActivation(RemoteSessionState.RECORDING_READY, certLost));
+        assertEquals(RemoteSessionState.FAILED_AGENT_ATTESTATION,
+                sm.transition(RemoteSessionState.RECORDING_READY, RemoteSessionState.ACTIVE, certLost));
+        // and the guard itself: unbound is only passable under the explicit legacy-allow flag
+        assertFalse(CertBindingGuard.decide(null, null, CertBindingGuard.Policy.REQUIRE_BOUND).satisfied());
+        assertFalse(CertBindingGuard.decide("ab".repeat(32), "cd".repeat(32),
+                CertBindingGuard.Policy.ALLOW_LEGACY_UNBOUND).satisfied());
     }
 
     // ---- 5. error-oracle guard: every DENY_* collapses to a uniform DENIED on the wire ----

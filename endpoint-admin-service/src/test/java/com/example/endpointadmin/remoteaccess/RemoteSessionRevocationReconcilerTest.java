@@ -28,8 +28,11 @@ class RemoteSessionRevocationReconcilerTest {
 
     private final StubStore store = new StubStore();
     private final InMemorySessionRegistry registry = new InMemorySessionRegistry();
+    // REQUIRE_BOUND (the strictest policy) on purpose: the reconciler's samples are cert-unsampled, so
+    // the token backstop must behave identically under any cert policy (B1.1c).
     private final RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
-            store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), MAX_HB_AGE));
+            store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), MAX_HB_AGE,
+                    CertBindingGuard.Policy.REQUIRE_BOUND));
 
     private void registerActive(String sessionId, String jti) {
         registry.put(new RemoteSessionHeartbeat.SessionSnapshot(
@@ -131,8 +134,12 @@ class RemoteSessionRevocationReconcilerTest {
 
     @Test
     void pollLeavesLiveSessionUntouched() {
+        // B1.1c regression: the session's token is BOUND and the policy is REQUIRE_BOUND, yet the poll
+        // backstop (cert-unsampled — it has no transport view) must NOT kill the healthy session; cert
+        // enforcement belongs to the cert-sampling live heartbeat.
         registerActive("s1", "jti-live");
         store.liveness.put("jti-live", TokenLifecycleStore.TokenLiveCheckResult.LIVE);
+        store.bound.put("jti-live", "ab".repeat(32));
         var out = reconciler.pollReconcile(registry, NOW);
         assertEquals(1, out.size());
         assertFalse(out.get(0).killed());
@@ -154,6 +161,7 @@ class RemoteSessionRevocationReconcilerTest {
     private static final class StubStore implements TokenLifecycleStore {
         final Map<String, TokenLiveCheckResult> liveness = new HashMap<>();
         final Map<String, Instant> revokedAt = new HashMap<>();
+        final Map<String, String> bound = new HashMap<>();
         final List<String> revoked = new ArrayList<>();
         MutationOutcome revokeOutcome = MutationOutcome.UPDATED;
 
@@ -164,7 +172,7 @@ class RemoteSessionRevocationReconcilerTest {
 
         @Override
         public Optional<String> boundThumbprint(String jti) {
-            return Optional.empty(); // unused by the reconciler
+            return Optional.ofNullable(bound.get(jti));
         }
 
         @Override
@@ -181,6 +189,11 @@ class RemoteSessionRevocationReconcilerTest {
         @Override
         public TokenLiveCheckResult isTokenLive(String jti, Instant now) {
             return liveness.getOrDefault(jti, TokenLiveCheckResult.NOT_FOUND);
+        }
+
+        @Override
+        public TokenStatus status(String jti, Instant now) {
+            return new TokenStatus(isTokenLive(jti, now), bound.get(jti));
         }
 
         @Override

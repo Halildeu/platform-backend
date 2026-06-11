@@ -68,7 +68,8 @@ class RevocationSloPostgresIntegrationTest {
     private RemoteSessionRevocationReconciler reconciler() {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         return new RemoteSessionRevocationReconciler(
-                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30)));
+                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
+                        CertBindingGuard.Policy.REQUIRE_BOUND));
     }
 
     private static TokenRevocationFeed.RevocationEvent event(String jti, Instant t0) {
@@ -80,7 +81,8 @@ class RevocationSloPostgresIntegrationTest {
     void sourceBoundPushLatencyMeetsSlo() {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
-                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30)));
+                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
+                        CertBindingGuard.Policy.REQUIRE_BOUND));
 
         int n = 100;
         List<Long> latencies = new ArrayList<>(n);
@@ -124,7 +126,8 @@ class RevocationSloPostgresIntegrationTest {
     void pollBackstopIsSourceBoundForADroppedEvent() {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
-                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30)));
+                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
+                        CertBindingGuard.Policy.REQUIRE_BOUND));
 
         String jti = "drop-1";
         Instant t = Instant.now();
@@ -148,7 +151,8 @@ class RevocationSloPostgresIntegrationTest {
     void pollLeavesAStillLiveSessionUntouched() {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
-                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30)));
+                store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
+                        CertBindingGuard.Policy.REQUIRE_BOUND));
 
         String jti = "live-1";
         Instant t = Instant.now();

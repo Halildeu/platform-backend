@@ -123,9 +123,29 @@ public interface TokenLifecycleStore {
 
     /**
      * The bound cert thumbprint pinned at {@code consume} (B1.1, RFC 8705 mTLS-bound token), or empty if
-     * the jti is unknown, legacy-unbound (null thumbprint), or the store is unavailable. The heartbeat
-     * compares the PRESENTED cert thumbprint to this; a bound token proceeds only with the matching cert,
-     * fail-closed (B1.1c).
+     * the jti is unknown, legacy-unbound (null thumbprint), or the store is unavailable. NOTE: empty is
+     * AMBIGUOUS across those three causes — enforcement paths MUST use {@link #status} (one atomic read)
+     * instead of pairing this with {@link #isTokenLive}, or a partition between the two reads could
+     * misread a bound token as legacy-unbound (a fail-open window). This read remains for forensic /
+     * observability use.
      */
     Optional<String> boundThumbprint(String jti);
+
+    /**
+     * Atomic liveness + cert-binding snapshot of one jti (B1.1c): BOTH values come from the SAME single
+     * row read, so there is no window in which the binding is read under a different store state than the
+     * liveness (no fail-open on a mid-evaluation partition).
+     *
+     * @param liveness        same semantics as {@link #isTokenLive}
+     * @param boundThumbprint the pinned thumbprint, or {@code null} when the row is legacy-unbound OR the
+     *                        row was unreadable — disambiguated BY the liveness: when
+     *                        {@code liveness == LIVE} the row was read, so {@code null} authoritatively
+     *                        means legacy-unbound; for any non-LIVE liveness the session dies on the token
+     *                        precondition anyway (cert never consulted, never mislabeled)
+     */
+    record TokenStatus(TokenLiveCheckResult liveness, String boundThumbprint) {
+    }
+
+    /** The heartbeat's enforcement read (B1.1c) — see {@link TokenStatus}. */
+    TokenStatus status(String jti, Instant now);
 }
