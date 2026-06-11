@@ -1,6 +1,7 @@
 package com.example.endpointadmin.remoteaccess;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Faz 22.6 B1.2 — a reference to the client certificate presented over the transport, the input to
@@ -45,5 +46,29 @@ public record CertRef(String thumbprint, String thumbprintAlg, String serialNumb
     /** Whether a cert was actually presented (a non-blank thumbprint). */
     public boolean isPresent() {
         return CertThumbprint.isPresent(thumbprint);
+    }
+
+    // Identity-based equality (Codex 019eb6d9 a-2): the record's auto equals/hashCode would compare
+    // encodedChain by array REFERENCE, so two refs to the SAME cert with distinct byte[] instances would be
+    // unequal — broken cache/map semantics. The thumbprint (a SHA-256 OF the cert) + serial + issuer ARE the
+    // identity; the chain is bulk transport material the evaluator consumes, deliberately excluded from
+    // equality so same-cert refs compare equal regardless of how the chain bytes were carried.
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof CertRef other)) {
+            return false;
+        }
+        return Objects.equals(thumbprint, other.thumbprint)
+                && Objects.equals(thumbprintAlg, other.thumbprintAlg)
+                && Objects.equals(serialNumber, other.serialNumber)
+                && Objects.equals(issuerDn, other.issuerDn);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(thumbprint, thumbprintAlg, serialNumber, issuerDn);
     }
 }

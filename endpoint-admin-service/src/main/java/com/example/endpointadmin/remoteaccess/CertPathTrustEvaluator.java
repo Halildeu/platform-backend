@@ -54,8 +54,9 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
         List<X509Certificate> chain;
         try {
             chain = X509ChainParser.parseChain(cert.encodedChain());
-        } catch (GeneralSecurityException parseFailure) {
-            return TrustDecision.NOT_TRUSTED; // a-2: a malformed chain never proceeds (no partial-accept)
+        } catch (GeneralSecurityException | RuntimeException parseFailure) {
+            // a-2 + Codex 019eb6d9: a malformed chain (or any unexpected runtime error) never proceeds
+            return TrustDecision.NOT_TRUSTED;
         }
         if (chain.isEmpty() || trustAnchors.isEmpty()) {
             return TrustDecision.NOT_TRUSTED; // no chain, or no root of trust → trust nothing
@@ -69,8 +70,8 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
             return TrustDecision.ALLOW; // a fully built + valid path
         } catch (CertPathValidatorException e) {
             return classify(e);
-        } catch (GeneralSecurityException e) {
-            return TrustDecision.NOT_TRUSTED; // any other crypto error → fail-closed
+        } catch (GeneralSecurityException | RuntimeException e) {
+            return TrustDecision.NOT_TRUSTED; // any other crypto OR unexpected runtime error → fail-closed
         }
     }
 
