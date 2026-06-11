@@ -102,4 +102,31 @@ class CertPathTrustEvaluatorTest {
         assertEquals(TrustDecision.NOT_TRUSTED,
                 eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), null));
     }
+
+    // ---- B1.4a-3: EKU enforcement (right chain, wrong purpose) ----
+
+    @Test
+    void aServerAuthLeafThatChainsValidlyIsRejectedAsWrongPurpose() throws CertificateException {
+        // leaf-serverauth chains to the SAME trusted intermediate/root + is in-validity, but its EKU is
+        // serverAuth (NOT clientAuth) → secure-by-default (2-arg ctor) rejects it (Codex 019eb6d9).
+        var eval = new CertPathTrustEvaluator(rootAnchors(), false);
+        var d = eval.evaluate(presented(fx("leaf-serverauth.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.NOT_TRUSTED, d);
+    }
+
+    @Test
+    void theSameServerAuthLeafIsAllowedWhenClientAuthIsNotRequired() throws CertificateException {
+        // the EKU enforcement is opt-out via the 3-arg ctor (requireClientAuth=false): the chain itself is valid
+        var eval = new CertPathTrustEvaluator(rootAnchors(), false, false);
+        var d = eval.evaluate(presented(fx("leaf-serverauth.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.ALLOW, d);
+    }
+
+    @Test
+    void aClientAuthLeafStillAllowsUnderSecureByDefault() throws CertificateException {
+        // the secure-by-default (clientAuth-required) path still ALLOWs a legitimate clientAuth leaf
+        var eval = new CertPathTrustEvaluator(rootAnchors(), false); // requireClientAuth=true
+        var d = eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.ALLOW, d);
+    }
 }
