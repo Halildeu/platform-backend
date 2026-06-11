@@ -78,12 +78,24 @@ public interface TokenLifecycleStore {
     }
 
     /**
-     * Atomically transition {@code UNSEEN → USED} for a one-time connect, recording {@code expiresAt}.
-     * Returns {@link ConsumeOutcome#ACCEPTED} only on the (single) winning call; replay / revoked / expired
-     * (incl. {@code now >= expiresAt}) / invalid / store-down all deny. Availability + expiry + state are
-     * evaluated in one atomic step.
+     * Cert-unbound consume (legacy / pre-B1.1): delegates to the bound overload with no thumbprint, so a
+     * {@code null} {@code bound_cert_thumbprint} is recorded. Whether a legacy-unbound token may go ACTIVE
+     * is a fail-closed feature-flag decision in the runtime (B1.1c), not here. Keeps every existing caller
+     * source-compatible.
      */
-    ConsumeOutcome consume(String jti, Instant expiresAt, Instant now);
+    default ConsumeOutcome consume(String jti, Instant expiresAt, Instant now) {
+        return consume(jti, expiresAt, now, null);
+    }
+
+    /**
+     * Atomically transition {@code UNSEEN → USED} for a one-time connect, recording {@code expiresAt} AND
+     * pinning the bound cert thumbprint (B1.1, RFC 8705 mTLS-bound token) in the SAME row — single-use and
+     * cert-binding are one atomic write, no second statement to race. Returns {@link ConsumeOutcome#ACCEPTED}
+     * only on the (single) winning call; replay / revoked / expired (incl. {@code now >= expiresAt}) /
+     * invalid / store-down all deny. Availability + expiry + state are evaluated in one atomic step. A
+     * null/blank {@code boundThumbprint} records legacy-unbound.
+     */
+    ConsumeOutcome consume(String jti, Instant expiresAt, Instant now, String boundThumbprint);
 
     /** Mark a jti revoked (authoritative — always wins). Idempotent; drives hard-kill of any live session. */
     MutationOutcome revoke(String jti);
@@ -108,4 +120,12 @@ public interface TokenLifecycleStore {
      * unknown, or the store is unavailable (the caller then falls back to the event clock + meters the gap).
      */
     Optional<Instant> revokedAt(String jti);
+
+    /**
+     * The bound cert thumbprint pinned at {@code consume} (B1.1, RFC 8705 mTLS-bound token), or empty if
+     * the jti is unknown, legacy-unbound (null thumbprint), or the store is unavailable. The heartbeat
+     * compares the PRESENTED cert thumbprint to this; a bound token proceeds only with the matching cert,
+     * fail-closed (B1.1c).
+     */
+    Optional<String> boundThumbprint(String jti);
 }

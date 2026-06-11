@@ -54,6 +54,7 @@ class DbCasConcurrencyPostgresIntegrationTest {
                 + "jti VARCHAR(255) PRIMARY KEY, state VARCHAR(16) NOT NULL, "
                 + "expires_at TIMESTAMPTZ NOT NULL, consumed_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ, "
                 + "created_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+                + "bound_cert_thumbprint VARCHAR(64), "
                 + "CONSTRAINT chk_rst_state CHECK (state IN ('USED','REVOKED','EXPIRED','INVALID')))");
     }
 

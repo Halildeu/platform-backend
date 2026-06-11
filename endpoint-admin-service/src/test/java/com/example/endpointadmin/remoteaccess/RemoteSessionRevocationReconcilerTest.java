@@ -158,8 +158,13 @@ class RemoteSessionRevocationReconcilerTest {
         MutationOutcome revokeOutcome = MutationOutcome.UPDATED;
 
         @Override
-        public ConsumeOutcome consume(String jti, Instant expiresAt, Instant now) {
+        public ConsumeOutcome consume(String jti, Instant expiresAt, Instant now, String boundThumbprint) {
             return ConsumeOutcome.ACCEPTED; // unused by the reconciler
+        }
+
+        @Override
+        public Optional<String> boundThumbprint(String jti) {
+            return Optional.empty(); // unused by the reconciler
         }
 
         @Override
