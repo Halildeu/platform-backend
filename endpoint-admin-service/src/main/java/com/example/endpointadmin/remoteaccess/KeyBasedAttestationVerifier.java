@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.PublicKey;
@@ -27,12 +28,26 @@ import java.util.concurrent.ConcurrentHashMap;
  * or any thrown exception) → SIGNATURE_INVALID. <b>Continuous:</b> {@link #revokeBuilder(String)} flips a
  * previously-VERIFIED session on its next heartbeat.
  *
- * <p><b>Scope (B1.4c-1):</b> this verifies a signature over the provenance tuple with a STATIC configured
- * key. Parsing a real in-toto/DSSE SLSA envelope (extracting the fields + the embedded signature from the
- * envelope JSON) is B1.4c-2; the keyless Sigstore chain (Fulcio cert + Rekor transparency log) — which needs
- * network — is a further seam (like live OCSP).
+ * <p>The refined verdict ({@code UNTRUSTED_BUILDER} vs {@code SIGNATURE_INVALID} vs …) is consumed
+ * INTERNALLY by the heartbeat for the audit record's kill reason — it is NOT signalled back to the agent, so
+ * it is not an attacker-facing oracle (Codex 019eb7d6 #3).
+ *
+ * <p><b>Scope (B1.4c-1):</b> this verifies a signature over the provenance tuple with a SINGLE STATIC
+ * configured key. A trusted-key RING + key-id selection (operational key rotation) is the B1.4c-3 factory's
+ * concern (Codex 019eb7d6 #4). Parsing a real in-toto/DSSE SLSA envelope (extracting the fields + the
+ * embedded signature from the envelope JSON) is B1.4c-2; the keyless Sigstore chain (Fulcio cert + Rekor
+ * transparency log) — which needs network — is a further seam (like live OCSP).
  */
 public final class KeyBasedAttestationVerifier implements AttestationVerifier {
+
+    /**
+     * The accepted signature algorithms (Codex 019eb7d6 #2): a strict allowlist so a weak/unexpected
+     * configured algorithm is rejected at construction (no algorithm-substitution surface). The evidence
+     * never carries its own algorithm — the verifier dictates it.
+     */
+    private static final Set<String> ALLOWED_ALGORITHMS = Set.of(
+            "SHA256withECDSA", "SHA384withECDSA", "SHA512withECDSA", "Ed25519", "Ed448",
+            "SHA256withRSA", "SHA384withRSA", "SHA512withRSA");
 
     private final String expectedBuilderId;
     private final String expectedPolicyHash;
@@ -53,6 +68,10 @@ public final class KeyBasedAttestationVerifier implements AttestationVerifier {
         if (signingKey == null || signatureAlgorithm == null || signatureAlgorithm.isBlank()) {
             throw new IllegalArgumentException("signingKey + signatureAlgorithm must be non-null/non-blank");
         }
+        if (!ALLOWED_ALGORITHMS.contains(signatureAlgorithm)) {
+            throw new IllegalArgumentException("signatureAlgorithm '" + signatureAlgorithm
+                    + "' is not in the allowlist " + ALLOWED_ALGORITHMS + " — refusing a weak/unexpected algorithm");
+        }
         this.expectedBuilderId = expectedBuilderId;
         this.expectedPolicyHash = expectedPolicyHash;
         this.signingKey = signingKey;
@@ -66,9 +85,28 @@ public final class KeyBasedAttestationVerifier implements AttestationVerifier {
         }
     }
 
-    /** The canonical provenance tuple bytes that the build system signs (same field order as the placeholder). */
+    /**
+     * The canonical provenance bytes the build system signs. Each field is LENGTH-PREFIXED (4-byte big-endian
+     * length + UTF-8 bytes) rather than delimiter-joined, so no field value can be confused with the framing —
+     * two distinct field-triples can never collide to the same byte string (Codex 019eb7d6 #1: a naive
+     * {@code a|b|c} join lets a {@code |} inside a field alias another triple). The signer MUST produce the
+     * signature over exactly these bytes.
+     */
     public static byte[] canonicalProvenance(String binaryDigest, String builderId, String slsaPredicateHash) {
-        return (binaryDigest + "|" + builderId + "|" + slsaPredicateHash).getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeLengthPrefixed(out, binaryDigest);
+        writeLengthPrefixed(out, builderId);
+        writeLengthPrefixed(out, slsaPredicateHash);
+        return out.toByteArray();
+    }
+
+    private static void writeLengthPrefixed(ByteArrayOutputStream out, String field) {
+        byte[] bytes = field.getBytes(StandardCharsets.UTF_8);
+        out.write((bytes.length >>> 24) & 0xFF);
+        out.write((bytes.length >>> 16) & 0xFF);
+        out.write((bytes.length >>> 8) & 0xFF);
+        out.write(bytes.length & 0xFF);
+        out.writeBytes(bytes);
     }
 
     @Override

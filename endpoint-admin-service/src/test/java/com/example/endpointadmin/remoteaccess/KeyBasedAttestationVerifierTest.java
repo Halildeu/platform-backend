@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Base64;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -119,5 +120,24 @@ class KeyBasedAttestationVerifierTest {
         for (AttestationDecision d : AttestationDecision.values()) {
             assertEquals(d == AttestationDecision.VERIFIED, d.isVerified(), d.name());
         }
+    }
+
+    @Test
+    void anUnexpectedSignatureAlgorithmIsRejectedAtConstruction() {
+        // Codex 019eb7d6 #2: a weak/unexpected configured algorithm is refused fail-fast at construction
+        assertThrows(IllegalArgumentException.class, () ->
+                new KeyBasedAttestationVerifier(BUILDER, POLICY, keyPair.getPublic(), "MD5withRSA"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new KeyBasedAttestationVerifier(BUILDER, POLICY, keyPair.getPublic(), "NoSuchAlg"));
+    }
+
+    @Test
+    void canonicalEncodingIsLengthPrefixedNotDelimiterJoined() {
+        // Codex 019eb7d6 #1: two distinct field-triples must never collide to the same canonical bytes.
+        // A naive "a|b|c" join would make ("x|","y") and ("x","|y") collide; the length-prefixed encoding
+        // keeps them distinct.
+        byte[] a = KeyBasedAttestationVerifier.canonicalProvenance("x|", "y", "p");
+        byte[] b = KeyBasedAttestationVerifier.canonicalProvenance("x", "|y", "p");
+        assertEquals(false, java.util.Arrays.equals(a, b));
     }
 }
