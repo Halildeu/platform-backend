@@ -70,6 +70,8 @@ public class ScheduledRevocationDriver {
     private final RemoteSessionTokenCleanup cleanup;
     private final CertBoundConsumeGate consumeGate;
     private final Timer revocationLatency;
+    /** B1.3b: whether an expected builder + policy hash were configured (else the verifier is deny-all). */
+    private final boolean attestationPolicyConfigured;
 
     public ScheduledRevocationDriver(
             JdbcTemplate jdbc,
@@ -107,6 +109,7 @@ public class ScheduledRevocationDriver {
                         || expectedPolicyHash == null || expectedPolicyHash.isBlank())
                         ? null
                         : new InMemoryAttestationVerifier(expectedBuilderId, expectedPolicyHash);
+        this.attestationPolicyConfigured = attestationVerifier != null;
         RemoteSessionHeartbeat heartbeat = new RemoteSessionHeartbeat(
                 store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy,
                 trustEvaluator, attestationVerifier);
@@ -151,6 +154,18 @@ public class ScheduledRevocationDriver {
             }
         });
         log.info("remote-access revocation driver ENABLED (push subscribed; poll + advisory-locked cleanup scheduled)");
+        // B1.3b operability (Codex 019eb6d2 #3): an enabled runtime with NO configured attestation policy is
+        // a deliberate global fail-closed (every cert-sampling session is DENIED) — but a silent config drift
+        // would read as a mysterious blanket outage. Announce it loudly so ops sees the cause, not just the
+        // symptom. (A full readiness/health-indicator that GATES live sessions on this belongs to the C/D
+        // tunnel-runtime slice that actually opens cert-sampling sessions; the reconciler here is
+        // cert-unsampled and never consults the verifier.)
+        if (!attestationPolicyConfigured) {
+            log.warn("remote-access ENABLED but NO attestation policy configured "
+                    + "(endpoint-admin.remote-access.attestation.expected-builder-id / expected-policy-hash blank) "
+                    + "— every cert-sampling session will be DENIED (fail-closed) until configured; "
+                    + "this is a D10 live-acceptance prerequisite");
+        }
     }
 
     @Scheduled(

@@ -196,12 +196,16 @@ public final class RemoteSessionHeartbeat {
         // Fail-closed: any non-VERIFIED verdict (missing / untrusted-or-revoked builder / policy-mismatch /
         // bad-signature) → agentAttestation=false → kill. When unsampled, the backstop's asserted last-known
         // boolean passes through (it cannot re-derive the verdict).
-        AttestationVerifier.AttestationDecision attestationDecision = sample.certSampled()
-                ? attestationVerifier.verify(sample.attestationEvidence(), now)
-                : null;
-        boolean agentAttestation = attestationDecision == null
-                ? sample.agentAttestation()
-                : attestationDecision.isVerified();
+        // certSampled ⇒ ALWAYS a non-null decision (verifyAttestation maps a null-returning OR throwing
+        // verifier to MISSING), so the live path is fail-closed regardless of the verifier impl (Codex
+        // 019eb6d2 #1). The null branch is reached ONLY when unsampled — and a withCert sample pins its
+        // agentAttestation boolean to false, so even a hypothetical null here on the live path cannot
+        // fail-open (computed verdict takes precedence; the pinned boolean is never the source of an ALLOW).
+        AttestationVerifier.AttestationDecision attestationDecision =
+                sample.certSampled() ? verifyAttestation(sample.attestationEvidence(), now) : null;
+        boolean agentAttestation = attestationDecision != null
+                ? attestationDecision.isVerified()  // live computed verdict (cert-sampling path)
+                : sample.agentAttestation();         // unsampled token-backstop pass-through (never on withCert)
         RemoteSessionPreconditions current = new RemoteSessionPreconditions(
                 sample.policyAllow(), sample.targetConsent(), sample.dualApproval(),
                 liveResult.isLive(), certValid, certBound, agentAttestation, sample.recordingWriterAck());
@@ -285,6 +289,24 @@ public final class RemoteSessionHeartbeat {
             case STALE -> RemoteSessionStateMachine.KillReason.CERT_STALE;
             case ALLOW -> RemoteSessionStateMachine.KillReason.CERT_TRUST_LOST; // unreachable (valid ⇒ no kill)
         };
+    }
+
+    /**
+     * Run the injected verifier FAIL-CLOSED: a {@code null} return OR any thrown {@link RuntimeException}
+     * (e.g. a future B1.4 Sigstore/cosign or OCSP transport error) maps to
+     * {@link AttestationVerifier.AttestationDecision#MISSING}, so a cert-sampling heartbeat can NEVER
+     * fail-open on an ill-behaved verifier — an unprovable build is no build (Codex 019eb6d2 #1). The
+     * in-memory reference verifier is pure + total, but the real transport-backed seam must not be trusted
+     * to be exception-free, and an exception bubbling out of {@code evaluate()} could otherwise leave a live
+     * session un-killed.
+     */
+    private AttestationVerifier.AttestationDecision verifyAttestation(AttestationEvidence evidence, Instant now) {
+        try {
+            AttestationVerifier.AttestationDecision d = attestationVerifier.verify(evidence, now);
+            return d == null ? AttestationVerifier.AttestationDecision.MISSING : d;
+        } catch (RuntimeException ex) {
+            return AttestationVerifier.AttestationDecision.MISSING; // a verifier that errors can't prove a build
+        }
     }
 
     /**

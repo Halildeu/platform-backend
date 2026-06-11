@@ -339,6 +339,34 @@ class RemoteSessionHeartbeatTest {
     }
 
     @Test
+    void attestationLossPrecedesStoreUnavailable() {
+        // Codex 019eb6d2 #4 boundary: attestation (#2) is COMPUTED from the agent's presented evidence —
+        // independent of the token store — so a missing-provenance session is killed as ATTESTATION_MISSING
+        // even when the token store is ALSO partitioned. The store-partition→STORE_UNAVAILABLE doctrine
+        // guards the store-DERIVED token/binding guarantees (so a partition isn't mislabeled a revoke/
+        // mismatch); it does NOT mask a genuine, transport-observed attestation failure that ranks higher.
+        store.consume("jti-a11", EXP, T0, TP_A);
+        store.setAvailable(false);
+        var d = hb.evaluate(active("jti-a11", 1L, T0), presentingWith(null, TP_A), 2L, T0.plusSeconds(5));
+        assertTrue(d.kill());
+        assertEquals(RemoteSessionStateMachine.KillReason.ATTESTATION_MISSING, d.reason());
+    }
+
+    @Test
+    void throwingVerifierIsFailClosedMissing() {
+        // Codex 019eb6d2 #1: a verifier that THROWS (a future B1.4 Sigstore/OCSP transport error) must not
+        // bubble out of evaluate() and leave the session un-killed — it is coerced to MISSING (fail-closed).
+        var hbThrows = new RemoteSessionHeartbeat(
+                store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
+                (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
+                (e, n) -> { throw new IllegalStateException("attestation backend down"); });
+        store.consume("jti-a12", EXP, T0, TP_A);
+        var d = hbThrows.evaluate(active("jti-a12", 1L, T0), presenting(TP_A), 2L, T0.plusSeconds(5));
+        assertTrue(d.kill());
+        assertEquals(RemoteSessionStateMachine.KillReason.ATTESTATION_MISSING, d.reason());
+    }
+
+    @Test
     void certUnsampledInstrumentNeverAttestationKills() {
         // the token-backstop reconciler has no presented provenance — even though the live verifier would
         // reject (no evidence), a certUnsampled sweep passes the asserted boolean through and stays ACTIVE.
