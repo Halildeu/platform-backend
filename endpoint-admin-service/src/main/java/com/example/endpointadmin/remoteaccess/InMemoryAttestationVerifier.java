@@ -11,7 +11,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * just an allowlist match): the evidence must be complete, the builder must be the expected one and not
  * revoked, the SLSA predicate hash must match the expected policy, AND the predicate signature must equal
  * the deterministic expected signature over the canonical provenance tuple. The heavy real Sigstore/cosign
- * chain + SLSA envelope verification is the B1.4 seam.
+ * chain + SLSA envelope verification is the B1.4 seam. <b>This is a PLACEHOLDER trust basis</b> (Codex
+ * 019eb694 Q1) — the deterministic signature stand-in is NOT a real cryptographic counter-proof; even once
+ * B1.3b wires it to the live heartbeat it is NOT final assurance until the B1.4 real Sigstore/cosign verify
+ * lands. It exists to prove the fail-closed decision flow deterministically without a PKI.
  *
  * <p><b>Fail-closed everywhere</b> + <b>continuous</b>: {@link #revokeBuilder(String)} lets a mid-session
  * builder revocation flip a previously-VERIFIED session to UNTRUSTED_BUILDER on its next heartbeat.
@@ -61,19 +64,12 @@ public final class InMemoryAttestationVerifier implements AttestationVerifier {
         }
         String expectedSig =
                 expectedSignature(evidence.binaryDigest(), evidence.builderId(), evidence.slsaPredicateHash());
-        if (!constantTimeEquals(expectedSig, evidence.predicateSignature())) {
+        // hex-normalized + constant-time (Codex 019eb694 Q3): both sides are 64-hex; CertThumbprint.matches
+        // decodes then compares the bytes so case/format can't create a false negative, and it is timing-safe.
+        // Kept deliberately so the real B1.4 signature verify inherits the same normalization.
+        if (!CertThumbprint.matches(expectedSig, evidence.predicateSignature())) {
             return AttestationDecision.SIGNATURE_INVALID; // signature does not verify over the provenance
         }
         return AttestationDecision.VERIFIED;
-    }
-
-    /** Constant-time string compare (the signature is a secret-ish proof; don't leak via timing). */
-    private static boolean constantTimeEquals(String a, String b) {
-        if (a == null || b == null) {
-            return false;
-        }
-        byte[] ba = a.getBytes(StandardCharsets.US_ASCII);
-        byte[] bb = b.getBytes(StandardCharsets.US_ASCII);
-        return java.security.MessageDigest.isEqual(ba, bb);
     }
 }
