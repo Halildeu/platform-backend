@@ -28,6 +28,7 @@ on:
           - api-gateway
           - discovery-server
           - notification-orchestrator
+          - audio-gateway-service
 
 permissions:
   contents: read
@@ -58,6 +59,7 @@ jobs:
           - api-gateway
           - discovery-server
           - notification-orchestrator
+          - audio-gateway-service
 
     steps:
       - name: Checkout
