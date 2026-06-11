@@ -40,15 +40,6 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class KeyBasedAttestationVerifier implements AttestationVerifier {
 
-    /**
-     * The accepted signature algorithms (Codex 019eb7d6 #2): a strict allowlist so a weak/unexpected
-     * configured algorithm is rejected at construction (no algorithm-substitution surface). The evidence
-     * never carries its own algorithm — the verifier dictates it.
-     */
-    private static final Set<String> ALLOWED_ALGORITHMS = Set.of(
-            "SHA256withECDSA", "SHA384withECDSA", "SHA512withECDSA", "Ed25519", "Ed448",
-            "SHA256withRSA", "SHA384withRSA", "SHA512withRSA");
-
     private final String expectedBuilderId;
     private final String expectedPolicyHash;
     private final PublicKey signingKey;
@@ -65,17 +56,13 @@ public final class KeyBasedAttestationVerifier implements AttestationVerifier {
                 || expectedPolicyHash == null || expectedPolicyHash.isBlank()) {
             throw new IllegalArgumentException("expectedBuilderId + expectedPolicyHash must be non-blank");
         }
-        if (signingKey == null || signatureAlgorithm == null || signatureAlgorithm.isBlank()) {
-            throw new IllegalArgumentException("signingKey + signatureAlgorithm must be non-null/non-blank");
-        }
-        if (!ALLOWED_ALGORITHMS.contains(signatureAlgorithm)) {
-            throw new IllegalArgumentException("signatureAlgorithm '" + signatureAlgorithm
-                    + "' is not in the allowlist " + ALLOWED_ALGORITHMS + " — refusing a weak/unexpected algorithm");
+        if (signingKey == null) {
+            throw new IllegalArgumentException("signingKey must be non-null");
         }
         this.expectedBuilderId = expectedBuilderId;
         this.expectedPolicyHash = expectedPolicyHash;
         this.signingKey = signingKey;
-        this.signatureAlgorithm = signatureAlgorithm;
+        this.signatureAlgorithm = SignatureAlgorithms.require(signatureAlgorithm); // shared allowlist (B1.4c-2)
     }
 
     /** Revoke a builder mid-session (compromised-builder disclosure) → its sessions fail on next heartbeat. */
