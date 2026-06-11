@@ -30,6 +30,13 @@ management:
     health:
       probes:
         enabled: true
+  # Redis health indicator default KAPALI: starter-data-redis classpath'te
+  # (PR-gw-01C dispatcher) ama default dispatcher mode=noop — Redis yokken
+  # aggregate health DOWN olmasın. Redis mode'da k8s overlay
+  # AUDIO_GATEWAY_HEALTH_REDIS_ENABLED=true ile açar (application-k8s.yml).
+  health:
+    redis:
+      enabled: false
   endpoints:
     web:
       exposure:

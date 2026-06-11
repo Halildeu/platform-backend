@@ -4,7 +4,26 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: ${AUDIO_GATEWAY_JWT_ISSUER_URI:http://platform-keycloak:8080/realms/platform}
+          # Dual-URI pattern (endpoint-admin emsali): issuer external (token iss
+          # claim'i edge host'u taşır), JWKS internal (cluster içi keycloak
+          # Service — default-deny egress dışarı 443'e izin vermez; key fetch
+          # in-cluster kalır). İkisi birlikte set → Boot jwk-set-uri'den key
+          # çeker + issuer-uri ile iss claim validation yapar.
+          #
+          # Default YOK (Codex 019eb709 REVISE absorb): her overlay/configmap iki
+          # env'i de açıkça verir; eksikse startup placeholder-resolution hatasıyla
+          # fail-fast eder — yanlış realm'e sessiz düşme YASAK (gitops
+          # OVERLAY_MUST_OVERRIDE felsefesiyle aynı fail-closed disiplin).
+          issuer-uri: ${AUDIO_GATEWAY_JWT_ISSUER_URI}
+          jwk-set-uri: ${AUDIO_GATEWAY_JWT_JWKS_URI}
+
+management:
+  health:
+    redis:
+      # redis dispatcher mode'da true set edilir (configmap) — aggregate
+      # /actuator/health Redis reachability'yi yansıtır (D29 Functional).
+      # Liveness/readiness probe group'ları etkilenmez (state-based).
+      enabled: ${AUDIO_GATEWAY_HEALTH_REDIS_ENABLED:false}
 
 audio:
   gateway:
