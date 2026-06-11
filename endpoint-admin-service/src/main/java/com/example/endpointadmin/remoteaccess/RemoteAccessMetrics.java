@@ -68,6 +68,15 @@ public final class RemoteAccessMetrics {
      */
     public static final String HARD_KILL_TOTAL = "remote_access_hard_kill_total";
 
+    /**
+     * A token consumed WITHOUT a cert binding — the legacy 3-arg {@code consume} (null thumbprint).
+     * Visibility for the B1.1 migration (Codex 019eb54b B1.1a REVISE): a non-zero rate means callers
+     * still issue unbound tokens. The runtime increments this at consume; B1.1c gates legacy-unbound
+     * (reject / pilot-off) before any live session — the store stays pure, so the constant lives here as
+     * the contract and the enforcement layer emits it.
+     */
+    public static final String LEGACY_UNBOUND_ISSUANCE = "remote_access_legacy_unbound_issuance_total";
+
     private RemoteAccessMetrics() {
     }
 }

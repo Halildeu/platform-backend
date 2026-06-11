@@ -13,6 +13,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -123,5 +124,21 @@ class DbCasTokenLifecycleStorePostgresIntegrationTest {
         assertEquals(TokenLifecycleStore.ConsumeOutcome.INVALID, s.consume("  ", EXP, T0));
         assertEquals(TokenLifecycleStore.TokenLiveCheckResult.INVALID, s.isTokenLive(" ", T0));
         assertEquals(TokenLifecycleStore.MutationOutcome.NOOP, s.revoke(null));
+    }
+
+    @Test
+    void consumeWithThumbprintPinsAndReadsItFromTheRow() {
+        // B1.1: the thumbprint is written in the SAME atomic consume row (V64 column, 64-hex CHECK).
+        DbCasTokenLifecycleStore s = store();
+        String tp = CertThumbprint.ofDer("cert-der".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        assertEquals(TokenLifecycleStore.ConsumeOutcome.ACCEPTED, s.consume("jti-tp", EXP, T0, tp));
+        assertEquals(Optional.of(tp), s.boundThumbprint("jti-tp"));
+    }
+
+    @Test
+    void legacyUnboundConsumeHasNoThumbprint() {
+        DbCasTokenLifecycleStore s = store();
+        assertEquals(TokenLifecycleStore.ConsumeOutcome.ACCEPTED, s.consume("jti-legacy", EXP, T0)); // 3-arg default
+        assertEquals(Optional.empty(), s.boundThumbprint("jti-legacy"));
     }
 }

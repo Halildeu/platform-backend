@@ -46,19 +46,20 @@ public final class DbCasTokenLifecycleStore implements TokenLifecycleStore {
     }
 
     @Override
-    public ConsumeOutcome consume(String jti, Instant expiresAt, Instant now) {
+    public ConsumeOutcome consume(String jti, Instant expiresAt, Instant now, String boundThumbprint) {
         if (jti == null || jti.isBlank() || expiresAt == null || now == null) {
             return ConsumeOutcome.INVALID;
         }
         boolean live = now.isBefore(expiresAt);
         String insertState = live ? "USED" : "EXPIRED";
+        String thumbprint = CertThumbprint.isPresent(boundThumbprint) ? boundThumbprint : null;
         try {
-            // Atomic: only the single winning caller inserts the row.
+            // Atomic: only the single winning caller inserts the row (single-use + cert-binding one write).
             int inserted = jdbc.update(
-                    "INSERT INTO " + table + " (jti, state, expires_at, consumed_at, created_at) "
-                            + "VALUES (?, ?, ?, ?, ?) ON CONFLICT (jti) DO NOTHING",
+                    "INSERT INTO " + table + " (jti, state, expires_at, consumed_at, created_at, bound_cert_thumbprint) "
+                            + "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (jti) DO NOTHING",
                     jti, insertState, Timestamp.from(expiresAt),
-                    live ? Timestamp.from(now) : null, Timestamp.from(now));
+                    live ? Timestamp.from(now) : null, Timestamp.from(now), thumbprint);
             if (inserted == 1) {
                 return live ? ConsumeOutcome.ACCEPTED : ConsumeOutcome.EXPIRED;
             }
@@ -164,6 +165,22 @@ public final class DbCasTokenLifecycleStore implements TokenLifecycleStore {
                     .map(Timestamp::toInstant);
         } catch (DataAccessException ex) {
             return Optional.empty(); // store-down → no DB anchor; caller falls back to the event clock
+        }
+    }
+
+    @Override
+    public Optional<String> boundThumbprint(String jti) {
+        if (jti == null || jti.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return jdbc.queryForList(
+                    "SELECT bound_cert_thumbprint FROM " + table + " WHERE jti = ?", jti)
+                    .stream().findFirst()
+                    .map(row -> (String) row.get("bound_cert_thumbprint"))
+                    .filter(tp -> tp != null && !tp.isBlank());
+        } catch (DataAccessException ex) {
+            return Optional.empty(); // store-down → fail-closed (caller treats unknown binding as no-match)
         }
     }
 

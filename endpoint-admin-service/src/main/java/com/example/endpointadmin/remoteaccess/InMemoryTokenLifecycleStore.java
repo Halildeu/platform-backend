@@ -16,7 +16,7 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
      * Per-jti record: lifecycle state + the token's recorded expiry (for deterministic time-liveness) +
      * the revoke instant (the SLO t0 source — only set when {@code state == REVOKED}).
      */
-    private record Entry(JtiState state, Instant expiresAt, Instant revokedAt) {
+    private record Entry(JtiState state, Instant expiresAt, Instant revokedAt, String boundThumbprint) {
     }
 
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
@@ -28,13 +28,14 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
     }
 
     @Override
-    public ConsumeOutcome consume(String jti, Instant expiresAt, Instant now) {
+    public ConsumeOutcome consume(String jti, Instant expiresAt, Instant now, String boundThumbprint) {
         if (jti == null || jti.isBlank() || expiresAt == null || now == null) {
             return ConsumeOutcome.INVALID;
         }
         if (!available) {
             return ConsumeOutcome.STORE_UNAVAILABLE; // fail-closed
         }
+        String thumbprint = CertThumbprint.isPresent(boundThumbprint) ? boundThumbprint : null;
         ConsumeOutcome[] outcome = new ConsumeOutcome[1];
         entries.compute(jti, (k, current) -> {
             // Re-check availability INSIDE the atomic step so a partition mid-call cannot leak an ACCEPTED
@@ -56,10 +57,11 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
             // first sight of this jti — reject an already-expired token, else accept once.
             if (!now.isBefore(expiresAt)) {
                 outcome[0] = ConsumeOutcome.EXPIRED;
-                return new Entry(JtiState.EXPIRED, expiresAt, null);
+                return new Entry(JtiState.EXPIRED, expiresAt, null, null);
             }
             outcome[0] = ConsumeOutcome.ACCEPTED;
-            return new Entry(JtiState.USED, expiresAt, null);
+            // pin the bound cert thumbprint atomically with the single-use USED transition (B1.1).
+            return new Entry(JtiState.USED, expiresAt, null, thumbprint);
         });
         return outcome[0];
     }
@@ -81,7 +83,8 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
             result[0] = MutationOutcome.UPDATED;
             // record the revoke instant so revokedAt() can serve the SLO t0 anchor (mirrors DbCas's
             // DB-recorded revoked_at; uses the same single-clock convention as the prod store).
-            return new Entry(JtiState.REVOKED, current == null ? null : current.expiresAt(), Instant.now());
+            return new Entry(JtiState.REVOKED, current == null ? null : current.expiresAt(), Instant.now(),
+                    current == null ? null : current.boundThumbprint());
         });
         return result[0];
     }
@@ -102,7 +105,8 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
             }
             result[0] = MutationOutcome.UPDATED;
             return new Entry(JtiState.EXPIRED, current == null ? null : current.expiresAt(),
-                    current == null ? null : current.revokedAt());
+                    current == null ? null : current.revokedAt(),
+                    current == null ? null : current.boundThumbprint());
         });
         return result[0];
     }
@@ -140,5 +144,17 @@ public final class InMemoryTokenLifecycleStore implements TokenLifecycleStore {
             return Optional.empty();
         }
         return Optional.ofNullable(e.revokedAt());
+    }
+
+    @Override
+    public Optional<String> boundThumbprint(String jti) {
+        if (jti == null || jti.isBlank() || !available) {
+            return Optional.empty();
+        }
+        Entry e = entries.get(jti);
+        if (e == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(e.boundThumbprint());
     }
 }
