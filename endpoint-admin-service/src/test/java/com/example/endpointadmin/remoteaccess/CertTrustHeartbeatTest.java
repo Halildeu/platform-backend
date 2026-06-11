@@ -34,7 +34,8 @@ class CertTrustHeartbeatTest {
     private final InMemoryCertTrustEvaluator trust = new InMemoryCertTrustEvaluator(TRUST_MAX_AGE);
     private final InMemoryAttestationVerifier attest = new InMemoryAttestationVerifier(BUILDER, POLICY);
     private final RemoteSessionHeartbeat hb = new RemoteSessionHeartbeat(
-            store, new RemoteSessionStateMachine(), MAX_HB_AGE, CertBindingGuard.Policy.REQUIRE_BOUND, trust, attest);
+            store, new RemoteSessionStateMachine(), MAX_HB_AGE, CertBindingGuard.Policy.REQUIRE_BOUND, trust, attest,
+            null);
 
     private static final AttestationEvidence GOOD = new AttestationEvidence(
             DIGEST, BUILDER, POLICY, InMemoryAttestationVerifier.expectedSignature(DIGEST, BUILDER, POLICY));

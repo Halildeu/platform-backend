@@ -81,7 +81,8 @@ public class ScheduledRevocationDriver {
             @Value("${endpoint-admin.remote-access.max-heartbeat-age-ms:15000}") long maxHeartbeatAgeMs,
             @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs,
             @Value("${endpoint-admin.remote-access.attestation.expected-builder-id:}") String expectedBuilderId,
-            @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash) {
+            @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash,
+            @Value("${endpoint-admin.remote-access.cert-trust.expected-issuer-dn:}") String expectedIssuerDn) {
         this.jdbc = jdbc;
         this.meters = meters;
         this.clock = Clock.systemUTC();
@@ -110,9 +111,17 @@ public class ScheduledRevocationDriver {
                         ? null
                         : new InMemoryAttestationVerifier(expectedBuilderId, expectedPolicyHash);
         this.attestationPolicyConfigured = attestationVerifier != null;
+        // B1.4a-0 cert-identity pin. An operator-configured expected agent-CA issuer DN; null when blank →
+        // identity NOT enforced (an ADDITIVE opt-in hardening on top of binding+trust, so absence is a
+        // legitimate "not constrained", NOT fail-closed). When set, the heartbeat rejects any presented cert
+        // from another CA. Serial is per-cert (pinned by the bound token later, B1.4a/store) — not configured
+        // here. Real RFC 4514 DN canonicalisation + X.509 path-build is the B1.4a PKIX slice.
+        CertRef expectedCertIdentity = (expectedIssuerDn == null || expectedIssuerDn.isBlank())
+                ? null
+                : new CertRef(null, "SHA-256", null, expectedIssuerDn);
         RemoteSessionHeartbeat heartbeat = new RemoteSessionHeartbeat(
                 store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy,
-                trustEvaluator, attestationVerifier);
+                trustEvaluator, attestationVerifier, expectedCertIdentity);
         this.registry = new InMemorySessionRegistry();
         this.feed = new InMemoryTokenRevocationFeed();
         this.reconciler = new RemoteSessionRevocationReconciler(store, heartbeat);
