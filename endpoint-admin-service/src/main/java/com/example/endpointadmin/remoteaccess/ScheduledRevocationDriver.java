@@ -19,8 +19,10 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP_DURATION_MS;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP_LOCK_CONTENDED;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP_PURGED_ROWS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.HARD_KILL_POLL_RECOVERY;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.HARD_KILL_TOTAL;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.REVOCATION_CLOCK_SKEW;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.REVOCATION_LATENCY_MS;
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.REVOCATION_NEGATIVE_LATENCY;
@@ -140,6 +142,7 @@ public class ScheduledRevocationDriver {
         Boolean locked = jdbc.queryForObject(
                 "SELECT pg_try_advisory_xact_lock(?)", Boolean.class, CLEANUP_ADVISORY_LOCK_KEY);
         if (!Boolean.TRUE.equals(locked)) {
+            meters.counter(CLEANUP_LOCK_CONTENDED).increment();
             log.debug("remote-access cleanup skipped — another replica holds the advisory lock");
             return;
         }
@@ -172,6 +175,7 @@ public class ScheduledRevocationDriver {
             if (!o.killed()) {
                 continue; // a still-live session in a poll sweep — nothing to do
             }
+            meters.counter(HARD_KILL_TOTAL).increment(); // denominator for the unavailable/unmeasured ratios
             if (o.storeUnavailable()) {
                 meters.counter(STORE_UNAVAILABLE).increment(); // fail-closed kill, excluded from the SLO
             } else if (o.negativeLatency()) {

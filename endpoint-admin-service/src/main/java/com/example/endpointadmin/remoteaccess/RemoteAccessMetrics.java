@@ -48,6 +48,25 @@ public final class RemoteAccessMetrics {
     public static final String CLEANUP_PURGED_ROWS = "remote_access_cleanup_purged_rows_total";
     /** Wall-clock duration of a cleanup run — DB-cost observability for the advisory-locked cleaner (Q4). */
     public static final String CLEANUP_DURATION_MS = "remote_access_cleanup_duration_ms";
+    /**
+     * A cleanup run that found the advisory lock already held by another replica (Codex Q4 follow-up) —
+     * expected to be non-zero in a multi-replica deployment; a {@code 0} rate means only one replica ever
+     * schedules cleanup (also fine). Pure observability, not an alarm.
+     */
+    public static final String CLEANUP_LOCK_CONTENDED = "remote_access_cleanup_lock_contended_total";
+
+    /**
+     * <b>The hard-kill DENOMINATOR</b> (Codex 019eb54b Q3 follow-up): every hard-kill decision, whether its
+     * latency was a clean SLO sample, was {@code STORE_UNAVAILABLE}, or was {@link #REVOCATION_NEGATIVE_LATENCY}.
+     * Excluding the unreliable samples from the P95 is correct, but on its own it would HIDE the SLO's
+     * reliability dimension — so this denominator makes the failure ratios computable + alarmable:
+     * <ul>
+     *   <li>{@code unavailable_ratio  = }{@link #STORE_UNAVAILABLE}{@code  / HARD_KILL_TOTAL} — alarm if &gt; 0</li>
+     *   <li>{@code unmeasured_rate    = (}{@link #STORE_UNAVAILABLE}{@code  + }{@link #REVOCATION_NEGATIVE_LATENCY}{@code ) / HARD_KILL_TOTAL}</li>
+     * </ul>
+     * The P95/P99 timer ({@link #REVOCATION_LATENCY_MS}) is then read together with these ratios, never alone.
+     */
+    public static final String HARD_KILL_TOTAL = "remote_access_hard_kill_total";
 
     private RemoteAccessMetrics() {
     }
