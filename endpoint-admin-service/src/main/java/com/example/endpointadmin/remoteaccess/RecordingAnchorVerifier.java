@@ -20,7 +20,9 @@ public final class RecordingAnchorVerifier {
     public enum AnchorVerdict {
         /** The anchor is authentically signed and the chain extends the anchored, unaltered prefix. */
         CONSISTENT(true),
-        /** The anchor's signature is absent/invalid, or there is nothing to compare → fail-closed. */
+        /** No anchor was supplied (no prior commitment exists) — fail-closed, distinct from a forged one. */
+        MISSING_ANCHOR(false),
+        /** The anchor's signature is absent/invalid, or its fields are out of range → fail-closed. */
         UNSIGNED(false),
         /** The chain is shorter than the signed count — the tail was dropped after anchoring. */
         TRUNCATED(false),
@@ -72,8 +74,11 @@ public final class RecordingAnchorVerifier {
      * anchored count equals the signed head.
      */
     public AnchorVerdict audit(SessionRecordingChain liveChain, RecordingAnchor lastAnchor) {
-        if (liveChain == null || lastAnchor == null || !verifySignature(lastAnchor)) {
-            return AnchorVerdict.UNSIGNED;
+        if (liveChain == null || lastAnchor == null) {
+            return AnchorVerdict.MISSING_ANCHOR; // no prior commitment to compare against (Codex 019eb7d6 #3)
+        }
+        if (lastAnchor.count() < 0 || !verifySignature(lastAnchor)) {
+            return AnchorVerdict.UNSIGNED; // bad/absent signature, or an out-of-range count (#2)
         }
         if (!liveChain.verifyIntegrity()) {
             return AnchorVerdict.REPLACED; // the chain itself was altered/re-ordered/etc.
@@ -93,5 +98,43 @@ public final class RecordingAnchorVerifier {
             return AnchorVerdict.REPLACED; // the anchored prefix was re-minted differently
         }
         return AnchorVerdict.CONSISTENT;
+    }
+
+    /**
+     * Verify a kept sequence of successive anchors (the operator's audit log) is sound (Codex 019eb7d6 #1):
+     * every anchor authentically signed, all for the SAME chain, the {@code count} MONOTONICALLY
+     * non-decreasing (a regression = a rollback) with a re-anchor at the same count committing the SAME head,
+     * and timestamps non-decreasing. This closes the single-anchor residual: a dropped/replaced tail between
+     * two anchors is caught because the later anchor's count/head must extend the earlier one's. Fail-closed:
+     * any gap → {@code false}.
+     */
+    public boolean verifyAnchorSequence(List<RecordingAnchor> anchors) {
+        if (anchors == null) {
+            return false;
+        }
+        String chainId = null;
+        long prevCount = -1;
+        long prevTimestamp = Long.MIN_VALUE;
+        String headAtPrevCount = null;
+        for (RecordingAnchor a : anchors) {
+            if (a == null || a.count() < 0 || !verifySignature(a)) {
+                return false; // forged / out-of-range / unsigned
+            }
+            if (chainId == null) {
+                chainId = a.chainId();
+            } else if (!chainId.equals(a.chainId())) {
+                return false; // all anchors must commit the SAME chain
+            }
+            if (a.count() < prevCount || a.timestampMillis() < prevTimestamp) {
+                return false; // count rollback / time going backwards
+            }
+            if (a.count() == prevCount && headAtPrevCount != null && !headAtPrevCount.equals(a.headHash())) {
+                return false; // a re-anchor at the same count MUST commit the same head (no same-length replace)
+            }
+            prevCount = a.count();
+            prevTimestamp = a.timestampMillis();
+            headAtPrevCount = a.headHash();
+        }
+        return true;
     }
 }

@@ -8,6 +8,8 @@ import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -119,5 +121,50 @@ class RecordingAnchorTest {
         for (AnchorVerdict v : AnchorVerdict.values()) {
             assertEquals(v == AnchorVerdict.CONSISTENT, v.isSound(), v.name());
         }
+    }
+
+    // ---- Codex 019eb7d6 absorb: null-anchor verdict + the keep-all-anchors monotonic sequence ----
+
+    @Test
+    void aNullAnchorIsMissingNotUnsigned() {
+        assertEquals(AnchorVerdict.MISSING_ANCHOR, verifier.audit(chainOf(2), null));
+    }
+
+    @Test
+    void aSoundAnchorSequenceVerifies() {
+        SessionRecordingChain chain = new SessionRecordingChain();
+        List<RecordingAnchor> sequence = new ArrayList<>();
+        chain.append(RecordKind.SESSION_START, "a", 100L);
+        sequence.add(signer.anchor(chain, 100L));
+        chain.append(RecordKind.AGENT_OUTPUT, "b", 200L);
+        sequence.add(signer.anchor(chain, 200L));
+        chain.append(RecordKind.SESSION_END, "c", 300L);
+        sequence.add(signer.anchor(chain, 300L));
+        assertTrue(verifier.verifyAnchorSequence(sequence));
+    }
+
+    @Test
+    void aCountRollbackInTheSequenceIsRejected() {
+        RecordingAnchor a2 = signer.anchor(chainOf(2), 200L);
+        RecordingAnchor a1 = signer.anchor(chainOf(1), 300L); // count regresses 2 → 1 = rollback
+        assertFalse(verifier.verifyAnchorSequence(List.of(a2, a1)));
+    }
+
+    @Test
+    void aMixedChainIdSequenceIsRejected() {
+        var otherSigner = new RecordingAnchorSigner("other-chain", keyPair.getPrivate(), ALG);
+        RecordingAnchor a = signer.anchor(chainOf(1), 100L);
+        RecordingAnchor b = otherSigner.anchor(chainOf(2), 200L);
+        assertFalse(verifier.verifyAnchorSequence(List.of(a, b)));
+    }
+
+    @Test
+    void aSameCountDifferentHeadReanchorIsRejected() {
+        RecordingAnchor a = signer.anchor(chainOf(2), 100L);
+        SessionRecordingChain other = new SessionRecordingChain();
+        other.append(RecordKind.AGENT_OUTPUT, "X", 1L);
+        other.append(RecordKind.AGENT_OUTPUT, "Y", 2L);
+        RecordingAnchor b = signer.anchor(other, 200L); // same count 2, DIFFERENT head = same-length replace
+        assertFalse(verifier.verifyAnchorSequence(List.of(a, b)));
     }
 }
