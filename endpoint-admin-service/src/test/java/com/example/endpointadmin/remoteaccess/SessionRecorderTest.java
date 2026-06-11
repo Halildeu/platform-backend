@@ -98,4 +98,32 @@ class SessionRecorderTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new SessionRecorder(new InMemoryRecordingSink(), null));
     }
+
+    @Test
+    void aHealthProbeThatThrowsIsTreatedUnhealthy() {
+        // Codex 019eb7d6: isHealthy() must not propagate a probe exception (fail-closed instead)
+        RecordingSink throwingSink = new RecordingSink() {
+            @Override
+            public void append(SessionRecordingChain.Entry entry) {
+            }
+
+            @Override
+            public boolean isWritable() {
+                throw new IllegalStateException("probe blew up");
+            }
+        };
+        SessionRecorder recorder = new SessionRecorder(throwingSink, signer);
+        assertFalse(recorder.isHealthy());
+    }
+
+    @Test
+    void anchoringAnUnhealthyRecorderIsRefused() {
+        // Codex 019eb7d6: don't anchor a broken recorder (its chain may be ahead of the durable sink)
+        InMemoryRecordingSink sink = new InMemoryRecordingSink();
+        SessionRecorder recorder = new SessionRecorder(sink, signer);
+        recorder.record(RecordKind.SESSION_START, "h0", 100L);
+        sink.setWritable(false);
+        recorder.record(RecordKind.AGENT_OUTPUT, "h1", 200L); // fails → latched unhealthy
+        assertThrows(IllegalStateException.class, () -> recorder.anchor(500L));
+    }
 }

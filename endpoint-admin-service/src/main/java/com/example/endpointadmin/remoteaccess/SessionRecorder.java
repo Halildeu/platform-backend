@@ -59,14 +59,31 @@ public final class SessionRecorder {
 
     /**
      * The {@code recordingWriterAck} signal: the recorder is healthy iff recording has never broken AND the
-     * sink is currently writable AND the in-process chain is intact. Fed to the RECORDER precondition.
+     * sink is currently writable AND the in-process chain is intact. Fed to the RECORDER precondition. A
+     * health probe that itself throws (Codex 019eb7d6) is treated as UNHEALTHY — an unprovable health can't
+     * keep a session alive.
      */
     public synchronized boolean isHealthy() {
-        return !recordingBroken && sink.isWritable() && chain.verifyIntegrity();
+        if (recordingBroken) {
+            return false;
+        }
+        try {
+            return sink.isWritable() && chain.verifyIntegrity();
+        } catch (RuntimeException e) {
+            return false; // a probe that errors can't prove health → fail-closed
+        }
     }
 
-    /** Produce a signed out-of-band anchor over the current chain state (C-2). */
+    /**
+     * Produce a signed out-of-band anchor over the current chain state (C-2). REFUSED when the recorder is
+     * unhealthy (Codex 019eb7d6): a broken recorder's in-process chain may be ahead of what the durable sink
+     * holds, so anchoring it would commit an entry the sink never durably stored.
+     */
     public synchronized RecordingAnchor anchor(long timestampMillis) {
+        if (!isHealthy()) {
+            throw new IllegalStateException(
+                    "cannot anchor an unhealthy recorder — the chain may diverge from the durable sink");
+        }
         return anchorSigner.anchor(chain, timestampMillis);
     }
 
