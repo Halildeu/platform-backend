@@ -128,10 +128,11 @@ class DbCasTokenLifecycleStorePostgresIntegrationTest {
 
     @Test
     void consumeWithThumbprintPinsAndReadsItFromTheRow() {
-        // B1.1: the thumbprint is written in the SAME atomic consume row (V64 column).
+        // B1.1: the thumbprint is written in the SAME atomic consume row (V64 column, 64-hex CHECK).
         DbCasTokenLifecycleStore s = store();
-        assertEquals(TokenLifecycleStore.ConsumeOutcome.ACCEPTED, s.consume("jti-tp", EXP, T0, "thumb-der-hex"));
-        assertEquals(Optional.of("thumb-der-hex"), s.boundThumbprint("jti-tp"));
+        String tp = CertThumbprint.ofDer("cert-der".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        assertEquals(TokenLifecycleStore.ConsumeOutcome.ACCEPTED, s.consume("jti-tp", EXP, T0, tp));
+        assertEquals(Optional.of(tp), s.boundThumbprint("jti-tp"));
     }
 
     @Test

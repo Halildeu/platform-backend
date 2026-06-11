@@ -1,6 +1,5 @@
 package com.example.endpointadmin.remoteaccess;
 
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
@@ -53,13 +52,50 @@ public final class CertThumbprint {
      * length-independent byte compare so the bound thumbprint is not leaked through timing.
      */
     public static boolean matches(String a, String b) {
-        if (a == null || b == null || a.isBlank() || b.isBlank()) {
-            return false;
+        byte[] da = decodeHex(a);
+        byte[] db = decodeHex(b);
+        if (da == null || db == null) {
+            return false; // fail-closed: blank / odd-length / non-hex on either side never matches
         }
-        byte[] ba = a.getBytes(StandardCharsets.US_ASCII);
-        byte[] bb = b.getBytes(StandardCharsets.US_ASCII);
-        // MessageDigest.isEqual is constant-time for equal-length inputs and length-safe for unequal ones.
-        return MessageDigest.isEqual(ba, bb);
+        // constant-time + length-safe over the DECODED bytes, so case ('AB' == 'ab') and format are
+        // normalized (Codex 019eb54b B1.1a REVISE #1 — the presented thumbprint from the TLS layer may
+        // not be lowercase, and a non-hex payload must never match rather than slip through as a string).
+        return MessageDigest.isEqual(da, db);
+    }
+
+    /** Decode a hex string to bytes (case-insensitive); null on null/blank/odd-length/non-hex (fail-closed). */
+    private static byte[] decodeHex(String s) {
+        if (s == null) {
+            return null;
+        }
+        String t = s.trim();
+        int n = t.length();
+        if (n == 0 || (n & 1) == 1) {
+            return null;
+        }
+        byte[] out = new byte[n / 2];
+        for (int i = 0; i < n; i += 2) {
+            int hi = hexVal(t.charAt(i));
+            int lo = hexVal(t.charAt(i + 1));
+            if (hi < 0 || lo < 0) {
+                return null;
+            }
+            out[i / 2] = (byte) ((hi << 4) | lo);
+        }
+        return out;
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
     }
 
     /** Whether a stored thumbprint value represents an actual binding (present + non-blank). */

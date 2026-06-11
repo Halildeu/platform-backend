@@ -8,6 +8,12 @@
 ALTER TABLE remote_session_token
     ADD COLUMN bound_cert_thumbprint VARCHAR(64);
 
+-- Format guarantee (Codex 019eb54b B1.1a REVISE #2): when present, the thumbprint MUST be a 64-char
+-- lowercase-hex SHA-256 — a bad/garbled payload is rejected at the DB, aiding future attestation/PKI.
+ALTER TABLE remote_session_token
+    ADD CONSTRAINT chk_remote_session_token_thumbprint
+        CHECK (bound_cert_thumbprint IS NULL OR bound_cert_thumbprint ~ '^[0-9a-f]{64}$');
+
 COMMENT ON COLUMN remote_session_token.bound_cert_thumbprint IS
     'Faz 22.6 B1.1: SHA-256 hex thumbprint of the client cert this token is bound to (RFC 8705). '
     'NULL = legacy-unbound (feature-flag gated). Pinned atomically at consume; enforced every heartbeat.';

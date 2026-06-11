@@ -51,6 +51,19 @@ class CertThumbprintTest {
     }
 
     @Test
+    void matchesIsCaseInsensitiveOverHex() {
+        // the bound thumbprint is stored lowercase; a presented uppercase hex of the SAME cert must match.
+        String lower = CertThumbprint.ofDer("cert".getBytes(StandardCharsets.US_ASCII));
+        assertTrue(CertThumbprint.matches(lower, lower.toUpperCase()));
+    }
+
+    @Test
+    void matchesRejectsNonHexAndOddLength() {
+        assertFalse(CertThumbprint.matches("zzzz", "zzzz")); // non-hex chars → fail-closed
+        assertFalse(CertThumbprint.matches("abc", "abc"));   // odd length → fail-closed
+    }
+
+    @Test
     void isPresentDistinguishesBound() {
         assertTrue(CertThumbprint.isPresent("abc"));
         assertFalse(CertThumbprint.isPresent(null));
