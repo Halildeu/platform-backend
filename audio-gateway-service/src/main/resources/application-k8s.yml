@@ -18,6 +18,13 @@ spring:
           jwk-set-uri: ${AUDIO_GATEWAY_JWT_JWKS_URI}
 
 management:
+  server:
+    # k8s'te actuator ayrı management portunda (tüm Spring servislerle aynı
+    # topoloji — drift gate spring-actuator probe contract'ı management:8081
+    # şart koşar; gitops scripts/drift_detection/lib/probe_contract_rules.py).
+    # Ayrı Netty server: WebFlux security chain ana porttan ayrışır, kubelet
+    # probe'ları auth'suz erişir.
+    port: 8081
   health:
     redis:
       # redis dispatcher mode'da true set edilir (configmap) — aggregate

@@ -27,8 +27,10 @@ WORKDIR /app
 COPY --from=build /app/target/*.jar app.jar
 RUN chown app:app app.jar
 
-# 8210 = server.port (application.yml); actuator aynı port
-EXPOSE 8210
+# 8210 = server.port; 8081 = k8s profilinde management/actuator portu
+# (application-k8s.yml management.server.port — drift gate spring-actuator
+# contract'ı; base profilde actuator 8210'da kalır)
+EXPOSE 8210 8081
 
 USER 1000:1000
 
