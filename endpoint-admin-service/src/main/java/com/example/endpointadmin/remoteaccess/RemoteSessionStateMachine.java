@@ -182,7 +182,12 @@ public final class RemoteSessionStateMachine {
     /** Precise audit reason for a mid-session kill (feeds {@code RemoteSessionAuditRecord.abortReason}). */
     public enum KillReason {
         NONE, NOT_ACTIVE, POLICY_REVOKED, ATTESTATION_LOST, RECORDER_LOST,
-        CONSENT_REVOKED, DUAL_APPROVAL_REVOKED, TOKEN_REVOKED, VISIBILITY_LOSS
+        CONSENT_REVOKED, DUAL_APPROVAL_REVOKED, TOKEN_REVOKED, VISIBILITY_LOSS,
+        // refined token-loss causes the heartbeat distinguishes from a plain revocation (Codex 019eb54b
+        // absorb — accurate audit/IR root-cause, not all token-loss is "revoked"):
+        TOKEN_EXPIRED, TOKEN_NOT_FOUND, STORE_UNAVAILABLE,
+        // a live session that stopped receiving fresh heartbeats (seq-independent timeout):
+        HEARTBEAT_TIMEOUT
     }
 
     /**
