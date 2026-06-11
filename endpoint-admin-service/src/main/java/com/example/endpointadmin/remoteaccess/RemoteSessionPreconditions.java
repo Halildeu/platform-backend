@@ -34,4 +34,14 @@ public record RemoteSessionPreconditions(
                 && agentAttestation
                 && recordingWriterAck;
     }
+
+    /**
+     * Wither: the same preconditions with {@code tokenBound} overridden. The heartbeat samples the other
+     * five from the runtime, then sets {@code tokenBound} from the authoritative {@link TokenLifecycleStore}
+     * liveness check (a revoked/expired jti → {@code false} → kill).
+     */
+    public RemoteSessionPreconditions withTokenBound(boolean tokenBoundOverride) {
+        return new RemoteSessionPreconditions(
+                policyAllow, targetConsent, dualApproval, tokenBoundOverride, agentAttestation, recordingWriterAck);
+    }
 }
