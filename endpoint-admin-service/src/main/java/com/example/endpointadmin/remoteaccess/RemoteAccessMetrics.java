@@ -22,6 +22,33 @@ public final class RemoteAccessMetrics {
     /** Count of consume() / liveness checks that hit a store-unavailable (fail-closed) path. */
     public static final String STORE_UNAVAILABLE = "remote_access_store_unavailable_total";
 
+    // ---- B2.2c live-runtime driver (Codex 019eb54b Q1/Q2/Q3/Q4/Q5 absorb) ----
+
+    /**
+     * A revocation caught by the POLL backstop (a DROPPED feed delivery) rather than the push path —
+     * proves criterion #7 fail-closed reliability. A rising rate means the feed transport is lossy.
+     */
+    public static final String HARD_KILL_POLL_RECOVERY = "remote_access_hard_kill_poll_recovery_total";
+    /**
+     * Invariant alarm: more than one LOCAL ACTIVE session was bound to a single jti — the single-owner
+     * assumption underpinning lock-free multi-instance safety (Codex Q1) was violated. Should stay 0.
+     */
+    public static final String SESSION_OWNERSHIP_CONFLICT = "remote_access_session_ownership_conflict_total";
+    /**
+     * Count of revocations where the event clock and the store's {@code revoked_at} disagreed (app↔store
+     * skew). The SLO anchors on the store value; this meters how far the event clock drifted from it.
+     */
+    public static final String REVOCATION_CLOCK_SKEW = "remote_access_revocation_clock_skew_total";
+    /**
+     * Subset alarm: t0({@code revoked_at}) was AFTER the decision clock ({@code now < t0}) — the latency
+     * sample is unreliable and is EXCLUDED from the P95 so a clock glitch cannot deflate the SLO (#10).
+     */
+    public static final String REVOCATION_NEGATIVE_LATENCY = "remote_access_revocation_negative_latency_total";
+    /** Rows purged by a cleanup run (expired, non-REVOKED). */
+    public static final String CLEANUP_PURGED_ROWS = "remote_access_cleanup_purged_rows_total";
+    /** Wall-clock duration of a cleanup run — DB-cost observability for the advisory-locked cleaner (Q4). */
+    public static final String CLEANUP_DURATION_MS = "remote_access_cleanup_duration_ms";
+
     private RemoteAccessMetrics() {
     }
 }

@@ -7,6 +7,7 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Faz 22.6 B2.2b — production {@link TokenLifecycleStore} backed by PostgreSQL (DB-CAS), behind the same
@@ -145,6 +146,24 @@ public final class DbCasTokenLifecycleStore implements TokenLifecycleStore {
             };
         } catch (DataAccessException ex) {
             return TokenLiveCheckResult.STORE_UNAVAILABLE; // fail-closed
+        }
+    }
+
+    @Override
+    public Optional<Instant> revokedAt(String jti) {
+        if (jti == null || jti.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            // Only a REVOKED row carries the SLO t0; read what the DB actually recorded (source-bound).
+            return jdbc.queryForList(
+                    "SELECT revoked_at FROM " + table + " WHERE jti = ? AND state = 'REVOKED'", jti)
+                    .stream().findFirst()
+                    .map(row -> (Timestamp) row.get("revoked_at"))
+                    .filter(ts -> ts != null)
+                    .map(Timestamp::toInstant);
+        } catch (DataAccessException ex) {
+            return Optional.empty(); // store-down → no DB anchor; caller falls back to the event clock
         }
     }
 

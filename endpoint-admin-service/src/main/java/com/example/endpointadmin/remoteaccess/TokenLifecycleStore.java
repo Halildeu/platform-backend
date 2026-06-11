@@ -1,6 +1,7 @@
 package com.example.endpointadmin.remoteaccess;
 
 import java.time.Instant;
+import java.util.Optional;
 
 /**
  * Faz 22.6 B2 — the single source of truth for session-token {@code jti} lifecycle (ADR-0033 §5/§9b,
@@ -98,4 +99,13 @@ public interface TokenLifecycleStore {
      * {@link RemoteSessionStateMachine#reevaluateActive} kill the session (and records the reason for SLO).
      */
     TokenLiveCheckResult isTokenLive(String jti, Instant now);
+
+    /**
+     * The store-authoritative {@code revoked_at} timestamp for a REVOKED jti — the SOURCE-BOUND {@code t0}
+     * for the hard-kill SLO (criterion #6, Codex 019eb54b Q2). The reconciler anchors revocation latency
+     * on THIS value (what the store actually recorded under its own clock), not on the in-flight event's
+     * clock, so app↔store clock skew is measured rather than hidden. Empty if the jti is not REVOKED, is
+     * unknown, or the store is unavailable (the caller then falls back to the event clock + meters the gap).
+     */
+    Optional<Instant> revokedAt(String jti);
 }
