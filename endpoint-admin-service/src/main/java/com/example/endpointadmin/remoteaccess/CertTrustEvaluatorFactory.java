@@ -4,7 +4,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.security.cert.TrustAnchor;
+import java.security.cert.X509CRL;
 import java.time.Duration;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -48,6 +50,7 @@ public final class CertTrustEvaluatorFactory {
      *                                 the safe default)
      * @param revocationMode           {@code null} → {@link RevocationMode#DISABLED}
      * @param anchors                  loaded trust anchors (only consulted for REAL_PKI)
+     * @param crls                     loaded CRLs (only consulted for REAL_PKI + revocation-mode=CRL)
      * @param allowInsecureNoRevocation the explicit test-only escape for REAL_PKI + DISABLED
      * @param productionLikeProfile    when true, the insecure escape is REFUSED even if the flag is set
      *                                 (Codex 019eb6d9: a stray test flag must never weaken a prod-like runtime)
@@ -55,7 +58,8 @@ public final class CertTrustEvaluatorFactory {
      * @throws IllegalStateException on any forbidden REAL_PKI combination (fail-fast startup)
      */
     public static CertTrustEvaluator create(EvaluatorType type, RevocationMode revocationMode,
-                                            Set<TrustAnchor> anchors, boolean allowInsecureNoRevocation,
+                                            Set<TrustAnchor> anchors, List<X509CRL> crls,
+                                            boolean allowInsecureNoRevocation,
                                             boolean productionLikeProfile, Duration inMemoryMaxAge) {
         EvaluatorType t = type == null ? EvaluatorType.IN_MEMORY : type;
         if (t == EvaluatorType.IN_MEMORY) {
@@ -69,8 +73,17 @@ public final class CertTrustEvaluatorFactory {
         }
         RevocationMode mode = revocationMode == null ? RevocationMode.DISABLED : revocationMode;
         switch (mode) {
-            case CRL, OCSP -> throw reject("REAL_PKI revocation-mode=" + mode + " is not yet implemented "
-                    + "(B1.4b: live CRL/OCSP) — refusing to boot a half-wired revocation path");
+            case OCSP -> throw reject("REAL_PKI revocation-mode=OCSP is not yet implemented (it needs a live "
+                    + "OCSP responder) — use revocation-mode=CRL (B1.4b) for an offline-verifiable revocation path");
+            case CRL -> {
+                // B1.4b: REAL_PKI + CRL is a LEGAL prod combo. CRLs are mandatory (no CRL ⇒ can't revoke).
+                if (crls == null || crls.isEmpty()) {
+                    throw reject("REAL_PKI + revocation-mode=CRL requires configured CRLs, but none were loaded "
+                            + "(endpoint-admin.remote-access.cert-trust.crl-pem) — refusing to boot CRL revocation "
+                            + "with no CRL (a revoked cert would never be caught)");
+                }
+                return new CertPathTrustEvaluator(anchors, true, true, crls); // chain + EKU + CRL revocation
+            }
             case DISABLED -> {
                 if (!allowInsecureNoRevocation) {
                     throw reject("REAL_PKI + revocation-mode=DISABLED is forbidden: REAL_PKI is legal ONLY with "

@@ -12,8 +12,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.cert.CertificateException;
+import java.security.GeneralSecurityException;
 import java.security.cert.TrustAnchor;
+import java.security.cert.X509CRL;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -89,6 +90,7 @@ public class ScheduledRevocationDriver {
             @Value("${endpoint-admin.remote-access.cert-trust.evaluator:IN_MEMORY}") String certEvaluatorType,
             @Value("${endpoint-admin.remote-access.cert-trust.revocation-mode:DISABLED}") String certRevocationMode,
             @Value("${endpoint-admin.remote-access.cert-trust.trust-anchor-pem:}") String certTrustAnchorPem,
+            @Value("${endpoint-admin.remote-access.cert-trust.crl-pem:}") String certCrlPem,
             @Value("${endpoint-admin.remote-access.cert-trust.allow-insecure-no-revocation:false}")
             boolean certAllowInsecureNoRevocation,
             @Value("${spring.profiles.active:}") String activeProfiles) {
@@ -114,8 +116,8 @@ public class ScheduledRevocationDriver {
         boolean productionLike = activeProfiles != null
                 && activeProfiles.toLowerCase(java.util.Locale.ROOT).contains("prod");
         CertTrustEvaluator trustEvaluator = buildTrustEvaluator(
-                certEvaluatorType, certRevocationMode, certTrustAnchorPem, certAllowInsecureNoRevocation,
-                productionLike, certTrustMaxAgeMs);
+                certEvaluatorType, certRevocationMode, certTrustAnchorPem, certCrlPem,
+                certAllowInsecureNoRevocation, productionLike, certTrustMaxAgeMs);
         // B1.3b agent-attestation source. In-memory reference (SLSA/builder/signed-predicate modeled — Codex
         // 019eb694 placeholder trust basis); the B1.4 transport seam swaps in real Sigstore/cosign + SLSA
         // envelope verify. With NO configured expected builder/policy the verifier is left null → the
@@ -159,7 +161,8 @@ public class ScheduledRevocationDriver {
      * {@link CertTrustEvaluatorFactory}). Blank evaluator/mode default to the safe IN_MEMORY/DISABLED.
      */
     private static CertTrustEvaluator buildTrustEvaluator(String evaluatorType, String revocationMode,
-                                                          String trustAnchorPem, boolean allowInsecureNoRevocation,
+                                                          String trustAnchorPem, String trustCrlPem,
+                                                          boolean allowInsecureNoRevocation,
                                                           boolean productionLikeProfile, long inMemoryMaxAgeMs) {
         CertTrustEvaluatorFactory.EvaluatorType type = parseEnum(
                 evaluatorType, CertTrustEvaluatorFactory.EvaluatorType.class,
@@ -170,12 +173,19 @@ public class ScheduledRevocationDriver {
         Set<TrustAnchor> anchors;
         try {
             anchors = TrustAnchorLoader.fromPemBundle(trustAnchorPem);
-        } catch (CertificateException e) {
+        } catch (GeneralSecurityException e) {
             throw new IllegalStateException(
                     "remote-access cert-trust.trust-anchor-pem is not a valid PEM certificate bundle", e);
         }
+        List<X509CRL> crls;
+        try {
+            crls = X509ChainParser.parseCrlBundle(trustCrlPem);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(
+                    "remote-access cert-trust.crl-pem is not a valid PEM CRL bundle", e);
+        }
         return CertTrustEvaluatorFactory.create(
-                type, mode, anchors, allowInsecureNoRevocation, productionLikeProfile,
+                type, mode, anchors, crls, allowInsecureNoRevocation, productionLikeProfile,
                 Duration.ofMillis(inMemoryMaxAgeMs));
     }
 

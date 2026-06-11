@@ -5,8 +5,10 @@ import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.cert.CertificateException;
 import java.security.cert.TrustAnchor;
+import java.security.cert.X509CRL;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -128,5 +130,46 @@ class CertPathTrustEvaluatorTest {
         var eval = new CertPathTrustEvaluator(rootAnchors(), false); // requireClientAuth=true
         var d = eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), AT_2035);
         assertEquals(TrustDecision.ALLOW, d);
+    }
+
+    // ---- B1.4b: offline CRL revocation ----
+
+    private static List<X509CRL> crls() throws GeneralSecurityException {
+        return List.of(X509ChainParser.parseCrl(fx("intermediate.crl")));
+    }
+
+    @Test
+    void aRevokedLeafIsRevokedAgainstTheCrl() throws GeneralSecurityException {
+        // leaf-revoked (serial 2000) is listed in intermediate.crl → REVOKED (revocation ON, CRL provided)
+        var eval = new CertPathTrustEvaluator(rootAnchors(), true, true, crls());
+        var d = eval.evaluate(presented(fx("leaf-revoked.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.REVOKED, d);
+    }
+
+    @Test
+    void aValidLeafNotOnTheCrlStaysAllowed() throws GeneralSecurityException {
+        // leaf-valid (serial 4096) is NOT on the CRL → revocation passes → ALLOW
+        var eval = new CertPathTrustEvaluator(rootAnchors(), true, true, crls());
+        var d = eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.ALLOW, d);
+    }
+
+    @Test
+    void revocationEnabledWithNoCrlIsUnknownFailClosed() throws GeneralSecurityException {
+        // revocation ON but NO CRL covers the cert → UNDETERMINED → UNKNOWN (fail-closed, no grace, NO_FALLBACK)
+        var eval = new CertPathTrustEvaluator(rootAnchors(), true); // revocationEnabled=true, empty CRLs
+        var d = eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.UNKNOWN, d);
+    }
+
+    @Test
+    void aStaleCrlPastItsNextUpdateIsUnknownFailClosed() throws GeneralSecurityException {
+        // Codex 019eb6d9: a CRL whose nextUpdate (2026) is BEFORE the validation Instant (2035) can no longer
+        // prove non-revocation → UNDETERMINED → UNKNOWN (a stale revocation source is exactly the window an
+        // attacker with a just-revoked cert wants; fail-closed, no grace — B1.2 doctrine).
+        var staleCrl = List.of(X509ChainParser.parseCrl(fx("intermediate-stale.crl")));
+        var eval = new CertPathTrustEvaluator(rootAnchors(), true, true, staleCrl);
+        var d = eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), AT_2035);
+        assertEquals(TrustDecision.UNKNOWN, d);
     }
 }
