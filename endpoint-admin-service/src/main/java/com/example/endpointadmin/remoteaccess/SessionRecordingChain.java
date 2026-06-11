@@ -111,10 +111,15 @@ public final class SessionRecordingChain {
         return true;
     }
 
+    /** Domain-separation tag in the hash preimage (Codex 019eb7d6): this chain's entry hashes can never
+     *  collide with another length-prefixed hash (e.g. the attestation canonical) or a future chain format. */
+    private static final String HASH_DOMAIN = "SessionRecordingChain:v1";
+
     /** SHA-256 over the length-prefixed canonical entry (delimiter-safe — no field can alias the framing). */
     private static String hashEntry(long seq, long timestampMillis, RecordKind kind, String contentHash,
                                     String previousHash) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
+        writeField(out, HASH_DOMAIN); // domain separation FIRST
         writeField(out, Long.toString(seq));
         writeField(out, Long.toString(timestampMillis));
         writeField(out, kind.name());
