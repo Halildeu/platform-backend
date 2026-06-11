@@ -69,7 +69,7 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         return new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
     }
 
     private static TokenRevocationFeed.RevocationEvent event(String jti, Instant t0) {
@@ -82,7 +82,7 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
 
         int n = 100;
         List<Long> latencies = new ArrayList<>(n);
@@ -127,7 +127,7 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
 
         String jti = "drop-1";
         Instant t = Instant.now();
@@ -152,7 +152,7 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
 
         String jti = "live-1";
         Instant t = Instant.now();

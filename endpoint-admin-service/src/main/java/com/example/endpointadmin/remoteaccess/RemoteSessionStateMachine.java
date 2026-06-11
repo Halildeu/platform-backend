@@ -90,7 +90,15 @@ public final class RemoteSessionStateMachine {
          * half of that guarantee family); this outcome + the refined {@link KillReason} carry the precise
          * cause, mirroring the token-loss refinement precedent.
          */
-        FAILED_CERT_BINDING
+        FAILED_CERT_BINDING,
+        /**
+         * Cert-trust precondition lost (B1.2): the presented cert is revoked / expired / not-trusted, or its
+         * revocation status is UNKNOWN / STALE (CRL/OCSP unreachable → fail-closed, no grace). Hard — no
+         * session may continue on an untrustworthy cert. Coarse terminal STATE is
+         * {@link RemoteSessionState#FAILED_AGENT_ATTESTATION}; this outcome + the refined {@link KillReason}
+         * carry the precise cause.
+         */
+        FAILED_CERT_TRUST
     }
 
     /**
@@ -105,7 +113,7 @@ public final class RemoteSessionStateMachine {
      * {@link #evaluateActivation} and {@link #reevaluateActive} so both compute the SAME decision from
      * one place (Codex 019eb54b absorb — single source of truth, no drift). Caller must pass non-null.
      */
-    public enum LostGuarantee { NONE, POLICY, ATTESTATION, RECORDER, CONSENT, DUAL_APPROVAL, TOKEN, CERT_BINDING }
+    public enum LostGuarantee { NONE, POLICY, ATTESTATION, RECORDER, CONSENT, DUAL_APPROVAL, TOKEN, CERT_TRUST, CERT_BINDING }
 
     static LostGuarantee firstLost(RemoteSessionPreconditions pre) {
         if (!pre.policyAllow()) {
@@ -125,6 +133,14 @@ public final class RemoteSessionStateMachine {
         }
         if (!pre.tokenBound()) {
             return LostGuarantee.TOKEN;
+        }
+        // CERT_TRUST before CERT_BINDING (B1.2): a revoked / expired / untrusted cert — or one whose
+        // revocation status is no longer freshly known (CRL/OCSP UNKNOWN/STALE) — is a trust failure
+        // regardless of WHICH token it is bound to, so don't even consult binding. Placed AFTER token so a
+        // token-store partition still surfaces as TOKEN; the trust cache (CRL/OCSP) is a SEPARATE store and
+        // its own partition surfaces as STALE → CERT_TRUST (distinct failure domain, both fail-closed).
+        if (!pre.certValid()) {
+            return LostGuarantee.CERT_TRUST;
         }
         // CERT_BINDING is deliberately LAST (B1.1c): the binding truth is read from the same store as
         // token liveness, so any store-level loss (incl. a partition, refined to STORE_UNAVAILABLE by the
@@ -149,6 +165,7 @@ public final class RemoteSessionStateMachine {
             case RECORDER -> ActivationOutcome.FAILED_RECORDING;
             // cert-binding loss is HARD (check-list #1/#3): a mismatch signals possible token theft, and a
             // legacy-unbound token under REQUIRE_BOUND must never go ACTIVE — not a recoverable pending.
+            case CERT_TRUST -> ActivationOutcome.FAILED_CERT_TRUST;
             case CERT_BINDING -> ActivationOutcome.FAILED_CERT_BINDING;
             // consent / dual-approval / token are recoverable — caller stays PENDING_* + audits
             case CONSENT, DUAL_APPROVAL, TOKEN -> ActivationOutcome.BLOCKED_PENDING;
@@ -198,6 +215,10 @@ public final class RemoteSessionStateMachine {
             // mid-session cert-binding loss = transport identity no longer matches the bound token
             // (or a flag-flip outlawed a legacy-unbound session) → hard identity terminal (B1.1c); the
             // heartbeat refines the reason to MISMATCH / PRESENTED_MISSING / UNBOUND_REJECTED.
+            // mid-session cert-trust loss = the presented cert became revoked/expired/untrusted, or its
+            // revocation status is no longer freshly known (CRL/OCSP STALE/UNKNOWN) → fail-closed; the
+            // heartbeat refines to CERT_REVOKED/CERT_EXPIRED/CERT_UNTRUSTED/CERT_UNKNOWN/CERT_STALE.
+            case CERT_TRUST -> new Reevaluation(FAILED_AGENT_ATTESTATION, KillReason.CERT_TRUST_LOST);
             case CERT_BINDING -> new Reevaluation(FAILED_AGENT_ATTESTATION, KillReason.CERT_BINDING_LOST);
         };
     }
@@ -213,7 +234,10 @@ public final class RemoteSessionStateMachine {
         HEARTBEAT_TIMEOUT,
         // cert-binding losses (B1.1c) — the state-machine-level base + the refined causes the heartbeat
         // distinguishes (same precedent as the token-loss refinement above):
-        CERT_BINDING_LOST, CERT_BINDING_MISMATCH, CERT_PRESENTED_MISSING, CERT_UNBOUND_REJECTED
+        CERT_BINDING_LOST, CERT_BINDING_MISMATCH, CERT_PRESENTED_MISSING, CERT_UNBOUND_REJECTED,
+        // cert-trust losses (B1.2) — the state-machine base + the refined causes the heartbeat distinguishes
+        // (CRL/OCSP revocation, expiry, an untrusted chain, or an unreachable/stale revocation source):
+        CERT_TRUST_LOST, CERT_REVOKED, CERT_EXPIRED, CERT_UNTRUSTED, CERT_UNKNOWN, CERT_STALE
     }
 
     /**
@@ -269,6 +293,7 @@ public final class RemoteSessionStateMachine {
                 // coarse terminal for a cert-binding failure (the precise cause stays in the outcome /
                 // KillReason — the state space is unchanged, mirroring the token-refinement precedent):
                 case FAILED_CERT_BINDING -> FAILED_AGENT_ATTESTATION;
+                case FAILED_CERT_TRUST -> FAILED_AGENT_ATTESTATION;
                 // BLOCKED_PENDING is NOT a state change — throwing keeps fail-closed (no ACTIVE). Callers
                 // wanting an auditable non-throwing decision use evaluateActivation() directly.
                 case BLOCKED_PENDING -> throw new IllegalStateTransitionException(from, ACTIVE,

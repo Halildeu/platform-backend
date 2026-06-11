@@ -76,7 +76,8 @@ public class ScheduledRevocationDriver {
             MeterRegistry meters,
             RemoteAccessProperties properties,
             @Value("${spring.jpa.properties.hibernate.default_schema:endpoint_admin_service}") String schema,
-            @Value("${endpoint-admin.remote-access.max-heartbeat-age-ms:15000}") long maxHeartbeatAgeMs) {
+            @Value("${endpoint-admin.remote-access.max-heartbeat-age-ms:15000}") long maxHeartbeatAgeMs,
+            @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs) {
         this.jdbc = jdbc;
         this.meters = meters;
         this.clock = Clock.systemUTC();
@@ -88,8 +89,14 @@ public class ScheduledRevocationDriver {
         // replica (the single-owner locality the lock-free model relies on).
         TokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, schema);
         CertBindingGuard.Policy certPolicy = properties.getCertBinding().policy();
+        // B1.2 cert-trust source. In-memory reference for now (chain/CRL/OCSP modeled); the B1.4 transport
+        // seam swaps in real X.509 path-build + live CRL/OCSP. Never consulted until a cert-sampling
+        // heartbeat runs under an enabled runtime (disabled-by-default).
+        CertTrustEvaluator trustEvaluator =
+                new InMemoryCertTrustEvaluator(Duration.ofMillis(certTrustMaxAgeMs));
         RemoteSessionHeartbeat heartbeat = new RemoteSessionHeartbeat(
-                store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy);
+                store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy,
+                trustEvaluator);
         this.registry = new InMemorySessionRegistry();
         this.feed = new InMemoryTokenRevocationFeed();
         this.reconciler = new RemoteSessionRevocationReconciler(store, heartbeat);
