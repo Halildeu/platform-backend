@@ -8,8 +8,9 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 
 # pom first — dependency layer cache (no code change → no re-download)
+# (no `|| true` masking — prefetch failure should surface here, not in package)
 COPY audio-gateway-service/pom.xml .
-RUN mvn dependency:go-offline -q || true
+RUN mvn dependency:go-offline -q
 
 COPY audio-gateway-service/src ./src
 RUN mvn clean package -DskipTests -q
