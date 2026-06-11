@@ -27,10 +27,12 @@ class RemoteSessionHeartbeatTest {
     private final InMemoryTokenLifecycleStore store = new InMemoryTokenLifecycleStore();
     /** Production-target policy: every token must be cert-bound (fail-closed default). */
     private final RemoteSessionHeartbeat hb = new RemoteSessionHeartbeat(
-            store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND);
+            store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
+            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW);
     /** Migration-window policy: a legacy-unbound token may stay live (explicitly flagged). */
     private final RemoteSessionHeartbeat hbLegacyAllow = new RemoteSessionHeartbeat(
-            store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.ALLOW_LEGACY_UNBOUND);
+            store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.ALLOW_LEGACY_UNBOUND,
+            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW);
 
     /**
      * Token-backstop sample (cert-unsampled) — these legacy B2 cases assert the token/visibility

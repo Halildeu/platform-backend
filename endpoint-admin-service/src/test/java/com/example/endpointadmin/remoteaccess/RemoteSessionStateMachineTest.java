@@ -16,7 +16,7 @@ class RemoteSessionStateMachineTest {
     private final RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
 
     private static RemoteSessionPreconditions allOk() {
-        return new RemoteSessionPreconditions(true, true, true, true, true, true, true);
+        return new RemoteSessionPreconditions(true, true, true, true, true, true, true, true);
     }
 
     /** Positional-arg guard: name the seven flags once so per-case flips stay readable. */
@@ -24,7 +24,7 @@ class RemoteSessionStateMachineTest {
                                                   boolean dualApproval, boolean tokenBound, boolean certBound,
                                                   boolean agentAttestation, boolean recordingWriterAck) {
         return new RemoteSessionPreconditions(policyAllow, targetConsent, dualApproval, tokenBound,
-                certBound, agentAttestation, recordingWriterAck);
+                true, certBound, agentAttestation, recordingWriterAck);
     }
 
     @Test

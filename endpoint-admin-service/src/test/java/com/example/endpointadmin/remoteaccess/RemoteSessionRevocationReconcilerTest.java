@@ -32,7 +32,7 @@ class RemoteSessionRevocationReconcilerTest {
     // the token backstop must behave identically under any cert policy (B1.1c).
     private final RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
             store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), MAX_HB_AGE,
-                    CertBindingGuard.Policy.REQUIRE_BOUND));
+                    CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
 
     private void registerActive(String sessionId, String jti) {
         registry.put(new RemoteSessionHeartbeat.SessionSnapshot(

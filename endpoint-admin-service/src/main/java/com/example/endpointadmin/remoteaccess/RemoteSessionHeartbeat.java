@@ -25,18 +25,26 @@ public final class RemoteSessionHeartbeat {
     private final RemoteSessionStateMachine stateMachine;
     private final Duration maxHeartbeatAge;
     private final CertBindingGuard.Policy certBindingPolicy;
+    private final CertTrustEvaluator trustEvaluator;
 
     /**
      * @param certBindingPolicy the legacy-unbound feature flag (B1.1c). {@code null} is coerced to
      *                          {@link CertBindingGuard.Policy#REQUIRE_BOUND} (fail-closed default).
+     * @param trustEvaluator    the B1.2 cert-trust source (chain + CRL/OCSP). {@code null} is coerced to a
+     *                          deny-all evaluator (fail-closed: an absent trust source can't prove trust →
+     *                          NOT_TRUSTED → kill any cert-sampling session).
      */
     public RemoteSessionHeartbeat(TokenLifecycleStore store, RemoteSessionStateMachine stateMachine,
-                                  Duration maxHeartbeatAge, CertBindingGuard.Policy certBindingPolicy) {
+                                  Duration maxHeartbeatAge, CertBindingGuard.Policy certBindingPolicy,
+                                  CertTrustEvaluator trustEvaluator) {
         this.store = store;
         this.stateMachine = stateMachine;
         this.maxHeartbeatAge = maxHeartbeatAge;
         this.certBindingPolicy =
                 certBindingPolicy == null ? CertBindingGuard.Policy.REQUIRE_BOUND : certBindingPolicy;
+        this.trustEvaluator = trustEvaluator == null
+                ? (cert, now) -> CertTrustEvaluator.TrustDecision.NOT_TRUSTED
+                : trustEvaluator;
     }
 
     /**
@@ -143,13 +151,21 @@ public final class RemoteSessionHeartbeat {
                 ? CertBindingGuard.decide(status.boundThumbprint(), sample.presentedThumbprint(), certBindingPolicy)
                 : null;
         boolean certBound = certDecision == null || certDecision.satisfied();
+        // (3b) cert TRUST (B1.2): chain + CRL/OCSP. Like binding, evaluated ONLY for cert-sampling
+        // instruments — the token-backstop reconciler has no transport view, so it must not trust-kill a
+        // guarantee it cannot observe; the live heartbeat is the cert enforcement point. Fail-closed: any
+        // non-ALLOW verdict (incl. UNKNOWN/STALE) → certValid=false → kill.
+        CertTrustEvaluator.TrustDecision trustDecision = sample.certSampled()
+                ? trustEvaluator.evaluate(CertRef.ofThumbprint(sample.presentedThumbprint()), now)
+                : null;
+        boolean certValid = trustDecision == null || trustDecision.isValid();
         RemoteSessionPreconditions current = new RemoteSessionPreconditions(
                 sample.policyAllow(), sample.targetConsent(), sample.dualApproval(),
-                liveResult.isLive(), certBound, sample.agentAttestation(), sample.recordingWriterAck());
+                liveResult.isLive(), certValid, certBound, sample.agentAttestation(), sample.recordingWriterAck());
         // (4) re-evaluate.
         RemoteSessionStateMachine.Reevaluation reev = stateMachine.reevaluateActive(snapshot.state(), current);
-        RemoteSessionStateMachine.KillReason reason =
-                refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision);
+        RemoteSessionStateMachine.KillReason reason = refineTrustReason(
+                refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision), trustDecision);
 
         // (5) latency for the SLO — clamp ≥ 0, flag clock skew rather than silently zeroing.
         long latency = 0;
@@ -201,6 +217,27 @@ public final class RemoteSessionHeartbeat {
             case UNBOUND_REJECTED -> RemoteSessionStateMachine.KillReason.CERT_UNBOUND_REJECTED;
             // satisfied decisions can't be the firstLost cause (unreachable defensive arm):
             case BOUND_MATCH, UNBOUND_ALLOWED -> RemoteSessionStateMachine.KillReason.CERT_BINDING_LOST;
+        };
+    }
+
+    /**
+     * When the kill is due to cert-trust ({@code CERT_TRUST_LOST} from the state machine), refine it to the
+     * precise verdict — REVOKED / EXPIRED / NOT_TRUSTED / UNKNOWN / STALE — so audit/IR sees the real cause
+     * (a CRL revocation vs an unreachable responder vs a stale cache vs an untrusted chain). Same precedent
+     * as the token + cert-binding refinements. Non-trust reasons pass through.
+     */
+    private static RemoteSessionStateMachine.KillReason refineTrustReason(
+            RemoteSessionStateMachine.KillReason base, CertTrustEvaluator.TrustDecision trustDecision) {
+        if (base != RemoteSessionStateMachine.KillReason.CERT_TRUST_LOST || trustDecision == null) {
+            return base;
+        }
+        return switch (trustDecision) {
+            case REVOKED -> RemoteSessionStateMachine.KillReason.CERT_REVOKED;
+            case EXPIRED -> RemoteSessionStateMachine.KillReason.CERT_EXPIRED;
+            case NOT_TRUSTED -> RemoteSessionStateMachine.KillReason.CERT_UNTRUSTED;
+            case UNKNOWN -> RemoteSessionStateMachine.KillReason.CERT_UNKNOWN;
+            case STALE -> RemoteSessionStateMachine.KillReason.CERT_STALE;
+            case ALLOW -> RemoteSessionStateMachine.KillReason.CERT_TRUST_LOST; // unreachable (valid ⇒ no kill)
         };
     }
 }

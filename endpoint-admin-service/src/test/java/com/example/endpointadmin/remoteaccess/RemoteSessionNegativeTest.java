@@ -139,7 +139,7 @@ class RemoteSessionNegativeTest {
     void recorderUnavailableBlocksActive() {
         RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
         RemoteSessionPreconditions noRecorder =
-                new RemoteSessionPreconditions(true, true, true, true, true, true, false);
+                new RemoteSessionPreconditions(true, true, true, true, true, true, true, false);
         assertFalse(sm.canActivate(RemoteSessionState.RECORDING_READY, noRecorder));
         assertEquals(RemoteSessionState.FAILED_RECORDING,
                 sm.transition(RemoteSessionState.RECORDING_READY, RemoteSessionState.ACTIVE, noRecorder));
@@ -152,7 +152,7 @@ class RemoteSessionNegativeTest {
         // a legacy-unbound token under REQUIRE_BOUND, or a bound token without its exact presented
         // cert, surfaces as certBound=false → never ACTIVE, hard FAILED_CERT_BINDING outcome
         RemoteSessionPreconditions certLost =
-                new RemoteSessionPreconditions(true, true, true, true, false, true, true);
+                new RemoteSessionPreconditions(true, true, true, true, true, false, true, true);
         assertFalse(sm.canActivate(RemoteSessionState.RECORDING_READY, certLost));
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_CERT_BINDING,
                 sm.evaluateActivation(RemoteSessionState.RECORDING_READY, certLost));

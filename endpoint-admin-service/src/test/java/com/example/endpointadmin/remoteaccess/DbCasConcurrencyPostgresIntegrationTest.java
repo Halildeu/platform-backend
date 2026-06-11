@@ -171,7 +171,7 @@ class DbCasConcurrencyPostgresIntegrationTest {
         // heartbeat sample after revoke → tokenBound=false → ABORTED/TOKEN_REVOKED (t3 kill)
         RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
         RemoteSessionPreconditions afterRevoke = new RemoteSessionPreconditions(
-                true, true, true, store.isTokenLive(jti, T0).isLive(), true, true, true);
+                true, true, true, store.isTokenLive(jti, T0).isLive(), true, true, true, true);
         RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(RemoteSessionState.ACTIVE, afterRevoke);
         assertEquals(RemoteSessionState.ABORTED, r.target());
         assertEquals(RemoteSessionStateMachine.KillReason.TOKEN_REVOKED, r.reason());
