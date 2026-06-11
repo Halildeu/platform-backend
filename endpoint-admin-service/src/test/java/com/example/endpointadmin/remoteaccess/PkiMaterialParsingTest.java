@@ -102,4 +102,19 @@ class PkiMaterialParsingTest {
         assertThrows(CertificateException.class,
                 () -> TrustAnchorLoader.load(List.of("not-a-cert".getBytes(StandardCharsets.UTF_8))));
     }
+
+    @Test
+    void loadsAMultiCertPemBundle() throws CertificateException {
+        // B1.4a-3 config shape: a single PEM blob carrying several roots
+        String bundle = new String(fixture("root-ca.pem"), StandardCharsets.UTF_8)
+                + "\n" + new String(fixture("unknown-root.pem"), StandardCharsets.UTF_8);
+        assertEquals(2, TrustAnchorLoader.fromPemBundle(bundle).size());
+    }
+
+    @Test
+    void aBlankBundleYieldsAnEmptySet() throws CertificateException {
+        // fail-closed: an unconfigured anchor bundle → empty (the REAL_PKI factory then fails fast)
+        assertTrue(TrustAnchorLoader.fromPemBundle(null).isEmpty());
+        assertTrue(TrustAnchorLoader.fromPemBundle("   ").isEmpty());
+    }
 }

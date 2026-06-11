@@ -1,6 +1,10 @@
 package com.example.endpointadmin.remoteaccess;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.util.Collection;
@@ -34,6 +38,26 @@ public final class TrustAnchorLoader {
         for (byte[] encoded : anchorCerts) {
             X509Certificate cert = X509ChainParser.parseCertificate(encoded);
             anchors.add(new TrustAnchor(cert, null)); // null name-constraints = no additional constraint
+        }
+        return anchors;
+    }
+
+    /**
+     * Load a (possibly multi-cert) PEM bundle — the B1.4a-3 config shape
+     * ({@code endpoint-admin.remote-access.cert-trust.trust-anchor-pem}) — into trust anchors. A
+     * {@code null}/blank bundle yields an EMPTY set (the REAL_PKI factory then fails fast). Fail-closed:
+     * a malformed bundle raises {@link CertificateException}.
+     */
+    public static Set<TrustAnchor> fromPemBundle(String pemBundle) throws CertificateException {
+        Set<TrustAnchor> anchors = new LinkedHashSet<>();
+        if (pemBundle == null || pemBundle.isBlank()) {
+            return anchors;
+        }
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        Collection<? extends Certificate> certs = cf.generateCertificates(
+                new ByteArrayInputStream(pemBundle.getBytes(StandardCharsets.UTF_8)));
+        for (Certificate c : certs) {
+            anchors.add(new TrustAnchor((X509Certificate) c, null));
         }
         return anchors;
     }

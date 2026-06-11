@@ -36,14 +36,33 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
     private static final String X509 = "X.509";
     private static final String PKIX = "PKIX";
 
+    /** RFC 5280 EKU OID for TLS client authentication; {@code anyExtendedKeyUsage} also satisfies it. */
+    private static final String EKU_CLIENT_AUTH = "1.3.6.1.5.5.7.3.2";
+    private static final String EKU_ANY = "2.5.29.37.0";
+
     private final Set<TrustAnchor> trustAnchors;
     private final boolean revocationEnabled;
+    private final boolean requireClientAuth;
 
+    /** Secure-by-default: enforces the {@code clientAuth} EKU + {@code digitalSignature} key-usage. */
     public CertPathTrustEvaluator(Set<TrustAnchor> trustAnchors, boolean revocationEnabled) {
+        this(trustAnchors, revocationEnabled, true);
+    }
+
+    /**
+     * @param requireClientAuth when true (B1.4a-3, Codex 019eb6d9), a chain that builds + validates is STILL
+     *                          rejected unless the leaf permits TLS client authentication (EKU {@code clientAuth}
+     *                          or {@code anyExtendedKeyUsage}) AND its key-usage permits {@code digitalSignature}
+     *                          — closing the "right chain but wrong purpose" gap (PKIX does not auto-enforce the
+     *                          application purpose). A leaf with no EKU extension is rejected (strict).
+     */
+    public CertPathTrustEvaluator(Set<TrustAnchor> trustAnchors, boolean revocationEnabled,
+                                  boolean requireClientAuth) {
         // copy defensively; an empty anchor set is allowed here (→ NOT_TRUSTED at evaluate-time). The B1.4a-3
         // driver adds the fail-FAST startup check so a REAL_PKI runtime can't BOOT with no anchors.
         this.trustAnchors = trustAnchors == null ? Set.of() : Set.copyOf(trustAnchors);
         this.revocationEnabled = revocationEnabled;
+        this.requireClientAuth = requireClientAuth;
     }
 
     @Override
@@ -67,11 +86,36 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
             params.setRevocationEnabled(revocationEnabled); // false in B1.4a; B1.4b turns CRL/OCSP on
             params.setDate(Date.from(now)); // validate AT the heartbeat's clock, not the JVM wall-clock
             CertPathValidator.getInstance(PKIX).validate(path, params);
-            return TrustDecision.ALLOW; // a fully built + valid path
+            // a fully built + valid path — but a valid chain to a trusted root is NOT enough: the leaf must be
+            // PURPOSED for TLS client auth (Codex 019eb6d9). PKIX does not enforce the application purpose, so a
+            // server / e-mail / code-signing cert that legitimately chains to the fleet CA must still be rejected.
+            if (requireClientAuth && !permitsClientAuthentication(chain.get(0))) {
+                return TrustDecision.NOT_TRUSTED; // right chain, wrong purpose
+            }
+            return TrustDecision.ALLOW;
         } catch (CertPathValidatorException e) {
             return classify(e);
         } catch (GeneralSecurityException | RuntimeException e) {
             return TrustDecision.NOT_TRUSTED; // any other crypto OR unexpected runtime error → fail-closed
+        }
+    }
+
+    /**
+     * Whether the leaf permits TLS client authentication: its EKU contains {@code clientAuth} (or
+     * {@code anyExtendedKeyUsage}) AND, if a key-usage extension is present, {@code digitalSignature} is set.
+     * Fail-closed: no EKU extension, or a parse error, → not permitted.
+     */
+    private static boolean permitsClientAuthentication(X509Certificate leaf) {
+        try {
+            List<String> eku = leaf.getExtendedKeyUsage(); // null = no EKU extension
+            if (eku == null || !(eku.contains(EKU_CLIENT_AUTH) || eku.contains(EKU_ANY))) {
+                return false; // not purposed for client auth (strict: an absent EKU is NOT a wildcard)
+            }
+            boolean[] keyUsage = leaf.getKeyUsage(); // null = no key-usage extension (unconstrained)
+            // index 0 = digitalSignature; if the extension is present it must permit it
+            return keyUsage == null || (keyUsage.length > 0 && keyUsage[0]);
+        } catch (GeneralSecurityException | RuntimeException e) {
+            return false; // a malformed EKU extension can't prove the purpose → fail-closed
         }
     }
 

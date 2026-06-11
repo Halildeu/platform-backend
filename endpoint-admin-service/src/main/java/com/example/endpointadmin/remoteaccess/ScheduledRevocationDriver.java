@@ -12,10 +12,13 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.cert.CertificateException;
+import java.security.cert.TrustAnchor;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP_DURATION_MS;
@@ -82,7 +85,13 @@ public class ScheduledRevocationDriver {
             @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs,
             @Value("${endpoint-admin.remote-access.attestation.expected-builder-id:}") String expectedBuilderId,
             @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash,
-            @Value("${endpoint-admin.remote-access.cert-trust.expected-issuer-dn:}") String expectedIssuerDn) {
+            @Value("${endpoint-admin.remote-access.cert-trust.expected-issuer-dn:}") String expectedIssuerDn,
+            @Value("${endpoint-admin.remote-access.cert-trust.evaluator:IN_MEMORY}") String certEvaluatorType,
+            @Value("${endpoint-admin.remote-access.cert-trust.revocation-mode:DISABLED}") String certRevocationMode,
+            @Value("${endpoint-admin.remote-access.cert-trust.trust-anchor-pem:}") String certTrustAnchorPem,
+            @Value("${endpoint-admin.remote-access.cert-trust.allow-insecure-no-revocation:false}")
+            boolean certAllowInsecureNoRevocation,
+            @Value("${spring.profiles.active:}") String activeProfiles) {
         this.jdbc = jdbc;
         this.meters = meters;
         this.clock = Clock.systemUTC();
@@ -94,11 +103,19 @@ public class ScheduledRevocationDriver {
         // replica (the single-owner locality the lock-free model relies on).
         TokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, schema);
         CertBindingGuard.Policy certPolicy = properties.getCertBinding().policy();
-        // B1.2 cert-trust source. In-memory reference for now (chain/CRL/OCSP modeled); the B1.4 transport
-        // seam swaps in real X.509 path-build + live CRL/OCSP. Never consulted until a cert-sampling
-        // heartbeat runs under an enabled runtime (disabled-by-default).
-        CertTrustEvaluator trustEvaluator =
-                new InMemoryCertTrustEvaluator(Duration.ofMillis(certTrustMaxAgeMs));
+        // B1.2/B1.4a-3 cert-trust source, SELECTED by config (default IN_MEMORY). REAL_PKI runs the real JDK
+        // PKIX path-build (B1.4a-2) + EKU enforcement, but the factory enforces the Codex 019eb6d9 blocking
+        // matrix AT THIS CONSTRUCTION (= startup): REAL_PKI fails fast on empty anchors, and is legal only with
+        // CRL/OCSP (B1.4b) — a REAL_PKI+DISABLED boot is refused unless the test-only escape is set. So a
+        // mis-config FAILS the bean rather than silently always-NOT_TRUSTED. Never consulted while
+        // disabled-by-default (no cert-sampling heartbeat runs).
+        // a "production-like" profile refuses the no-revocation test escape even if its flag is set (Codex
+        // 019eb6d9): a stray test flag must never weaken a prod runtime.
+        boolean productionLike = activeProfiles != null
+                && activeProfiles.toLowerCase(java.util.Locale.ROOT).contains("prod");
+        CertTrustEvaluator trustEvaluator = buildTrustEvaluator(
+                certEvaluatorType, certRevocationMode, certTrustAnchorPem, certAllowInsecureNoRevocation,
+                productionLike, certTrustMaxAgeMs);
         // B1.3b agent-attestation source. In-memory reference (SLSA/builder/signed-predicate modeled — Codex
         // 019eb694 placeholder trust basis); the B1.4 transport seam swaps in real Sigstore/cosign + SLSA
         // envelope verify. With NO configured expected builder/policy the verifier is left null → the
@@ -134,6 +151,45 @@ public class ScheduledRevocationDriver {
                 .description("t0(revoked_at) → hard-kill decision latency (SLO P95 ≤ 5s)")
                 .publishPercentiles(0.95, 0.99)
                 .register(meters);
+    }
+
+    /**
+     * Select + safely construct the cert-trust evaluator from config (B1.4a-3). Invalid enum values and an
+     * unparseable anchor bundle FAIL FAST here (= startup), as does any forbidden REAL_PKI combination (via
+     * {@link CertTrustEvaluatorFactory}). Blank evaluator/mode default to the safe IN_MEMORY/DISABLED.
+     */
+    private static CertTrustEvaluator buildTrustEvaluator(String evaluatorType, String revocationMode,
+                                                          String trustAnchorPem, boolean allowInsecureNoRevocation,
+                                                          boolean productionLikeProfile, long inMemoryMaxAgeMs) {
+        CertTrustEvaluatorFactory.EvaluatorType type = parseEnum(
+                evaluatorType, CertTrustEvaluatorFactory.EvaluatorType.class,
+                CertTrustEvaluatorFactory.EvaluatorType.IN_MEMORY);
+        CertTrustEvaluatorFactory.RevocationMode mode = parseEnum(
+                revocationMode, CertTrustEvaluatorFactory.RevocationMode.class,
+                CertTrustEvaluatorFactory.RevocationMode.DISABLED);
+        Set<TrustAnchor> anchors;
+        try {
+            anchors = TrustAnchorLoader.fromPemBundle(trustAnchorPem);
+        } catch (CertificateException e) {
+            throw new IllegalStateException(
+                    "remote-access cert-trust.trust-anchor-pem is not a valid PEM certificate bundle", e);
+        }
+        return CertTrustEvaluatorFactory.create(
+                type, mode, anchors, allowInsecureNoRevocation, productionLikeProfile,
+                Duration.ofMillis(inMemoryMaxAgeMs));
+    }
+
+    /** Parse a config enum, blank→default, an invalid value → fail-fast (a typo must not silently default). */
+    private static <E extends Enum<E>> E parseEnum(String value, Class<E> type, E dflt) {
+        if (value == null || value.isBlank()) {
+            return dflt;
+        }
+        try {
+            return Enum.valueOf(type, value.trim().toUpperCase(java.util.Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException(
+                    "invalid remote-access config value '" + value + "' for " + type.getSimpleName());
+        }
     }
 
     /** The replica-local session registry — the C/D tunnel runtime registers/removes sessions here. */
