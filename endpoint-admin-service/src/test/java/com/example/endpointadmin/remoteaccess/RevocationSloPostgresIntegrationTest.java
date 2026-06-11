@@ -69,7 +69,8 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         return new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
     }
 
     private static TokenRevocationFeed.RevocationEvent event(String jti, Instant t0) {
@@ -82,7 +83,8 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
 
         int n = 100;
         List<Long> latencies = new ArrayList<>(n);
@@ -127,7 +129,8 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
 
         String jti = "drop-1";
         Instant t = Instant.now();
@@ -152,7 +155,8 @@ class RevocationSloPostgresIntegrationTest {
         DbCasTokenLifecycleStore store = new DbCasTokenLifecycleStore(jdbc, SCHEMA);
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
-                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
+                        CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
 
         String jti = "live-1";
         Instant t = Instant.now();

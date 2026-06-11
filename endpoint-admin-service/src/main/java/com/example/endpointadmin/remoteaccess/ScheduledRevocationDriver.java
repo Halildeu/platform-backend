@@ -70,6 +70,8 @@ public class ScheduledRevocationDriver {
     private final RemoteSessionTokenCleanup cleanup;
     private final CertBoundConsumeGate consumeGate;
     private final Timer revocationLatency;
+    /** B1.3b: whether an expected builder + policy hash were configured (else the verifier is deny-all). */
+    private final boolean attestationPolicyConfigured;
 
     public ScheduledRevocationDriver(
             JdbcTemplate jdbc,
@@ -77,7 +79,9 @@ public class ScheduledRevocationDriver {
             RemoteAccessProperties properties,
             @Value("${spring.jpa.properties.hibernate.default_schema:endpoint_admin_service}") String schema,
             @Value("${endpoint-admin.remote-access.max-heartbeat-age-ms:15000}") long maxHeartbeatAgeMs,
-            @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs) {
+            @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs,
+            @Value("${endpoint-admin.remote-access.attestation.expected-builder-id:}") String expectedBuilderId,
+            @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash) {
         this.jdbc = jdbc;
         this.meters = meters;
         this.clock = Clock.systemUTC();
@@ -94,9 +98,21 @@ public class ScheduledRevocationDriver {
         // heartbeat runs under an enabled runtime (disabled-by-default).
         CertTrustEvaluator trustEvaluator =
                 new InMemoryCertTrustEvaluator(Duration.ofMillis(certTrustMaxAgeMs));
+        // B1.3b agent-attestation source. In-memory reference (SLSA/builder/signed-predicate modeled — Codex
+        // 019eb694 placeholder trust basis); the B1.4 transport seam swaps in real Sigstore/cosign + SLSA
+        // envelope verify. With NO configured expected builder/policy the verifier is left null → the
+        // heartbeat coerces it to deny-all (fail-closed: an enabled runtime without an attestation policy
+        // refuses every live session until D10 supplies the expected builder + policy hash). Never consulted
+        // while disabled-by-default (no cert-sampling heartbeat runs).
+        AttestationVerifier attestationVerifier =
+                (expectedBuilderId == null || expectedBuilderId.isBlank()
+                        || expectedPolicyHash == null || expectedPolicyHash.isBlank())
+                        ? null
+                        : new InMemoryAttestationVerifier(expectedBuilderId, expectedPolicyHash);
+        this.attestationPolicyConfigured = attestationVerifier != null;
         RemoteSessionHeartbeat heartbeat = new RemoteSessionHeartbeat(
                 store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy,
-                trustEvaluator);
+                trustEvaluator, attestationVerifier);
         this.registry = new InMemorySessionRegistry();
         this.feed = new InMemoryTokenRevocationFeed();
         this.reconciler = new RemoteSessionRevocationReconciler(store, heartbeat);
@@ -138,6 +154,18 @@ public class ScheduledRevocationDriver {
             }
         });
         log.info("remote-access revocation driver ENABLED (push subscribed; poll + advisory-locked cleanup scheduled)");
+        // B1.3b operability (Codex 019eb6d2 #3): an enabled runtime with NO configured attestation policy is
+        // a deliberate global fail-closed (every cert-sampling session is DENIED) — but a silent config drift
+        // would read as a mysterious blanket outage. Announce it loudly so ops sees the cause, not just the
+        // symptom. (A full readiness/health-indicator that GATES live sessions on this belongs to the C/D
+        // tunnel-runtime slice that actually opens cert-sampling sessions; the reconciler here is
+        // cert-unsampled and never consults the verifier.)
+        if (!attestationPolicyConfigured) {
+            log.warn("remote-access ENABLED but NO attestation policy configured "
+                    + "(endpoint-admin.remote-access.attestation.expected-builder-id / expected-policy-hash blank) "
+                    + "— every cert-sampling session will be DENIED (fail-closed) until configured; "
+                    + "this is a D10 live-acceptance prerequisite");
+        }
     }
 
     @Scheduled(

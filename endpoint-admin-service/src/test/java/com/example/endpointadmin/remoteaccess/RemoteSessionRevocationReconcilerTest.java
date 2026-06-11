@@ -29,10 +29,12 @@ class RemoteSessionRevocationReconcilerTest {
     private final StubStore store = new StubStore();
     private final InMemorySessionRegistry registry = new InMemorySessionRegistry();
     // REQUIRE_BOUND (the strictest policy) on purpose: the reconciler's samples are cert-unsampled, so
-    // the token backstop must behave identically under any cert policy (B1.1c).
+    // the token backstop must behave identically under any cert/attestation policy (B1.1c + B1.3b — the
+    // deny-all attestation verifier proves the reconciler never attestation-kills a session it can't observe).
     private final RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
             store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), MAX_HB_AGE,
-                    CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW));
+                    CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
+                    (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
 
     private void registerActive(String sessionId, String jti) {
         registry.put(new RemoteSessionHeartbeat.SessionSnapshot(
