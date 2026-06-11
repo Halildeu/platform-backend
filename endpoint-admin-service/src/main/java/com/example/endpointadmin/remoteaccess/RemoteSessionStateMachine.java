@@ -12,7 +12,8 @@ import static com.example.endpointadmin.remoteaccess.RemoteSessionState.*;
  * <ul>
  *   <li><b>Fail-closed {@code ACTIVE} invariant:</b> a session may enter {@link RemoteSessionState#ACTIVE}
  *       only when {@link RemoteSessionPreconditions#allSatisfied()} (policy ∧ consent ∧ dual-approval ∧
- *       token ∧ attestation ∧ recording-ack). Otherwise it stays pending or fails — no channel opens.</li>
+ *       token ∧ cert-binding ∧ attestation ∧ recording-ack). Otherwise it stays pending or fails — no
+ *       channel opens.</li>
  *   <li><b>Abort beats connect:</b> a terminal/abort transition is always allowed from any non-terminal
  *       state, even mid-connect.</li>
  *   <li><b>Terminal irreversibility + monotonicity:</b> no transition may leave a terminal state.</li>
@@ -80,7 +81,16 @@ public final class RemoteSessionStateMachine {
         /** Hard fail-closed terminals. */
         FAILED_POLICY,
         FAILED_RECORDING,
-        FAILED_AGENT_ATTESTATION
+        FAILED_AGENT_ATTESTATION,
+        /**
+         * Cert-binding precondition lost (B1.1c): bound-token mismatch / missing presented cert, or a
+         * legacy-unbound token under {@link CertBindingGuard.Policy#REQUIRE_BOUND}. Hard — NOT recoverable
+         * within the session (re-issuing a properly bound token is a new session). The coarse terminal
+         * STATE is {@link RemoteSessionState#FAILED_AGENT_ATTESTATION} (cert identity is the "agent cert"
+         * half of that guarantee family); this outcome + the refined {@link KillReason} carry the precise
+         * cause, mirroring the token-loss refinement precedent.
+         */
+        FAILED_CERT_BINDING
     }
 
     /**
@@ -95,7 +105,7 @@ public final class RemoteSessionStateMachine {
      * {@link #evaluateActivation} and {@link #reevaluateActive} so both compute the SAME decision from
      * one place (Codex 019eb54b absorb — single source of truth, no drift). Caller must pass non-null.
      */
-    public enum LostGuarantee { NONE, POLICY, ATTESTATION, RECORDER, CONSENT, DUAL_APPROVAL, TOKEN }
+    public enum LostGuarantee { NONE, POLICY, ATTESTATION, RECORDER, CONSENT, DUAL_APPROVAL, TOKEN, CERT_BINDING }
 
     static LostGuarantee firstLost(RemoteSessionPreconditions pre) {
         if (!pre.policyAllow()) {
@@ -116,6 +126,12 @@ public final class RemoteSessionStateMachine {
         if (!pre.tokenBound()) {
             return LostGuarantee.TOKEN;
         }
+        // CERT_BINDING is deliberately LAST (B1.1c): the binding truth is read from the same store as
+        // token liveness, so any store-level loss (incl. a partition, refined to STORE_UNAVAILABLE by the
+        // heartbeat) must be reported as TOKEN — a partition is never mislabeled as a cert mismatch.
+        if (!pre.certBound()) {
+            return LostGuarantee.CERT_BINDING;
+        }
         return LostGuarantee.NONE;
     }
 
@@ -131,6 +147,9 @@ public final class RemoteSessionStateMachine {
             case POLICY -> ActivationOutcome.FAILED_POLICY;
             case ATTESTATION -> ActivationOutcome.FAILED_AGENT_ATTESTATION;
             case RECORDER -> ActivationOutcome.FAILED_RECORDING;
+            // cert-binding loss is HARD (check-list #1/#3): a mismatch signals possible token theft, and a
+            // legacy-unbound token under REQUIRE_BOUND must never go ACTIVE — not a recoverable pending.
+            case CERT_BINDING -> ActivationOutcome.FAILED_CERT_BINDING;
             // consent / dual-approval / token are recoverable — caller stays PENDING_* + audits
             case CONSENT, DUAL_APPROVAL, TOKEN -> ActivationOutcome.BLOCKED_PENDING;
         };
@@ -176,6 +195,10 @@ public final class RemoteSessionStateMachine {
             case CONSENT -> new Reevaluation(ABORTED, KillReason.CONSENT_REVOKED);
             case DUAL_APPROVAL -> new Reevaluation(ABORTED, KillReason.DUAL_APPROVAL_REVOKED);
             case TOKEN -> new Reevaluation(ABORTED, KillReason.TOKEN_REVOKED);
+            // mid-session cert-binding loss = transport identity no longer matches the bound token
+            // (or a flag-flip outlawed a legacy-unbound session) → hard identity terminal (B1.1c); the
+            // heartbeat refines the reason to MISMATCH / PRESENTED_MISSING / UNBOUND_REJECTED.
+            case CERT_BINDING -> new Reevaluation(FAILED_AGENT_ATTESTATION, KillReason.CERT_BINDING_LOST);
         };
     }
 
@@ -187,7 +210,10 @@ public final class RemoteSessionStateMachine {
         // absorb — accurate audit/IR root-cause, not all token-loss is "revoked"):
         TOKEN_EXPIRED, TOKEN_NOT_FOUND, STORE_UNAVAILABLE,
         // a live session that stopped receiving fresh heartbeats (seq-independent timeout):
-        HEARTBEAT_TIMEOUT
+        HEARTBEAT_TIMEOUT,
+        // cert-binding losses (B1.1c) — the state-machine-level base + the refined causes the heartbeat
+        // distinguishes (same precedent as the token-loss refinement above):
+        CERT_BINDING_LOST, CERT_BINDING_MISMATCH, CERT_PRESENTED_MISSING, CERT_UNBOUND_REJECTED
     }
 
     /**
@@ -240,6 +266,9 @@ public final class RemoteSessionStateMachine {
                 case FAILED_POLICY -> FAILED_POLICY;
                 case FAILED_RECORDING -> FAILED_RECORDING;
                 case FAILED_AGENT_ATTESTATION -> FAILED_AGENT_ATTESTATION;
+                // coarse terminal for a cert-binding failure (the precise cause stays in the outcome /
+                // KillReason — the state space is unchanged, mirroring the token-refinement precedent):
+                case FAILED_CERT_BINDING -> FAILED_AGENT_ATTESTATION;
                 // BLOCKED_PENDING is NOT a state change — throwing keeps fail-closed (no ACTIVE). Callers
                 // wanting an auditable non-throwing decision use evaluateActivation() directly.
                 case BLOCKED_PENDING -> throw new IllegalStateTransitionException(from, ACTIVE,

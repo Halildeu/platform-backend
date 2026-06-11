@@ -12,8 +12,11 @@ import java.time.Instant;
  * <p>Per sample it: (0) <b>heartbeat-timeout kill</b> — a live session whose last fresh sample is older
  * than {@code maxHeartbeatAge} is killed even if no fresh sample arrives (seq-independent, fail-closed),
  * (1) rejects a stale/out-of-order sample (monotonicity — can't rewind a killed session), (2) refreshes
- * {@code tokenBound} from the authoritative store with the precise root cause, (3) re-evaluates the ACTIVE
- * invariant, (4) on a kill measures {@code revokedAt → now} latency (clamped ≥ 0; a negative skew is
+ * {@code tokenBound} AND the cert-binding from ONE atomic {@link TokenLifecycleStore#status} read with the
+ * precise root cause, (3) checks the PRESENTED client-cert thumbprint against the BOUND one (B1.1c,
+ * RFC 8705 — mismatch/missing presented on a bound token, or a legacy-unbound token under
+ * {@link CertBindingGuard.Policy#REQUIRE_BOUND}, → fail-closed kill), (4) re-evaluates the ACTIVE
+ * invariant, (5) on a kill measures {@code revokedAt → now} latency (clamped ≥ 0; a negative skew is
  * flagged, not silently zeroed) for the {@code revocation_latency_ms} SLO (P95 ≤ 5s).
  */
 public final class RemoteSessionHeartbeat {
@@ -21,12 +24,19 @@ public final class RemoteSessionHeartbeat {
     private final TokenLifecycleStore store;
     private final RemoteSessionStateMachine stateMachine;
     private final Duration maxHeartbeatAge;
+    private final CertBindingGuard.Policy certBindingPolicy;
 
+    /**
+     * @param certBindingPolicy the legacy-unbound feature flag (B1.1c). {@code null} is coerced to
+     *                          {@link CertBindingGuard.Policy#REQUIRE_BOUND} (fail-closed default).
+     */
     public RemoteSessionHeartbeat(TokenLifecycleStore store, RemoteSessionStateMachine stateMachine,
-                                  Duration maxHeartbeatAge) {
+                                  Duration maxHeartbeatAge, CertBindingGuard.Policy certBindingPolicy) {
         this.store = store;
         this.stateMachine = stateMachine;
         this.maxHeartbeatAge = maxHeartbeatAge;
+        this.certBindingPolicy =
+                certBindingPolicy == null ? CertBindingGuard.Policy.REQUIRE_BOUND : certBindingPolicy;
     }
 
     /**
@@ -36,14 +46,46 @@ public final class RemoteSessionHeartbeat {
             String sessionId, String jti, RemoteSessionState state, long lastAppliedSeq, Instant lastFreshAt) {
     }
 
-    /** @param revokedAt the t0 of a pending revocation (for SLO latency), or {@code null} if none */
+    /**
+     * One heartbeat's runtime observation. Build via {@link #withCert} (cert-sampling instruments — the
+     * live agent/tunnel heartbeat, which sees the TLS layer) or {@link #certUnsampled} (token-backstop
+     * instruments — the store-driven revocation reconciler, which has NO transport view and must not
+     * degrade the cert guarantee it cannot observe).
+     *
+     * @param certSampled         whether this sample carries a transport view (presented thumbprint). When
+     *                            {@code false}, the cert-binding precondition is NOT evaluated for this
+     *                            sample (pass-through) — ONLY for instruments that structurally cannot see
+     *                            the TLS layer; the live heartbeat path MUST use {@link #withCert}, where a
+     *                            missing presented cert on a bound token is a fail-closed kill.
+     * @param presentedThumbprint the live TLS-layer client-cert SHA-256 thumbprint ({@code null} = none)
+     * @param revokedAt           the t0 of a pending revocation (for SLO latency), or {@code null} if none
+     */
     public record PreconditionSample(
             boolean policyAllow,
             boolean targetConsent,
             boolean dualApproval,
             boolean agentAttestation,
             boolean recordingWriterAck,
+            boolean certSampled,
+            String presentedThumbprint,
             Instant revokedAt) {
+
+        /** Cert-sampling sample (the live heartbeat path) — the presented thumbprint IS enforced. */
+        public static PreconditionSample withCert(
+                boolean policyAllow, boolean targetConsent, boolean dualApproval,
+                boolean agentAttestation, boolean recordingWriterAck,
+                String presentedThumbprint, Instant revokedAt) {
+            return new PreconditionSample(policyAllow, targetConsent, dualApproval,
+                    agentAttestation, recordingWriterAck, true, presentedThumbprint, revokedAt);
+        }
+
+        /** Token-backstop sample (no transport view, e.g. the revocation reconciler) — cert pass-through. */
+        public static PreconditionSample certUnsampled(
+                boolean policyAllow, boolean targetConsent, boolean dualApproval,
+                boolean agentAttestation, boolean recordingWriterAck, Instant revokedAt) {
+            return new PreconditionSample(policyAllow, targetConsent, dualApproval,
+                    agentAttestation, recordingWriterAck, false, null, revokedAt);
+        }
     }
 
     /**
@@ -88,16 +130,28 @@ public final class RemoteSessionHeartbeat {
             return new HeartbeatDecision(snapshot.state(),
                     RemoteSessionStateMachine.KillReason.NONE, false, false, 0, false);
         }
-        // (2) authoritative token liveness with the precise root cause.
-        TokenLifecycleStore.TokenLiveCheckResult liveResult = store.isTokenLive(snapshot.jti(), now);
+        // (2) authoritative token liveness + cert binding from ONE atomic store read (B1.1c): a partition
+        // between two separate reads could misread a bound token as legacy-unbound (fail-open) — with the
+        // single read, store-down surfaces as STORE_UNAVAILABLE on the token precondition and the binding
+        // is only trusted when the SAME read proved the row (liveness=LIVE ⇒ null binding = truly unbound).
+        TokenLifecycleStore.TokenStatus status = store.status(snapshot.jti(), now);
+        TokenLifecycleStore.TokenLiveCheckResult liveResult = status.liveness();
+        // (3) presented-vs-bound (B1.1c). Evaluated only for cert-sampling instruments; the token-backstop
+        // reconciler (certUnsampled) cannot see the TLS layer and must not kill on a guarantee it cannot
+        // observe — the live heartbeat remains the cert enforcement point.
+        CertBindingGuard.Decision certDecision = sample.certSampled()
+                ? CertBindingGuard.decide(status.boundThumbprint(), sample.presentedThumbprint(), certBindingPolicy)
+                : null;
+        boolean certBound = certDecision == null || certDecision.satisfied();
         RemoteSessionPreconditions current = new RemoteSessionPreconditions(
                 sample.policyAllow(), sample.targetConsent(), sample.dualApproval(),
-                liveResult.isLive(), sample.agentAttestation(), sample.recordingWriterAck());
-        // (3) re-evaluate.
+                liveResult.isLive(), certBound, sample.agentAttestation(), sample.recordingWriterAck());
+        // (4) re-evaluate.
         RemoteSessionStateMachine.Reevaluation reev = stateMachine.reevaluateActive(snapshot.state(), current);
-        RemoteSessionStateMachine.KillReason reason = refineTokenReason(reev.reason(), liveResult);
+        RemoteSessionStateMachine.KillReason reason =
+                refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision);
 
-        // (4) latency for the SLO — clamp ≥ 0, flag clock skew rather than silently zeroing.
+        // (5) latency for the SLO — clamp ≥ 0, flag clock skew rather than silently zeroing.
         long latency = 0;
         boolean skew = false;
         if (reev.isKill() && sample.revokedAt() != null) {
@@ -127,6 +181,26 @@ public final class RemoteSessionHeartbeat {
             case STORE_UNAVAILABLE -> RemoteSessionStateMachine.KillReason.STORE_UNAVAILABLE;
             case NOT_FOUND, INVALID -> RemoteSessionStateMachine.KillReason.TOKEN_NOT_FOUND;
             case LIVE -> RemoteSessionStateMachine.KillReason.TOKEN_REVOKED; // unreachable (live ⇒ no kill)
+        };
+    }
+
+    /**
+     * When the kill is due to the cert-binding ({@code CERT_BINDING_LOST} from the state machine), refine
+     * it to the precise guard decision — MISMATCH (possible token theft) vs PRESENTED_MISSING (transport
+     * lost its client cert) vs UNBOUND_REJECTED (legacy-unbound under REQUIRE_BOUND, incl. a mid-session
+     * flag flip) — same audit/IR precedent as the token refinement. Non-cert reasons pass through.
+     */
+    private static RemoteSessionStateMachine.KillReason refineCertReason(
+            RemoteSessionStateMachine.KillReason base, CertBindingGuard.Decision certDecision) {
+        if (base != RemoteSessionStateMachine.KillReason.CERT_BINDING_LOST || certDecision == null) {
+            return base;
+        }
+        return switch (certDecision) {
+            case MISMATCH -> RemoteSessionStateMachine.KillReason.CERT_BINDING_MISMATCH;
+            case PRESENTED_MISSING -> RemoteSessionStateMachine.KillReason.CERT_PRESENTED_MISSING;
+            case UNBOUND_REJECTED -> RemoteSessionStateMachine.KillReason.CERT_UNBOUND_REJECTED;
+            // satisfied decisions can't be the firstLost cause (unreachable defensive arm):
+            case BOUND_MATCH, UNBOUND_ALLOWED -> RemoteSessionStateMachine.KillReason.CERT_BINDING_LOST;
         };
     }
 }

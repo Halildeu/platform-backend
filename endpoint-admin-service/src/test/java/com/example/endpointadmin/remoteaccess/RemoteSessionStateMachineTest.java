@@ -16,7 +16,15 @@ class RemoteSessionStateMachineTest {
     private final RemoteSessionStateMachine sm = new RemoteSessionStateMachine();
 
     private static RemoteSessionPreconditions allOk() {
-        return new RemoteSessionPreconditions(true, true, true, true, true, true);
+        return new RemoteSessionPreconditions(true, true, true, true, true, true, true);
+    }
+
+    /** Positional-arg guard: name the seven flags once so per-case flips stay readable. */
+    private static RemoteSessionPreconditions pre(boolean policyAllow, boolean targetConsent,
+                                                  boolean dualApproval, boolean tokenBound, boolean certBound,
+                                                  boolean agentAttestation, boolean recordingWriterAck) {
+        return new RemoteSessionPreconditions(policyAllow, targetConsent, dualApproval, tokenBound,
+                certBound, agentAttestation, recordingWriterAck);
     }
 
     @Test
@@ -60,14 +68,13 @@ class RemoteSessionStateMachineTest {
         assertFalse(sm.canActivate(OPERATOR_CONNECTED, allOk()));
         // missing a precondition → fail-closed
         assertFalse(sm.canActivate(RECORDING_READY,
-                new RemoteSessionPreconditions(true, true, true, true, true, false)));
+                pre(true, true, true, true, true, true, false)));
         assertFalse(sm.canActivate(RECORDING_READY, null));
     }
 
     @Test
     void transitionToActiveFailsClosedToFailedRecordingWhenRecorderMissing() {
-        RemoteSessionPreconditions noRecorder =
-                new RemoteSessionPreconditions(true, true, true, true, true, false);
+        RemoteSessionPreconditions noRecorder = pre(true, true, true, true, true, true, false);
         assertEquals(FAILED_RECORDING, sm.transition(RECORDING_READY, ACTIVE, noRecorder));
     }
 
@@ -123,13 +130,11 @@ class RemoteSessionStateMachineTest {
     @Test
     void evaluateActivationBlockedPendingForRecoverablePreconditions() {
         // consent missing → recoverable PENDING, NOT a FAILED terminal, NOT ACTIVE
-        RemoteSessionPreconditions noConsent =
-                new RemoteSessionPreconditions(true, false, true, true, true, true);
+        RemoteSessionPreconditions noConsent = pre(true, false, true, true, true, true, true);
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.BLOCKED_PENDING,
                 sm.evaluateActivation(RECORDING_READY, noConsent));
         // dual-approval missing → also pending
-        RemoteSessionPreconditions noApproval =
-                new RemoteSessionPreconditions(true, true, false, true, true, true);
+        RemoteSessionPreconditions noApproval = pre(true, true, false, true, true, true, true);
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.BLOCKED_PENDING,
                 sm.evaluateActivation(RECORDING_READY, noApproval));
         // wrong stage → pending (not yet activatable)
@@ -141,13 +146,13 @@ class RemoteSessionStateMachineTest {
     void evaluateActivationHardFailuresMapToTerminals() {
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_POLICY,
                 sm.evaluateActivation(RECORDING_READY,
-                        new RemoteSessionPreconditions(false, true, true, true, true, true)));
+                        pre(false, true, true, true, true, true, true)));
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_AGENT_ATTESTATION,
                 sm.evaluateActivation(RECORDING_READY,
-                        new RemoteSessionPreconditions(true, true, true, true, false, true)));
+                        pre(true, true, true, true, true, false, true)));
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_RECORDING,
                 sm.evaluateActivation(RECORDING_READY,
-                        new RemoteSessionPreconditions(true, true, true, true, true, false)));
+                        pre(true, true, true, true, true, true, false)));
         // null preconditions → fail-closed policy failure, never NPE
         assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_POLICY,
                 sm.evaluateActivation(RECORDING_READY, null));
@@ -155,8 +160,7 @@ class RemoteSessionStateMachineTest {
 
     @Test
     void transitionToActiveThrowsExplicitlyWhenBlockedPending() {
-        RemoteSessionPreconditions noToken =
-                new RemoteSessionPreconditions(true, true, true, false, true, true);
+        RemoteSessionPreconditions noToken = pre(true, true, true, false, true, true, true);
         // fail-closed: never returns ACTIVE; the blocked case is an explicit throw, not a silent state
         assertThrows(RemoteSessionStateMachine.IllegalStateTransitionException.class,
                 () -> sm.transition(RECORDING_READY, ACTIVE, noToken));
@@ -178,6 +182,58 @@ class RemoteSessionStateMachineTest {
                 () -> sm.transition(FAILED_RECORDING, ENDING, allOk()));
     }
 
+    // ---- B1.1c: the certBound precondition is fail-closed at activation (Codex check-list #1/#3) ----
+
+    @Test
+    void evaluateActivationFailsHardWhenCertBindingLost() {
+        // check-list #3: a session whose cert-binding precondition is false (legacy-unbound under
+        // REQUIRE_BOUND, or bound-token mismatch/missing presented cert) must NEVER go ACTIVE — and it
+        // is a HARD failure, not a recoverable pending.
+        RemoteSessionPreconditions certLost = pre(true, true, true, true, false, true, true);
+        assertEquals(RemoteSessionStateMachine.ActivationOutcome.FAILED_CERT_BINDING,
+                sm.evaluateActivation(RECORDING_READY, certLost));
+        assertFalse(sm.canActivate(RECORDING_READY, certLost));
+        assertFalse(certLost.allSatisfied());
+    }
+
+    @Test
+    void transitionToActiveFailsClosedToAttestationTerminalOnCertBindingLoss() {
+        // coarse terminal state = FAILED_AGENT_ATTESTATION (cert identity family); the precise cause
+        // lives in the ActivationOutcome / refined KillReason — state space unchanged.
+        assertEquals(FAILED_AGENT_ATTESTATION,
+                sm.transition(RECORDING_READY, ACTIVE, pre(true, true, true, true, false, true, true)));
+    }
+
+    @Test
+    void reevaluateActiveKillsOnCertBindingLossMidSession() {
+        RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(ACTIVE,
+                pre(true, true, true, true, false, true, true));
+        assertEquals(FAILED_AGENT_ATTESTATION, r.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.CERT_BINDING_LOST, r.reason());
+        assertTrue(r.isKill());
+    }
+
+    @Test
+    void tokenLossTakesPrecedenceOverCertBindingLoss() {
+        // both token and cert lost (the store-down shape: one read drives both) → the TOKEN guarantee is
+        // reported, so the heartbeat's STORE_UNAVAILABLE refinement is never mislabeled as a cert problem.
+        RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(ACTIVE,
+                pre(true, true, true, false, false, true, true));
+        assertEquals(RemoteSessionStateMachine.KillReason.TOKEN_REVOKED, r.reason());
+        assertEquals(RemoteSessionStateMachine.ActivationOutcome.BLOCKED_PENDING,
+                sm.evaluateActivation(RECORDING_READY, pre(true, true, true, false, false, true, true)));
+    }
+
+    @Test
+    void higherPrecedenceGuaranteesReportBeforeCertBinding() {
+        // policy + cert lost → POLICY reported (and its FAILED_POLICY terminal), not cert
+        assertEquals(RemoteSessionStateMachine.KillReason.POLICY_REVOKED,
+                sm.reevaluateActive(ACTIVE, pre(false, true, true, true, false, true, true)).reason());
+        // attestation + cert lost → ATTESTATION reported
+        assertEquals(RemoteSessionStateMachine.KillReason.ATTESTATION_LOST,
+                sm.reevaluateActive(ACTIVE, pre(true, true, true, true, false, false, true)).reason());
+    }
+
     // ---- reevaluateActive: continuous mid-session kill + audit reason (Codex 019eb54b #1 absorb) ----
 
     @Test
@@ -191,8 +247,7 @@ class RemoteSessionStateMachineTest {
     @Test
     void reevaluateActiveKillsOnRecorderDeathMidSession() {
         // recorder died while live → no unrecorded ACTIVE may continue
-        RemoteSessionPreconditions recorderGone =
-                new RemoteSessionPreconditions(true, true, true, true, true, false);
+        RemoteSessionPreconditions recorderGone = pre(true, true, true, true, true, true, false);
         RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(ACTIVE, recorderGone);
         assertEquals(FAILED_RECORDING, r.target());
         assertEquals(RemoteSessionStateMachine.KillReason.RECORDER_LOST, r.reason());
@@ -203,16 +258,16 @@ class RemoteSessionStateMachineTest {
     void reevaluateActiveAbortsWithDistinctReasonOnConsentVsTokenLoss() {
         // consent withdrawn mid-session → ABORTED / CONSENT_REVOKED
         RemoteSessionStateMachine.Reevaluation consent = sm.reevaluateActive(ACTIVE,
-                new RemoteSessionPreconditions(true, false, true, true, true, true));
+                pre(true, false, true, true, true, true, true));
         assertEquals(ABORTED, consent.target());
         assertEquals(RemoteSessionStateMachine.KillReason.CONSENT_REVOKED, consent.reason());
         // dual-approval revoked → ABORTED / DUAL_APPROVAL_REVOKED (distinct audit reason)
         RemoteSessionStateMachine.Reevaluation appr = sm.reevaluateActive(ACTIVE,
-                new RemoteSessionPreconditions(true, true, false, true, true, true));
+                pre(true, true, false, true, true, true, true));
         assertEquals(RemoteSessionStateMachine.KillReason.DUAL_APPROVAL_REVOKED, appr.reason());
         // token revoked → ABORTED / TOKEN_REVOKED
         RemoteSessionStateMachine.Reevaluation tok = sm.reevaluateActive(ACTIVE,
-                new RemoteSessionPreconditions(true, true, true, false, true, true));
+                pre(true, true, true, false, true, true, true));
         assertEquals(ABORTED, tok.target());
         assertEquals(RemoteSessionStateMachine.KillReason.TOKEN_REVOKED, tok.reason());
     }
@@ -221,10 +276,10 @@ class RemoteSessionStateMachineTest {
     void reevaluateActiveKillsOnPolicyOrAttestationLoss() {
         assertEquals(RemoteSessionStateMachine.KillReason.POLICY_REVOKED,
                 sm.reevaluateActive(ACTIVE,
-                        new RemoteSessionPreconditions(false, true, true, true, true, true)).reason());
+                        pre(false, true, true, true, true, true, true)).reason());
         assertEquals(RemoteSessionStateMachine.KillReason.ATTESTATION_LOST,
                 sm.reevaluateActive(ACTIVE,
-                        new RemoteSessionPreconditions(true, true, true, true, false, true)).reason());
+                        pre(true, true, true, true, true, false, true)).reason());
     }
 
     @Test

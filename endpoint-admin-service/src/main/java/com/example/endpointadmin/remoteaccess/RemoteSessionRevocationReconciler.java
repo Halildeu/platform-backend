@@ -136,17 +136,21 @@ public final class RemoteSessionRevocationReconciler {
     /**
      * Run one session through the heartbeat brain and project the decision onto a {@link ReconcileOutcome}.
      * The synthetic sample carries all non-token guarantees as held (the heartbeat re-reads token liveness
-     * from the authoritative store itself) and the source-bound {@code t0} for the latency. The sample seq
-     * is {@code lastAppliedSeq + 1} so it is always "fresh" for THIS session — the reconciler is a
-     * synchronous store-driven check, not an out-of-order network sample, so the monotonicity guard must
-     * not spuriously reject it; cross-session ordering is irrelevant because the guard is per-session.
+     * from the authoritative store itself) and the source-bound {@code t0} for the latency. It is
+     * {@code certUnsampled} (B1.1c): the reconciler is a store-driven token backstop with NO transport
+     * view — it must not kill on a presented-cert guarantee it structurally cannot observe (a bound, live,
+     * healthy session would otherwise be killed by every poll sweep); cert enforcement stays with the
+     * cert-sampling live heartbeat. The sample seq is {@code lastAppliedSeq + 1} so it is always "fresh"
+     * for THIS session — the reconciler is a synchronous store-driven check, not an out-of-order network
+     * sample, so the monotonicity guard must not spuriously reject it; cross-session ordering is
+     * irrelevant because the guard is per-session.
      */
     private ReconcileOutcome killOne(RemoteSessionHeartbeat.SessionSnapshot snap, Instant t0, Trigger trigger,
                                      Instant now, boolean storeDownRevoke, boolean conflict,
                                      boolean feedDropEligible, long eventDbSkewMillis) {
         long seq = snap.lastAppliedSeq() + 1;
         RemoteSessionHeartbeat.PreconditionSample sample =
-                new RemoteSessionHeartbeat.PreconditionSample(true, true, true, true, true, t0);
+                RemoteSessionHeartbeat.PreconditionSample.certUnsampled(true, true, true, true, true, t0);
         RemoteSessionHeartbeat.HeartbeatDecision d = heartbeat.evaluate(snap, sample, seq, now);
         boolean storeDownKill = storeDownRevoke
                 || d.reason() == RemoteSessionStateMachine.KillReason.STORE_UNAVAILABLE;

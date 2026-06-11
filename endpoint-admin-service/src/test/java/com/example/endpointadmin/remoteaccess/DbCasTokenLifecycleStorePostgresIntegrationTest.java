@@ -141,4 +141,28 @@ class DbCasTokenLifecycleStorePostgresIntegrationTest {
         assertEquals(TokenLifecycleStore.ConsumeOutcome.ACCEPTED, s.consume("jti-legacy", EXP, T0)); // 3-arg default
         assertEquals(Optional.empty(), s.boundThumbprint("jti-legacy"));
     }
+
+    @Test
+    void statusReadsLivenessAndBindingFromOneSelect() {
+        // B1.1c: the enforcement read — liveness + binding from a SINGLE row SELECT (no two-read window).
+        DbCasTokenLifecycleStore s = store();
+        String tp = CertThumbprint.ofDer("status-der".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        s.consume("jti-status", EXP, T0, tp);
+        TokenLifecycleStore.TokenStatus bound = s.status("jti-status", T0.plusSeconds(1));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.LIVE, bound.liveness());
+        assertEquals(tp, bound.boundThumbprint());
+
+        s.consume("jti-status-legacy", EXP, T0);
+        TokenLifecycleStore.TokenStatus unbound = s.status("jti-status-legacy", T0.plusSeconds(1));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.LIVE, unbound.liveness());
+        assertEquals(null, unbound.boundThumbprint()); // LIVE ⇒ row read ⇒ authoritatively legacy-unbound
+
+        s.revoke("jti-status");
+        TokenLifecycleStore.TokenStatus revoked = s.status("jti-status", T0.plusSeconds(2));
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.REVOKED, revoked.liveness());
+        assertEquals(tp, revoked.boundThumbprint()); // binding preserved for audit
+
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.NOT_FOUND, s.status("nope", T0).liveness());
+        assertEquals(TokenLifecycleStore.TokenLiveCheckResult.INVALID, s.status(" ", T0).liveness());
+    }
 }

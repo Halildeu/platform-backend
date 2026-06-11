@@ -32,7 +32,7 @@ class TokenRevocationFeedTest {
         feed.subscribe(ev -> {
             store.revoke(ev.jti());
             RemoteSessionPreconditions now = new RemoteSessionPreconditions(
-                    true, true, true, store.isTokenLive(ev.jti(), T0).isLive(), true, true);
+                    true, true, true, store.isTokenLive(ev.jti(), T0).isLive(), true, true, true);
             killed.set(sm.reevaluateActive(RemoteSessionState.ACTIVE, now));
         });
 

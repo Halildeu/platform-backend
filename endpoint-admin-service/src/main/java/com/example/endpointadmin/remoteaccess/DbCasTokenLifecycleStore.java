@@ -122,18 +122,25 @@ public final class DbCasTokenLifecycleStore implements TokenLifecycleStore {
 
     @Override
     public TokenLiveCheckResult isTokenLive(String jti, Instant now) {
+        return status(jti, now).liveness();
+    }
+
+    @Override
+    public TokenStatus status(String jti, Instant now) {
         if (jti == null || jti.isBlank() || now == null) {
-            return TokenLiveCheckResult.INVALID;
+            return new TokenStatus(TokenLiveCheckResult.INVALID, null);
         }
         try {
+            // ONE SELECT serves both liveness and binding — a single-row atomic snapshot (B1.1c: no
+            // window in which the binding is read under a different store state than the liveness).
             Map<String, Object> row = jdbc.queryForList(
-                    "SELECT state, expires_at FROM " + table + " WHERE jti = ?", jti)
+                    "SELECT state, expires_at, bound_cert_thumbprint FROM " + table + " WHERE jti = ?", jti)
                     .stream().findFirst().orElse(null);
             if (row == null) {
-                return TokenLiveCheckResult.NOT_FOUND;
+                return new TokenStatus(TokenLiveCheckResult.NOT_FOUND, null);
             }
             String state = (String) row.get("state");
-            return switch (state) {
+            TokenLiveCheckResult liveness = switch (state) {
                 case "REVOKED" -> TokenLiveCheckResult.REVOKED;
                 case "EXPIRED" -> TokenLiveCheckResult.EXPIRED;
                 case "USED" -> {
@@ -145,8 +152,10 @@ public final class DbCasTokenLifecycleStore implements TokenLifecycleStore {
                 }
                 default -> TokenLiveCheckResult.INVALID;
             };
+            String thumbprint = (String) row.get("bound_cert_thumbprint");
+            return new TokenStatus(liveness, (thumbprint == null || thumbprint.isBlank()) ? null : thumbprint);
         } catch (DataAccessException ex) {
-            return TokenLiveCheckResult.STORE_UNAVAILABLE; // fail-closed
+            return new TokenStatus(TokenLiveCheckResult.STORE_UNAVAILABLE, null); // fail-closed
         }
     }
 

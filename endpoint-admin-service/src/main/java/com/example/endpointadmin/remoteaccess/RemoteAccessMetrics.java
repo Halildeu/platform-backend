@@ -71,11 +71,21 @@ public final class RemoteAccessMetrics {
     /**
      * A token consumed WITHOUT a cert binding — the legacy 3-arg {@code consume} (null thumbprint).
      * Visibility for the B1.1 migration (Codex 019eb54b B1.1a REVISE): a non-zero rate means callers
-     * still issue unbound tokens. The runtime increments this at consume; B1.1c gates legacy-unbound
-     * (reject / pilot-off) before any live session — the store stays pure, so the constant lives here as
-     * the contract and the enforcement layer emits it.
+     * still issue unbound tokens. Emitted by the enforcement layer ({@link CertBoundConsumeGate}, wired in
+     * {@code ScheduledRevocationDriver}) on every ACCEPTED legacy-unbound consume — only possible under
+     * the explicit {@code legacy-unbound-allowed} migration flag (B1.1c check-list #2); the store stays
+     * pure. Watch it flatline at zero before flipping the flag back to reject.
      */
     public static final String LEGACY_UNBOUND_ISSUANCE = "remote_access_legacy_unbound_issuance_total";
+
+    /**
+     * A connect denied or a live session killed on cert-binding grounds (B1.1c): tag {@code cause} with
+     * the {@link CertBindingGuard.Decision} / refined {@code KillReason} (MISMATCH = possible token theft
+     * → alarmable; PRESENTED_MISSING = transport lost its client cert; UNBOUND_REJECTED = legacy token
+     * under the reject policy). Declared as the contract now; the C/D cert-sampling ingest driver emits it
+     * (the B2.2c reconciler is cert-unsampled by design, so it never produces these).
+     */
+    public static final String CERT_BINDING_REJECT_TOTAL = "remote_access_cert_binding_reject_total";
 
     private RemoteAccessMetrics() {
     }
