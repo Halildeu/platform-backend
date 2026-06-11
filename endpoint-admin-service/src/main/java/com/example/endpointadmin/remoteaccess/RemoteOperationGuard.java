@@ -24,8 +24,14 @@ public final class RemoteOperationGuard {
         ALLOWED(true),
         /** No granted capability permits the operation. */
         DENIED_NO_CAPABILITY(false),
-        /** The operation is permitted only by a non-pilot capability, refused under pilot strictness. */
+        /** The operation is permitted only by a non-pilot capability, refused under pilot strictness. The
+         *  caller (C/D runtime) SHOULD meter this — a non-pilot capability reaching the guard is a grant
+         *  bug / mis-issuance worth alerting on (Codex 019eb7d6). */
         DENIED_NON_PILOT(false),
+        /** A transport-supplied operation name that maps to no known {@link RemoteOperation} → fail-closed
+         *  (the "deny-unmapped" contract: an action the transport cannot map to a known operation is refused,
+         *  never ignored). */
+        DENIED_UNKNOWN_OPERATION(false),
         /** A null operation / capability set → fail-closed. */
         DENIED_MALFORMED(false);
 
@@ -61,5 +67,24 @@ public final class RemoteOperationGuard {
         // not permitted by the effective set — was it only blocked by the pilot filter?
         boolean permittedByRawGrant = operation.permittedBy().stream().anyMatch(granted::contains);
         return permittedByRawGrant ? Decision.DENIED_NON_PILOT : Decision.DENIED_NO_CAPABILITY;
+    }
+
+    /**
+     * Decide by operation NAME — the live transport carries a wire-level action it must map onto a known
+     * {@link RemoteOperation}. An unknown/unmappable name → {@link Decision#DENIED_UNKNOWN_OPERATION}
+     * (the deny-unmapped contract, Codex 019eb7d6): the transport must never silently pass through an action
+     * it cannot map; anything it can't map is refused here, fail-closed.
+     */
+    public Decision decide(Set<RemoteSessionCapability> granted, String operationName) {
+        if (granted == null || operationName == null || operationName.isBlank()) {
+            return Decision.DENIED_MALFORMED;
+        }
+        RemoteOperation operation;
+        try {
+            operation = RemoteOperation.valueOf(operationName.trim());
+        } catch (IllegalArgumentException e) {
+            return Decision.DENIED_UNKNOWN_OPERATION; // an unmapped wire action → fail-closed
+        }
+        return decide(granted, operation);
     }
 }

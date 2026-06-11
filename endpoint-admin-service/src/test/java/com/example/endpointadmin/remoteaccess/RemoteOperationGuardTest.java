@@ -65,7 +65,7 @@ class RemoteOperationGuardTest {
     @Test
     void nullsAreFailClosed() {
         assertEquals(Decision.DENIED_MALFORMED, pilot.decide(null, RemoteOperation.SCREEN_VIEW));
-        assertEquals(Decision.DENIED_MALFORMED, pilot.decide(Set.of(VIEW_ONLY), null));
+        assertEquals(Decision.DENIED_MALFORMED, pilot.decide(Set.of(VIEW_ONLY), (RemoteOperation) null));
     }
 
     @Test
@@ -73,5 +73,26 @@ class RemoteOperationGuardTest {
         for (Decision d : Decision.values()) {
             assertEquals(d == Decision.ALLOWED, d.allowed(), d.name());
         }
+    }
+
+    // ---- Codex 019eb7d6: the deny-unmapped contract (decide by transport-supplied operation name) ----
+
+    @Test
+    void aKnownOperationNameDelegatesToTheEnumDecision() {
+        assertEquals(Decision.ALLOWED, pilot.decide(Set.of(VIEW_ONLY), "SCREEN_VIEW"));
+        assertEquals(Decision.DENIED_NO_CAPABILITY, pilot.decide(Set.of(VIEW_ONLY), "KEYBOARD_INPUT"));
+    }
+
+    @Test
+    void anUnknownOperationNameIsDeniedNotIgnored() {
+        // a wire action the transport can't map to a known RemoteOperation must be refused, never passed through
+        assertEquals(Decision.DENIED_UNKNOWN_OPERATION, pilot.decide(Set.of(VIEW_ONLY), "REGISTRY_EDIT"));
+        assertEquals(Decision.DENIED_UNKNOWN_OPERATION, pilot.decide(Set.of(VIEW_ONLY), "screen_view")); // case
+    }
+
+    @Test
+    void aNullOrBlankOperationNameIsFailClosed() {
+        assertEquals(Decision.DENIED_MALFORMED, pilot.decide(Set.of(VIEW_ONLY), (String) null));
+        assertEquals(Decision.DENIED_MALFORMED, pilot.decide(Set.of(VIEW_ONLY), "   "));
     }
 }
