@@ -40,6 +40,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class DsseProvenanceVerifier {
 
     private static final String PAE_PREFIX = "DSSEv1";
+    /** Cap the signatures we attempt to verify so a hostile envelope can't force unbounded crypto work. */
+    private static final int MAX_SIGNATURES = 16;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final String expectedBuilderId;
@@ -104,7 +106,10 @@ public final class DsseProvenanceVerifier {
 
             String builderId = nodeText(statement, "predicate", "builder", "id");
             String predicateType = nodeText(statement, "predicateType");
-            String subjectDigest = statement.path("subject").path(0).path("digest").path("sha256").asText(null);
+            // type-guarded (Codex 019eb7d6): a non-textual node (e.g. a number/object) must NOT silently
+            // coerce to a string — read it only when it is genuinely a JSON string.
+            JsonNode digestNode = statement.path("subject").path(0).path("digest").path("sha256");
+            String subjectDigest = digestNode.isTextual() ? digestNode.asText() : null;
             if (isBlank(builderId) || isBlank(predicateType) || isBlank(subjectDigest)) {
                 return AttestationDecision.MISSING; // incomplete in-toto Statement
             }
@@ -125,8 +130,13 @@ public final class DsseProvenanceVerifier {
 
     /** True iff at least one envelope signature verifies over the PAE with the configured key (fail-closed). */
     private boolean anySignatureVerifies(JsonNode signatures, byte[] pae) {
+        int checked = 0;
         for (JsonNode sigNode : signatures) {
-            String sigBase64 = sigNode.path("sig").asText(null);
+            if (checked++ >= MAX_SIGNATURES) {
+                break; // DoS guard: don't verify an unbounded number of attacker-supplied signatures
+            }
+            JsonNode sigField = sigNode.path("sig");
+            String sigBase64 = sigField.isTextual() ? sigField.asText() : null;
             if (isBlank(sigBase64)) {
                 continue;
             }

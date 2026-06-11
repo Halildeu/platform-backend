@@ -162,6 +162,20 @@ class DsseProvenanceVerifierTest {
     }
 
     @Test
+    void missingForANonTextualDigest() throws Exception {
+        // Codex 019eb7d6 type-guard: a non-string sha256 (a number) must NOT silently coerce → MISSING
+        ObjectNode stmt = json.createObjectNode();
+        stmt.put("_type", "https://in-toto.io/Statement/v1");
+        ObjectNode subject = stmt.putArray("subject").addObject();
+        subject.put("name", "agent-binary");
+        subject.putObject("digest").put("sha256", 1234567890); // a NUMBER, not a string
+        stmt.put("predicateType", PREDICATE_TYPE);
+        stmt.putObject("predicate").putObject("builder").put("id", BUILDER);
+        byte[] env = signedEnvelope(json.writeValueAsBytes(stmt));
+        assertEquals(AttestationDecision.MISSING, verifier.verify(env, NOW));
+    }
+
+    @Test
     void paeMatchesTheDsseSpec() {
         // PAE = "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body
         byte[] body = "hello".getBytes(StandardCharsets.UTF_8);
