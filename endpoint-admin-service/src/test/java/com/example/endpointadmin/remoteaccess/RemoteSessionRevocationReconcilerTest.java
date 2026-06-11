@@ -34,7 +34,7 @@ class RemoteSessionRevocationReconcilerTest {
     private final RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
             store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), MAX_HB_AGE,
                     CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
-                    (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
+                    (e, n) -> AttestationVerifier.AttestationDecision.MISSING, null));
 
     private void registerActive(String sessionId, String jti) {
         registry.put(new RemoteSessionHeartbeat.SessionSnapshot(

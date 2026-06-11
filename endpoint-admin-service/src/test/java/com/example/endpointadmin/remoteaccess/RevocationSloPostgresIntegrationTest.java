@@ -70,7 +70,7 @@ class RevocationSloPostgresIntegrationTest {
         return new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
                         CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
-                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING, null));
     }
 
     private static TokenRevocationFeed.RevocationEvent event(String jti, Instant t0) {
@@ -84,7 +84,7 @@ class RevocationSloPostgresIntegrationTest {
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
                         CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
-                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING, null));
 
         int n = 100;
         List<Long> latencies = new ArrayList<>(n);
@@ -130,7 +130,7 @@ class RevocationSloPostgresIntegrationTest {
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
                         CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
-                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING, null));
 
         String jti = "drop-1";
         Instant t = Instant.now();
@@ -156,7 +156,7 @@ class RevocationSloPostgresIntegrationTest {
         RemoteSessionRevocationReconciler reconciler = new RemoteSessionRevocationReconciler(
                 store, new RemoteSessionHeartbeat(store, new RemoteSessionStateMachine(), Duration.ofSeconds(30),
                         CertBindingGuard.Policy.REQUIRE_BOUND, (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
-                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING));
+                        (e, n) -> AttestationVerifier.AttestationDecision.MISSING, null));
 
         String jti = "live-1";
         Instant t = Instant.now();

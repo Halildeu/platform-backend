@@ -243,7 +243,12 @@ public final class RemoteSessionStateMachine {
         // untrusted or mid-session-revoked builder, a failed SLSA policy, or a bad predicate signature). The
         // state space + ActivationOutcome are unchanged — precision lives in the refined KillReason, exactly
         // the token + cert refinement precedent:
-        ATTESTATION_MISSING, ATTESTATION_UNTRUSTED_BUILDER, ATTESTATION_POLICY_MISMATCH, ATTESTATION_SIG_INVALID
+        ATTESTATION_MISSING, ATTESTATION_UNTRUSTED_BUILDER, ATTESTATION_POLICY_MISMATCH, ATTESTATION_SIG_INVALID,
+        // cert-IDENTITY losses (B1.4a-0) — folded into the certValid precondition (CERT_TRUST_LOST base) but
+        // refined by the heartbeat to the issuer/serial pin cause: the presented cert came from the wrong CA,
+        // carried no issuer under a configured pin, or its serial differs from a bound one. Frozen state space
+        // (precision in the refined KillReason), same precedent as the cert-trust refinement above:
+        CERT_IDENTITY_ISSUER_MISSING, CERT_IDENTITY_ISSUER_MISMATCH, CERT_IDENTITY_SERIAL_MISMATCH
     }
 
     /**

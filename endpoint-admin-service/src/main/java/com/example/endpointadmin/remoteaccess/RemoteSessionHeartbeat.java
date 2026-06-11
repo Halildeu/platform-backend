@@ -27,23 +27,32 @@ public final class RemoteSessionHeartbeat {
     private final CertBindingGuard.Policy certBindingPolicy;
     private final CertTrustEvaluator trustEvaluator;
     private final AttestationVerifier attestationVerifier;
+    private final CertRef expectedCertIdentity;
 
     /**
-     * @param certBindingPolicy   the legacy-unbound feature flag (B1.1c). {@code null} is coerced to
-     *                            {@link CertBindingGuard.Policy#REQUIRE_BOUND} (fail-closed default).
-     * @param trustEvaluator      the B1.2 cert-trust source (chain + CRL/OCSP). {@code null} is coerced to a
-     *                            deny-all evaluator (fail-closed: an absent trust source can't prove trust →
-     *                            NOT_TRUSTED → kill any cert-sampling session).
-     * @param attestationVerifier the B1.3 agent-provenance source (SLSA/builder/signed-predicate). {@code null}
-     *                            is coerced to a deny-all verifier (fail-closed: an absent provenance source
-     *                            can't prove a build → MISSING → the {@code agentAttestation} precondition
-     *                            fails → kill any cert-sampling session). Symmetric to {@code trustEvaluator}:
-     *                            an enabled runtime with NO configured attestation policy refuses every live
-     *                            session until the expected builder/policy is supplied (D10).
+     * @param certBindingPolicy    the legacy-unbound feature flag (B1.1c). {@code null} is coerced to
+     *                             {@link CertBindingGuard.Policy#REQUIRE_BOUND} (fail-closed default).
+     * @param trustEvaluator       the B1.2 cert-trust source (chain + CRL/OCSP). {@code null} is coerced to a
+     *                             deny-all evaluator (fail-closed: an absent trust source can't prove trust →
+     *                             NOT_TRUSTED → kill any cert-sampling session).
+     * @param attestationVerifier  the B1.3 agent-provenance source (SLSA/builder/signed-predicate). {@code null}
+     *                             is coerced to a deny-all verifier (fail-closed: an absent provenance source
+     *                             can't prove a build → MISSING → the {@code agentAttestation} precondition
+     *                             fails → kill any cert-sampling session). Symmetric to {@code trustEvaluator}:
+     *                             an enabled runtime with NO configured attestation policy refuses every live
+     *                             session until the expected builder/policy is supplied (D10).
+     * @param expectedCertIdentity the B1.4a-0 identity pin (expected agent-CA issuer DN, and a future bound
+     *                             serial) checked against the presented cert. {@code null} = NOT enforced — an
+     *                             ADDITIVE hardening (the thumbprint binding + trust still protect the
+     *                             session), opt-in by config, so its absence is legitimately "identity not
+     *                             constrained", NOT fail-closed (unlike {@code trustEvaluator}/
+     *                             {@code attestationVerifier}, whose absence denies). When SET, a presented
+     *                             cert from another CA — or with no issuer — is a fail-closed kill.
      */
     public RemoteSessionHeartbeat(TokenLifecycleStore store, RemoteSessionStateMachine stateMachine,
                                   Duration maxHeartbeatAge, CertBindingGuard.Policy certBindingPolicy,
-                                  CertTrustEvaluator trustEvaluator, AttestationVerifier attestationVerifier) {
+                                  CertTrustEvaluator trustEvaluator, AttestationVerifier attestationVerifier,
+                                  CertRef expectedCertIdentity) {
         this.store = store;
         this.stateMachine = stateMachine;
         this.maxHeartbeatAge = maxHeartbeatAge;
@@ -55,6 +64,7 @@ public final class RemoteSessionHeartbeat {
         this.attestationVerifier = attestationVerifier == null
                 ? (evidence, now) -> AttestationVerifier.AttestationDecision.MISSING
                 : attestationVerifier;
+        this.expectedCertIdentity = expectedCertIdentity; // null = identity not enforced (additive, opt-in)
     }
 
     /**
@@ -80,11 +90,14 @@ public final class RemoteSessionHeartbeat {
      *                            heartbeat path MUST use {@link #withCert}, where a missing presented cert on
      *                            a bound token, an untrusted cert, or unverified provenance is a fail-closed
      *                            kill.
-     * @param presentedThumbprint the live TLS-layer client-cert SHA-256 thumbprint ({@code null} = none)
-     * @param attestationEvidence the agent's presented SLSA/builder/signed-predicate provenance (B1.3b),
-     *                            verified live ({@code null}/incomplete ⇒ MISSING ⇒ fail-closed kill on the
-     *                            cert-sampling path). Ignored on the {@code certUnsampled} path.
-     * @param revokedAt           the t0 of a pending revocation (for SLO latency), or {@code null} if none
+     * @param presentedThumbprint   the live TLS-layer client-cert SHA-256 thumbprint ({@code null} = none)
+     * @param presentedSerialNumber the live cert's serial number (B1.4a-0 identity; {@code null} if unknown)
+     * @param presentedIssuerDn     the live cert's issuer DN (B1.4a-0 identity pin; {@code null} if unknown —
+     *                              fail-closed against a configured issuer pin)
+     * @param attestationEvidence   the agent's presented SLSA/builder/signed-predicate provenance (B1.3b),
+     *                              verified live ({@code null}/incomplete ⇒ MISSING ⇒ fail-closed kill on the
+     *                              cert-sampling path). Ignored on the {@code certUnsampled} path.
+     * @param revokedAt             the t0 of a pending revocation (for SLO latency), or {@code null} if none
      */
     public record PreconditionSample(
             boolean policyAllow,
@@ -94,21 +107,41 @@ public final class RemoteSessionHeartbeat {
             boolean recordingWriterAck,
             boolean certSampled,
             String presentedThumbprint,
+            String presentedSerialNumber,
+            String presentedIssuerDn,
             AttestationEvidence attestationEvidence,
             Instant revokedAt) {
 
         /**
-         * Cert-sampling sample (the live heartbeat path) — the presented thumbprint AND the attestation
-         * evidence ARE enforced. {@code agentAttestation} is NOT taken as a trusted boolean here (B1.3b):
-         * it is COMPUTED from {@code attestationEvidence} via the injected {@link AttestationVerifier}, so
-         * the record's boolean field is pinned {@code false} (a mis-wired read can only fail-closed).
+         * Cert-sampling sample (the live heartbeat path), thumbprint-only identity. The presented thumbprint
+         * AND the attestation evidence ARE enforced; {@code agentAttestation} is COMPUTED from the evidence
+         * (B1.3b), so the record's boolean field is pinned {@code false} (a mis-wired read can only
+         * fail-closed). Carries NO serial/issuer — if a B1.4a-0 issuer pin is configured, such a sample
+         * fail-closes as ISSUER_MISSING; the live runtime that knows the full cert identity uses
+         * {@link #withCertIdentity}.
          */
         public static PreconditionSample withCert(
                 boolean policyAllow, boolean targetConsent, boolean dualApproval,
                 AttestationEvidence attestationEvidence, boolean recordingWriterAck,
                 String presentedThumbprint, Instant revokedAt) {
             return new PreconditionSample(policyAllow, targetConsent, dualApproval,
-                    false, recordingWriterAck, true, presentedThumbprint, attestationEvidence, revokedAt);
+                    false, recordingWriterAck, true, presentedThumbprint, null, null, attestationEvidence,
+                    revokedAt);
+        }
+
+        /**
+         * Cert-sampling sample carrying the FULL presented cert identity (thumbprint + serial + issuer DN),
+         * so a B1.4a-0 issuer/serial pin can be enforced (the live cert-sampling runtime path). Same
+         * attestation semantics as {@link #withCert}.
+         */
+        public static PreconditionSample withCertIdentity(
+                boolean policyAllow, boolean targetConsent, boolean dualApproval,
+                AttestationEvidence attestationEvidence, boolean recordingWriterAck,
+                String presentedThumbprint, String presentedSerialNumber, String presentedIssuerDn,
+                Instant revokedAt) {
+            return new PreconditionSample(policyAllow, targetConsent, dualApproval,
+                    false, recordingWriterAck, true, presentedThumbprint, presentedSerialNumber,
+                    presentedIssuerDn, attestationEvidence, revokedAt);
         }
 
         /**
@@ -122,7 +155,7 @@ public final class RemoteSessionHeartbeat {
                 boolean policyAllow, boolean targetConsent, boolean dualApproval,
                 boolean agentAttestation, boolean recordingWriterAck, Instant revokedAt) {
             return new PreconditionSample(policyAllow, targetConsent, dualApproval,
-                    agentAttestation, recordingWriterAck, false, null, null, revokedAt);
+                    agentAttestation, recordingWriterAck, false, null, null, null, null, revokedAt);
         }
     }
 
@@ -181,14 +214,27 @@ public final class RemoteSessionHeartbeat {
                 ? CertBindingGuard.decide(status.boundThumbprint(), sample.presentedThumbprint(), certBindingPolicy)
                 : null;
         boolean certBound = certDecision == null || certDecision.satisfied();
-        // (3b) cert TRUST (B1.2): chain + CRL/OCSP. Like binding, evaluated ONLY for cert-sampling
+        // The full presented cert identity (B1.4a-0): ONE CertRef feeds BOTH the trust evaluator (enriched
+        // with serial/issuer for the B1.4a PKIX path-build) and the identity guard. Only for cert-sampling.
+        CertRef presentedCert = sample.certSampled()
+                ? new CertRef(sample.presentedThumbprint(), "SHA-256",
+                        sample.presentedSerialNumber(), sample.presentedIssuerDn())
+                : null;
+        // (3b-i) cert IDENTITY (B1.4a-0): does the presented cert match the configured agent-CA issuer pin
+        // (and a future bound serial)? ADDITIVE to binding+trust, folded INTO certValid (no new precondition).
+        // NOT_ENFORCED when no pin is configured (opt-in hardening — binding+trust still protect the session);
+        // fail-closed when a pin IS set and the presented issuer is wrong/absent. Cert-sampling only.
+        CertIdentityGuard.Decision identityDecision =
+                sample.certSampled() ? CertIdentityGuard.decide(expectedCertIdentity, presentedCert) : null;
+        // (3b-ii) cert TRUST (B1.2): chain + CRL/OCSP. Like binding, evaluated ONLY for cert-sampling
         // instruments — the token-backstop reconciler has no transport view, so it must not trust-kill a
         // guarantee it cannot observe; the live heartbeat is the cert enforcement point. Fail-closed: any
         // non-ALLOW verdict (incl. UNKNOWN/STALE) → certValid=false → kill.
-        CertTrustEvaluator.TrustDecision trustDecision = sample.certSampled()
-                ? trustEvaluator.evaluate(CertRef.ofThumbprint(sample.presentedThumbprint()), now)
-                : null;
-        boolean certValid = trustDecision == null || trustDecision.isValid();
+        CertTrustEvaluator.TrustDecision trustDecision =
+                sample.certSampled() ? trustEvaluator.evaluate(presentedCert, now) : null;
+        // certValid folds identity + trust: BOTH must hold (an unsampled instrument leaves both null = pass).
+        boolean certValid = (identityDecision == null || identityDecision.satisfied())
+                && (trustDecision == null || trustDecision.isValid());
         // (3c) agent ATTESTATION (B1.3b): SLSA/builder/signed-predicate provenance. Like binding + trust,
         // evaluated ONLY for cert-sampling instruments — the token-backstop reconciler sees no presented
         // provenance and must not attestation-kill a guarantee it cannot observe (it would otherwise kill
@@ -211,9 +257,15 @@ public final class RemoteSessionHeartbeat {
                 liveResult.isLive(), certValid, certBound, agentAttestation, sample.recordingWriterAck());
         // (4) re-evaluate.
         RemoteSessionStateMachine.Reevaluation reev = stateMachine.reevaluateActive(snapshot.state(), current);
+        // refineCertIdentityReason runs INNER than refineTrustReason: both key on CERT_TRUST_LOST, and an
+        // identity failure (wrong CA / no issuer) is the more fundamental "wrong cert" cause — so it consumes
+        // CERT_TRUST_LOST first and the trust refiner then no-ops. When identity holds, it passes through and
+        // the trust refiner reports the revocation/expiry/etc. cause.
         RemoteSessionStateMachine.KillReason reason = refineAttestationReason(
                 refineTrustReason(
-                        refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision),
+                        refineCertIdentityReason(
+                                refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision),
+                                identityDecision),
                         trustDecision),
                 attestationDecision);
 
@@ -288,6 +340,28 @@ public final class RemoteSessionHeartbeat {
             case UNKNOWN -> RemoteSessionStateMachine.KillReason.CERT_UNKNOWN;
             case STALE -> RemoteSessionStateMachine.KillReason.CERT_STALE;
             case ALLOW -> RemoteSessionStateMachine.KillReason.CERT_TRUST_LOST; // unreachable (valid ⇒ no kill)
+        };
+    }
+
+    /**
+     * When the kill folds in a cert-IDENTITY loss (B1.4a-0) — the certValid precondition surfaced as
+     * {@code CERT_TRUST_LOST} but the cause is the issuer/serial pin, not revocation — refine it to
+     * ISSUER_MISSING / ISSUER_MISMATCH (wrong CA) / SERIAL_MISMATCH. Runs INNER than
+     * {@link #refineTrustReason} so a genuine identity failure outranks the trust verdict. A satisfied
+     * (NOT_ENFORCED/MATCH) or {@code null} decision passes through (then the trust refiner reports its cause).
+     */
+    private static RemoteSessionStateMachine.KillReason refineCertIdentityReason(
+            RemoteSessionStateMachine.KillReason base, CertIdentityGuard.Decision decision) {
+        if (base != RemoteSessionStateMachine.KillReason.CERT_TRUST_LOST
+                || decision == null || decision.satisfied()) {
+            return base;
+        }
+        return switch (decision) {
+            case ISSUER_MISSING -> RemoteSessionStateMachine.KillReason.CERT_IDENTITY_ISSUER_MISSING;
+            case ISSUER_MISMATCH -> RemoteSessionStateMachine.KillReason.CERT_IDENTITY_ISSUER_MISMATCH;
+            case SERIAL_MISMATCH -> RemoteSessionStateMachine.KillReason.CERT_IDENTITY_SERIAL_MISMATCH;
+            // satisfied decisions are guarded above (unreachable defensive arm):
+            case NOT_ENFORCED, MATCH -> base;
         };
     }
 

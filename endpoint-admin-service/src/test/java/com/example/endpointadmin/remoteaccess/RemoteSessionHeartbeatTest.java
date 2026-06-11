@@ -29,17 +29,26 @@ class RemoteSessionHeartbeatTest {
     private static final String POLICY = "expected-slsa-policy-hash";
     private static final String DIGEST = "agent-binary-sha256";
 
+    /** B1.4a-0 identity pin: the expected agent-CA issuer DN. */
+    private static final String AGENT_CA = "CN=Agent Fleet CA,O=Acik,C=TR";
+    private static final String CERT_SERIAL = "0A1B2C3D";
+
     private final InMemoryTokenLifecycleStore store = new InMemoryTokenLifecycleStore();
     /** A live attestation verifier (so a cert-sampling sample's {@code agentAttestation} is COMPUTED). */
     private final InMemoryAttestationVerifier attest = new InMemoryAttestationVerifier(BUILDER, POLICY);
-    /** Production-target policy: every token must be cert-bound (fail-closed default). */
+    /** Production-target policy: every token must be cert-bound (fail-closed default). No identity pin. */
     private final RemoteSessionHeartbeat hb = new RemoteSessionHeartbeat(
             store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
-            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, attest);
-    /** Migration-window policy: a legacy-unbound token may stay live (explicitly flagged). */
+            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, attest, null);
+    /** Migration-window policy: a legacy-unbound token may stay live (explicitly flagged). No identity pin. */
     private final RemoteSessionHeartbeat hbLegacyAllow = new RemoteSessionHeartbeat(
             store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.ALLOW_LEGACY_UNBOUND,
-            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, attest);
+            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, attest, null);
+    /** B1.4a-0: same as {@code hb} but with an agent-CA issuer pin configured (identity enforced). */
+    private final RemoteSessionHeartbeat hbIssuerPin = new RemoteSessionHeartbeat(
+            store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
+            (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, attest,
+            new CertRef(null, "SHA-256", null, AGENT_CA));
 
     /** A complete, correctly-signed provenance for the expected builder + policy → verifier returns VERIFIED. */
     private static AttestationEvidence goodEvidence() {
@@ -359,7 +368,7 @@ class RemoteSessionHeartbeatTest {
         var hbThrows = new RemoteSessionHeartbeat(
                 store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
                 (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW,
-                (e, n) -> { throw new IllegalStateException("attestation backend down"); });
+                (e, n) -> { throw new IllegalStateException("attestation backend down"); }, null);
         store.consume("jti-a12", EXP, T0, TP_A);
         var d = hbThrows.evaluate(active("jti-a12", 1L, T0), presenting(TP_A), 2L, T0.plusSeconds(5));
         assertTrue(d.kill());
@@ -382,10 +391,96 @@ class RemoteSessionHeartbeatTest {
         // session — the heartbeat coerces null to a deny-all (MISSING) verifier (D10 must supply the policy).
         var hbNoVerifier = new RemoteSessionHeartbeat(
                 store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
-                (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, null);
+                (c, n) -> CertTrustEvaluator.TrustDecision.ALLOW, null, null);
         store.consume("jti-a10", EXP, T0, TP_A);
         var d = hbNoVerifier.evaluate(active("jti-a10", 1L, T0), presenting(TP_A), 2L, T0.plusSeconds(5));
         assertTrue(d.kill());
         assertEquals(RemoteSessionStateMachine.KillReason.ATTESTATION_MISSING, d.reason());
+    }
+
+    // ---- B1.4a-0: cert IDENTITY pin (expected agent-CA issuer DN) folded into certValid ----
+
+    /** Cert-sampling sample carrying the full presented identity (thumbprint + serial + issuer). */
+    private static RemoteSessionHeartbeat.PreconditionSample presentingIdentity(
+            String thumbprint, String serial, String issuer) {
+        return RemoteSessionHeartbeat.PreconditionSample.withCertIdentity(
+                true, true, true, goodEvidence(), true, thumbprint, serial, issuer, null);
+    }
+
+    @Test
+    void matchingIssuerUnderPinStaysActive() {
+        store.consume("jti-i1", EXP, T0, TP_A);
+        var d = hbIssuerPin.evaluate(active("jti-i1", 1L, T0),
+                presentingIdentity(TP_A, CERT_SERIAL, AGENT_CA), 2L, T0.plusSeconds(5));
+        assertFalse(d.kill());
+        assertEquals(RemoteSessionState.ACTIVE, d.target());
+    }
+
+    @Test
+    void wrongIssuerUnderPinKillsWithIdentityMismatch() {
+        // a cert from another CA (even with a matching thumbprint + trusted chain) is rejected at the pin
+        store.consume("jti-i2", EXP, T0, TP_A);
+        var d = hbIssuerPin.evaluate(active("jti-i2", 1L, T0),
+                presentingIdentity(TP_A, CERT_SERIAL, "CN=Rogue CA,O=Evil,C=XX"), 2L, T0.plusSeconds(5));
+        assertTrue(d.kill());
+        assertEquals(RemoteSessionState.FAILED_AGENT_ATTESTATION, d.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.CERT_IDENTITY_ISSUER_MISMATCH, d.reason());
+    }
+
+    @Test
+    void presentedWithoutIssuerUnderPinKillsWithIdentityMissing() {
+        // a thumbprint-only sample (withCert, no issuer) under a configured pin is fail-closed
+        store.consume("jti-i3", EXP, T0, TP_A);
+        var d = hbIssuerPin.evaluate(active("jti-i3", 1L, T0), presenting(TP_A), 2L, T0.plusSeconds(5));
+        assertTrue(d.kill());
+        assertEquals(RemoteSessionStateMachine.KillReason.CERT_IDENTITY_ISSUER_MISSING, d.reason());
+    }
+
+    @Test
+    void wrongIssuerWithoutAPinStaysActive() {
+        // identity is ADDITIVE + opt-in: with NO pin configured (hb), any issuer passes (binding+trust only)
+        store.consume("jti-i4", EXP, T0, TP_A);
+        var d = hb.evaluate(active("jti-i4", 1L, T0),
+                presentingIdentity(TP_A, CERT_SERIAL, "CN=Anything,O=Whoever"), 2L, T0.plusSeconds(5));
+        assertFalse(d.kill());
+        assertEquals(RemoteSessionState.ACTIVE, d.target());
+    }
+
+    @Test
+    void identityMismatchOutranksTrustRevocation() {
+        // both identity (wrong CA) AND trust (revoked) fail → the identity cause is reported (inner refiner)
+        var hbPinRevokedTrust = new RemoteSessionHeartbeat(
+                store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
+                (c, n) -> CertTrustEvaluator.TrustDecision.REVOKED, attest,
+                new CertRef(null, "SHA-256", null, AGENT_CA));
+        store.consume("jti-i5", EXP, T0, TP_A);
+        var d = hbPinRevokedTrust.evaluate(active("jti-i5", 1L, T0),
+                presentingIdentity(TP_A, CERT_SERIAL, "CN=Rogue CA,O=Evil,C=XX"), 2L, T0.plusSeconds(5));
+        assertTrue(d.kill());
+        assertEquals(RemoteSessionStateMachine.KillReason.CERT_IDENTITY_ISSUER_MISMATCH, d.reason());
+    }
+
+    @Test
+    void trustCauseReportedWhenIdentityHolds() {
+        // identity matches but the cert is revoked → the trust refiner reports CERT_REVOKED (identity no-ops)
+        var hbPinRevokedTrust = new RemoteSessionHeartbeat(
+                store, new RemoteSessionStateMachine(), MAX_AGE, CertBindingGuard.Policy.REQUIRE_BOUND,
+                (c, n) -> CertTrustEvaluator.TrustDecision.REVOKED, attest,
+                new CertRef(null, "SHA-256", null, AGENT_CA));
+        store.consume("jti-i6", EXP, T0, TP_A);
+        var d = hbPinRevokedTrust.evaluate(active("jti-i6", 1L, T0),
+                presentingIdentity(TP_A, CERT_SERIAL, AGENT_CA), 2L, T0.plusSeconds(5));
+        assertTrue(d.kill());
+        assertEquals(RemoteSessionStateMachine.KillReason.CERT_REVOKED, d.reason());
+    }
+
+    @Test
+    void certUnsampledInstrumentNeverIdentityKills() {
+        // the token-backstop reconciler sees no transport identity — even with a pin configured, a healthy
+        // bound session survives its sweep (identity enforcement belongs to the cert-sampling live heartbeat).
+        store.consume("jti-i7", EXP, T0, TP_A);
+        var d = hbIssuerPin.evaluate(active("jti-i7", 1L, T0), healthy(null), 2L, T0.plusSeconds(5));
+        assertFalse(d.kill());
+        assertEquals(RemoteSessionState.ACTIVE, d.target());
     }
 }
