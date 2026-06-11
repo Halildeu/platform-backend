@@ -39,10 +39,20 @@ public interface TokenLifecycleStore {
         }
     }
 
-    /** Idempotent mutation result (lets revocation-fanout tests/metrics tell a real change from a no-op). */
+    /**
+     * Idempotent mutation result. {@link #UPDATED} = a real change; {@link #NOOP} = already in that state;
+     * {@link #STORE_UNAVAILABLE} = the mutation FAILED at the store (Codex 019eb54b absorb — a failed
+     * revoke MUST surface, not masquerade as a no-op, so the revocation fanout retries/alerts instead of
+     * assuming the kill landed).
+     */
     enum MutationOutcome {
         UPDATED,
-        NOOP
+        NOOP,
+        STORE_UNAVAILABLE;
+
+        public boolean isApplied() {
+            return this == UPDATED;
+        }
     }
 
     /**

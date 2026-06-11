@@ -84,6 +84,16 @@ class TokenLifecycleStoreTest {
     }
 
     @Test
+    void revokeAndExpireSurfaceStoreUnavailableUnderPartition() {
+        // Codex absorb: a failed mutation must NOT masquerade as NOOP (the fanout must retry/alert).
+        InMemoryTokenLifecycleStore s = new InMemoryTokenLifecycleStore();
+        s.consume("jti-p", EXP, T0);
+        s.setAvailable(false);
+        assertEquals(TokenLifecycleStore.MutationOutcome.STORE_UNAVAILABLE, s.revoke("jti-p"));
+        assertEquals(TokenLifecycleStore.MutationOutcome.STORE_UNAVAILABLE, s.expire("jti-p"));
+    }
+
+    @Test
     void concurrentConsumeOfSameJtiAcceptsExactlyOnce() throws InterruptedException {
         int threads = 128;
         ExecutorService pool = Executors.newFixedThreadPool(32);
