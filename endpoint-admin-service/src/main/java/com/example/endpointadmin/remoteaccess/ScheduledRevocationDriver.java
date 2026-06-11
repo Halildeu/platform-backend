@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.GeneralSecurityException;
+import java.security.PublicKey;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509CRL;
 import java.time.Clock;
@@ -86,6 +87,10 @@ public class ScheduledRevocationDriver {
             @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs,
             @Value("${endpoint-admin.remote-access.attestation.expected-builder-id:}") String expectedBuilderId,
             @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash,
+            @Value("${endpoint-admin.remote-access.attestation.verifier:IN_MEMORY}") String attestationVerifierType,
+            @Value("${endpoint-admin.remote-access.attestation.public-key-pem:}") String attestationPublicKeyPem,
+            @Value("${endpoint-admin.remote-access.attestation.signature-algorithm:SHA256withECDSA}")
+            String attestationSignatureAlgorithm,
             @Value("${endpoint-admin.remote-access.cert-trust.expected-issuer-dn:}") String expectedIssuerDn,
             @Value("${endpoint-admin.remote-access.cert-trust.evaluator:IN_MEMORY}") String certEvaluatorType,
             @Value("${endpoint-admin.remote-access.cert-trust.revocation-mode:DISABLED}") String certRevocationMode,
@@ -118,17 +123,16 @@ public class ScheduledRevocationDriver {
         CertTrustEvaluator trustEvaluator = buildTrustEvaluator(
                 certEvaluatorType, certRevocationMode, certTrustAnchorPem, certCrlPem,
                 certAllowInsecureNoRevocation, productionLike, certTrustMaxAgeMs);
-        // B1.3b agent-attestation source. In-memory reference (SLSA/builder/signed-predicate modeled — Codex
-        // 019eb694 placeholder trust basis); the B1.4 transport seam swaps in real Sigstore/cosign + SLSA
-        // envelope verify. With NO configured expected builder/policy the verifier is left null → the
-        // heartbeat coerces it to deny-all (fail-closed: an enabled runtime without an attestation policy
-        // refuses every live session until D10 supplies the expected builder + policy hash). Never consulted
-        // while disabled-by-default (no cert-sampling heartbeat runs).
-        AttestationVerifier attestationVerifier =
-                (expectedBuilderId == null || expectedBuilderId.isBlank()
-                        || expectedPolicyHash == null || expectedPolicyHash.isBlank())
-                        ? null
-                        : new InMemoryAttestationVerifier(expectedBuilderId, expectedPolicyHash);
+        // B1.3b/B1.4c-3 agent-attestation source, SELECTED by config (default IN_MEMORY placeholder). KEY_BASED
+        // (B1.4c-1) swaps in REAL signature verification against the configured public key; the factory
+        // enforces the blocking matrix AT THIS CONSTRUCTION (= startup): the placeholder is forbidden in a
+        // prod-like profile, KEY_BASED fails fast without a key, DSSE (B1.4c-2) is refused until the C/D
+        // transport delivers the envelope. With NO configured expected builder/policy the verifier is null →
+        // the heartbeat coerces it to deny-all (an enabled runtime without an attestation policy refuses every
+        // cert-sampling session until D10). Never consulted while disabled-by-default.
+        AttestationVerifier attestationVerifier = buildAttestationVerifier(
+                attestationVerifierType, expectedBuilderId, expectedPolicyHash,
+                attestationPublicKeyPem, attestationSignatureAlgorithm, productionLike);
         this.attestationPolicyConfigured = attestationVerifier != null;
         // B1.4a-0 cert-identity pin. An operator-configured expected agent-CA issuer DN; null when blank →
         // identity NOT enforced (an ADDITIVE opt-in hardening on top of binding+trust, so absence is a
@@ -187,6 +191,32 @@ public class ScheduledRevocationDriver {
         return CertTrustEvaluatorFactory.create(
                 type, mode, anchors, crls, allowInsecureNoRevocation, productionLikeProfile,
                 Duration.ofMillis(inMemoryMaxAgeMs));
+    }
+
+    /**
+     * Select + safely construct the attestation verifier from config (B1.4c-3). An invalid verifier enum, an
+     * unparseable public-key PEM, or any forbidden combination (via {@link AttestationVerifierFactory}) FAIL
+     * FAST here (= startup). Blank expected builder/policy → {@code null} (heartbeat deny-all).
+     */
+    private static AttestationVerifier buildAttestationVerifier(String verifierType, String expectedBuilderId,
+                                                               String expectedPolicyHash, String publicKeyPem,
+                                                               String signatureAlgorithm,
+                                                               boolean productionLikeProfile) {
+        AttestationVerifierFactory.VerifierType type = parseEnum(
+                verifierType, AttestationVerifierFactory.VerifierType.class,
+                AttestationVerifierFactory.VerifierType.IN_MEMORY);
+        PublicKey signingKey = null;
+        if (publicKeyPem != null && !publicKeyPem.isBlank()) {
+            try {
+                signingKey = PublicKeys.fromPem(publicKeyPem);
+            } catch (GeneralSecurityException e) {
+                throw new IllegalStateException(
+                        "remote-access attestation.public-key-pem is not a valid public key", e);
+            }
+        }
+        return AttestationVerifierFactory.create(
+                type, expectedBuilderId, expectedPolicyHash, signingKey, signatureAlgorithm,
+                productionLikeProfile);
     }
 
     /** Parse a config enum, blank→default, an invalid value → fail-fast (a typo must not silently default). */
