@@ -26,17 +26,24 @@ public final class RemoteSessionHeartbeat {
     private final Duration maxHeartbeatAge;
     private final CertBindingGuard.Policy certBindingPolicy;
     private final CertTrustEvaluator trustEvaluator;
+    private final AttestationVerifier attestationVerifier;
 
     /**
-     * @param certBindingPolicy the legacy-unbound feature flag (B1.1c). {@code null} is coerced to
-     *                          {@link CertBindingGuard.Policy#REQUIRE_BOUND} (fail-closed default).
-     * @param trustEvaluator    the B1.2 cert-trust source (chain + CRL/OCSP). {@code null} is coerced to a
-     *                          deny-all evaluator (fail-closed: an absent trust source can't prove trust →
-     *                          NOT_TRUSTED → kill any cert-sampling session).
+     * @param certBindingPolicy   the legacy-unbound feature flag (B1.1c). {@code null} is coerced to
+     *                            {@link CertBindingGuard.Policy#REQUIRE_BOUND} (fail-closed default).
+     * @param trustEvaluator      the B1.2 cert-trust source (chain + CRL/OCSP). {@code null} is coerced to a
+     *                            deny-all evaluator (fail-closed: an absent trust source can't prove trust →
+     *                            NOT_TRUSTED → kill any cert-sampling session).
+     * @param attestationVerifier the B1.3 agent-provenance source (SLSA/builder/signed-predicate). {@code null}
+     *                            is coerced to a deny-all verifier (fail-closed: an absent provenance source
+     *                            can't prove a build → MISSING → the {@code agentAttestation} precondition
+     *                            fails → kill any cert-sampling session). Symmetric to {@code trustEvaluator}:
+     *                            an enabled runtime with NO configured attestation policy refuses every live
+     *                            session until the expected builder/policy is supplied (D10).
      */
     public RemoteSessionHeartbeat(TokenLifecycleStore store, RemoteSessionStateMachine stateMachine,
                                   Duration maxHeartbeatAge, CertBindingGuard.Policy certBindingPolicy,
-                                  CertTrustEvaluator trustEvaluator) {
+                                  CertTrustEvaluator trustEvaluator, AttestationVerifier attestationVerifier) {
         this.store = store;
         this.stateMachine = stateMachine;
         this.maxHeartbeatAge = maxHeartbeatAge;
@@ -45,6 +52,9 @@ public final class RemoteSessionHeartbeat {
         this.trustEvaluator = trustEvaluator == null
                 ? (cert, now) -> CertTrustEvaluator.TrustDecision.NOT_TRUSTED
                 : trustEvaluator;
+        this.attestationVerifier = attestationVerifier == null
+                ? (evidence, now) -> AttestationVerifier.AttestationDecision.MISSING
+                : attestationVerifier;
     }
 
     /**
@@ -56,16 +66,24 @@ public final class RemoteSessionHeartbeat {
 
     /**
      * One heartbeat's runtime observation. Build via {@link #withCert} (cert-sampling instruments — the
-     * live agent/tunnel heartbeat, which sees the TLS layer) or {@link #certUnsampled} (token-backstop
-     * instruments — the store-driven revocation reconciler, which has NO transport view and must not
-     * degrade the cert guarantee it cannot observe).
+     * live agent/tunnel heartbeat, which sees the TLS layer AND the agent's presented provenance) or
+     * {@link #certUnsampled} (token-backstop instruments — the store-driven revocation reconciler, which has
+     * NO transport view and must not degrade the cert/attestation guarantees it cannot observe).
      *
-     * @param certSampled         whether this sample carries a transport view (presented thumbprint). When
-     *                            {@code false}, the cert-binding precondition is NOT evaluated for this
-     *                            sample (pass-through) — ONLY for instruments that structurally cannot see
-     *                            the TLS layer; the live heartbeat path MUST use {@link #withCert}, where a
-     *                            missing presented cert on a bound token is a fail-closed kill.
+     * @param agentAttestation    the last-known attestation boolean — used ONLY on the {@code certUnsampled}
+     *                            (token-backstop) path; on the {@code certSampled} live path it is IGNORED
+     *                            and the verdict is COMPUTED from {@code attestationEvidence} (B1.3b).
+     * @param certSampled         whether this sample carries a transport view (presented thumbprint +
+     *                            attestation evidence). When {@code false}, the cert-binding, cert-trust AND
+     *                            attestation preconditions are NOT evaluated for this sample (pass-through) —
+     *                            ONLY for instruments that structurally cannot see the transport; the live
+     *                            heartbeat path MUST use {@link #withCert}, where a missing presented cert on
+     *                            a bound token, an untrusted cert, or unverified provenance is a fail-closed
+     *                            kill.
      * @param presentedThumbprint the live TLS-layer client-cert SHA-256 thumbprint ({@code null} = none)
+     * @param attestationEvidence the agent's presented SLSA/builder/signed-predicate provenance (B1.3b),
+     *                            verified live ({@code null}/incomplete ⇒ MISSING ⇒ fail-closed kill on the
+     *                            cert-sampling path). Ignored on the {@code certUnsampled} path.
      * @param revokedAt           the t0 of a pending revocation (for SLO latency), or {@code null} if none
      */
     public record PreconditionSample(
@@ -76,23 +94,35 @@ public final class RemoteSessionHeartbeat {
             boolean recordingWriterAck,
             boolean certSampled,
             String presentedThumbprint,
+            AttestationEvidence attestationEvidence,
             Instant revokedAt) {
 
-        /** Cert-sampling sample (the live heartbeat path) — the presented thumbprint IS enforced. */
+        /**
+         * Cert-sampling sample (the live heartbeat path) — the presented thumbprint AND the attestation
+         * evidence ARE enforced. {@code agentAttestation} is NOT taken as a trusted boolean here (B1.3b):
+         * it is COMPUTED from {@code attestationEvidence} via the injected {@link AttestationVerifier}, so
+         * the record's boolean field is pinned {@code false} (a mis-wired read can only fail-closed).
+         */
         public static PreconditionSample withCert(
                 boolean policyAllow, boolean targetConsent, boolean dualApproval,
-                boolean agentAttestation, boolean recordingWriterAck,
+                AttestationEvidence attestationEvidence, boolean recordingWriterAck,
                 String presentedThumbprint, Instant revokedAt) {
             return new PreconditionSample(policyAllow, targetConsent, dualApproval,
-                    agentAttestation, recordingWriterAck, true, presentedThumbprint, revokedAt);
+                    false, recordingWriterAck, true, presentedThumbprint, attestationEvidence, revokedAt);
         }
 
-        /** Token-backstop sample (no transport view, e.g. the revocation reconciler) — cert pass-through. */
+        /**
+         * Token-backstop sample (no transport view, e.g. the revocation reconciler) — cert AND attestation
+         * pass-through (it sees neither the TLS layer nor the agent's presented provenance). The
+         * {@code agentAttestation} boolean is the last-known value the backstop asserts; it MUST NOT
+         * re-derive a kill from a guarantee it cannot observe (cert + attestation enforcement stay with the
+         * cert-sampling live heartbeat).
+         */
         public static PreconditionSample certUnsampled(
                 boolean policyAllow, boolean targetConsent, boolean dualApproval,
                 boolean agentAttestation, boolean recordingWriterAck, Instant revokedAt) {
             return new PreconditionSample(policyAllow, targetConsent, dualApproval,
-                    agentAttestation, recordingWriterAck, false, null, revokedAt);
+                    agentAttestation, recordingWriterAck, false, null, null, revokedAt);
         }
     }
 
@@ -159,13 +189,29 @@ public final class RemoteSessionHeartbeat {
                 ? trustEvaluator.evaluate(CertRef.ofThumbprint(sample.presentedThumbprint()), now)
                 : null;
         boolean certValid = trustDecision == null || trustDecision.isValid();
+        // (3c) agent ATTESTATION (B1.3b): SLSA/builder/signed-predicate provenance. Like binding + trust,
+        // evaluated ONLY for cert-sampling instruments — the token-backstop reconciler sees no presented
+        // provenance and must not attestation-kill a guarantee it cannot observe (it would otherwise kill
+        // every healthy bound session each poll sweep); the live heartbeat is the enforcement point.
+        // Fail-closed: any non-VERIFIED verdict (missing / untrusted-or-revoked builder / policy-mismatch /
+        // bad-signature) → agentAttestation=false → kill. When unsampled, the backstop's asserted last-known
+        // boolean passes through (it cannot re-derive the verdict).
+        AttestationVerifier.AttestationDecision attestationDecision = sample.certSampled()
+                ? attestationVerifier.verify(sample.attestationEvidence(), now)
+                : null;
+        boolean agentAttestation = attestationDecision == null
+                ? sample.agentAttestation()
+                : attestationDecision.isVerified();
         RemoteSessionPreconditions current = new RemoteSessionPreconditions(
                 sample.policyAllow(), sample.targetConsent(), sample.dualApproval(),
-                liveResult.isLive(), certValid, certBound, sample.agentAttestation(), sample.recordingWriterAck());
+                liveResult.isLive(), certValid, certBound, agentAttestation, sample.recordingWriterAck());
         // (4) re-evaluate.
         RemoteSessionStateMachine.Reevaluation reev = stateMachine.reevaluateActive(snapshot.state(), current);
-        RemoteSessionStateMachine.KillReason reason = refineTrustReason(
-                refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision), trustDecision);
+        RemoteSessionStateMachine.KillReason reason = refineAttestationReason(
+                refineTrustReason(
+                        refineCertReason(refineTokenReason(reev.reason(), liveResult), certDecision),
+                        trustDecision),
+                attestationDecision);
 
         // (5) latency for the SLO — clamp ≥ 0, flag clock skew rather than silently zeroing.
         long latency = 0;
@@ -238,6 +284,28 @@ public final class RemoteSessionHeartbeat {
             case UNKNOWN -> RemoteSessionStateMachine.KillReason.CERT_UNKNOWN;
             case STALE -> RemoteSessionStateMachine.KillReason.CERT_STALE;
             case ALLOW -> RemoteSessionStateMachine.KillReason.CERT_TRUST_LOST; // unreachable (valid ⇒ no kill)
+        };
+    }
+
+    /**
+     * When the kill is due to agent attestation ({@code ATTESTATION_LOST} from the state machine), refine it
+     * to the precise verifier verdict — MISSING / UNTRUSTED_BUILDER / POLICY_MISMATCH / SIGNATURE_INVALID —
+     * so audit/IR sees whether the agent presented no provenance, came from an untrusted (or mid-session
+     * revoked) builder, failed the expected SLSA policy, or carried a bad predicate signature. Same precedent
+     * as the token + cert refinements. Non-attestation reasons pass through.
+     */
+    private static RemoteSessionStateMachine.KillReason refineAttestationReason(
+            RemoteSessionStateMachine.KillReason base, AttestationVerifier.AttestationDecision decision) {
+        if (base != RemoteSessionStateMachine.KillReason.ATTESTATION_LOST || decision == null) {
+            return base;
+        }
+        return switch (decision) {
+            case MISSING -> RemoteSessionStateMachine.KillReason.ATTESTATION_MISSING;
+            case UNTRUSTED_BUILDER -> RemoteSessionStateMachine.KillReason.ATTESTATION_UNTRUSTED_BUILDER;
+            case POLICY_MISMATCH -> RemoteSessionStateMachine.KillReason.ATTESTATION_POLICY_MISMATCH;
+            case SIGNATURE_INVALID -> RemoteSessionStateMachine.KillReason.ATTESTATION_SIG_INVALID;
+            // VERIFIED can't be the firstLost cause (unreachable defensive arm):
+            case VERIFIED -> RemoteSessionStateMachine.KillReason.ATTESTATION_LOST;
         };
     }
 }

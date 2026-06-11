@@ -77,7 +77,9 @@ public class ScheduledRevocationDriver {
             RemoteAccessProperties properties,
             @Value("${spring.jpa.properties.hibernate.default_schema:endpoint_admin_service}") String schema,
             @Value("${endpoint-admin.remote-access.max-heartbeat-age-ms:15000}") long maxHeartbeatAgeMs,
-            @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs) {
+            @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs,
+            @Value("${endpoint-admin.remote-access.attestation.expected-builder-id:}") String expectedBuilderId,
+            @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash) {
         this.jdbc = jdbc;
         this.meters = meters;
         this.clock = Clock.systemUTC();
@@ -94,9 +96,20 @@ public class ScheduledRevocationDriver {
         // heartbeat runs under an enabled runtime (disabled-by-default).
         CertTrustEvaluator trustEvaluator =
                 new InMemoryCertTrustEvaluator(Duration.ofMillis(certTrustMaxAgeMs));
+        // B1.3b agent-attestation source. In-memory reference (SLSA/builder/signed-predicate modeled — Codex
+        // 019eb694 placeholder trust basis); the B1.4 transport seam swaps in real Sigstore/cosign + SLSA
+        // envelope verify. With NO configured expected builder/policy the verifier is left null → the
+        // heartbeat coerces it to deny-all (fail-closed: an enabled runtime without an attestation policy
+        // refuses every live session until D10 supplies the expected builder + policy hash). Never consulted
+        // while disabled-by-default (no cert-sampling heartbeat runs).
+        AttestationVerifier attestationVerifier =
+                (expectedBuilderId == null || expectedBuilderId.isBlank()
+                        || expectedPolicyHash == null || expectedPolicyHash.isBlank())
+                        ? null
+                        : new InMemoryAttestationVerifier(expectedBuilderId, expectedPolicyHash);
         RemoteSessionHeartbeat heartbeat = new RemoteSessionHeartbeat(
                 store, new RemoteSessionStateMachine(), Duration.ofMillis(maxHeartbeatAgeMs), certPolicy,
-                trustEvaluator);
+                trustEvaluator, attestationVerifier);
         this.registry = new InMemorySessionRegistry();
         this.feed = new InMemoryTokenRevocationFeed();
         this.reconciler = new RemoteSessionRevocationReconciler(store, heartbeat);

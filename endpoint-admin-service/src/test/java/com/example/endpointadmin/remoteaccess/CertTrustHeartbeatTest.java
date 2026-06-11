@@ -25,11 +25,19 @@ class CertTrustHeartbeatTest {
     private static final Duration MAX_HB_AGE = Duration.ofSeconds(30);
     private static final Duration TRUST_MAX_AGE = Duration.ofMinutes(10);
     private static final String BOUND_TP = "aa".repeat(32); // a valid 64-hex thumbprint
+    // Attestation fixture (B1.3b): a configured verifier + good provenance so ONLY cert-trust varies here.
+    private static final String BUILDER = "trusted-builder@slsa";
+    private static final String POLICY = "expected-slsa-policy-hash";
+    private static final String DIGEST = "agent-binary-sha256";
 
     private final InMemoryTokenLifecycleStore store = new InMemoryTokenLifecycleStore();
     private final InMemoryCertTrustEvaluator trust = new InMemoryCertTrustEvaluator(TRUST_MAX_AGE);
+    private final InMemoryAttestationVerifier attest = new InMemoryAttestationVerifier(BUILDER, POLICY);
     private final RemoteSessionHeartbeat hb = new RemoteSessionHeartbeat(
-            store, new RemoteSessionStateMachine(), MAX_HB_AGE, CertBindingGuard.Policy.REQUIRE_BOUND, trust);
+            store, new RemoteSessionStateMachine(), MAX_HB_AGE, CertBindingGuard.Policy.REQUIRE_BOUND, trust, attest);
+
+    private static final AttestationEvidence GOOD = new AttestationEvidence(
+            DIGEST, BUILDER, POLICY, InMemoryAttestationVerifier.expectedSignature(DIGEST, BUILDER, POLICY));
 
     @BeforeEach
     void seed() {
@@ -42,7 +50,7 @@ class CertTrustHeartbeatTest {
     }
 
     private static PreconditionSample sampledWith(String presented) {
-        return PreconditionSample.withCert(true, true, true, true, true, presented, null);
+        return PreconditionSample.withCert(true, true, true, GOOD, true, presented, null);
     }
 
     @Test

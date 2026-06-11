@@ -237,7 +237,13 @@ public final class RemoteSessionStateMachine {
         CERT_BINDING_LOST, CERT_BINDING_MISMATCH, CERT_PRESENTED_MISSING, CERT_UNBOUND_REJECTED,
         // cert-trust losses (B1.2) — the state-machine base + the refined causes the heartbeat distinguishes
         // (CRL/OCSP revocation, expiry, an untrusted chain, or an unreachable/stale revocation source):
-        CERT_TRUST_LOST, CERT_REVOKED, CERT_EXPIRED, CERT_UNTRUSTED, CERT_UNKNOWN, CERT_STALE
+        CERT_TRUST_LOST, CERT_REVOKED, CERT_EXPIRED, CERT_UNTRUSTED, CERT_UNKNOWN, CERT_STALE,
+        // attestation losses (B1.3b) — ATTESTATION_LOST (above) is the state-machine base; these are the
+        // refined provenance causes the cert-sampling heartbeat distinguishes (no provenance presented, an
+        // untrusted or mid-session-revoked builder, a failed SLSA policy, or a bad predicate signature). The
+        // state space + ActivationOutcome are unchanged — precision lives in the refined KillReason, exactly
+        // the token + cert refinement precedent:
+        ATTESTATION_MISSING, ATTESTATION_UNTRUSTED_BUILDER, ATTESTATION_POLICY_MISMATCH, ATTESTATION_SIG_INVALID
     }
 
     /**
