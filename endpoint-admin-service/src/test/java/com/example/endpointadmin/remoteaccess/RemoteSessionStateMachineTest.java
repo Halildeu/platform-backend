@@ -177,4 +177,87 @@ class RemoteSessionStateMachineTest {
         assertThrows(RemoteSessionStateMachine.IllegalStateTransitionException.class,
                 () -> sm.transition(FAILED_RECORDING, ENDING, allOk()));
     }
+
+    // ---- reevaluateActive: continuous mid-session kill + audit reason (Codex 019eb54b #1 absorb) ----
+
+    @Test
+    void reevaluateActiveStaysActiveWhileAllGuaranteesHold() {
+        RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(ACTIVE, allOk());
+        assertEquals(ACTIVE, r.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.NONE, r.reason());
+        assertFalse(r.isKill());
+    }
+
+    @Test
+    void reevaluateActiveKillsOnRecorderDeathMidSession() {
+        // recorder died while live → no unrecorded ACTIVE may continue
+        RemoteSessionPreconditions recorderGone =
+                new RemoteSessionPreconditions(true, true, true, true, true, false);
+        RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(ACTIVE, recorderGone);
+        assertEquals(FAILED_RECORDING, r.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.RECORDER_LOST, r.reason());
+        assertTrue(r.isKill());
+    }
+
+    @Test
+    void reevaluateActiveAbortsWithDistinctReasonOnConsentVsTokenLoss() {
+        // consent withdrawn mid-session → ABORTED / CONSENT_REVOKED
+        RemoteSessionStateMachine.Reevaluation consent = sm.reevaluateActive(ACTIVE,
+                new RemoteSessionPreconditions(true, false, true, true, true, true));
+        assertEquals(ABORTED, consent.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.CONSENT_REVOKED, consent.reason());
+        // dual-approval revoked → ABORTED / DUAL_APPROVAL_REVOKED (distinct audit reason)
+        RemoteSessionStateMachine.Reevaluation appr = sm.reevaluateActive(ACTIVE,
+                new RemoteSessionPreconditions(true, true, false, true, true, true));
+        assertEquals(RemoteSessionStateMachine.KillReason.DUAL_APPROVAL_REVOKED, appr.reason());
+        // token revoked → ABORTED / TOKEN_REVOKED
+        RemoteSessionStateMachine.Reevaluation tok = sm.reevaluateActive(ACTIVE,
+                new RemoteSessionPreconditions(true, true, true, false, true, true));
+        assertEquals(ABORTED, tok.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.TOKEN_REVOKED, tok.reason());
+    }
+
+    @Test
+    void reevaluateActiveKillsOnPolicyOrAttestationLoss() {
+        assertEquals(RemoteSessionStateMachine.KillReason.POLICY_REVOKED,
+                sm.reevaluateActive(ACTIVE,
+                        new RemoteSessionPreconditions(false, true, true, true, true, true)).reason());
+        assertEquals(RemoteSessionStateMachine.KillReason.ATTESTATION_LOST,
+                sm.reevaluateActive(ACTIVE,
+                        new RemoteSessionPreconditions(true, true, true, true, false, true)).reason());
+    }
+
+    @Test
+    void reevaluateActiveFailClosedOnLostVisibility() {
+        RemoteSessionStateMachine.Reevaluation r = sm.reevaluateActive(ACTIVE, null);
+        assertEquals(ABORTED, r.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.VISIBILITY_LOSS, r.reason());
+        assertTrue(r.isKill());
+    }
+
+    @Test
+    void reevaluateActiveIsNoOpForNonActiveSessions() {
+        RemoteSessionStateMachine.Reevaluation r1 = sm.reevaluateActive(RECORDING_READY, null);
+        assertEquals(RECORDING_READY, r1.target());
+        assertEquals(RemoteSessionStateMachine.KillReason.NOT_ACTIVE, r1.reason());
+        assertFalse(r1.isKill());
+        assertEquals(ENDED, sm.reevaluateActive(ENDED, allOk()).target());
+    }
+
+    @Test
+    void killTargetsAreReachableFromActive() {
+        // the kill outcomes reevaluateActive returns must be legal transitions out of ACTIVE
+        assertTrue(sm.canTransition(ACTIVE, ABORTED));
+        assertTrue(sm.canTransition(ACTIVE, FAILED_RECORDING));
+        assertTrue(sm.canTransition(ACTIVE, FAILED_POLICY));
+        assertTrue(sm.canTransition(ACTIVE, FAILED_AGENT_ATTESTATION));
+    }
+
+    @Test
+    void staleHeartbeatSampleIsRejectedByMonotonicityGuard() {
+        // a fresher sample applies; a stale/out-of-order one does not (can't rewind the session)
+        assertTrue(RemoteSessionStateMachine.isFreshSample(5L, 4L));
+        assertFalse(RemoteSessionStateMachine.isFreshSample(4L, 4L)); // duplicate
+        assertFalse(RemoteSessionStateMachine.isFreshSample(3L, 4L)); // out-of-order/delayed
+    }
 }

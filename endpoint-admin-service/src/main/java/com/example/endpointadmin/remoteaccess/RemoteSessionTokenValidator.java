@@ -38,6 +38,13 @@ public final class RemoteSessionTokenValidator {
         this.replayCache = replayCache;
     }
 
+    /**
+     * Internal / AUDIT-ONLY decision. The specific {@code DENY_*} reason is a high-signal audit/telemetry
+     * value but MUST NOT be surfaced to the client (Codex 019eb54b absorb — error-oracle / enumeration
+     * guard): two callers presenting different bad tokens must be indistinguishable on the wire. Map to
+     * {@link #clientFacing(Decision)} ({@link ClientDecision#DENIED}) for any external response, and the
+     * caller MUST respond in constant time + under a rate limit so timing/branching is not an oracle.
+     */
     public enum Decision {
         ACCEPT,
         DENY_MALFORMED,
@@ -45,6 +52,21 @@ public final class RemoteSessionTokenValidator {
         DENY_BINDING_MISMATCH,
         DENY_REPLAYED,
         DENY_CAPABILITY_MISMATCH
+    }
+
+    /** The ONLY decision shape allowed on the wire (uniform — no reason leak). */
+    public enum ClientDecision {
+        ACCEPT,
+        DENIED
+    }
+
+    /**
+     * Collapse any internal {@link Decision} to the uniform client-facing {@link ClientDecision}. Every
+     * {@code DENY_*} → {@link ClientDecision#DENIED}; only {@link Decision#ACCEPT} → ACCEPT. Use this for
+     * every external response so the specific failure reason never leaks (anti-oracle).
+     */
+    public static ClientDecision clientFacing(Decision decision) {
+        return decision == Decision.ACCEPT ? ClientDecision.ACCEPT : ClientDecision.DENIED;
     }
 
     /**

@@ -90,6 +90,35 @@ public final class RemoteSessionStateMachine {
      * as {@link ActivationOutcome#FAILED_POLICY}; any non-{@code GRANTED} outcome means NO interactive
      * channel opens.
      */
+    /**
+     * The single guarantee whose loss is reported first, in security-precedence order. Shared by
+     * {@link #evaluateActivation} and {@link #reevaluateActive} so both compute the SAME decision from
+     * one place (Codex 019eb54b absorb — single source of truth, no drift). Caller must pass non-null.
+     */
+    public enum LostGuarantee { NONE, POLICY, ATTESTATION, RECORDER, CONSENT, DUAL_APPROVAL, TOKEN }
+
+    static LostGuarantee firstLost(RemoteSessionPreconditions pre) {
+        if (!pre.policyAllow()) {
+            return LostGuarantee.POLICY;
+        }
+        if (!pre.agentAttestation()) {
+            return LostGuarantee.ATTESTATION;
+        }
+        if (!pre.recordingWriterAck()) {
+            return LostGuarantee.RECORDER; // recording is atomic with the session
+        }
+        if (!pre.targetConsent()) {
+            return LostGuarantee.CONSENT;
+        }
+        if (!pre.dualApproval()) {
+            return LostGuarantee.DUAL_APPROVAL;
+        }
+        if (!pre.tokenBound()) {
+            return LostGuarantee.TOKEN;
+        }
+        return LostGuarantee.NONE;
+    }
+
     public ActivationOutcome evaluateActivation(RemoteSessionState from, RemoteSessionPreconditions pre) {
         if (pre == null) {
             return ActivationOutcome.FAILED_POLICY;
@@ -97,19 +126,14 @@ public final class RemoteSessionStateMachine {
         if (from != RECORDING_READY) {
             return ActivationOutcome.BLOCKED_PENDING; // not yet at the activation stage
         }
-        if (!pre.policyAllow()) {
-            return ActivationOutcome.FAILED_POLICY;
-        }
-        if (!pre.agentAttestation()) {
-            return ActivationOutcome.FAILED_AGENT_ATTESTATION;
-        }
-        if (!pre.recordingWriterAck()) {
-            return ActivationOutcome.FAILED_RECORDING; // recording is atomic with the session
-        }
-        if (!pre.targetConsent() || !pre.dualApproval() || !pre.tokenBound()) {
-            return ActivationOutcome.BLOCKED_PENDING; // recoverable — caller stays PENDING_* + audits
-        }
-        return ActivationOutcome.GRANTED;
+        return switch (firstLost(pre)) {
+            case NONE -> ActivationOutcome.GRANTED;
+            case POLICY -> ActivationOutcome.FAILED_POLICY;
+            case ATTESTATION -> ActivationOutcome.FAILED_AGENT_ATTESTATION;
+            case RECORDER -> ActivationOutcome.FAILED_RECORDING;
+            // consent / dual-approval / token are recoverable — caller stays PENDING_* + audits
+            case CONSENT, DUAL_APPROVAL, TOKEN -> ActivationOutcome.BLOCKED_PENDING;
+        };
     }
 
     /**
@@ -120,6 +144,67 @@ public final class RemoteSessionStateMachine {
      */
     public boolean canActivate(RemoteSessionState from, RemoteSessionPreconditions pre) {
         return evaluateActivation(from, pre) == ActivationOutcome.GRANTED;
+    }
+
+    /**
+     * Continuous mid-session re-evaluation hook (ADR-0033 §9b — Codex 019eb54b absorb: the ACTIVE
+     * invariant is NOT only an activation-time check). A runtime heartbeat calls this every ≤N seconds
+     * with the CURRENT preconditions; if any was lost while the session is live, the session must be
+     * killed immediately (fail-closed) — TOCTOU / capability-drift / revocation guard. Pure + total.
+     *
+     * @param current the session's current state
+     * @param now     the freshly-sampled preconditions (policy still allow? token still valid? consent
+     *                still held? dual-approval still valid? recorder still healthy?)
+     * @return a {@link Reevaluation} with the target state to move to + a precise {@link KillReason}
+     *         (fed to the audit record's {@code abortReason}). {@code ACTIVE}/{@code NONE} = stay live;
+     *         hard losses map to {@code FAILED_*}; consent/approval/token loss + visibility loss map to
+     *         {@code ABORTED} with a distinct reason. For a non-ACTIVE state this is a no-op.
+     */
+    public Reevaluation reevaluateActive(RemoteSessionState current, RemoteSessionPreconditions now) {
+        if (current != ACTIVE) {
+            return new Reevaluation(current, KillReason.NOT_ACTIVE); // only governs live sessions
+        }
+        if (now == null) {
+            return new Reevaluation(ABORTED, KillReason.VISIBILITY_LOSS); // fail-closed: lost visibility → kill
+        }
+        return switch (firstLost(now)) {
+            case NONE -> new Reevaluation(ACTIVE, KillReason.NONE); // all guarantees still hold → stay live
+            case POLICY -> new Reevaluation(FAILED_POLICY, KillReason.POLICY_REVOKED);
+            case ATTESTATION -> new Reevaluation(FAILED_AGENT_ATTESTATION, KillReason.ATTESTATION_LOST);
+            // recorder died → no unrecorded ACTIVE may continue
+            case RECORDER -> new Reevaluation(FAILED_RECORDING, KillReason.RECORDER_LOST);
+            case CONSENT -> new Reevaluation(ABORTED, KillReason.CONSENT_REVOKED);
+            case DUAL_APPROVAL -> new Reevaluation(ABORTED, KillReason.DUAL_APPROVAL_REVOKED);
+            case TOKEN -> new Reevaluation(ABORTED, KillReason.TOKEN_REVOKED);
+        };
+    }
+
+    /** Precise audit reason for a mid-session kill (feeds {@code RemoteSessionAuditRecord.abortReason}). */
+    public enum KillReason {
+        NONE, NOT_ACTIVE, POLICY_REVOKED, ATTESTATION_LOST, RECORDER_LOST,
+        CONSENT_REVOKED, DUAL_APPROVAL_REVOKED, TOKEN_REVOKED, VISIBILITY_LOSS
+    }
+
+    /**
+     * Heartbeat re-evaluation result: the target state + the precise audit reason. {@link #isKill()}
+     * iff the live session must be terminated now.
+     */
+    public record Reevaluation(RemoteSessionState target, KillReason reason) {
+        public boolean isKill() {
+            return reason != KillReason.NONE && reason != KillReason.NOT_ACTIVE;
+        }
+    }
+
+    /**
+     * Stale-event / monotonicity guard for the heartbeat (Codex 019eb54b absorb): a sampled heartbeat
+     * must be applied only if it is strictly newer than the last applied one, so a delayed/out-of-order
+     * sample can never "rewind" the session (resurrect a killed session, or undo a newer kill). The
+     * runtime supplies a monotonic sequence / timestamp source.
+     *
+     * @return {@code true} iff {@code incomingSeq} is fresh (strictly greater than {@code lastAppliedSeq}).
+     */
+    public static boolean isFreshSample(long incomingSeq, long lastAppliedSeq) {
+        return incomingSeq > lastAppliedSeq;
     }
 
     /**

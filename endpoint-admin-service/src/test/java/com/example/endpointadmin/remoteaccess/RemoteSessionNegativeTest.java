@@ -144,4 +144,21 @@ class RemoteSessionNegativeTest {
         assertEquals(RemoteSessionState.FAILED_RECORDING,
                 sm.transition(RemoteSessionState.RECORDING_READY, RemoteSessionState.ACTIVE, noRecorder));
     }
+
+    // ---- 5. error-oracle guard: every DENY_* collapses to a uniform DENIED on the wire ----
+    @Test
+    void everyDenyReasonCollapsesToUniformClientDenied() {
+        for (RemoteSessionTokenValidator.Decision d : RemoteSessionTokenValidator.Decision.values()) {
+            RemoteSessionTokenValidator.ClientDecision wire =
+                    RemoteSessionTokenValidator.clientFacing(d);
+            if (d == RemoteSessionTokenValidator.Decision.ACCEPT) {
+                assertEquals(RemoteSessionTokenValidator.ClientDecision.ACCEPT, wire);
+            } else {
+                assertEquals(RemoteSessionTokenValidator.ClientDecision.DENIED, wire,
+                        d + " must not leak its specific reason to the client");
+            }
+        }
+        // there are exactly two client-facing shapes (no reason enumeration surface)
+        assertEquals(2, RemoteSessionTokenValidator.ClientDecision.values().length);
+    }
 }
