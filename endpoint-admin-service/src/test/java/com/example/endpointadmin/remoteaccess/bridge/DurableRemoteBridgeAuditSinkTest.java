@@ -93,9 +93,22 @@ class DurableRemoteBridgeAuditSinkTest {
         DurableRemoteBridgeAuditSink durable =
                 new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id));
 
-        durable.record(new AuditEvent("sess-1", "DURESS_KILL", "h9", 2_000L));
+        durable.record(new AuditEvent("sess-1", "KILL:DURESS", "h9", 2_000L));
 
         assertEquals(RecordKind.KILL, sink.entries.get(0).kind());
+    }
+
+    @Test
+    void anOperationIdThatMerelyContainsKillIsNotMisclassified() {
+        // the broker records decisions as "ALLOW_DECISION:<operationId>" — an opId containing "kill" must
+        // map to POLICY_EVENT, NOT KILL (prefix-match, not substring — Codex slice-3b note)
+        CapturingSink sink = new CapturingSink();
+        DurableRemoteBridgeAuditSink durable =
+                new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id));
+
+        durable.record(new AuditEvent("sess-1", "ALLOW_DECISION:kill-pod", "h1", 1_000L));
+
+        assertEquals(RecordKind.POLICY_EVENT, sink.entries.get(0).kind());
     }
 
     @Test
@@ -163,8 +176,8 @@ class DurableRemoteBridgeAuditSinkTest {
         DurableRemoteBridgeAuditSink durable =
                 new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id));
 
-        durable.record(new AuditEvent("sess-1", "DECISION", "h1", 1L));
-        durable.record(new AuditEvent("sess-1", "DURESS_KILL", "h2", 2L));
+        durable.record(new AuditEvent("sess-1", "ALLOW_DECISION:op-1", "h1", 1L));
+        durable.record(new AuditEvent("sess-1", "KILL:DURESS", "h2", 2L));
 
         SessionRecordingChain rebuilt = new SessionRecordingChain();
         for (Entry e : sink.entries) {
