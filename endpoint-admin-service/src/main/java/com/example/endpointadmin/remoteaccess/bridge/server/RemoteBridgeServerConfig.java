@@ -4,7 +4,9 @@ import com.example.endpointadmin.remoteaccess.AttestationVerifier;
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
 import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
@@ -109,11 +111,40 @@ public class RemoteBridgeServerConfig {
         });
     }
 
+    /**
+     * Faz 22.6 T-4a-ii slice-2c — the inbound-audit sink for the BrokerControlPlane. The control plane's
+     * agent-event audit (hello-verified / consent / local-abort) is BEST-EFFORT (a record failure must never
+     * make the broker IGNORE a consent denial or a kill — the safe outcome proceeds, BrokerControlPlane
+     * swallows the throw). So a structured log line is the correct sink here. The DURABLE, hash-chained,
+     * session-keyed recorder (the one {@code RemoteBridgeBroker}'s durable-record-BEFORE-permit rule needs)
+     * is the slice-3 adapter — this best-effort log sink does NOT gate permit issuance (no broker yet).
+     */
+    @Bean
+    public RemoteBridgeAuditSink remoteBridgeInboundAuditSink() {
+        org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger("remote-bridge.audit.inbound");
+        return event -> log.info("remote-bridge inbound audit: session={} type={} ts={}",
+                event.sessionId(), event.eventType(), event.epochMillis());
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-2c — the REAL inbound control plane: replaces {@code ControlPlaneHandler.INERT}.
+     * Agent events (hello → ledger trust evidence; consent → session lease; local-abort/indicator-loss → kill)
+     * are now absorbed into broker state. This issues NO authority — no consent prompts, no operation permits
+     * (the operator-side service + permit push are slice-4). The transport still cannot mint a permit.
+     */
+    @Bean
+    public BrokerControlPlane remoteBridgeControlPlane(PeerTrustLedger ledger,
+                                                       RemoteBridgeSessionStore store,
+                                                       RemoteBridgeAuditSink auditSink) {
+        return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis);
+    }
+
     @Bean
     public RemoteBridgeConnectService remoteBridgeConnectService(RemoteBridgeServerProperties properties,
                                                                  ControlStreamRegistry registry,
-                                                                 ScheduledExecutorService heartbeatScheduler) {
-        return new RemoteBridgeConnectService(registry, ControlPlaneHandler.INERT, heartbeatScheduler,
+                                                                 ScheduledExecutorService heartbeatScheduler,
+                                                                 BrokerControlPlane controlPlane) {
+        return new RemoteBridgeConnectService(registry, controlPlane, heartbeatScheduler,
                 properties.heartbeatIntervalMillis(), properties.maxDataFrameBytes(),
                 System::currentTimeMillis, "rb-v1");
     }
