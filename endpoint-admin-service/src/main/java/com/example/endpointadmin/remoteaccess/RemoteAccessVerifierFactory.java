@@ -2,6 +2,7 @@ package com.example.endpointadmin.remoteaccess;
 
 import java.security.GeneralSecurityException;
 import java.security.PublicKey;
+import java.security.cert.CertificateException;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509CRL;
 import java.time.Duration;
@@ -80,6 +81,39 @@ public final class RemoteAccessVerifierFactory {
         return AttestationVerifierFactory.create(
                 type, expectedBuilderId, expectedPolicyHash, signingKey, signatureAlgorithm,
                 productionLikeProfile);
+    }
+
+    /**
+     * Like {@link #buildAttestationVerifier} but NEVER null — an unconfigured policy yields the explicit
+     * {@link DenyAllAttestationVerifier} (the remote-bridge {@code PeerTrustLedger} requires a non-null
+     * verifier; deny-all is the fail-closed coercion, Codex 019ebc7e).
+     */
+    public static AttestationVerifier buildAttestationVerifierOrDenyAll(String verifierType,
+            String expectedBuilderId, String expectedPolicyHash, String publicKeyPem,
+            String signatureAlgorithm, boolean productionLikeProfile) {
+        AttestationVerifier verifier = buildAttestationVerifier(verifierType, expectedBuilderId,
+                expectedPolicyHash, publicKeyPem, signatureAlgorithm, productionLikeProfile);
+        return verifier != null ? verifier : DenyAllAttestationVerifier.INSTANCE;
+    }
+
+    /**
+     * Construct the device-identity verifier (B1.4d) from config: the device-CA roots an agent's device key
+     * must chain to, and the minimum acceptable key-protection level. An unparseable device-CA bundle FAILS
+     * FAST. Blank roots → an empty anchor set (the verifier then trusts no device — fail-closed).
+     */
+    public static DeviceIdentityVerifier buildDeviceIdentityVerifier(String deviceCaPem,
+            String protectionLevel) {
+        java.util.Set<TrustAnchor> roots;
+        try {
+            roots = TrustAnchorLoader.fromPemBundle(deviceCaPem);
+        } catch (CertificateException e) {
+            throw new IllegalStateException(
+                    "remote-bridge device-identity device-ca-pem is not a valid PEM certificate bundle", e);
+        }
+        DeviceIdentityVerifier.DeviceProtectionLevel required = parseEnum(protectionLevel,
+                DeviceIdentityVerifier.DeviceProtectionLevel.class,
+                DeviceIdentityVerifier.DeviceProtectionLevel.SECURE_ELEMENT_OR_TPM);
+        return new DeviceIdentityVerifier(roots, required);
     }
 
     /** Parse a config enum, blank→default, an invalid value → fail-fast (a typo must not silently default). */
