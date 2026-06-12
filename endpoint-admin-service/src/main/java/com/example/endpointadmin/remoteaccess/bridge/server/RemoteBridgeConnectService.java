@@ -94,6 +94,9 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         // heartbeat task, so a replaced/killed stream's timer can never keep writing to a completed observer
         ControlStreamHandle handle = new ControlStreamHandle(outbound);
         registry.register(peer, handle);
+        // whichever path closes the handle (replace, kill, error, or a heartbeat write dying on a broken
+        // stream) also vacates the registry slot — no stale slot until gRPC's inbound cancellation arrives
+        handle.attachOnClose(() -> registry.unregister(peer, handle));
         handle.attachHeartbeat(scheduleHeartbeat(handle));
         return new StreamObserver<>() {
             private long nextSeq = 0;

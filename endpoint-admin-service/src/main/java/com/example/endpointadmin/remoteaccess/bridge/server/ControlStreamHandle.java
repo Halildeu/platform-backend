@@ -13,16 +13,32 @@ import java.util.concurrent.ScheduledFuture;
  * heartbeat task (a replaced stream's timer must not keep writing to a completed observer until shutdown).
  *
  * <p>Idempotent and terminal: after {@link #close()} (or a failed write, which self-closes) every further
- * send is a refused no-op.
+ * send is a refused no-op. An attached on-close action (the registry unregistration) runs EXACTLY once on
+ * whichever path terminates the handle first — so a heartbeat write that dies on a broken stream cannot
+ * leave a stale registry slot behind until gRPC delivers the inbound cancellation (Codex 019eb9fb T-2b
+ * follow-up note).
  */
 final class ControlStreamHandle {
 
     private final StreamObserver<Envelope> outbound;
     private ScheduledFuture<?> heartbeat;
+    private Runnable onClose;
     private boolean closed;
 
     ControlStreamHandle(StreamObserver<Envelope> outbound) {
         this.outbound = outbound;
+    }
+
+    /** Attach the run-once close action (registry unregistration); runs immediately when already closed. */
+    synchronized void attachOnClose(Runnable action) {
+        if (action == null) {
+            return;
+        }
+        if (closed) {
+            action.run();
+            return;
+        }
+        this.onClose = action;
     }
 
     /** Attach this stream's heartbeat task; cancelled immediately when the handle is already closed. */
@@ -85,6 +101,12 @@ final class ControlStreamHandle {
             outbound.onCompleted();
         } catch (RuntimeException ignored) {
             // already terminated
+        }
+        if (onClose != null) {
+            Runnable action = onClose;
+            onClose = null;
+            // ConcurrentHashMap remove(key, value) — lock-free, reentrant-safe from this monitor
+            action.run();
         }
     }
 }
