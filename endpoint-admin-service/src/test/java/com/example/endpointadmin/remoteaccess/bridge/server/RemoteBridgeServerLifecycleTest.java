@@ -46,14 +46,19 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeConnectService"));
             assertFalse(context.containsBean("remoteBridgeControlStreamRegistry"));
             assertFalse(context.containsBean("remoteBridgeHeartbeatScheduler"));
+            assertFalse(context.containsBean("remoteBridgePeerTrustLedger"));
+            assertFalse(context.containsBean("remoteBridgeSessionStore"));
             assertEquals(0, context.getBeanNamesForType(RemoteBridgeServerProperties.class).length);
         });
     }
 
     @Test
     void explicitlyDisabledBehavesLikeDefault() {
-        runner.withPropertyValues("remote-bridge.enabled=false").run(context ->
-                assertFalse(context.containsBean("remoteBridgeGrpcServer")));
+        runner.withPropertyValues("remote-bridge.enabled=false").run(context -> {
+            assertFalse(context.containsBean("remoteBridgeGrpcServer"));
+            assertFalse(context.containsBean("remoteBridgePeerTrustLedger"));
+            assertFalse(context.containsBean("remoteBridgeSessionStore"));
+        });
     }
 
     @Test
@@ -96,6 +101,10 @@ class RemoteBridgeServerLifecycleTest {
                     RemoteBridgeServerProperties properties =
                             context.getBean(RemoteBridgeServerProperties.class);
                     assertEquals("127.0.0.1", properties.bindHost());
+                    // T-4a-ii slice-2b: the per-peer trust ledger + session store are wired (verifiers
+                    // built fail-closed from the shared factory; default IN_MEMORY config → no fail-fast)
+                    assertTrue(context.containsBean("remoteBridgePeerTrustLedger"));
+                    assertTrue(context.containsBean("remoteBridgeSessionStore"));
                     server.stop();
                     assertFalse(server.isRunning());
                 });

@@ -1,11 +1,21 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
+import com.example.endpointadmin.remoteaccess.AttestationVerifier;
+import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
+import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
+import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
+import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -33,6 +43,56 @@ public class RemoteBridgeServerConfig {
     @Bean
     public RemoteBridgePermitSigner remoteBridgePermitSigner(RemoteBridgeServerProperties properties) {
         return PermitSigningKeyLoader.load(properties.permit());
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-2b (Codex 019ebc7e) — the broker's per-peer trust ledger: the B1.4 verifiers
+     * built the SAME way as the revocation runtime (shared {@link RemoteAccessVerifierFactory}, same
+     * {@code endpoint-admin.remote-access.*} config), wrapped fail-closed (an unconfigured attestation policy
+     * → deny-all, never null). The wire-format evidence parser stays {@link PeerEvidenceParser#FAIL_CLOSED}
+     * (the real decoder is the owner-gated T-4 device-format slice). The ledger is consumed by the
+     * BrokerControlPlane bean (slice-2c, INERT→real); until then it is constructed (and its config validated)
+     * fail-closed at refresh.
+     */
+    @Bean
+    public PeerTrustLedger remoteBridgePeerTrustLedger(
+            Environment environment,
+            @Value("${endpoint-admin.remote-access.cert-trust.evaluator:IN_MEMORY}") String certEvaluator,
+            @Value("${endpoint-admin.remote-access.cert-trust.revocation-mode:DISABLED}") String certRevocationMode,
+            @Value("${endpoint-admin.remote-access.cert-trust.trust-anchor-pem:}") String certTrustAnchorPem,
+            @Value("${endpoint-admin.remote-access.cert-trust.crl-pem:}") String certCrlPem,
+            @Value("${endpoint-admin.remote-access.cert-trust.allow-insecure-no-revocation:false}")
+                    boolean certAllowInsecureNoRevocation,
+            @Value("${endpoint-admin.remote-access.cert-trust.max-age-ms:3600000}") long certTrustMaxAgeMs,
+            @Value("${endpoint-admin.remote-access.attestation.verifier:IN_MEMORY}") String attestationVerifier,
+            @Value("${endpoint-admin.remote-access.attestation.expected-builder-id:}") String expectedBuilderId,
+            @Value("${endpoint-admin.remote-access.attestation.expected-policy-hash:}") String expectedPolicyHash,
+            @Value("${endpoint-admin.remote-access.attestation.public-key-pem:}") String attestationPublicKeyPem,
+            @Value("${endpoint-admin.remote-access.attestation.signature-algorithm:SHA256withECDSA}")
+                    String attestationSignatureAlgorithm,
+            @Value("${remote-bridge.peer-trust.device-ca-pem:}") String deviceCaPem,
+            @Value("${remote-bridge.peer-trust.device-protection-level:SECURE_ELEMENT_OR_TPM}")
+                    String deviceProtectionLevel,
+            @Value("${remote-bridge.peer-trust.freshness-ttl-millis:30000}") long freshnessTtlMillis) {
+        // a prod-like profile refuses the test-only escapes (Codex 019eb6d9) — same rule as the driver
+        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
+                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
+        boolean productionLike = profiles.contains("prod");
+        CertTrustEvaluator certTrust = RemoteAccessVerifierFactory.buildTrustEvaluator(
+                certEvaluator, certRevocationMode, certTrustAnchorPem, certCrlPem,
+                certAllowInsecureNoRevocation, productionLike, certTrustMaxAgeMs);
+        AttestationVerifier attestation = RemoteAccessVerifierFactory.buildAttestationVerifierOrDenyAll(
+                attestationVerifier, expectedBuilderId, expectedPolicyHash, attestationPublicKeyPem,
+                attestationSignatureAlgorithm, productionLike);
+        DeviceIdentityVerifier device = RemoteAccessVerifierFactory.buildDeviceIdentityVerifier(
+                deviceCaPem, deviceProtectionLevel);
+        return new PeerTrustLedger(certTrust, attestation, device,
+                PeerEvidenceParser.FAIL_CLOSED, freshnessTtlMillis);
+    }
+
+    @Bean
+    public RemoteBridgeSessionStore remoteBridgeSessionStore() {
+        return new RemoteBridgeSessionStore();
     }
 
     @Bean
