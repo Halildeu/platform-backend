@@ -79,6 +79,36 @@ class RemoteAccessVerifierFactoryTest {
                 "IN_MEMORY", "builder", "hash", "", "", true));
     }
 
+    // --- deny-all wrap + device verifier (slice-2) ------------------------
+
+    @Test
+    void orDenyAllNeverReturnsNullForAnUnconfiguredPolicy() {
+        // PeerTrustLedger requires non-null — blank config must yield the explicit deny-all, not null
+        AttestationVerifier v = RemoteAccessVerifierFactory.buildAttestationVerifierOrDenyAll(
+                "", "", "", "", "", false);
+        assertNotNull(v);
+        assertEquals(AttestationVerifier.AttestationDecision.MISSING,
+                v.verify(new AttestationEvidence("sha256:x", "b", "h", "s"), java.time.Instant.now()));
+    }
+
+    @Test
+    void denyAllVerifierNeverVerifies() {
+        assertFalse(DenyAllAttestationVerifier.INSTANCE.verify(
+                new AttestationEvidence("sha256:x", "b", "h", "s"), java.time.Instant.now()).isVerified());
+    }
+
+    @Test
+    void buildDeviceIdentityVerifierWithBlankRootsTrustsNoDevice() {
+        // empty anchor set → the verifier is constructed (non-null) but trusts no device (fail-closed)
+        assertNotNull(RemoteAccessVerifierFactory.buildDeviceIdentityVerifier("", "SECURE_ELEMENT_OR_TPM"));
+    }
+
+    @Test
+    void buildDeviceIdentityVerifierWithABadPemFailsFast() {
+        assertThrows(IllegalStateException.class,
+                () -> RemoteAccessVerifierFactory.buildDeviceIdentityVerifier("not a pem", "SOFTWARE"));
+    }
+
     @Test
     void factoryIsAStatelessHelperNotInstantiable() {
         assertFalse(java.lang.reflect.Modifier.isPublic(
