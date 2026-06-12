@@ -158,6 +158,9 @@ public final class RemoteBridgeProtoAdapter {
 
     /** AgentHello stays ADVISORY (never an authorization input) — but it still decodes fail-closed. */
     public static DecodeResult<RemoteBridgeMessages.AgentHello> decode(AgentHello hello) {
+        if (hello == null) {
+            return DecodeResult.reject("agent-hello-null");
+        }
         if (!WireContract.isValidId(hello.getDeviceId())) {
             return DecodeResult.reject("agent-hello-device-id");
         }
@@ -190,6 +193,9 @@ public final class RemoteBridgeProtoAdapter {
     }
 
     public static DecodeResult<RemoteBridgeMessages.SessionRequest> decode(SessionRequest request) {
+        if (request == null) {
+            return DecodeResult.reject("session-request-null");
+        }
         DecodeResult<Set<RemoteSessionCapability>> capabilities =
                 decodeCapabilities(request.getRequestedCapabilitiesList(), true);
         if (!capabilities.isOk()) {
@@ -219,6 +225,9 @@ public final class RemoteBridgeProtoAdapter {
     }
 
     public static DecodeResult<RemoteBridgeMessages.ConsentPrompt> decode(ConsentPrompt prompt) {
+        if (prompt == null) {
+            return DecodeResult.reject("consent-prompt-null");
+        }
         if (!WireContract.isValidId(prompt.getSessionId())) {
             return DecodeResult.reject("consent-prompt-session-id");
         }
@@ -249,6 +258,9 @@ public final class RemoteBridgeProtoAdapter {
     }
 
     public static DecodeResult<RemoteBridgeMessages.ConsentResult> decode(ConsentResult result) {
+        if (result == null) {
+            return DecodeResult.reject("consent-result-null");
+        }
         if (!WireContract.isValidId(result.getSessionId())) {
             return DecodeResult.reject("consent-result-session-id");
         }
@@ -279,6 +291,9 @@ public final class RemoteBridgeProtoAdapter {
      * (proto3 default); whether a PTY operation REQUIRES a command stays the broker's rule, not the wire's.
      */
     public static DecodeResult<RemoteBridgeMessages.OperationRequest> decode(OperationRequest request) {
+        if (request == null) {
+            return DecodeResult.reject("operation-request-null");
+        }
         if (!WireContract.isValidId(request.getSessionId())) {
             return DecodeResult.reject("operation-request-session-id");
         }
@@ -303,6 +318,9 @@ public final class RemoteBridgeProtoAdapter {
     }
 
     public static DecodeResult<RemoteBridgeMessages.Kill> decode(Kill kill) {
+        if (kill == null) {
+            return DecodeResult.reject("kill-null");
+        }
         if (!WireContract.isValidId(kill.getSessionId())) {
             return DecodeResult.reject("kill-session-id");
         }
@@ -325,6 +343,9 @@ public final class RemoteBridgeProtoAdapter {
     }
 
     public static DecodeResult<RemoteBridgeMessages.AuditEvent> decode(AuditEvent event) {
+        if (event == null) {
+            return DecodeResult.reject("audit-event-null");
+        }
         if (!WireContract.isValidId(event.getSessionId())) {
             return DecodeResult.reject("audit-event-session-id");
         }
@@ -364,6 +385,9 @@ public final class RemoteBridgeProtoAdapter {
      */
     public static DecodeResult<OperationPermit> decode(
             com.example.endpointadmin.remoteaccess.bridge.proto.OperationPermit permit) {
+        if (permit == null) {
+            return DecodeResult.reject("permit-null");
+        }
         if (permit.getPermitVersion() != RemoteBridgePermitSigner.PERMIT_VERSION) {
             return DecodeResult.reject("permit-version");
         }
@@ -445,11 +469,16 @@ public final class RemoteBridgeProtoAdapter {
      *   <li>a payload must be set;</li>
      *   <li>{@code data_frame} travels ONLY on DATA; {@code heartbeat}/{@code error} on either; every other
      *       payload ONLY on CONTROL — so a KILL can never legally sit on (or behind) the DATA stream;</li>
+     *   <li>the payloads with no domain-record decoder ({@code data_frame}/{@code heartbeat}/{@code error})
+     *       validate their CONTENT here too — this method is the only static gate they pass (Codex P1);</li>
      *   <li>routing headers are optional (empty until a session exists) but validate when present;</li>
      *   <li>{@code frame_seq}/{@code sent_at_epoch_millis} are non-negative.</li>
      * </ul>
      */
     public static DecodeResult<Envelope> validateEnvelope(Envelope envelope) {
+        if (envelope == null) {
+            return DecodeResult.reject("envelope-null");
+        }
         ChannelType channel = envelope.getChannelType();
         if (channel != ChannelType.CONTROL && channel != ChannelType.DATA) {
             return DecodeResult.reject("envelope-channel");
@@ -466,6 +495,15 @@ public final class RemoteBridgeProtoAdapter {
         if (!allowed) {
             return DecodeResult.reject("envelope-payload-channel-mismatch");
         }
+        String payloadDefect = switch (payload) {
+            case DATA_FRAME -> dataFrameDefect(envelope.getDataFrame());
+            case HEARTBEAT -> heartbeatDefect(envelope.getHeartbeat());
+            case ERROR -> errorFrameDefect(envelope.getError());
+            default -> null; // CONTROL payloads have their own decode(...) validators
+        };
+        if (payloadDefect != null) {
+            return DecodeResult.reject(payloadDefect);
+        }
         if (!envelope.getSessionId().isEmpty() && !WireContract.isValidId(envelope.getSessionId())) {
             return DecodeResult.reject("envelope-session-id");
         }
@@ -479,5 +517,42 @@ public final class RemoteBridgeProtoAdapter {
             return DecodeResult.reject("envelope-counters");
         }
         return DecodeResult.ok(envelope);
+    }
+
+    /** Frame byte-size limits stay a T-2b stream-layer concern (no config in T-2a); shape validates here. */
+    private static String dataFrameDefect(com.example.endpointadmin.remoteaccess.bridge.proto.DataFrame frame) {
+        if (!WireContract.isValidId(frame.getStreamId())) {
+            return "data-frame-stream-id";
+        }
+        if (frame.getFrameSeq() < 0) {
+            return "data-frame-seq";
+        }
+        if (!isSafeText(frame.getContentType(), true)) {
+            return "data-frame-content-type";
+        }
+        return null;
+    }
+
+    private static String heartbeatDefect(com.example.endpointadmin.remoteaccess.bridge.proto.Heartbeat heartbeat) {
+        if (heartbeat.getHeartbeatIntervalMillis() <= 0) {
+            return "heartbeat-interval";
+        }
+        if (heartbeat.getLeaseExpiresAtEpochMillis() < 0) {
+            return "heartbeat-lease";
+        }
+        if (!isSafeText(heartbeat.getProtocolVersion(), false)) {
+            return "heartbeat-protocol-version";
+        }
+        return null;
+    }
+
+    private static String errorFrameDefect(com.example.endpointadmin.remoteaccess.bridge.proto.ErrorFrame error) {
+        if (!isSafeText(error.getCode(), true)) {
+            return "error-frame-code";
+        }
+        if (!isSafeText(error.getDetail(), false)) {
+            return "error-frame-detail";
+        }
+        return null;
     }
 }

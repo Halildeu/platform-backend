@@ -137,7 +137,7 @@ class RemoteBridgeProtoAdapterTest {
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setSessionId("s\nid").build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setOperatorSubject((char) 0 + "x").build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setDeviceId("d".repeat(257)).build()).isOk());
-        assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setReason("ab").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setReason("a" + (char) 7 + "b").build()).isOk());
     }
 
     @Test
@@ -207,7 +207,7 @@ class RemoteBridgeProtoAdapterTest {
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setContentHash("xyz").build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(
                 proto.toBuilder().setContentHash(HASH.toUpperCase()).build()).isOk());
-        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setEventType("ev").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setEventType("e" + (char) 27 + "v").build()).isOk());
     }
 
     // ------------------------------------------------------------------
@@ -320,7 +320,8 @@ class RemoteBridgeProtoAdapterTest {
     @Test
     void dataFramesOnlyOnDataAndControlPayloadsOnlyOnControl() {
         Envelope dataOnControl = Envelope.newBuilder().setChannelType(ChannelType.CONTROL)
-                .setDataFrame(DataFrame.newBuilder().setStreamId("st-1").setFrameSeq(1)).build();
+                .setDataFrame(DataFrame.newBuilder().setStreamId("st-1").setFrameSeq(1)
+                        .setContentType("image/png")).build();
         assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(dataOnControl).isOk());
         assertTrue(RemoteBridgeProtoAdapter.validateEnvelope(
                 dataOnControl.toBuilder().setChannelType(ChannelType.DATA).build()).isOk());
@@ -352,5 +353,61 @@ class RemoteBridgeProtoAdapterTest {
         assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(control().setStreamId("x".repeat(257)).build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(control().setFrameSeq(-1).build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(control().setSentAtEpochMillis(-5).build()).isOk());
+    }
+
+    // ------------------------------------------------------------------
+    // Codex post-impl P1/P2 — payload-content validation + null guards
+    // ------------------------------------------------------------------
+
+    @Test
+    void dataFrameContentValidatesInsideTheEnvelope() {
+        DataFrame valid = DataFrame.newBuilder().setStreamId("st-1").setFrameSeq(0)
+                .setContentType("image/png").build();
+        Envelope.Builder data = Envelope.newBuilder().setChannelType(ChannelType.DATA);
+        assertTrue(RemoteBridgeProtoAdapter.validateEnvelope(data.setDataFrame(valid).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(data.setDataFrame(
+                valid.toBuilder().setStreamId("bad\nid")).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(data.setDataFrame(
+                valid.toBuilder().setStreamId("")).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(data.setDataFrame(
+                valid.toBuilder().setFrameSeq(-1)).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(data.setDataFrame(
+                valid.toBuilder().setContentType("")).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(data.setDataFrame(
+                valid.toBuilder().setContentType("x" + (char) 0 + "y")).build()).isOk());
+    }
+
+    @Test
+    void heartbeatAndErrorContentValidateInsideTheEnvelope() {
+        Envelope.Builder ctrl = Envelope.newBuilder().setChannelType(ChannelType.CONTROL);
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(ctrl.setHeartbeat(
+                Heartbeat.newBuilder().setHeartbeatIntervalMillis(0)).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(ctrl.setHeartbeat(
+                Heartbeat.newBuilder().setHeartbeatIntervalMillis(5000).setLeaseExpiresAtEpochMillis(-1))
+                .build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(ctrl.setHeartbeat(
+                Heartbeat.newBuilder().setHeartbeatIntervalMillis(5000).setProtocolVersion("v\n1"))
+                .build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(ctrl.setError(
+                ErrorFrame.newBuilder().setCode("")).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(ctrl.setError(
+                ErrorFrame.newBuilder().setCode("backoff").setDetail("d" + (char) 7 + "tail")).build()).isOk());
+        assertTrue(RemoteBridgeProtoAdapter.validateEnvelope(ctrl.setError(
+                ErrorFrame.newBuilder().setCode("backoff").setDetail("retry in 5s").setRetryable(true))
+                .build()).isOk());
+    }
+
+    @Test
+    void nullProtoInputsRejectInsteadOfThrowing() {
+        assertFalse(RemoteBridgeProtoAdapter.decode((AgentHello) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((SessionRequest) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((ConsentPrompt) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((ConsentResult) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((OperationRequest) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((Kill) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((AuditEvent) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(
+                (com.example.endpointadmin.remoteaccess.bridge.proto.OperationPermit) null).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(null).isOk());
     }
 }
