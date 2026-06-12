@@ -247,9 +247,11 @@ public class RemoteBridgeServerConfig {
             RemoteBridgeSessionStore remoteBridgeSessionStore,
             TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler,
             RemoteBridgeBroker remoteBridgeBroker,
-            ControlStreamRegistry remoteBridgeControlStreamRegistry) {
+            ControlStreamRegistry remoteBridgeControlStreamRegistry,
+            @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis) {
         return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
-                remoteBridgeBroker, remoteBridgeControlStreamRegistry, System::currentTimeMillis);
+                remoteBridgeBroker, remoteBridgeControlStreamRegistry, System::currentTimeMillis,
+                consentPromptTtlMillis);
     }
 
     @Bean

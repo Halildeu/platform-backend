@@ -4,8 +4,14 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeTrustEvidence;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.ConsentPrompt;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.OpenResult;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Opened;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Refused;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
+import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 
 import java.util.Objects;
 import java.util.function.LongSupplier;
@@ -52,15 +58,72 @@ public final class RemoteBridgeOperatorService {
     private final RemoteBridgeBroker broker;
     private final ControlStreamRegistry registry;
     private final LongSupplier clock;
+    private final long consentPromptTtlMillis;
 
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
                                        RemoteBridgeBroker broker, ControlStreamRegistry registry,
-                                       LongSupplier clock) {
+                                       LongSupplier clock, long consentPromptTtlMillis) {
         this.store = Objects.requireNonNull(store, "store");
         this.assembler = Objects.requireNonNull(assembler, "assembler");
         this.broker = Objects.requireNonNull(broker, "broker");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.clock = Objects.requireNonNull(clock, "clock");
+        if (consentPromptTtlMillis <= 0) {
+            throw new IllegalArgumentException("consentPromptTtlMillis must be positive");
+        }
+        this.consentPromptTtlMillis = consentPromptTtlMillis;
+    }
+
+    /** The outcome of opening an attended session: the session id, whether the consent prompt reached the agent. */
+    public record SessionOpenOutcome(String sessionId, boolean consentPromptSent, String rejectReason) {
+        public boolean opened() {
+            return rejectReason == null;
+        }
+
+        static SessionOpenOutcome prompted(String sessionId) {
+            return new SessionOpenOutcome(sessionId, true, null);
+        }
+
+        static SessionOpenOutcome rejected(String sessionId, String reason) {
+            return new SessionOpenOutcome(sessionId, false, reason);
+        }
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-4b-3 (Codex 019ebd7f) — open an ATTENDED session and push the consent prompt to
+     * the agent. The store walks the new session to {@code CONSENT_PENDING} itself, so the service does NOT
+     * re-drive the state machine (Codex S3). The prompt TTL is config-derived, not caller-supplied (S2).
+     *
+     * <p><b>Fail-closed:</b> a peer with no live CONTROL stream is refused BEFORE the session is created
+     * (pre-guard). If the prompt does not land despite the pre-guard (the peer dropped in the race window), the
+     * just-opened session is driven terminal + evicted so no orphan {@code CONSENT_PENDING} session lingers
+     * awaiting a consent that can never arrive (Codex S3).
+     */
+    public SessionOpenOutcome openSession(SessionRequest request, PeerIdentity peer, String operatorDisplayName) {
+        if (request == null || request.sessionId() == null || request.sessionId().isBlank() || peer == null) {
+            return SessionOpenOutcome.rejected(request == null ? null : request.sessionId(), "malformed-request");
+        }
+        long now = clock.getAsLong();
+        if (!registry.isConnected(peer.transportPeerKey())) {
+            return SessionOpenOutcome.rejected(request.sessionId(), "peer-not-connected"); // pre-guard
+        }
+
+        OpenResult result = store.open(request, peer, operatorDisplayName, now + consentPromptTtlMillis, now);
+        if (result instanceof Refused refused) {
+            return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
+        }
+        RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
+
+        ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
+                request.reason(), session.requestedCapabilities(), session.promptExpiryEpochMillis());
+        boolean sent = registry.sendConsentPrompt(peer.transportPeerKey(), prompt, now);
+        if (!sent) {
+            // the peer dropped between the pre-guard and the send → don't leave an orphan CONSENT_PENDING session
+            session.transition(Event.KILL);
+            store.evictIfTerminal(session.sessionId());
+            return SessionOpenOutcome.rejected(session.sessionId(), "consent-prompt-not-delivered");
+        }
+        return SessionOpenOutcome.prompted(session.sessionId());
     }
 
     public OperatorOutcome handleOperationRequest(OperationRequest request) {
