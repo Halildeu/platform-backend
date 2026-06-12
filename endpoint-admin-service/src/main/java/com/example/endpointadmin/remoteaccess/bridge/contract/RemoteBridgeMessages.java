@@ -1,0 +1,93 @@
+package com.example.endpointadmin.remoteaccess.bridge.contract;
+
+import com.example.endpointadmin.remoteaccess.RemoteOperation;
+import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
+
+import java.util.Set;
+
+/**
+ * Faz 22.6 T-1a — the remote-bridge WIRE CONTRACT message model, as pure Java records. These are designed to
+ * map 1:1 onto the future protobuf (`RemoteBridgeService`, T-2) — the field correspondence + reserved proto
+ * field numbers are documented in {@code docs/remote-bridge-wire-contract.md}. T-1 owns MEANING (the domain
+ * records, canonicalisation, validation); T-2's protobuf adapters will own BYTES, replacing these on the wire
+ * WITHOUT changing the broker / state-machine / permit-signer / policy-dry-run (the T-1 acceptance boundary,
+ * Codex 019eb9fb).
+ *
+ * <p><b>Trust note:</b> {@link AgentHello} is AGENT-SUPPLIED and ADVISORY ONLY — its fields (advertised
+ * capabilities, attestation evidence) are NEVER trusted as authorization input. The broker re-derives every
+ * authoritative fact through the B1.4 verifiers into a separate, verifier-produced trust-evidence object
+ * (T-1b), never off {@code AgentHello}.
+ */
+public final class RemoteBridgeMessages {
+
+    private RemoteBridgeMessages() {
+    }
+
+    /** The two logical channels (ADR-0038 §4). Declarative in T-1 — the stream/never-drop semantics are T-2. */
+    public enum ChannelType { CONTROL, DATA }
+
+    /** Agent → broker on connect. ADVISORY ONLY — never an authorization input (see class note). */
+    public record AgentHello(String agentVersion,
+                             String deviceId,
+                             String certFingerprint,
+                             String attestationEvidenceB64,
+                             String protocolVersion,
+                             Set<RemoteSessionCapability> advertisedCapabilities) {
+        public AgentHello {
+            advertisedCapabilities = advertisedCapabilities == null ? Set.of() : Set.copyOf(advertisedCapabilities);
+        }
+    }
+
+    /** Operator console → broker (the operator never talks to the agent directly). */
+    public record SessionRequest(String sessionId,
+                                 String deviceId,
+                                 String operatorSubject,
+                                 String reason,
+                                 Set<RemoteSessionCapability> requestedCapabilities) {
+        public SessionRequest {
+            requestedCapabilities = requestedCapabilities == null ? Set.of() : Set.copyOf(requestedCapabilities);
+        }
+    }
+
+    /** Broker → agent: prompt the endpoint user for attended consent (operator identity + reason + caps + notice). */
+    public record ConsentPrompt(String sessionId,
+                                String operatorDisplayName,
+                                String reason,
+                                Set<RemoteSessionCapability> capabilities,
+                                long expiryEpochMillis) {
+        public ConsentPrompt {
+            capabilities = capabilities == null ? Set.of() : Set.copyOf(capabilities);
+        }
+    }
+
+    /** Agent → broker: the endpoint user's consent outcome (becomes a {@link ConsentLease}). */
+    public record ConsentResult(String sessionId,
+                                boolean granted,
+                                String windowsInteractiveSession,
+                                long grantedAtEpochMillis,
+                                long expiryEpochMillis) {
+    }
+
+    /** Operator console → broker: one attempted operation. {@code commandLine} is null for a non-PTY operation. */
+    public record OperationRequest(String sessionId,
+                                   String operationId,
+                                   RemoteOperation operation,
+                                   String commandLine) {
+    }
+
+    /** Broker → operator/audit: the engine's verdict (maps {@code RemoteSessionPolicyEngine.SessionDecision}). */
+    public record PolicyDecision(String sessionId,
+                                 String operationId,
+                                 String outcome,
+                                 String gate,
+                                 String detail) {
+    }
+
+    /** Broker → agent (CONTROL): terminate the session now. */
+    public record Kill(String sessionId, String killReason, long issuedAtEpochMillis) {
+    }
+
+    /** Either side → the recorder: a control-plane audit event (metadata + content hash, never raw payload). */
+    public record AuditEvent(String sessionId, String eventType, String contentHash, long epochMillis) {
+    }
+}
