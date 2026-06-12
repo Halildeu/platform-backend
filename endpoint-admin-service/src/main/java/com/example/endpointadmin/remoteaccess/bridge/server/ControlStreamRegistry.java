@@ -1,8 +1,11 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
+import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
+import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -78,6 +81,56 @@ public final class ControlStreamRegistry {
                 .build();
         handle.sendAndClose(kill);
         return true;
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-4a — push a signed {@link OperationPermit} to the authenticated peer's live
+     * CONTROL stream (the broker permitted the operation). Unlike {@link #killPeer}, this is NON-terminal:
+     * the stream is fetched with {@code get} (not removed) and stays open — the session continues. Returns
+     * false when the peer has no live CONTROL stream (a dropped peer cannot receive a permit; the operation
+     * simply does not proceed — fail-closed, no permit lands). The broker's record-before-permit rule has
+     * already run UPSTREAM, so a permit reaching here is durably recorded; this method only transports it.
+     */
+    public boolean sendOperationPermit(String transportPeerKey, OperationPermit permit, long nowEpochMillis) {
+        if (permit == null) {
+            return false;
+        }
+        ControlStreamHandle handle = streams.get(transportPeerKey);
+        if (handle == null) {
+            return false;
+        }
+        Envelope envelope = Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL)
+                .setSessionId(permit.sessionId())
+                .setSentAtEpochMillis(nowEpochMillis)
+                .setOperationPermit(RemoteBridgeProtoAdapter.encode(permit))
+                .build();
+        return handle.send(envelope);
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-4a — push a {@link RemoteBridgeMessages.ConsentPrompt} to the authenticated
+     * peer's live CONTROL stream (the operator opened an attended session; the agent must obtain the
+     * end-user's consent before any operation). NON-terminal {@code get} — the stream stays open awaiting the
+     * consent result. Returns false when the peer has no live CONTROL stream. No authority is conferred by the
+     * prompt itself; the operator's permits remain gated on the consent LEASE the agent reports back.
+     */
+    public boolean sendConsentPrompt(String transportPeerKey, RemoteBridgeMessages.ConsentPrompt prompt,
+                                     long nowEpochMillis) {
+        if (prompt == null) {
+            return false;
+        }
+        ControlStreamHandle handle = streams.get(transportPeerKey);
+        if (handle == null) {
+            return false;
+        }
+        Envelope envelope = Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL)
+                .setSessionId(prompt.sessionId())
+                .setSentAtEpochMillis(nowEpochMillis)
+                .setConsentPrompt(RemoteBridgeProtoAdapter.encode(prompt))
+                .build();
+        return handle.send(envelope);
     }
 
     /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */
