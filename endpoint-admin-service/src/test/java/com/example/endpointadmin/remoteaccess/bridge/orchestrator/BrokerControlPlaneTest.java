@@ -275,6 +275,27 @@ class BrokerControlPlaneTest {
         assertTrue(sink.has("CONSENT_DENIED"));
     }
 
+    @Test
+    void aZeroOrPastExpiryGrantIsRefusedNeverEscalated() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+
+        // proto3 default 0 — a malformed grant must NOT become a full-window lease
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW, 0));
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+        assertTrue(sink.has("CONSENT_REFUSED:invalid-expiry"));
+
+        // an expiry exactly at/below 'now' is equally no grant
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW, NOW + 1000)); // plane clock is NOW+1000 → not in the future
+        assertEquals(State.CONSENT_PENDING, session.state());
+        assertFalse(session.lease().granted());
+    }
+
     // --- inbound audit ---------------------------------------------------------
 
     @Test
@@ -292,6 +313,38 @@ class BrokerControlPlaneTest {
         assertTrue(session.lease().locallyAborted());
         assertEquals(0, store.liveCount());
         assertTrue(sink.has("KILLED:local-abort"));
+    }
+
+    @Test
+    void indicatorLossAbortsTheLeaseAndKillsLikeALocalAbort() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW, PROMPT_EXPIRY));
+
+        // the user can no longer SEE that support is active — the lease contract treats this as an abort
+        plane.onAuditEvent(PEER, new RemoteBridgeMessages.AuditEvent("sess-1",
+                BrokerControlPlane.EVENT_INDICATOR_LOST, "", NOW + 2000));
+        assertEquals(State.KILLED, session.state());
+        assertTrue(session.lease().locallyAborted());
+        assertEquals(0, store.liveCount());
+        assertTrue(sink.has("KILLED:indicator-lost"));
+    }
+
+    @Test
+    void aThrowingParserStillRecordsFailClosedAllFalse() {
+        PeerEvidenceParser exploding = (peer, hello) -> {
+            throw new IllegalStateException("malformed evidence bytes");
+        };
+        PeerTrustLedger ledger = new PeerTrustLedger(certResult(true),
+                attestationResult(AttestationVerifier.AttestationDecision.VERIFIED),
+                untrustingDeviceVerifier(), exploding, 30_000);
+        PeerTrustLedger.PeerTrust trust = ledger.record(PEER, hello(), NOW);
+        assertFalse(trust.certTrusted());
+        assertFalse(trust.attestationVerified());
+        assertFalse(trust.deviceTrusted());
     }
 
     @Test

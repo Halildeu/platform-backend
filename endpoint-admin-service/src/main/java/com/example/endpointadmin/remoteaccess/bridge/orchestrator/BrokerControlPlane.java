@@ -33,11 +33,14 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     /** The endpoint user's local consent withdrawal (ADR-0034 D2/D10-7 — always honored, kills the session). */
     public static final String EVENT_LOCAL_ABORT = "LOCAL_ABORT";
 
+    /** The visible 'remote-support active' indicator could not be kept on screen (D10-6). */
+    public static final String EVENT_INDICATOR_LOST = "AGENT_INDICATOR_LOST";
+
     /** Agent-originated audit metadata the broker accepts; anything else is refused (audited, dropped). */
     private static final Set<String> INBOUND_AUDIT_ALLOWLIST = Set.of(
             EVENT_LOCAL_ABORT,
-            "AGENT_INDICATOR_SHOWN",   // the visible 'remote-support active' indicator came up (D10-6)
-            "AGENT_INDICATOR_LOST");   // ...or could not be kept on screen
+            "AGENT_INDICATOR_SHOWN",   // the indicator came up (D10-6)
+            EVENT_INDICATOR_LOST);
 
     private final PeerTrustLedger ledger;
     private final RemoteBridgeSessionStore store;
@@ -90,6 +93,12 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             }
             return;
         }
+        if (result.expiryEpochMillis() <= now) {
+            // proto3's default 0 (or any not-in-the-future expiry) must NEVER escalate to the full broker
+            // window — a malformed grant is no grant (Codex 019ebbfa post-impl P1)
+            recordBestEffort(session.sessionId(), "CONSENT_REFUSED:invalid-expiry");
+            return;
+        }
         // the machine accepts CONSENT_GRANTED only from CONSENT_PENDING — duplicates/replays refuse here
         if (!session.transition(Event.CONSENT_GRANTED).accepted()) {
             recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
@@ -107,14 +116,17 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             return;
         }
         recordBestEffort(event.sessionId(), "AGENT:" + event.eventType());
-        if (EVENT_LOCAL_ABORT.equals(event.eventType())) {
+        // ConsentLease's contract counts a persistent indicator loss as a local abort (the endpoint user can
+        // no longer SEE that support is active) — both events kill, fail-closed (Codex 019ebbfa post-impl P1)
+        if (EVENT_LOCAL_ABORT.equals(event.eventType()) || EVENT_INDICATOR_LOST.equals(event.eventType())) {
+            String cause = EVENT_LOCAL_ABORT.equals(event.eventType()) ? "local-abort" : "indicator-lost";
             store.bySessionId(event.sessionId())
                     .filter(session -> session.transportPeerKey().equals(peer.transportPeerKey()))
                     .ifPresent(session -> {
                         session.abortLeaseLocally();
                         if (session.transition(Event.LOCAL_ABORT).accepted()) {
                             store.evictIfTerminal(session.sessionId());
-                            recordBestEffort(session.sessionId(), "KILLED:local-abort");
+                            recordBestEffort(session.sessionId(), "KILLED:" + cause);
                         }
                     });
         }

@@ -63,7 +63,12 @@ public final class PeerTrustLedger {
      * (never skipped-as-true); a verifier throwing records FALSE for that dimension (fail-closed, total).
      */
     public PeerTrust record(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello, long nowEpochMillis) {
-        PeerEvidenceParser.ParsedEvidence parsed = parser.parse(peer, hello);
+        PeerEvidenceParser.ParsedEvidence parsed;
+        try {
+            parsed = parser.parse(peer, hello);
+        } catch (RuntimeException e) {
+            parsed = PeerEvidenceParser.ParsedEvidence.empty(); // a non-total parser still fails CLOSED here
+        }
         Instant now = Instant.ofEpochMilli(nowEpochMillis);
         boolean cert = parsed.certRef().map(ref -> {
             try {
