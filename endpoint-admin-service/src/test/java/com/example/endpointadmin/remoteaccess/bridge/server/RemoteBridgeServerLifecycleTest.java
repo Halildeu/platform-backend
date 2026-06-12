@@ -48,6 +48,8 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeHeartbeatScheduler"));
             assertFalse(context.containsBean("remoteBridgePeerTrustLedger"));
             assertFalse(context.containsBean("remoteBridgeSessionStore"));
+            assertFalse(context.containsBean("remoteBridgeControlPlane"));
+            assertFalse(context.containsBean("remoteBridgeInboundAuditSink"));
             assertEquals(0, context.getBeanNamesForType(RemoteBridgeServerProperties.class).length);
         });
     }
@@ -58,6 +60,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeGrpcServer"));
             assertFalse(context.containsBean("remoteBridgePeerTrustLedger"));
             assertFalse(context.containsBean("remoteBridgeSessionStore"));
+            assertFalse(context.containsBean("remoteBridgeControlPlane"));
         });
     }
 
@@ -105,6 +108,9 @@ class RemoteBridgeServerLifecycleTest {
                     // built fail-closed from the shared factory; default IN_MEMORY config → no fail-fast)
                     assertTrue(context.containsBean("remoteBridgePeerTrustLedger"));
                     assertTrue(context.containsBean("remoteBridgeSessionStore"));
+                    // T-4a-ii slice-2c: the REAL inbound control plane is wired (INERT→BrokerControlPlane)
+                    assertTrue(context.containsBean("remoteBridgeControlPlane"));
+                    assertTrue(context.containsBean("remoteBridgeInboundAuditSink"));
                     server.stop();
                     assertFalse(server.isRunning());
                 });
