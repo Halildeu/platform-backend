@@ -1,9 +1,9 @@
 # Remote-Bridge Wire Contract (Faz 22.6 transport, T-1a + T-2a)
 
-> **Status:** T-1 domain model (pure Java records) + **T-2a protobuf encoding LANDED**
-> (`src/main/proto/remote_bridge.proto`, codegen via `io.github.ascopes:protobuf-maven-plugin`,
-> protobuf-java 3.25.x LTS + grpc 1.73.x BOM). The gRPC **server runtime** (streams, mTLS peer extraction,
-> heartbeat/backpressure/KILL latency) is **T-2b** — no server, port, TLS, or Spring wiring exists yet.
+> **Status:** T-1 domain model + T-2a protobuf encoding + **T-2b grpc server runtime LANDED**
+> (`…bridge.server`: Netty lifecycle behind `remote-bridge.enabled=false` — the DEFAULT context has ZERO
+> remote-bridge beans; loopback bind default; in-process tests). Real mTLS credentials + the TLS-passthrough
+> L4 edge + broker wiring (SessionContext assembly) remain **T-4 / owner-pilot-gated** (ADR-0034 §13/D10).
 > **Decided by:** [ADR-0038](../../../docs/adr/0038-faz-22-6-remote-access-transport.md) (gRPC/mTLS, broker-authoritative); Codex architecture thread `019eb9fb`.
 
 This started as the **shadow wire spec** (Codex guardrail) and is now the contract documentation for the real
@@ -187,6 +187,32 @@ T-2b enforces a max frame byte size at the stream layer (no decode-time size gua
 | 1 | code | string | |
 | 2 | detail | string | internal/debug only — never secrets, never raw session content |
 | 3 | retryable | bool | |
+
+## T-2b stream rules (`…bridge.server.RemoteBridgeConnectService`, tested in-process)
+
+- **No anonymous streams**: Connect/Data without an authenticated `PeerIdentity` (mTLS leaf-fingerprint via
+  `PeerIdentityInterceptor`; injected context key in tests) is refused before any payload is read.
+- **Directional allowlist (inbound = agent side)**: CONTROL accepts ONLY agent_hello / consent_result /
+  audit_event / heartbeat / error — the broker-originated payloads (operation_permit, consent_prompt, kill)
+  and the operator-console payloads (session_request, operation_request — they do NOT ride the agent tunnel)
+  are refused inbound, so a semi-trusted agent can never inject broker authority. DATA accepts ONLY
+  data_frame / heartbeat / error.
+- **Sequencing**: CONTROL = `Envelope.frameSeq`, strictly increasing from 0 per stream. DATA sequencing
+  authority is **`DataFrame.frameSeq` per `DataFrame.streamId`** (proto3 int64 has no presence, so the
+  envelope counter cannot be optional); the DATA `Envelope.frameSeq` MUST be 0 and `Envelope.streamId` must
+  be empty or equal to the frame's. Replay/duplicate → ErrorFrame + close.
+- **Byte cap**: `DataFrame.payload` over `remote-bridge.max-data-frame-bytes` closes the stream (the stream
+  layer owns the cap, deferred here from T-2a by design).
+- **Advisory-hello identity rule**: an `AgentHello.deviceId` contradicting the cert-bound device id closes
+  the stream; the `ControlStreamRegistry` is keyed by the AUTHENTICATED `transportPeerKey`, never by an
+  advisory deviceId — and a reconnect replaces only the SAME peer's stream.
+- **KILL path**: `ControlStreamRegistry.killPeer` pushes `Envelope.kill` on CONTROL then completes the
+  stream (terminal). Tested: KILL lands < 1s while DATA is saturated. A transport-scoped kill without a
+  broker session uses the `transport-kill` sentinel session id (satisfies the Kill wire contract).
+- **Heartbeat**: server-push on CONTROL only; `leaseExpiresAt=0` until the broker lease wiring (T-4);
+  missed-heartbeat policy is the agent's (T-3).
+- **Seam**: decoded domain records + `PeerIdentity` go to `ControlPlaneHandler` (INERT in T-2b);
+  `RemoteBridgeBroker` is NOT called — SessionContext assembly is T-4.
 
 ## T-2a adapter invariants (tested in `RemoteBridgeProtoAdapterTest`)
 

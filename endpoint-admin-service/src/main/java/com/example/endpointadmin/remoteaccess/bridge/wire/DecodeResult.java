@@ -48,4 +48,11 @@ public sealed interface DecodeResult<T> permits DecodeResult.Ok, DecodeResult.Re
     default String rejectReason() {
         return this instanceof Reject<T> reject ? reject.reason() : null;
     }
+
+    /** Run {@code action} with the value when ok; do nothing on a rejection (T-2b dispatch convenience). */
+    default void ifOk(java.util.function.Consumer<? super T> action) {
+        if (this instanceof Ok<T> ok) {
+            action.accept(ok.value());
+        }
+    }
 }

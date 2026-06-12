@@ -221,6 +221,20 @@
             <version>1.3.2</version>
             <scope>provided</scope>
         </dependency>
+        <!-- Faz 22.6 T-2b (Codex 019eb9fb): the grpc server RUNTIME. Netty
+             transport ships now so the future pilot only flips config+infra -
+             but remote-bridge.enabled=false (default) creates NO server, NO
+             bind, NO remote-bridge beans at all. Tests run over the in-process
+             transport (no port, no TLS). -->
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-inprocess</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
