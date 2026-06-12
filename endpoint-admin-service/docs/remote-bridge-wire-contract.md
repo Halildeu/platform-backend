@@ -1,13 +1,19 @@
-# Remote-Bridge Wire Contract (Faz 22.6 transport, T-1a)
+# Remote-Bridge Wire Contract (Faz 22.6 transport, T-1a + T-2a)
 
-> **Status:** T-1 domain model (pure Java records); the protobuf wire encoding is **T-2**.
+> **Status:** T-1 domain model (pure Java records) + **T-2a protobuf encoding LANDED**
+> (`src/main/proto/remote_bridge.proto`, codegen via `io.github.ascopes:protobuf-maven-plugin`,
+> protobuf-java 3.25.x LTS + grpc 1.73.x BOM). The gRPC **server runtime** (streams, mTLS peer extraction,
+> heartbeat/backpressure/KILL latency) is **T-2b** — no server, port, TLS, or Spring wiring exists yet.
 > **Decided by:** [ADR-0038](../../../docs/adr/0038-faz-22-6-remote-access-transport.md) (gRPC/mTLS, broker-authoritative); Codex architecture thread `019eb9fb`.
 
-This is the **shadow wire spec** (Codex guardrail): the T-1 Java records in
-`com.example.endpointadmin.remoteaccess.bridge.contract` are designed to map **1:1** onto the future protobuf
-`RemoteBridgeService` (T-2). T-1 owns **meaning** (records, canonicalisation, validation); T-2's protobuf
-adapters own **bytes**. Reserved proto field numbers are fixed here so the encoding can be added in T-2 without
-re-numbering.
+This started as the **shadow wire spec** (Codex guardrail) and is now the contract documentation for the real
+encoding: the T-1 Java records in `com.example.endpointadmin.remoteaccess.bridge.contract` map **1:1** onto the
+protobuf messages in `remote_bridge.proto` (generated into
+`com.example.endpointadmin.remoteaccess.bridge.proto`; generated sources are never committed). T-1 owns
+**meaning** (records, canonicalisation, validation); the T-2a adapters in
+`com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter` own **bytes** — every decode
+re-validates (ids, enum default-deny, proto3 default normalisation) and returns an explicit
+`DecodeResult.ok/reject`, so a generated proto class never reaches the broker.
 
 **T-1 acceptance boundary:** the protobuf DTO adapters in T-2 must replace these records on the wire **without
 changing** `RemoteBridgeBroker`, `RemoteBridgeSessionStateMachine`, `RemoteBridgePermitSigner`, or the
@@ -118,6 +124,84 @@ The `canonicalPayload()` covers fields 1–14 (NOT the signature). Asymmetric ke
 | 3 | contentHash | string |
 | 4 | epochMillis | int64 |
 
-## Reserved for T-2 (DATA-plane / stream framing — declarative only in T-1)
-`channelType` (CONTROL/DATA), `frameSeq`, `streamId`, `heartbeatInterval`, `leaseExpiresAt`, and the screen/PTY
-DATA payload fields are **reserved** (proto numbers to be assigned in T-2) — no streaming semantics exist in T-1.
+## Service + Envelope (FINALIZED in T-2a — Codex 019eb9fb)
+
+```proto
+service RemoteBridge {
+  rpc Connect(stream Envelope) returns (stream Envelope); // CONTROL — never-drop
+  rpc Data(stream Envelope) returns (stream Envelope);    // DATA — drop-tolerant
+}
+```
+
+**KILL is NOT a separate RPC** — it is `Envelope.kill` on the CONTROL stream. CONTROL and DATA are separate
+HTTP/2 streams (T-2b may place them on separate connections), so DATA backpressure can never delay a KILL.
+The agent initiates both streams (outbound-only, NAT-friendly); the broker pushes on the response side.
+
+### `Envelope`
+| # | field | type | notes |
+|---|---|---|---|
+| 1 | sessionId | string | optional routing header; empty until a session exists; validates when set |
+| 2 | deviceId | string | optional routing header; validates when set |
+| 3 | channelType | ChannelType | **required** — `CHANNEL_TYPE_UNSPECIFIED`(0) rejects (default-deny) |
+| 4 | frameSeq | int64 | ≥ 0 |
+| 5 | streamId | string | optional; validates when set |
+| 6 | sentAtEpochMillis | int64 | ≥ 0 |
+| 10–20 | oneof payload | | agent_hello(10), session_request(11), consent_prompt(12), consent_result(13), operation_request(14), operation_permit(15), kill(16), audit_event(17), heartbeat(18), data_frame(19), error(20) |
+
+**Channel/payload compatibility** (statically enforced by `RemoteBridgeProtoAdapter.validateEnvelope`, tested):
+
+| payload | CONTROL | DATA |
+|---|---|---|
+| data_frame | ✗ | ✓ |
+| heartbeat, error | ✓ | ✓ |
+| everything else (incl. **kill**) | ✓ | ✗ |
+
+### `ChannelType`
+0 = `CHANNEL_TYPE_UNSPECIFIED` (reject), 1 = `CONTROL`, 2 = `DATA`.
+
+### `WireOperation` (proto twin of the pilot slice of `RemoteOperation`)
+0 = `WIRE_OPERATION_UNSPECIFIED` (reject), 1 = `SCREEN_VIEW`, 2 = `PTY_COMMAND`, 3–15 reserved. Only the
+broker-allowlisted pilot operations exist on the wire at all; decode of anything else rejects.
+
+### `Heartbeat`
+| # | field | type |
+|---|---|---|
+| 1 | heartbeatIntervalMillis | int64 |
+| 2 | leaseExpiresAtEpochMillis | int64 |
+| 3 | protocolVersion | string |
+
+### `DataFrame` (declared; semantically inert until T-2b/T-4)
+| # | field | type |
+|---|---|---|
+| 1 | streamId | string |
+| 2 | frameSeq | int64 |
+| 3 | contentType | string |
+| 4 | payload | bytes |
+| 5 | endStream | bool |
+
+T-2b enforces a max frame byte size at the stream layer (no decode-time size guard in T-2a — no config yet).
+
+### `ErrorFrame`
+| # | field | type | notes |
+|---|---|---|---|
+| 1 | code | string | |
+| 2 | detail | string | internal/debug only — never secrets, never raw session content |
+| 3 | retryable | bool | |
+
+## T-2a adapter invariants (tested in `RemoteBridgeProtoAdapterTest`)
+
+- **Ids re-validated on decode** (`WireContract.isValidId`); the permit `decisionId` is the broker composite
+  `sessionId:operationId`, so its bound is 513 chars on the same character allowlist.
+- **Enums default-deny in both directions**: `*_UNSPECIFIED`, `UNRECOGNIZED` (unknown wire number — e.g. a
+  peer speaking a newer contract), and non-pilot values reject the whole message; `encodeCapability`/
+  `encodeOperation` throw on a non-pilot value (it must never reach the wire).
+- **proto3 implicit defaults explicit**: optional text (reason, commandLine) empty↔null normalised; an empty
+  repeated `requestedCapabilities` (the proto3 default!) rejects a SessionRequest.
+- **OperationPermit strict decode**: permitVersion pin (=1), alg pin (`SHA256withECDSA`), capability↔commandHash
+  consistency re-enforced at the wire (CONSTRAINED_PTY ⇒ sha-256 lowercase hex; VIEW_ONLY ⇒ empty), positive
+  validity window, seq ≥ 0, non-empty base64-checked signature.
+- **Canonical-payload byte stability**: sign → encode → real wire bytes → parse → decode →
+  `canonicalPayload()` byte-equal AND the broker signature still verifies (the T-1 acceptance boundary);
+  any field changed on the wire fails verification.
+- **No raw command in a permit** — the raw command line travels only in `OperationRequest`; a permit carries
+  the canonical hash.
