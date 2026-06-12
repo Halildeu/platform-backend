@@ -66,7 +66,7 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
         }
         registry.completeAll(); // each handle cancels its own heartbeat task; the scheduler bean stays
         current.shutdown();      // alive (Spring owns its destroy) so a SmartLifecycle restart still works
-        
+
         try {
             if (!current.awaitTermination(properties.shutdownGraceMillis(), TimeUnit.MILLISECONDS)) {
                 current.shutdownNow();
