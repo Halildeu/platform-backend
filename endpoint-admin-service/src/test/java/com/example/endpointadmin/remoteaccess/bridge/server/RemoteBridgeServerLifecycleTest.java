@@ -2,8 +2,14 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
+import java.util.Base64;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -16,8 +22,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class RemoteBridgeServerLifecycleTest {
 
+    @TempDir
+    static Path tempDir;
+
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(RemoteBridgeServerConfig.class);
+
+    /** A valid PKCS#8 EC P-256 signing key (T-4a-ii: an enabled bridge now requires one). */
+    private static String permitKeyPath() throws Exception {
+        KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
+        g.initialize(new ECGenParameterSpec("secp256r1"));
+        byte[] der = g.generateKeyPair().getPrivate().getEncoded();
+        String b64 = Base64.getMimeEncoder(64, "\n".getBytes()).encodeToString(der);
+        Path file = tempDir.resolve("lifecycle-permit.pem");
+        Files.writeString(file, "-----BEGIN PRIVATE KEY-----\n" + b64 + "\n-----END PRIVATE KEY-----\n");
+        return file.toString();
+    }
 
     @Test
     void defaultContextHasNoRemoteBridgeBeansAtAll() {
@@ -37,9 +57,12 @@ class RemoteBridgeServerLifecycleTest {
     }
 
     @Test
-    void enabledWithoutTlsFailsTheContextFailClosed() {
-        // T-2c: SmartLifecycle start refuses → context refresh fails → nothing serves
-        runner.withPropertyValues("remote-bridge.enabled=true").run(context -> {
+    void enabledWithoutTlsFailsTheContextFailClosed() throws Exception {
+        // T-2c: SmartLifecycle start refuses → context refresh fails → nothing serves.
+        // T-4a-ii: a valid permit key is supplied so the signer passes and TLS is the root cause.
+        runner.withPropertyValues("remote-bridge.enabled=true",
+                "remote-bridge.permit.signing-key-pem-path=" + permitKeyPath(),
+                "remote-bridge.permit.kid=kid-1").run(context -> {
             Throwable failure = context.getStartupFailure();
             assertTrue(failure != null, "the context must fail to start");
             Throwable root = failure;
@@ -63,7 +86,10 @@ class RemoteBridgeServerLifecycleTest {
                 "remote-bridge.port=" + port,
                 "remote-bridge.heartbeat-interval-millis=0",
                 // T-2c: an enabled server is mTLS-only; the Spring smoke uses the explicit loopback-only escape
-                "remote-bridge.allow-insecure-plaintext=true")
+                "remote-bridge.allow-insecure-plaintext=true",
+                // T-4a-ii: the signer is now mandatory for an enabled bridge
+                "remote-bridge.permit.signing-key-pem-path=" + permitKeyPath(),
+                "remote-bridge.permit.kid=kid-1")
                 .run(context -> {
                     RemoteBridgeGrpcServer server = context.getBean(RemoteBridgeGrpcServer.class);
                     assertTrue(server.isRunning(), "SmartLifecycle must have started the server");

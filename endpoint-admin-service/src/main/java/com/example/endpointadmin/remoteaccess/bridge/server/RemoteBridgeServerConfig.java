@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -22,6 +23,17 @@ import java.util.concurrent.ScheduledExecutorService;
 @ConditionalOnProperty(prefix = "remote-bridge", name = "enabled", havingValue = "true")
 @EnableConfigurationProperties(RemoteBridgeServerProperties.class)
 public class RemoteBridgeServerConfig {
+
+    /**
+     * Faz 22.6 T-4a-ii (Codex 019ebc7e) — the broker permit-signing key, loaded fail-closed at context init:
+     * an enabled bridge that cannot sign permits refuses to start (no insecure escape). The broker bean
+     * (slice-2/3) consumes this signer; until then the eager singleton still runs the fail-closed key
+     * validation, so "enabled boot requires a valid signing key" holds today.
+     */
+    @Bean
+    public RemoteBridgePermitSigner remoteBridgePermitSigner(RemoteBridgeServerProperties properties) {
+        return PermitSigningKeyLoader.load(properties.permit());
+    }
 
     @Bean
     public ControlStreamRegistry remoteBridgeControlStreamRegistry() {
