@@ -14,9 +14,12 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -218,6 +221,35 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
         return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, remoteBridgePermitSigner,
                 remoteBridgeDurableAuditSink, policyVersion, permitTtlMillis);
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-4b — the trust-evidence assembler the operator service feeds the broker.
+     * {@code OwnerTokenGate.DENY_ALL}: no owner-signed-token verifier until the live-pilot slice → grant
+     * nothing (every operation denied for lack of capability). {@code DuressSignalSource.AMBIGUOUS_UNTIL_WIRED}:
+     * no transport duress-classification path yet → AMBIGUOUS → the broker KILLS — fail-closed, an enabled
+     * broker with no real duress source kills rather than proceeds.
+     */
+    @Bean
+    public TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler(PeerTrustLedger remoteBridgePeerTrustLedger) {
+        return new TrustEvidenceAssembler(remoteBridgePeerTrustLedger, OwnerTokenGate.DENY_ALL,
+                TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED);
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-4b — the operator-side orchestration: drives an OperationRequest through the
+     * broker and routes the verdict to the transport (slice-4a primitives). Wired here but the transport
+     * endpoint that ACCEPTS operator requests is a later slice — this bean proves the broker↔transport seam
+     * composes fail-closed. No authority is minted outside the broker.
+     */
+    @Bean
+    public RemoteBridgeOperatorService remoteBridgeOperatorService(
+            RemoteBridgeSessionStore remoteBridgeSessionStore,
+            TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler,
+            RemoteBridgeBroker remoteBridgeBroker,
+            ControlStreamRegistry remoteBridgeControlStreamRegistry) {
+        return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
+                remoteBridgeBroker, remoteBridgeControlStreamRegistry, System::currentTimeMillis);
     }
 
     @Bean

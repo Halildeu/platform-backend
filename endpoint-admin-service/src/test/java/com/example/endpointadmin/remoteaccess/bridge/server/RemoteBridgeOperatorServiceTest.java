@@ -1,0 +1,184 @@
+package com.example.endpointadmin.remoteaccess.bridge.server;
+
+import com.example.endpointadmin.remoteaccess.AttestationVerifier;
+import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
+import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
+import com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal;
+import com.example.endpointadmin.remoteaccess.RemoteOperation;
+import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
+import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome.Kind;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSession;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
+import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
+import io.grpc.stub.StreamObserver;
+import org.junit.jupiter.api.Test;
+
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Faz 22.6 T-4a-ii slice-4b-2 (Codex 019ebd7f) — the operator service routes the broker verdict to the
+ * transport: a duress (AMBIGUOUS until wired) KILLs + drives the session terminal + evicts (Codex S1); a
+ * deny pushes nothing; an unknown/malformed request is rejected before the broker is consulted. The PERMIT
+ * happy path (a full policy pass) is the e2e slice (4b-4). In the server package for ControlStreamHandle access.
+ */
+class RemoteBridgeOperatorServiceTest {
+
+    private static final long NOW = 2_000_000L;
+
+    private static KeyPair ecKeyPair() {
+        try {
+            KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
+            g.initialize(new ECGenParameterSpec("secp256r1"));
+            return g.generateKeyPair();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** A broker with a no-op audit sink — KILL/DENY use best-effort audit (not the durable record gate). */
+    private static RemoteBridgeBroker broker() {
+        RemoteBridgePermitSigner signer = new RemoteBridgePermitSigner(
+                ecKeyPair().getPrivate(), "kid-1", RemoteBridgePermitSigner.PERMIT_ALG);
+        RemoteBridgeAuditSink sink = event -> { };
+        return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "rb-v1", 60_000L);
+    }
+
+    private static PeerTrustLedger emptyLedger() {
+        return new PeerTrustLedger(
+                (cert, now) -> CertTrustEvaluator.TrustDecision.NOT_TRUSTED,
+                (evidence, now) -> AttestationVerifier.AttestationDecision.MISSING,
+                new DeviceIdentityVerifier(Set.of(), DeviceIdentityVerifier.DeviceProtectionLevel.SECURE_ELEMENT_OR_TPM),
+                PeerEvidenceParser.FAIL_CLOSED, 30_000L);
+    }
+
+    private static TrustEvidenceAssembler assembler(TrustEvidenceAssembler.DuressSignalSource duress) {
+        return new TrustEvidenceAssembler(emptyLedger(), OwnerTokenGate.DENY_ALL, duress);
+    }
+
+    /** A capturing CONTROL StreamObserver so a transport kill/permit is observable. */
+    private static final class CapturingObserver implements StreamObserver<Envelope> {
+        final List<Envelope> sent = new ArrayList<>();
+        boolean completed;
+
+        @Override public void onNext(Envelope value) {
+            sent.add(value);
+        }
+
+        @Override public void onError(Throwable t) { }
+
+        @Override public void onCompleted() {
+            completed = true;
+        }
+    }
+
+    /** Open a session and drive its state machine to ACTIVE with an active consent lease. */
+    private static RemoteBridgeSession activeSession(RemoteBridgeSessionStore store, String sessionId,
+                                                     String peerKey, Set<RemoteSessionCapability> caps) {
+        PeerIdentity peer = new PeerIdentity(peerKey, Optional.of("dev-1"), List.of());
+        store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null, caps), peer, "Operator X",
+                NOW + 60_000L, NOW);
+        RemoteBridgeSession s = store.bySessionId(sessionId).orElseThrow();
+        s.transition(Event.ENABLE);
+        s.transition(Event.REQUEST_SESSION);
+        s.transition(Event.PROMPT_CONSENT);
+        s.transition(Event.CONSENT_GRANTED);
+        s.grantConsent(true, NOW + 300_000L);
+        s.transition(Event.ACTIVATE);
+        return s;
+    }
+
+    @Test
+    void aMalformedRequestIsRejectedBeforeTheBroker() {
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(
+                new RemoteBridgeSessionStore(), assembler((sid, now) -> DuressSignal.NONE), broker(),
+                new ControlStreamRegistry(), () -> NOW);
+
+        OperatorOutcome outcome = service.handleOperationRequest(
+                new OperationRequest(" ", "op-1", RemoteOperation.SCREEN_VIEW, null));
+
+        assertFalse(outcome.accepted());
+        assertEquals("malformed-request", outcome.rejectReason());
+    }
+
+    @Test
+    void anUnknownSessionIsRejectedBeforeTheBroker() {
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(
+                new RemoteBridgeSessionStore(), assembler((sid, now) -> DuressSignal.NONE), broker(),
+                new ControlStreamRegistry(), () -> NOW);
+
+        OperatorOutcome outcome = service.handleOperationRequest(
+                new OperationRequest("ghost", "op-1", RemoteOperation.SCREEN_VIEW, null));
+
+        assertFalse(outcome.accepted());
+        assertEquals("unknown-session", outcome.rejectReason());
+    }
+
+    @Test
+    void anAmbiguousDuressKillsTheSessionAndEvictsIt() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        registry.register(new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()),
+                new ControlStreamHandle(observer));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+
+        // the UNWIRED duress source (AMBIGUOUS) → the broker kills regardless of capability
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry,
+                () -> NOW);
+
+        OperatorOutcome outcome = service.handleOperationRequest(
+                new OperationRequest("s1", "op-1", RemoteOperation.SCREEN_VIEW, null));
+
+        assertEquals(Kind.KILL, outcome.brokerOutcome().kind());
+        assertFalse(outcome.transportPushed());
+        assertTrue(observer.sent.stream().anyMatch(Envelope::hasKill), "a KILL must be pushed on CONTROL");
+        assertTrue(observer.completed, "the transport stream must be closed by the kill");
+        assertTrue(store.bySessionId("s1").isEmpty(), "the killed session must be evicted (no ACTIVE ghost)");
+    }
+
+    @Test
+    void aCleanDuressWithNoGrantedCapabilityIsDeniedAndPushesNothing() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        registry.register(new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()),
+                new ControlStreamHandle(observer));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+
+        // a clean duress source → the broker reaches the policy engine; DENY_ALL gate → no capability → DENY
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW);
+
+        OperatorOutcome outcome = service.handleOperationRequest(
+                new OperationRequest("s1", "op-1", RemoteOperation.SCREEN_VIEW, null));
+
+        assertEquals(Kind.DENY, outcome.brokerOutcome().kind());
+        assertFalse(outcome.transportPushed());
+        assertTrue(observer.sent.isEmpty(), "a deny pushes nothing to the agent");
+        assertTrue(store.bySessionId("s1").isPresent(), "a deny does NOT evict the session");
+    }
+}

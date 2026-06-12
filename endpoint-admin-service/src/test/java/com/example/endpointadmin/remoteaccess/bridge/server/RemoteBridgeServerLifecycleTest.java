@@ -68,6 +68,8 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeInboundAuditSink"));
             assertFalse(context.containsBean("remoteBridgeDurableAuditSink"));
             assertFalse(context.containsBean("remoteBridgeBroker"));
+            assertFalse(context.containsBean("remoteBridgeTrustEvidenceAssembler"));
+            assertFalse(context.containsBean("remoteBridgeOperatorService"));
             assertEquals(0, context.getBeanNamesForType(RemoteBridgeServerProperties.class).length);
         });
     }
@@ -81,6 +83,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeControlPlane"));
             assertFalse(context.containsBean("remoteBridgeDurableAuditSink"));
             assertFalse(context.containsBean("remoteBridgeBroker"));
+            assertFalse(context.containsBean("remoteBridgeOperatorService"));
         });
     }
 
@@ -234,6 +237,9 @@ class RemoteBridgeServerLifecycleTest {
                     // T-4a-ii slice-3c: the durable audit sink + the broker are wired (fail-closed, no transport)
                     assertTrue(context.containsBean("remoteBridgeDurableAuditSink"));
                     assertTrue(context.containsBean("remoteBridgeBroker"));
+                    // T-4a-ii slice-4b: the trust-evidence assembler + the operator service are wired
+                    assertTrue(context.containsBean("remoteBridgeTrustEvidenceAssembler"));
+                    assertTrue(context.containsBean("remoteBridgeOperatorService"));
                     server.stop();
                     assertFalse(server.isRunning());
                 });
