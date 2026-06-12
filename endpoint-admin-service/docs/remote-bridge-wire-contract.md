@@ -1,9 +1,10 @@
 # Remote-Bridge Wire Contract (Faz 22.6 transport, T-1a + T-2a)
 
-> **Status:** T-1 domain model + T-2a protobuf encoding + **T-2b grpc server runtime LANDED**
-> (`…bridge.server`: Netty lifecycle behind `remote-bridge.enabled=false` — the DEFAULT context has ZERO
-> remote-bridge beans; loopback bind default; in-process tests). Real mTLS credentials + the TLS-passthrough
-> L4 edge + broker wiring (SessionContext assembly) remain **T-4 / owner-pilot-gated** (ADR-0034 §13/D10).
+> **Status:** T-1 domain model + T-2a protobuf encoding + T-2b grpc server runtime + **T-2c mutual-TLS
+> credential wiring LANDED** (`…bridge.server`: Netty lifecycle behind `remote-bridge.enabled=false` — the
+> DEFAULT context has ZERO remote-bridge beans; an ENABLED server is mTLS-only, fail-closed). Real cert
+> MATERIAL + the TLS-passthrough L4 edge + broker wiring (SessionContext assembly) remain
+> **T-4 / owner-pilot-gated** (ADR-0034 §13/D10).
 > **Decided by:** [ADR-0038](../../../docs/adr/0038-faz-22-6-remote-access-transport.md) (gRPC/mTLS, broker-authoritative); Codex architecture thread `019eb9fb`.
 
 This started as the **shadow wire spec** (Codex guardrail) and is now the contract documentation for the real
@@ -213,6 +214,26 @@ T-2b enforces a max frame byte size at the stream layer (no decode-time size gua
   missed-heartbeat policy is the agent's (T-3).
 - **Seam**: decoded domain records + `PeerIdentity` go to `ControlPlaneHandler` (INERT in T-2b);
   `RemoteBridgeBroker` is NOT called — SessionContext assembly is T-4.
+
+## T-2c transport mTLS (tested in `RemoteBridgeMtlsTest` over the REAL Netty transport)
+
+- **Secure by default:** an enabled server REQUIRES the complete TLS triple —
+  `remote-bridge.tls.cert-chain-pem-path` + `private-key-pem-path` + `client-ca-pem-path` (FILE paths;
+  K8s secret mounts at the pilot; PEM bodies are never inline and never committed) — loaded into grpc
+  `TlsServerCredentials` with `clientAuth=REQUIRE` against the device CA. Partial config, missing/unreadable
+  files, or garbage PEM all refuse BEFORE any bind (the port is provably never opened).
+- **Plaintext is a loopback-only test mode:** `remote-bridge.allow-insecure-plaintext=true` AND a
+  provably-loopback bind host (literal `127.0.0.1`/`::1` — hostnames incl. `localhost` and wildcards
+  `0.0.0.0`/`::` are refused: what a name resolves to is ambient state, not proof).
+- **Identity vs trust:** transport mTLS authenticates the peer and feeds the unchanged T-2b
+  `PeerIdentityInterceptor` (a CA-signed client's `PeerIdentity` materializes with the leaf SHA-256
+  fingerprint — full-stack tested); device TRUST (revocation/CRL, EKU, identity decision) stays with the
+  B1.4 `CertTrustEvaluator` at the application layer. Deliberately ONE revocation authority — there is no
+  transport-level CRL and no custom TrustManager (Codex 019ebb6c).
+- A certless or wrong-CA client fails the handshake; nothing reaches the control-plane seam and no registry
+  slot is claimed.
+- Pilot flip = config + mounted files only: set the three paths (+ `enabled=true`, non-loopback bind, the
+  L4 TLS-passthrough edge) — no code change. Device-CA issuance/distribution stays B1.4/T-4 operational.
 
 ## T-2a adapter invariants (tested in `RemoteBridgeProtoAdapterTest`)
 
