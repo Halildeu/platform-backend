@@ -32,7 +32,8 @@ public record RemoteBridgeServerProperties(boolean enabled,
                                            int maxDataFrameBytes,
                                            long shutdownGraceMillis,
                                            Tls tls,
-                                           boolean allowInsecurePlaintext) {
+                                           boolean allowInsecurePlaintext,
+                                           Permit permit) {
 
     /**
      * Mutual-TLS credential FILE PATHS ({@code -path} suffix — these are never inline PEM bodies). The
@@ -58,6 +59,23 @@ public record RemoteBridgeServerProperties(boolean enabled,
         }
     }
 
+    /**
+     * Faz 22.6 T-4a-ii (Codex 019ebc7e) — the broker's permit-signing key (file PATH, never inline PEM).
+     * An ENABLED bridge MUST have this — there is NO insecure escape (unlike the transport-TLS smoke flag):
+     * a broker that cannot sign permits cannot authorize any operation, so it must fail closed at startup.
+     * {@code signingKeyPemPath} = PKCS#8 EC P-256 private key; {@code kid} = the key id agents pin.
+     */
+    public record Permit(String signingKeyPemPath, String kid) {
+
+        public boolean isConfigured() {
+            return notBlank(signingKeyPemPath) && notBlank(kid);
+        }
+
+        private static boolean notBlank(String s) {
+            return s != null && !s.isBlank();
+        }
+    }
+
     public RemoteBridgeServerProperties {
         bindHost = bindHost == null || bindHost.isBlank() ? "127.0.0.1" : bindHost;
         if (port <= 0) {
@@ -73,5 +91,6 @@ public record RemoteBridgeServerProperties(boolean enabled,
             shutdownGraceMillis = 5_000L;
         }
         tls = tls == null ? new Tls(null, null, null) : tls;
+        permit = permit == null ? new Permit(null, null) : permit;
     }
 }
