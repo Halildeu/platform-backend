@@ -4,7 +4,6 @@ import com.example.endpointadmin.remoteaccess.SessionRecorder;
 import com.example.endpointadmin.remoteaccess.SessionRecordingChain.RecordKind;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
 
-import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -62,8 +61,15 @@ public final class DurableRemoteBridgeAuditSink implements RemoteBridgeAuditSink
         }
     }
 
+    /** The broker's audit event-type prefix for a duress/kill record (everything else is a policy event). */
+    static final String KILL_EVENT_PREFIX = "KILL";
+
     private static RecordKind mapKind(String eventType) {
-        if (eventType != null && eventType.toLowerCase(Locale.ROOT).contains("kill")) {
+        // PREFIX-match, NOT substring (Codex slice-3b note): the broker records its decisions as
+        // "ALLOW_DECISION:<operationId>" — an operationId that merely CONTAINS "kill" (e.g.
+        // "ALLOW_DECISION:kill-pod") must NOT be misclassified as a KILL record. A duress/kill is recorded
+        // with the "KILL" prefix; anything else is a policy-plane event.
+        if (eventType != null && eventType.startsWith(KILL_EVENT_PREFIX)) {
             return RecordKind.KILL;
         }
         return RecordKind.POLICY_EVENT;

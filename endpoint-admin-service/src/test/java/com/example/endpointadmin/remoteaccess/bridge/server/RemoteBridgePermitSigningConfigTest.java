@@ -8,6 +8,7 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 /**
  * Faz 22.6 T-4a-ii slice-1 (Codex 019ebc7e) — the permit-signing key is loaded fail-closed at context init:
@@ -34,7 +36,10 @@ class RemoteBridgePermitSigningConfigTest {
     @TempDir
     static Path tempDir;
 
+    // slice-3c: the enabled config now also wires the broker (durable sink needs a JdbcTemplate) — a mock
+    // datasource stands in; the signer bean inits FIRST, so a missing-signer test still fails on the signer.
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
+            .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
             .withUserConfiguration(RemoteBridgeServerConfig.class);
 
     private static KeyPair ec(String curve) throws Exception {
@@ -72,7 +77,11 @@ class RemoteBridgePermitSigningConfigTest {
     void enabledWithValidP256KeyAndKidProducesAWorkingSigner() throws Exception {
         KeyPair kp = ec("secp256r1");
         Path key = pkcs8Pem("p256.pem", kp);
-        enabledLoopback(kp, "kid-1", key).run(context -> {
+        // slice-3c: the broker also wires now — supply a valid (separate) anchor key so the context boots
+        Path anchorKey = pkcs8Pem("p256-anchor.pem", ec("secp256r1"));
+        enabledLoopback(kp, "kid-1", key)
+                .withPropertyValues("remote-bridge.recording.anchor-key.path=" + anchorKey)
+                .run(context -> {
             assertNull(context.getStartupFailure());
             RemoteBridgePermitSigner signer = context.getBean(RemoteBridgePermitSigner.class);
             assertNotNull(signer);

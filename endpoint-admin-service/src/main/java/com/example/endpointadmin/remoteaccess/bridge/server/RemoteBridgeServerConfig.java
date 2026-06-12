@@ -2,9 +2,16 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import com.example.endpointadmin.remoteaccess.AttestationVerifier;
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
+import com.example.endpointadmin.remoteaccess.DbRecordingSink;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
+import com.example.endpointadmin.remoteaccess.RecordingAnchorSigner;
 import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
+import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
+import com.example.endpointadmin.remoteaccess.SessionRecorder;
+import com.example.endpointadmin.remoteaccess.SessionRecordingChain;
+import com.example.endpointadmin.remoteaccess.bridge.DurableRemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
@@ -17,7 +24,9 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.security.PrivateKey;
 import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -142,6 +151,73 @@ public class RemoteBridgeServerConfig {
         // DURABLE broker recorder) — the control plane's inbound audit must stay the best-effort log sink, so
         // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds)
         return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis);
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-3c (Codex 019ebc7e) — the broker's DURABLE control-plane audit sink: one
+     * hash-chained {@link SessionRecorder} per session ({@code chainId == sessionId}) over the EXISTING WORM
+     * recording store ({@link DbRecordingSink}, Flyway V65). This is the sink that gates permit issuance — a
+     * durable-write failure throws, so the broker issues no permit (ADR-0034 §6). Distinct from the
+     * best-effort {@code remoteBridgeInboundAuditSink} (pinned to the control plane via {@code @Qualifier}).
+     *
+     * <p>The recording-anchor key is a SEPARATE forensic/WORM-integrity key (NOT the permit-signing key) —
+     * its own config, rotation, and blast-radius domain (Codex S2). Loaded fail-closed via the shared
+     * {@link Pkcs8EcPrivateKeyLoader}: an enabled broker with no readable anchor key refuses to start. The
+     * {@code DbRecordingSink} constructor only holds the {@link JdbcTemplate} reference (no DB I/O at wiring);
+     * its Postgres behaviour is proven in {@code DbRecordingSinkPostgresIntegrationTest}.
+     */
+    @Bean
+    public DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink(
+            JdbcTemplate jdbcTemplate,
+            @Value("${ENDPOINT_ADMIN_DB_SCHEMA:endpoint_admin_service}") String schema,
+            @Value("${remote-bridge.recording.anchor-key.path:}") String anchorKeyPath,
+            @Value("${remote-bridge.recording.anchor-key.algorithm:SHA256withECDSA}") String anchorAlgorithm) {
+        PrivateKey anchorKey =
+                Pkcs8EcPrivateKeyLoader.loadFromFile(anchorKeyPath, "remote-bridge.recording.anchor-key.path");
+        // Codex slice-3c REVISE: prevalidate at refresh so an enabled boot really IS config-validated — a
+        // malformed schema or a bad/incompatible anchor algorithm must fail HERE, not lazily at the first record.
+        try {
+            // schema identifier guard: DbRecordingSink's ctor runs the [a-z_][a-z0-9_]* SQL-identifier check
+            // (null/blank/uppercase/dotted all rejected), so a malformed schema fails at refresh. The probe
+            // holds the JdbcTemplate reference only — no DB I/O at construction.
+            new DbRecordingSink("__startup_probe__", jdbcTemplate, schema);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("ENDPOINT_ADMIN_DB_SCHEMA is invalid for an enabled broker ("
+                    + schema + ") — refusing to start", e);
+        }
+        try {
+            // startup probe — the ctor runs SignatureAlgorithms.require(alg) (allowlist), and a real anchor
+            // over an empty chain runs Signature.initSign(anchorKey), so an UNSUPPORTED alg AND an alg that is
+            // allowed-but-incompatible with the key (e.g. an EC key + SHA256withRSA) both fail at refresh, not
+            // lazily at the first record (Codex slice-3c REVISE-2). The probe instances are discarded.
+            new RecordingAnchorSigner("__startup_probe__", anchorKey, anchorAlgorithm)
+                    .anchor(new SessionRecordingChain(), 0L);
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("remote-bridge.recording.anchor-key.algorithm is invalid or "
+                    + "incompatible with the anchor key for an enabled broker (" + anchorAlgorithm
+                    + ") — refusing to start", e);
+        }
+        return new DurableRemoteBridgeAuditSink(sessionId -> new SessionRecorder(
+                new DbRecordingSink(sessionId, jdbcTemplate, schema),
+                new RecordingAnchorSigner(sessionId, anchorKey, anchorAlgorithm)));
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-3c — the BROKER: composes the merged pilot policy engine
+     * ({@link RemoteSessionPolicyEngine#PILOT}) + the permit signer + the DURABLE audit sink into the
+     * record-BEFORE-permit control plane (ADR-0038, T-1b). The bean exists ONLY when {@code
+     * remote-bridge.enabled=true}; it is constructed + config-validated here but issues authority to NO
+     * transport — the operator-side service + permit push that drive it are slice-4. So an enabled boot proves
+     * "the broker wires fail-closed (valid signer + durable recorder + pilot engine)" without minting permits.
+     */
+    @Bean
+    public RemoteBridgeBroker remoteBridgeBroker(
+            RemoteBridgePermitSigner remoteBridgePermitSigner,
+            DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
+            @Value("${remote-bridge.broker.policy-version:rb-pilot-v1}") String policyVersion,
+            @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
+        return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, remoteBridgePermitSigner,
+                remoteBridgeDurableAuditSink, policyVersion, permitTtlMillis);
     }
 
     @Bean
