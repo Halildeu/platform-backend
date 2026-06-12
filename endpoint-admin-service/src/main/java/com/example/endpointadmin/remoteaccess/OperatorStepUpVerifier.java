@@ -38,6 +38,7 @@ public interface OperatorStepUpVerifier {
         MALFORMED,
         CHALLENGE_MISMATCH,
         ORIGIN_MISMATCH,
+        RP_ID_MISMATCH,
         USER_PRESENCE_MISSING,
         SIGNATURE_INVALID
     }
