@@ -1,26 +1,21 @@
 package com.example.endpointadmin.remoteaccess;
 
+import jakarta.annotation.PostConstruct;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.security.GeneralSecurityException;
-import java.security.PublicKey;
-import java.security.cert.TrustAnchor;
-import java.security.cert.X509CRL;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.CLEANUP_DURATION_MS;
@@ -120,7 +115,7 @@ public class ScheduledRevocationDriver {
         // 019eb6d9): a stray test flag must never weaken a prod runtime.
         boolean productionLike = activeProfiles != null
                 && activeProfiles.toLowerCase(java.util.Locale.ROOT).contains("prod");
-        CertTrustEvaluator trustEvaluator = buildTrustEvaluator(
+        CertTrustEvaluator trustEvaluator = RemoteAccessVerifierFactory.buildTrustEvaluator(
                 certEvaluatorType, certRevocationMode, certTrustAnchorPem, certCrlPem,
                 certAllowInsecureNoRevocation, productionLike, certTrustMaxAgeMs);
         // B1.3b/B1.4c-3 agent-attestation source, SELECTED by config (default IN_MEMORY placeholder). KEY_BASED
@@ -130,7 +125,7 @@ public class ScheduledRevocationDriver {
         // transport delivers the envelope. With NO configured expected builder/policy the verifier is null →
         // the heartbeat coerces it to deny-all (an enabled runtime without an attestation policy refuses every
         // cert-sampling session until D10). Never consulted while disabled-by-default.
-        AttestationVerifier attestationVerifier = buildAttestationVerifier(
+        AttestationVerifier attestationVerifier = RemoteAccessVerifierFactory.buildAttestationVerifier(
                 attestationVerifierType, expectedBuilderId, expectedPolicyHash,
                 attestationPublicKeyPem, attestationSignatureAlgorithm, productionLike);
         this.attestationPolicyConfigured = attestationVerifier != null;
@@ -157,79 +152,6 @@ public class ScheduledRevocationDriver {
                 .description("t0(revoked_at) → hard-kill decision latency (SLO P95 ≤ 5s)")
                 .publishPercentiles(0.95, 0.99)
                 .register(meters);
-    }
-
-    /**
-     * Select + safely construct the cert-trust evaluator from config (B1.4a-3). Invalid enum values and an
-     * unparseable anchor bundle FAIL FAST here (= startup), as does any forbidden REAL_PKI combination (via
-     * {@link CertTrustEvaluatorFactory}). Blank evaluator/mode default to the safe IN_MEMORY/DISABLED.
-     */
-    private static CertTrustEvaluator buildTrustEvaluator(String evaluatorType, String revocationMode,
-                                                          String trustAnchorPem, String trustCrlPem,
-                                                          boolean allowInsecureNoRevocation,
-                                                          boolean productionLikeProfile, long inMemoryMaxAgeMs) {
-        CertTrustEvaluatorFactory.EvaluatorType type = parseEnum(
-                evaluatorType, CertTrustEvaluatorFactory.EvaluatorType.class,
-                CertTrustEvaluatorFactory.EvaluatorType.IN_MEMORY);
-        CertTrustEvaluatorFactory.RevocationMode mode = parseEnum(
-                revocationMode, CertTrustEvaluatorFactory.RevocationMode.class,
-                CertTrustEvaluatorFactory.RevocationMode.DISABLED);
-        Set<TrustAnchor> anchors;
-        try {
-            anchors = TrustAnchorLoader.fromPemBundle(trustAnchorPem);
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException(
-                    "remote-access cert-trust.trust-anchor-pem is not a valid PEM certificate bundle", e);
-        }
-        List<X509CRL> crls;
-        try {
-            crls = X509ChainParser.parseCrlBundle(trustCrlPem);
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException(
-                    "remote-access cert-trust.crl-pem is not a valid PEM CRL bundle", e);
-        }
-        return CertTrustEvaluatorFactory.create(
-                type, mode, anchors, crls, allowInsecureNoRevocation, productionLikeProfile,
-                Duration.ofMillis(inMemoryMaxAgeMs));
-    }
-
-    /**
-     * Select + safely construct the attestation verifier from config (B1.4c-3). An invalid verifier enum, an
-     * unparseable public-key PEM, or any forbidden combination (via {@link AttestationVerifierFactory}) FAIL
-     * FAST here (= startup). Blank expected builder/policy → {@code null} (heartbeat deny-all).
-     */
-    private static AttestationVerifier buildAttestationVerifier(String verifierType, String expectedBuilderId,
-                                                               String expectedPolicyHash, String publicKeyPem,
-                                                               String signatureAlgorithm,
-                                                               boolean productionLikeProfile) {
-        AttestationVerifierFactory.VerifierType type = parseEnum(
-                verifierType, AttestationVerifierFactory.VerifierType.class,
-                AttestationVerifierFactory.VerifierType.IN_MEMORY);
-        PublicKey signingKey = null;
-        if (publicKeyPem != null && !publicKeyPem.isBlank()) {
-            try {
-                signingKey = PublicKeys.fromPem(publicKeyPem);
-            } catch (GeneralSecurityException e) {
-                throw new IllegalStateException(
-                        "remote-access attestation.public-key-pem is not a valid public key", e);
-            }
-        }
-        return AttestationVerifierFactory.create(
-                type, expectedBuilderId, expectedPolicyHash, signingKey, signatureAlgorithm,
-                productionLikeProfile);
-    }
-
-    /** Parse a config enum, blank→default, an invalid value → fail-fast (a typo must not silently default). */
-    private static <E extends Enum<E>> E parseEnum(String value, Class<E> type, E dflt) {
-        if (value == null || value.isBlank()) {
-            return dflt;
-        }
-        try {
-            return Enum.valueOf(type, value.trim().toUpperCase(java.util.Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            throw new IllegalStateException(
-                    "invalid remote-access config value '" + value + "' for " + type.getSimpleName());
-        }
     }
 
     /** The replica-local session registry — the C/D tunnel runtime registers/removes sessions here. */
