@@ -10,6 +10,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlP
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -135,7 +136,11 @@ public class RemoteBridgeServerConfig {
     @Bean
     public BrokerControlPlane remoteBridgeControlPlane(PeerTrustLedger ledger,
                                                        RemoteBridgeSessionStore store,
+                                                       @Qualifier("remoteBridgeInboundAuditSink")
                                                        RemoteBridgeAuditSink auditSink) {
+        // pin the BEST-EFFORT inbound sink explicitly: slice-3c adds a second RemoteBridgeAuditSink bean (the
+        // DURABLE broker recorder) — the control plane's inbound audit must stay the best-effort log sink, so
+        // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds)
         return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis);
     }
 
