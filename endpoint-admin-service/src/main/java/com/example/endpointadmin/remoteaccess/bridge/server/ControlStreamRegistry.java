@@ -3,7 +3,6 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
-import io.grpc.stub.StreamObserver;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,26 +13,28 @@ import java.util.concurrent.ConcurrentHashMap;
  * must not be able to claim another device's slot; the verified deviceId→peer mapping is the broker's T-4
  * job, after B1.4 cert binding).
  *
- * <p>One CONTROL stream per authenticated peer: a reconnect REPLACES the previous stream (the old one is
- * completed and dropped — only for the SAME authenticated peer). {@link #killPeer} is THE sub-second kill
- * path: it pushes {@code Envelope.kill} onto CONTROL and then terminates the stream — CONTROL is a separate
- * HTTP/2 stream from DATA, so DATA backpressure can never queue ahead of it (tested).
+ * <p>One CONTROL stream per authenticated peer, held as a {@link ControlStreamHandle} (the serialized write
+ * path — Codex P2: heartbeat/kill/replace must never write a raw {@code StreamObserver} concurrently). A
+ * reconnect REPLACES the previous stream: the old handle is closed (its heartbeat task cancelled with it) —
+ * only for the SAME authenticated peer. {@link #killPeer} is THE sub-second kill path: it pushes
+ * {@code Envelope.kill} onto CONTROL and terminates the stream — CONTROL is a separate HTTP/2 stream from
+ * DATA, so DATA backpressure can never queue ahead of it (tested).
  */
 public final class ControlStreamRegistry {
 
-    private final Map<String, StreamObserver<Envelope>> streams = new ConcurrentHashMap<>();
+    private final Map<String, ControlStreamHandle> streams = new ConcurrentHashMap<>();
 
-    /** Register the peer's CONTROL stream; an existing stream for the SAME peer is completed and replaced. */
-    public void register(PeerIdentity peer, StreamObserver<Envelope> stream) {
-        StreamObserver<Envelope> previous = streams.put(peer.transportPeerKey(), stream);
-        if (previous != null && previous != stream) {
-            completeQuietly(previous);
+    /** Register the peer's CONTROL handle; an existing handle for the SAME peer is closed and replaced. */
+    void register(PeerIdentity peer, ControlStreamHandle handle) {
+        ControlStreamHandle previous = streams.put(peer.transportPeerKey(), handle);
+        if (previous != null && previous != handle) {
+            previous.close();
         }
     }
 
-    /** Remove the peer's stream — only if it is still THIS stream (a replaced stream must not unregister its successor). */
-    public void unregister(PeerIdentity peer, StreamObserver<Envelope> stream) {
-        streams.remove(peer.transportPeerKey(), stream);
+    /** Remove the peer's handle — only if it is still THIS handle (a replaced stream must not unregister its successor). */
+    void unregister(PeerIdentity peer, ControlStreamHandle handle) {
+        streams.remove(peer.transportPeerKey(), handle);
     }
 
     public boolean isConnected(String transportPeerKey) {
@@ -52,17 +53,17 @@ public final class ControlStreamRegistry {
     public static final String TRANSPORT_KILL_SESSION = "transport-kill";
 
     /**
-     * KILL the authenticated peer's session NOW: push {@code Envelope.kill} on CONTROL, then complete and
+     * KILL the authenticated peer's session NOW: push {@code Envelope.kill} on CONTROL, then terminate and
      * unregister the stream (terminal — Codex T-2b guidance). Returns false when the peer has no live
-     * CONTROL stream. A failed push still unregisters (the stream is dead either way; the safe outcome is
-     * removal, and the T-3 agent's heartbeat loss handling is the backstop).
+     * CONTROL stream. A dead stream still ends removed (the safe outcome; the T-3 agent's heartbeat-loss
+     * handling is the backstop).
      *
      * @param sessionId the broker session this kill targets, or null/blank for a peer-scoped transport kill
      *                  ({@link #TRANSPORT_KILL_SESSION})
      */
     public boolean killPeer(String transportPeerKey, String sessionId, String killReason, long nowEpochMillis) {
-        StreamObserver<Envelope> stream = streams.remove(transportPeerKey);
-        if (stream == null) {
+        ControlStreamHandle handle = streams.remove(transportPeerKey);
+        if (handle == null) {
             return false;
         }
         String session = sessionId == null || sessionId.isBlank() ? TRANSPORT_KILL_SESSION : sessionId;
@@ -75,27 +76,13 @@ public final class ControlStreamRegistry {
                         .setKillReason(killReason == null || killReason.isBlank() ? "killed" : killReason)
                         .setIssuedAtEpochMillis(nowEpochMillis))
                 .build();
-        try {
-            stream.onNext(kill);
-            stream.onCompleted();
-            return true;
-        } catch (RuntimeException e) {
-            completeQuietly(stream);
-            return true; // the stream is gone either way — terminal outcome reached
-        }
+        handle.sendAndClose(kill);
+        return true;
     }
 
-    /** Complete every live stream (server shutdown). */
+    /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */
     public void completeAll() {
-        streams.values().forEach(ControlStreamRegistry::completeQuietly);
+        streams.values().forEach(ControlStreamHandle::close);
         streams.clear();
-    }
-
-    private static void completeQuietly(StreamObserver<Envelope> stream) {
-        try {
-            stream.onCompleted();
-        } catch (RuntimeException ignored) {
-            // already terminated — removal is the outcome that matters
-        }
     }
 }

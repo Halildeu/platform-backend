@@ -49,8 +49,7 @@ public class RemoteBridgeServerConfig {
     @Bean
     public RemoteBridgeGrpcServer remoteBridgeGrpcServer(RemoteBridgeServerProperties properties,
                                                          RemoteBridgeConnectService service,
-                                                         ControlStreamRegistry registry,
-                                                         ScheduledExecutorService heartbeatScheduler) {
-        return new RemoteBridgeGrpcServer(properties, service, registry, heartbeatScheduler);
+                                                         ControlStreamRegistry registry) {
+        return new RemoteBridgeGrpcServer(properties, service, registry);
     }
 }

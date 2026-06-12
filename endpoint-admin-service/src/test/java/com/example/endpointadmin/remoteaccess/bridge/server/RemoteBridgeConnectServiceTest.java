@@ -394,6 +394,114 @@ class RemoteBridgeConnectServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // Codex post-impl P1 — malformed-but-direction-allowed payloads close the stream
+    // ------------------------------------------------------------------
+
+    @Test
+    void malformedConsentResultClosesTheStreamAndNeverReachesTheSeam() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.connect(sink);
+        inbound.onNext(control(0, Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
+                .setSessionId("bad session id") // space — fails the wire-id allowlist
+                .setGranted(true).setWindowsInteractiveSession("Console")
+                .setGrantedAtEpochMillis(1000).setExpiryEpochMillis(2000))));
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+        assertEquals("consent-result-session-id", sink.firstError().getError().getCode());
+        assertTrue(controlPlane.consents.isEmpty());
+
+        ClientSink sink2 = new ClientSink();
+        StreamObserver<Envelope> inbound2 = stub.connect(sink2);
+        inbound2.onNext(control(0, Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
+                .setSessionId("sess-1").setGranted(true).setWindowsInteractiveSession("") // required
+                .setGrantedAtEpochMillis(1000).setExpiryEpochMillis(2000))));
+        assertTrue(sink2.terminated.await(2, TimeUnit.SECONDS));
+        assertEquals("consent-result-interactive-session", sink2.firstError().getError().getCode());
+        assertTrue(controlPlane.consents.isEmpty());
+    }
+
+    @Test
+    void malformedAuditEventClosesTheStreamAndNeverReachesTheSeam() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.connect(sink);
+        inbound.onNext(control(0, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
+                .setSessionId("sess-1").setEventType("LOCAL_ABORT")
+                .setContentHash("not-a-sha256").setEpochMillis(1500))));
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+        assertEquals("audit-event-content-hash", sink.firstError().getError().getCode());
+        assertTrue(controlPlane.audits.isEmpty());
+    }
+
+    // ------------------------------------------------------------------
+    // Codex post-impl P2 — serialized CONTROL writes + heartbeat lifecycle
+    // ------------------------------------------------------------------
+
+    @Test
+    void reconnectCancelsTheReplacedStreamsHeartbeat() throws Exception {
+        java.util.concurrent.ScheduledExecutorService scheduler =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+            String name = InProcessServerBuilder.generateName();
+            RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                    scheduler, 30, 1024, System::currentTimeMillis, "rb-v1");
+            server = InProcessServerBuilder.forName(name).directExecutor()
+                    .intercept(new InjectIdentity(PEER)).addService(service).build().start();
+            channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+            RemoteBridgeGrpc.RemoteBridgeStub stub = RemoteBridgeGrpc.newStub(channel);
+
+            ClientSink first = new ClientSink();
+            stub.connect(first);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (System.nanoTime() < deadline && first.received.stream()
+                    .noneMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT)) {
+                Thread.sleep(10);
+            }
+            assertTrue(first.received.stream()
+                    .anyMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT));
+
+            ClientSink second = new ClientSink();
+            stub.connect(second); // replaces the first stream — must cancel ITS heartbeat task too
+            assertTrue(first.terminated.await(2, TimeUnit.SECONDS));
+            int firstCountAfterReplace = first.received.size();
+            Thread.sleep(150); // several would-be heartbeat periods
+            assertEquals(firstCountAfterReplace, first.received.size(),
+                    "a replaced stream's heartbeat task must stop writing");
+            assertTrue(registry.isConnected("peer-fp-1")); // the successor is live
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void killDuringActiveHeartbeatIsCleanAndTerminal() throws Exception {
+        java.util.concurrent.ScheduledExecutorService scheduler =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+            String name = InProcessServerBuilder.generateName();
+            RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                    scheduler, 1, 1024, System::currentTimeMillis, "rb-v1"); // aggressive heartbeat
+            server = InProcessServerBuilder.forName(name).directExecutor()
+                    .intercept(new InjectIdentity(PEER)).addService(service).build().start();
+            channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+
+            ClientSink sink = new ClientSink();
+            RemoteBridgeGrpc.newStub(channel).connect(sink);
+            Thread.sleep(30); // heartbeats flowing
+            assertTrue(registry.killPeer("peer-fp-1", "sess-1", "duress", System.currentTimeMillis()));
+            assertTrue(sink.killReceived.await(1, TimeUnit.SECONDS));
+            assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+            assertFalse(registry.isConnected("peer-fp-1"));
+            int countAtKill = sink.received.size();
+            Thread.sleep(50); // the killed stream's heartbeat task must be cancelled with the handle
+            assertEquals(countAtKill, sink.received.size(),
+                    "no writes may follow a kill-closed stream");
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    // ------------------------------------------------------------------
     // heartbeat
     // ------------------------------------------------------------------
 

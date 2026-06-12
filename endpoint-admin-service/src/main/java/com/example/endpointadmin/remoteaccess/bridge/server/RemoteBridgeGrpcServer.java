@@ -8,7 +8,6 @@ import org.springframework.context.SmartLifecycle;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -27,18 +26,15 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
     private final RemoteBridgeServerProperties properties;
     private final RemoteBridgeConnectService service;
     private final ControlStreamRegistry registry;
-    private final ScheduledExecutorService heartbeatScheduler;
 
     private volatile Server server;
 
     public RemoteBridgeGrpcServer(RemoteBridgeServerProperties properties,
                                   RemoteBridgeConnectService service,
-                                  ControlStreamRegistry registry,
-                                  ScheduledExecutorService heartbeatScheduler) {
+                                  ControlStreamRegistry registry) {
         this.properties = properties;
         this.service = service;
         this.registry = registry;
-        this.heartbeatScheduler = heartbeatScheduler;
     }
 
     @Override
@@ -68,9 +64,9 @@ public final class RemoteBridgeGrpcServer implements SmartLifecycle {
         if (current == null) {
             return;
         }
-        registry.completeAll();
-        heartbeatScheduler.shutdownNow();
-        current.shutdown();
+        registry.completeAll(); // each handle cancels its own heartbeat task; the scheduler bean stays
+        current.shutdown();      // alive (Spring owns its destroy) so a SmartLifecycle restart still works
+        
         try {
             if (!current.awaitTermination(properties.shutdownGraceMillis(), TimeUnit.MILLISECONDS)) {
                 current.shutdownNow();

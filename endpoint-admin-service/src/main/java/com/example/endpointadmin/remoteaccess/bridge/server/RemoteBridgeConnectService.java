@@ -89,8 +89,12 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         if (peer == null) {
             return refuse(outbound, ChannelType.CONTROL, "anonymous-peer");
         }
-        registry.register(peer, outbound);
-        ScheduledFuture<?> heartbeat = scheduleHeartbeat(outbound);
+        // every outbound CONTROL write (error frames, heartbeats, kill, replace-close) is serialized through
+        // the handle — a StreamObserver is not a thread-safe sink (Codex P2); closing the handle cancels ITS
+        // heartbeat task, so a replaced/killed stream's timer can never keep writing to a completed observer
+        ControlStreamHandle handle = new ControlStreamHandle(outbound);
+        registry.register(peer, handle);
+        handle.attachHeartbeat(scheduleHeartbeat(handle));
         return new StreamObserver<>() {
             private long nextSeq = 0;
 
@@ -98,9 +102,8 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             public void onNext(Envelope envelope) {
                 String defect = controlDefect(envelope, nextSeq, peer);
                 if (defect != null) {
-                    cancelQuietly(heartbeat);
-                    registry.unregister(peer, outbound);
-                    sendErrorAndClose(outbound, ChannelType.CONTROL, defect);
+                    registry.unregister(peer, handle);
+                    handle.sendAndClose(errorEnvelope(ChannelType.CONTROL, defect));
                     return;
                 }
                 nextSeq = envelope.getFrameSeq() + 1;
@@ -109,15 +112,14 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
 
             @Override
             public void onError(Throwable t) {
-                cancelQuietly(heartbeat);
-                registry.unregister(peer, outbound);
+                registry.unregister(peer, handle);
+                handle.close();
             }
 
             @Override
             public void onCompleted() {
-                cancelQuietly(heartbeat);
-                registry.unregister(peer, outbound);
-                completeQuietly(outbound);
+                registry.unregister(peer, handle);
+                handle.close();
             }
         };
     }
@@ -142,13 +144,14 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         if (envelope.getFrameSeq() != expectedSeq) {
             return "control-frame-seq";
         }
-        if (envelope.getPayloadCase() == Envelope.PayloadCase.AGENT_HELLO) {
-            String helloDefect = agentHelloDefect(envelope, peer);
-            if (helloDefect != null) {
-                return helloDefect;
-            }
-        }
-        return null;
+        // every direction-allowed payload with a domain decoder must decode VALID here — a malformed-but-
+        // allowed payload must close the stream, never silently advance the sequence (Codex P1)
+        return switch (envelope.getPayloadCase()) {
+            case AGENT_HELLO -> agentHelloDefect(envelope, peer);
+            case CONSENT_RESULT -> RemoteBridgeProtoAdapter.decode(envelope.getConsentResult()).rejectReason();
+            case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent()).rejectReason();
+            default -> null; // HEARTBEAT/ERROR content already validated by validateEnvelope
+        };
     }
 
     /** Advisory hello may be ignored, never believed over the certificate (Codex T-2b). */
@@ -179,17 +182,12 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         }
     }
 
-    private ScheduledFuture<?> scheduleHeartbeat(StreamObserver<Envelope> outbound) {
+    private ScheduledFuture<?> scheduleHeartbeat(ControlStreamHandle handle) {
         if (heartbeatScheduler == null || heartbeatIntervalMillis <= 0) {
             return null;
         }
-        return heartbeatScheduler.scheduleWithFixedDelay(() -> {
-            try {
-                outbound.onNext(heartbeatEnvelope());
-            } catch (RuntimeException e) {
-                // the stream is gone; its observer lifecycle (onError/onCompleted) does the unregistering
-            }
-        }, heartbeatIntervalMillis, heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
+        return heartbeatScheduler.scheduleWithFixedDelay(() -> handle.send(heartbeatEnvelope()),
+                heartbeatIntervalMillis, heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
     }
 
     private Envelope heartbeatEnvelope() {
@@ -297,13 +295,18 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         };
     }
 
+    private Envelope errorEnvelope(ChannelType channel, String code) {
+        return Envelope.newBuilder()
+                .setChannelType(channel)
+                .setSentAtEpochMillis(clock.getAsLong())
+                .setError(ErrorFrame.newBuilder().setCode(code).setRetryable(false))
+                .build();
+    }
+
+    /** DATA + anonymous paths have a SINGLE writer (the inbound handler) — no handle needed there. */
     private void sendErrorAndClose(StreamObserver<Envelope> outbound, ChannelType channel, String code) {
         try {
-            outbound.onNext(Envelope.newBuilder()
-                    .setChannelType(channel)
-                    .setSentAtEpochMillis(clock.getAsLong())
-                    .setError(ErrorFrame.newBuilder().setCode(code).setRetryable(false))
-                    .build());
+            outbound.onNext(errorEnvelope(channel, code));
             outbound.onCompleted();
         } catch (RuntimeException e) {
             // already terminated — closing was the goal
@@ -315,12 +318,6 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             outbound.onCompleted();
         } catch (RuntimeException ignored) {
             // already terminated
-        }
-    }
-
-    private static void cancelQuietly(ScheduledFuture<?> future) {
-        if (future != null) {
-            future.cancel(false);
         }
     }
 }
