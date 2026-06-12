@@ -54,8 +54,11 @@ class RemoteBridgeServerLifecycleTest {
 
     @Test
     void explicitlyDisabledBehavesLikeDefault() {
-        runner.withPropertyValues("remote-bridge.enabled=false").run(context ->
-                assertFalse(context.containsBean("remoteBridgeGrpcServer")));
+        runner.withPropertyValues("remote-bridge.enabled=false").run(context -> {
+            assertFalse(context.containsBean("remoteBridgeGrpcServer"));
+            assertFalse(context.containsBean("remoteBridgePeerTrustLedger"));
+            assertFalse(context.containsBean("remoteBridgeSessionStore"));
+        });
     }
 
     @Test
