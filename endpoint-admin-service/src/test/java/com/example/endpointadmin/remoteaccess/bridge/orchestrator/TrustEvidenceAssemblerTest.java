@@ -101,7 +101,56 @@ class TrustEvidenceAssemblerTest {
 
         assertTrue(ev.certTrusted());
         assertTrue(ev.attestationVerified());
-        assertFalse(ev.deviceTrusted(), "the untrusting device verifier → deviceTrusted false");
+        assertFalse(ev.deviceTrusted(),
+                "no device-trust verifier wired (3-arg ctor → deny-all) → deviceTrusted false");
+    }
+
+    // --- D10.1 slice-3b: device trust now comes from the session device-trust verifier ------------------
+
+    @Test
+    void anEnrollingDeviceTrustVerifierWithConsistentIdentitiesYieldsDeviceTrusted() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        ledger.record(peer("peer-1"), hello(), NOW); // fresh trust; helloDeviceId == "dev-1"
+        SessionDeviceTrustVerifier enrolled =
+                (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.enrolledActive();
+        TrustEvidenceAssembler assembler =
+                new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, enrolled, null);
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertTrue(ev.deviceTrusted(), "enrolled-active verifier + consistent ledger device id → deviceTrusted");
+    }
+
+    @Test
+    void anEnrollingVerifierIsStillVoidedByAnInconsistentLedgerDeviceId() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        ledger.record(peer("peer-1"), hello(), NOW); // fresh trust; helloDeviceId == "dev-1"
+        SessionDeviceTrustVerifier enrolled =
+                (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.enrolledActive();
+        TrustEvidenceAssembler assembler =
+                new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, enrolled, null);
+
+        // the session targets a DIFFERENT device than the ledger's helloDeviceId → consistency AND voids it
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-OTHER", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertFalse(ev.deviceTrusted(), "a lying-agent device id voids device trust even when enrollment passes");
+    }
+
+    @Test
+    void aDenyingDeviceTrustVerifierYieldsDeviceUntrusted() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        ledger.record(peer("peer-1"), hello(), NOW); // fresh, consistent trust
+        SessionDeviceTrustVerifier denying =
+                (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.deny("not-enrolled");
+        TrustEvidenceAssembler assembler =
+                new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, denying, null);
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertFalse(ev.deviceTrusted(), "a denying device-trust verifier → deviceTrusted false");
     }
 
     @Test

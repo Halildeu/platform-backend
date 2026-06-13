@@ -29,6 +29,8 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidencePa
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -298,16 +300,38 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
+     * Faz 22.6 D10.1 slice-3b — the session device-trust verifier, opt-in via {@code
+     * remote-bridge.device-trust.verifier}. DEFAULT {@code FAIL_CLOSED}: device trust never established →
+     * {@code deviceTrusted=false} → the broker stays gated (behaviour unchanged). {@code MACHINE_CERT_ENROLLMENT}
+     * (non-prod only) trusts a session whose peer is the active ENROLLED machine cert for the tenant/device (via
+     * {@link ConnectedDeviceResolver}) — enrollment identity, NOT hardware key attestation; the factory forbids it
+     * in a prod-like profile until the policy/D29-EA accepts that basis.
+     */
+    @Bean
+    public SessionDeviceTrustVerifier remoteBridgeSessionDeviceTrustVerifier(
+            Environment environment,
+            ConnectedDeviceResolver remoteBridgeConnectedDeviceResolver,
+            @Value("${remote-bridge.device-trust.verifier:FAIL_CLOSED}") String deviceTrustVerifierType) {
+        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
+                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
+        boolean productionLike = profiles.contains("prod");
+        return SessionDeviceTrustVerifierFactory.create(
+                deviceTrustVerifierType, productionLike, remoteBridgeConnectedDeviceResolver);
+    }
+
+    /**
      * Faz 22.6 T-4a-ii slice-4b — the trust-evidence assembler the operator service feeds the broker. The
-     * owner-grant gate (D10 slice-2; default DENY_ALL → grant nothing) and the duress source (D10 slice-3;
-     * default AMBIGUOUS → KILL) are both injected.
+     * owner-grant gate (D10 slice-2; default DENY_ALL → grant nothing), the session device-trust verifier (D10.1
+     * slice-3b; default FAIL_CLOSED → deviceTrusted false), and the duress source (D10 slice-3; default AMBIGUOUS
+     * → KILL) are all injected.
      */
     @Bean
     public TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler(PeerTrustLedger remoteBridgePeerTrustLedger,
             OwnerTokenGate remoteBridgeOwnerTokenGate,
+            SessionDeviceTrustVerifier remoteBridgeSessionDeviceTrustVerifier,
             TrustEvidenceAssembler.DuressSignalSource remoteBridgeDuressSignalSource) {
         return new TrustEvidenceAssembler(remoteBridgePeerTrustLedger, remoteBridgeOwnerTokenGate,
-                remoteBridgeDuressSignalSource);
+                remoteBridgeSessionDeviceTrustVerifier, remoteBridgeDuressSignalSource);
     }
 
     /**
