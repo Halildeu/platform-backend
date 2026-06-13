@@ -7,6 +7,7 @@ import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifierFactory;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.RecordingAnchorSigner;
 import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
 import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
@@ -269,6 +270,25 @@ public class RemoteBridgeServerConfig {
                 expectedOrigin.isBlank() ? null : expectedOrigin,
                 expectedRpId.isBlank() ? null : expectedRpId,
                 productionLike);
+    }
+
+    /**
+     * Faz 22.6 D step-up — the operator step-up challenge-response handler: issues a single-use challenge and
+     * verifies the operator's WebAuthn assertion against it, recording a VERIFIED step-up into the session. The
+     * handler logic is wired here; the operator-facing mTLS transport that AUTHENTICATES the operator and
+     * carries the challenge/assertion (an operator gRPC/REST endpoint) is the live slice-4c-transport — until
+     * then the bean is constructed but not yet called (deferred-consumer, like the step-up verifier bean).
+     */
+    @Bean
+    public OperatorStepUpHandler remoteBridgeOperatorStepUpHandler(
+            OperatorStepUpVerifier remoteBridgeOperatorStepUpVerifier,
+            RemoteBridgeSessionStore remoteBridgeSessionStore,
+            @Value("${remote-bridge.step-up.expected-origin:}") String expectedOrigin,
+            @Value("${remote-bridge.step-up.challenge-ttl-millis:120000}") long challengeTtlMillis) {
+        // origin pinning is mandatory for an enabled broker (the handler ctor refuses a blank origin) —
+        // fail-closed, the same rule as the verifier bean
+        return new OperatorStepUpHandler(remoteBridgeOperatorStepUpVerifier, remoteBridgeSessionStore,
+                expectedOrigin.isBlank() ? null : expectedOrigin, challengeTtlMillis);
     }
 
     /**

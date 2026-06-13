@@ -71,6 +71,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeTrustEvidenceAssembler"));
             assertFalse(context.containsBean("remoteBridgeOperatorService"));
             assertFalse(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
+            assertFalse(context.containsBean("remoteBridgeOperatorStepUpHandler"));
             assertEquals(0, context.getBeanNamesForType(RemoteBridgeServerProperties.class).length);
         });
     }
@@ -86,6 +87,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeBroker"));
             assertFalse(context.containsBean("remoteBridgeOperatorService"));
             assertFalse(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
+            assertFalse(context.containsBean("remoteBridgeOperatorStepUpHandler"));
         });
     }
 
@@ -250,6 +252,7 @@ class RemoteBridgeServerLifecycleTest {
                     assertTrue(context.containsBean("remoteBridgeOperatorService"));
                     // D step-up: the operator step-up verifier is wired (consumed by the slice-4c transport)
                     assertTrue(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
+                    assertTrue(context.containsBean("remoteBridgeOperatorStepUpHandler"));
                     server.stop();
                     assertFalse(server.isRunning());
                 });
