@@ -86,7 +86,8 @@ class RemoteBridgePermitSigningConfigTest {
                         "remote-bridge.step-up.expected-rp-id=operator.acik.com",
                         // slice-4c-2a: the operator authenticator bean's reference config is mandatory too
                         "remote-bridge.operator-auth.in-memory-token=ref-operator-token-1",
-                        "remote-bridge.operator-auth.in-memory-subject=operator@acik.com")
+                        "remote-bridge.operator-auth.in-memory-subject=operator@acik.com",
+                        "remote-bridge.operator-auth.in-memory-tenant=11111111-1111-1111-1111-111111111111")
                 .run(context -> {
             assertNull(context.getStartupFailure());
             RemoteBridgePermitSigner signer = context.getBean(RemoteBridgePermitSigner.class);

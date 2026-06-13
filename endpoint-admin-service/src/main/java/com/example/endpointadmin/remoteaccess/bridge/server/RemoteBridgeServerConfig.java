@@ -304,7 +304,8 @@ public class RemoteBridgeServerConfig {
             Environment environment,
             @Value("${remote-bridge.operator-auth.type:IN_MEMORY}") String authenticatorType,
             @Value("${remote-bridge.operator-auth.in-memory-token:}") String inMemoryToken,
-            @Value("${remote-bridge.operator-auth.in-memory-subject:}") String inMemorySubject) {
+            @Value("${remote-bridge.operator-auth.in-memory-subject:}") String inMemorySubject,
+            @Value("${remote-bridge.operator-auth.in-memory-tenant:}") String inMemoryTenant) {
         // a prod-like profile refuses the placeholder IN_MEMORY authenticator (same rule as the verifiers)
         String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
                 environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
@@ -313,6 +314,7 @@ public class RemoteBridgeServerConfig {
                 OperatorAuthenticatorFactory.AuthenticatorType.valueOf(authenticatorType),
                 inMemoryToken.isBlank() ? null : inMemoryToken,
                 inMemorySubject.isBlank() ? null : inMemorySubject,
+                inMemoryTenant.isBlank() ? null : inMemoryTenant,
                 productionLike);
     }
 

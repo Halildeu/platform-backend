@@ -22,9 +22,10 @@ class OperatorAuthenticatorTest {
 
     private static final String REF_TOKEN = "ref-operator-token-1";
     private static final String SUBJECT = "operator@acik.com";
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     private static OperatorAuthenticator authenticator() {
-        return new InMemoryOperatorAuthenticator(REF_TOKEN, SUBJECT);
+        return new InMemoryOperatorAuthenticator(REF_TOKEN, SUBJECT, TENANT);
     }
 
     private static OperatorCredential bearer(String token) {
@@ -35,6 +36,7 @@ class OperatorAuthenticatorTest {
     void theMatchingTokenAuthenticatesTheOperator() {
         OperatorIdentity identity = authenticator().authenticate(bearer(REF_TOKEN));
         assertTrue(identity.isAuthenticated());
+        assertEquals(TENANT, identity.tenantId());
         assertEquals(SUBJECT, identity.operatorSubject());
         assertEquals(AuthMethod.JWT_BEARER, identity.authMethod());
     }
@@ -55,9 +57,11 @@ class OperatorAuthenticatorTest {
 
     @Test
     void theReferenceCtorRejectsBlankConfig() {
-        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator("  ", SUBJECT));
-        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator(REF_TOKEN, "  "));
-        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator(null, SUBJECT));
+        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator("  ", SUBJECT, TENANT));
+        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator(REF_TOKEN, "  ", TENANT));
+        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator(null, SUBJECT, TENANT));
+        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator(REF_TOKEN, SUBJECT, "  "));
+        assertThrows(IllegalArgumentException.class, () -> new InMemoryOperatorAuthenticator(REF_TOKEN, SUBJECT, null));
     }
 
     @Test
@@ -70,16 +74,25 @@ class OperatorAuthenticatorTest {
     @Test
     void anAuthenticatedFlagWithNoSubjectIsStillNotAuthenticated() {
         // defense-in-depth: a malformed identity (authenticated=true but blank subject) must not pass
-        OperatorIdentity malformed = new OperatorIdentity("  ", AuthMethod.JWT_BEARER, true);
+        OperatorIdentity malformed = new OperatorIdentity(TENANT, "  ", AuthMethod.JWT_BEARER, true);
         assertFalse(malformed.isAuthenticated());
     }
 
     @Test
     void anAuthenticatedFlagWithNoRealMethodIsNormalizedToUnauthenticated() {
         // Codex REVISE: authenticated=true with a null/UNAUTHENTICATED method must NOT pass the 4c-2 guard
-        assertFalse(new OperatorIdentity("op", AuthMethod.UNAUTHENTICATED, true).isAuthenticated());
-        assertFalse(new OperatorIdentity("op", null, true).isAuthenticated());
+        assertFalse(new OperatorIdentity(TENANT, "op", AuthMethod.UNAUTHENTICATED, true).isAuthenticated());
+        assertFalse(new OperatorIdentity(TENANT, "op", null, true).isAuthenticated());
         // the compact ctor normalizes the inconsistent flag to false
-        assertFalse(new OperatorIdentity("op", AuthMethod.UNAUTHENTICATED, true).authenticated());
+        assertFalse(new OperatorIdentity(TENANT, "op", AuthMethod.UNAUTHENTICATED, true).authenticated());
+    }
+
+    @Test
+    void anAuthenticatedFlagWithNoTenantIsNormalizedToUnauthenticated() {
+        // Faz 22.6 slice-4c-2b-0 (Codex REVISE): a tenant-less authenticated identity has no tenancy boundary —
+        // the device→peer resolver must never accept it, so the compact ctor normalizes the flag to false
+        assertFalse(new OperatorIdentity("  ", "op", AuthMethod.JWT_BEARER, true).isAuthenticated());
+        assertFalse(new OperatorIdentity(null, "op", AuthMethod.JWT_BEARER, true).isAuthenticated());
+        assertFalse(new OperatorIdentity("  ", "op", AuthMethod.JWT_BEARER, true).authenticated());
     }
 }

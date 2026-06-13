@@ -51,6 +51,7 @@ class RemoteBridgeOperatorControllerTest {
     private static final String TOKEN = "ref-operator-token-1";
     private static final String OWNER = "operator@acik.com";
     private static final String OTHER = "other-operator@acik.com";
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
     private static final long NOW = 5_000L;
     private static final String AUTH = "Bearer " + TOKEN;
     private static final String BASE = "/internal/remote-bridge/operator/sessions/";
@@ -64,7 +65,7 @@ class RemoteBridgeOperatorControllerTest {
     void setUp() {
         openSession("s-owned", OWNER, "dev-owned", "peer-owned");
         openSession("s-foreign", OTHER, "dev-foreign", "peer-foreign");
-        OperatorAuthenticator authenticator = new InMemoryOperatorAuthenticator(TOKEN, OWNER);
+        OperatorAuthenticator authenticator = new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT);
         RemoteBridgeOperatorController controller = new RemoteBridgeOperatorController(
                 operatorService, stepUpHandler, authenticator, store, () -> NOW);
         mvc = MockMvcBuilders.standaloneSetup(controller).build();
@@ -238,7 +239,7 @@ class RemoteBridgeOperatorControllerTest {
         ApplicationContextRunner runner = new ApplicationContextRunner()
                 .withBean(RemoteBridgeOperatorService.class, () -> mock(RemoteBridgeOperatorService.class))
                 .withBean(OperatorStepUpHandler.class, () -> mock(OperatorStepUpHandler.class))
-                .withBean(OperatorAuthenticator.class, () -> new InMemoryOperatorAuthenticator(TOKEN, OWNER))
+                .withBean(OperatorAuthenticator.class, () -> new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT))
                 .withBean(RemoteBridgeSessionStore.class, RemoteBridgeSessionStore::new)
                 .withConfiguration(UserConfigurations.of(RemoteBridgeOperatorController.class));
 

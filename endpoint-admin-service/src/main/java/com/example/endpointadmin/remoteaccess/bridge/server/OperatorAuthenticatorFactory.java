@@ -36,7 +36,8 @@ public final class OperatorAuthenticatorFactory {
      * @throws IllegalStateException on any forbidden combination (fail-fast startup)
      */
     public static OperatorAuthenticator create(AuthenticatorType type, String inMemoryToken,
-                                               String inMemorySubject, boolean productionLikeProfile) {
+                                               String inMemorySubject, String inMemoryTenant,
+                                               boolean productionLikeProfile) {
         AuthenticatorType t = type == null ? AuthenticatorType.IN_MEMORY : type; // placeholder default (non-prod)
         switch (t) {
             case IN_MEMORY -> {
@@ -45,7 +46,7 @@ public final class OperatorAuthenticatorFactory {
                             + "and is forbidden in a production-like profile — configure a real operator "
                             + "authenticator (mTLS client cert or JWT)");
                 }
-                return new InMemoryOperatorAuthenticator(inMemoryToken, inMemorySubject);
+                return new InMemoryOperatorAuthenticator(inMemoryToken, inMemorySubject, inMemoryTenant);
             }
             case MTLS_CLIENT_CERT -> throw reject("operator authenticator MTLS_CLIENT_CERT is not yet "
                     + "implemented (the live operator-channel slice) — refusing rather than half-wiring auth");

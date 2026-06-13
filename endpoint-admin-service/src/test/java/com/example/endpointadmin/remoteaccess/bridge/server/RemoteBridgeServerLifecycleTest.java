@@ -106,7 +106,8 @@ class RemoteBridgeServerLifecycleTest {
                 "remote-bridge.step-up.expected-origin=https://operator.acik.com",
                 "remote-bridge.step-up.expected-rp-id=operator.acik.com",
                 "remote-bridge.operator-auth.in-memory-token=ref-operator-token-1",
-                "remote-bridge.operator-auth.in-memory-subject=operator@acik.com").run(context -> {
+                "remote-bridge.operator-auth.in-memory-subject=operator@acik.com",
+                "remote-bridge.operator-auth.in-memory-tenant=11111111-1111-1111-1111-111111111111").run(context -> {
             Throwable failure = context.getStartupFailure();
             assertTrue(failure != null, "the context must fail to start");
             Throwable root = failure;
@@ -237,7 +238,8 @@ class RemoteBridgeServerLifecycleTest {
                 "remote-bridge.step-up.expected-rp-id=operator.acik.com",
                 // slice-4c-2a: the operator authenticator bean's reference config is mandatory for an enabled broker
                 "remote-bridge.operator-auth.in-memory-token=ref-operator-token-1",
-                "remote-bridge.operator-auth.in-memory-subject=operator@acik.com")
+                "remote-bridge.operator-auth.in-memory-subject=operator@acik.com",
+                "remote-bridge.operator-auth.in-memory-tenant=11111111-1111-1111-1111-111111111111")
                 .run(context -> {
                     RemoteBridgeGrpcServer server = context.getBean(RemoteBridgeGrpcServer.class);
                     assertTrue(server.isRunning(), "SmartLifecycle must have started the server");
