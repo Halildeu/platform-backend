@@ -98,6 +98,12 @@ public final class RemoteBridgeOperatorService {
      * (pre-guard). If the prompt does not land despite the pre-guard (the peer dropped in the race window), the
      * just-opened session is driven terminal + evicted so no orphan {@code CONSENT_PENDING} session lingers
      * awaiting a consent that can never arrive (Codex S3).
+     *
+     * <p><b>Tenant invariant (slice-4c-2b-2b, Codex 019ebe06):</b> {@code operatorTenantId} is not validated
+     * here — this is a PUBLIC orchestrator seam, so the canonical-UUID invariant is enforced at the store
+     * chokepoint ({@link RemoteBridgeSessionStore#open}). A blank/non-canonical tenant therefore surfaces here
+     * as a {@code rejected("invalid-operator-tenant")} outcome with NO session created, even for a future caller
+     * that is not the controller.
      */
     public SessionOpenOutcome openSession(SessionRequest request, PeerIdentity peer, String operatorTenantId,
                                           String operatorDisplayName) {

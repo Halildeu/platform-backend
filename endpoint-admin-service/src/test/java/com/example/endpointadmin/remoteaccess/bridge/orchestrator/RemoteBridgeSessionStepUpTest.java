@@ -19,9 +19,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class RemoteBridgeSessionStepUpTest {
 
     private static final long SESSION_START = 10_000L;
+    // a canonical operator-tenant UUID — mirrors the store-enforced canonical form (slice-4c-2b-2b)
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     private static RemoteBridgeSession session() {
-        return new RemoteBridgeSession("s1", "peer-1", "dev-1", "operator@x", "t-1", "Operator X",
+        return new RemoteBridgeSession("s1", "peer-1", "dev-1", "operator@x", TENANT, "Operator X",
                 Set.of(RemoteSessionCapability.VIEW_ONLY), SESSION_START + 60_000L, SESSION_START, State.ACTIVE);
     }
 
