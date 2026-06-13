@@ -7,6 +7,7 @@ import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.contract.WireContract;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
@@ -104,8 +105,16 @@ public class RemoteBridgeOperatorController {
      * Open an ATTENDED session to a device the operator's OWN tenant owns: resolve the verified connected peer
      * ({@link ConnectedDeviceResolver}), then drive the broker's consent flow. The operator subject AND tenant
      * come from the AUTHENTICATED identity, never the body — the body only names the target device + reason +
-     * capabilities. This is the path-LESS create (no {@code {sessionId}}), so the operator-supplied sessionId is
-     * an idempotency key (the store's open is putIfAbsent), not a way to target another operator's session.
+     * capabilities. This is the path-LESS create (no {@code {sessionId}}); the operator-supplied sessionId is
+     * the new session's id — a duplicate is REFUSED (not idempotent-success), and it cannot target another
+     * operator's session.
+     *
+     * <p><b>Full request-shape validation BEFORE the resolver (Codex REVISE):</b> every malformed input (a bad
+     * subject, a non-canonical/invalid id, a missing/non-pilot/null capability) is rejected before
+     * {@code resolveConnectedPeer} is ever called, so a malformed request can never probe whether a device is
+     * connected (the response never depends on device state until the request is well-formed). The deviceId is
+     * canonicalized ({@code UUID.toString()}) into the {@link SessionRequest} so a whitespace-padded raw id
+     * cannot reach the store and be rejected LATE (another oracle).
      */
     @PostMapping("/sessions")
     public ResponseEntity<?> openSession(@RequestBody(required = false) OpenSessionRequestBody body,
@@ -120,19 +129,29 @@ public class RemoteBridgeOperatorController {
         if (tenantId == null) {
             return unauthenticated();
         }
-        if (body == null || body.sessionId() == null || body.sessionId().isBlank()
-                || body.deviceId() == null || body.deviceId().isBlank()) {
+        // a verified subject that is not a valid wire id is an auth/IdP misconfig — fail-closed before the data plane
+        if (!WireContract.isValidId(identity.operatorSubject())) {
+            return unauthenticated();
+        }
+        if (body == null) {
             return ResponseEntity.badRequest().build();
         }
         UUID deviceId = parseUuidOrNull(body.deviceId());
         if (deviceId == null) {
-            return ResponseEntity.badRequest().build(); // a malformed client-supplied deviceId is a bad request
+            return ResponseEntity.badRequest().build(); // a missing/blank/malformed client deviceId is a bad request
         }
         Set<RemoteSessionCapability> capabilities;
         try {
             capabilities = parseCapabilities(body.capabilities());
-        } catch (IllegalArgumentException unknownCapability) {
-            return ResponseEntity.badRequest().build();
+        } catch (IllegalArgumentException invalidCapabilities) {
+            return ResponseEntity.badRequest().build(); // missing/null/unknown/non-pilot capability — no resolver call
+        }
+        // build with the AUTHENTICATED subject + the CANONICAL device id (never the raw body id), then validate
+        // the WHOLE request-shape before the resolver so a malformed request can never probe device state
+        SessionRequest sessionRequest = new SessionRequest(body.sessionId(), deviceId.toString(),
+                identity.operatorSubject(), body.reason(), capabilities);
+        if (!WireContract.isValid(sessionRequest)) {
+            return ResponseEntity.badRequest().build(); // invalid sessionId / shape — fail-closed before the resolver
         }
         PeerIdentity peer = deviceResolver
                 .resolveConnectedPeer(tenantId, deviceId, Instant.ofEpochMilli(clock.getAsLong()))
@@ -140,12 +159,11 @@ public class RemoteBridgeOperatorController {
         if (peer == null) {
             return notFound(); // not connected / not enrolled / cross-tenant — same 404, no existence oracle
         }
-        // operatorSubject is the AUTHENTICATED subject (never a client field); the resolved peer is the target
-        SessionRequest sessionRequest = new SessionRequest(body.sessionId(), body.deviceId(),
-                identity.operatorSubject(), body.reason(), capabilities);
         SessionOpenOutcome outcome = operatorService.openSession(sessionRequest, peer, identity.operatorSubject());
         if (!outcome.opened()) {
-            return ResponseEntity.unprocessableEntity().body(new RejectedResponse(outcome.rejectReason()));
+            // a GENERIC refusal — the internal reason (e.g. a duplicate session id) is audited upstream, never
+            // echoed, so a guessed sessionId cannot become a collision oracle (Codex REVISE)
+            return ResponseEntity.unprocessableEntity().body(new RejectedResponse("open-session-refused"));
         }
         return ResponseEntity.ok(new OpenSessionResponse(outcome.sessionId(), outcome.consentPromptSent()));
     }
@@ -252,14 +270,26 @@ public class RemoteBridgeOperatorController {
         }
     }
 
-    /** Map the requested capability names to the enum; an unknown name throws (the caller maps it to 400). */
+    /**
+     * Map the requested capability names to a non-empty, all-pilot enum set; ANY problem throws so the caller
+     * maps it to 400 BEFORE the resolver (Codex REVISE — a non-pilot capability would otherwise reach the store
+     * and reject LATE, leaking device-connected state). Rejects: missing/empty, a null element, an unknown name,
+     * and a capability outside {@link RemoteSessionCapability#PILOT_ALLOWED}.
+     */
     private static Set<RemoteSessionCapability> parseCapabilities(List<String> requested) {
         if (requested == null || requested.isEmpty()) {
-            return Set.of();
+            throw new IllegalArgumentException("at least one capability is required");
         }
         EnumSet<RemoteSessionCapability> capabilities = EnumSet.noneOf(RemoteSessionCapability.class);
         for (String name : requested) {
-            capabilities.add(RemoteSessionCapability.valueOf(name)); // unknown capability → IllegalArgumentException
+            if (name == null) {
+                throw new IllegalArgumentException("a null capability is not allowed");
+            }
+            RemoteSessionCapability capability = RemoteSessionCapability.valueOf(name); // unknown → IllegalArgumentException
+            if (!RemoteSessionCapability.PILOT_ALLOWED.contains(capability)) {
+                throw new IllegalArgumentException("non-pilot capability: " + name);
+            }
+            capabilities.add(capability);
         }
         return capabilities;
     }

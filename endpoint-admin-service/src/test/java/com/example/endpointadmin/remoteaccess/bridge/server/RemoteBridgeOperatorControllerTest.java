@@ -254,11 +254,12 @@ class RemoteBridgeOperatorControllerTest {
 
     @Test
     void anOpenSessionWithABlankSessionIdOrDeviceIdIs400() throws Exception {
+        // a blank/invalid sessionId is caught by WireContract.isValid BEFORE the resolver (well-formed otherwise)
         mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"sessionId\":\"\",\"deviceId\":\"" + DEVICE_UUID + "\"}"))
+                .content("{\"sessionId\":\"\",\"deviceId\":\"" + DEVICE_UUID + "\",\"capabilities\":[\"VIEW_ONLY\"]}"))
                 .andExpect(status().isBadRequest());
         mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"sessionId\":\"s-new\",\"deviceId\":\"\"}"))
+                .content("{\"sessionId\":\"s-new\",\"deviceId\":\"\",\"capabilities\":[\"VIEW_ONLY\"]}"))
                 .andExpect(status().isBadRequest());
         verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
     }
@@ -317,7 +318,52 @@ class RemoteBridgeOperatorControllerTest {
         mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
                 .content(openBody("s-new", DEVICE_UUID)))
                 .andExpect(status().isUnprocessableEntity())
-                .andExpect(jsonPath("$.reason").value("consent-prompt-not-delivered"));
+                // the internal reason is NOT echoed — a generic refusal closes the sessionId-collision oracle
+                .andExpect(jsonPath("$.reason").value("open-session-refused"));
+    }
+
+    @Test
+    void anOpenSessionWithMissingEmptyNullOrNonPilotCapabilitiesIs400() throws Exception {
+        // every capability problem is rejected BEFORE the resolver (Codex REVISE — no device-state oracle)
+        String[] badCapabilityBodies = {
+            "{\"sessionId\":\"s-new\",\"deviceId\":\"" + DEVICE_UUID + "\"}",                                  // missing
+            "{\"sessionId\":\"s-new\",\"deviceId\":\"" + DEVICE_UUID + "\",\"capabilities\":[]}",              // empty
+            "{\"sessionId\":\"s-new\",\"deviceId\":\"" + DEVICE_UUID + "\",\"capabilities\":[null]}",          // null element
+            "{\"sessionId\":\"s-new\",\"deviceId\":\"" + DEVICE_UUID + "\",\"capabilities\":[\"FULL_RDP\"]}"   // non-pilot
+        };
+        for (String body : badCapabilityBodies) {
+            mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionWithANonWireIdOperatorSubjectIs401AndNeverResolves() throws Exception {
+        // a verified subject that is not a valid wire id is an auth/IdP misconfig → fail-closed before the data plane
+        RemoteBridgeOperatorController badSubject = new RemoteBridgeOperatorController(operatorService, stepUpHandler,
+                new InMemoryOperatorAuthenticator(TOKEN, "bad subject!", TENANT), store, deviceResolver, () -> NOW);
+        MockMvc mvcBad = MockMvcBuilders.standaloneSetup(badSubject).build();
+        mvcBad.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", DEVICE_UUID)))
+                .andExpect(status().isUnauthorized());
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionCanonicalizesAWhitespacePaddedDeviceId() throws Exception {
+        when(deviceResolver.resolveConnectedPeer(any(), any(), any()))
+                .thenReturn(Optional.of(new PeerIdentity("peer-new", Optional.empty(), List.of())));
+        when(operatorService.openSession(any(), any(), any())).thenReturn(new SessionOpenOutcome("s-new", true, null));
+
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", "  " + DEVICE_UUID + "  ")))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<SessionRequest> captor = ArgumentCaptor.forClass(SessionRequest.class);
+        verify(operatorService).openSession(captor.capture(), any(), any());
+        // the CANONICAL device id reaches the store, never the raw whitespace-padded body id (no late-reject oracle)
+        assertEquals(DEVICE_UUID, captor.getValue().deviceId());
     }
 
     @Test
