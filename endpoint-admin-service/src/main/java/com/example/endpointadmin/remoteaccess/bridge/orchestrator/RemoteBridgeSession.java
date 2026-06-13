@@ -1,6 +1,7 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
 import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChallenge;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine;
@@ -42,6 +43,10 @@ public final class RemoteBridgeSession {
     // operator transport records a VERIFIED step-up (slice-4c). Restart drops it (fail-closed, session-scoped).
     private long lastStepUpEpochMillis = 0L;
     private MethodStrength stepUpStrength = MethodStrength.NONE;
+    // a single pending step-up challenge (issued, awaiting the operator's assertion) + its expiry; null = none.
+    // One pending challenge per session (Codex S3) — a new issue replaces the prior, verify consumes it.
+    private StepUpChallenge pendingStepUpChallenge = null;
+    private long pendingChallengeExpiryEpochMillis = 0L;
 
     RemoteBridgeSession(String sessionId,
                         String transportPeerKey,
@@ -115,6 +120,32 @@ public final class RemoteBridgeSession {
         }
         lastStepUpEpochMillis = ts;
         stepUpStrength = verification.achievedStrength();
+    }
+
+    /**
+     * Issue a single pending step-up challenge — a new one REPLACES any prior (one pending per session, Codex
+     * S3), so a stale or parallel challenge can never be redeemed. The handler stores the challenge it just
+     * generated here; {@link #consumePendingStepUpChallenge} redeems it exactly once.
+     */
+    public synchronized void setPendingStepUpChallenge(StepUpChallenge challenge, long expiryEpochMillis) {
+        this.pendingStepUpChallenge = challenge;
+        this.pendingChallengeExpiryEpochMillis = expiryEpochMillis;
+    }
+
+    /**
+     * Consume the pending step-up challenge (SINGLE-USE): returns it ONLY if present and not expired at {@code
+     * now}, then clears it unconditionally. A missing/expired/already-consumed challenge yields empty
+     * (fail-closed — the handler then refuses the assertion without advancing the step-up).
+     */
+    public synchronized java.util.Optional<StepUpChallenge> consumePendingStepUpChallenge(long nowEpochMillis) {
+        StepUpChallenge challenge = pendingStepUpChallenge;
+        long expiry = pendingChallengeExpiryEpochMillis;
+        pendingStepUpChallenge = null; // single-use: always cleared on consume, even when expired
+        pendingChallengeExpiryEpochMillis = 0L;
+        if (challenge == null || nowEpochMillis > expiry) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(challenge);
     }
 
     public synchronized long lastStepUpEpochMillis() {
