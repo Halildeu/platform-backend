@@ -63,7 +63,7 @@ public class BackupDryRunManifestPayloadPolicy {
     private static final Set<String> DETAILS_KEYS = Set.of(MANIFEST_KEY);
     private static final Set<String> MANIFEST_KEYS = Set.of(
             "manifest_version", "dc_ea_tier", "device_id", "tenant_id",
-            "allowlist_profile_id", "scope", "entries", "aggregate");
+            "generated_at", "allowlist_profile_id", "scope", "entries", "aggregate");
     private static final Set<String> SCOPE_KEYS = Set.of("managed_data_roots", "byod");
     private static final Set<String> ENTRY_KEYS = Set.of(
             "path_class", "root_ref", "relative_depth", "extension_type",
@@ -84,7 +84,12 @@ public class BackupDryRunManifestPayloadPolicy {
             "cloud_cli_token_store", "password_manager_vault", "dpapi_store", "registry_hive",
             "app_token_store", "archive_container");
 
-    private static final Pattern DRIVE_PREFIX = Pattern.compile("^[A-Za-z]:");
+    // A Windows drive path ANYWHERE in a string: a STANDALONE single drive
+    // letter (start-of-string or preceded by a non-letter, so "managed_root:"
+    // and ISO timestamps like "...T21:00" do NOT match) followed by a colon.
+    // Catches "C:\\x", "C:/x", embedded "failed at C:/Users", and drive-relative
+    // "D:relative" (Codex 019ec2e6 P0#2).
+    private static final Pattern DRIVE_PATH = Pattern.compile("(^|[^A-Za-z])[A-Za-z]:");
 
     /**
      * Validate the COLLECT_BACKUP_DRYRUN result. {@code details} MUST be
@@ -95,16 +100,18 @@ public class BackupDryRunManifestPayloadPolicy {
      *
      * @throws IllegalArgumentException (path-free message) on any violation
      */
-    public void validate(Map<String, Object> details, String summary, String errorMessage,
+    public void validate(Map<String, Object> details, String summary, String errorCode, String errorMessage,
                          String expectedDeviceId, String expectedTenantId) {
         // P0 (Codex 019ec2e6): a COLLECT_BACKUP_DRYRUN result with null details
         // must FAIL, not silently skip — the manifest is mandatory.
         if (details == null) {
             throw reject("result details missing (manifest required)");
         }
-        // Full-envelope path-free: the result summary / errorMessage also
-        // persist, so a raw path there is rejected too.
+        // Full-envelope path-free: the result summary / errorCode / errorMessage
+        // also persist (endpoint_command_results + admin DTO), so a raw path in
+        // any of them is rejected too (Codex 019ec2e6 P0#1).
         assertStringPathFree(summary);
+        assertStringPathFree(errorCode);
         assertStringPathFree(errorMessage);
 
         // Top-level details MUST be exactly { backupDryRun } — no sibling keys
@@ -127,6 +134,7 @@ public class BackupDryRunManifestPayloadPolicy {
         String deviceId = stringField(manifest, "device_id");
         String tenantId = stringField(manifest, "tenant_id");
         stringField(manifest, "allowlist_profile_id");
+        stringField(manifest, "generated_at");
         if (expectedDeviceId != null && !expectedDeviceId.equals(deviceId)) {
             throw reject("manifest device_id does not match command device");
         }
@@ -277,7 +285,7 @@ public class BackupDryRunManifestPayloadPolicy {
         if (s.contains("..")) {
             throw reject("a field contains path traversal");
         }
-        if (DRIVE_PREFIX.matcher(s).find()) {
+        if (DRIVE_PATH.matcher(s).find()) {
             throw reject("a field contains a drive-letter path");
         }
     }

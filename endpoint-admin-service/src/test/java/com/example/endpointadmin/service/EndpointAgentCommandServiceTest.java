@@ -1214,6 +1214,7 @@ class EndpointAgentCommandServiceTest {
         m.put("dc_ea_tier", "DC-EA-1");
         m.put("device_id", deviceId);
         m.put("tenant_id", tenantId);
+        m.put("generated_at", "2026-06-14T21:00:00Z");
         m.put("allowlist_profile_id", "prof-1");
         m.put("scope", scope);
         m.put("entries", new java.util.ArrayList<>(java.util.List.of(entry)));

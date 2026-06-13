@@ -391,6 +391,7 @@ public class EndpointAgentCommandService {
                 backupDryRunManifestPayloadPolicy.validate(
                         request.details(),
                         request.summary(),
+                        request.errorCode(),
                         request.errorMessage(),
                         command.getDevice().getId().toString(),
                         String.valueOf(command.getTenantId()));
