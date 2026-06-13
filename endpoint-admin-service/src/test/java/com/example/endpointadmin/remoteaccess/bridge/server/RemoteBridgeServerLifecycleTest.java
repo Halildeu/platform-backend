@@ -72,6 +72,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeOperatorService"));
             assertFalse(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
             assertFalse(context.containsBean("remoteBridgeOperatorStepUpHandler"));
+            assertFalse(context.containsBean("remoteBridgeOperatorAuthenticator"));
             assertEquals(0, context.getBeanNamesForType(RemoteBridgeServerProperties.class).length);
         });
     }
@@ -88,6 +89,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeOperatorService"));
             assertFalse(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
             assertFalse(context.containsBean("remoteBridgeOperatorStepUpHandler"));
+            assertFalse(context.containsBean("remoteBridgeOperatorAuthenticator"));
         });
     }
 
@@ -102,7 +104,9 @@ class RemoteBridgeServerLifecycleTest {
                 "remote-bridge.permit.kid=kid-1",
                 "remote-bridge.recording.anchor-key.path=" + anchorKeyPath(),
                 "remote-bridge.step-up.expected-origin=https://operator.acik.com",
-                "remote-bridge.step-up.expected-rp-id=operator.acik.com").run(context -> {
+                "remote-bridge.step-up.expected-rp-id=operator.acik.com",
+                "remote-bridge.operator-auth.in-memory-token=ref-operator-token-1",
+                "remote-bridge.operator-auth.in-memory-subject=operator@acik.com").run(context -> {
             Throwable failure = context.getStartupFailure();
             assertTrue(failure != null, "the context must fail to start");
             Throwable root = failure;
@@ -230,7 +234,10 @@ class RemoteBridgeServerLifecycleTest {
                 "remote-bridge.recording.anchor-key.path=" + anchorKeyPath(),
                 // D step-up: the verifier bean's origin/RP pinning is mandatory for an enabled broker
                 "remote-bridge.step-up.expected-origin=https://operator.acik.com",
-                "remote-bridge.step-up.expected-rp-id=operator.acik.com")
+                "remote-bridge.step-up.expected-rp-id=operator.acik.com",
+                // slice-4c-2a: the operator authenticator bean's reference config is mandatory for an enabled broker
+                "remote-bridge.operator-auth.in-memory-token=ref-operator-token-1",
+                "remote-bridge.operator-auth.in-memory-subject=operator@acik.com")
                 .run(context -> {
                     RemoteBridgeGrpcServer server = context.getBean(RemoteBridgeGrpcServer.class);
                     assertTrue(server.isRunning(), "SmartLifecycle must have started the server");
@@ -253,6 +260,8 @@ class RemoteBridgeServerLifecycleTest {
                     // D step-up: the operator step-up verifier is wired (consumed by the slice-4c transport)
                     assertTrue(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
                     assertTrue(context.containsBean("remoteBridgeOperatorStepUpHandler"));
+                    // slice-4c-2a: the operator authenticator is wired (consumed by the slice-4c REST transport)
+                    assertTrue(context.containsBean("remoteBridgeOperatorAuthenticator"));
                     server.stop();
                     assertFalse(server.isRunning());
                 });
