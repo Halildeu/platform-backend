@@ -57,6 +57,7 @@ public class EndpointAgentCommandService {
     private final com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy;
     private final com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy;
     private final com.example.endpointadmin.security.AppControlPayloadPolicy appControlPayloadPolicy;
+    private final com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy backupDryRunManifestPayloadPolicy;
     private final EndpointSoftwareInventoryService softwareInventoryService;
     private final EndpointHardwareInventoryService hardwareInventoryService;
     private final EndpointDeviceHealthService deviceHealthService;
@@ -103,6 +104,7 @@ public class EndpointAgentCommandService {
                                        com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy,
                                        com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy,
                                        com.example.endpointadmin.security.AppControlPayloadPolicy appControlPayloadPolicy,
+                                       com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy backupDryRunManifestPayloadPolicy,
                                        EndpointSoftwareInventoryService softwareInventoryService,
                                        EndpointHardwareInventoryService hardwareInventoryService,
                                        EndpointDeviceHealthService deviceHealthService,
@@ -132,6 +134,7 @@ public class EndpointAgentCommandService {
         this.servicesPayloadPolicy = servicesPayloadPolicy;
         this.startupExposurePayloadPolicy = startupExposurePayloadPolicy;
         this.appControlPayloadPolicy = appControlPayloadPolicy;
+        this.backupDryRunManifestPayloadPolicy = backupDryRunManifestPayloadPolicy;
         this.softwareInventoryService = softwareInventoryService;
         this.hardwareInventoryService = hardwareInventoryService;
         this.deviceHealthService = deviceHealthService;
@@ -370,6 +373,27 @@ public class EndpointAgentCommandService {
                 throw new ResultSubmissionRejectedException(ex.getMessage());
             }
             effectiveDetails = uninstallEvidencePayloadPolicy.redact(request.details());
+        }
+
+        // Faz 22.8A (#117) — COLLECT_BACKUP_DRYRUN server-side MIRROR validator
+        // (contract §5). The agent's metadata-only manifest is re-validated
+        // against the same contract (path-free, bounded enums, DC-EA-RED
+        // denied-aggregate, aggregate invariants, device/tenant binding) so a
+        // buggy or compromised agent cannot persist a manifest that breaks the
+        // privacy boundary. The validator NEVER reads content (there is none in
+        // the manifest); a violation throws a path-free IllegalArgumentException
+        // → 400 + bounded command error, mirroring the INSTALL/UNINSTALL flow.
+        if (command.getCommandType() == CommandType.COLLECT_BACKUP_DRYRUN
+                && request.details() != null) {
+            try {
+                backupDryRunManifestPayloadPolicy.validate(
+                        request.details(),
+                        command.getDevice().getId().toString(),
+                        String.valueOf(command.getTenantId()));
+            } catch (IllegalArgumentException ex) {
+                markResultRejected(command, request, ex.getMessage());
+                throw new ResultSubmissionRejectedException(ex.getMessage());
+            }
         }
 
         Instant now = Instant.now(clock);
