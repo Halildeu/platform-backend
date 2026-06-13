@@ -4,10 +4,14 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpAsser
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChallenge;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
+import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSession;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import com.example.endpointadmin.remoteaccess.bridge.server.OperatorAuthenticator.OperatorIdentity;
@@ -22,8 +26,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 import java.util.function.LongSupplier;
 
 /**
@@ -64,14 +73,16 @@ public class RemoteBridgeOperatorController {
     private final OperatorStepUpHandler stepUpHandler;
     private final OperatorAuthenticator authenticator;
     private final RemoteBridgeSessionStore sessionStore;
+    private final ConnectedDeviceResolver deviceResolver;
     private final LongSupplier clock;
 
     @Autowired
     public RemoteBridgeOperatorController(RemoteBridgeOperatorService operatorService,
                                           OperatorStepUpHandler stepUpHandler,
                                           OperatorAuthenticator authenticator,
-                                          RemoteBridgeSessionStore sessionStore) {
-        this(operatorService, stepUpHandler, authenticator, sessionStore, System::currentTimeMillis);
+                                          RemoteBridgeSessionStore sessionStore,
+                                          ConnectedDeviceResolver deviceResolver) {
+        this(operatorService, stepUpHandler, authenticator, sessionStore, deviceResolver, System::currentTimeMillis);
     }
 
     /** Package-private seam so a test can pin the clock. */
@@ -79,12 +90,64 @@ public class RemoteBridgeOperatorController {
                                    OperatorStepUpHandler stepUpHandler,
                                    OperatorAuthenticator authenticator,
                                    RemoteBridgeSessionStore sessionStore,
+                                   ConnectedDeviceResolver deviceResolver,
                                    LongSupplier clock) {
         this.operatorService = Objects.requireNonNull(operatorService, "operatorService");
         this.stepUpHandler = Objects.requireNonNull(stepUpHandler, "stepUpHandler");
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
+        this.deviceResolver = Objects.requireNonNull(deviceResolver, "deviceResolver");
         this.clock = Objects.requireNonNull(clock, "clock");
+    }
+
+    /**
+     * Open an ATTENDED session to a device the operator's OWN tenant owns: resolve the verified connected peer
+     * ({@link ConnectedDeviceResolver}), then drive the broker's consent flow. The operator subject AND tenant
+     * come from the AUTHENTICATED identity, never the body — the body only names the target device + reason +
+     * capabilities. This is the path-LESS create (no {@code {sessionId}}), so the operator-supplied sessionId is
+     * an idempotency key (the store's open is putIfAbsent), not a way to target another operator's session.
+     */
+    @PostMapping("/sessions")
+    public ResponseEntity<?> openSession(@RequestBody(required = false) OpenSessionRequestBody body,
+                                         HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        // the tenant is the operator's VERIFIED tenant — a non-UUID tenant is an unusable identity; refuse
+        // before any resolver/service call (Codex: tenant parse failure must not reach the data plane)
+        UUID tenantId = parseUuidOrNull(identity.tenantId());
+        if (tenantId == null) {
+            return unauthenticated();
+        }
+        if (body == null || body.sessionId() == null || body.sessionId().isBlank()
+                || body.deviceId() == null || body.deviceId().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        UUID deviceId = parseUuidOrNull(body.deviceId());
+        if (deviceId == null) {
+            return ResponseEntity.badRequest().build(); // a malformed client-supplied deviceId is a bad request
+        }
+        Set<RemoteSessionCapability> capabilities;
+        try {
+            capabilities = parseCapabilities(body.capabilities());
+        } catch (IllegalArgumentException unknownCapability) {
+            return ResponseEntity.badRequest().build();
+        }
+        PeerIdentity peer = deviceResolver
+                .resolveConnectedPeer(tenantId, deviceId, Instant.ofEpochMilli(clock.getAsLong()))
+                .orElse(null);
+        if (peer == null) {
+            return notFound(); // not connected / not enrolled / cross-tenant — same 404, no existence oracle
+        }
+        // operatorSubject is the AUTHENTICATED subject (never a client field); the resolved peer is the target
+        SessionRequest sessionRequest = new SessionRequest(body.sessionId(), body.deviceId(),
+                identity.operatorSubject(), body.reason(), capabilities);
+        SessionOpenOutcome outcome = operatorService.openSession(sessionRequest, peer, identity.operatorSubject());
+        if (!outcome.opened()) {
+            return ResponseEntity.unprocessableEntity().body(new RejectedResponse(outcome.rejectReason()));
+        }
+        return ResponseEntity.ok(new OpenSessionResponse(outcome.sessionId(), outcome.consentPromptSent()));
     }
 
     /** Issue a fresh step-up challenge for the operator's own session (replaces any prior pending one). */
@@ -177,7 +240,37 @@ public class RemoteBridgeOperatorController {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
     }
 
+    /** Parse a canonical UUID or null — a non-UUID value never reaches the data plane (fail-closed). */
+    private static UUID parseUuidOrNull(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw.trim());
+        } catch (IllegalArgumentException notAUuid) {
+            return null;
+        }
+    }
+
+    /** Map the requested capability names to the enum; an unknown name throws (the caller maps it to 400). */
+    private static Set<RemoteSessionCapability> parseCapabilities(List<String> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return Set.of();
+        }
+        EnumSet<RemoteSessionCapability> capabilities = EnumSet.noneOf(RemoteSessionCapability.class);
+        for (String name : requested) {
+            capabilities.add(RemoteSessionCapability.valueOf(name)); // unknown capability → IllegalArgumentException
+        }
+        return capabilities;
+    }
+
     // ---- wire DTOs (server-shaped; the operator subject is NEVER taken from a request body) ----
+
+    public record OpenSessionRequestBody(String sessionId, String deviceId, String reason, List<String> capabilities) {
+    }
+
+    public record OpenSessionResponse(String sessionId, boolean consentPromptSent) {
+    }
 
     public record ChallengeResponse(String challengeB64, String expectedOrigin, long issuedAtEpochMillis) {
     }

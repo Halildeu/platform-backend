@@ -8,6 +8,7 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Files;
@@ -40,6 +41,7 @@ class RemoteBridgePermitSigningConfigTest {
     // datasource stands in; the signer bean inits FIRST, so a missing-signer test still fails on the signer.
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+            .withBean(EndpointMachineCertRepository.class, () -> mock(EndpointMachineCertRepository.class))
             .withUserConfiguration(RemoteBridgeServerConfig.class);
 
     private static KeyPair ec(String curve) throws Exception {

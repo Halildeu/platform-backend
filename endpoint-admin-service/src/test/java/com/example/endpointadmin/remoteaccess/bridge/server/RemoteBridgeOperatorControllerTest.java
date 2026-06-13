@@ -9,9 +9,11 @@ import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,12 +54,15 @@ class RemoteBridgeOperatorControllerTest {
     private static final String OWNER = "operator@acik.com";
     private static final String OTHER = "other-operator@acik.com";
     private static final String TENANT = "11111111-1111-1111-1111-111111111111";
+    private static final String DEVICE_UUID = "22222222-2222-2222-2222-222222222222";
     private static final long NOW = 5_000L;
     private static final String AUTH = "Bearer " + TOKEN;
     private static final String BASE = "/internal/remote-bridge/operator/sessions/";
+    private static final String OPEN = "/internal/remote-bridge/operator/sessions";
 
     private final RemoteBridgeOperatorService operatorService = mock(RemoteBridgeOperatorService.class);
     private final OperatorStepUpHandler stepUpHandler = mock(OperatorStepUpHandler.class);
+    private final ConnectedDeviceResolver deviceResolver = mock(ConnectedDeviceResolver.class);
     private final RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
     private MockMvc mvc;
 
@@ -67,7 +72,7 @@ class RemoteBridgeOperatorControllerTest {
         openSession("s-foreign", OTHER, "dev-foreign", "peer-foreign");
         OperatorAuthenticator authenticator = new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT);
         RemoteBridgeOperatorController controller = new RemoteBridgeOperatorController(
-                operatorService, stepUpHandler, authenticator, store, () -> NOW);
+                operatorService, stepUpHandler, authenticator, store, deviceResolver, () -> NOW);
         mvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -232,6 +237,101 @@ class RemoteBridgeOperatorControllerTest {
         verify(operatorService, never()).handleOperationRequest(any());
     }
 
+    // ---- openSession: resolve the verified peer (tenant from identity, deviceId from body), then consent flow ----
+
+    private static String openBody(String sessionId, String deviceId) {
+        return "{\"sessionId\":\"" + sessionId + "\",\"deviceId\":\"" + deviceId
+                + "\",\"reason\":\"support\",\"capabilities\":[\"VIEW_ONLY\"]}";
+    }
+
+    @Test
+    void anUnauthenticatedOpenSessionIs401AndTouchesNothing() throws Exception {
+        mvc.perform(post(OPEN).contentType(MediaType.APPLICATION_JSON).content(openBody("s-new", DEVICE_UUID)))
+                .andExpect(status().isUnauthorized());
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+        verify(operatorService, never()).openSession(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionWithABlankSessionIdOrDeviceIdIs400() throws Exception {
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"sessionId\":\"\",\"deviceId\":\"" + DEVICE_UUID + "\"}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"sessionId\":\"s-new\",\"deviceId\":\"\"}"))
+                .andExpect(status().isBadRequest());
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionWithAMalformedDeviceIdIs400AndNeverResolves() throws Exception {
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", "not-a-uuid")))
+                .andExpect(status().isBadRequest());
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionWithAnUnknownCapabilityIs400() throws Exception {
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"sessionId\":\"s-new\",\"deviceId\":\"" + DEVICE_UUID
+                        + "\",\"capabilities\":[\"NOT_A_REAL_CAPABILITY\"]}"))
+                .andExpect(status().isBadRequest());
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionForADeviceWithNoConnectedPeerIs404() throws Exception {
+        when(deviceResolver.resolveConnectedPeer(any(), any(), any())).thenReturn(Optional.empty());
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", DEVICE_UUID)))
+                .andExpect(status().isNotFound());
+        verify(operatorService, never()).openSession(any(), any(), any());
+    }
+
+    @Test
+    void anOpenSessionResolvesThePeerAndDerivesTheOperatorSubjectFromTheIdentity() throws Exception {
+        PeerIdentity peer = new PeerIdentity("peer-new", Optional.of("dev"), List.of());
+        when(deviceResolver.resolveConnectedPeer(any(), any(), any())).thenReturn(Optional.of(peer));
+        when(operatorService.openSession(any(), any(), any()))
+                .thenReturn(new SessionOpenOutcome("s-new", true, null));
+
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", DEVICE_UUID)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sessionId").value("s-new"))
+                .andExpect(jsonPath("$.consentPromptSent").value(true));
+
+        ArgumentCaptor<SessionRequest> captor = ArgumentCaptor.forClass(SessionRequest.class);
+        verify(operatorService).openSession(captor.capture(), eq(peer), eq(OWNER));
+        assertEquals(OWNER, captor.getValue().operatorSubject(), "operatorSubject must come from the AUTH identity");
+        assertEquals(DEVICE_UUID, captor.getValue().deviceId());
+    }
+
+    @Test
+    void anOpenSessionTheServiceRejectsIs422() throws Exception {
+        when(deviceResolver.resolveConnectedPeer(any(), any(), any()))
+                .thenReturn(Optional.of(new PeerIdentity("peer-new", Optional.empty(), List.of())));
+        when(operatorService.openSession(any(), any(), any()))
+                .thenReturn(new SessionOpenOutcome("s-new", false, "consent-prompt-not-delivered"));
+        mvc.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", DEVICE_UUID)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.reason").value("consent-prompt-not-delivered"));
+    }
+
+    @Test
+    void anOpenSessionWithANonUuidIdentityTenantIs401AndNeverResolves() throws Exception {
+        // a verified identity with a non-UUID tenant is unusable for tenant-scoping → fail-closed before the data plane
+        RemoteBridgeOperatorController badTenant = new RemoteBridgeOperatorController(operatorService, stepUpHandler,
+                new InMemoryOperatorAuthenticator(TOKEN, OWNER, "not-a-uuid"), store, deviceResolver, () -> NOW);
+        MockMvc mvcBad = MockMvcBuilders.standaloneSetup(badTenant).build();
+        mvcBad.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
+                .content(openBody("s-new", DEVICE_UUID)))
+                .andExpect(status().isUnauthorized());
+        verify(deviceResolver, never()).resolveConnectedPeer(any(), any(), any());
+    }
+
     // ---- disabled-by-default: the @ConditionalOnProperty(operator-rest.enabled) gate ----
 
     @Test
@@ -241,6 +341,7 @@ class RemoteBridgeOperatorControllerTest {
                 .withBean(OperatorStepUpHandler.class, () -> mock(OperatorStepUpHandler.class))
                 .withBean(OperatorAuthenticator.class, () -> new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT))
                 .withBean(RemoteBridgeSessionStore.class, RemoteBridgeSessionStore::new)
+                .withBean(ConnectedDeviceResolver.class, () -> mock(ConnectedDeviceResolver.class))
                 .withConfiguration(UserConfigurations.of(RemoteBridgeOperatorController.class));
 
         // default (property absent) → fail-closed: no controller bean, no endpoint

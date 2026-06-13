@@ -18,12 +18,14 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
+import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -334,6 +336,20 @@ public class RemoteBridgeServerConfig {
         return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
                 remoteBridgeBroker, remoteBridgeControlStreamRegistry, System::currentTimeMillis,
                 consentPromptTtlMillis);
+    }
+
+    /**
+     * Faz 22.6 slice-4c-2b-2a/2b-2b — the operator-side device→peer resolver: maps an operator's
+     * {@code (tenantId, deviceId)} to the connected agent peer (via the device's active cert thumbprint =
+     * transportPeerKey), fail-closed at every gate. The operator REST {@code openSession} consumes it to find
+     * the verified target before driving the consent flow. Wired here (the bridge gains a read-only dependency
+     * on {@link EndpointMachineCertRepository}); disabled-by-default with the rest of the broker.
+     */
+    @Bean
+    public ConnectedDeviceResolver remoteBridgeConnectedDeviceResolver(
+            EndpointMachineCertRepository endpointMachineCertRepository,
+            ControlStreamRegistry remoteBridgeControlStreamRegistry) {
+        return new ConnectedDeviceResolver(endpointMachineCertRepository, remoteBridgeControlStreamRegistry);
     }
 
     @Bean
