@@ -146,8 +146,8 @@ class RemoteSessionApprovalRecorderTest {
     @Test
     void everyOutcomeIsAuditedWithItsDistinctReason() {
         java.util.List<String> audited = new java.util.ArrayList<>();
-        ApprovalDecisionAuditSink sink = (sessionId, operatorSubject, approverPrincipal, result, now) ->
-                audited.add(sessionId + ":" + operatorSubject + ":" + approverPrincipal + ":" + result);
+        ApprovalDecisionAuditSink sink = r ->
+                audited.add(r.sessionId() + ":" + r.operatorSubject() + ":" + r.approverPrincipal() + ":" + r.result());
         RemoteSessionApprovalRecorder rec = new RemoteSessionApprovalRecorder(
                 flow(new ApprovalFatigueLimiter(5, WINDOW)), new InMemoryApprovalGrantStore(), TTL, sink);
         // a valid approval → RECORDED audited; a tenant mismatch → DENIED_TENANT_MISMATCH audited (distinct reason)
@@ -156,6 +156,19 @@ class RemoteSessionApprovalRecorderTest {
         assertEquals(java.util.List.of(
                 SID + ":" + OPERATOR + ":" + APPROVER + ":RECORDED",
                 SID + ":" + OPERATOR + ":" + APPROVER + ":DENIED_TENANT_MISMATCH"), audited);
+    }
+
+    @Test
+    void aThrowingAuditSinkPropagates() {
+        // grant + audit run in one transaction boundary — a failing audit must NOT be swallowed; it propagates so
+        // the caller's transaction rolls back (the durable grant+audit atomicity is proven in the PG IT)
+        ApprovalDecisionAuditSink throwing = r -> {
+            throw new IllegalStateException("durable audit down");
+        };
+        RemoteSessionApprovalRecorder rec = new RemoteSessionApprovalRecorder(
+                flow(new ApprovalFatigueLimiter(5, WINDOW)), new InMemoryApprovalGrantStore(), TTL, throwing);
+        assertThrows(IllegalStateException.class,
+                () -> rec.record(session(), APPROVER, TENANT, Set.of(RemoteSessionCapability.VIEW_ONLY), NOW));
     }
 
     @Test
