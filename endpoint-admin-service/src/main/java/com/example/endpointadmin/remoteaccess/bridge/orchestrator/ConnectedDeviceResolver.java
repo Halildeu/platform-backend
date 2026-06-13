@@ -70,8 +70,8 @@ public final class ConnectedDeviceResolver {
         if (!withinValidity(cert, now)) {
             return Optional.empty(); // expired / not-yet-valid / null window — fail-closed
         }
-        if (!deviceEligible(cert)) {
-            return Optional.empty(); // null device/status, PENDING_ENROLLMENT, or DECOMMISSIONED — fail-closed
+        if (!deviceEligible(cert, tenantId)) {
+            return Optional.empty(); // null device/status, cross-tenant device, PENDING_ENROLLMENT, or DECOMMISSIONED
         }
         String thumbprint = canonicalThumbprint(cert.getCertThumbprint());
         if (thumbprint == null) {
@@ -88,9 +88,14 @@ public final class ConnectedDeviceResolver {
                 && !now.isBefore(notBefore) && now.isBefore(notAfter);
     }
 
-    private static boolean deviceEligible(EndpointMachineCert cert) {
+    private static boolean deviceEligible(EndpointMachineCert cert, UUID tenantId) {
         EndpointDevice device = cert.getDevice();
         if (device == null || device.getStatus() == null) {
+            return false;
+        }
+        // defense-in-depth (Codex REVISE): device_id is a single-column FK, so a corrupt/raced row could pair a
+        // tenant-A cert with a tenant-B device — re-check the device's own tenant even though the query pins it
+        if (!Objects.equals(device.getTenantId(), tenantId)) {
             return false;
         }
         return !INELIGIBLE_STATUSES.contains(device.getStatus());

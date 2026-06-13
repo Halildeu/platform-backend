@@ -32,6 +32,7 @@ import static org.mockito.Mockito.when;
 class ConnectedDeviceResolverTest {
 
     private static final UUID TENANT = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID OTHER_TENANT = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final UUID DEVICE = UUID.fromString("22222222-2222-2222-2222-222222222222");
     private static final String THUMBPRINT = "a".repeat(64); // canonical lowercase 64-hex
     private static final Instant NOW = Instant.parse("2026-06-13T12:00:00Z");
@@ -41,8 +42,14 @@ class ConnectedDeviceResolverTest {
     private final ConnectedDeviceResolver resolver = new ConnectedDeviceResolver(certs, registry);
 
     private EndpointMachineCert cert(String thumbprint, Instant notBefore, Instant notAfter, DeviceStatus status) {
+        return cert(thumbprint, notBefore, notAfter, status, TENANT);
+    }
+
+    private EndpointMachineCert cert(String thumbprint, Instant notBefore, Instant notAfter, DeviceStatus status,
+                                     UUID deviceTenant) {
         EndpointDevice device = mock(EndpointDevice.class);
         when(device.getStatus()).thenReturn(status);
+        when(device.getTenantId()).thenReturn(deviceTenant);
         EndpointMachineCert cert = mock(EndpointMachineCert.class);
         when(cert.getCertThumbprint()).thenReturn(thumbprint);
         when(cert.getCertNotBefore()).thenReturn(notBefore);
@@ -136,6 +143,15 @@ class ConnectedDeviceResolverTest {
         activeCertIs(cert(THUMBPRINT, NOW.minusSeconds(60), NOW.plusSeconds(60), DeviceStatus.PENDING_ENROLLMENT));
         assertTrue(resolver.resolveConnectedPeer(TENANT, DEVICE, NOW).isEmpty());
         activeCertIs(cert(THUMBPRINT, NOW.minusSeconds(60), NOW.plusSeconds(60), null));
+        assertTrue(resolver.resolveConnectedPeer(TENANT, DEVICE, NOW).isEmpty());
+        verify(registry, never()).connectedPeer(anyString());
+    }
+
+    @Test
+    void aDeviceWhoseTenantDiffersFromTheRequestedTenantIsEmpty() {
+        // defense-in-depth (Codex REVISE): device_id is a single-column FK — a corrupt/raced row could pair a
+        // tenant-A cert with a tenant-B device; the resolver re-checks the device's own tenant, fail-closed
+        activeCertIs(cert(THUMBPRINT, NOW.minusSeconds(60), NOW.plusSeconds(60), DeviceStatus.ONLINE, OTHER_TENANT));
         assertTrue(resolver.resolveConnectedPeer(TENANT, DEVICE, NOW).isEmpty());
         verify(registry, never()).connectedPeer(anyString());
     }

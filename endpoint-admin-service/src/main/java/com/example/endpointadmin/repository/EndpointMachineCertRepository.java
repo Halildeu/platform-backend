@@ -54,12 +54,18 @@ public interface EndpointMachineCertRepository extends JpaRepository<EndpointMac
      * a cross-tenant device row is never materialized) + {@code revoked_at IS NULL} (the partial unique index
      * keeps it single-active). {@code JOIN FETCH c.device} so the operator-side resolver can read the device
      * status outside an open transaction without a lazy-init failure.
+     *
+     * <p>BOTH the cert row's tenant AND the joined device row's tenant are pinned to {@code :tenantId} (Codex
+     * REVISE): {@code device_id} is a single-column FK, so a corrupt/raced/hand-edited row could pair a
+     * tenant-A cert with a tenant-B device; a security boundary must refuse it, so the device tenant is part of
+     * the query predicate (the resolver also re-checks it post-fetch, defense-in-depth).
      */
     @Query("""
             SELECT c FROM EndpointMachineCert c
-            JOIN FETCH c.device
+            JOIN FETCH c.device d
             WHERE c.tenantId = :tenantId
-              AND c.device.id = :deviceId
+              AND d.id = :deviceId
+              AND d.tenantId = :tenantId
               AND c.revokedAt IS NULL
             """)
     Optional<EndpointMachineCert> findActiveByTenantIdAndDeviceId(
