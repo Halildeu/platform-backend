@@ -15,10 +15,13 @@ import java.util.Set;
  * absence of evidence is never read as trust.
  *
  * <ul>
- *   <li><b>trust (cert/attestation/device):</b> from {@link PeerTrustLedger#fresh} — a missing/stale peer
- *       trust ⇒ all three FALSE (no fresh verifier evidence ⇒ untrusted). Device trust additionally requires
- *       the ledger device identities to be CONSISTENT with the session's device id (a {@code helloDeviceId}
- *       or {@code certBoundDeviceId} that disagrees ⇒ {@code deviceTrusted=false}, Codex hardening).</li>
+ *   <li><b>cert/attestation:</b> from {@link PeerTrustLedger#fresh} — a missing/stale peer trust ⇒ both FALSE
+ *       (no fresh verifier evidence ⇒ untrusted).</li>
+ *   <li><b>device:</b> from the injected {@link SessionDeviceTrustVerifier} (D10.1 slice-3b) — e.g. the
+ *       enrolled-active machine-cert basis — NOT the ledger's (future) hardware-attestation {@code deviceTrusted}.
+ *       It is ANDed with ledger device-identity CONSISTENCY: a {@code helloDeviceId}/{@code certBoundDeviceId} that
+ *       disagrees with the session's device id, or a missing peer trust (null), ⇒ {@code deviceTrusted=false}
+ *       (fail-closed, Codex hardening).</li>
  *   <li><b>granted capabilities:</b> {@link OwnerTokenGate#effectiveGrant}(owner-token grant ∩ session
  *       request ∩ pilot allowlist) — owner-authoritative, request-narrowing, pilot-bounded.</li>
  *   <li><b>duress:</b> from an injected {@link DuressSignalSource}. Until the transport duress-classification
@@ -47,14 +50,32 @@ public final class TrustEvidenceAssembler {
 
     private final PeerTrustLedger ledger;
     private final OwnerTokenGate ownerGate;
+    private final SessionDeviceTrustVerifier deviceTrustVerifier;
     private final DuressSignalSource duressSource;
 
+    /**
+     * Canonical wiring (Faz 22.6 D10.1 slice-3b): {@code deviceTrustVerifier} decides device trust from the
+     * session context (the enrolled-active machine-cert basis). A null verifier is the unwired state →
+     * {@link DenyAllSessionDeviceTrustVerifier} (device trust never established, fail-closed), never an NPE.
+     */
     public TrustEvidenceAssembler(PeerTrustLedger ledger, OwnerTokenGate ownerGate,
+                                  SessionDeviceTrustVerifier deviceTrustVerifier,
                                   DuressSignalSource duressSource) {
         this.ledger = Objects.requireNonNull(ledger, "ledger");
         this.ownerGate = Objects.requireNonNull(ownerGate, "ownerGate");
+        this.deviceTrustVerifier = deviceTrustVerifier == null
+                ? DenyAllSessionDeviceTrustVerifier.INSTANCE : deviceTrustVerifier;
         // a null source is the unwired state → fail-closed AMBIGUOUS, never a silent NONE
         this.duressSource = duressSource == null ? DuressSignalSource.AMBIGUOUS_UNTIL_WIRED : duressSource;
+    }
+
+    /**
+     * Back-compat / no-device-trust construction: NO device-trust verifier wired ⇒ device trust is never
+     * established ({@link DenyAllSessionDeviceTrustVerifier}, fail-closed). The pilot wires the 4-arg ctor.
+     */
+    public TrustEvidenceAssembler(PeerTrustLedger ledger, OwnerTokenGate ownerGate,
+                                  DuressSignalSource duressSource) {
+        this(ledger, ownerGate, DenyAllSessionDeviceTrustVerifier.INSTANCE, duressSource);
     }
 
     public RemoteBridgeTrustEvidence assemble(RemoteBridgeSession session, long nowEpochMillis) {
@@ -63,7 +84,14 @@ public final class TrustEvidenceAssembler {
 
         boolean certTrusted = trust != null && trust.certTrusted();
         boolean attestationVerified = trust != null && trust.attestationVerified();
-        boolean deviceTrusted = trust != null && trust.deviceTrusted()
+        // device trust now comes from the session device-trust verifier (slice-3b): the enrolled-active machine
+        // cert basis, NOT the ledger's (pilot-empty) hardware-attestation deviceTrusted. The ledger device-identity
+        // cross-check still ANDs in — a peer presenting a different device id voids it, and a missing peer trust
+        // (null) cannot confirm consistency → false (fail-closed). The decision's basis is auditable + honest
+        // (enrollment ≠ hardware key attestation).
+        SessionDeviceTrustVerifier.DeviceTrustDecision deviceDecision =
+                deviceTrustVerifier.verify(session, trust, nowEpochMillis);
+        boolean deviceTrusted = deviceDecision.trusted()
                 && deviceIdentitiesConsistent(trust, session.deviceId());
 
         Set<RemoteSessionCapability> granted = OwnerTokenGate.effectiveGrant(
@@ -94,8 +122,8 @@ public final class TrustEvidenceAssembler {
      * presenting a different device id is exactly the binding attack device trust must refuse).
      */
     static boolean deviceIdentitiesConsistent(PeerTrust trust, String sessionDeviceId) {
-        if (sessionDeviceId == null || sessionDeviceId.isBlank()) {
-            return false;
+        if (trust == null || sessionDeviceId == null || sessionDeviceId.isBlank()) {
+            return false; // no peer-trust evidence (or no session device id) cannot confirm device consistency
         }
         if (trust.helloDeviceId() != null && !trust.helloDeviceId().equals(sessionDeviceId)) {
             return false;
