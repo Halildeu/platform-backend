@@ -33,7 +33,24 @@ public final class InMemoryCanonicalIdentityResolver implements CanonicalIdentit
             if (principal == null || principal.isBlank() || canonical == null || canonical.isBlank()) {
                 throw new IllegalArgumentException("blank principal or canonical subject is not allowed");
             }
-            normalized.put(principal.strip(), canonical.strip());
+            String key = principal.strip();
+            // a normalized-duplicate principal (e.g. "u1" and " u1 ") would be a non-deterministic last-writer-
+            // wins overwrite — reject so the mapping is unambiguous (Codex REVISE)
+            if (normalized.containsKey(key)) {
+                throw new IllegalArgumentException("duplicate normalized principal: " + key);
+            }
+            normalized.put(key, canonical.strip());
+        });
+        // canonical subjects MUST be terminal/idempotent: if a canonical value is itself a principal key, that
+        // key must map to itself — otherwise the same human appears under two distinct canonicals (e.g.
+        // u1→uid-123 but u1-alias→u1: a single-hop resolve makes them look distinct → a self-approval BYPASS).
+        // The resolver does a single hop by design, so non-terminal canonicals are a config error (Codex REVISE).
+        normalized.forEach((principal, canonical) -> {
+            String terminal = normalized.get(canonical);
+            if (terminal != null && !terminal.equals(canonical)) {
+                throw new IllegalArgumentException("canonical subject must be terminal/idempotent: '" + canonical
+                        + "' is itself a principal that further maps to '" + terminal + "'");
+            }
         });
         this.principalToCanonical = Map.copyOf(normalized);
     }

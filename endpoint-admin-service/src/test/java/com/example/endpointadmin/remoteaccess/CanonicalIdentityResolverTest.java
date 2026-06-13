@@ -59,6 +59,34 @@ class CanonicalIdentityResolverTest {
                 () -> new InMemoryCanonicalIdentityResolver(java.util.Collections.singletonMap("u1", " ")));
     }
 
+    @Test
+    void aNormalizedDuplicatePrincipalIsRejected() {
+        // "u1" and " u1 " both normalize to "u1" → non-deterministic last-writer-wins; reject (Codex REVISE)
+        assertThrows(IllegalArgumentException.class,
+                () -> new InMemoryCanonicalIdentityResolver(Map.of("u1", "x", " u1 ", "y")));
+    }
+
+    @Test
+    void aNonTerminalCanonicalSubjectIsRejected() {
+        // u1→uid-123 but u1-alias→u1: a single-hop resolve makes the same human look like two distinct
+        // canonicals (uid-123 vs u1) → a self-approval BYPASS; the ctor must reject the non-terminal canonical
+        assertThrows(IllegalArgumentException.class,
+                () -> new InMemoryCanonicalIdentityResolver(Map.of("u1", "uid-123", "u1-alias", "u1")));
+        // a terminal/idempotent mapping (u1→u1, multiple aliases→same terminal) is fine
+        CanonicalIdentityResolver ok = new InMemoryCanonicalIdentityResolver(
+                Map.of("u1", "u1", "u1-alias", "u1", "u1-proxy", "u1"));
+        assertEquals("u1", ok.canonicalSubject("u1-proxy").orElseThrow());
+    }
+
+    @Test
+    void aResolverThatThrowsIsFailClosedAtTheCaller() {
+        // defense-in-depth: a contract-violating resolver (throws instead of empty) → deny (Codex REVISE)
+        CanonicalIdentityResolver faulty = principalId -> {
+            throw new IllegalStateException("resolver boom");
+        };
+        assertFalse(RemoteSessionAuthz.approverDistinctFromRequesterCanonical(faulty, "u1", "u2"));
+    }
+
     // ---- the factory blocking-matrix ----
 
     @Test

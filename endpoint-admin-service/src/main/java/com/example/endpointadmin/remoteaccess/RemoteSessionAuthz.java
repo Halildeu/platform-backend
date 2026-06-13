@@ -77,8 +77,16 @@ public final class RemoteSessionAuthz {
         if (resolver == null) {
             return false;
         }
-        String requesterCanonical = resolver.canonicalSubject(requesterPrincipal).orElse(null);
-        String approverCanonical = resolver.canonicalSubject(approverPrincipal).orElse(null);
+        String requesterCanonical;
+        String approverCanonical;
+        try {
+            requesterCanonical = resolver.canonicalSubject(requesterPrincipal).orElse(null);
+            approverCanonical = resolver.canonicalSubject(approverPrincipal).orElse(null);
+        } catch (RuntimeException resolverFault) {
+            // the resolver contract is total, but a misbehaving (contract-violating) resolver is fail-closed
+            // here too — defense-in-depth (Codex REVISE)
+            return false;
+        }
         if (requesterCanonical == null || approverCanonical == null) {
             return false; // an unresolvable principal is fail-closed — distinctness cannot be proven
         }
