@@ -15,21 +15,30 @@ public final class InMemoryOperatorAuthenticator implements OperatorAuthenticato
 
     private final String expectedBearerToken;
     private final String operatorSubject;
+    private final String operatorTenantId;
 
     /**
      * @param expectedBearerToken the single token a reference operator must present (non-blank — a blank token
      *                            would authenticate nothing meaningful)
      * @param operatorSubject     the subject a successful reference authentication asserts (non-blank)
+     * @param operatorTenantId    the tenant a successful reference authentication asserts (non-blank — Faz
+     *                            22.6 slice-4c-2b-0, the tenancy boundary the device→peer resolver enforces; a
+     *                            real authenticator derives this from a JWT claim or the operator cert)
      */
-    public InMemoryOperatorAuthenticator(String expectedBearerToken, String operatorSubject) {
+    public InMemoryOperatorAuthenticator(String expectedBearerToken, String operatorSubject,
+                                         String operatorTenantId) {
         if (expectedBearerToken == null || expectedBearerToken.isBlank()) {
             throw new IllegalArgumentException("expectedBearerToken must be non-blank for the reference authenticator");
         }
         if (operatorSubject == null || operatorSubject.isBlank()) {
             throw new IllegalArgumentException("operatorSubject must be non-blank for the reference authenticator");
         }
+        if (operatorTenantId == null || operatorTenantId.isBlank()) {
+            throw new IllegalArgumentException("operatorTenantId must be non-blank for the reference authenticator");
+        }
         this.expectedBearerToken = expectedBearerToken;
         this.operatorSubject = operatorSubject;
+        this.operatorTenantId = operatorTenantId;
     }
 
     @Override
@@ -46,7 +55,7 @@ public final class InMemoryOperatorAuthenticator implements OperatorAuthenticato
         if (!constantTimeEquals(token, expectedBearerToken)) {
             return OperatorIdentity.unauthenticated();
         }
-        return OperatorIdentity.of(operatorSubject, AuthMethod.JWT_BEARER);
+        return OperatorIdentity.of(operatorTenantId, operatorSubject, AuthMethod.JWT_BEARER);
     }
 
     private static boolean constantTimeEquals(String a, String b) {

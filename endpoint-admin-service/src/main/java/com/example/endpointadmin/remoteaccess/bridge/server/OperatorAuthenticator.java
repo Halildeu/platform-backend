@@ -45,30 +45,38 @@ public interface OperatorAuthenticator {
 
     /**
      * The authenticated operator identity. {@code authenticated=false} is the fail-closed floor — a transport
-     * MUST refuse every operation when it is false, and the subject is then meaningless.
+     * MUST refuse every operation when it is false, and the tenant/subject are then meaningless.
+     *
+     * <p>{@code tenantId} is the operator's tenancy boundary (Faz 22.6 slice-4c-2b-0, Codex REVISE): a
+     * tenant-less authenticated operator could open a session to a device in another tenant, so an
+     * authenticated identity MUST carry a tenant. It is derived from the verified credential (a JWT tenant
+     * claim or the operator cert), NEVER from a client-supplied request field.
      */
-    record OperatorIdentity(String operatorSubject, AuthMethod authMethod, boolean authenticated) {
+    record OperatorIdentity(String tenantId, String operatorSubject, AuthMethod authMethod, boolean authenticated) {
         public OperatorIdentity {
-            // an authenticated identity MUST carry a real auth method — a null/UNAUTHENTICATED method with
-            // authenticated=true is inconsistent (an attacker forging the flag), so normalize it to unauth
-            // (Codex REVISE: the 4c-2 guard must never accept it)
-            if (authenticated && (authMethod == null || authMethod == AuthMethod.UNAUTHENTICATED)) {
+            // an authenticated identity MUST carry a real tenant AND a real auth method — a blank/null tenant or
+            // a null/UNAUTHENTICATED method with authenticated=true is inconsistent (an attacker forging the
+            // flag, or an identity with no tenancy boundary), so normalize it to unauth (Codex REVISE: the
+            // device→peer resolver tenant-scoping must never accept a tenant-less authenticated identity)
+            if (authenticated && (tenantId == null || tenantId.isBlank()
+                    || authMethod == null || authMethod == AuthMethod.UNAUTHENTICATED)) {
                 authenticated = false;
             }
         }
 
         public boolean isAuthenticated() {
-            return authenticated && operatorSubject != null && !operatorSubject.isBlank()
+            return authenticated && tenantId != null && !tenantId.isBlank()
+                    && operatorSubject != null && !operatorSubject.isBlank()
                     && authMethod != null && authMethod != AuthMethod.UNAUTHENTICATED;
         }
 
-        /** The fail-closed unauthenticated identity — no subject, no method. */
+        /** The fail-closed unauthenticated identity — no tenant, no subject, no method. */
         public static OperatorIdentity unauthenticated() {
-            return new OperatorIdentity(null, AuthMethod.UNAUTHENTICATED, false);
+            return new OperatorIdentity(null, null, AuthMethod.UNAUTHENTICATED, false);
         }
 
-        public static OperatorIdentity of(String operatorSubject, AuthMethod authMethod) {
-            return new OperatorIdentity(operatorSubject, authMethod, true);
+        public static OperatorIdentity of(String tenantId, String operatorSubject, AuthMethod authMethod) {
+            return new OperatorIdentity(tenantId, operatorSubject, authMethod, true);
         }
     }
 
