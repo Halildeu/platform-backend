@@ -76,7 +76,13 @@ import static org.mockito.Mockito.when;
  * prod-forbidden (TRANSPORT_BOUND parser, MACHINE_CERT_ENROLLMENT device trust, REAL_PKI+no-revocation). A green
  * result means "the non-prod PERMIT path composes", NOT "ready" — live/prod still needs D29-EA dual-CA PKI + real
  * CRL/OCSP + real WebAuthn credential enrollment + real provenance anchor + Vault key custody + the attended pilot.
- * It is also NOT a replay-resistant attestation proof (that is slice-3c freshness/replay).
+ *
+ * <p><b>Attestation freshness boundary (slice-3c):</b> the attestation here is STATIC build provenance — it has no
+ * per-attestation nonce, and proving it does NOT prove the currently-running process is live in this session.
+ * Session freshness is enforced by the peer-trust ledger TTL/re-verify + the consent lease + step-up freshness +
+ * the permit TTL + the transport/device binding (all exercised below, incl. the stale-trust / revoked-builder /
+ * rotated-policy negatives). A true session-bound RUNTIME attestation (a per-session signed challenge) would be a
+ * separate protocol/evidence type, not this static SLSA provenance.
  */
 class RemoteBridgeNonProdPermitCompositionE2ETest {
 
@@ -122,6 +128,11 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
     private DuressSignal duress = DuressSignal.NONE;
     private boolean auditThrows = false;
     private RemoteOperation operation = RemoteOperation.SCREEN_VIEW;
+    // slice-3c (freshness / revoke / policy-rotation) knobs
+    private long ledgerRecordAt = NOW;                    // when the ledger verified the peer (re-verify clock)
+    private long peerTrustFreshnessTtlMillis = 3_600_000L; // the stale-trust negative shrinks this below the gap
+    private boolean builderRevoked = false;              // revoke the attestation builder before recording
+    private String expectedPolicy = POLICY;              // the policy-rotation negative drifts this from the evidence
 
     /**
      * Wire the FULL real chain with the current knobs and return the broker outcome for one operation. Every
@@ -136,17 +147,22 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
         CertTrustEvaluator certEvaluator = RemoteAccessVerifierFactory.buildTrustEvaluator(
                 "REAL_PKI", "DISABLED", fixtureText(trustAnchorFixture), "", true, false, 3_600_000L);
         AttestationVerifier attestationVerifier = RemoteAccessVerifierFactory.buildAttestationVerifierOrDenyAll(
-                "KEY_BASED", BUILDER, POLICY, toPem(attestationKeys.getPublic()), ALG, false);
+                "KEY_BASED", BUILDER, expectedPolicy, toPem(attestationKeys.getPublic()), ALG, false);
+        // slice-3c: a revoked builder must fail through the WHOLE composition (the verifier returns non-VERIFIED
+        // (UNTRUSTED_BUILDER) at record time, even though the signature is otherwise valid)
+        if (builderRevoked && attestationVerifier instanceof KeyBasedAttestationVerifier keyBased) {
+            keyBased.revokeBuilder(BUILDER);
+        }
         DeviceIdentityVerifier ledgerDeviceVerifier = new DeviceIdentityVerifier(
                 Set.of(), DeviceIdentityVerifier.DeviceProtectionLevel.SECURE_ELEMENT_OR_TPM);
         PeerTrustLedger ledger = new PeerTrustLedger(certEvaluator, attestationVerifier, ledgerDeviceVerifier,
-                new TransportBoundPeerEvidenceParser(), 3_600_000L);
+                new TransportBoundPeerEvidenceParser(), peerTrustFreshnessTtlMillis);
 
         // 2) the agent peer (transport leaf) + record its hello → the real verifiers run in the ledger
         PeerIdentity peer = new PeerIdentity(leafThumbprint, Optional.of(DEVICE), List.of(leaf, intermediate));
         AgentHello hello = new AgentHello("0.2.3", DEVICE, leafThumbprint,
                 attestationEvidenceB64(validAttestation), "rb-v1", Set.of(RemoteSessionCapability.VIEW_ONLY));
-        ledger.record(peer, hello, NOW);
+        ledger.record(peer, hello, ledgerRecordAt);
 
         // 3) device trust = the real enrollment verifier (3b) over a real resolver. The DB row (machine cert) and
         //    the live-connection lookup are mocked DATA SOURCES — the resolver still runs every fail-closed gate.
@@ -332,6 +348,42 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
         BrokerOutcome outcome = run();
         assertEquals(Kind.DENY, outcome.kind());
         assertEquals("recording-failed", outcome.reason(), "no permit is issued without a durable record");
+    }
+
+    // ===================== slice-3c: freshness / revoke / policy-rotation =====================
+    // The attestation is STATIC build provenance — there is no per-attestation nonce. Session freshness is the
+    // peer-trust ledger TTL/re-verify (below), plus consent lease + step-up freshness + permit TTL + transport/
+    // device binding (above). These prove the re-verify, builder-revocation, and SLSA-policy-rotation rules all
+    // compose through parser→ledger→assembler→broker (a stale/revoked/rotated trust cannot mint a permit).
+
+    @Test
+    void aStalePeerTrustRecordDeniesAtCryptoIdentity() {
+        // the ledger verified the peer, but the recorded trust is older than the freshness TTL at eval time →
+        // fresh() drops it → no fresh cert/attestation evidence → CRYPTO_IDENTITY (the re-verify rule)
+        peerTrustFreshnessTtlMillis = 1_000L; // recorded at NOW, evaluated at NOW+2s → 2s > 1s TTL → stale
+        BrokerOutcome outcome = run();
+        assertEquals(Kind.DENY, outcome.kind());
+        assertEquals("policy:CRYPTO_IDENTITY", outcome.reason(), "a stale peer-trust record must be re-verified");
+    }
+
+    @Test
+    void aRevokedBuilderDeniesAtCryptoIdentity() {
+        // the attestation signature is otherwise valid, but the builder is revoked before the ledger records it →
+        // the real KeyBasedAttestationVerifier returns non-VERIFIED → attestationVerified false → CRYPTO_IDENTITY
+        builderRevoked = true;
+        BrokerOutcome outcome = run();
+        assertEquals(Kind.DENY, outcome.kind());
+        assertEquals("policy:CRYPTO_IDENTITY", outcome.reason(), "a revoked builder cannot mint a permit");
+    }
+
+    @Test
+    void aRotatedPolicyHashDeniesAtCryptoIdentity() {
+        // the evidence is signed for the OLD policy hash, but the verifier now expects a ROTATED one → the
+        // expected-policy mismatch denies even though the signature is cryptographically valid for the old tuple
+        expectedPolicy = "rotated-slsa-policy-hash";
+        BrokerOutcome outcome = run();
+        assertEquals(Kind.DENY, outcome.kind());
+        assertEquals("policy:CRYPTO_IDENTITY", outcome.reason(), "an expected-policy rotation is not bypassable");
     }
 
     // ============================ helpers (synthetic material, real decisions) ============================
