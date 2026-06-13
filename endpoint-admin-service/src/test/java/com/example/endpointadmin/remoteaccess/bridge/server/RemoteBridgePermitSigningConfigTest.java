@@ -79,8 +79,11 @@ class RemoteBridgePermitSigningConfigTest {
         Path key = pkcs8Pem("p256.pem", kp);
         // slice-3c: the broker also wires now — supply a valid (separate) anchor key so the context boots
         Path anchorKey = pkcs8Pem("p256-anchor.pem", ec("secp256r1"));
+        // D step-up: the operator step-up verifier bean also wires now — origin/RP pinning is mandatory
         enabledLoopback(kp, "kid-1", key)
-                .withPropertyValues("remote-bridge.recording.anchor-key.path=" + anchorKey)
+                .withPropertyValues("remote-bridge.recording.anchor-key.path=" + anchorKey,
+                        "remote-bridge.step-up.expected-origin=https://operator.acik.com",
+                        "remote-bridge.step-up.expected-rp-id=operator.acik.com")
                 .run(context -> {
             assertNull(context.getStartupFailure());
             RemoteBridgePermitSigner signer = context.getBean(RemoteBridgePermitSigner.class);

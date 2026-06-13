@@ -4,6 +4,9 @@ import com.example.endpointadmin.remoteaccess.AttestationVerifier;
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
 import com.example.endpointadmin.remoteaccess.DbRecordingSink;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifierFactory;
 import com.example.endpointadmin.remoteaccess.RecordingAnchorSigner;
 import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
 import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
@@ -234,6 +237,38 @@ public class RemoteBridgeServerConfig {
     public TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler(PeerTrustLedger remoteBridgePeerTrustLedger) {
         return new TrustEvidenceAssembler(remoteBridgePeerTrustLedger, OwnerTokenGate.DENY_ALL,
                 TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED);
+    }
+
+    /**
+     * Faz 22.6 D step-up — the operator step-up verifier, selected fail-closed at construction via the
+     * factory's blocking matrix (B1.4c-3 pattern): IN_MEMORY (placeholder) is refused in a prod-like profile,
+     * WEBAUTHN requires an operator public key. The verifier is wired here but the operator-facing transport
+     * that produces a real WebAuthn assertion and calls {@code session.recordStepUp(...)} is the slice-4c
+     * operator endpoint — until then the bean is constructed + config-validated but not yet consumed (same
+     * deferred-consumer pattern as the per-peer trust ledger before the control plane). Origin/RP pinning are
+     * mandatory for an enabled broker (the verifier ctor refuses a blank origin/RP — fail-closed).
+     */
+    @Bean
+    public OperatorStepUpVerifier remoteBridgeOperatorStepUpVerifier(
+            Environment environment,
+            @Value("${remote-bridge.step-up.verifier:IN_MEMORY}") String verifierType,
+            @Value("${remote-bridge.step-up.in-memory-strength:WEBAUTHN_USER_VERIFICATION}") String inMemoryStrength,
+            @Value("${remote-bridge.step-up.public-key-pem:}") String publicKeyPem,
+            @Value("${remote-bridge.step-up.signature-algorithm:SHA256withECDSA}") String signatureAlgorithm,
+            @Value("${remote-bridge.step-up.expected-origin:}") String expectedOrigin,
+            @Value("${remote-bridge.step-up.expected-rp-id:}") String expectedRpId) {
+        // a prod-like profile refuses the placeholder IN_MEMORY verifier (same rule as cert-trust/attestation)
+        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
+                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
+        boolean productionLike = profiles.contains("prod");
+        return OperatorStepUpVerifierFactory.create(
+                OperatorStepUpVerifierFactory.VerifierType.valueOf(verifierType),
+                MethodStrength.valueOf(inMemoryStrength),
+                publicKeyPem.isBlank() ? null : publicKeyPem,
+                signatureAlgorithm,
+                expectedOrigin.isBlank() ? null : expectedOrigin,
+                expectedRpId.isBlank() ? null : expectedRpId,
+                productionLike);
     }
 
     /**
