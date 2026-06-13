@@ -53,8 +53,16 @@ public final class RemoteSessionApprovalGate {
      */
     public Outcome decide(String requesterPrincipal, String approverPrincipal,
                           boolean requesterHasCanRequest, boolean approverHasCanApprove, long nowEpochMillis) {
-        String requesterCanonical = resolver.canonicalSubject(requesterPrincipal).orElse(null);
-        String approverCanonical = resolver.canonicalSubject(approverPrincipal).orElse(null);
+        String requesterCanonical;
+        String approverCanonical;
+        try {
+            requesterCanonical = resolver.canonicalSubject(requesterPrincipal).orElse(null);
+            approverCanonical = resolver.canonicalSubject(approverPrincipal).orElse(null);
+        } catch (RuntimeException resolverFault) {
+            // this gate is THE single dual-control chokepoint — a contract-violating (throwing) resolver is
+            // fail-closed here too, mirroring RemoteSessionAuthz's caller-defense (Codex REVISE)
+            return Outcome.DENIED_UNRESOLVED_IDENTITY;
+        }
         if (requesterCanonical == null || approverCanonical == null) {
             return Outcome.DENIED_UNRESOLVED_IDENTITY; // an unidentifiable party can never pass dual-control
         }

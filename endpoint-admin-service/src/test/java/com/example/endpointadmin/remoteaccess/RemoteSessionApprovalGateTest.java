@@ -84,6 +84,21 @@ class RemoteSessionApprovalGateTest {
     }
 
     @Test
+    void aThrowingResolverIsDeniedAsUnresolvedAndSpendsNoFatigue() {
+        // this gate is THE dual-control chokepoint → a contract-violating (throwing) resolver is fail-closed
+        // here too (Codex REVISE), returning an Outcome rather than propagating a 500/throw
+        ApprovalFatigueLimiter fatigue = new ApprovalFatigueLimiter(1, WINDOW);
+        CanonicalIdentityResolver throwing = principalId -> {
+            throw new IllegalStateException("resolver boom");
+        };
+        RemoteSessionApprovalGate throwingGate = new RemoteSessionApprovalGate(throwing, fatigue);
+        assertEquals(Outcome.DENIED_UNRESOLVED_IDENTITY, throwingGate.decide("u1", "u2", true, true, NOW));
+        // the throwing path spent no fatigue for u2 → a real gate sharing the limiter still allows u2 to approve
+        RemoteSessionApprovalGate realGate = new RemoteSessionApprovalGate(resolver(), fatigue);
+        assertEquals(Outcome.ALLOWED, realGate.decide("u1", "u2", true, true, NOW));
+    }
+
+    @Test
     void nullCollaboratorsAreRejectedAtConstruction() {
         assertThrows(NullPointerException.class,
                 () -> new RemoteSessionApprovalGate(null, new ApprovalFatigueLimiter(1, WINDOW)));
