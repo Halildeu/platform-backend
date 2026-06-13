@@ -23,6 +23,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -152,6 +154,7 @@ class EndpointAgentCommandServiceInstallBranchTest {
                 uninstallAuditService,
                 commandSecretService,
                 event -> { },
+                new EndpointAgentCommandMetrics(new SimpleMeterRegistry()),
                 fixed,
                 300L);
     }

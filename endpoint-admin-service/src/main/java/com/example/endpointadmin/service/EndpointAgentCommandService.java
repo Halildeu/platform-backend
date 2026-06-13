@@ -71,6 +71,7 @@ public class EndpointAgentCommandService {
     private final EndpointUninstallAuditService uninstallAuditService;
     private final EndpointCommandSecretService commandSecretService;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final EndpointAgentCommandMetrics commandMetrics;
     private final Clock clock;
     private final Duration claimTtl;
 
@@ -116,6 +117,7 @@ public class EndpointAgentCommandService {
                                        EndpointUninstallAuditService uninstallAuditService,
                                        EndpointCommandSecretService commandSecretService,
                                        org.springframework.context.ApplicationEventPublisher eventPublisher,
+                                       EndpointAgentCommandMetrics commandMetrics,
                                        Clock clock,
                                        @Value("${endpoint-admin.commands.claim-ttl-seconds:300}") long claimTtlSeconds) {
         this.commandRepository = commandRepository;
@@ -144,6 +146,7 @@ public class EndpointAgentCommandService {
         this.uninstallAuditService = uninstallAuditService;
         this.commandSecretService = commandSecretService;
         this.eventPublisher = eventPublisher;
+        this.commandMetrics = commandMetrics;
         this.clock = clock;
         this.claimTtl = Duration.ofSeconds(Math.max(30L, claimTtlSeconds));
     }
@@ -567,6 +570,17 @@ public class EndpointAgentCommandService {
 
         if (isTerminalResult(request.status())) {
             commandSecretService.clearIfTerminal(command);
+
+            // Faz 22.5 M6 (#1493): record the durably-persisted terminal
+            // command result for the capacity-baseline / wave-abort metric
+            // (endpoint_admin_agent_command_results_total). Deferred to
+            // after-commit inside the metrics collaborator so a result whose
+            // transaction later fails to commit is not counted. Reached only on
+            // the success path — the idempotent duplicate re-submit returns
+            // early and validation rejections throw before this point; the
+            // isTerminalResult guard also keeps a future non-terminal
+            // CommandResultStatus out of the counter (Codex 019ebffb).
+            commandMetrics.recordResultAfterCommit(command.getCommandType(), request.status());
         }
     }
 
