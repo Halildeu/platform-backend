@@ -37,6 +37,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Import({
         TimeConfig.class,
         EndpointAgentCommandService.class,
+        // Faz 22.5 M6 (#1493): capacity-baseline command-result counter
+        // collaborator. Its ObjectProvider<MeterRegistry> constructor falls
+        // back to a private SimpleMeterRegistry when this @DataJpaTest slice
+        // supplies no registry bean, so the slice stays metrics-free.
+        EndpointAgentCommandMetrics.class,
         EndpointAuditService.class,
         com.example.endpointadmin.audit.NoOpAuditChainLock.class,
         EndpointSoftwareInventoryService.class,
