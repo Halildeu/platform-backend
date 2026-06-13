@@ -83,7 +83,10 @@ class RemoteBridgePermitSigningConfigTest {
         enabledLoopback(kp, "kid-1", key)
                 .withPropertyValues("remote-bridge.recording.anchor-key.path=" + anchorKey,
                         "remote-bridge.step-up.expected-origin=https://operator.acik.com",
-                        "remote-bridge.step-up.expected-rp-id=operator.acik.com")
+                        "remote-bridge.step-up.expected-rp-id=operator.acik.com",
+                        // slice-4c-2a: the operator authenticator bean's reference config is mandatory too
+                        "remote-bridge.operator-auth.in-memory-token=ref-operator-token-1",
+                        "remote-bridge.operator-auth.in-memory-subject=operator@acik.com")
                 .run(context -> {
             assertNull(context.getStartupFailure());
             RemoteBridgePermitSigner signer = context.getBean(RemoteBridgePermitSigner.class);

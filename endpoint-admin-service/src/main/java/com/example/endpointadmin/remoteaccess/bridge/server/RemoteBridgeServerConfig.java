@@ -292,6 +292,31 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
+     * Faz 22.6 slice-4c-2a — the operator authenticator, selected fail-closed at construction via the
+     * factory's blocking matrix (IN_MEMORY placeholder refused in a prod-like profile; the real mTLS/JWT
+     * authenticators are the live operator-channel slice). The operator REST transport (slice-4c-2b) extracts
+     * the credential ({@link OperatorCredentialExtractor}) and authenticates it through this bean before
+     * calling any handler — no verified operator identity, no handler. Constructed here but not yet called
+     * until the operator REST controller exists (deferred-consumer).
+     */
+    @Bean
+    public OperatorAuthenticator remoteBridgeOperatorAuthenticator(
+            Environment environment,
+            @Value("${remote-bridge.operator-auth.type:IN_MEMORY}") String authenticatorType,
+            @Value("${remote-bridge.operator-auth.in-memory-token:}") String inMemoryToken,
+            @Value("${remote-bridge.operator-auth.in-memory-subject:}") String inMemorySubject) {
+        // a prod-like profile refuses the placeholder IN_MEMORY authenticator (same rule as the verifiers)
+        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
+                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
+        boolean productionLike = profiles.contains("prod");
+        return OperatorAuthenticatorFactory.create(
+                OperatorAuthenticatorFactory.AuthenticatorType.valueOf(authenticatorType),
+                inMemoryToken.isBlank() ? null : inMemoryToken,
+                inMemorySubject.isBlank() ? null : inMemorySubject,
+                productionLike);
+    }
+
+    /**
      * Faz 22.6 T-4a-ii slice-4b — the operator-side orchestration: drives an OperationRequest through the
      * broker and routes the verdict to the transport (slice-4a primitives). Wired here but the transport
      * endpoint that ACCEPTS operator requests is a later slice — this bean proves the broker↔transport seam
