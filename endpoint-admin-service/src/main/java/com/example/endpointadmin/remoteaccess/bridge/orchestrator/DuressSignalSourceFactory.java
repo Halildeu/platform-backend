@@ -32,26 +32,35 @@ public final class DuressSignalSourceFactory {
     }
 
     /**
-     * @param type              the duress source (null defaults to the fail-closed AMBIGUOUS_UNTIL_WIRED)
-     * @param pilotRiskAccepted explicit owner acceptance that the pilot runs WITHOUT duress detection (required
-     *                          for PILOT_RISK_ACCEPTED_DISABLED)
+     * @param type                  the duress source (null defaults to the fail-closed AMBIGUOUS_UNTIL_WIRED)
+     * @param pilotRiskAccepted     explicit owner acceptance that the pilot runs WITHOUT duress detection
+     *                              (required for PILOT_RISK_ACCEPTED_DISABLED)
+     * @param productionLikeProfile when true, PILOT_RISK_ACCEPTED_DISABLED is REFUSED — disabling the
+     *                              human-protection kill is forbidden in production even with risk-acceptance;
+     *                              a prod deployment MUST use a real duress source (Codex REVISE)
      * @throws IllegalStateException on any forbidden combination (fail-fast startup)
      */
-    public static TrustEvidenceAssembler.DuressSignalSource create(SourceType type, boolean pilotRiskAccepted) {
+    public static TrustEvidenceAssembler.DuressSignalSource create(SourceType type, boolean pilotRiskAccepted,
+                                                                   boolean productionLikeProfile) {
         SourceType t = type == null ? SourceType.AMBIGUOUS_UNTIL_WIRED : type; // fail-closed default
         switch (t) {
             case AMBIGUOUS_UNTIL_WIRED -> {
                 return TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED;
             }
             case PILOT_RISK_ACCEPTED_DISABLED -> {
+                if (productionLikeProfile) {
+                    throw reject("duress source PILOT_RISK_ACCEPTED_DISABLED DISABLES the human-protection duress "
+                            + "kill and is forbidden in a production-like profile — a prod deployment MUST use a "
+                            + "real duress source (the disabled mode is for the narrow non-prod pilot only)");
+                }
                 if (!pilotRiskAccepted) {
                     throw reject("duress source PILOT_RISK_ACCEPTED_DISABLED DISABLES the human-protection duress "
                             + "kill and REQUIRES explicit owner risk-acceptance "
                             + "(remote-bridge.duress.pilot-risk-accepted=true) — refusing to silently disable it");
                 }
                 log.warn("DURESS DETECTION DISABLED (PILOT_RISK_ACCEPTED_DISABLED) — owner-risk-accepted: the "
-                        + "broker will NOT kill on duress. Valid ONLY for the narrow named-roster / attended-only "
-                        + "/ IT-owned pilot; every other deployment MUST use a real duress source.");
+                        + "broker will NOT kill on duress. Valid ONLY for the narrow non-prod named-roster / "
+                        + "attended-only / IT-owned pilot; every other deployment MUST use a real duress source.");
                 return new PilotRiskAcceptedDuressSignalSource();
             }
             default -> throw reject("unreachable duress source type " + t);

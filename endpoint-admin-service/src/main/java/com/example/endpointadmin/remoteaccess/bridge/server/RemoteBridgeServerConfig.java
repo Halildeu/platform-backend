@@ -273,10 +273,17 @@ public class RemoteBridgeServerConfig {
      */
     @Bean
     public TrustEvidenceAssembler.DuressSignalSource remoteBridgeDuressSignalSource(
+            Environment environment,
             @Value("${remote-bridge.duress.source-type:AMBIGUOUS_UNTIL_WIRED}") String duressSourceType,
             @Value("${remote-bridge.duress.pilot-risk-accepted:false}") boolean duressPilotRiskAccepted) {
+        // disabling the human-protection kill is forbidden in a prod-like profile (Codex REVISE) — even with
+        // risk-acceptance, a prod deployment must use a real duress source
+        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
+                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
+        boolean productionLike = profiles.contains("prod");
         return DuressSignalSourceFactory.create(
-                DuressSignalSourceFactory.SourceType.valueOf(duressSourceType), duressPilotRiskAccepted);
+                DuressSignalSourceFactory.SourceType.valueOf(duressSourceType), duressPilotRiskAccepted,
+                productionLike);
     }
 
     /**
