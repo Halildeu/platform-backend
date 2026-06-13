@@ -1,7 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
 import com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal;
-import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.StepUpState;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeTrustEvidence;
@@ -26,9 +25,10 @@ import java.util.Set;
  *       path is wired, the absence of a source is NOT {@code NONE} ("no duress") but {@code AMBIGUOUS}
  *       ("cannot tell") — the broker maps {@code AMBIGUOUS} to a KILL, so the unwired default is fail-closed
  *       (Codex S1).</li>
- *   <li><b>step-up:</b> a fail-closed weakest {@link StepUpState} ({@code lastStepUp=0}, the session start,
- *       {@code MethodStrength.NONE}) — real operator FIDO2 step-up is a later (D) slice; until then the policy
- *       sees no satisfied step-up and routes high-risk operations to {@code REQUIRE_STEP_UP}/deny (Codex S2).</li>
+ *   <li><b>step-up:</b> the {@link StepUpState} READ FROM THE SESSION (lastStepUp + strength), which the
+ *       operator transport advances on a VERIFIED WebAuthn step-up (slice-4c). Until a step-up is recorded the
+ *       session stays at the fail-closed weakest (lastStepUp=0, NONE), so the policy sees no satisfied step-up
+ *       and routes high-risk operations to {@code REQUIRE_STEP_UP}/deny (Codex S2).</li>
  * </ul>
  */
 public final class TrustEvidenceAssembler {
@@ -71,7 +71,11 @@ public final class TrustEvidenceAssembler {
                 session.requestedCapabilities());
 
         DuressSignal duress = classifyDuress(session.sessionId(), nowEpochMillis);
-        StepUpState stepUp = new StepUpState(0L, session.sessionStartEpochMillis(), MethodStrength.NONE);
+        // step-up freshness/strength is now read from the session (Faz 22.6 D step-up wiring) — the operator
+        // transport records a VERIFIED step-up into it (slice-4c); until then it stays the fail-closed weakest
+        // (lastStepUp=0, NONE), so the policy still routes high-risk operations to REQUIRE_STEP_UP unchanged.
+        StepUpState stepUp = new StepUpState(session.lastStepUpEpochMillis(),
+                session.sessionStartEpochMillis(), session.stepUpStrength());
 
         return new RemoteBridgeTrustEvidence(certTrusted, attestationVerified, deviceTrusted, stepUp, duress,
                 granted, session.lease(), session.deviceId(), session.operatorSubject());
