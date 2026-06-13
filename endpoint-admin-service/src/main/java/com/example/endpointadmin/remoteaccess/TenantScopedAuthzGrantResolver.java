@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Faz 22.6 D10 approval-chain (Codex 019ebe06) — an in-memory {@link AuthzGrantResolver} whose grants are
@@ -55,7 +56,14 @@ public final class TenantScopedAuthzGrantResolver implements AuthzGrantResolver 
                 if (tenant == null || tenant.isBlank()) {
                     throw new IllegalArgumentException(label + " grant for '" + principal + "' has a blank tenant");
                 }
-                normalizedTenants.add(tenant.strip());
+                String stripped = tenant.strip();
+                // the session/JWT tenant is enforced as a canonical UUID everywhere; a non-canonical grant tenant
+                // would silently never match (a false-negative pilot-config error) → fail-fast (Codex follow-up)
+                if (!isCanonicalUuid(stripped)) {
+                    throw new IllegalArgumentException(label + " grant for '" + principal
+                            + "' has a non-canonical-UUID tenant: '" + stripped + "'");
+                }
+                normalizedTenants.add(stripped);
             }
             if (out.put(principal.strip(), Set.copyOf(normalizedTenants)) != null) {
                 throw new IllegalArgumentException(label + " grant has a duplicate normalized principal: "
@@ -103,5 +111,13 @@ public final class TenantScopedAuthzGrantResolver implements AuthzGrantResolver 
             return null;
         }
         return parts[1];
+    }
+
+    private static boolean isCanonicalUuid(String value) {
+        try {
+            return UUID.fromString(value).toString().equals(value); // strict canonical round-trip
+        } catch (IllegalArgumentException notAUuid) {
+            return false;
+        }
     }
 }

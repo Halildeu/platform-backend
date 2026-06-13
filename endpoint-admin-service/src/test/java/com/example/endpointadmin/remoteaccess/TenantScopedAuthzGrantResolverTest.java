@@ -77,4 +77,14 @@ class TenantScopedAuthzGrantResolverTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new TenantScopedAuthzGrantResolver(Map.of(OP, Set.of("  ")), Map.of()));    // blank tenant
     }
+
+    @Test
+    void ctorRejectsANonCanonicalUuidTenant() {
+        // the session/JWT tenant is always a canonical UUID — a non-canonical grant tenant would silently never
+        // match, so it is a fail-fast pilot-config error (Codex follow-up)
+        assertThrows(IllegalArgumentException.class,
+                () -> new TenantScopedAuthzGrantResolver(Map.of(OP, Set.of("tenant-1")), Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> new TenantScopedAuthzGrantResolver(
+                Map.of(OP, Set.of("AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")), Map.of())); // uppercase = non-canonical
+    }
 }
