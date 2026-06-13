@@ -383,11 +383,15 @@ public class EndpointAgentCommandService {
         // privacy boundary. The validator NEVER reads content (there is none in
         // the manifest); a violation throws a path-free IllegalArgumentException
         // → 400 + bounded command error, mirroring the INSTALL/UNINSTALL flow.
-        if (command.getCommandType() == CommandType.COLLECT_BACKUP_DRYRUN
-                && request.details() != null) {
+        // Codex 019ec2e6 P0#3: validate EVEN when details is null — a
+        // COLLECT_BACKUP_DRYRUN result MUST carry the manifest, so null details
+        // is a fail-closed reject (the policy enforces it), not a silent skip.
+        if (command.getCommandType() == CommandType.COLLECT_BACKUP_DRYRUN) {
             try {
                 backupDryRunManifestPayloadPolicy.validate(
                         request.details(),
+                        request.summary(),
+                        request.errorMessage(),
                         command.getDevice().getId().toString(),
                         String.valueOf(command.getTenantId()));
             } catch (IllegalArgumentException ex) {

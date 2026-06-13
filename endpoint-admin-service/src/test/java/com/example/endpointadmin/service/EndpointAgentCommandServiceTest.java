@@ -1126,6 +1126,48 @@ class EndpointAgentCommandServiceTest {
         assertThat(updated.getStatus()).isEqualTo(CommandStatus.FAILED);
     }
 
+    @Test
+    void submitResultRejectsBackupDryRunWithNullDetails() {
+        // Codex 019ec2e6 P0#3: a COLLECT_BACKUP_DRYRUN result with null details
+        // must fail-closed, not silently skip the validator.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-BKP-NULL"));
+        EndpointCommand command = commandRepository.saveAndFlush(backupDryRunCommand(device, "cmd-bkp-null", 10));
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        AgentCommandResultRequest req = new AgentCommandResultRequest(
+                claimed.claimId(), claimed.attemptNumber(), CommandResultStatus.SUCCEEDED,
+                "done", null, null, null, 0, Instant.now().minusSeconds(5), Instant.now());
+
+        assertThatThrownBy(() -> commandService.submitResult(principal(device), command.getId(), req))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("BACKUP_DRYRUN_MANIFEST_VIOLATION");
+
+        assertThat(resultRepository.findByCommand_Id(command.getId())).isEmpty();
+        assertThat(commandRepository.findById(command.getId()).orElseThrow().getStatus())
+                .isEqualTo(CommandStatus.FAILED);
+    }
+
+    @Test
+    void submitResultRejectsBackupDryRunWithSiblingDetailsKey() {
+        // P0#1: a sibling key alongside backupDryRun would persist verbatim.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-BKP-SIB"));
+        EndpointCommand command = commandRepository.saveAndFlush(backupDryRunCommand(device, "cmd-bkp-sib", 10));
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.put("backupDryRun", validBackupManifest(device.getId().toString(), device.getTenantId().toString()));
+        details.put("log", "C:\\Users\\Alice\\notes.txt"); // sibling raw path
+
+        AgentCommandResultRequest req = new AgentCommandResultRequest(
+                claimed.claimId(), claimed.attemptNumber(), CommandResultStatus.SUCCEEDED,
+                "done", details, null, null, 0, Instant.now().minusSeconds(5), Instant.now());
+
+        assertThatThrownBy(() -> commandService.submitResult(principal(device), command.getId(), req))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("BACKUP_DRYRUN_MANIFEST_VIOLATION");
+        assertThat(resultRepository.findByCommand_Id(command.getId())).isEmpty();
+    }
+
     private EndpointCommand backupDryRunCommand(EndpointDevice device, String idempotencyKey, int priority) {
         EndpointCommand command = command(device, idempotencyKey, priority);
         command.setCommandType(CommandType.COLLECT_BACKUP_DRYRUN);

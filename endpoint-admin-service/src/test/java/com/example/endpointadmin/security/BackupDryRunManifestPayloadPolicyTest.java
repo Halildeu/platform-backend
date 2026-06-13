@@ -12,9 +12,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Pure unit tests for the Faz 22.8A backup dry-run manifest MIRROR validator
- * (contract §5). No Spring / no Postgres — exercises every contract invariant
- * directly. The wired 400-reject path is covered in
- * EndpointAgentCommandServiceTest.
+ * (contract §5). No Spring / no Postgres. Covers strict-schema (Codex 019ec2e6
+ * P0: exact keys, no unknown fields, key+value path-free, integral numbers,
+ * null-details, full-envelope) + every contract invariant. The wired 400
+ * reject path is covered in EndpointAgentCommandServiceTest.
  */
 class BackupDryRunManifestPayloadPolicyTest {
 
@@ -67,7 +68,7 @@ class BackupDryRunManifestPayloadPolicyTest {
         return m;
     }
 
-    private Map<String, Object> details(Map<String, Object> manifest) {
+    private Map<String, Object> details(Object manifest) {
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("backupDryRun", manifest);
         return d;
@@ -83,8 +84,13 @@ class BackupDryRunManifestPayloadPolicyTest {
         return (Map<String, Object>) manifest.get("aggregate");
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> scope(Map<String, Object> manifest) {
+        return (Map<String, Object>) manifest.get("scope");
+    }
+
     private void expectReject(Map<String, Object> manifest) {
-        assertThatThrownBy(() -> policy.validate(details(manifest), DEVICE, TENANT))
+        assertThatThrownBy(() -> policy.validate(details(manifest), "done", null, DEVICE, TENANT))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageStartingWith("BACKUP_DRYRUN_MANIFEST_VIOLATION");
     }
@@ -93,29 +99,102 @@ class BackupDryRunManifestPayloadPolicyTest {
 
     @Test
     void validManifestPasses() {
-        assertThatCode(() -> policy.validate(details(validManifest()), DEVICE, TENANT))
+        assertThatCode(() -> policy.validate(details(validManifest()), "done", null, DEVICE, TENANT))
                 .doesNotThrowAnyException();
     }
 
     @Test
     void nullBindingSkipsDeviceTenantCheck() {
-        assertThatCode(() -> policy.validate(details(validManifest()), null, null))
+        assertThatCode(() -> policy.validate(details(validManifest()), "done", null, null, null))
                 .doesNotThrowAnyException();
     }
 
-    // ---- structural / header ---------------------------------------------
+    @Test
+    void validArchiveAggregatePasses() {
+        Map<String, Object> m = validManifest();
+        agg(m).put("denied_count", 2);
+        agg(m).put("container_count", 1);
+        agg(m).put("denied_classes", new ArrayList<>(List.of("mailbox_cache", "archive_container")));
+        assertThatCode(() -> policy.validate(details(m), "done", null, DEVICE, TENANT))
+                .doesNotThrowAnyException();
+    }
+
+    // ---- P0: strict schema / full envelope (Codex 019ec2e6) ---------------
 
     @Test
-    void missingManifestRejected() {
-        assertThatThrownBy(() -> policy.validate(Map.of("other", "x"), DEVICE, TENANT))
+    void nullDetailsRejected() {
+        // A COLLECT_BACKUP_DRYRUN result MUST carry a manifest.
+        assertThatThrownBy(() -> policy.validate(null, "done", null, DEVICE, TENANT))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void siblingDetailsKeyRejected() {
+        // details must be EXACTLY { backupDryRun } — a sibling key would
+        // otherwise persist verbatim into the result payload.
+        Map<String, Object> d = details(validManifest());
+        d.put("log", "harmless-looking");
+        assertThatThrownBy(() -> policy.validate(d, "done", null, DEVICE, TENANT))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void unknownManifestFieldRejected() {
+        Map<String, Object> m = validManifest();
+        m.put("content_sha256", "deadbeef"); // no content/hash field may exist
+        expectReject(m);
+    }
+
+    @Test
+    void unknownEntryFieldRejected() {
+        Map<String, Object> m = validManifest();
+        firstEntry(m).put("rawPath", "something");
+        expectReject(m);
+    }
+
+    @Test
+    void pathShapedMapKeyRejected() {
+        Map<String, Object> m = validManifest();
+        // A path-shaped MAP KEY (not value) must be rejected too.
+        scope(m).put("C:\\Users\\Alice", true);
+        expectReject(m);
+    }
+
+    @Test
+    void decimalNumberRejected() {
+        Map<String, Object> m = validManifest();
+        firstEntry(m).put("size_bytes", 1.9); // JSON decimal must not truncate to 1
+        expectReject(m);
+    }
+
+    @Test
+    void missingRequiredFieldRejected() {
+        Map<String, Object> m = validManifest();
+        m.remove("allowlist_profile_id");
+        expectReject(m);
+    }
+
+    @Test
+    void summaryWithRawPathRejected() {
+        assertThatThrownBy(() -> policy.validate(details(validManifest()),
+                "scanned C:\\Users\\Alice\\Documents", null, DEVICE, TENANT))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void errorMessageWithRawPathRejected() {
+        assertThatThrownBy(() -> policy.validate(details(validManifest()),
+                "done", "failed at \\\\server\\share\\hr", DEVICE, TENANT))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void nonObjectManifestRejected() {
-        assertThatThrownBy(() -> policy.validate(details(null), DEVICE, TENANT))
+        assertThatThrownBy(() -> policy.validate(details("not-a-map"), "done", null, DEVICE, TENANT))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    // ---- header / binding -------------------------------------------------
 
     @Test
     void wrongVersionRejected() {
@@ -130,8 +209,6 @@ class BackupDryRunManifestPayloadPolicyTest {
         m.put("dc_ea_tier", "DC-EA-2");
         expectReject(m);
     }
-
-    // ---- device / tenant binding -----------------------------------------
 
     @Test
     void deviceBindingMismatchRejected() {
@@ -151,7 +228,6 @@ class BackupDryRunManifestPayloadPolicyTest {
 
     @Test
     void archiveExtensionTypeNeverAnEntry() {
-        // CONTRACT P0 (Codex 019ec28a): archive is denied-aggregate, never an entry.
         Map<String, Object> m = validManifest();
         firstEntry(m).put("extension_type", "archive");
         expectReject(m);
@@ -210,23 +286,24 @@ class BackupDryRunManifestPayloadPolicyTest {
     void fileCountBelowOneRejected() {
         Map<String, Object> m = validManifest();
         firstEntry(m).put("file_count", 0);
+        // total_eligible_count must still equal Σ file_count to isolate the cause
+        agg(m).put("total_eligible_count", 0);
         expectReject(m);
     }
 
-    // ---- path-free (recursive) -------------------------------------------
+    // ---- scope / path-free ------------------------------------------------
 
     @Test
-    void backslashPathAnywhereRejected() {
+    void scopeRootRefPathShapedRejected() {
         Map<String, Object> m = validManifest();
-        // a raw path stuffed into an otherwise-string field
+        scope(m).put("managed_data_roots", new ArrayList<>(List.of("managed_root:abc/def")));
+        expectReject(m);
+    }
+
+    @Test
+    void backslashValueAnywhereRejected() {
+        Map<String, Object> m = validManifest();
         m.put("allowlist_profile_id", "C:\\Users\\Alice\\Documents");
-        expectReject(m);
-    }
-
-    @Test
-    void driveLetterPathRejected() {
-        Map<String, Object> m = validManifest();
-        m.put("allowlist_profile_id", "D:relative");
         expectReject(m);
     }
 
@@ -234,15 +311,6 @@ class BackupDryRunManifestPayloadPolicyTest {
     void dotdotTraversalRejected() {
         Map<String, Object> m = validManifest();
         m.put("allowlist_profile_id", "prof/../escape");
-        expectReject(m);
-    }
-
-    @Test
-    void scopeRootRefPathShapedRejected() {
-        Map<String, Object> m = validManifest();
-        @SuppressWarnings("unchecked")
-        Map<String, Object> scope = (Map<String, Object>) m.get("scope");
-        scope.put("managed_data_roots", new ArrayList<>(List.of("managed_root:abc/def")));
         expectReject(m);
     }
 
@@ -261,7 +329,7 @@ class BackupDryRunManifestPayloadPolicyTest {
         Map<String, Object> m = validManifest();
         agg(m).put("denied_count", 1);
         agg(m).put("denied_classes", new ArrayList<>(List.of("archive_container")));
-        agg(m).put("container_count", 0); // violates archive_container ⟹ container_count≥1
+        agg(m).put("container_count", 0);
         expectReject(m);
     }
 
@@ -286,7 +354,7 @@ class BackupDryRunManifestPayloadPolicyTest {
     @Test
     void totalEligibleCountMismatchRejected() {
         Map<String, Object> m = validManifest();
-        agg(m).put("total_eligible_count", 5); // sum(entry.file_count) is 1
+        agg(m).put("total_eligible_count", 5);
         expectReject(m);
     }
 
@@ -295,16 +363,5 @@ class BackupDryRunManifestPayloadPolicyTest {
         Map<String, Object> m = validManifest();
         agg(m).put("unresolved_path_count", -1);
         expectReject(m);
-    }
-
-    @Test
-    void validArchiveAggregatePasses() {
-        // denied archive correctly reflected: denied_count=2, container_count=1,
-        // archive_container present, container_count ≤ denied_count.
-        Map<String, Object> m = validManifest();
-        agg(m).put("denied_count", 2);
-        agg(m).put("container_count", 1);
-        agg(m).put("denied_classes", new ArrayList<>(List.of("mailbox_cache", "archive_container")));
-        assertThatCode(() -> policy.validate(details(m), DEVICE, TENANT)).doesNotThrowAnyException();
     }
 }
