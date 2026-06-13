@@ -78,6 +78,24 @@ endpoint-admin:
   mtls:
     forward-header:
       enabled: ${ENDPOINT_ADMIN_MTLS_FORWARD_HEADER_ENABLED:true}
+    # Faz 22.5 Step-2 (ADR-0029 #1501, Codex 019ec0f9): CANONICAL passthrough
+    # mTLS. Default OFF -> zero runtime impact until an activation overlay sets
+    # `enabled=true` TOGETHER WITH `forward-header.enabled=false` (mutually
+    # exclusive — startup FAILS if both on). On the mTLS connector X-Tenant-Id is
+    # IGNORED (the L4 SNI edge cannot strip/inject it); tenant = `fixed-tenant-id`
+    # (single-company deployment authority, NOT multi-tenant). Keystore/truststore
+    # are mounted secret files; truststore holds ONLY the endpoint-machine issuing
+    # CA. Prod activation additionally gated on revocation (CRL/OCSP) + DNS subhost.
+    passthrough:
+      enabled: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_ENABLED:false}
+      port: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_PORT:8443}
+      fixed-tenant-id: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_FIXED_TENANT_ID:}
+      key-store: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_KEY_STORE:}
+      key-store-password: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_KEY_STORE_PASSWORD:}
+      key-store-type: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_KEY_STORE_TYPE:PKCS12}
+      trust-store: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_TRUST_STORE:}
+      trust-store-password: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_TRUST_STORE_PASSWORD:}
+      trust-store-type: ${ENDPOINT_ADMIN_MTLS_PASSTHROUGH_TRUST_STORE_TYPE:PKCS12}
 
 server:
   port: ${SERVER_PORT:8096}
