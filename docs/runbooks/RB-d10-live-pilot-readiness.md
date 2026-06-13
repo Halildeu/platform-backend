@@ -8,7 +8,7 @@
 
 ## 0. Status snapshot (2026-06-13)
 
-- ✅ **Authority CODE path complete** — operator JWT auth + dual-control approval→grant + duress pilot-policy (all Codex-AGREE'd, thread `019ebe06`).
+- ✅ **Pilot PERMIT path CODE-COMPLETE** — operator JWT auth (#626) + dual-control approval→grant (#627) + duress pilot-policy (#628) + approval-chain wiring (#630) + approval REST endpoint (#631) + write-path hardening/audit (#632); plus the operator REST transport (slice-4c). All Codex-AGREE'd. With the owner opting each in (§2), an approver records a dual-control approval and the broker PERMITs an attended pilot session.
 - ✅ **4-role KVKK signed** (owner 2026-06-11, #1388 CLOSED, PR #1444 — D1 legitimate-interest+contract, D3 mandatory fail-closed recording, D6 attended-only, D8 narrow view+PTY).
 - ✅ **Broker isolation scaffold** (gitops #1483: separate Deployment + SA + ExternalSecret + NetworkPolicy + egress ACL + namespace isolation; activation overlay `kustomize/overlays/test/activation/endpoint-admin-remote-bridge/` NOT wired into the synced overlay).
 - 🔒 **Remaining:** owner activation (config + Vault + Keycloak) + physical pilot PCs + the attended run. **Legal-counsel review recommended pre-prod (not a hard gate for the narrow pilot).**
@@ -57,6 +57,18 @@ remote-bridge.owner-grant.gate-type=APPROVAL_BACKED_IN_MEMORY
 # --- slice-3: duress disabled for the pilot (non-prod, owner-risk-accepted) ---
 remote-bridge.duress.source-type=PILOT_RISK_ACCEPTED_DISABLED
 remote-bridge.duress.pilot-risk-accepted=true
+
+# --- approval write-path (#630 chain + #631 endpoint): the approver records a dual-control approval ---
+remote-bridge.approval-rest.enabled=true
+# explicit principal→canonical mapping (every roster operator + approver; no pass-through):
+remote-bridge.approval.canonical-identity.<operator-principal>=<canonical-subject>
+remote-bridge.approval.canonical-identity.<approver-principal>=<canonical-subject>
+# tenant-scoped grants (canonical-UUID tenants; a principal granted in a tenant may act on ANY session there):
+remote-bridge.approval.grants.can-request.<operator-principal>[0]=<tenant-uuid>
+remote-bridge.approval.grants.can-approve.<approver-principal>[0]=<tenant-uuid>
+remote-bridge.approval.fatigue.max-per-window=5
+remote-bridge.approval.fatigue.window-millis=3600000
+remote-bridge.approval.grant-ttl-millis=300000
 ```
 
 > ⚠️ **Each line is a deliberate, owner-accepted reduction for the narrow pilot.** `APPROVAL_BACKED_IN_MEMORY` and `PILOT_RISK_ACCEPTED_DISABLED` are **code-forbidden in a production-like profile** — the activation profile MUST be non-prod. Omitting any line leaves that gate at its fail-closed default.
@@ -99,11 +111,14 @@ remote-bridge.duress.pilot-risk-accepted=true
 
 ---
 
-## 6. Deferred consumers (next agent slices, owner-gated to activate)
+## 6. Consumers (code-complete) + post-pilot slices
 
-- **Approval REST endpoint** — the approver's console calls `RemoteSessionApprovalRecorder` (slice-2) with the **server-side authenticated approver identity** (its own JWT). MUST NOT leak the `DENIED_*` reasons as an external oracle. This is the write path that fills the grant store.
+**✅ Code-complete (owner activates via the §2 config):**
+- **Approval REST endpoint** (#630 chain + #631 controller) — `POST /internal/remote-bridge/approval/sessions/{sessionId}/approve`; the approver's console posts the approved capabilities, authenticated by the approver's OWN JWT (server-side; never a body). Records a dual-control approval → fills the grant store. No `DENIED_*` oracle (all denials → uniform 404); every outcome audited (#632).
 - **Operator REST transport** (slice-4c) — gated by `operator-rest.enabled`; the operator console connects through it.
-- **Durable grant store** + **E1 kill→live-grant-revoke** — the in-memory store + TTL is the pilot; a durable/OpenFGA-backed store + a live revoke backstop are post-pilot.
+
+**🔒 Post-pilot (owner-gated live slices):**
+- **Durable grant store** + **durable/WORM approval-audit sink** (#632 wired the seam) + **E1 kill→live-grant-revoke** — the in-memory store + TTL + app-log audit is the pilot; durable/OpenFGA-backed store + WORM sink + a live revoke backstop are post-pilot.
 
 ---
 
