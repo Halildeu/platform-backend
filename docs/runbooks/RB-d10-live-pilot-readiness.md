@@ -8,7 +8,8 @@
 
 ## 0. Status snapshot (2026-06-13)
 
-- ✅ **Pilot PERMIT path CODE-COMPLETE** — operator JWT auth (#626) + dual-control approval→grant (#627) + duress pilot-policy (#628) + approval-chain wiring (#630) + approval REST endpoint (#631) + write-path hardening/audit (#632); plus the operator REST transport (slice-4c). All Codex-AGREE'd. With the owner opting each in (§2), an approver records a dual-control approval and the broker PERMITs an attended pilot session.
+- ✅ **Approval WRITE-PATH code-complete** — operator JWT auth (#626) + dual-control approval→grant (#627) + duress pilot-policy (#628) + approval-chain wiring (#630) + approval REST endpoint (#631) + write-path hardening/audit (#632); plus the operator REST transport (slice-4c). All Codex-AGREE'd. With the owner opting each in (§2), an approver records a dual-control approval.
+- ⚠️ **Full operation-PERMIT is NOT config-only achievable yet** (Codex 019ec25c). With the current code the broker correctly **fail-closes** (DENY/KILL) on three real gaps — **tracked in #634** (broker PERMIT enablement, reference-trust): (1) signer/anchor config (permit `kid` + recording anchor key as a file mount), (2) consent→ACTIVE lifecycle, (3) reference trust-evidence parser/verifier (NOT a synthetic-trust bypass). So a config-only activation proves **Up + mTLS transport + approval write-path + secured-negatives** (the operation fail-closing is correct evidence); full Functional-PERMIT awaits #634.
 - ✅ **4-role KVKK signed** (owner 2026-06-11, #1388 CLOSED, PR #1444 — D1 legitimate-interest+contract, D3 mandatory fail-closed recording, D6 attended-only, D8 narrow view+PTY).
 - ✅ **Broker isolation scaffold** (gitops #1483: separate Deployment + SA + ExternalSecret + NetworkPolicy + egress ACL + namespace isolation; activation overlay `kustomize/overlays/test/activation/endpoint-admin-remote-bridge/` NOT wired into the synced overlay).
 - 🔒 **Remaining:** owner activation (config + Vault + Keycloak) + physical pilot PCs + the attended run. **Legal-counsel review recommended pre-prod (not a hard gate for the narrow pilot).**
@@ -94,10 +95,11 @@ remote-bridge.approval.grant-ttl-millis=300000
 
 | Layer | Proves | How |
 |---|---|---|
-| **Up** | broker pod Running + 9444 reachable | `kubectl get pod` + TCP probe |
-| **Functional** | an operator JWT (Keycloak, with the role) authenticates → a dual-control approval records a grant → the broker PERMITs view/PTY | end-to-end with a roster operator + approver |
-| **Secured** | operator without the role → 401; cross-tenant → denied; expired/replayed token → uniform DENY; recording fail-closed; revoke→kill-within-SLO | the negative tests exercised live |
-| **Does NOT prove** | real duress detection (disabled, risk-accepted); TPM/HSM non-exportable; CRL/OCSP; durable grant store | (post-pilot / owner-gated) |
+| **Up** | broker pod Running + 9444 mTLS listener + imageID digest match | `kubectl get pod` + TLS probe |
+| **Functional-transport** | synthetic device mTLS CONTROL stream + AgentHello/heartbeat → operator JWT `openSession` → consent prompt/result → approval-REST records a grant | end-to-end transport + the approval write-path |
+| **Functional-PERMIT** | the operation call returns **PERMIT** + a signed permit is pushed | **🔒 blocked by #634** (lifecycle + signer/anchor + reference trust-parser); until then the operation correctly **DENY/KILL**s (fail-closed) |
+| **Secured** | no/wrong client cert → refused; plaintext refused; wrong CA / wrong device fingerprint; operator without the role → 401; cross-tenant → uniform 404; no approval grant → DENY; ambiguous duress → KILL; 8096/8081 off-path | the negative tests exercised live (all fail-closed) |
+| **Does NOT prove** | real duress detection (disabled, risk-accepted); TPM/HSM non-exportable; CRL/OCSP; durable grant store; production-grade attestation | (post-pilot / owner-gated) |
 
 ---
 
