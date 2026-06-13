@@ -184,6 +184,22 @@ class BackupDryRunManifestPayloadPolicyTest {
     }
 
     @Test
+    void nonIso8601GeneratedAtRejected() {
+        Map<String, Object> m = validManifest();
+        m.put("generated_at", "yesterday-ish");
+        expectReject(m);
+    }
+
+    @Test
+    void deniedCountAndClassesDisagreeRejected() {
+        // denied_count == 0 but denied_classes non-empty (Codex 019ec2e6 hardening).
+        Map<String, Object> m = validManifest();
+        agg(m).put("denied_count", 0);
+        agg(m).put("denied_classes", new ArrayList<>(List.of("mailbox_cache")));
+        expectReject(m);
+    }
+
+    @Test
     void summaryWithBackslashPathRejected() {
         assertThatThrownBy(() -> run(details(validManifest()), "scanned C:\\Users\\Alice\\Documents", null, null))
                 .isInstanceOf(IllegalArgumentException.class);

@@ -29,8 +29,9 @@ import java.util.regex.Pattern;
  *       that would carry content/hash simply isn't in the allowed set.</li>
  *   <li><b>Full-envelope path-free</b> (KVKK m.4): no raw filesystem path may
  *       appear in ANY string — keys AND values, recursively — nor in the
- *       result {@code summary} / {@code errorMessage}. Rejects backslash,
- *       drive prefixes ({@code C:}), and {@code ..} traversal.</li>
+ *       result {@code summary} / {@code errorCode} / {@code errorMessage}.
+ *       Rejects backslash, drive paths ({@code C:\}, {@code C:/}, {@code
+ *       D:relative}, embedded), and {@code ..} traversal.</li>
  *   <li><b>Denylist-negative</b>: no entry may be a DC-EA-RED class.
  *       {@code extension_type} is a bounded enum that EXCLUDES {@code archive}
  *       (archives are denied-aggregate, never an entry — contract v1 P0
@@ -134,7 +135,7 @@ public class BackupDryRunManifestPayloadPolicy {
         String deviceId = stringField(manifest, "device_id");
         String tenantId = stringField(manifest, "tenant_id");
         stringField(manifest, "allowlist_profile_id");
-        stringField(manifest, "generated_at");
+        validateIso8601(stringField(manifest, "generated_at"));
         if (expectedDeviceId != null && !expectedDeviceId.equals(deviceId)) {
             throw reject("manifest device_id does not match command device");
         }
@@ -234,6 +235,18 @@ public class BackupDryRunManifestPayloadPolicy {
         }
         if (containers >= 1 && !hasArchiveContainer) {
             throw reject("container_count positive but archive_container missing from denied_classes");
+        }
+        // denied_count == 0 ⟺ denied_classes empty (Codex 019ec2e6 hardening).
+        if ((denied == 0) != deniedClasses.isEmpty()) {
+            throw reject("denied_count and denied_classes disagree on whether denials exist");
+        }
+    }
+
+    private static void validateIso8601(String s) {
+        try {
+            java.time.Instant.parse(s);
+        } catch (RuntimeException e) {
+            throw reject("generated_at is not an ISO-8601 instant");
         }
     }
 
