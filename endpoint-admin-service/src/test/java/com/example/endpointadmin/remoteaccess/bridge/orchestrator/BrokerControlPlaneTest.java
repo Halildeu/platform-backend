@@ -209,10 +209,24 @@ class BrokerControlPlaneTest {
         // the agent claims a YEAR of consent — the broker clamps to its own prompt window
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
                 NOW + 1000, NOW + 365L * 24 * 3600 * 1000));
-        assertEquals(State.CONSENT_GRANTED, session.state());
+        assertEquals(State.ACTIVE, session.state()); // D10.1: a granted consent activates the session
         assertTrue(session.lease().granted());
         assertEquals(PROMPT_EXPIRY, session.lease().expiryEpochMillis());
         assertTrue(sink.has("CONSENT_GRANTED"));
+    }
+
+    @Test
+    void aValidGrantedConsentActivatesTheSessionForTheTransport() {
+        // D10.1 (#634): a granted consent moves the session to ACTIVE (transport readiness) so the operator
+        // transport can drive operations — the operation PERMIT still goes through the full policy at that time
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(store, sink);
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW + 1000, PROMPT_EXPIRY));
+        assertEquals(State.ACTIVE, session.state());
+        assertTrue(sink.has("ACTIVE:lease-until=" + session.lease().expiryEpochMillis()));
     }
 
     @Test
@@ -243,7 +257,7 @@ class BrokerControlPlaneTest {
 
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
                 NOW, PROMPT_EXPIRY));
-        assertEquals(State.CONSENT_GRANTED, session.state());
+        assertEquals(State.ACTIVE, session.state()); // D10.1: a granted consent activates the session
         // a DUPLICATE grant replay is refused by the machine (no longer CONSENT_PENDING)
         plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
                 NOW, PROMPT_EXPIRY));
