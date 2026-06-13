@@ -8,6 +8,7 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
 import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -22,22 +23,32 @@ import java.util.concurrent.ConcurrentHashMap;
  * only for the SAME authenticated peer. {@link #killPeer} is THE sub-second kill path: it pushes
  * {@code Envelope.kill} onto CONTROL and terminates the stream — CONTROL is a separate HTTP/2 stream from
  * DATA, so DATA backpressure can never queue ahead of it (tested).
+ *
+ * <p>Faz 22.6 slice-4c-2b-2a (Codex 019ebe06) — each entry holds the {@link PeerIdentity} ALONGSIDE its handle
+ * in one composite value, so {@link #connectedPeer} (the operator-side device→peer resolver's lookup) stays
+ * atomically consistent with the handle on register/unregister/kill/shutdown (one map, never two that could
+ * drift).
  */
 public final class ControlStreamRegistry {
 
-    private final Map<String, ControlStreamHandle> streams = new ConcurrentHashMap<>();
+    /** One live CONTROL stream: the authenticated peer + its serialized write handle, kept atomically together. */
+    private record ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle) {
+    }
+
+    private final Map<String, ConnectedPeer> streams = new ConcurrentHashMap<>();
 
     /** Register the peer's CONTROL handle; an existing handle for the SAME peer is closed and replaced. */
     void register(PeerIdentity peer, ControlStreamHandle handle) {
-        ControlStreamHandle previous = streams.put(peer.transportPeerKey(), handle);
-        if (previous != null && previous != handle) {
-            previous.close();
+        ConnectedPeer previous = streams.put(peer.transportPeerKey(), new ConnectedPeer(peer, handle));
+        if (previous != null && previous.handle() != handle) {
+            previous.handle().close();
         }
     }
 
     /** Remove the peer's handle — only if it is still THIS handle (a replaced stream must not unregister its successor). */
     void unregister(PeerIdentity peer, ControlStreamHandle handle) {
-        streams.remove(peer.transportPeerKey(), handle);
+        // handle-identity conditional remove (atomic): drop the entry only while its handle is still this one
+        streams.computeIfPresent(peer.transportPeerKey(), (key, entry) -> entry.handle() == handle ? null : entry);
     }
 
     public boolean isConnected(String transportPeerKey) {
@@ -46,6 +57,21 @@ public final class ControlStreamRegistry {
 
     public int connectedCount() {
         return streams.size();
+    }
+
+    /**
+     * Faz 22.6 slice-4c-2b-2a — the still-registered {@link PeerIdentity} for a transport key, or empty when no
+     * live stream holds it. This is the operator-side resolver's lookup: a device's active-cert thumbprint
+     * equals its {@code transportPeerKey}, so the resolver maps {@code (tenant, deviceId) → active cert
+     * thumbprint → connectedPeer}. Returns the REAL registered peer (with its cert chain), only while the
+     * stream is live — a dropped peer yields empty (fail-closed, no session opens to a gone agent).
+     */
+    public Optional<PeerIdentity> connectedPeer(String transportPeerKey) {
+        if (transportPeerKey == null) {
+            return Optional.empty();
+        }
+        ConnectedPeer entry = streams.get(transportPeerKey);
+        return entry == null ? Optional.empty() : Optional.of(entry.peer());
     }
 
     /**
@@ -65,8 +91,8 @@ public final class ControlStreamRegistry {
      *                  ({@link #TRANSPORT_KILL_SESSION})
      */
     public boolean killPeer(String transportPeerKey, String sessionId, String killReason, long nowEpochMillis) {
-        ControlStreamHandle handle = streams.remove(transportPeerKey);
-        if (handle == null) {
+        ConnectedPeer entry = streams.remove(transportPeerKey);
+        if (entry == null) {
             return false;
         }
         String session = sessionId == null || sessionId.isBlank() ? TRANSPORT_KILL_SESSION : sessionId;
@@ -79,7 +105,7 @@ public final class ControlStreamRegistry {
                         .setKillReason(killReason == null || killReason.isBlank() ? "killed" : killReason)
                         .setIssuedAtEpochMillis(nowEpochMillis))
                 .build();
-        handle.sendAndClose(kill);
+        entry.handle().sendAndClose(kill);
         return true;
     }
 
@@ -95,8 +121,8 @@ public final class ControlStreamRegistry {
         if (permit == null) {
             return false;
         }
-        ControlStreamHandle handle = streams.get(transportPeerKey);
-        if (handle == null) {
+        ConnectedPeer entry = streams.get(transportPeerKey);
+        if (entry == null) {
             return false;
         }
         Envelope envelope = Envelope.newBuilder()
@@ -105,7 +131,7 @@ public final class ControlStreamRegistry {
                 .setSentAtEpochMillis(nowEpochMillis)
                 .setOperationPermit(RemoteBridgeProtoAdapter.encode(permit))
                 .build();
-        return handle.send(envelope);
+        return entry.handle().send(envelope);
     }
 
     /**
@@ -120,8 +146,8 @@ public final class ControlStreamRegistry {
         if (prompt == null) {
             return false;
         }
-        ControlStreamHandle handle = streams.get(transportPeerKey);
-        if (handle == null) {
+        ConnectedPeer entry = streams.get(transportPeerKey);
+        if (entry == null) {
             return false;
         }
         Envelope envelope = Envelope.newBuilder()
@@ -130,12 +156,12 @@ public final class ControlStreamRegistry {
                 .setSentAtEpochMillis(nowEpochMillis)
                 .setConsentPrompt(RemoteBridgeProtoAdapter.encode(prompt))
                 .build();
-        return handle.send(envelope);
+        return entry.handle().send(envelope);
     }
 
     /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */
     public void completeAll() {
-        streams.values().forEach(ControlStreamHandle::close);
+        streams.values().forEach(entry -> entry.handle().close());
         streams.clear();
     }
 }
