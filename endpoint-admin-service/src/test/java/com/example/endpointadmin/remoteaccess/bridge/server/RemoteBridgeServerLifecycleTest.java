@@ -70,6 +70,7 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeBroker"));
             assertFalse(context.containsBean("remoteBridgeTrustEvidenceAssembler"));
             assertFalse(context.containsBean("remoteBridgeOperatorService"));
+            assertFalse(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
             assertEquals(0, context.getBeanNamesForType(RemoteBridgeServerProperties.class).length);
         });
     }
@@ -84,18 +85,22 @@ class RemoteBridgeServerLifecycleTest {
             assertFalse(context.containsBean("remoteBridgeDurableAuditSink"));
             assertFalse(context.containsBean("remoteBridgeBroker"));
             assertFalse(context.containsBean("remoteBridgeOperatorService"));
+            assertFalse(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
         });
     }
 
     @Test
     void enabledWithoutTlsFailsTheContextFailClosed() throws Exception {
         // T-2c: SmartLifecycle start refuses → context refresh fails → nothing serves.
-        // T-4a-ii: a valid permit key AND a valid anchor key are supplied so the signer + durable sink + broker
-        // all wire cleanly and TLS stays the root cause (an anchor-key failure would otherwise mask it).
+        // T-4a-ii: a valid permit key AND a valid anchor key AND step-up origin/RP are supplied so the signer +
+        // durable sink + broker + step-up verifier all wire cleanly and TLS stays the root cause (any of those
+        // failing would otherwise mask it).
         runner.withPropertyValues("remote-bridge.enabled=true",
                 "remote-bridge.permit.signing-key-pem-path=" + permitKeyPath(),
                 "remote-bridge.permit.kid=kid-1",
-                "remote-bridge.recording.anchor-key.path=" + anchorKeyPath()).run(context -> {
+                "remote-bridge.recording.anchor-key.path=" + anchorKeyPath(),
+                "remote-bridge.step-up.expected-origin=https://operator.acik.com",
+                "remote-bridge.step-up.expected-rp-id=operator.acik.com").run(context -> {
             Throwable failure = context.getStartupFailure();
             assertTrue(failure != null, "the context must fail to start");
             Throwable root = failure;
@@ -220,7 +225,10 @@ class RemoteBridgeServerLifecycleTest {
                 "remote-bridge.permit.signing-key-pem-path=" + permitKeyPath(),
                 "remote-bridge.permit.kid=kid-1",
                 // slice-3c: the durable recording-anchor key is mandatory too
-                "remote-bridge.recording.anchor-key.path=" + anchorKeyPath())
+                "remote-bridge.recording.anchor-key.path=" + anchorKeyPath(),
+                // D step-up: the verifier bean's origin/RP pinning is mandatory for an enabled broker
+                "remote-bridge.step-up.expected-origin=https://operator.acik.com",
+                "remote-bridge.step-up.expected-rp-id=operator.acik.com")
                 .run(context -> {
                     RemoteBridgeGrpcServer server = context.getBean(RemoteBridgeGrpcServer.class);
                     assertTrue(server.isRunning(), "SmartLifecycle must have started the server");
@@ -240,6 +248,8 @@ class RemoteBridgeServerLifecycleTest {
                     // T-4a-ii slice-4b: the trust-evidence assembler + the operator service are wired
                     assertTrue(context.containsBean("remoteBridgeTrustEvidenceAssembler"));
                     assertTrue(context.containsBean("remoteBridgeOperatorService"));
+                    // D step-up: the operator step-up verifier is wired (consumed by the slice-4c transport)
+                    assertTrue(context.containsBean("remoteBridgeOperatorStepUpVerifier"));
                     server.stop();
                     assertFalse(server.isRunning());
                 });
