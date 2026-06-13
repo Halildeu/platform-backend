@@ -6,13 +6,13 @@
 
 ---
 
-## 0. Status snapshot (2026-06-13)
+## 0. Status snapshot (2026-06-14)
 
-- ✅ **Approval WRITE-PATH code-complete** — operator JWT auth (#626) + dual-control approval→grant (#627) + duress pilot-policy (#628) + approval-chain wiring (#630) + approval REST endpoint (#631) + write-path hardening/audit (#632); plus the operator REST transport (slice-4c). All Codex-AGREE'd. With the owner opting each in (§2), an approver records a dual-control approval.
-- ⚠️ **Full operation-PERMIT is NOT config-only achievable yet** (Codex 019ec25c). With the current code the broker correctly **fail-closes** (DENY/KILL) on three real gaps — **tracked in #634** (broker PERMIT enablement, reference-trust): (1) signer/anchor config (permit `kid` + recording anchor key as a file mount), (2) consent→ACTIVE lifecycle, (3) reference trust-evidence parser/verifier (NOT a synthetic-trust bypass). So a config-only activation proves **Up + mTLS transport + approval write-path + secured-negatives** (the operation fail-closing is correct evidence); full Functional-PERMIT awaits #634.
+- ✅ **Broker PERMIT path — COMPOSITION PROVEN** (#641 e2e, Codex 019ec29a). The full real trust chain composes into a **real signed broker PERMIT**: transport-bound cert evidence (3a #637) + machine-cert enrollment device trust (3b #638) + `KEY_BASED` attestation + a real WebAuthn step-up + consent→ACTIVE (#636) + the approval-backed grant + clean-duress + durable audit + the signer. A 12-case inverse matrix proves **no single gate is bypassable** (remove any → DENY/KILL), and freshness/revoke/policy-rotation semantics are proven (3c #642). So the broker PERMIT **code path works** — what remains for a *live* PERMIT is **live trust material + the signer/anchor key**, NOT missing code. (This supersedes the earlier "NOT config-only achievable / three gaps" note — consent→ACTIVE and the reference parser/verifier gaps are now CLOSED; only the signer/anchor key + live material remain.)
+- ✅ **Approval WRITE-PATH code-complete** — operator JWT auth (#626) + dual-control approval→grant (#627) + duress pilot-policy (#628) + approval-chain wiring (#630) + approval REST endpoint (#631) + write-path hardening/audit (#632) + the operator REST transport (slice-4c). All Codex-AGREE'd. With the owner opting each in (§2), an approver records a dual-control approval.
 - ✅ **4-role KVKK signed** (owner 2026-06-11, #1388 CLOSED, PR #1444 — D1 legitimate-interest+contract, D3 mandatory fail-closed recording, D6 attended-only, D8 narrow view+PTY).
 - ✅ **Broker isolation scaffold** (gitops #1483: separate Deployment + SA + ExternalSecret + NetworkPolicy + egress ACL + namespace isolation; activation overlay `kustomize/overlays/test/activation/endpoint-admin-remote-bridge/` NOT wired into the synced overlay).
-- 🔒 **Remaining:** owner activation (config + Vault + Keycloak) + physical pilot PCs + the attended run. **Legal-counsel review recommended pre-prod (not a hard gate for the narrow pilot).**
+- 🔒 **Remaining for a LIVE PERMIT (owner-gated):** (1) the **signer/anchor key** — the permit `kid` + the recording-anchor key as a file mount (Vault custody); (2) **live trust material** — a real device-PKI cert chain (the `REAL_PKI` anchor) + a real `KEY_BASED` attestation provenance key + a real enrolled machine-cert row + a real WebAuthn operator credential; (3) the complete **§2 activation config** (below); (4) physical pilot PCs + the attended run. **Legal-counsel review recommended pre-prod (not a hard gate for the narrow pilot).**
 
 ---
 
@@ -27,6 +27,11 @@
 | Recording / WORM | ✅ code (#591) | Vault recording-anchor key + WORM object-lock storage |
 | mTLS + cert-bound token | ✅ code (T-2c/B1.1) | agent device-PKI certs (machine channel) |
 | WebAuthn per-action step-up | ✅ code (D step-up) | operator WebAuthn public key (config) |
+| Transport-bound cert evidence (3a) | ✅ code (#637) | `peer-evidence.parser=TRANSPORT_BOUND` + a `REAL_PKI` cert anchor (§2) |
+| Machine-cert enrollment device trust (3b) | ✅ code (#638) | `device-trust.verifier=MACHINE_CERT_ENROLLMENT` + an enrolled machine-cert row |
+| `KEY_BASED` attestation + builder-revoke / policy-rotation (3a/3c) | ✅ code (#637/#642) | `attestation.verifier=KEY_BASED` + the provenance key/builder/policy (§2) |
+| **PERMIT composition** | ✅ **proven** (#641 e2e) | the §2 trust-substrate config + the signer/anchor key + live material |
+| **Signer/anchor key** | 🔒 owner | the permit signing key + the recording-anchor key (Vault file mounts — §2) |
 | **Broker deploy (D29-EA O4)** | 🔒 owner | activate the overlay (#1483) + seed Vault secrets |
 | **Endpoint enrollment** | 🔒 owner | enroll 2-5 pilot PCs |
 | **Live producers** (real duress, TPM attestation, CRL/OCSP) | 🔒 owner / deferred | pilot uses disabled-duress (risk-accepted); the rest are post-pilot |
@@ -70,9 +75,61 @@ remote-bridge.approval.grants.can-approve.<approver-principal>[0]=<tenant-uuid>
 remote-bridge.approval.fatigue.max-per-window=5
 remote-bridge.approval.fatigue.window-millis=3600000
 remote-bridge.approval.grant-ttl-millis=300000
+
+# --- broker machine-channel mTLS — REQUIRED for an enabled bridge (the agent CONTROL stream needs it; an enabled
+#     server FAIL-CLOSES at startup without all three). Typically provided by the #1483 deployment ExternalSecret/
+#     overlay — set here only if the activation overlay does not already mount them ---
+remote-bridge.tls.cert-chain-pem-path=<broker TLS server cert chain PEM file>
+remote-bridge.tls.private-key-pem-path=<broker TLS server private key PEM file>
+remote-bridge.tls.client-ca-pem-path=<the agent/device client CA PEM file>
+# remote-bridge.port=9444                       # default
+# remote-bridge.allow-insecure-plaintext=false  # MUST stay false for the pilot (loopback-only test escape)
+
+# --- 3a: transport-bound peer-evidence parser (non-prod) — builds the CertRef from the mTLS transport leaf,
+#         so the cert/attestation verifiers below actually run (default FAIL_CLOSED → no evidence → never PERMIT) ---
+remote-bridge.peer-evidence.parser=TRANSPORT_BOUND
+
+# --- 3b: machine-cert enrollment device trust (non-prod) — deviceTrusted = the live peer IS the active enrolled
+#         machine cert for the tenant/device (default FAIL_CLOSED → deviceTrusted false → never PERMIT) ---
+remote-bridge.device-trust.verifier=MACHINE_CERT_ENROLLMENT
+
+# --- cert trust (REAL_PKI): the agent device-PKI chain must build to this anchor (certTrusted). The DISABLED +
+#     allow-insecure-no-revocation pair is NON-PROD ONLY (prod MUST use revocation-mode=CRL with a real CRL) ---
+endpoint-admin.remote-access.cert-trust.evaluator=REAL_PKI
+endpoint-admin.remote-access.cert-trust.trust-anchor-pem=<the device-CA root PEM bundle>
+endpoint-admin.remote-access.cert-trust.revocation-mode=DISABLED
+endpoint-admin.remote-access.cert-trust.allow-insecure-no-revocation=true
+
+# --- attestation (KEY_BASED): the agent's SLSA build-provenance must verify under this key + builder/policy
+#     (attestationVerified). IN_MEMORY is a code-forbidden placeholder in prod — use KEY_BASED with a real key ---
+endpoint-admin.remote-access.attestation.verifier=KEY_BASED
+endpoint-admin.remote-access.attestation.expected-builder-id=<the trusted builder id>
+endpoint-admin.remote-access.attestation.expected-policy-hash=<the expected SLSA policy hash>   # = the agent's slsaPredicateHash (3rd provenance field)
+endpoint-admin.remote-access.attestation.public-key-pem=<the provenance signing PUBLIC key PEM>
+
+# --- operator per-action step-up (WebAuthn) — REQUIRED: even SCREEN_VIEW needs a fresh USER_PRESENCE step-up;
+#     the JWT operator-auth above is identity only, NOT the per-action step-up. Without this → DENY policy:STEP_UP ---
+remote-bridge.step-up.verifier=WEBAUTHN
+remote-bridge.step-up.public-key-pem=<the operator's WebAuthn credential PUBLIC key PEM>
+remote-bridge.step-up.expected-origin=<the operator console origin, e.g. https://operator.acik.com>
+remote-bridge.step-up.expected-rp-id=<the WebAuthn RP id, e.g. operator.acik.com>
+remote-bridge.step-up.signature-algorithm=SHA256withECDSA   # default; explicit for the owner
+remote-bridge.step-up.challenge-ttl-millis=120000           # default
+
+# --- the re-verify freshness TTL (slice-3c) — a recorded peer-trust older than this is dropped → re-verify ---
+remote-bridge.peer-trust.freshness-ttl-millis=30000
+# (remote-bridge.peer-trust.device-ca-pem is for FUTURE hardware device-key attestation ONLY — OMIT for the
+#  MACHINE_CERT_ENROLLMENT pilot; device trust here is the DB machine-cert enrollment binding, not hardware keys)
+
+# --- the signer/anchor key (the LAST gap — Vault-mounted file paths; a broker that cannot sign refuses to start).
+#     BOTH keys MUST be PKCS#8 "BEGIN PRIVATE KEY", NOT SEC1 "BEGIN EC PRIVATE KEY" ---
+remote-bridge.permit.signing-key-pem-path=<PKCS#8 EC P-256 permit-signing private key file (Vault-mounted)>
+remote-bridge.permit.kid=<the permit key id the agents pin>
+remote-bridge.recording.anchor-key.path=<PKCS#8 EC recording-anchor private key file (Vault-mounted)>
+remote-bridge.recording.anchor-key.algorithm=SHA256withECDSA   # default
 ```
 
-> ⚠️ **Each line is a deliberate, owner-accepted reduction for the narrow pilot.** `APPROVAL_BACKED_IN_MEMORY` and `PILOT_RISK_ACCEPTED_DISABLED` are **code-forbidden in a production-like profile** — the activation profile MUST be non-prod. Omitting any line leaves that gate at its fail-closed default.
+> ⚠️ **Each line is a deliberate, owner-accepted reduction for the narrow pilot.** `APPROVAL_BACKED_IN_MEMORY`, `PILOT_RISK_ACCEPTED_DISABLED`, `TRANSPORT_BOUND`, `MACHINE_CERT_ENROLLMENT`, and `REAL_PKI`+`revocation-mode=DISABLED` are **code-forbidden in a production-like profile** — the activation profile MUST be non-prod. Omitting any line leaves that gate at its fail-closed default (and without the trust-substrate + signer keys the broker correctly **never PERMITs** — proven by the #641 composition e2e + its 12-case inverse matrix).
 
 ---
 
@@ -84,7 +141,12 @@ remote-bridge.approval.grant-ttl-millis=300000
 | **Keycloak audience** | a client/audience the operator token carries as `aud` = the bridge audience (so a main-app token can't be replayed) |
 | **Keycloak `tenant_id` mapper** | a protocol mapper emitting the operator's tenant as a canonical-UUID `tenant_id` claim |
 | **Roster role-assignment** | assign `remote-bridge-operator` to the named-roster operators (only) |
-| **Vault** | the broker's secrets per the #1483 ExternalSecret (recording-anchor key, etc.) |
+| **Vault — signer/anchor keys** | the permit signing key + the recording-anchor key (PKCS#8 EC; per the #1483 ExternalSecret) |
+| **Broker mTLS material** | the broker TLS server cert chain + key + the agent/device client CA (the machine channel — via the #1483 deployment secret) |
+| **Device-PKI anchor (REAL_PKI)** | the device-CA root PEM the agent cert chain builds to (`cert-trust.trust-anchor-pem`) |
+| **Provenance signing key + builder/policy** | the SLSA provenance signing PUBLIC key + the expected builder id + policy hash (`attestation.*`) |
+| **Operator WebAuthn credential** | the operator's WebAuthn PUBLIC key + the console origin + RP id (`step-up.*`) — the per-action step-up |
+| **Enrolled machine-cert rows** | each pilot PC's agent cert enrolled (active, in-window) so `MACHINE_CERT_ENROLLMENT` resolves it |
 | **Activation overlay** | `kubectl apply -k kustomize/overlays/test/activation/endpoint-admin-remote-bridge/` (gitops #1483) |
 | **Pilot PCs** | 2-5 IT-owned Windows, agent-enrolled (cert-bound) |
 | **Named roster (D7)** | the pilot operators + endpoint-users (the attended participants) |
@@ -97,7 +159,7 @@ remote-bridge.approval.grant-ttl-millis=300000
 |---|---|---|
 | **Up** | broker pod Running + 9444 mTLS listener + imageID digest match | `kubectl get pod` + TLS probe |
 | **Functional-transport** | synthetic device mTLS CONTROL stream + AgentHello/heartbeat → operator JWT `openSession` → consent prompt/result → approval-REST records a grant | end-to-end transport + the approval write-path |
-| **Functional-PERMIT** | the operation call returns **PERMIT** + a signed permit is pushed | **🔒 blocked by #634** (lifecycle + signer/anchor + reference trust-parser); until then the operation correctly **DENY/KILL**s (fail-closed) |
+| **Functional-PERMIT** | the operation call returns **PERMIT** + a signed permit is pushed | ✅ **code path PROVEN** (#641 composition e2e: a real signed PERMIT issues when every gate is satisfied by real evidence). A *live* PERMIT needs the §2 trust-substrate config + the signer/anchor key + real cert/attestation/enrollment/WebAuthn material; with a gap in any, the operation correctly **DENY/KILL**s (fail-closed, proven by the 12-case inverse matrix) |
 | **Secured** | no/wrong client cert → refused; plaintext refused; wrong CA / wrong device fingerprint; operator without the role → 401; cross-tenant → uniform 404; no approval grant → DENY; ambiguous duress → KILL; 8096/8081 off-path | the negative tests exercised live (all fail-closed) |
 | **Does NOT prove** | real duress detection (disabled, risk-accepted); TPM/HSM non-exportable; CRL/OCSP; durable grant store; production-grade attestation | (post-pilot / owner-gated) |
 
