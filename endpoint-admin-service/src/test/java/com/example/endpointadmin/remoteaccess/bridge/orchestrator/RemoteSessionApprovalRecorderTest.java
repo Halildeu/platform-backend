@@ -144,6 +144,21 @@ class RemoteSessionApprovalRecorderTest {
     }
 
     @Test
+    void everyOutcomeIsAuditedWithItsDistinctReason() {
+        java.util.List<String> audited = new java.util.ArrayList<>();
+        ApprovalDecisionAuditSink sink = (sessionId, operatorSubject, approverPrincipal, result, now) ->
+                audited.add(sessionId + ":" + operatorSubject + ":" + approverPrincipal + ":" + result);
+        RemoteSessionApprovalRecorder rec = new RemoteSessionApprovalRecorder(
+                flow(new ApprovalFatigueLimiter(5, WINDOW)), new InMemoryApprovalGrantStore(), TTL, sink);
+        // a valid approval → RECORDED audited; a tenant mismatch → DENIED_TENANT_MISMATCH audited (distinct reason)
+        rec.record(session(), APPROVER, TENANT, Set.of(RemoteSessionCapability.VIEW_ONLY), NOW);
+        rec.record(session(), APPROVER, OTHER_TENANT, Set.of(RemoteSessionCapability.VIEW_ONLY), NOW);
+        assertEquals(java.util.List.of(
+                SID + ":" + OPERATOR + ":" + APPROVER + ":RECORDED",
+                SID + ":" + OPERATOR + ":" + APPROVER + ":DENIED_TENANT_MISMATCH"), audited);
+    }
+
+    @Test
     void nullCollaboratorsRejectedAtConstruction() {
         ApprovalGrantStore store = new InMemoryApprovalGrantStore();
         RemoteSessionApprovalFlow f = flow(new ApprovalFatigueLimiter(1, WINDOW));

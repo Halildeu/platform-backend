@@ -32,15 +32,22 @@ public final class RemoteSessionApprovalRecorder {
     private final RemoteSessionApprovalFlow approvalFlow;
     private final ApprovalGrantStore store;
     private final long grantTtlMillis;
+    private final ApprovalDecisionAuditSink auditSink;
 
     public RemoteSessionApprovalRecorder(RemoteSessionApprovalFlow approvalFlow, ApprovalGrantStore store,
                                          long grantTtlMillis) {
+        this(approvalFlow, store, grantTtlMillis, new LoggingApprovalDecisionAuditSink());
+    }
+
+    public RemoteSessionApprovalRecorder(RemoteSessionApprovalFlow approvalFlow, ApprovalGrantStore store,
+                                         long grantTtlMillis, ApprovalDecisionAuditSink auditSink) {
         this.approvalFlow = Objects.requireNonNull(approvalFlow, "approvalFlow");
         this.store = Objects.requireNonNull(store, "store");
         if (grantTtlMillis <= 0) {
             throw new IllegalArgumentException("grantTtlMillis must be positive");
         }
         this.grantTtlMillis = grantTtlMillis;
+        this.auditSink = Objects.requireNonNull(auditSink, "auditSink");
     }
 
     /**
@@ -51,7 +58,15 @@ public final class RemoteSessionApprovalRecorder {
     public Result record(RemoteBridgeSession session, String approverPrincipal, String approverTenantId,
                          Set<RemoteSessionCapability> approvedCapabilities, long nowEpochMillis) {
         Objects.requireNonNull(session, "session"); // server-sourced — a null session is a programming error
+        Result result = decide(session, approverPrincipal, approverTenantId, approvedCapabilities, nowEpochMillis);
+        // EVERY outcome (recorded + each denial) is audited here — the distinct reason is captured for audit but
+        // NEVER leaked to the caller as an external oracle (the REST transport collapses all denials to one response)
+        auditSink.record(session.sessionId(), session.operatorSubject(), approverPrincipal, result, nowEpochMillis);
+        return result;
+    }
 
+    private Result decide(RemoteBridgeSession session, String approverPrincipal, String approverTenantId,
+                          Set<RemoteSessionCapability> approvedCapabilities, long nowEpochMillis) {
         // (1) approver-tenant guard: the approver must be in the SAME tenant as the session's operator. The E10
         // canonical identity is NOT a tenancy boundary — that boundary lives here (#612: cross-tenant fail-open).
         if (approverTenantId == null || approverTenantId.isBlank()
