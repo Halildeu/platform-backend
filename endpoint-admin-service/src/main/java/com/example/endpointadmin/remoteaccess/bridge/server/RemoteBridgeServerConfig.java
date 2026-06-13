@@ -22,6 +22,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDevic
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ApprovalGrantStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DuressSignalSourceFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.InMemoryApprovalGrantStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.JdbcApprovalGrantStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerGrantGateFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
@@ -250,12 +251,24 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
-     * Faz 22.6 D10 slice-2 — the approval-grant store the (owner-gated) approval endpoint records into. The
-     * in-memory reference is process-local (the durable/OpenFGA-backed store is the owner-gated live slice); it
-     * stays EMPTY until a dual-control approval is recorded, so by itself it grants nothing.
+     * Faz 22.6 D10 slice-2 (+ post-pilot durable, Codex 019ec29a) — the approval-grant store BOTH the approval
+     * recorder (write) and the owner-grant gate (read) share. Its type follows {@code owner-grant.gate-type}:
+     * {@code APPROVAL_BACKED_DURABLE_DB} → the durable {@link JdbcApprovalGrantStore} (DB-backed, survives restart;
+     * probed fail-fast at refresh); otherwise the process-local {@link InMemoryApprovalGrantStore} (the non-prod
+     * pilot / unused under DENY_ALL). It stays EMPTY until a dual-control approval is recorded, so by itself it
+     * grants nothing.
      */
     @Bean
-    public ApprovalGrantStore remoteBridgeApprovalGrantStore() {
+    public ApprovalGrantStore remoteBridgeApprovalGrantStore(
+            JdbcTemplate jdbcTemplate,
+            @Value("${ENDPOINT_ADMIN_DB_SCHEMA:endpoint_admin_service}") String schema,
+            @Value("${remote-bridge.owner-grant.gate-type:DENY_ALL}") String gateType) {
+        if ("APPROVAL_BACKED_DURABLE_DB".equals(gateType == null ? "" : gateType.strip())) {
+            JdbcApprovalGrantStore durable = new JdbcApprovalGrantStore(jdbcTemplate, schema);
+            // fail-fast: an enabled DURABLE_DB broker whose table is missing refuses to start (not lazily later)
+            durable.probeAvailable();
+            return durable;
+        }
         return new InMemoryApprovalGrantStore();
     }
 

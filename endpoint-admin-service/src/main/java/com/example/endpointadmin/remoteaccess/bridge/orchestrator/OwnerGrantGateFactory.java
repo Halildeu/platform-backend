@@ -10,15 +10,20 @@ import org.slf4j.LoggerFactory;
  *   <li><b>DENY_ALL</b> — the fail-closed default ({@link OwnerTokenGate#DENY_ALL}): no grant mechanism wired,
  *       every operation denied. The current behaviour until the live pilot opts in.</li>
  *   <li><b>APPROVAL_BACKED_IN_MEMORY</b> — the {@link ApprovalBackedOwnerTokenGate} over an in-memory
- *       {@link ApprovalGrantStore}. A PLACEHOLDER (process-local) grant store → FORBIDDEN in a production-like
- *       profile; the durable/distributed (DB / OpenFGA-backed) grant store is the owner-gated live slice.</li>
+ *       {@link ApprovalGrantStore}. A PLACEHOLDER (process-local, lost on restart) grant store → FORBIDDEN in a
+ *       production-like profile; the non-prod pilot path.</li>
+ *   <li><b>APPROVAL_BACKED_DURABLE_DB</b> — the {@link ApprovalBackedOwnerTokenGate} over the durable
+ *       {@link JdbcApprovalGrantStore}: the recorded session grant survives restart / multi-replica, so this is
+ *       ALLOWED in a production-like profile (the prod / owner path). NOTE (Codex 019ec29a): this alone does NOT
+ *       complete the prod approval path — the canonical-identity resolver + tenant-scoped grants + fatigue
+ *       limiter remain separate (still placeholder); it fixes only the process-local authority-state problem.</li>
  * </ul>
  */
 public final class OwnerGrantGateFactory {
 
     private static final Logger log = LoggerFactory.getLogger(OwnerGrantGateFactory.class);
 
-    public enum GateType { DENY_ALL, APPROVAL_BACKED_IN_MEMORY }
+    public enum GateType { DENY_ALL, APPROVAL_BACKED_IN_MEMORY, APPROVAL_BACKED_DURABLE_DB }
 
     private OwnerGrantGateFactory() {
     }
@@ -29,8 +34,9 @@ public final class OwnerGrantGateFactory {
     }
 
     /**
-     * @param store                 the grant store (only consulted for APPROVAL_BACKED_IN_MEMORY)
-     * @param productionLikeProfile when true, the placeholder in-memory approval-backed gate is REFUSED
+     * @param store                 the grant store (consulted for APPROVAL_BACKED_IN_MEMORY + APPROVAL_BACKED_DURABLE_DB)
+     * @param productionLikeProfile when true, the placeholder in-memory approval-backed gate is REFUSED (the
+     *                              durable DB-backed gate is allowed)
      * @throws IllegalStateException on any forbidden combination (fail-fast startup)
      */
     public static OwnerTokenGate create(GateType type, ApprovalGrantStore store, boolean productionLikeProfile) {
@@ -43,10 +49,18 @@ public final class OwnerGrantGateFactory {
                 if (productionLikeProfile) {
                     throw reject("owner-grant gate APPROVAL_BACKED_IN_MEMORY uses a PLACEHOLDER in-memory grant "
                             + "store (process-local, lost on restart) and is forbidden in a production-like "
-                            + "profile — configure a durable/OpenFGA-backed grant store");
+                            + "profile — use APPROVAL_BACKED_DURABLE_DB");
                 }
                 if (store == null) {
                     throw reject("owner-grant gate APPROVAL_BACKED_IN_MEMORY requires an ApprovalGrantStore");
+                }
+                return new ApprovalBackedOwnerTokenGate(store);
+            }
+            case APPROVAL_BACKED_DURABLE_DB -> {
+                // durable (DB-backed) grant store survives restart / multi-replica → allowed in every profile
+                if (store == null) {
+                    throw reject("owner-grant gate APPROVAL_BACKED_DURABLE_DB requires an ApprovalGrantStore "
+                            + "(the durable JdbcApprovalGrantStore)");
                 }
                 return new ApprovalBackedOwnerTokenGate(store);
             }
