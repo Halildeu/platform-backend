@@ -3,6 +3,7 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.junit.jupiter.api.io.TempDir;
+import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.net.ServerSocket;
@@ -33,6 +34,7 @@ class RemoteBridgeServerLifecycleTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+            .withBean(EndpointMachineCertRepository.class, () -> mock(EndpointMachineCertRepository.class))
             .withUserConfiguration(RemoteBridgeServerConfig.class);
 
     /** A valid PKCS#8 EC P-256 key written to {@code name} (signing + anchor keys share the format). */

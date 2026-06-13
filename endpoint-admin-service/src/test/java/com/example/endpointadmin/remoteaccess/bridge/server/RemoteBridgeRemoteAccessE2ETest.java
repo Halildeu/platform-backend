@@ -113,7 +113,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         SessionOpenOutcome open = operator.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support",
                         Set.of(RemoteSessionCapability.VIEW_ONLY)),
-                peer, "Operator X");
+                peer, "t-1", "Operator X");
         assertTrue(open.opened());
         assertTrue(open.consentPromptSent());
         assertTrue(agent.sent.stream().anyMatch(Envelope::hasConsentPrompt), "agent received the consent prompt");
@@ -156,7 +156,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         registry.register(peer, new ControlStreamHandle(agent));
 
         operator.openSession(new SessionRequest("s1", "dev-1", "operator@x", "support",
-                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, "Operator X");
+                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, "t-1", "Operator X");
 
         // the end-user REFUSES → the control plane denies consent; there is NO path from here to ACTIVE
         controlPlane.onConsentResult(peer, new ConsentResult("s1", false, "1", NOW, NOW + 300_000L));

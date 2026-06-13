@@ -99,7 +99,8 @@ public final class RemoteBridgeOperatorService {
      * just-opened session is driven terminal + evicted so no orphan {@code CONSENT_PENDING} session lingers
      * awaiting a consent that can never arrive (Codex S3).
      */
-    public SessionOpenOutcome openSession(SessionRequest request, PeerIdentity peer, String operatorDisplayName) {
+    public SessionOpenOutcome openSession(SessionRequest request, PeerIdentity peer, String operatorTenantId,
+                                          String operatorDisplayName) {
         if (request == null || request.sessionId() == null || request.sessionId().isBlank() || peer == null) {
             return SessionOpenOutcome.rejected(request == null ? null : request.sessionId(), "malformed-request");
         }
@@ -108,7 +109,8 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(request.sessionId(), "peer-not-connected"); // pre-guard
         }
 
-        OpenResult result = store.open(request, peer, operatorDisplayName, now + consentPromptTtlMillis, now);
+        OpenResult result = store.open(request, peer, operatorTenantId, operatorDisplayName,
+                now + consentPromptTtlMillis, now);
         if (result instanceof Refused refused) {
             return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
         }
