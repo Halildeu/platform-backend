@@ -100,7 +100,7 @@ class RemoteBridgeOperatorServiceTest {
     private static RemoteBridgeSession activeSession(RemoteBridgeSessionStore store, String sessionId,
                                                      String peerKey, Set<RemoteSessionCapability> caps) {
         PeerIdentity peer = new PeerIdentity(peerKey, Optional.of("dev-1"), List.of());
-        store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null, caps), peer, "Operator X",
+        store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null, caps), peer, "t-1", "Operator X",
                 NOW + 60_000L, NOW);
         RemoteBridgeSession s = store.bySessionId(sessionId).orElseThrow();
         s.transition(Event.ENABLE);
@@ -198,7 +198,7 @@ class RemoteBridgeOperatorServiceTest {
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
-                peer, "Operator X");
+                peer, "t-1", "Operator X");
 
         assertTrue(outcome.opened());
         assertTrue(outcome.consentPromptSent());
@@ -219,7 +219,7 @@ class RemoteBridgeOperatorServiceTest {
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
-                new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()), "Operator X");
+                new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()), "t-1", "Operator X");
 
         assertFalse(outcome.opened());
         assertEquals("peer-not-connected", outcome.rejectReason());
@@ -232,7 +232,7 @@ class RemoteBridgeOperatorServiceTest {
                 assembler((sid, now) -> DuressSignal.NONE), broker(), new ControlStreamRegistry(), () -> NOW,
                 120_000L);
 
-        SessionOpenOutcome outcome = service.openSession(null, null, "Operator X");
+        SessionOpenOutcome outcome = service.openSession(null, null, "t-1", "Operator X");
 
         assertFalse(outcome.opened());
         assertEquals("malformed-request", outcome.rejectReason());

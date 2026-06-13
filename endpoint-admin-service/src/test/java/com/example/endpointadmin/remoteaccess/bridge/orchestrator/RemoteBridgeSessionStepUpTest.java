@@ -21,7 +21,7 @@ class RemoteBridgeSessionStepUpTest {
     private static final long SESSION_START = 10_000L;
 
     private static RemoteBridgeSession session() {
-        return new RemoteBridgeSession("s1", "peer-1", "dev-1", "operator@x", "Operator X",
+        return new RemoteBridgeSession("s1", "peer-1", "dev-1", "operator@x", "t-1", "Operator X",
                 Set.of(RemoteSessionCapability.VIEW_ONLY), SESSION_START + 60_000L, SESSION_START, State.ACTIVE);
     }
 

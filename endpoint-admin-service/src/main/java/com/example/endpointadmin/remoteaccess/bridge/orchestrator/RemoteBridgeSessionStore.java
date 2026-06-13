@@ -43,6 +43,7 @@ public final class RemoteBridgeSessionStore {
      */
     public OpenResult open(RemoteBridgeMessages.SessionRequest request,
                            PeerIdentity peer,
+                           String operatorTenantId,
                            String operatorDisplayName,
                            long promptExpiryEpochMillis,
                            long nowEpochMillis) {
@@ -53,7 +54,7 @@ public final class RemoteBridgeSessionStore {
             return new Refused("prompt-expiry-not-in-future");
         }
         RemoteBridgeSession session = new RemoteBridgeSession(request.sessionId(), peer.transportPeerKey(),
-                request.deviceId(), request.operatorSubject(),
+                request.deviceId(), request.operatorSubject(), operatorTenantId,
                 operatorDisplayName == null || operatorDisplayName.isBlank() ? request.operatorSubject()
                         : operatorDisplayName,
                 request.requestedCapabilities(), promptExpiryEpochMillis, nowEpochMillis, State.DISABLED);

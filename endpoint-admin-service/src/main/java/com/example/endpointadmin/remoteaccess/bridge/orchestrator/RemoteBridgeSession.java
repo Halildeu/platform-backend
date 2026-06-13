@@ -31,6 +31,7 @@ public final class RemoteBridgeSession {
     private final String transportPeerKey;
     private final String deviceId;
     private final String operatorSubject;
+    private final String operatorTenantId;
     private final String operatorDisplayName;
     private final Set<RemoteSessionCapability> requestedCapabilities;
     private final long promptExpiryEpochMillis;
@@ -52,6 +53,7 @@ public final class RemoteBridgeSession {
                         String transportPeerKey,
                         String deviceId,
                         String operatorSubject,
+                        String operatorTenantId,
                         String operatorDisplayName,
                         Set<RemoteSessionCapability> requestedCapabilities,
                         long promptExpiryEpochMillis,
@@ -61,6 +63,7 @@ public final class RemoteBridgeSession {
         this.transportPeerKey = transportPeerKey;
         this.deviceId = deviceId;
         this.operatorSubject = operatorSubject;
+        this.operatorTenantId = operatorTenantId;
         this.operatorDisplayName = operatorDisplayName;
         this.requestedCapabilities = Set.copyOf(requestedCapabilities);
         this.promptExpiryEpochMillis = promptExpiryEpochMillis;
@@ -182,6 +185,15 @@ public final class RemoteBridgeSession {
 
     public String operatorSubject() {
         return operatorSubject;
+    }
+
+    /**
+     * Faz 22.6 slice-4c-2b-2b (Codex REVISE) — the operator's tenant, pinned from the AUTHENTICATED identity at
+     * open time (never a wire field). The follow-up operations (step-up, operation) gate ownership on tenant AND
+     * subject, so an operator with the SAME subject in a DIFFERENT tenant cannot act on this session.
+     */
+    public String operatorTenantId() {
+        return operatorTenantId;
     }
 
     public String operatorDisplayName() {

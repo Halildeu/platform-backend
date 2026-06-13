@@ -159,7 +159,10 @@ public class RemoteBridgeOperatorController {
         if (peer == null) {
             return notFound(); // not connected / not enrolled / cross-tenant — same 404, no existence oracle
         }
-        SessionOpenOutcome outcome = operatorService.openSession(sessionRequest, peer, identity.operatorSubject());
+        // the session is pinned to the AUTHENTICATED tenant (canonical) so the follow-up ownership guard is
+        // tenant-scoped, not just subject-scoped (Codex REVISE)
+        SessionOpenOutcome outcome = operatorService.openSession(sessionRequest, peer, tenantId.toString(),
+                identity.operatorSubject());
         if (!outcome.opened()) {
             // a GENERIC refusal — the internal reason (e.g. a duplicate session id) is audited upstream, never
             // echoed, so a guessed sessionId cannot become a collision oracle (Codex REVISE)
@@ -244,10 +247,21 @@ public class RemoteBridgeOperatorController {
         return authenticator.authenticate(OperatorCredentialExtractor.extract(request));
     }
 
-    /** The session iff it exists AND is owned by the authenticated operator; otherwise empty (⇒ 404). */
+    /**
+     * The session iff it exists AND is owned by the authenticated operator — gated on BOTH the operator's
+     * tenant AND subject (Codex REVISE: subject alone is not a tenancy boundary, so an operator with the same
+     * subject in a DIFFERENT tenant must not pass). A non-UUID identity tenant owns nothing (fail-closed).
+     * Otherwise empty (⇒ 404, same response for missing/not-owned — no existence oracle).
+     */
     private Optional<RemoteBridgeSession> ownedSession(String sessionId, OperatorIdentity identity) {
+        UUID tenantId = parseUuidOrNull(identity.tenantId());
+        if (tenantId == null) {
+            return Optional.empty();
+        }
+        String canonicalTenant = tenantId.toString();
         return sessionStore.bySessionId(sessionId)
-                .filter(session -> Objects.equals(session.operatorSubject(), identity.operatorSubject()));
+                .filter(session -> canonicalTenant.equals(session.operatorTenantId())
+                        && Objects.equals(session.operatorSubject(), identity.operatorSubject()));
     }
 
     private static ResponseEntity<?> unauthenticated() {

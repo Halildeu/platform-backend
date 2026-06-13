@@ -98,7 +98,7 @@ class BrokerControlPlaneTest {
 
     private static RemoteBridgeSession opened(RemoteBridgeSessionStore store, String sessionId) {
         RemoteBridgeSessionStore.OpenResult result =
-                store.open(request(sessionId), PEER, "Op Erator", PROMPT_EXPIRY, NOW);
+                store.open(request(sessionId), PEER, "t-1", "Op Erator", PROMPT_EXPIRY, NOW);
         assertTrue(result instanceof RemoteBridgeSessionStore.Opened, String.valueOf(result));
         return ((RemoteBridgeSessionStore.Opened) result).session();
     }
@@ -165,13 +165,13 @@ class BrokerControlPlaneTest {
     void openRefusesInvalidDuplicatePastExpiryAndSecondLiveSessionPerPeer() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         assertTrue(store.open(new RemoteBridgeMessages.SessionRequest("s", "d", "o", null, Set.of()),
-                PEER, "x", PROMPT_EXPIRY, NOW) instanceof RemoteBridgeSessionStore.Refused);
-        assertTrue(store.open(request("sess-x"), PEER, "x", NOW - 1, NOW)
+                PEER, "t-1", "x", PROMPT_EXPIRY, NOW) instanceof RemoteBridgeSessionStore.Refused);
+        assertTrue(store.open(request("sess-x"), PEER, "t-1", "x", NOW - 1, NOW)
                 instanceof RemoteBridgeSessionStore.Refused); // expiry not in the future
         opened(store, "sess-1");
-        assertTrue(store.open(request("sess-1"), OTHER_PEER, "x", PROMPT_EXPIRY, NOW)
+        assertTrue(store.open(request("sess-1"), OTHER_PEER, "t-1", "x", PROMPT_EXPIRY, NOW)
                 instanceof RemoteBridgeSessionStore.Refused); // duplicate id
-        RemoteBridgeSessionStore.OpenResult second = store.open(request("sess-2"), PEER, "x",
+        RemoteBridgeSessionStore.OpenResult second = store.open(request("sess-2"), PEER, "t-1", "x",
                 PROMPT_EXPIRY, NOW);
         assertTrue(second instanceof RemoteBridgeSessionStore.Refused);
         assertEquals("peer-already-has-live-session",
@@ -185,7 +185,7 @@ class BrokerControlPlaneTest {
         assertTrue(session.transition(Event.KILL).accepted());
         store.evictIfTerminal("sess-1");
         assertEquals(0, store.liveCount());
-        assertTrue(store.open(request("sess-2"), PEER, "x", PROMPT_EXPIRY, NOW)
+        assertTrue(store.open(request("sess-2"), PEER, "t-1", "x", PROMPT_EXPIRY, NOW)
                 instanceof RemoteBridgeSessionStore.Opened);
     }
 

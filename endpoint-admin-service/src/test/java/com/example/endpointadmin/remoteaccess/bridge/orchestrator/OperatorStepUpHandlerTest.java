@@ -48,7 +48,7 @@ class OperatorStepUpHandlerTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null,
-                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, "Operator X", NOW + 60_000L, NOW);
+                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, "t-1", "Operator X", NOW + 60_000L, NOW);
         return store;
     }
 

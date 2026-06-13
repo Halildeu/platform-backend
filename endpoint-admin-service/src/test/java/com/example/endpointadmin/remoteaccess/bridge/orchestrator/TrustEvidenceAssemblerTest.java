@@ -69,7 +69,7 @@ class TrustEvidenceAssemblerTest {
 
     private static RemoteBridgeSession session(String sessionId, String peerKey, String deviceId,
                                                Set<RemoteSessionCapability> requested) {
-        return new RemoteBridgeSession(sessionId, peerKey, deviceId, "operator@x", "Operator X",
+        return new RemoteBridgeSession(sessionId, peerKey, deviceId, "operator@x", "t-1", "Operator X",
                 requested, NOW + 60_000L, NOW, State.ACTIVE);
     }
 
