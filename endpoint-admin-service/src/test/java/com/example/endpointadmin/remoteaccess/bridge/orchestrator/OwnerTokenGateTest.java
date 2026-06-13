@@ -16,7 +16,8 @@ class OwnerTokenGateTest {
 
     @Test
     void denyAllGrantsNothing() {
-        assertTrue(OwnerTokenGate.DENY_ALL.grantedCapabilities("sess-1", "operator@x").isEmpty());
+        assertTrue(OwnerTokenGate.DENY_ALL.grantedCapabilities(
+                new OwnerTokenGate.OwnerGrantContext("sess-1", "t-1", "operator@x", 0L), 0L).isEmpty());
     }
 
     @Test
@@ -54,7 +55,8 @@ class OwnerTokenGateTest {
     void denyAllThroughEffectiveGrantYieldsNothing() {
         // the default gate's empty grant ∩ anything = empty → every operation denied
         assertTrue(OwnerTokenGate.effectiveGrant(
-                OwnerTokenGate.DENY_ALL.grantedCapabilities("s", "o"),
+                OwnerTokenGate.DENY_ALL.grantedCapabilities(
+                        new OwnerTokenGate.OwnerGrantContext("s", "t", "o", 0L), 0L),
                 Set.of(RemoteSessionCapability.VIEW_ONLY)).isEmpty());
     }
 
