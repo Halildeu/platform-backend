@@ -56,4 +56,40 @@ public final class RemoteSessionAuthz {
         }
         return !req.equals(appr);
     }
+
+    /**
+     * Faz 22.6 D10-E10 (Codex 019ebe06) — the dual-control invariant enforced on CANONICAL subjects: resolve
+     * BOTH the requester and approver principals (which may be aliases / proxies / service-accounts) to their
+     * stable canonical subject via a {@link CanonicalIdentityResolver}, then require the canonical subjects to
+     * be distinct. This closes the gap that {@link #approverDistinctFromRequester} explicitly leaves open — the
+     * same human approving their own request under a second id (red-team must-land #10).
+     *
+     * <p><b>Fail-closed:</b> a null resolver, or EITHER principal failing to resolve to a canonical subject,
+     * denies approval (an unresolvable principal can never be proven distinct from another). The final
+     * distinctness check reuses {@link #approverDistinctFromRequester}, so blank/whitespace handling is
+     * identical on the resolved canonical subjects.
+     *
+     * @return {@code true} iff both principals resolve AND their canonical subjects are distinct.
+     */
+    public static boolean approverDistinctFromRequesterCanonical(CanonicalIdentityResolver resolver,
+                                                                 String requesterPrincipal,
+                                                                 String approverPrincipal) {
+        if (resolver == null) {
+            return false;
+        }
+        String requesterCanonical;
+        String approverCanonical;
+        try {
+            requesterCanonical = resolver.canonicalSubject(requesterPrincipal).orElse(null);
+            approverCanonical = resolver.canonicalSubject(approverPrincipal).orElse(null);
+        } catch (RuntimeException resolverFault) {
+            // the resolver contract is total, but a misbehaving (contract-violating) resolver is fail-closed
+            // here too — defense-in-depth (Codex REVISE)
+            return false;
+        }
+        if (requesterCanonical == null || approverCanonical == null) {
+            return false; // an unresolvable principal is fail-closed — distinctness cannot be proven
+        }
+        return approverDistinctFromRequester(requesterCanonical, approverCanonical);
+    }
 }
