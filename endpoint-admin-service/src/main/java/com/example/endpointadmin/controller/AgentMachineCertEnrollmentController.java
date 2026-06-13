@@ -47,11 +47,21 @@ import java.util.UUID;
  *       so an unauthenticated client cannot inject a header.</li>
  * </ol>
  *
- * <p>Tenant resolution (Codex 019e6dc9 P1-4 absorb): {@code X-Tenant-Id}
- * header is REQUIRED. There is no default-tenant fallback — a missing or
- * blank header always produces {@code 400 TENANT_HEADER_REQUIRED}. The
- * gateway is responsible for stripping any client-supplied tenant header
- * and injecting its own validated value.
+ * <p>Tenant resolution (Codex 019e6dc9 P1-4 absorb): in forward-header /
+ * gateway-terminated mode the {@code X-Tenant-Id} header is REQUIRED — there is
+ * no default-tenant fallback, a missing or blank header produces
+ * {@code 400 TENANT_HEADER_REQUIRED}, and the gateway is responsible for
+ * stripping any client-supplied tenant header and injecting its own validated
+ * value.
+ *
+ * <p><b>Passthrough exception (Faz 22.5 Step-2, Codex 019ec0f9):</b> when a
+ * request arrives on the mTLS passthrough connector
+ * ({@code endpoint-admin.mtls.passthrough.enabled} and
+ * {@code getLocalPort()==passthrough.port}) the {@code X-Tenant-Id} header is
+ * IGNORED — an L4 SNI edge cannot strip/inject it, so it would be
+ * client-controlled. The tenant is the fixed single-tenant
+ * {@code passthrough.fixed-tenant-id}; the header (present or not, forged or not)
+ * has no effect.
  */
 @RestController
 @RequestMapping("/api/v1/endpoint-agent/endpoint-enrollments")
@@ -65,6 +75,16 @@ public class AgentMachineCertEnrollmentController {
 
     private final MachineCertAutoEnrollService service;
     private final boolean forwardHeaderEnabled;
+
+    // Faz 22.5 Step-2 (Codex 019ec0f9): passthrough tenant authority. When a
+    // request arrives on the mTLS passthrough connector, X-Tenant-Id is IGNORED
+    // (an L4 SNI edge cannot strip/inject it, so it would be client-controlled)
+    // and the tenant is the fixed single-tenant UUID. Startup validation
+    // (MtlsPassthroughValidator) guarantees a valid non-nil UUID + mutual
+    // exclusion with forward-header mode when passthrough is enabled.
+    private final boolean passthroughEnabled;
+    private final int passthroughPort;
+    private final String passthroughFixedTenantId;
 
     /**
      * @param forwardHeaderEnabled when {@code false} (default) the controller
@@ -82,17 +102,32 @@ public class AgentMachineCertEnrollmentController {
      *                             default-on header mode would let any
      *                             caller with raw service access spoof an
      *                             enrollment by injecting their own PEM.
+     * @param passthroughEnabled   when {@code true}, requests on
+     *                             {@code passthroughPort} resolve the tenant from
+     *                             the fixed single-tenant UUID instead of the
+     *                             {@code X-Tenant-Id} header (Codex 019ec0f9).
      */
     public AgentMachineCertEnrollmentController(
             MachineCertAutoEnrollService service,
-            @Value("${endpoint-admin.mtls.forward-header.enabled:false}") boolean forwardHeaderEnabled) {
+            @Value("${endpoint-admin.mtls.forward-header.enabled:false}") boolean forwardHeaderEnabled,
+            @Value("${endpoint-admin.mtls.passthrough.enabled:false}") boolean passthroughEnabled,
+            @Value("${endpoint-admin.mtls.passthrough.port:8443}") int passthroughPort,
+            @Value("${endpoint-admin.mtls.passthrough.fixed-tenant-id:}") String passthroughFixedTenantId) {
         this.service = service;
         this.forwardHeaderEnabled = forwardHeaderEnabled;
+        this.passthroughEnabled = passthroughEnabled;
+        this.passthroughPort = passthroughPort;
+        this.passthroughFixedTenantId = passthroughFixedTenantId;
         if (forwardHeaderEnabled) {
             log.info("X-Client-Cert forwarded-header mode ENABLED. "
                     + "Upstream gateway MUST validate the cert chain and strip "
                     + "any client-supplied X-Client-Cert / X-Tenant-Id before "
                     + "this service receives the request.");
+        }
+        if (passthroughEnabled) {
+            log.info("Passthrough mTLS tenant authority ENABLED on port {}: "
+                    + "X-Tenant-Id is IGNORED; tenant is the fixed single-tenant UUID.",
+                    passthroughPort);
         }
     }
 
@@ -159,6 +194,15 @@ public class AgentMachineCertEnrollmentController {
     }
 
     private UUID resolveTenantId(HttpServletRequest request) {
+        // Faz 22.5 Step-2 (Codex 019ec0f9): on the mTLS passthrough connector the
+        // L4 SNI edge cannot strip/inject X-Tenant-Id, so the header is
+        // client-controlled and MUST NOT be trusted — a forged X-Tenant-Id would
+        // otherwise steer a FIRST enrollment into an arbitrary tenant. The tenant
+        // is the fixed single-tenant authority; the header is ignored. Startup
+        // validation guarantees a valid non-nil UUID here when enabled.
+        if (passthroughEnabled && request.getLocalPort() == passthroughPort) {
+            return UUID.fromString(passthroughFixedTenantId.trim());
+        }
         String header = request.getHeader(TENANT_HEADER);
         if (header == null || header.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "TENANT_HEADER_REQUIRED");
