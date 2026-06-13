@@ -34,6 +34,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 
 import java.security.PrivateKey;
 import java.util.Locale;
@@ -307,17 +310,44 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.operator-auth.type:IN_MEMORY}") String authenticatorType,
             @Value("${remote-bridge.operator-auth.in-memory-token:}") String inMemoryToken,
             @Value("${remote-bridge.operator-auth.in-memory-subject:}") String inMemorySubject,
-            @Value("${remote-bridge.operator-auth.in-memory-tenant:}") String inMemoryTenant) {
+            @Value("${remote-bridge.operator-auth.in-memory-tenant:}") String inMemoryTenant,
+            @Value("${remote-bridge.operator-auth.jwt.jwk-set-uri:}") String jwtJwkSetUri,
+            @Value("${remote-bridge.operator-auth.jwt.issuer:}") String jwtIssuer,
+            @Value("${remote-bridge.operator-auth.jwt.audience:}") String jwtAudience,
+            @Value("${remote-bridge.operator-auth.jwt.tenant-claim:tenant_id}") String jwtTenantClaim,
+            @Value("${remote-bridge.operator-auth.jwt.subject-claim:sub}") String jwtSubjectClaim,
+            @Value("${remote-bridge.operator-auth.jwt.role-claim-path:realm_access.roles}") String jwtRoleClaimPath,
+            @Value("${remote-bridge.operator-auth.jwt.required-operator-role:remote-bridge-operator}")
+            String jwtRequiredOperatorRole) {
         // a prod-like profile refuses the placeholder IN_MEMORY authenticator (same rule as the verifiers)
         String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
                 environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
         boolean productionLike = profiles.contains("prod");
-        return OperatorAuthenticatorFactory.create(
-                OperatorAuthenticatorFactory.AuthenticatorType.valueOf(authenticatorType),
+
+        OperatorAuthenticatorFactory.AuthenticatorType type =
+                OperatorAuthenticatorFactory.AuthenticatorType.valueOf(authenticatorType);
+
+        // JWT_BEARER (human-to-console): a BRIDGE-specific decoder — signature + temporal + issuer against the
+        // IdP JWKS, but WITHOUT the main app's audience validator (the bridge audience is enforced by the
+        // authenticator, so a main-app token cannot be replayed here). Built only when JWT is selected + a JWKS
+        // URI + issuer are configured; otherwise the factory fail-fasts on the incomplete config.
+        OperatorAuthenticatorFactory.JwtBearerConfig jwtConfig = null;
+        if (type == OperatorAuthenticatorFactory.AuthenticatorType.JWT_BEARER) {
+            JwtDecoder jwtDecoder = null;
+            if (!jwtJwkSetUri.isBlank() && !jwtIssuer.isBlank()) {
+                NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwtJwkSetUri).build();
+                decoder.setJwtValidator(JwtValidators.createDefaultWithIssuer(jwtIssuer));
+                jwtDecoder = decoder;
+            }
+            jwtConfig = new OperatorAuthenticatorFactory.JwtBearerConfig(jwtDecoder, jwtIssuer, jwtAudience,
+                    jwtTenantClaim, jwtSubjectClaim, jwtRoleClaimPath, jwtRequiredOperatorRole);
+        }
+
+        return OperatorAuthenticatorFactory.create(type,
                 inMemoryToken.isBlank() ? null : inMemoryToken,
                 inMemorySubject.isBlank() ? null : inMemorySubject,
                 inMemoryTenant.isBlank() ? null : inMemoryTenant,
-                productionLike);
+                jwtConfig, productionLike);
     }
 
     /**
