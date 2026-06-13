@@ -6,6 +6,8 @@
 >
 > **Kaynak:** ADR-0034 §11 (owner-signed 2026-06-11) · ADR-0033 (broker/threat-model) · gitops #1388 (LIFTED, engineering) · backend #510 (22.6 umbrella).
 > **Statü lejantı:** ✅ agent-evidence DONE · 🟡 agent-completable GAP (yazılabilir) · 🔒 owner-gated (live producer / infra / legal / fiziksel).
+>
+> **🎯 UPDATE 2026-06-13 — live-pilot authority CODE path COMPLETE:** the 3 authority blockers are closed (#626 operator JWT auth + #627 approval→owner-grant + #628 duress pilot-policy). With the owner opting each in, the broker can PERMIT an attended pilot session. **Turnkey activation guide: [RB-d10-live-pilot-readiness.md](./RB-d10-live-pilot-readiness.md)** (config + Keycloak/Vault owner-input + D29-EA smoke + the attended-pilot run). O4 (D29-EA deploy) remains the owner-gated activation step.
 
 ---
 
