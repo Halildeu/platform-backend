@@ -67,7 +67,9 @@ public final class TrustEvidenceAssembler {
                 && deviceIdentitiesConsistent(trust, session.deviceId());
 
         Set<RemoteSessionCapability> granted = OwnerTokenGate.effectiveGrant(
-                ownerGate.grantedCapabilities(session.sessionId(), session.operatorSubject()),
+                ownerGate.grantedCapabilities(new OwnerTokenGate.OwnerGrantContext(session.sessionId(),
+                        session.operatorTenantId(), session.operatorSubject(), session.sessionStartEpochMillis()),
+                        nowEpochMillis),
                 session.requestedCapabilities());
 
         DuressSignal duress = classifyDuress(session.sessionId(), nowEpochMillis);

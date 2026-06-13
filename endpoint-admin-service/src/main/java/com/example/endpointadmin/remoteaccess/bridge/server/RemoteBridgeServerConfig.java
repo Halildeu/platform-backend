@@ -19,6 +19,9 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ApprovalGrantStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.InMemoryApprovalGrantStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerGrantGateFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
@@ -233,15 +236,43 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
-     * Faz 22.6 T-4a-ii slice-4b — the trust-evidence assembler the operator service feeds the broker.
-     * {@code OwnerTokenGate.DENY_ALL}: no owner-signed-token verifier until the live-pilot slice → grant
-     * nothing (every operation denied for lack of capability). {@code DuressSignalSource.AMBIGUOUS_UNTIL_WIRED}:
-     * no transport duress-classification path yet → AMBIGUOUS → the broker KILLS — fail-closed, an enabled
-     * broker with no real duress source kills rather than proceeds.
+     * Faz 22.6 D10 slice-2 — the approval-grant store the (owner-gated) approval endpoint records into. The
+     * in-memory reference is process-local (the durable/OpenFGA-backed store is the owner-gated live slice); it
+     * stays EMPTY until a dual-control approval is recorded, so by itself it grants nothing.
      */
     @Bean
-    public TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler(PeerTrustLedger remoteBridgePeerTrustLedger) {
-        return new TrustEvidenceAssembler(remoteBridgePeerTrustLedger, OwnerTokenGate.DENY_ALL,
+    public ApprovalGrantStore remoteBridgeApprovalGrantStore() {
+        return new InMemoryApprovalGrantStore();
+    }
+
+    /**
+     * Faz 22.6 D10 slice-2 — the owner-grant gate, opt-in via {@code remote-bridge.owner-grant.gate-type}.
+     * DEFAULT {@code DENY_ALL}: grant nothing (every operation denied for lack of capability) — behaviour
+     * unchanged. {@code APPROVAL_BACKED_IN_MEMORY} (non-prod only) reads grants recorded by a dual-control
+     * approval; the placeholder in-memory store is forbidden in a prod-like profile.
+     */
+    @Bean
+    public OwnerTokenGate remoteBridgeOwnerTokenGate(
+            Environment environment,
+            ApprovalGrantStore remoteBridgeApprovalGrantStore,
+            @Value("${remote-bridge.owner-grant.gate-type:DENY_ALL}") String gateType) {
+        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
+                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
+        boolean productionLike = profiles.contains("prod");
+        return OwnerGrantGateFactory.create(
+                OwnerGrantGateFactory.GateType.valueOf(gateType), remoteBridgeApprovalGrantStore, productionLike);
+    }
+
+    /**
+     * Faz 22.6 T-4a-ii slice-4b — the trust-evidence assembler the operator service feeds the broker. The
+     * owner-grant gate is injected (D10 slice-2; default DENY_ALL → grant nothing).
+     * {@code DuressSignalSource.AMBIGUOUS_UNTIL_WIRED}: no transport duress-classification path yet → AMBIGUOUS →
+     * the broker KILLS — fail-closed, an enabled broker with no real duress source kills rather than proceeds.
+     */
+    @Bean
+    public TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler(PeerTrustLedger remoteBridgePeerTrustLedger,
+                                                                     OwnerTokenGate remoteBridgeOwnerTokenGate) {
+        return new TrustEvidenceAssembler(remoteBridgePeerTrustLedger, remoteBridgeOwnerTokenGate,
                 TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED);
     }
 

@@ -23,13 +23,23 @@ import java.util.Set;
 public interface OwnerTokenGate {
 
     /**
-     * The capabilities the owner's signed token grants for this session/operator. MUST be total and
-     * fail-closed: no valid token ⇒ empty set. Never returns a non-pilot capability.
+     * The lookup context — the FULL session-incarnation + tenancy boundary, so a grant can never be read by a
+     * different tenant or by a later session that reused the same id (Codex slice-2: sessionId is client-supplied
+     * and NOT a security boundary on its own; {@code operatorTenantId} + {@code sessionStartEpochMillis} pin it).
      */
-    Set<RemoteSessionCapability> grantedCapabilities(String sessionId, String operatorSubject);
+    record OwnerGrantContext(String sessionId, String operatorTenantId, String operatorSubject,
+                             long sessionStartEpochMillis) {
+    }
 
-    /** No owner-token mechanism wired → grant nothing (every operation denied). The fail-closed default. */
-    OwnerTokenGate DENY_ALL = (sessionId, operatorSubject) -> Set.of();
+    /**
+     * The capabilities granted for THIS session-incarnation. MUST be total + fail-closed: no grant (or an
+     * expired one) ⇒ empty set; never a non-pilot capability. {@code nowEpochMillis} lets a backing store expire
+     * stale grants.
+     */
+    Set<RemoteSessionCapability> grantedCapabilities(OwnerGrantContext context, long nowEpochMillis);
+
+    /** No grant mechanism wired → grant nothing (every operation denied). The fail-closed default. */
+    OwnerTokenGate DENY_ALL = (context, nowEpochMillis) -> Set.of();
 
     /**
      * The effective grant a session may exercise: the owner's grant, intersected with what the operator
