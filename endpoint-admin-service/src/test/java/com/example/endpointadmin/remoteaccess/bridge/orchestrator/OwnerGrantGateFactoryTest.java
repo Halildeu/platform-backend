@@ -42,4 +42,23 @@ class OwnerGrantGateFactoryTest {
         assertThrows(IllegalStateException.class, () -> OwnerGrantGateFactory.create(
                 GateType.APPROVAL_BACKED_IN_MEMORY, null, false));
     }
+
+    @Test
+    void durableDbBuildsTheRealGateInEveryProfile() {
+        // the durable DB-backed store survives restart → allowed in a prod-like profile (unlike the in-memory one).
+        // The factory is store-IMPL-agnostic (it wraps any non-null store), so an in-memory double is enough here;
+        // the CONCRETE JdbcApprovalGrantStore wiring is proven by RemoteBridgeServerConfig + the durable PG IT.
+        assertInstanceOf(ApprovalBackedOwnerTokenGate.class, OwnerGrantGateFactory.create(
+                GateType.APPROVAL_BACKED_DURABLE_DB, new InMemoryApprovalGrantStore(), false));
+        assertInstanceOf(ApprovalBackedOwnerTokenGate.class, OwnerGrantGateFactory.create(
+                GateType.APPROVAL_BACKED_DURABLE_DB, new InMemoryApprovalGrantStore(), true));
+    }
+
+    @Test
+    void durableDbRequiresAStore() {
+        assertThrows(IllegalStateException.class, () -> OwnerGrantGateFactory.create(
+                GateType.APPROVAL_BACKED_DURABLE_DB, null, false));
+        assertThrows(IllegalStateException.class, () -> OwnerGrantGateFactory.create(
+                GateType.APPROVAL_BACKED_DURABLE_DB, null, true));
+    }
 }
