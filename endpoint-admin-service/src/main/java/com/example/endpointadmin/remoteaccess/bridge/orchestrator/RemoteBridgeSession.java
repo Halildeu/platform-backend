@@ -1,5 +1,7 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
+import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
@@ -36,6 +38,10 @@ public final class RemoteBridgeSession {
 
     private State state;
     private ConsentLease lease = ConsentLease.NONE;
+    // operator step-up freshness/strength (Faz 22.6 D step-up wiring) — default fail-closed weakest until the
+    // operator transport records a VERIFIED step-up (slice-4c). Restart drops it (fail-closed, session-scoped).
+    private long lastStepUpEpochMillis = 0L;
+    private MethodStrength stepUpStrength = MethodStrength.NONE;
 
     RemoteBridgeSession(String sessionId,
                         String transportPeerKey,
@@ -86,6 +92,37 @@ public final class RemoteBridgeSession {
         if (lease.granted()) {
             lease = new ConsentLease(true, true, lease.expiryEpochMillis());
         }
+    }
+
+    /**
+     * Faz 22.6 D step-up wiring (Codex 019ebe06) — record a VERIFIED operator step-up into the session's
+     * freshness/strength state (the {@code OperatorStepUpPolicy} CONSUMER reads it via the assembler). The
+     * caller that produces the {@link StepUpVerification} from a real WebAuthn assertion is the operator-facing
+     * transport (slice-4c) — until then this is never called and the session stays at the fail-closed weakest.
+     *
+     * <p><b>VERIFIED-only advance + monotonic guard (Codex S2):</b> a non-VERIFIED verification is a no-op (a
+     * failed attempt must NOT erase an earlier valid step-up); a VERIFIED one is accepted only when its
+     * timestamp is at/after the session start AND does not move the freshness backward — a pre-session or
+     * backward timestamp is nonsensical/forgeable, so it is a fail-closed no-op.
+     */
+    public synchronized void recordStepUp(StepUpVerification verification) {
+        if (verification == null || !verification.isVerified()) {
+            return;
+        }
+        long ts = verification.verifiedAtEpochMillis();
+        if (ts < sessionStartEpochMillis || ts < lastStepUpEpochMillis) {
+            return;
+        }
+        lastStepUpEpochMillis = ts;
+        stepUpStrength = verification.achievedStrength();
+    }
+
+    public synchronized long lastStepUpEpochMillis() {
+        return lastStepUpEpochMillis;
+    }
+
+    public synchronized MethodStrength stepUpStrength() {
+        return stepUpStrength;
     }
 
     public synchronized State state() {

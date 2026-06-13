@@ -6,6 +6,9 @@ import com.example.endpointadmin.remoteaccess.CertRef;
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
 import com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
+import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.Verdict;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
@@ -162,5 +165,33 @@ class TrustEvidenceAssemblerTest {
         PeerTrust trust = new PeerTrust(true, true, true, Optional.empty(), null, NOW);
         assertFalse(TrustEvidenceAssembler.deviceIdentitiesConsistent(trust, ""));
         assertFalse(TrustEvidenceAssembler.deviceIdentitiesConsistent(trust, null));
+    }
+
+    // --- D step-up wiring (the StepUpState is read from the session, not hardcoded) ---------------------
+
+    @Test
+    void theStepUpStateDefaultsToTheWeakestWithoutARecordedStepUp() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        TrustEvidenceAssembler assembler = new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, null);
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertEquals(0L, ev.stepUpState().lastStepUpEpochMillis());
+        assertEquals(MethodStrength.NONE, ev.stepUpState().methodStrength());
+    }
+
+    @Test
+    void theStepUpStateReflectsAVerifiedSessionStepUp() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        TrustEvidenceAssembler assembler = new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, null);
+        RemoteBridgeSession session = session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        session.recordStepUp(new StepUpVerification(Verdict.VERIFIED,
+                MethodStrength.WEBAUTHN_USER_VERIFICATION, NOW + 100L));
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(session, NOW + 200L);
+
+        assertEquals(NOW + 100L, ev.stepUpState().lastStepUpEpochMillis());
+        assertEquals(MethodStrength.WEBAUTHN_USER_VERIFICATION, ev.stepUpState().methodStrength());
     }
 }
