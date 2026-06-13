@@ -87,6 +87,7 @@ class EndpointAgentCommandServiceUninstallBranchTest {
     @Mock private com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy;
     @Mock private com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy;
     @Mock private com.example.endpointadmin.security.AppControlPayloadPolicy appControlPayloadPolicy;
+    @Mock private com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy backupDryRunManifestPayloadPolicy;
     @Mock private EndpointHotfixPostureService hotfixPostureService;
     @Mock private EndpointDiagnosticsService diagnosticsService;
     @Mock private EndpointServicesService servicesService;
@@ -118,6 +119,7 @@ class EndpointAgentCommandServiceUninstallBranchTest {
                 servicesPayloadPolicy,
                 startupExposurePayloadPolicy,
                 appControlPayloadPolicy,
+                backupDryRunManifestPayloadPolicy,
                 softwareInventoryService,
                 hardwareInventoryService,
                 deviceHealthService,

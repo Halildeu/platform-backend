@@ -254,6 +254,31 @@ class EndpointAdminCommandServiceTest {
     }
 
     @Test
+    void createCommandRejectsBackupDryRunOnGenericEndpoint() {
+        // Faz 22.8A (#117, Codex 019ec2e6 P1): COLLECT_BACKUP_DRYRUN is
+        // dedicated-path-only — the generic /commands surface MUST reject it
+        // (422) so widening admin-creatable-types cannot accidentally expose
+        // the privacy-sensitive backup dry-run via the generic path.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(TENANT_ID, "PC-BKP-DRYRUN"));
+        CreateEndpointCommandRequest request = new CreateEndpointCommandRequest(
+                CommandType.COLLECT_BACKUP_DRYRUN,
+                "backup-dryrun-generic-001",
+                "should be rejected",
+                Map.of("reason", "backup eligibility dry-run"),
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+
+        assertThatThrownBy(() -> commandService.createCommand(adminContext(), device.getId(), request))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.UNPROCESSABLE_ENTITY)
+                .hasMessageContaining("COLLECT_BACKUP_DRYRUN must be created via");
+    }
+
+    @Test
     void createCommandRejectsUninstallSoftwareOnGenericEndpoint() {
         // AG-028 Phase 1 (Codex plan-time iter-2 absorb): UNINSTALL_SOFTWARE
         // also belongs to the DEDICATED_PATH_ONLY set — generic /commands

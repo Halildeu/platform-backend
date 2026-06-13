@@ -28,5 +28,13 @@ public enum CommandType {
     // value. Dedicated-path-only: the generic /commands surface rejects it
     // (422) until the dedicated display-policy dispatch surface lands (slice-2);
     // it carries a full desired-state snapshot and is always maker-checker.
-    SET_DISPLAY_POLICY
+    SET_DISPLAY_POLICY,
+    // Faz 22.8A (#117) — endpoint backup DRY-RUN manifest (metadata-only).
+    // V66 extends endpoint_commands.command_type CHECK with this value. The
+    // agent capability is disabled-by-default; the result carries a
+    // metadata-only manifest re-validated server-side by
+    // BackupDryRunManifestPayloadPolicy (contract §5 mirror). No content/hash
+    // is ever read. Generic command creation stays fail-closed until the
+    // dedicated issuing surface lands.
+    COLLECT_BACKUP_DRYRUN
 }

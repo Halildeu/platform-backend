@@ -82,6 +82,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         // AG-041-be — Application Control (WDAC + AppLocker) ingest service + policy (Faz 22.5).
         com.example.endpointadmin.security.AppControlPayloadPolicy.class,
         EndpointAppControlService.class,
+        // Faz 22.8A (#117) — backup dry-run manifest mirror validator wired into
+        // the COLLECT_BACKUP_DRYRUN submitResult branch (contract §5).
+        com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy.class,
         // AG-028 Phase 2B — uninstall evidence sanitiser + audit service wired
         // into the UNINSTALL_SOFTWARE submitResult branch (Faz 22.5.6,
         // Codex 019e8de2 iter-2 absorb).
@@ -1074,6 +1077,149 @@ class EndpointAgentCommandServiceTest {
 
     private DeviceCredentialResult principal(EndpointDevice device) {
         return new DeviceCredentialResult(device.getId().toString(), UUID.randomUUID().toString(), Instant.now());
+    }
+
+    // ------------------------------------------------------------------
+    // Faz 22.8A (#117) — backup dry-run manifest mirror-validator wiring.
+    // The COLLECT_BACKUP_DRYRUN submitResult branch re-validates the
+    // metadata-only manifest server-side (contract §5). A valid manifest is
+    // accepted + stored; an archive entry (the P0 denied-aggregate violation,
+    // Codex 019ec28a) is a fail-closed 400 that rolls back so nothing persists.
+    // ------------------------------------------------------------------
+
+    @Test
+    void submitResultAcceptsValidBackupDryRunManifest() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-BKP-OK"));
+        EndpointCommand command = commandRepository.saveAndFlush(backupDryRunCommand(device, "cmd-bkp-ok", 10));
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        commandService.submitResult(principal(device), command.getId(),
+                backupManifestResult(claimed.claimId(), claimed.attemptNumber(),
+                        validBackupManifest(device.getId().toString(), device.getTenantId().toString())));
+
+        EndpointCommand updated = commandRepository.findById(command.getId()).orElseThrow();
+        assertThat(updated.getStatus()).isEqualTo(CommandStatus.SUCCEEDED);
+        assertThat(resultRepository.findByCommand_Id(command.getId())).isPresent();
+    }
+
+    @Test
+    void submitResultRejectsArchiveEntryInBackupDryRunManifest() {
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-BKP-ARCH"));
+        EndpointCommand command = commandRepository.saveAndFlush(backupDryRunCommand(device, "cmd-bkp-arch", 10));
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        java.util.Map<String, Object> manifest =
+                validBackupManifest(device.getId().toString(), device.getTenantId().toString());
+        // CONTRACT P0: archive may never be an entry (denied-aggregate).
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> entry =
+                (java.util.Map<String, Object>) ((java.util.List<Object>) manifest.get("entries")).get(0);
+        entry.put("extension_type", "archive");
+
+        assertThatThrownBy(() -> commandService.submitResult(principal(device), command.getId(),
+                backupManifestResult(claimed.claimId(), claimed.attemptNumber(), manifest)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("BACKUP_DRYRUN_MANIFEST_VIOLATION");
+
+        assertThat(resultRepository.findByCommand_Id(command.getId())).isEmpty();
+        EndpointCommand updated = commandRepository.findById(command.getId()).orElseThrow();
+        assertThat(updated.getStatus()).isEqualTo(CommandStatus.FAILED);
+    }
+
+    @Test
+    void submitResultRejectsBackupDryRunWithNullDetails() {
+        // Codex 019ec2e6 P0#3: a COLLECT_BACKUP_DRYRUN result with null details
+        // must fail-closed, not silently skip the validator.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-BKP-NULL"));
+        EndpointCommand command = commandRepository.saveAndFlush(backupDryRunCommand(device, "cmd-bkp-null", 10));
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        AgentCommandResultRequest req = new AgentCommandResultRequest(
+                claimed.claimId(), claimed.attemptNumber(), CommandResultStatus.SUCCEEDED,
+                "done", null, null, null, 0, Instant.now().minusSeconds(5), Instant.now());
+
+        assertThatThrownBy(() -> commandService.submitResult(principal(device), command.getId(), req))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("BACKUP_DRYRUN_MANIFEST_VIOLATION");
+
+        assertThat(resultRepository.findByCommand_Id(command.getId())).isEmpty();
+        assertThat(commandRepository.findById(command.getId()).orElseThrow().getStatus())
+                .isEqualTo(CommandStatus.FAILED);
+    }
+
+    @Test
+    void submitResultRejectsBackupDryRunWithSiblingDetailsKey() {
+        // P0#1: a sibling key alongside backupDryRun would persist verbatim.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(DeviceStatus.ONLINE, "PC-BKP-SIB"));
+        EndpointCommand command = commandRepository.saveAndFlush(backupDryRunCommand(device, "cmd-bkp-sib", 10));
+        AgentCommandResponse claimed = commandService.claimNext(principal(device)).orElseThrow();
+
+        java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.put("backupDryRun", validBackupManifest(device.getId().toString(), device.getTenantId().toString()));
+        details.put("log", "C:\\Users\\Alice\\notes.txt"); // sibling raw path
+
+        AgentCommandResultRequest req = new AgentCommandResultRequest(
+                claimed.claimId(), claimed.attemptNumber(), CommandResultStatus.SUCCEEDED,
+                "done", details, null, null, 0, Instant.now().minusSeconds(5), Instant.now());
+
+        assertThatThrownBy(() -> commandService.submitResult(principal(device), command.getId(), req))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("BACKUP_DRYRUN_MANIFEST_VIOLATION");
+        assertThat(resultRepository.findByCommand_Id(command.getId())).isEmpty();
+    }
+
+    private EndpointCommand backupDryRunCommand(EndpointDevice device, String idempotencyKey, int priority) {
+        EndpointCommand command = command(device, idempotencyKey, priority);
+        command.setCommandType(CommandType.COLLECT_BACKUP_DRYRUN);
+        command.setPayload(Map.of("reason", "backup eligibility dry-run"));
+        return command;
+    }
+
+    private AgentCommandResultRequest backupManifestResult(String claimId, int attemptNumber,
+                                                           java.util.Map<String, Object> manifest) {
+        java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+        details.put("backupDryRun", manifest);
+        return new AgentCommandResultRequest(
+                claimId, attemptNumber, CommandResultStatus.SUCCEEDED, "done",
+                details, null, null, 0,
+                Instant.now().minusSeconds(5), Instant.now());
+    }
+
+    private java.util.Map<String, Object> validBackupManifest(String deviceId, String tenantId) {
+        java.util.Map<String, Object> scope = new java.util.LinkedHashMap<>();
+        scope.put("managed_data_roots", new java.util.ArrayList<>(java.util.List.of(
+                "managed_root:33333333-3333-3333-3333-333333333333")));
+        scope.put("byod", false);
+
+        java.util.Map<String, Object> entry = new java.util.LinkedHashMap<>();
+        entry.put("path_class", "managed/it-folder");
+        entry.put("root_ref", "managed_root:33333333-3333-3333-3333-333333333333");
+        entry.put("relative_depth", 2);
+        entry.put("extension_type", "doc");
+        entry.put("size_bytes", 123);
+        entry.put("mtime_bucket", "P7D");
+        entry.put("owner_scope_marker", "company");
+        entry.put("file_count", 1);
+
+        java.util.Map<String, Object> agg = new java.util.LinkedHashMap<>();
+        agg.put("total_eligible_count", 1);
+        agg.put("total_eligible_size_bytes", 123);
+        agg.put("denied_count", 0);
+        agg.put("denied_classes", new java.util.ArrayList<>());
+        agg.put("container_count", 0);
+        agg.put("unresolved_path_count", 0);
+
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("manifest_version", "1");
+        m.put("dc_ea_tier", "DC-EA-1");
+        m.put("device_id", deviceId);
+        m.put("tenant_id", tenantId);
+        m.put("generated_at", "2026-06-14T21:00:00Z");
+        m.put("allowlist_profile_id", "prof-1");
+        m.put("scope", scope);
+        m.put("entries", new java.util.ArrayList<>(java.util.List.of(entry)));
+        m.put("aggregate", agg);
+        return m;
     }
 
     private EndpointDevice device(DeviceStatus status, String hostname) {

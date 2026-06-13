@@ -133,7 +133,14 @@ public class EndpointAdminCommandService {
             // #508 — display policy carries a full desired-state snapshot + is
             // always maker-checker; it MUST go through its dedicated dispatch
             // surface (slice-2), never the generic /commands path.
-            CommandType.SET_DISPLAY_POLICY);
+            CommandType.SET_DISPLAY_POLICY,
+            // Faz 22.8A (#117) — backup dry-run is privacy-sensitive (DC-EA-1)
+            // and disabled-by-default on the agent; it MUST go through a
+            // dedicated issuing surface (future slice), never the generic
+            // /commands path. Hard service-level guard so widening
+            // admin-creatable-types cannot accidentally expose it (Codex
+            // 019ec2e6 P1).
+            CommandType.COLLECT_BACKUP_DRYRUN);
 
     private static final Duration DEFAULT_LOCAL_PASSWORD_SECRET_TTL = Duration.ofMinutes(15);
     private static final String LOCAL_PASSWORD_SECRET_REF = "endpoint-command-secret:newPassword";
