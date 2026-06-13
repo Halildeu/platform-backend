@@ -8,6 +8,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -38,8 +39,15 @@ public final class RemoteBridgeSessionStore {
 
     /**
      * Open a session for an operator request against an authenticated peer, leaving it CONSENT_PENDING.
-     * Fail-closed: invalid request shape, a duplicate session id, or an existing non-terminal session on the
-     * same peer all refuse.
+     * Fail-closed: invalid request shape, a non-canonical operator tenant, a duplicate session id, or an
+     * existing non-terminal session on the same peer all refuse.
+     *
+     * <p>Faz 22.6 slice-4c-2b-2b hardening (Codex 019ebe06): {@code operatorTenantId} is the tenancy boundary
+     * the follow-up ownership guard ({@code RemoteBridgeOperatorController.ownedSession}) compares against, so a
+     * blank/non-canonical tenant would silently weaken that guard. This is a PUBLIC orchestrator chokepoint —
+     * EVERY session creation goes through here — so the canonical-UUID invariant is enforced at the store, not
+     * trusted to the (sole, today) caller. The controller already passes {@code UUID.toString()} (canonical
+     * lowercase), so the valid path is unchanged; only a non-canonical tenant is newly refused.
      */
     public OpenResult open(RemoteBridgeMessages.SessionRequest request,
                            PeerIdentity peer,
@@ -49,6 +57,9 @@ public final class RemoteBridgeSessionStore {
                            long nowEpochMillis) {
         if (!WireContract.isValid(request) || peer == null) {
             return new Refused("invalid-session-request");
+        }
+        if (!isCanonicalUuid(operatorTenantId)) {
+            return new Refused("invalid-operator-tenant"); // fail-closed: no session is created
         }
         if (promptExpiryEpochMillis <= nowEpochMillis) {
             return new Refused("prompt-expiry-not-in-future");
@@ -108,5 +119,22 @@ public final class RemoteBridgeSessionStore {
 
     public int liveCount() {
         return (int) bySessionId.values().stream().filter(s -> !s.isTerminal()).count();
+    }
+
+    /**
+     * Strict canonical-UUID check: a {@code UUID.fromString} round-trip that must reproduce the input EXACTLY.
+     * {@code UUID.fromString} is lenient (accepts uppercase hex and other non-canonical spellings); requiring
+     * {@code toString().equals(value)} pins the input to the canonical 8-4-4-4-12 lowercase form the controller
+     * emits via {@code UUID.toString()}. Null/blank fail-closed.
+     */
+    private static boolean isCanonicalUuid(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        try {
+            return UUID.fromString(value).toString().equals(value);
+        } catch (IllegalArgumentException notAUuid) {
+            return false;
+        }
     }
 }

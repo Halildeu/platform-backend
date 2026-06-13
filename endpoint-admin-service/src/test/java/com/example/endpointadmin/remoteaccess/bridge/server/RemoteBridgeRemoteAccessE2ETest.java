@@ -56,6 +56,8 @@ class RemoteBridgeRemoteAccessE2ETest {
 
     private static final long NOW = 3_000_000L;
     private static final String PEER = "peer-1";
+    // a canonical operator-tenant UUID — the store enforces the canonical form (slice-4c-2b-2b)
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     private static RemoteBridgeBroker broker() {
         try {
@@ -113,7 +115,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         SessionOpenOutcome open = operator.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support",
                         Set.of(RemoteSessionCapability.VIEW_ONLY)),
-                peer, "t-1", "Operator X");
+                peer, TENANT, "Operator X");
         assertTrue(open.opened());
         assertTrue(open.consentPromptSent());
         assertTrue(agent.sent.stream().anyMatch(Envelope::hasConsentPrompt), "agent received the consent prompt");
@@ -156,7 +158,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         registry.register(peer, new ControlStreamHandle(agent));
 
         operator.openSession(new SessionRequest("s1", "dev-1", "operator@x", "support",
-                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, "t-1", "Operator X");
+                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
 
         // the end-user REFUSES → the control plane denies consent; there is NO path from here to ACTIVE
         controlPlane.onConsentResult(peer, new ConsentResult("s1", false, "1", NOW, NOW + 300_000L));

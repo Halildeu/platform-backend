@@ -33,6 +33,8 @@ class BrokerControlPlaneTest {
     private static final PeerIdentity OTHER_PEER = new PeerIdentity("peer-2", Optional.empty(), List.of());
     private static final long NOW = 1_000_000L;
     private static final long PROMPT_EXPIRY = NOW + 60_000;
+    // a canonical operator-tenant UUID — the store enforces the canonical form (slice-4c-2b-2b)
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     // --- fakes -------------------------------------------------------------
 
@@ -98,7 +100,7 @@ class BrokerControlPlaneTest {
 
     private static RemoteBridgeSession opened(RemoteBridgeSessionStore store, String sessionId) {
         RemoteBridgeSessionStore.OpenResult result =
-                store.open(request(sessionId), PEER, "t-1", "Op Erator", PROMPT_EXPIRY, NOW);
+                store.open(request(sessionId), PEER, TENANT, "Op Erator", PROMPT_EXPIRY, NOW);
         assertTrue(result instanceof RemoteBridgeSessionStore.Opened, String.valueOf(result));
         return ((RemoteBridgeSessionStore.Opened) result).session();
     }
@@ -165,13 +167,13 @@ class BrokerControlPlaneTest {
     void openRefusesInvalidDuplicatePastExpiryAndSecondLiveSessionPerPeer() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         assertTrue(store.open(new RemoteBridgeMessages.SessionRequest("s", "d", "o", null, Set.of()),
-                PEER, "t-1", "x", PROMPT_EXPIRY, NOW) instanceof RemoteBridgeSessionStore.Refused);
-        assertTrue(store.open(request("sess-x"), PEER, "t-1", "x", NOW - 1, NOW)
+                PEER, TENANT, "x", PROMPT_EXPIRY, NOW) instanceof RemoteBridgeSessionStore.Refused);
+        assertTrue(store.open(request("sess-x"), PEER, TENANT, "x", NOW - 1, NOW)
                 instanceof RemoteBridgeSessionStore.Refused); // expiry not in the future
         opened(store, "sess-1");
-        assertTrue(store.open(request("sess-1"), OTHER_PEER, "t-1", "x", PROMPT_EXPIRY, NOW)
+        assertTrue(store.open(request("sess-1"), OTHER_PEER, TENANT, "x", PROMPT_EXPIRY, NOW)
                 instanceof RemoteBridgeSessionStore.Refused); // duplicate id
-        RemoteBridgeSessionStore.OpenResult second = store.open(request("sess-2"), PEER, "t-1", "x",
+        RemoteBridgeSessionStore.OpenResult second = store.open(request("sess-2"), PEER, TENANT, "x",
                 PROMPT_EXPIRY, NOW);
         assertTrue(second instanceof RemoteBridgeSessionStore.Refused);
         assertEquals("peer-already-has-live-session",
@@ -185,7 +187,7 @@ class BrokerControlPlaneTest {
         assertTrue(session.transition(Event.KILL).accepted());
         store.evictIfTerminal("sess-1");
         assertEquals(0, store.liveCount());
-        assertTrue(store.open(request("sess-2"), PEER, "t-1", "x", PROMPT_EXPIRY, NOW)
+        assertTrue(store.open(request("sess-2"), PEER, TENANT, "x", PROMPT_EXPIRY, NOW)
                 instanceof RemoteBridgeSessionStore.Opened);
     }
 

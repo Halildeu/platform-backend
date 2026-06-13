@@ -32,6 +32,8 @@ class TrustEvidenceAssemblerTest {
 
     private static final long NOW = 1_000_000L;
     private static final long TTL = 30_000L;
+    // a canonical operator-tenant UUID — mirrors the store-enforced canonical form (slice-4c-2b-2b)
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     private static PeerEvidenceParser presentingParser() {
         return (peer, hello) -> new PeerEvidenceParser.ParsedEvidence(
@@ -69,7 +71,7 @@ class TrustEvidenceAssemblerTest {
 
     private static RemoteBridgeSession session(String sessionId, String peerKey, String deviceId,
                                                Set<RemoteSessionCapability> requested) {
-        return new RemoteBridgeSession(sessionId, peerKey, deviceId, "operator@x", "t-1", "Operator X",
+        return new RemoteBridgeSession(sessionId, peerKey, deviceId, "operator@x", TENANT, "Operator X",
                 requested, NOW + 60_000L, NOW, State.ACTIVE);
     }
 

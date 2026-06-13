@@ -32,6 +32,8 @@ class OperatorStepUpHandlerTest {
     private static final long NOW = 100_000L;
     private static final long TTL = 60_000L;
     private static final String ORIGIN = "https://operator.acik.com";
+    // a canonical operator-tenant UUID — the store enforces the canonical form (slice-4c-2b-2b)
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     /** Mirror InMemoryOperatorStepUpVerifier's placeholder signature so a test can produce a "valid" assertion. */
     private static String placeholderSig(String challengeB64, String clientDataJsonB64) {
@@ -48,7 +50,7 @@ class OperatorStepUpHandlerTest {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null,
-                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, "t-1", "Operator X", NOW + 60_000L, NOW);
+                Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X", NOW + 60_000L, NOW);
         return store;
     }
 

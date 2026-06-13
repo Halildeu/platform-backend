@@ -49,6 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RemoteBridgeOperatorServiceTest {
 
     private static final long NOW = 2_000_000L;
+    // a canonical operator-tenant UUID — the store enforces the canonical form (slice-4c-2b-2b)
+    private static final String TENANT = "11111111-1111-1111-1111-111111111111";
 
     private static KeyPair ecKeyPair() {
         try {
@@ -100,7 +102,7 @@ class RemoteBridgeOperatorServiceTest {
     private static RemoteBridgeSession activeSession(RemoteBridgeSessionStore store, String sessionId,
                                                      String peerKey, Set<RemoteSessionCapability> caps) {
         PeerIdentity peer = new PeerIdentity(peerKey, Optional.of("dev-1"), List.of());
-        store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null, caps), peer, "t-1", "Operator X",
+        store.open(new SessionRequest(sessionId, "dev-1", "operator@x", null, caps), peer, TENANT, "Operator X",
                 NOW + 60_000L, NOW);
         RemoteBridgeSession s = store.bySessionId(sessionId).orElseThrow();
         s.transition(Event.ENABLE);
@@ -198,7 +200,7 @@ class RemoteBridgeOperatorServiceTest {
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
-                peer, "t-1", "Operator X");
+                peer, TENANT, "Operator X");
 
         assertTrue(outcome.opened());
         assertTrue(outcome.consentPromptSent());
@@ -219,7 +221,7 @@ class RemoteBridgeOperatorServiceTest {
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
-                new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()), "t-1", "Operator X");
+                new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()), TENANT, "Operator X");
 
         assertFalse(outcome.opened());
         assertEquals("peer-not-connected", outcome.rejectReason());
@@ -232,9 +234,85 @@ class RemoteBridgeOperatorServiceTest {
                 assembler((sid, now) -> DuressSignal.NONE), broker(), new ControlStreamRegistry(), () -> NOW,
                 120_000L);
 
-        SessionOpenOutcome outcome = service.openSession(null, null, "t-1", "Operator X");
+        SessionOpenOutcome outcome = service.openSession(null, null, TENANT, "Operator X");
 
         assertFalse(outcome.opened());
         assertEquals("malformed-request", outcome.rejectReason());
+    }
+
+    // --- slice-4c-2b-2b operator-tenant fail-closed guard (Codex 019ebe06) ----
+
+    @Test
+    void openSessionWithABlankTenantIsRefusedAndCreatesNoSessionOrPrompt() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW, 120_000L);
+
+        // a CONNECTED peer (the pre-guard passes) but a BLANK tenant — the store refuses past the pre-guard
+        SessionOpenOutcome outcome = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, "  ", "Operator X");
+
+        assertFalse(outcome.opened());
+        assertEquals("invalid-operator-tenant", outcome.rejectReason());
+        assertTrue(store.bySessionId("s1").isEmpty(), "no session is created for a blank tenant");
+        assertTrue(observer.sent.isEmpty(), "no consent prompt is pushed for a refused open");
+    }
+
+    @Test
+    void openSessionWithANonCanonicalTenantIsRefused() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW, 120_000L);
+
+        // "t-1" is a non-UUID tenant on a connected peer — a future caller passing a non-canonical tenant must
+        // not silently weaken the controller's tenant-scoped ownership guard
+        SessionOpenOutcome outcome = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, "t-1", "Operator X");
+
+        assertFalse(outcome.opened());
+        assertEquals("invalid-operator-tenant", outcome.rejectReason());
+        assertTrue(store.bySessionId("s1").isEmpty(), "no session is created for a non-canonical tenant");
+    }
+
+    @Test
+    void storeOpenRefusesEveryNonCanonicalTenantButAcceptsTheCanonicalOne() {
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        Set<RemoteSessionCapability> caps = Set.of(RemoteSessionCapability.VIEW_ONLY);
+        String[] nonCanonical = {
+                null, "", "  ", "t-1", "not-a-uuid",
+                "11111111-1111-1111-1111-11111111111g",   // non-hex digit
+                "11111111111111111111111111111111",        // no dashes
+                "11111111-1111-1111-1111-111111111111 ",   // trailing whitespace (store does NOT trim)
+                "11111111-1111-1111-1111-11111111111A",     // uppercase = non-canonical (toString is lowercase)
+        };
+
+        for (String badTenant : nonCanonical) {
+            RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+            RemoteBridgeSessionStore.OpenResult result = store.open(
+                    new SessionRequest("s1", "dev-1", "operator@x", null, caps),
+                    peer, badTenant, "Operator X", NOW + 60_000L, NOW);
+            assertTrue(result instanceof RemoteBridgeSessionStore.Refused,
+                    "tenant <" + badTenant + "> must be refused");
+            assertEquals("invalid-operator-tenant",
+                    ((RemoteBridgeSessionStore.Refused) result).reason(), "tenant <" + badTenant + "> reason");
+            assertEquals(0, store.liveCount(), "no session created for tenant <" + badTenant + ">");
+        }
+
+        // the canonical lowercase form the controller emits via UUID.toString() still opens — no behavior change
+        RemoteBridgeSessionStore canonicalStore = new RemoteBridgeSessionStore();
+        RemoteBridgeSessionStore.OpenResult opened = canonicalStore.open(
+                new SessionRequest("s1", "dev-1", "operator@x", null, caps), peer, TENANT, "Operator X",
+                NOW + 60_000L, NOW);
+        assertTrue(opened instanceof RemoteBridgeSessionStore.Opened, "the canonical tenant opens");
+        assertEquals(1, canonicalStore.liveCount());
     }
 }
