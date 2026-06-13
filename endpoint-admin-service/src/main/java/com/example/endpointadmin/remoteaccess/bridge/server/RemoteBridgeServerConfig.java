@@ -25,6 +25,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.InMemoryApprov
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerGrantGateFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParserFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
@@ -77,10 +78,11 @@ public class RemoteBridgeServerConfig {
      * Faz 22.6 T-4a-ii slice-2b (Codex 019ebc7e) — the broker's per-peer trust ledger: the B1.4 verifiers
      * built the SAME way as the revocation runtime (shared {@link RemoteAccessVerifierFactory}, same
      * {@code endpoint-admin.remote-access.*} config), wrapped fail-closed (an unconfigured attestation policy
-     * → deny-all, never null). The wire-format evidence parser stays {@link PeerEvidenceParser#FAIL_CLOSED}
-     * (the real decoder is the owner-gated T-4 device-format slice). The ledger is consumed by the
-     * BrokerControlPlane bean (slice-2c, INERT→real); until then it is constructed (and its config validated)
-     * fail-closed at refresh.
+     * → deny-all, never null). The wire-format evidence parser is selected by {@link PeerEvidenceParserFactory}
+     * (D10.1 #634): DEFAULT {@code FAIL_CLOSED} (empty evidence → never PERMIT); {@code TRANSPORT_BOUND} (non-prod
+     * pilot) decodes the CertRef from the mTLS transport leaf + the agent attestation so the real verifiers run.
+     * The ledger is consumed by the BrokerControlPlane bean (slice-2c, INERT→real); until then it is constructed
+     * (and its config validated) fail-closed at refresh.
      */
     @Bean
     public PeerTrustLedger remoteBridgePeerTrustLedger(
@@ -101,7 +103,8 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.peer-trust.device-ca-pem:}") String deviceCaPem,
             @Value("${remote-bridge.peer-trust.device-protection-level:SECURE_ELEMENT_OR_TPM}")
                     String deviceProtectionLevel,
-            @Value("${remote-bridge.peer-trust.freshness-ttl-millis:30000}") long freshnessTtlMillis) {
+            @Value("${remote-bridge.peer-trust.freshness-ttl-millis:30000}") long freshnessTtlMillis,
+            @Value("${remote-bridge.peer-evidence.parser:FAIL_CLOSED}") String peerEvidenceParserType) {
         // a prod-like profile refuses the test-only escapes (Codex 019eb6d9) — same rule as the driver
         String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
                 environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
@@ -114,8 +117,16 @@ public class RemoteBridgeServerConfig {
                 attestationSignatureAlgorithm, productionLike);
         DeviceIdentityVerifier device = RemoteAccessVerifierFactory.buildDeviceIdentityVerifier(
                 deviceCaPem, deviceProtectionLevel);
+        // D10.1 (#634, Codex 019ec29a): the wire-format evidence PARSER is now selectable. DEFAULT FAIL_CLOSED
+        // (empty evidence → every trust false → never PERMIT — behaviour unchanged); TRANSPORT_BOUND (non-prod
+        // pilot) decodes the CertRef from the mTLS transport leaf + the agent's attestation so the REAL verifiers
+        // above can run. The parser produces only EVIDENCE — never a trust input; the verifiers still decide
+        // cert/attestation/device trust. A prod-like profile refuses the pilot parser (its attestation wire-form
+        // is synthetic-agent-specific).
+        PeerEvidenceParser peerEvidenceParser =
+                PeerEvidenceParserFactory.create(peerEvidenceParserType, productionLike);
         return new PeerTrustLedger(certTrust, attestation, device,
-                PeerEvidenceParser.FAIL_CLOSED, freshnessTtlMillis);
+                peerEvidenceParser, freshnessTtlMillis);
     }
 
     @Bean
