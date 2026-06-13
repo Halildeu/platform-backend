@@ -107,6 +107,16 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         session.grantConsent(true, result.expiryEpochMillis()); // clamped to the broker prompt window
         recordBestEffort(session.sessionId(), "CONSENT_GRANTED:lease-until="
                 + session.lease().expiryEpochMillis());
+        // D10.1 (#634, Codex 019ec25c): a VALID granted consent (peer/expiry/pending already checked) moves the
+        // session to ACTIVE so the operator transport can drive operations. ACTIVE is TRANSPORT/session READINESS
+        // ONLY — NOT authority: an operation still goes through owner-grant + step-up + trust evidence + duress +
+        // capability policy at PERMIT time. Without this the session stalls at CONSENT_GRANTED and isActive() is
+        // false, so the broker can never PERMIT a legitimately-consented session.
+        if (session.transition(Event.ACTIVATE).accepted()) {
+            recordBestEffort(session.sessionId(), "ACTIVE:lease-until=" + session.lease().expiryEpochMillis());
+        } else {
+            recordBestEffort(session.sessionId(), "ACTIVATE_REFUSED:not-consent-granted");
+        }
     }
 
     @Override

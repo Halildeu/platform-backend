@@ -122,15 +122,13 @@ class RemoteBridgeRemoteAccessE2ETest {
         RemoteBridgeSession session = store.bySessionId("s1").orElseThrow();
         assertEquals(State.CONSENT_PENDING, session.state());
 
-        // 2) the agent reports the end-user's consent → the control plane absorbs it → CONSENT_GRANTED + lease
+        // 2) the agent reports the end-user's consent → the control plane absorbs it → grants the lease AND
+        //    activates the session (D10.1 #634: a granted consent moves the session to ACTIVE automatically —
+        //    no manual ACTIVATE step; ACTIVE is transport readiness, not authority)
         controlPlane.onConsentResult(peer, new ConsentResult("s1", true, "1", NOW, NOW + 300_000L));
-        assertEquals(State.CONSENT_GRANTED, session.state());
-
-        // 3) the operator activates the granted session → ACTIVE
-        assertTrue(session.transition(Event.ACTIVATE).accepted());
         assertEquals(State.ACTIVE, session.state());
 
-        // 4) the operator issues an operation → broker → transport routing. With no device PKI / step-up wired,
+        // 3) the operator issues an operation → broker → transport routing. With no device PKI / step-up wired,
         //    the honest verdict is DENY (no granted capability under DENY_ALL); nothing is pushed to the agent.
         int beforeOp = agent.sent.size();
         OperatorOutcome op = operator.handleOperationRequest(
