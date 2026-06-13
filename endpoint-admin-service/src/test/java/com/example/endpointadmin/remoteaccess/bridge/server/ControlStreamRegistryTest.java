@@ -114,4 +114,52 @@ class ControlStreamRegistryTest {
         assertFalse(registry.sendConsentPrompt("peer-1", null, 1L));
         assertTrue(observer.sent.isEmpty(), "nothing must be pushed for a null payload");
     }
+
+    // ---- slice-4c-2b-2a: the connectedPeer lookup (the device→peer resolver's read), composite-consistent ----
+
+    @Test
+    void connectedPeerIsThePeerWhileRegisteredAndEmptyOtherwise() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        registry.register(p, new ControlStreamHandle(new CapturingObserver()));
+
+        assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
+        assertTrue(registry.connectedPeer("ghost").isEmpty());
+        assertTrue(registry.connectedPeer(null).isEmpty());
+    }
+
+    @Test
+    void unregisterWithTheCurrentHandleClearsTheConnectedPeer() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, handle);
+
+        registry.unregister(p, handle);
+        assertTrue(registry.connectedPeer("peer-1").isEmpty());
+    }
+
+    @Test
+    void unregisterWithAStaleHandleDoesNotEvictTheSuccessor() {
+        // a reconnect REPLACED the stream; the old stream's late unregister must not remove its successor
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        ControlStreamHandle second = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, first);
+        registry.register(p, second); // replace
+
+        registry.unregister(p, first); // stale handle
+        assertTrue(registry.connectedPeer("peer-1").isPresent(), "the successor stream must survive a stale unregister");
+    }
+
+    @Test
+    void killPeerClearsTheConnectedPeer() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        registry.register(p, new ControlStreamHandle(new CapturingObserver()));
+
+        assertTrue(registry.killPeer("peer-1", "sess-1", "duress", 1L));
+        assertTrue(registry.connectedPeer("peer-1").isEmpty());
+    }
 }
