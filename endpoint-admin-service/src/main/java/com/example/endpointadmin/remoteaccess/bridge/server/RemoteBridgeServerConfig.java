@@ -20,6 +20,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ApprovalGrantStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DuressSignalSourceFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.InMemoryApprovalGrantStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerGrantGateFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
@@ -264,16 +265,31 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
+     * Faz 22.6 D10 slice-3 — the duress source, opt-in via {@code remote-bridge.duress.source-type}. DEFAULT
+     * {@code AMBIGUOUS_UNTIL_WIRED}: no real duress producer → AMBIGUOUS → the broker KILLS (fail-closed,
+     * behaviour unchanged). {@code PILOT_RISK_ACCEPTED_DISABLED} asserts NONE (the broker does not kill) ONLY
+     * with explicit owner risk-acceptance ({@code remote-bridge.duress.pilot-risk-accepted=true}) — the narrow
+     * named-roster / attended-only / IT-owned pilot.
+     */
+    @Bean
+    public TrustEvidenceAssembler.DuressSignalSource remoteBridgeDuressSignalSource(
+            @Value("${remote-bridge.duress.source-type:AMBIGUOUS_UNTIL_WIRED}") String duressSourceType,
+            @Value("${remote-bridge.duress.pilot-risk-accepted:false}") boolean duressPilotRiskAccepted) {
+        return DuressSignalSourceFactory.create(
+                DuressSignalSourceFactory.SourceType.valueOf(duressSourceType), duressPilotRiskAccepted);
+    }
+
+    /**
      * Faz 22.6 T-4a-ii slice-4b — the trust-evidence assembler the operator service feeds the broker. The
-     * owner-grant gate is injected (D10 slice-2; default DENY_ALL → grant nothing).
-     * {@code DuressSignalSource.AMBIGUOUS_UNTIL_WIRED}: no transport duress-classification path yet → AMBIGUOUS →
-     * the broker KILLS — fail-closed, an enabled broker with no real duress source kills rather than proceeds.
+     * owner-grant gate (D10 slice-2; default DENY_ALL → grant nothing) and the duress source (D10 slice-3;
+     * default AMBIGUOUS → KILL) are both injected.
      */
     @Bean
     public TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler(PeerTrustLedger remoteBridgePeerTrustLedger,
-                                                                     OwnerTokenGate remoteBridgeOwnerTokenGate) {
+            OwnerTokenGate remoteBridgeOwnerTokenGate,
+            TrustEvidenceAssembler.DuressSignalSource remoteBridgeDuressSignalSource) {
         return new TrustEvidenceAssembler(remoteBridgePeerTrustLedger, remoteBridgeOwnerTokenGate,
-                TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED);
+                remoteBridgeDuressSignalSource);
     }
 
     /**
