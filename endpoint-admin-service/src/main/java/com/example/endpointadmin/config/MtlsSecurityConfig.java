@@ -35,7 +35,8 @@ public class MtlsSecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST,
-                                "/api/v1/endpoint-agent/endpoint-enrollments/auto").permitAll()
+                                "/api/v1/endpoint-agent/endpoint-enrollments/auto",
+                                "/api/v1/endpoint-agent/heartbeat").permitAll()
                         .anyRequest().denyAll()
                 );
         return http.build();
