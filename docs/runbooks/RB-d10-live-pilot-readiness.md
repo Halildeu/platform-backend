@@ -161,7 +161,7 @@ remote-bridge.recording.anchor-key.algorithm=SHA256withECDSA   # default
 | **Functional-transport** | synthetic device mTLS CONTROL stream + AgentHello/heartbeat → operator JWT `openSession` → consent prompt/result → approval-REST records a grant | end-to-end transport + the approval write-path |
 | **Functional-PERMIT** | the operation call returns **PERMIT** + a signed permit is pushed | ✅ **code path PROVEN** (#641 composition e2e: a real signed PERMIT issues when every gate is satisfied by real evidence). A *live* PERMIT needs the §2 trust-substrate config + the signer/anchor key + real cert/attestation/enrollment/WebAuthn material; with a gap in any, the operation correctly **DENY/KILL**s (fail-closed, proven by the 12-case inverse matrix) |
 | **Secured** | no/wrong client cert → refused; plaintext refused; wrong CA / wrong device fingerprint; operator without the role → 401; cross-tenant → uniform 404; no approval grant → DENY; ambiguous duress → KILL; 8096/8081 off-path | the negative tests exercised live (all fail-closed) |
-| **Does NOT prove** | real duress detection (disabled, risk-accepted); TPM/HSM non-exportable; CRL/OCSP; durable grant store; production-grade attestation | (post-pilot / owner-gated) |
+| **Does NOT prove** | real duress detection (disabled, risk-accepted); TPM/HSM non-exportable; CRL/OCSP; live identity producers (OpenFGA/IdP); production-grade attestation | (post-pilot / owner-gated; the durable grant store #645 + WORM approval audit #646 are agent-done + PG-proven) |
 
 ---
 
@@ -181,8 +181,13 @@ remote-bridge.recording.anchor-key.algorithm=SHA256withECDSA   # default
 - **Approval REST endpoint** (#630 chain + #631 controller) — `POST /internal/remote-bridge/approval/sessions/{sessionId}/approve`; the approver's console posts the approved capabilities, authenticated by the approver's OWN JWT (server-side; never a body). Records a dual-control approval → fills the grant store. No `DENIED_*` oracle (all denials → uniform 404); every outcome audited (#632).
 - **Operator REST transport** (slice-4c) — gated by `operator-rest.enabled`; the operator console connects through it.
 
-**🔒 Post-pilot (owner-gated live slices):**
-- **Durable grant store** + **durable/WORM approval-audit sink** (#632 wired the seam) + **E1 kill→live-grant-revoke** — the in-memory store + TTL + app-log audit is the pilot; durable/OpenFGA-backed store + WORM sink + a live revoke backstop are post-pilot.
+**✅ Post-pilot hardening DONE (agent-completed, opt-in via §2 config):**
+- **Durable grant store** (#645) — `owner-grant.gate-type=APPROVAL_BACKED_DURABLE_DB`: the recorded session grant survives restart / multi-replica (replacing the process-local in-memory store, which is prod-forbidden). PG-IT proven.
+- **Durable WORM approval-audit sink** (#646) — `approval.audit-sink=DURABLE_WORM_DB`: every approval decision is appended to a WORM table, and the grant + audit commit in ONE DB transaction (no grant without its audit row). PG-IT proven (incl. the rollback invariant). Requires the durable grant store.
+
+**🔒 Genuinely remaining (owner-gated / deferred):**
+- **OpenFGA-backed grant/identity resolver, IdP-backed canonical resolver, durable fatigue limiter** — the live identity/authorization producers (the durable grant STORE is done; these are the upstream resolvers).
+- **E1 kill→grant-revoke** — DEFENSE-IN-DEPTH, **deferred** (NOT a correctness gap): reuse-after-kill is already structurally closed by the incarnation-keyed grant (`sessionId + tenant + RAW subject + sessionStart`) + the broker's session-active/consent-lease check before the grant is read + terminal-evict (Codex 019ec29a verified). Implement only if a future distributed/durable session-state design introduces a stale-active-session risk, or live pilot shows grant-row cleanup is operationally required.
 
 ---
 
