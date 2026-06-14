@@ -49,6 +49,11 @@ CREATE TABLE endpoint_backup_dryrun_requests (
     CONSTRAINT ck_bdr_req_allowlist_profile_opaque
         CHECK (allowlist_profile_id ~ '^[A-Za-z0-9._:-]+$'
                AND allowlist_profile_id !~ '(^[A-Za-z]:|\.\.)'),
+    -- idempotency_key flows to the audit correlation_id (length 128) — opaque +
+    -- path-free + ≤128 durable backstop (Codex 019ec45e P1).
+    CONSTRAINT ck_bdr_req_idempotency_opaque
+        CHECK (idempotency_key ~ '^[A-Za-z0-9._:-]{1,128}$'
+               AND idempotency_key !~ '(^[A-Za-z]:|\.\.)'),
     CONSTRAINT ck_bdr_req_org_match CHECK (org_id IS NULL OR org_id = tenant_id),
     CONSTRAINT ck_bdr_req_org_not_null CHECK (org_id IS NOT NULL)
 );

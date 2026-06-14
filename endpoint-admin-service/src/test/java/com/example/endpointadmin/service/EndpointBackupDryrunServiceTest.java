@@ -261,6 +261,18 @@ class EndpointBackupDryrunServiceTest {
     }
 
     @Test
+    void suppliedPathShapedIdempotencyKeyRejected() {
+        // Codex 019ec45e P1: a caller-supplied idempotency key persists in the
+        // audit correlation_id, so a path-shaped key is rejected (400).
+        registerRoot();
+        UUID deviceId = seedDevice();
+        assertThatThrownBy(() -> service.propose(alice(), deviceId,
+                new AdminBackupDryrunRequestCreate(List.of(ROOT_REF), "profile-1", "a valid reason", "C:foo")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
     void pathShapedProfileRejected() {
         // Codex 019ec45e P1: allowlistProfileId must be path-free (drive-letter rejected).
         registerRoot();

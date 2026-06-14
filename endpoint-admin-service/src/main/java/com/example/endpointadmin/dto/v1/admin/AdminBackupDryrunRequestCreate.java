@@ -17,5 +17,5 @@ public record AdminBackupDryrunRequestCreate(
         @NotEmpty @Size(max = 64) List<@NotBlank @Size(max = 255) String> rootRefs,
         @NotBlank @Size(max = 255) String allowlistProfileId,
         @NotBlank @Size(max = 512) String reason,
-        @Size(max = 255) String idempotencyKey) {
+        @Size(max = 128) String idempotencyKey) {
 }

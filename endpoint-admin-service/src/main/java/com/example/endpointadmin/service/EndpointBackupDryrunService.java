@@ -56,6 +56,9 @@ public class EndpointBackupDryrunService {
     private static final String HEARTBEAT_CAPABILITIES_KEY = "capabilities";
     private static final Pattern DRIVE_PATH = Pattern.compile("(^|[^A-Za-z])[A-Za-z]:");
     private static final Pattern PROFILE_OPAQUE = Pattern.compile("^[A-Za-z0-9._:-]+$");
+    // idempotency_key flows to the request row AND the audit correlation_id
+    // (length=128) — opaque + path-free + ≤128 (Codex 019ec45e P1).
+    private static final Pattern IDEMPOTENCY_KEY_OPAQUE = Pattern.compile("^[A-Za-z0-9._:-]{1,128}$");
 
     private final EndpointBackupDryrunRequestRepository requestRepository;
     private final EndpointBackupDryrunManagedRootRepository rootRepository;
@@ -128,6 +131,17 @@ public class EndpointBackupDryrunService {
             throw badRequest("reason is required");
         }
         assertPathFree(reason); // reason is operator free-text → must not carry a raw path
+
+        // Codex 019ec45e P1: a caller-supplied idempotency key persists in the
+        // request row AND the audit correlation_id (length=128), so it must be
+        // opaque + path-free + ≤128 (a raw path would leak via the audit trail).
+        String suppliedKey = trim(request.idempotencyKey());
+        if (suppliedKey != null && !suppliedKey.isEmpty()) {
+            if (!IDEMPOTENCY_KEY_OPAQUE.matcher(suppliedKey).matches()) {
+                throw badRequest("idempotencyKey must be opaque ([A-Za-z0-9._:-]+) and ≤128 chars");
+            }
+            assertPathFree(suppliedKey);
+        }
 
         EndpointDevice device = EndpointDeviceWriteGuard.loadActiveForUpdate(deviceRepository, tenantId, deviceId);
 
