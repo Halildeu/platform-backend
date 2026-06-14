@@ -512,6 +512,38 @@ class EndpointAdminCommandServiceTest {
         );
     }
 
+    @org.junit.jupiter.api.Test
+    void backupDryrunCommandPayloadRedactedInDto() {
+        // Faz 22.8A.3b (#648): the COLLECT_BACKUP_DRYRUN dispatch payload carries
+        // resolved roots[].local_path; the generic command DTO must redact it.
+        EndpointDevice device = deviceRepository.saveAndFlush(device(TENANT_ID, "PC-BDR-REDACT"));
+        EndpointCommand command = new EndpointCommand();
+        command.setTenantId(TENANT_ID);
+        command.setDevice(device);
+        command.setCommandType(CommandType.COLLECT_BACKUP_DRYRUN);
+        command.setIdempotencyKey("bdr-redact-" + UUID.randomUUID());
+        command.setStatus(CommandStatus.QUEUED);
+        command.setApprovalStatus(ApprovalStatus.NOT_REQUIRED);
+        command.setPayload(java.util.Map.of("roots", java.util.List.of(java.util.Map.of(
+                "root_ref", "managed_root:abc",
+                "local_path", "C:\\Users\\Alice\\Secret",
+                "path_class", "managed/it-folder",
+                "company_managed", true))));
+        command.setPriority(100);
+        command.setAttemptCount(0);
+        command.setMaxAttempts(3);
+        command.setVisibleAfterAt(Instant.now());
+        command.setExpiresAt(Instant.now().plusSeconds(1800));
+        command.setIssuedBySubject("admin@example.com");
+        command.setIssuedAt(Instant.now());
+        EndpointCommand saved = commandRepository.saveAndFlush(command);
+
+        var dto = commandService.toDto(saved);
+        assertThat(dto.payload()).containsEntry("redacted", true);
+        assertThat(dto.payload()).doesNotContainKey("roots");
+        assertThat(dto.payload().toString()).doesNotContain("Alice").doesNotContain("Secret");
+    }
+
     private EndpointDevice device(UUID tenantId, String hostname) {
         EndpointDevice device = new EndpointDevice();
         device.setTenantId(tenantId);
