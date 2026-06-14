@@ -23,10 +23,15 @@ import java.util.Optional;
 public interface TpmNonceStore {
 
     /** What the verifier needs back at /attest. {@code serverSecret} is the V10 activation secret. */
-    record Consumed(byte[] nonce, byte[] serverSecret) {}
+    record Consumed(byte[] nonce, byte[] serverSecret, byte[] akName) {}
 
-    /** Issue: bind {@code nonce}+{@code serverSecret} to {@code nonceId} under {@code scope}, expiring at {@code expiresAt}. */
-    void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, Instant expiresAt);
+    /**
+     * Issue: bind {@code nonce}+{@code serverSecret}+{@code akName} to {@code nonceId} under
+     * {@code scope}, expiring at {@code expiresAt}. {@code akName} is the L1-validated AK TPM Name;
+     * at /attest the verifier MUST check the quote/certify-signing AK's recomputed Name equals it,
+     * binding the activation-proven AK to the signing AK (Codex {@code 019ec723} gate-4d MUST#1).
+     */
+    void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, byte[] akName, Instant expiresAt);
 
     /**
      * Consume exactly once. Returns the bound nonce+secret iff the entry exists,

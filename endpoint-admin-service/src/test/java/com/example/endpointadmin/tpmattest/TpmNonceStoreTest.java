@@ -30,17 +30,19 @@ class TpmNonceStoreTest {
     private static final Instant T0 = Instant.parse("2026-06-14T00:00:00Z");
     private final byte[] nonce = "nonce-bytes".getBytes();
     private final byte[] secret = "server-secret-bytes".getBytes();
+    private final byte[] akName = "ak-name-bytes".getBytes();
 
     @Test
     void consume_returnsBoundValuesExactlyOnce() {
         MutableClock clock = new MutableClock(T0);
         InMemoryTpmNonceStore store = new InMemoryTpmNonceStore(clock);
-        store.issue("n1", "tok|tenant|dev", nonce, secret, T0.plusSeconds(300));
+        store.issue("n1", "tok|tenant|dev", nonce, secret, akName, T0.plusSeconds(300));
 
         Optional<TpmNonceStore.Consumed> first = store.consume("n1", "tok|tenant|dev");
         assertThat(first).isPresent();
         assertThat(first.get().nonce()).isEqualTo(nonce);
         assertThat(first.get().serverSecret()).isEqualTo(secret);
+        assertThat(first.get().akName()).as("L1 AK Name round-trips for the L2 binding (MUST#1)").isEqualTo(akName);
 
         // Second consume of the same id fails (single-use).
         assertThat(store.consume("n1", "tok|tenant|dev")).isEmpty();
@@ -51,7 +53,7 @@ class TpmNonceStoreTest {
     void consume_failsWhenExpired() {
         MutableClock clock = new MutableClock(T0);
         InMemoryTpmNonceStore store = new InMemoryTpmNonceStore(clock);
-        store.issue("n1", "scope", nonce, secret, T0.plusSeconds(300));
+        store.issue("n1", "scope", nonce, secret, akName, T0.plusSeconds(300));
 
         clock.advance(Duration.ofSeconds(301));
         assertThat(store.consume("n1", "scope")).isEmpty();
@@ -62,7 +64,7 @@ class TpmNonceStoreTest {
     void consume_scopeMismatch_doesNotBurnTheEntry() {
         MutableClock clock = new MutableClock(T0);
         InMemoryTpmNonceStore store = new InMemoryTpmNonceStore(clock);
-        store.issue("n1", "correct-scope", nonce, secret, T0.plusSeconds(300));
+        store.issue("n1", "correct-scope", nonce, secret, akName, T0.plusSeconds(300));
 
         // A wrong-scope guess must NOT consume the legitimately-pending nonce.
         assertThat(store.consume("n1", "attacker-scope")).isEmpty();
@@ -82,8 +84,8 @@ class TpmNonceStoreTest {
     void evictExpired_removesOnlyExpired() {
         MutableClock clock = new MutableClock(T0);
         InMemoryTpmNonceStore store = new InMemoryTpmNonceStore(clock);
-        store.issue("old", "s", nonce, secret, T0.plusSeconds(60));
-        store.issue("new", "s", nonce, secret, T0.plusSeconds(600));
+        store.issue("old", "s", nonce, secret, akName, T0.plusSeconds(60));
+        store.issue("new", "s", nonce, secret, akName, T0.plusSeconds(600));
 
         clock.advance(Duration.ofSeconds(120));
         store.evictExpired();
