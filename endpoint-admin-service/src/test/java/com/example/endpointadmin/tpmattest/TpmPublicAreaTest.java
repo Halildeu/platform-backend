@@ -78,6 +78,31 @@ class TpmPublicAreaTest {
     }
 
     @Test
+    void bareTpmtPublic_parsesIdenticallyWhenFlagSaysSo() {
+        // Codex follow-up (gate-4a-2.2): cover the isTpm2b=false (bare TPMT_PUBLIC) path.
+        byte[] tpm2b = Base64.getDecoder().decode(golden.get("akPub").asText());
+        byte[] bare = java.util.Arrays.copyOfRange(tpm2b, 2, tpm2b.length); // strip the TPM2B size prefix
+        TpmPublicArea fromBare = TpmPublicArea.parse(bare, false);
+        TpmPublicArea fromWrapped = TpmPublicArea.parse(tpm2b, true);
+        assertThat(fromBare.computeNameHex())
+                .as("bare TPMT_PUBLIC (isTpm2b=false) parses identically to the TPM2B form")
+                .isEqualTo(fromWrapped.computeNameHex());
+    }
+
+    @Test
+    void wrappedBytesWithBareFlag_doNotSilentlyYieldTheTpmName() {
+        // The explicit flag's whole point: claiming isTpm2b=false on TPM2B-wrapped bytes reads the
+        // size prefix as type/nameAlg → it must NOT silently reproduce the correct TPM Name.
+        byte[] tpm2b = Base64.getDecoder().decode(golden.get("akPub").asText());
+        try {
+            String wrong = TpmPublicArea.parse(tpm2b, false).computeNameHex();
+            assertThat(wrong).isNotEqualTo(golden.get("akNameHex").asText());
+        } catch (RuntimeException expected) {
+            // also correct: the mis-typed nameAlg is rejected outright
+        }
+    }
+
+    @Test
     void unsupportedNameAlgRejected() {
         assertThatThrownBy(() -> TpmPublicArea.jcaHash(0x0004 /* SHA1 */))
                 .isInstanceOf(IllegalArgumentException.class);
