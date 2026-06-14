@@ -19,6 +19,9 @@ import java.util.Map;
  */
 public record TpmAttestEnvelope(
         @NotBlank @Size(max = 64) String schema,
+        // The bootstrap enrollment token (gate-4d-2): L2 re-derives the SAME server-side scope as L1
+        // to consume the scope-bound nonce (anti device-hijack — V1).
+        @NotBlank @Size(max = 512) String enrollmentToken,
         @NotBlank @Size(max = 256) String deviceRef,
         @NotBlank @Size(max = 128) String nonceId,
         @NotBlank @Size(max = 8192) String ekCert,
@@ -31,6 +34,9 @@ public record TpmAttestEnvelope(
         @NotBlank @Size(max = 4096) String quote,
         @NotBlank @Size(max = 2048) String quoteSig,
         Map<@NotBlank @Size(max = 16) String, Map<@NotBlank @Size(max = 8) String, @NotBlank @Size(max = 128) String>> pcrs,
+        // The device key's TPM2B_PUBLIC (gate-4d-2): V4 recomputes its TPM Name to match the AK's
+        // certify, and binds it to the CSR's public key (the attested key == the key being signed).
+        @NotBlank @Size(max = 4096) String deviceKeyPub,
         @NotBlank @Size(max = 8192) String csrDer) {
 
     /** The envelope schema this verifier accepts. */

@@ -81,10 +81,15 @@ class TpmEnrollmentControllerTest {
         scopeResolver = new StubScopeResolver();
         scopeResolver.next = new TpmEnrollmentScopeResolver.Scope(TENANT, UUID.randomUUID(), null, "scope-ok");
 
+        // /nonce L1 tests don't exercise the L2 collaborators (PCR/Vault/completion).
         TpmEnrollmentController controller = new TpmEnrollmentController(
                 props, scopeResolver, singletonProvider(goldenEkChainValidator()),
                 new TpmMakeCredential(), new InMemoryTpmNonceStore(clock),
-                new TpmEnrollmentRateLimiter(clock), clock);
+                new TpmEnrollmentRateLimiter(clock), clock,
+                emptyProvider(), emptyProvider(),
+                new TpmEnrollmentCompletionService(
+                        org.mockito.Mockito.mock(com.example.endpointadmin.repository.EndpointEnrollmentRepository.class),
+                        clock));
 
         MappingJackson2HttpMessageConverter conv = new MappingJackson2HttpMessageConverter();
         conv.setObjectMapper(json);
@@ -195,6 +200,16 @@ class TpmEnrollmentControllerTest {
             @Override public T getObject(Object... args) { return value; }
             @Override public T getIfAvailable() { return value; }
             @Override public T getIfUnique() { return value; }
+        };
+    }
+
+    /** An empty provider (no bean) — getIfAvailable() returns null (feature collaborator absent). */
+    private static <T> ObjectProvider<T> emptyProvider() {
+        return new ObjectProvider<>() {
+            @Override public T getObject() { throw new org.springframework.beans.factory.NoSuchBeanDefinitionException("none"); }
+            @Override public T getObject(Object... args) { throw new org.springframework.beans.factory.NoSuchBeanDefinitionException("none"); }
+            @Override public T getIfAvailable() { return null; }
+            @Override public T getIfUnique() { return null; }
         };
     }
 
