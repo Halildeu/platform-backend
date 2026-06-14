@@ -20,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @ConditionalOnMissingBean(name = "distributedTpmNonceStore")
 public class InMemoryTpmNonceStore implements TpmNonceStore {
 
-    private record Entry(String scope, byte[] nonce, byte[] serverSecret, Instant expiresAt) {}
+    private record Entry(String scope, byte[] nonce, byte[] serverSecret, byte[] akName, Instant expiresAt) {}
 
     private final Map<String, Entry> entries = new ConcurrentHashMap<>();
     private final Clock clock;
@@ -30,8 +30,9 @@ public class InMemoryTpmNonceStore implements TpmNonceStore {
     }
 
     @Override
-    public void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, Instant expiresAt) {
-        entries.put(nonceId, new Entry(scope, nonce.clone(), serverSecret.clone(), expiresAt));
+    public void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, byte[] akName, Instant expiresAt) {
+        entries.put(nonceId, new Entry(scope, nonce.clone(), serverSecret.clone(),
+                akName == null ? new byte[0] : akName.clone(), expiresAt));
     }
 
     @Override
@@ -51,7 +52,7 @@ public class InMemoryTpmNonceStore implements TpmNonceStore {
             if (!constantTimeEquals(scope, e.scope())) {
                 return e;                         // scope mismatch → retain, do NOT burn
             }
-            holder.result = new Consumed(e.nonce().clone(), e.serverSecret().clone());
+            holder.result = new Consumed(e.nonce().clone(), e.serverSecret().clone(), e.akName().clone());
             return null;                          // consumed → evict
         });
         return Optional.ofNullable(holder.result);
