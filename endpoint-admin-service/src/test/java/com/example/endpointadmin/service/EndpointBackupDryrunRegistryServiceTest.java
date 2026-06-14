@@ -62,6 +62,9 @@ class EndpointBackupDryrunRegistryServiceTest {
         EndpointBackupDryrunManagedRoot stored =
                 rootRepository.findByTenantIdAndRootRef(TENANT, ROOT_REF).orElseThrow();
         assertThat(stored.getLocalPath()).isEqualTo("C:\\Users\\Acme\\OneDrive - Acme\\Shared");
+        // path-free actor trail (Codex 019ec45e round-2 — replaced the fake reason).
+        assertThat(stored.getCreatedBy()).isEqualTo("admin@example.com");
+        assertThat(stored.getUpdatedBy()).isEqualTo("admin@example.com");
         // ...but the response DTO has NO localPath field at all (structural path-free).
         assertThat(AdminManagedRootResponse.class.getRecordComponents())
                 .extracting(java.lang.reflect.RecordComponent::getName)
@@ -82,9 +85,10 @@ class EndpointBackupDryrunRegistryServiceTest {
         var svc = enabledService();
         AdminManagedRootResponse created = svc.register(ctx(), validCreate());
         AdminManagedRootResponse disabled = svc.setEnabled(ctx(), created.id(),
-                new AdminManagedRootSetEnabledRequest(false, "decommissioned"));
+                new AdminManagedRootSetEnabledRequest(false));
         assertThat(disabled.enabled()).isFalse();
-        assertThat(rootRepository.findByTenantIdAndEnabledTrueAndRootRefIn(TENANT, List.of(ROOT_REF))).isEmpty();
+        assertThat(rootRepository.findByTenantIdAndEnabledTrueAndCompanyManagedTrueAndRootRefIn(
+                TENANT, List.of(ROOT_REF))).isEmpty();
     }
 
     // ---- validation -------------------------------------------------------

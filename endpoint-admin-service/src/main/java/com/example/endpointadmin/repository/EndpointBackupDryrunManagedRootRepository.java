@@ -23,9 +23,11 @@ public interface EndpointBackupDryrunManagedRootRepository
 
     /**
      * Resolve a set of root_refs to their registry entries for the issuing
-     * surface (22.8A.3b). Only ENABLED roots resolve; a missing/disabled ref is
-     * absent from the result so the caller can fail-closed.
+     * surface (22.8A.3b). Only ENABLED + COMPANY-MANAGED roots resolve; a
+     * missing / disabled / BYOD ref is absent from the result so the caller can
+     * fail-closed (Codex 019ec45e round-2 — BYOD durable at the resolver, not
+     * just the register path).
      */
-    List<EndpointBackupDryrunManagedRoot> findByTenantIdAndEnabledTrueAndRootRefIn(
+    List<EndpointBackupDryrunManagedRoot> findByTenantIdAndEnabledTrueAndCompanyManagedTrueAndRootRefIn(
             UUID tenantId, List<String> rootRefs);
 }

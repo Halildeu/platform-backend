@@ -60,6 +60,10 @@ public class EndpointBackupDryrunManagedRoot {
     @Column(name = "created_by", nullable = false, length = 255)
     private String createdBy;
 
+    /** Actor of the most recent mutation (register or enable/disable) — path-free trail. */
+    @Column(name = "updated_by", nullable = false, length = 255)
+    private String updatedBy;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -153,6 +157,14 @@ public class EndpointBackupDryrunManagedRoot {
 
     public void setCreatedBy(String createdBy) {
         this.createdBy = createdBy;
+    }
+
+    public String getUpdatedBy() {
+        return updatedBy;
+    }
+
+    public void setUpdatedBy(String updatedBy) {
+        this.updatedBy = updatedBy;
     }
 
     public Instant getCreatedAt() {

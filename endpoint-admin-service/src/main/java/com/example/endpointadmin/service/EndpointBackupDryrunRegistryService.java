@@ -100,6 +100,7 @@ public class EndpointBackupDryrunRegistryService {
         root.setEnabled(true);
         root.setRootVersion(1);
         root.setCreatedBy(subject(context));
+        root.setUpdatedBy(subject(context));
         return AdminManagedRootResponse.from(rootRepository.saveAndFlush(root));
     }
 
@@ -126,6 +127,7 @@ public class EndpointBackupDryrunRegistryService {
                 .findByIdAndTenantId(id, context.tenantId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "managed root not found"));
         root.setEnabled(request.enabled());
+        root.setUpdatedBy(subject(context));
         return AdminManagedRootResponse.from(rootRepository.saveAndFlush(root));
     }
 
