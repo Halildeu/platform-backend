@@ -80,6 +80,15 @@ endpoint-admin:
   uninstalls:
     max-redacted-bytes: ${ENDPOINT_ADMIN_UNINSTALLS_MAX_REDACTED_BYTES:8192}
     max-summary-bytes: ${ENDPOINT_ADMIN_UNINSTALLS_MAX_SUMMARY_BYTES:2048}
+  backup-dryrun:
+    # Faz 22.8A.3a (#648) — managed-root registry + (later 22.8A.3b) issuing
+    # surface for the privacy-sensitive backup dry-run. Default FALSE so the
+    # routes return 503 in dark mode and ship off-by-default. Even when TRUE,
+    # the per-tenant allow-list is EMPTY by default → every tenant gets 403
+    # until explicitly opted in (double-gated, fail-closed).
+    enabled: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_ENABLED:false}
+    # Comma-separated tenant UUIDs allowed to use the surface. Empty → none.
+    allowed-tenant-ids: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_ALLOWED_TENANT_IDS:}
   tenant:
     local-default-tenant-id: ${ENDPOINT_ADMIN_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
 
