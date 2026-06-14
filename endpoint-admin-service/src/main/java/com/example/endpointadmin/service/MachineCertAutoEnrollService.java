@@ -8,6 +8,7 @@ import com.example.endpointadmin.model.EndpointMachineCert;
 import com.example.endpointadmin.model.OsType;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
+import com.example.endpointadmin.security.DeviceCredentialResult;
 import com.example.endpointadmin.security.MachineCertExtractionException;
 import com.example.endpointadmin.security.MachineCertExtractor;
 import org.slf4j.Logger;
@@ -246,6 +247,44 @@ public class MachineCertAutoEnrollService {
                                 parsed.notAfter()
                         )
                 )
+        );
+    }
+
+    /**
+     * Authenticate an already-enrolled mTLS machine cert for tokenless agent
+     * lifecycle calls such as heartbeat. This deliberately returns the same
+     * principal shape as the HMAC device credential path so downstream services
+     * keep one persistence/audit behavior.
+     */
+    @Transactional(readOnly = true)
+    public DeviceCredentialResult authenticateLifecycle(X509Certificate cert, UUID tenantId) {
+        Instant now = Instant.now(clock);
+        MachineCertExtractor.ParsedCert parsed;
+        try {
+            parsed = MachineCertExtractor.extract(cert, now);
+        } catch (MachineCertExtractionException ex) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, ex.getErrorCode());
+        }
+
+        EndpointMachineCert active = certRepository.findActiveBySanUri(parsed.sanUri())
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.UNAUTHORIZED, "MACHINE_CERT_NOT_ENROLLED"));
+
+        if (!active.getTenantId().equals(tenantId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "TENANT_BOUNDARY");
+        }
+        if (active.getDevice() == null || active.getDevice().getId() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "DEVICE_RE_ENROLL_REQUIRED");
+        }
+        if (active.getDevice().getStatus() == DeviceStatus.DECOMMISSIONED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Endpoint device is decommissioned; admin reactivation is required before lifecycle use.");
+        }
+
+        return new DeviceCredentialResult(
+                active.getDevice().getId().toString(),
+                "machine-cert:" + active.getId(),
+                now
         );
     }
 
