@@ -1,7 +1,10 @@
 package com.example.endpointadmin.tpmattest;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Faz 22.3B (ADR-0039) gate-4a-2.2 — canonical parser for a {@code TPMS_ATTEST}
@@ -29,16 +32,31 @@ public final class TpmsAttest {
     public static final int ST_ATTEST_CERTIFY = 0x8017;
     public static final int ST_ATTEST_QUOTE = 0x8018;
 
+    /** One TPML_PCR_SELECTION entry: a PCR bank (hashAlg) + its selection bitmap. */
+    public record PcrSelection(int hashAlg, byte[] bitmap) {
+        public PcrSelection { bitmap = bitmap.clone(); }
+        public byte[] bitmap() { return bitmap.clone(); }
+        /** Stable identity for tuple-set equality (hashAlg + bitmap), order-independent across selections. */
+        public String key() {
+            return Integer.toHexString(hashAlg) + ":" + java.util.HexFormat.of().formatHex(bitmap);
+        }
+    }
+
     private final int type;
     private final byte[] qualifiedSigner;
     private final byte[] extraData;
     private final byte[] certifiedName; // CERTIFY: the attested object's Name; null otherwise
+    private final List<PcrSelection> pcrSelections; // QUOTE: the attested PCR banks; empty otherwise
+    private final byte[] pcrDigest; // QUOTE: the aggregate PCR digest; null otherwise
 
-    private TpmsAttest(int type, byte[] qualifiedSigner, byte[] extraData, byte[] certifiedName) {
+    private TpmsAttest(int type, byte[] qualifiedSigner, byte[] extraData, byte[] certifiedName,
+                       List<PcrSelection> pcrSelections, byte[] pcrDigest) {
         this.type = type;
         this.qualifiedSigner = qualifiedSigner;
         this.extraData = extraData;
         this.certifiedName = certifiedName;
+        this.pcrSelections = pcrSelections;
+        this.pcrDigest = pcrDigest;
     }
 
     public static TpmsAttest parse(byte[] raw) {
@@ -57,6 +75,8 @@ public final class TpmsAttest {
         skip(bb, 8, "firmwareVersion");
 
         byte[] certifiedName = null;
+        List<PcrSelection> pcrSelections = Collections.emptyList();
+        byte[] pcrDigest = null;
         if (type == ST_ATTEST_CERTIFY) {
             certifiedName = readTpm2b(bb, "certifyInfo.name");
             readTpm2b(bb, "certifyInfo.qualifiedName"); // consume
@@ -65,19 +85,26 @@ public final class TpmsAttest {
             if (count < 0 || count > 16) {
                 throw new IllegalArgumentException("implausible PCR selection count " + count);
             }
+            List<PcrSelection> sels = new ArrayList<>();
             for (long i = 0; i < count; i++) {
-                u16(bb); // hashAlg
+                int hashAlg = u16(bb);
                 int sizeofSelect = u8(bb);
-                skip(bb, sizeofSelect, "pcrSelect.bitmap");
+                if (sizeofSelect > bb.remaining()) {
+                    throw new IllegalArgumentException("pcrSelect.bitmap overruns buffer");
+                }
+                byte[] bitmap = new byte[sizeofSelect];
+                bb.get(bitmap);
+                sels.add(new PcrSelection(hashAlg, bitmap));
             }
-            readTpm2b(bb, "quoteInfo.pcrDigest"); // consume
+            pcrSelections = Collections.unmodifiableList(sels);
+            pcrDigest = readTpm2b(bb, "quoteInfo.pcrDigest");
         } else {
             throw new IllegalArgumentException("unsupported attest type 0x" + Integer.toHexString(type));
         }
         if (bb.hasRemaining()) {
             throw new IllegalArgumentException("trailing bytes in TPMS_ATTEST (" + bb.remaining() + " left)");
         }
-        return new TpmsAttest(type, qualifiedSigner, extraData, certifiedName);
+        return new TpmsAttest(type, qualifiedSigner, extraData, certifiedName, pcrSelections, pcrDigest);
     }
 
     public int type() { return type; }
@@ -92,6 +119,17 @@ public final class TpmsAttest {
             throw new IllegalStateException("certifiedName only present for TPM2_Certify attestations");
         }
         return certifiedName.clone();
+    }
+
+    /** The attested PCR banks/selections (QUOTE only; empty otherwise). For V6 (T-5 exact-subset). */
+    public List<PcrSelection> pcrSelections() { return pcrSelections; }
+
+    /** The aggregate PCR digest (QUOTE only). For V6 (T-6 risk-tiered allow-set). */
+    public byte[] pcrDigest() {
+        if (pcrDigest == null) {
+            throw new IllegalStateException("pcrDigest only present for TPM2_Quote attestations");
+        }
+        return pcrDigest.clone();
     }
 
     private static int u8(ByteBuffer bb) {
