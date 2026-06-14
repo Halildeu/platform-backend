@@ -247,6 +247,31 @@ class EndpointBackupDryrunServiceTest {
     }
 
     @Test
+    void idempotencyKeyReuseDifferentProfileRejected() {
+        // Codex 019ec45e P1: same key + different stable scope/profile → 409 (not silent replay).
+        registerRoot();
+        UUID deviceId = seedDevice();
+        seedHeartbeat(deviceId, List.of("COLLECT_BACKUP_DRYRUN"));
+        service.propose(alice(), deviceId,
+                new AdminBackupDryrunRequestCreate(List.of(ROOT_REF), "profile-1", "first", "reuse-key"));
+        assertThatThrownBy(() -> service.propose(alice(), deviceId,
+                new AdminBackupDryrunRequestCreate(List.of(ROOT_REF), "profile-2", "second", "reuse-key")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void pathShapedProfileRejected() {
+        // Codex 019ec45e P1: allowlistProfileId must be path-free (drive-letter rejected).
+        registerRoot();
+        UUID deviceId = seedDevice();
+        assertThatThrownBy(() -> service.propose(alice(), deviceId,
+                new AdminBackupDryrunRequestCreate(List.of(ROOT_REF), "C:profile", "a valid reason", null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
     void activeApprovedDryRunBlocksNewPropose() {
         // Codex 019ec45e #3: single-flight = one ACTIVE dry-run per device. After
         // approve the command is QUEUED (non-terminal) → a new propose is 409.

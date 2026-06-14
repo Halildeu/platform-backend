@@ -119,6 +119,10 @@ public class EndpointBackupDryrunService {
         if (profile == null || !PROFILE_OPAQUE.matcher(profile).matches()) {
             throw badRequest("allowlistProfileId must be opaque ([A-Za-z0-9._:-]+)");
         }
+        // Codex 019ec45e P1: the opaque charset still admits "C:foo" / ".." —
+        // allowlistProfileId is echoed in the response/audit/dispatch, so it must
+        // be path-free too (drive-letter / dotdot / backslash rejected).
+        assertPathFree(profile);
         String reason = trim(request.reason());
         if (reason == null || reason.isEmpty()) {
             throw badRequest("reason is required");
@@ -134,9 +138,18 @@ public class EndpointBackupDryrunService {
                 requestRepository.findByTenantIdAndIdempotencyKey(tenantId, idempotencyKey);
         if (existing.isPresent()) {
             EndpointBackupDryrunRequest e = existing.get();
-            if (!Objects.equals(e.getDeviceId(), deviceId)) {
+            // Codex 019ec45e P1: an idempotency-key replay must match the STABLE
+            // request shape — device + profile + (canonical) root scope. A reuse
+            // with a different scope/profile is a 409, not a silent replay of the
+            // old scope. (reason is not part of the stable identity.)
+            List<String> existingRefs = e.getRootsSnapshot().stream()
+                    .map(BackupDryrunRootSnapshot::rootRef).sorted().toList();
+            List<String> incomingRefs = rootRefs.stream().sorted().toList();
+            if (!Objects.equals(e.getDeviceId(), deviceId)
+                    || !Objects.equals(e.getAllowlistProfileId(), profile)
+                    || !existingRefs.equals(incomingRefs)) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
-                        "backup dry-run idempotency key already used for another device");
+                        "idempotency key already used for a different device / profile / root scope");
             }
             return AdminBackupDryrunRequestResponse.from(e);
         }
@@ -426,8 +439,18 @@ public class EndpointBackupDryrunService {
         }
         List<String> sorted = new ArrayList<>(rootRefs);
         sorted.sort(String::compareTo);
-        int h = (deviceId.toString() + "|" + profile + "|" + String.join(",", sorted)).hashCode();
-        return "bdr-" + deviceId + "-" + Integer.toHexString(h);
+        String material = deviceId + "|" + profile + "|" + String.join(",", sorted);
+        return "bdr-" + deviceId + "-" + sha256Hex(material).substring(0, 24);
+    }
+
+    private static String sha256Hex(String s) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private void assertPathFree(String s) {
@@ -435,7 +458,7 @@ public class EndpointBackupDryrunService {
             return;
         }
         if (s.indexOf('\\') >= 0 || s.contains("..") || DRIVE_PATH.matcher(s).find()) {
-            throw badRequest("reason must not contain a filesystem path");
+            throw badRequest("field must not contain a filesystem path (backslash / drive-letter / ..)");
         }
     }
 

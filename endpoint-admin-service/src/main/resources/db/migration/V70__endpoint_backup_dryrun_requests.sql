@@ -44,8 +44,11 @@ CREATE TABLE endpoint_backup_dryrun_requests (
     CONSTRAINT uq_bdr_req_id_org UNIQUE (id, org_id),
     CONSTRAINT ck_bdr_req_state CHECK (state IN ('PENDING_APPROVAL', 'APPROVED')),
     CONSTRAINT ck_bdr_req_byod_false CHECK (byod IS FALSE),
+    -- opaque profile id: bounded charset AND no drive-letter prefix / no dotdot
+    -- (durable path-free backstop for the service check; Codex 019ec45e P1).
     CONSTRAINT ck_bdr_req_allowlist_profile_opaque
-        CHECK (allowlist_profile_id ~ '^[A-Za-z0-9._:-]+$'),
+        CHECK (allowlist_profile_id ~ '^[A-Za-z0-9._:-]+$'
+               AND allowlist_profile_id !~ '(^[A-Za-z]:|\.\.)'),
     CONSTRAINT ck_bdr_req_org_match CHECK (org_id IS NULL OR org_id = tenant_id),
     CONSTRAINT ck_bdr_req_org_not_null CHECK (org_id IS NOT NULL)
 );
