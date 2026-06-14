@@ -50,6 +50,9 @@ public class SecurityConfig {
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/v1/agent/enrollments/consume").permitAll()
+                        // Faz 22.3B (ADR-0039) gate-4d: TPM attestation enrollment (token-in-body auth,
+                        // like /consume; default-off + fail-closed in the controller).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/agent/enrollments/tpm/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(deviceCredentialAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
