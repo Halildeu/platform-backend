@@ -236,16 +236,13 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- Faz 22.3B (ADR-0039) gate-4: TPM 2.0 attestation parsing/verification.
-             webauthn4j's "tpm" attestation-statement classes parse TPMT_PUBLIC /
-             TPMS_ATTEST standalone (no WebAuthn ceremony); BouncyCastle for EK
-             cert-chain + signatures + the software TPM2_MakeCredential. All
-             behind endpoint-admin.tpm-attest.enabled=false (default-off). -->
-        <dependency>
-            <groupId>com.webauthn4j</groupId>
-            <artifactId>webauthn4j-core</artifactId>
-            <version>0.29.1.RELEASE</version>
-        </dependency>
+        <!-- Faz 22.3B (ADR-0039) gate-4: TPM 2.0 attestation verification.
+             BouncyCastle covers the EK cert-chain validation, the certify/quote
+             signature verification, and the in-process software TPM2_MakeCredential.
+             The few TPMT_PUBLIC / TPMS_ATTEST fields the verifier needs are
+             hand-parsed (TpmPublicArea), pinned to a real swtpm golden vector — no
+             separate attestation library. All behind
+             endpoint-admin.tpm-attest.enabled=false (default-off). -->
         <dependency>
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcpkix-jdk18on</artifactId>
