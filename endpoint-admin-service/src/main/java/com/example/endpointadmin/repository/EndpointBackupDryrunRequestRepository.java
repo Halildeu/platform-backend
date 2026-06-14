@@ -50,5 +50,9 @@ public interface EndpointBackupDryrunRequestRepository
     List<EndpointBackupDryrunRequest> findByTenantIdAndDeviceIdOrderByCreatedAtDesc(
             UUID tenantId, UUID deviceId, Pageable pageable);
 
+    /** Active-dry-run single-flight: APPROVED requests for a device (their command may still be in flight). */
+    List<EndpointBackupDryrunRequest> findByTenantIdAndDeviceIdAndState(
+            UUID tenantId, UUID deviceId, BackupDryrunRequestState state);
+
     Optional<EndpointBackupDryrunRequest> findByTenantIdAndId(UUID tenantId, UUID id);
 }

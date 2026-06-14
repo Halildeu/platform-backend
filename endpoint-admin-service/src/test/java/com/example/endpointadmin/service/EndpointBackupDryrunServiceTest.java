@@ -245,4 +245,20 @@ class EndpointBackupDryrunServiceTest {
         AdminBackupDryrunRequestResponse replay = service.propose(alice(), deviceId, req);
         assertThat(replay.id()).isEqualTo(first.id());
     }
+
+    @Test
+    void activeApprovedDryRunBlocksNewPropose() {
+        // Codex 019ec45e #3: single-flight = one ACTIVE dry-run per device. After
+        // approve the command is QUEUED (non-terminal) → a new propose is 409.
+        registerRoot();
+        UUID deviceId = seedDevice();
+        seedHeartbeat(deviceId, List.of("COLLECT_BACKUP_DRYRUN"));
+        AdminBackupDryrunRequestResponse proposed = service.propose(alice(), deviceId, createReq());
+        service.approve(bob(), deviceId, proposed.id(), new AdminBackupDryrunRequestApproval(null));
+
+        assertThatThrownBy(() -> service.propose(alice(), deviceId,
+                new AdminBackupDryrunRequestCreate(List.of(ROOT_REF), "profile-1", "second attempt", "key-2")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT);
+    }
 }

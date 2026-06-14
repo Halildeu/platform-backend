@@ -141,10 +141,24 @@ public class EndpointBackupDryrunService {
             return AdminBackupDryrunRequestResponse.from(e);
         }
 
-        // (2) single-flight soft read (DB partial unique is the hard guard)
+        // (2) single-flight: ONE ACTIVE dry-run per device (Codex 019ec45e #3).
+        // (a) a PENDING_APPROVAL request (DB partial unique is the hard guard);
+        // (b) an APPROVED request whose dispatched command is still non-terminal
+        //     (don't start a second dry-run while the first is in flight).
         if (requestRepository.findOpenForDevice(tenantId, deviceId, BackupDryrunRequestState.PENDING_APPROVAL).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "an open (PENDING_APPROVAL) backup dry-run request already exists for this device");
+        }
+        boolean approvedInFlight = requestRepository
+                .findByTenantIdAndDeviceIdAndState(tenantId, deviceId, BackupDryrunRequestState.APPROVED).stream()
+                .map(EndpointBackupDryrunRequest::getCommandId)
+                .filter(Objects::nonNull)
+                .map(commandRepository::findById)
+                .filter(Optional::isPresent).map(Optional::get)
+                .anyMatch(c -> !isTerminal(c.getStatus()));
+        if (approvedInFlight) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "an approved backup dry-run is still in flight for this device; wait for it to finish");
         }
 
         // (3) resolve roots against the registry (enabled + company-managed only)
@@ -306,7 +320,15 @@ public class EndpointBackupDryrunService {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
                     "one or more rootRefs are unknown, disabled, or not company-managed in the registry");
         }
+        // canonical order (Codex 019ec45e #8) so the propose snapshot + the
+        // dispatch payload are deterministic regardless of registry row order.
+        resolved.sort(java.util.Comparator.comparing(EndpointBackupDryrunManagedRoot::getRootRef));
         return resolved;
+    }
+
+    private static boolean isTerminal(CommandStatus s) {
+        return s == CommandStatus.SUCCEEDED || s == CommandStatus.FAILED
+                || s == CommandStatus.CANCELLED || s == CommandStatus.EXPIRED;
     }
 
     private Map<String, Object> buildDispatchPayload(UUID tenantId, UUID deviceId,
