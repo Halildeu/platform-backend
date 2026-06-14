@@ -2,8 +2,12 @@ package com.example.endpointadmin.tpmattest;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -19,6 +23,8 @@ import java.util.Map;
  * (operational, not verify-oracles). Scoped to this controller so it never affects other endpoints.
  */
 @RestControllerAdvice(assignableTypes = TpmEnrollmentController.class)
+@Order(Ordered.HIGHEST_PRECEDENCE) // consulted before any global ResponseEntityExceptionHandler, so even
+                                   // framework parse/validation errors map to the uniform 403 (no oracle)
 public class TpmEnrollmentExceptionAdvice {
 
     private static final Logger audit = LoggerFactory.getLogger("tpm-attest-audit");
@@ -60,9 +66,21 @@ public class TpmEnrollmentExceptionAdvice {
     }
 
     /**
-     * Catch-all (incl. {@link IllegalArgumentException} from parsers, bean-validation failures, and any
-     * other {@link RuntimeException}). Fail-closed to the SAME uniform 403 — a malformed input can never
-     * surface as a 5xx or a distinct status (Codex: that is itself an oracle).
+     * Framework parse / bean-validation errors (malformed JSON body, {@code @Valid} failures) are mapped
+     * to the SAME uniform 403 — NOT the default {@code 400} — so they can't become an oracle distinct
+     * from a verifier deny (Codex {@code 019ec723} post-impl review). The {@code @Order(HIGHEST_PRECEDENCE)}
+     * on this advice ensures it wins over any global {@code ResponseEntityExceptionHandler}.
+     */
+    @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentNotValidException.class})
+    public ResponseEntity<Map<String, String>> onMalformed(Exception e) {
+        audit.info("tpm-enroll deny code=MALFORMED detail={}", e.getClass().getSimpleName());
+        return uniform403();
+    }
+
+    /**
+     * Catch-all (incl. {@link IllegalArgumentException} from parsers and any other {@link RuntimeException}).
+     * Fail-closed to the SAME uniform 403 — a malformed input can never surface as a 5xx or a distinct
+     * status (Codex: that is itself an oracle).
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> onAny(Exception e) {

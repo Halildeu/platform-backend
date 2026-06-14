@@ -88,9 +88,13 @@ class TpmEnrollmentControllerTest {
 
         MappingJackson2HttpMessageConverter conv = new MappingJackson2HttpMessageConverter();
         conv.setObjectMapper(json);
+        org.springframework.validation.beanvalidation.LocalValidatorFactoryBean validator =
+                new org.springframework.validation.beanvalidation.LocalValidatorFactoryBean();
+        validator.afterPropertiesSet();
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new TpmEnrollmentExceptionAdvice())
                 .setMessageConverters(conv)
+                .setValidator(validator) // enforce @Valid so the framework-exception → 403 path is exercised
                 .build();
     }
 
@@ -148,6 +152,24 @@ class TpmEnrollmentControllerTest {
         byte[] bad = HexFormat.of().parseHex(golden.get("akNameHex").asText());
         bad[bad.length - 1] ^= 0x01;
         b.put("akName", b64(bad));
+        postNonce(b).andExpect(status().isForbidden()).andExpect(content().json("{\"status\":\"denied\"}"));
+    }
+
+    @Test
+    void malformedJsonBody_uniform403() throws Exception {
+        // HttpMessageNotReadableException must map to the SAME uniform 403, not a 400 oracle.
+        mvc.perform(post("/api/v1/agent/enrollments/tpm/nonce")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ not valid json"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().json("{\"status\":\"denied\"}"));
+    }
+
+    @Test
+    void beanValidationViolation_uniform403() throws Exception {
+        // @Valid failure (blank required field) → MethodArgumentNotValidException → uniform 403, not 400.
+        Map<String, Object> b = body();
+        b.put("enrollmentToken", "");
         postNonce(b).andExpect(status().isForbidden()).andExpect(content().json("{\"status\":\"denied\"}"));
     }
 
