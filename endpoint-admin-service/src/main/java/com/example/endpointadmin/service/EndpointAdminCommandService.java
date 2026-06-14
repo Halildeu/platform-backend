@@ -441,6 +441,15 @@ public class EndpointAdminCommandService {
         EndpointCommandResultDto result = resultRepository.findByCommand_Id(command.getId())
                 .map(this::toResultDto)
                 .orElse(null);
+        // Faz 22.8A.3b (#648): the COLLECT_BACKUP_DRYRUN dispatch payload carries
+        // resolved roots[].local_path (raw paths). The generic command DTO must
+        // NOT surface it (path-free policy, Codex 019ec45e); the dedicated
+        // backup-dryruns request endpoint exposes only the opaque root_refs.
+        Map<String, Object> dtoPayload = command.getCommandType() == CommandType.COLLECT_BACKUP_DRYRUN
+                ? Map.of("redacted", true,
+                        "note", "COLLECT_BACKUP_DRYRUN payload omitted from the generic command DTO (path-free); "
+                                + "use GET /api/v1/admin/endpoint-devices/{deviceId}/backup-dryruns")
+                : command.getPayload();
         return new EndpointCommandDto(
                 command.getId(),
                 command.getTenantId(),
@@ -449,7 +458,7 @@ public class EndpointAdminCommandService {
                 command.getIdempotencyKey(),
                 command.getStatus(),
                 command.getApprovalStatus(),
-                command.getPayload(),
+                dtoPayload,
                 command.getPriority(),
                 command.getAttemptCount(),
                 command.getMaxAttempts(),

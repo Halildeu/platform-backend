@@ -89,6 +89,15 @@ endpoint-admin:
     enabled: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_ENABLED:false}
     # Comma-separated tenant UUIDs allowed to use the surface. Empty → none.
     allowed-tenant-ids: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_ALLOWED_TENANT_IDS:}
+    # 22.8A.3b issuing surface gates (Codex 019ec45e):
+    # heartbeat fresher than this TTL is required at approve; older → 424.
+    heartbeat-freshness-ttl: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_HEARTBEAT_FRESHNESS_TTL:PT5M}
+    # capability the agent must advertise in its latest heartbeat (missing → 422).
+    required-capability: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_REQUIRED_CAPABILITY:COLLECT_BACKUP_DRYRUN}
+    # bounded TTL on the dispatched command (no null expiry — stale approved scope must not run).
+    command-ttl: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_COMMAND_TTL:PT30M}
+    # scope cap: max managed roots per request.
+    max-roots: ${ENDPOINT_ADMIN_BACKUP_DRYRUN_MAX_ROOTS:32}
   tenant:
     local-default-tenant-id: ${ENDPOINT_ADMIN_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
 
