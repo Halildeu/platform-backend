@@ -119,6 +119,61 @@ class MachineCertAutoEnrollServiceTest {
         assertThat(second.body().deviceId()).isEqualTo(first.body().deviceId());
     }
 
+    @Test
+    void lifecycleAuthenticationReturnsDeviceCredentialForActiveMachineCert() {
+        UUID guid = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.validClientCert(guid);
+        var enrolled = service.autoEnroll(cert, TENANT_A, sampleRequest("fp-life"));
+
+        var principal = service.authenticateLifecycle(cert, TENANT_A);
+
+        assertThat(principal.deviceId()).isEqualTo(enrolled.body().deviceId().toString());
+        assertThat(principal.credentialId()).startsWith("machine-cert:");
+        assertThat(principal.authenticatedAt()).isNotNull();
+    }
+
+    @Test
+    void lifecycleAuthenticationRejectsCrossTenantMachineCert() {
+        UUID guid = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.validClientCert(guid);
+        service.autoEnroll(cert, TENANT_A, sampleRequest("fp-life-x"));
+
+        assertThatThrownBy(() -> service.authenticateLifecycle(cert, TENANT_B))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                        .isEqualTo(HttpStatus.FORBIDDEN))
+                .hasMessageContaining("TENANT_BOUNDARY");
+    }
+
+    @Test
+    void lifecycleAuthenticationRejectsUnenrolledMachineCert() {
+        X509Certificate cert = TestX509Certs.validClientCert(UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.authenticateLifecycle(cert, TENANT_A))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                        .isEqualTo(HttpStatus.UNAUTHORIZED))
+                .hasMessageContaining("MACHINE_CERT_NOT_ENROLLED");
+    }
+
+    @Test
+    void lifecycleAuthenticationRejectsDecommissionedDevice() {
+        UUID guid = UUID.randomUUID();
+        X509Certificate cert = TestX509Certs.validClientCert(guid);
+        var enrolled = service.autoEnroll(cert, TENANT_A, sampleRequest("fp-life-decom"));
+
+        var device = deviceRepository.findById(enrolled.body().deviceId()).orElseThrow();
+        device.setStatus(DeviceStatus.DECOMMISSIONED);
+        deviceRepository.saveAndFlush(device);
+
+        assertThatThrownBy(() -> service.authenticateLifecycle(cert, TENANT_A))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                        .isEqualTo(HttpStatus.CONFLICT))
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getReason())
+                        .containsIgnoringCase("decommission"));
+    }
+
     /**
      * Codex 019ea789 iter-2 regression — the already-enrolled active-cert path
      * must FAIL-CLOSE with 409 on a DECOMMISSIONED device, not silently return
