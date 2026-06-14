@@ -31,7 +31,7 @@ class TpmPublicAreaTest {
     @Test
     void v11_akNameRecomputeMatchesTpmEmittedName() {
         byte[] akPub = Base64.getDecoder().decode(golden.get("akPub").asText());
-        TpmPublicArea ak = TpmPublicArea.parse(akPub);
+        TpmPublicArea ak = TpmPublicArea.parse(akPub, true /* TPM2B_PUBLIC from tpm2_createak -u */);
 
         // The decisive ground-truth assertion: our computed Name == the TPM's ak.name.
         assertThat(ak.computeNameHex())
@@ -42,16 +42,19 @@ class TpmPublicAreaTest {
     @Test
     void v11_akIsRestrictedSigningKey() {
         byte[] akPub = Base64.getDecoder().decode(golden.get("akPub").asText());
-        TpmPublicArea ak = TpmPublicArea.parse(akPub);
+        TpmPublicArea ak = TpmPublicArea.parse(akPub, true);
 
         // tpm2_createak produces a restricted signing key (RSA, SHA-256 name).
         assertThat(ak.type()).isEqualTo(TpmPublicArea.ALG_RSA);
         assertThat(ak.nameAlg()).isEqualTo(TpmPublicArea.ALG_SHA256);
         assertThat(ak.isRestrictedSigningKey())
-                .as("AK is restricted + sign + fixedTPM + sensitiveDataOrigin (V11)").isTrue();
+                .as("AK is restricted + sign + ¬decrypt + fixedTPM + fixedParent + sensitiveDataOrigin (V11)")
+                .isTrue();
         assertThat(ak.isRestricted()).isTrue();
         assertThat(ak.isSign()).isTrue();
+        assertThat(ak.isDecrypt()).as("a restricted SIGNING AK must NOT also decrypt").isFalse();
         assertThat(ak.isFixedTpm()).isTrue();
+        assertThat(ak.isFixedParent()).as("AK is non-migratable (fixedParent)").isTrue();
         assertThat(ak.isSensitiveDataOrigin()).isTrue();
     }
 
@@ -59,8 +62,19 @@ class TpmPublicAreaTest {
     void v11_devkeyIsNotRestricted() {
         // The certified device key is an ordinary (unrestricted) key — contrast with the AK.
         byte[] devkey = Base64.getDecoder().decode(golden.get("devkeyPub").asText());
-        TpmPublicArea dk = TpmPublicArea.parse(devkey);
+        TpmPublicArea dk = TpmPublicArea.parse(devkey, true);
         assertThat(dk.isRestricted()).as("device key is NOT a restricted key").isFalse();
+    }
+
+    @Test
+    void tpm2bSizeMismatchRejected() {
+        // Explicit format contract: an isTpm2b input whose UINT16 size != remaining length is rejected
+        // (no silent fallthrough to treating it as a bare TPMT_PUBLIC).
+        byte[] akPub = Base64.getDecoder().decode(golden.get("akPub").asText());
+        byte[] truncated = java.util.Arrays.copyOf(akPub, akPub.length - 1);
+        assertThatThrownBy(() -> TpmPublicArea.parse(truncated, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("size mismatch");
     }
 
     @Test
