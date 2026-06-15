@@ -130,7 +130,7 @@ trusted only once `CanonicalCommand.hash(commandLine)` equals the SIGNED `permit
 | # | field | type | r/o | notes |
 |---|---|---|---|---|
 | 1 | permit | OperationPermit | req | the broker-signed permit, byte-for-byte as signed (see integrity rule) |
-| 2 | commandLine | string | opt | plaintext; **required non-empty** for `CONSTRAINED_PTY`; **empty** for `VIEW_ONLY` |
+| 2 | commandLine | string | opt | plaintext, carried EXACT/raw — `CanonicalCommand` canonicalises only for the hash-check, the wire never normalises it. For `CONSTRAINED_PTY`: **required non-empty** (whitespace-only rejected) + ≤256 chars + no control chars (defense-in-depth: a NUL/newline/over-long command never reaches a log/exec path). For `VIEW_ONLY`: **empty** (decodes ≡ `null`). |
 
 **Agent fail-closed acceptance order (no step may be reordered; any failure → no execute, no DATA stream):**
 1. **Disabled-by-default gate** — if the agent's PTY operation handler is not configured, `OperationDispatch`
