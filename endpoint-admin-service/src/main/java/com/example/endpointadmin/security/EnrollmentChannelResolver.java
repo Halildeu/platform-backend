@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -214,7 +215,12 @@ public final class EnrollmentChannelResolver {
             if (!(entry.get(0) instanceof Integer type) || type != SAN_TYPE_URI) {
                 continue;
             }
-            if (entry.get(1) instanceof String uri && foreign.matcher(uri).matches()) {
+            // Locale.ROOT lowercase before matching (Codex 019ec723 optional hardening):
+            // catch case-variant foreign SANs (e.g. TPM:..., ADCOMPUTER:...) so the guard
+            // does not depend on the channel extractor's own strict-lowercase pin. ROOT
+            // avoids the Turkish-locale i/İ pitfall on this host.
+            if (entry.get(1) instanceof String uri
+                    && foreign.matcher(uri.toLowerCase(Locale.ROOT)).matches()) {
                 throw new MachineCertExtractionException(
                         "CHANNEL_SAN_CROSS_CONTAMINATION",
                         "Cert resolved to channel " + channel

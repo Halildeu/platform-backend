@@ -102,6 +102,23 @@ class EnrollmentChannelResolverTest {
     }
 
     @Test
+    void caseVariantForeignSanIsCrossContamination() {
+        TestChannelCa ad = TestChannelCa.create("ad-cs-ca");
+        TestChannelCa vault = TestChannelCa.create("vault-ca");
+        // AD CS issuer signs a cert whose ONLY SAN is an UPPERCASE tpm: variant.
+        // The channel extractor's strict-lowercase pin would ignore it (and report
+        // CERT_SAN_URI_MISSING); the hardened guard lowercase-normalizes and catches
+        // the foreign-channel scheme BEFORE delegation.
+        X509Certificate leaf = ad.leaf()
+                .sanUri("TPM:" + EK.toUpperCase())
+                .clientAuth(true).validForDays(30).build();
+
+        assertThatThrownBy(() -> resolver(ad, vault).resolve(leaf, NOW))
+                .isInstanceOf(MachineCertExtractionException.class)
+                .satisfies(t -> assertThat(code(t)).isEqualTo("CHANNEL_SAN_CROSS_CONTAMINATION"));
+    }
+
+    @Test
     void unknownIssuerIsUntrusted() {
         TestChannelCa ad = TestChannelCa.create("ad-cs-ca");
         TestChannelCa vault = TestChannelCa.create("vault-ca");
