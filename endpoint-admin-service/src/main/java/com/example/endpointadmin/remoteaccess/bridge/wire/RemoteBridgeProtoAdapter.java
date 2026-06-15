@@ -459,6 +459,61 @@ public final class RemoteBridgeProtoAdapter {
     }
 
     // ------------------------------------------------------------------
+    // OperationDispatch — broker→agent CONSTRAINED_PTY command transport (T-4)
+    // ------------------------------------------------------------------
+
+    /**
+     * Decodes the broker→agent command dispatch. The INNER permit goes through the strict permit decoder above
+     * (so its {@link OperationPermit#canonicalPayload()} — and thus the broker signature — survives the
+     * round-trip byte-for-byte; the wrapper never re-marshals the signed bytes). Then it enforces the
+     * wire-level capability↔command consistency, mirroring the permit's capability↔commandHash rule: a
+     * {@code CONSTRAINED_PTY} permit REQUIRES a non-blank {@code command_line}; a {@code VIEW_ONLY} permit
+     * REQUIRES an empty one. The signature verification and the hash-match
+     * ({@code CanonicalCommand.hash(commandLine) == permit.commandHash}) are the agent's crypto gate, NOT the
+     * wire adapter's job.
+     */
+    public static DecodeResult<RemoteBridgeMessages.OperationDispatch> decode(
+            com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch dispatch) {
+        if (dispatch == null) {
+            return DecodeResult.reject("operation-dispatch-null");
+        }
+        if (!dispatch.hasPermit()) {
+            return DecodeResult.reject("operation-dispatch-permit-missing");
+        }
+        DecodeResult<OperationPermit> permit = decode(dispatch.getPermit());
+        if (!permit.isOk()) {
+            return DecodeResult.reject(permit.rejectReason());
+        }
+        OperationPermit decoded = permit.orElseThrow();
+        String commandLine = dispatch.getCommandLine();
+        boolean pty = decoded.capability() == RemoteSessionCapability.CONSTRAINED_PTY;
+        if (pty) {
+            if (commandLine.isBlank()) {
+                return DecodeResult.reject("operation-dispatch-command-missing"); // whitespace-only is not a command
+            }
+            // Defense-in-depth (Codex 019ecd07): the hash-match + the agent allowlist are the authoritative gate,
+            // but a bounded, control-char-free command means a NUL/newline/over-long command never reaches a log
+            // or exec path from the wire. isSafeText = non-empty + <=256 chars + no control chars.
+            if (!isSafeText(commandLine, true)) {
+                return DecodeResult.reject("operation-dispatch-command-unsafe");
+            }
+        } else if (!commandLine.isEmpty()) {
+            return DecodeResult.reject("operation-dispatch-command-unexpected"); // VIEW_ONLY carries no command
+        }
+        // PTY: keep the command EXACT (CanonicalCommand canonicalises for the hash; the wire carries it raw).
+        // VIEW_ONLY: empty normalises to null.
+        return DecodeResult.ok(new RemoteBridgeMessages.OperationDispatch(decoded, emptyToNull(commandLine)));
+    }
+
+    public static com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch encode(
+            RemoteBridgeMessages.OperationDispatch dispatch) {
+        return com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch.newBuilder()
+                .setPermit(encode(dispatch.permit()))
+                .setCommandLine(nullToEmpty(dispatch.commandLine()))
+                .build();
+    }
+
+    // ------------------------------------------------------------------
     // Envelope — channel/payload compatibility (the stream rule, statically enforced)
     // ------------------------------------------------------------------
 

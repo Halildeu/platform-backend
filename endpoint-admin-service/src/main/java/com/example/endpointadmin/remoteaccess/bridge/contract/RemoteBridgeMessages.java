@@ -75,6 +75,18 @@ public final class RemoteBridgeMessages {
                                    String commandLine) {
     }
 
+    /**
+     * Broker → agent (CONTROL, T-4 CONSTRAINED_PTY): a signed {@link OperationPermit} paired with the plaintext
+     * command to execute. The raw command travels toward the agent ONLY here (never inside the permit, which
+     * carries only the {@code commandHash}); it is authorization-NEUTRAL — the agent trusts it only after
+     * re-deriving {@code CanonicalCommand.hash(commandLine)} equals {@code permit.commandHash()} against the
+     * SIGNED permit. {@code commandLine} is null/empty for VIEW_ONLY (a non-command capability). The nested
+     * permit's signed bytes are unchanged by this wrapper — verify the INNER permit, never the wrapper. (Wire
+     * shadow-spec: {@code docs/remote-bridge-wire-contract.md}; Codex 019ecd07 B2.)
+     */
+    public record OperationDispatch(OperationPermit permit, String commandLine) {
+    }
+
     /** Broker → operator/audit: the engine's verdict (maps {@code RemoteSessionPolicyEngine.SessionDecision}). */
     public record PolicyDecision(String sessionId,
                                  String operationId,

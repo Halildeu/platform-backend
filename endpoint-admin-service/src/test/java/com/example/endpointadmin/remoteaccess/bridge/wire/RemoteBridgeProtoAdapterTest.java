@@ -298,6 +298,91 @@ class RemoteBridgeProtoAdapterTest {
     }
 
     // ------------------------------------------------------------------
+    // OperationDispatch — broker→agent command transport (wraps the signed permit + plaintext command)
+    // ------------------------------------------------------------------
+
+    private static OperationPermit signedViewOnlyPermit(KeyPair kp) {
+        RemoteBridgePermitSigner signer = new RemoteBridgePermitSigner(kp.getPrivate(), "kid-1", ALG);
+        OperationPermit unsigned = new OperationPermit(ALG, "kid-1", 1, "policy-1", "sess-1:op-1", "sess-1",
+                "op-1", "dev-1", "operator@x", RemoteSessionCapability.VIEW_ONLY, "", 1000L, 1300L, 7L, null);
+        return signer.sign(unsigned).orElseThrow();
+    }
+
+    @Test
+    void operationDispatchRoundTripsAndTheInnerPermitSurvivesByteForByteAndVerifies() throws Exception {
+        KeyPair kp = ec();
+        OperationPermit signed = signedPermit(kp); // CONSTRAINED_PTY, hash of "hostname"
+        var dispatch = new RemoteBridgeMessages.OperationDispatch(signed, "hostname");
+        byte[] wire = RemoteBridgeProtoAdapter.encode(dispatch).toByteArray();
+
+        RemoteBridgeMessages.OperationDispatch decoded = RemoteBridgeProtoAdapter.decode(
+                com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch.parseFrom(wire)).orElseThrow();
+        assertEquals("hostname", decoded.commandLine());
+        // the wrapper never re-marshals the signed bytes — the inner permit is byte-identical and still verifies
+        assertArrayEquals(signed.canonicalPayload(), decoded.permit().canonicalPayload());
+        assertTrue(new RemoteBridgePermitVerifier(kp.getPublic(), "kid-1").verify(decoded.permit(), 1100L));
+    }
+
+    @Test
+    void operationDispatchViewOnlyCarriesNoCommandAndNormalisesToNull() throws Exception {
+        OperationPermit view = signedViewOnlyPermit(ec());
+        var dispatch = new RemoteBridgeMessages.OperationDispatch(view, null);
+        byte[] wire = RemoteBridgeProtoAdapter.encode(dispatch).toByteArray();
+        RemoteBridgeMessages.OperationDispatch decoded = RemoteBridgeProtoAdapter.decode(
+                com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch.parseFrom(wire)).orElseThrow();
+        assertNull(decoded.commandLine());
+        assertEquals(RemoteSessionCapability.VIEW_ONLY, decoded.permit().capability());
+    }
+
+    @Test
+    void operationDispatchEnforcesCapabilityCommandConsistencyBothWays() throws Exception {
+        com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch pty =
+                RemoteBridgeProtoAdapter.encode(new RemoteBridgeMessages.OperationDispatch(signedPermit(ec()), "hostname"));
+        // CONSTRAINED_PTY REQUIRES a non-blank command
+        assertFalse(RemoteBridgeProtoAdapter.decode(pty.toBuilder().setCommandLine("").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(pty.toBuilder().setCommandLine("   ").build()).isOk());
+        // VIEW_ONLY must NOT carry a command
+        com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch view =
+                RemoteBridgeProtoAdapter.encode(new RemoteBridgeMessages.OperationDispatch(signedViewOnlyPermit(ec()), null));
+        assertFalse(RemoteBridgeProtoAdapter.decode(view.toBuilder().setCommandLine("hostname").build()).isOk());
+        assertTrue(RemoteBridgeProtoAdapter.decode(view).isOk());
+    }
+
+    @Test
+    void operationDispatchRejectsUnsafeOrOverlongPtyCommand() throws Exception {
+        com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch pty =
+                RemoteBridgeProtoAdapter.encode(new RemoteBridgeMessages.OperationDispatch(signedPermit(ec()), "hostname"));
+        // a control char (newline / NUL) in the command is rejected — it never reaches a log/exec path from the wire
+        assertFalse(RemoteBridgeProtoAdapter.decode(pty.toBuilder().setCommandLine("host\nname").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(pty.toBuilder().setCommandLine("a" + (char) 0 + "b").build()).isOk());
+        // over the 256-char text bound is rejected
+        assertFalse(RemoteBridgeProtoAdapter.decode(pty.toBuilder().setCommandLine("x".repeat(257)).build()).isOk());
+    }
+
+    @Test
+    void operationDispatchRejectsMissingPermitAndInheritsStrictPermitDecode() throws Exception {
+        // no permit at all
+        assertFalse(RemoteBridgeProtoAdapter.decode(
+                com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch.newBuilder()
+                        .setCommandLine("hostname").build()).isOk());
+        // a structurally-bad inner permit (wrong version) is rejected by the reused strict permit decoder
+        com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch valid =
+                RemoteBridgeProtoAdapter.encode(new RemoteBridgeMessages.OperationDispatch(signedPermit(ec()), "hostname"));
+        assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder()
+                .setPermit(valid.getPermit().toBuilder().setPermitVersion(2)).build()).isOk());
+    }
+
+    @Test
+    void operationDispatchTravelsOnlyOnControl() throws Exception {
+        com.example.endpointadmin.remoteaccess.bridge.proto.OperationDispatch dispatch =
+                RemoteBridgeProtoAdapter.encode(new RemoteBridgeMessages.OperationDispatch(signedPermit(ec()), "hostname"));
+        assertTrue(RemoteBridgeProtoAdapter.validateEnvelope(Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL).setOperationDispatch(dispatch).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(Envelope.newBuilder()
+                .setChannelType(ChannelType.DATA).setOperationDispatch(dispatch).build()).isOk());
+    }
+
+    // ------------------------------------------------------------------
     // Envelope channel/payload compatibility
     // ------------------------------------------------------------------
 
