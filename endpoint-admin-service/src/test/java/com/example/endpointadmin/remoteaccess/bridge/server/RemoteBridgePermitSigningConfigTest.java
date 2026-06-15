@@ -9,6 +9,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Files;
@@ -42,6 +44,7 @@ class RemoteBridgePermitSigningConfigTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
             .withBean(EndpointMachineCertRepository.class, () -> mock(EndpointMachineCertRepository.class))
+            .withBean(MeterRegistry.class, SimpleMeterRegistry::new) // bridge data-plane metrics (T-2b/#1588)
             .withUserConfiguration(RemoteBridgeServerConfig.class);
 
     private static KeyPair ec(String curve) throws Exception {

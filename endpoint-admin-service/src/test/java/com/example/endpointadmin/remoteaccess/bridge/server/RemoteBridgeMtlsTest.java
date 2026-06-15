@@ -10,6 +10,7 @@ import io.grpc.Grpc;
 import io.grpc.ManagedChannel;
 import io.grpc.TlsChannelCredentials;
 import io.grpc.stub.StreamObserver;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -132,7 +133,8 @@ class RemoteBridgeMtlsTest {
         RemoteBridgeServerProperties properties = props(port,
                 new RemoteBridgeServerProperties.Tls(serverChainPem.toString(), serverKeyPem.toString(),
                         clientCaPem.toString()), "127.0.0.1", false);
-        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, plane, null, 0, 1024,
+        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, plane,
+                DataPlaneHandler.INERT, new SimpleMeterRegistry(), null, 0, 1024,
                 System::currentTimeMillis, "rb-v1");
         RemoteBridgeGrpcServer grpcServer = new RemoteBridgeGrpcServer(properties, service, registry);
         grpcServer.start();
@@ -253,7 +255,8 @@ class RemoteBridgeMtlsTest {
     // ------------------------------------------------------------------
 
     private RemoteBridgeGrpcServer serverWith(RemoteBridgeServerProperties properties) {
-        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, plane, null, 0, 1024,
+        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, plane,
+                DataPlaneHandler.INERT, new SimpleMeterRegistry(), null, 0, 1024,
                 System::currentTimeMillis, "rb-v1");
         return new RemoteBridgeGrpcServer(properties, service, registry);
     }
