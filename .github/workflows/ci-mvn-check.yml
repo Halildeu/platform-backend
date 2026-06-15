@@ -193,6 +193,28 @@ jobs:
       - name: Pre-install reactor deps (common-auth + common-export — board #1154, not in Maven Central)
         run: ./mvnw -q -pl common-auth,common-export install -DskipTests
 
+      - name: Pre-pull the MSSQL image (CI hardening — avoid the Testcontainers 2-min pull-await flake)
+        run: |
+          # The MSSQL image (~1.5 GB) is pulled fresh each run; Testcontainers' RemoteDockerImage.resolve
+          # awaits the pull for only ~2 minutes, which intermittently flakes on a slow runner→registry link
+          # ("ContainerFetchException ... not fulfilled within 2 minutes"). Pre-pulling here — OUTSIDE that
+          # await and with retries — makes the image local so resolve is instant and deterministic.
+          img=mcr.microsoft.com/mssql/server:2022-latest
+          for attempt in 1 2 3; do
+            if docker image inspect "$img" >/dev/null 2>&1; then
+              echo "MSSQL image already present"
+              exit 0
+            fi
+            if timeout 180 docker pull "$img"; then
+              echo "MSSQL image pulled (attempt $attempt)"
+              exit 0
+            fi
+            echo "MSSQL image pull attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "MSSQL image pre-pull failed after 3 attempts" >&2
+          exit 1
+
       - name: Run report-service MSSQL Testcontainers integration tests
         run: ./mvnw -q -pl report-service test -Pintegration-tests -Dtest='SqlBuilderMssqlIntegrationTest,WorkcubeQueryAdapterIT'
 
