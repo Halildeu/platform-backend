@@ -5,7 +5,11 @@
 > DEFAULT context has ZERO remote-bridge beans; an ENABLED server is mTLS-only, fail-closed). Real cert
 > MATERIAL + the TLS-passthrough L4 edge + broker wiring (SessionContext assembly) remain
 > **T-4 / owner-pilot-gated** (ADR-0034 §13/D10).
-> **Decided by:** [ADR-0038](../../../docs/adr/0038-faz-22-6-remote-access-transport.md) (gRPC/mTLS, broker-authoritative); Codex architecture thread `019eb9fb`.
+> **T-4 `OperationDispatch` (broker→agent CONSTRAINED_PTY command transport) is DESIGN-SPEC** below (Codex
+> thread `019ecd07`, B2): proto encoding + broker push + agent dispatch are the follow-on slices; LIVE
+> dispatch is owner-pilot-gated. The agent-side execution path (verify→gate→ConPTY→stream) is already
+> code-complete (platform-agent `internal/remotebridge/{operation,ptyexec}`).
+> **Decided by:** [ADR-0038](../../../docs/adr/0038-faz-22-6-remote-access-transport.md) (gRPC/mTLS, broker-authoritative); Codex architecture thread `019eb9fb`; T-4 dispatch extension `019ecd07`.
 
 This started as the **shadow wire spec** (Codex guardrail) and is now the contract documentation for the real
 encoding: the T-1 Java records in `com.example.endpointadmin.remoteaccess.bridge.contract` map **1:1** onto the
@@ -110,6 +114,51 @@ The `canonicalPayload()` covers fields 1–14 (NOT the signature). Asymmetric ke
 | 14 | seq | int64 | ✓ | monotonic per-session (replay guard) |
 | 15 | signatureB64 | string | ✗ | the broker signature over fields 1–14 |
 
+### `OperationDispatch` (proto `OperationDispatch`) — broker→agent CONTROL, T-4 CONSTRAINED_PTY command transport
+
+> **Status: design-spec (T-4 wire extension), NOT yet encoded.** Extends the ADR-0038 wire under ADR-0034 D8
+> `CONSTRAINED_PTY`; disabled-by-default; a LIVE dispatch is owner-pilot-gated (§13/D10). Defined here so the
+> broker-push impl + the agent re-vendor + the agent dispatch (slice-5b) bind to ONE Codex-ratified shape
+> (thread `019ecd07`, B2). Field numbers below are PROPOSED — finalized when the proto lands.
+
+The signed `OperationPermit` (hash only) cannot, by itself, drive an agent execution: the agent needs the
+PLAINTEXT command to resolve the no-shell ExecPlan and to re-derive the hash. The raw command still NEVER
+rides inside the permit (the signed bytes are unchanged); it is transported in a wrapper that pairs it with
+the signed permit in ONE self-contained broker→agent frame. The command is authorization-NEUTRAL: it is
+trusted only once `CanonicalCommand.hash(commandLine)` equals the SIGNED `permit.commandHash`.
+
+| # | field | type | r/o | notes |
+|---|---|---|---|---|
+| 1 | permit | OperationPermit | req | the broker-signed permit, byte-for-byte as signed (see integrity rule) |
+| 2 | commandLine | string | opt | plaintext; **required non-empty** for `CONSTRAINED_PTY`; **empty** for `VIEW_ONLY` |
+
+**Agent fail-closed acceptance order (no step may be reordered; any failure → no execute, no DATA stream):**
+1. **Disabled-by-default gate** — if the agent's PTY operation handler is not configured, `OperationDispatch`
+   is REFUSED inbound (a CONTROL `ErrorFrame` + no-op; never silently consumed). Only an explicitly-enabled
+   agent accepts it.
+2. **Permit signature** — verification MUST run the SAME `OperationPermit.canonicalPayload()` canonicalizer
+   over the permit's fields (parse the inner permit out of the wrapper, then canonicalize via the identical
+   function); never treat the `OperationDispatch` wrapper bytes as the signed message. `canonicalPayload()`
+   is independent of the protobuf/wrapper encoding, so the signed bytes are unchanged by being transported
+   inside `OperationDispatch`.
+3. **Freshness + replay** — `isFresh` (`issuedAt ≤ now < expiresAt`) + per-`sessionId` monotonic `seq`
+   (existing gate). The TTL is owned by `permit.issuedAt/expiresAt` + `seq`; `operationId` serves correlation
+   (to the DATA stream) + single-use replay protection, NOT the TTL itself.
+4. **Capability ↔ command consistency** — `CONSTRAINED_PTY` ⇒ `commandLine` non-empty AND
+   `permit.commandHash` non-empty; `VIEW_ONLY` ⇒ `commandLine` empty AND `permit.commandHash` empty.
+5. **Command binding** — `CanonicalCommand.hash(commandLine)` MUST equal `permit.commandHash`, computed with
+   the IDENTICAL `CanonicalCommand` canonicalization profile (delimiter/trim/normalization) that minted the
+   signed hash — the cross-language vector (`pty-permit-vector.json`, platform-agent #184 + drift-guard #667)
+   anchors this profile on both sides; any profile drift ⇒ mismatch ⇒ reject. Mismatch ⇒ reject, no execute
+   (the command is never trusted unbound from the signed hash).
+6. **Execute + stream** — gated `Executor` runs the allowlisted no-shell command; output streams over the
+   DATA stream keyed by `permit.operationId` (`DataFrame.streamId = operationId`).
+
+**One-dispatch-per-operation:** an `operationId` is single-use. A re-sent dispatch for an already-handled
+`operationId` MUST NOT cause a second execution; the agent returns a deterministic fail-closed response that
+references the already-handled operation (never re-running it) — combined with the `seq` monotonic guard,
+this prevents retry/replay amplification and closes the double-execute window.
+
 ### `Kill` (proto `Kill`) — CONTROL channel
 | # | field | type |
 |---|---|---|
@@ -147,7 +196,7 @@ The agent initiates both streams (outbound-only, NAT-friendly); the broker pushe
 | 4 | frameSeq | int64 | ≥ 0 |
 | 5 | streamId | string | optional; validates when set |
 | 6 | sentAtEpochMillis | int64 | ≥ 0 |
-| 10–20 | oneof payload | | agent_hello(10), session_request(11), consent_prompt(12), consent_result(13), operation_request(14), operation_permit(15), kill(16), audit_event(17), heartbeat(18), data_frame(19), error(20) |
+| 10–21 | oneof payload | | agent_hello(10), session_request(11), consent_prompt(12), consent_result(13), operation_request(14), operation_permit(15), kill(16), audit_event(17), heartbeat(18), data_frame(19), error(20), **operation_dispatch(21)** — T-4 design-spec, proto-pending |
 
 **Channel/payload compatibility** (statically enforced by `RemoteBridgeProtoAdapter.validateEnvelope`, tested):
 
@@ -155,7 +204,7 @@ The agent initiates both streams (outbound-only, NAT-friendly); the broker pushe
 |---|---|---|
 | data_frame | ✗ | ✓ |
 | heartbeat, error | ✓ | ✓ |
-| everything else (incl. **kill**) | ✓ | ✗ |
+| everything else (incl. **kill**, **operation_dispatch**) | ✓ | ✗ |
 
 ### `ChannelType`
 0 = `CHANNEL_TYPE_UNSPECIFIED` (reject), 1 = `CONTROL`, 2 = `DATA`.
@@ -194,10 +243,15 @@ T-2b enforces a max frame byte size at the stream layer (no decode-time size gua
 - **No anonymous streams**: Connect/Data without an authenticated `PeerIdentity` (mTLS leaf-fingerprint via
   `PeerIdentityInterceptor`; injected context key in tests) is refused before any payload is read.
 - **Directional allowlist (inbound = agent side)**: CONTROL accepts ONLY agent_hello / consent_result /
-  audit_event / heartbeat / error — the broker-originated payloads (operation_permit, consent_prompt, kill)
-  and the operator-console payloads (session_request, operation_request — they do NOT ride the agent tunnel)
-  are refused inbound, so a semi-trusted agent can never inject broker authority. DATA accepts ONLY
-  data_frame / heartbeat / error.
+  audit_event / heartbeat / error — the broker-originated payloads (operation_permit, consent_prompt, kill,
+  **operation_dispatch**) and the operator-console payloads (session_request, operation_request — they do NOT
+  ride the agent tunnel) are refused inbound, so a semi-trusted agent can never inject broker authority. DATA
+  accepts ONLY data_frame / heartbeat / error.
+- **OperationDispatch is the lone broker→agent command path** (T-4, design-spec): it flows ONLY broker→agent
+  on CONTROL; the broker REFUSES it inbound (above). On the agent it is accepted ONLY by an explicitly-enabled
+  PTY operation handler — disabled-by-default the agent fail-closes it (ErrorFrame, no execute, no DATA
+  stream). It is the ONLY frame that carries a plaintext command toward the agent, always paired with its
+  signed permit and bound by the hash-match (no raw-command trust).
 - **Sequencing**: CONTROL = `Envelope.frameSeq`, strictly increasing from 0 per stream. DATA sequencing
   authority is **`DataFrame.frameSeq` per `DataFrame.streamId`** (proto3 int64 has no presence, so the
   envelope counter cannot be optional); the DATA `Envelope.frameSeq` MUST be 0 and `Envelope.streamId` must
@@ -250,5 +304,7 @@ T-2b enforces a max frame byte size at the stream layer (no decode-time size gua
 - **Canonical-payload byte stability**: sign → encode → real wire bytes → parse → decode →
   `canonicalPayload()` byte-equal AND the broker signature still verifies (the T-1 acceptance boundary);
   any field changed on the wire fails verification.
-- **No raw command in a permit** — the raw command line travels only in `OperationRequest`; a permit carries
-  the canonical hash.
+- **No raw command in a permit** — the raw command line never rides inside `OperationPermit` (the signed
+  bytes carry only the canonical hash). Operator→broker it travels in `OperationRequest`; broker→agent it
+  travels in `OperationDispatch` (T-4), always paired with the signed permit and accepted only after the
+  agent re-derives `CanonicalCommand.hash(commandLine) == permit.commandHash`.
