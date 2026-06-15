@@ -135,6 +135,32 @@ public final class ControlStreamRegistry {
     }
 
     /**
+     * Faz 22.6 T-4 — push an {@link RemoteBridgeMessages.OperationDispatch} (a signed permit paired with the
+     * plaintext command) to the authenticated peer's live CONTROL stream. The CONSTRAINED_PTY counterpart of
+     * {@link #sendOperationPermit}: used when the permitted operation carries a command the agent must run (the
+     * permit alone carries only the one-way command hash). NON-terminal {@code get} — the session continues.
+     * Returns false when the dispatch/permit is null or the peer has no live CONTROL stream (fail-closed — a
+     * dropped peer cannot receive it). Record-before-permit has already run UPSTREAM; this only transports it.
+     */
+    public boolean sendOperationDispatch(String transportPeerKey, RemoteBridgeMessages.OperationDispatch dispatch,
+                                         long nowEpochMillis) {
+        if (dispatch == null || dispatch.permit() == null) {
+            return false;
+        }
+        ConnectedPeer entry = streams.get(transportPeerKey);
+        if (entry == null) {
+            return false;
+        }
+        Envelope envelope = Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL)
+                .setSessionId(dispatch.permit().sessionId())
+                .setSentAtEpochMillis(nowEpochMillis)
+                .setOperationDispatch(RemoteBridgeProtoAdapter.encode(dispatch))
+                .build();
+        return entry.handle().send(envelope);
+    }
+
+    /**
      * Faz 22.6 T-4a-ii slice-4a — push a {@link RemoteBridgeMessages.ConsentPrompt} to the authenticated
      * peer's live CONTROL stream (the operator opened an attended session; the agent must obtain the
      * end-user's consent before any operation). NON-terminal {@code get} — the stream stays open awaiting the
