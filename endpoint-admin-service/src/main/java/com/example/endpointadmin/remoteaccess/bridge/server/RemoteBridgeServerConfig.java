@@ -34,6 +34,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceT
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -484,13 +485,26 @@ public class RemoteBridgeServerConfig {
         return new ConnectedDeviceResolver(endpointMachineCertRepository, remoteBridgeControlStreamRegistry);
     }
 
+    /**
+     * Faz 22.6 T-2b / #1588 (Codex 019ecbc5) — the DATA-plane consumption seam. {@code INERT} in T-2b
+     * (accept-and-drop): the transport validates + meters DATA frames but consumes nothing. Durable WORM
+     * recording of the DATA stream + operator viewer fan-out are the owner-gated T-4 consumer, behind their
+     * own flag + fail-closed recording policy — they REPLACE this bean then, never the transport.
+     */
+    @Bean
+    public DataPlaneHandler remoteBridgeDataPlane() {
+        return DataPlaneHandler.INERT;
+    }
+
     @Bean
     public RemoteBridgeConnectService remoteBridgeConnectService(RemoteBridgeServerProperties properties,
                                                                  ControlStreamRegistry registry,
                                                                  ScheduledExecutorService heartbeatScheduler,
-                                                                 BrokerControlPlane controlPlane) {
-        return new RemoteBridgeConnectService(registry, controlPlane, heartbeatScheduler,
-                properties.heartbeatIntervalMillis(), properties.maxDataFrameBytes(),
+                                                                 BrokerControlPlane controlPlane,
+                                                                 DataPlaneHandler remoteBridgeDataPlane,
+                                                                 MeterRegistry meterRegistry) {
+        return new RemoteBridgeConnectService(registry, controlPlane, remoteBridgeDataPlane, meterRegistry,
+                heartbeatScheduler, properties.heartbeatIntervalMillis(), properties.maxDataFrameBytes(),
                 System::currentTimeMillis, "rb-v1");
     }
 

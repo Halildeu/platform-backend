@@ -2,6 +2,7 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
+import com.example.endpointadmin.remoteaccess.bridge.proto.DataFrame;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ErrorFrame;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Heartbeat;
@@ -9,6 +10,7 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.RemoteBridgeGrpc;
 import com.example.endpointadmin.remoteaccess.bridge.wire.DecodeResult;
 import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
 import io.grpc.stub.StreamObserver;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +18,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
+
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_BYTES;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_DEFECTS;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_FRAMES;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_HANDLER_ERRORS;
 
 /**
  * Faz 22.6 T-2b (Codex 019eb9fb) — the {@code RemoteBridge} bidi service: Connect = CONTROL, Data = DATA.
@@ -51,6 +58,8 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
 
     private final ControlStreamRegistry registry;
     private final ControlPlaneHandler controlPlane;
+    private final DataPlaneHandler dataPlane;
+    private final MeterRegistry meters;
     private final ScheduledExecutorService heartbeatScheduler;
     private final long heartbeatIntervalMillis;
     private final int maxDataFrameBytes;
@@ -59,6 +68,8 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
 
     public RemoteBridgeConnectService(ControlStreamRegistry registry,
                                       ControlPlaneHandler controlPlane,
+                                      DataPlaneHandler dataPlane,
+                                      MeterRegistry meters,
                                       ScheduledExecutorService heartbeatScheduler,
                                       long heartbeatIntervalMillis,
                                       int maxDataFrameBytes,
@@ -67,11 +78,17 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         if (registry == null || controlPlane == null || clock == null) {
             throw new IllegalArgumentException("registry, controlPlane and clock are required");
         }
+        if (meters == null) {
+            throw new IllegalArgumentException("meters is required");
+        }
         if (maxDataFrameBytes <= 0) {
             throw new IllegalArgumentException("maxDataFrameBytes must be positive");
         }
         this.registry = registry;
         this.controlPlane = controlPlane;
+        // a null data-plane handler means "accept-and-drop" — the T-2b default (no consumption yet)
+        this.dataPlane = dataPlane == null ? DataPlaneHandler.INERT : dataPlane;
+        this.meters = meters;
         this.heartbeatScheduler = heartbeatScheduler;
         this.heartbeatIntervalMillis = heartbeatIntervalMillis;
         this.maxDataFrameBytes = maxDataFrameBytes;
@@ -221,9 +238,26 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             public void onNext(Envelope envelope) {
                 String defect = dataDefect(envelope, nextSeqByStream);
                 if (defect != null) {
+                    meters.counter(BRIDGE_DATA_DEFECTS, "reason", defectCategory(defect)).increment();
                     sendErrorAndClose(outbound, ChannelType.DATA, defect);
+                    return;
                 }
-                // accepted DATA frames are deliberately inert in T-2b — no business semantics until T-4
+                // accepted DATA_FRAMEs are metered + handed to the data-plane seam (INERT in T-2b = drop;
+                // durable recording / operator fan-out are the owner-gated T-4 consumer). heartbeat/error
+                // carry no frame, so they are accepted but not dispatched.
+                if (envelope.getPayloadCase() == Envelope.PayloadCase.DATA_FRAME) {
+                    DataFrame frame = envelope.getDataFrame();
+                    meters.counter(BRIDGE_DATA_FRAMES).increment();
+                    meters.counter(BRIDGE_DATA_BYTES).increment(frame.getPayload().size());
+                    try {
+                        dataPlane.onDataFrame(peer, frame);
+                    } catch (RuntimeException e) {
+                        // a consumer fault closes the DATA stream (transport-level) — NEVER a session kill
+                        // from the transport (kill-on-recording-failure is the owner-gated recording slice)
+                        meters.counter(BRIDGE_DATA_HANDLER_ERRORS).increment();
+                        sendErrorAndClose(outbound, ChannelType.DATA, "data-handler-error");
+                    }
+                }
             }
 
             @Override
@@ -275,6 +309,26 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         }
         nextSeqByStream.put(frame.getStreamId(), expected + 1);
         return null;
+    }
+
+    /**
+     * Coarse, BOUNDED-cardinality category for the {@code BRIDGE_DATA_DEFECTS} {@code reason} tag — never the
+     * raw defect string (a metric tag must not carry unbounded values). Output set is fixed:
+     * seq / too-large / channel / payload / stream-id / envelope / other.
+     */
+    private static String defectCategory(String defect) {
+        if (defect == null) {
+            return "other";
+        }
+        return switch (defect) {
+            case "data-frame-seq", "data-envelope-frame-seq-must-be-zero" -> "seq";
+            case "data-frame-too-large" -> "too-large";
+            case "data-wrong-channel" -> "channel";
+            case "data-inbound-payload-refused" -> "payload";
+            case "data-stream-id-mismatch" -> "stream-id";
+            // every other defect comes from RemoteBridgeProtoAdapter.validateEnvelope() (a bounded code set)
+            default -> "envelope";
+        };
     }
 
     // ------------------------------------------------------------------

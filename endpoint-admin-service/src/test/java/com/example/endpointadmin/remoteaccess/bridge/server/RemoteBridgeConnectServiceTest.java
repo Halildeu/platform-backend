@@ -25,6 +25,7 @@ import io.grpc.ServerInterceptor;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +37,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_BYTES;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_DEFECTS;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_FRAMES;
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_DATA_HANDLER_ERRORS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -57,6 +62,8 @@ class RemoteBridgeConnectServiceTest {
     private ManagedChannel channel;
     private final ControlStreamRegistry registry = new ControlStreamRegistry();
     private final RecordingControlPlane controlPlane = new RecordingControlPlane();
+    private final RecordingDataPlane dataPlane = new RecordingDataPlane();
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
 
     /** Test seam: inject a fixed authenticated PeerIdentity (or none) — same context key as the mTLS interceptor. */
     private record InjectIdentity(PeerIdentity identity) implements ServerInterceptor {
@@ -92,6 +99,22 @@ class RemoteBridgeConnectServiceTest {
         @Override
         public void onAuditEvent(PeerIdentity peer, RemoteBridgeMessages.AuditEvent event) {
             audits.add(event);
+        }
+    }
+
+    /** Captures the ACCEPTED DATA frames the transport dispatched (T-2b seam); optionally throws to test fault. */
+    private static final class RecordingDataPlane implements DataPlaneHandler {
+        final ConcurrentLinkedQueue<DataFrame> frames = new ConcurrentLinkedQueue<>();
+        volatile PeerIdentity lastPeer;
+        volatile boolean throwOnNext;
+
+        @Override
+        public void onDataFrame(PeerIdentity peer, DataFrame frame) {
+            lastPeer = peer;
+            frames.add(frame);
+            if (throwOnNext) {
+                throw new RuntimeException("simulated consumer fault");
+            }
         }
     }
 
@@ -134,7 +157,7 @@ class RemoteBridgeConnectServiceTest {
                                                     int maxFrameBytes) throws Exception {
         String name = InProcessServerBuilder.generateName();
         RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
-                null, heartbeatMillis, maxFrameBytes, System::currentTimeMillis, "rb-v1");
+                dataPlane, meters, null, heartbeatMillis, maxFrameBytes, System::currentTimeMillis, "rb-v1");
         server = InProcessServerBuilder.forName(name).directExecutor()
                 .intercept(new InjectIdentity(identity))
                 .addService(service)
@@ -325,6 +348,63 @@ class RemoteBridgeConnectServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // DATA consumption seam + metrics (T-2b / #1588, Codex 019ecbc5)
+    // ------------------------------------------------------------------
+
+    @Test
+    void acceptedDataFramesAreDispatchedToTheSeamInOrderAndMetered() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.data(sink);
+        inbound.onNext(dataFrame("st-1", 0, 8));
+        inbound.onNext(dataFrame("st-1", 1, 16));
+        inbound.onNext(heartbeat().setChannelType(ChannelType.DATA).build()); // accepted, no frame → not dispatched
+        inbound.onCompleted();
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+
+        // both DATA_FRAMEs handed to the seam, in order, with the authenticated peer; heartbeat not dispatched
+        assertEquals(2, dataPlane.frames.size());
+        var it = dataPlane.frames.iterator();
+        assertEquals(0, it.next().getFrameSeq());
+        assertEquals(1, it.next().getFrameSeq());
+        assertEquals(PEER, dataPlane.lastPeer);
+        // metered: 2 frames, 24 payload bytes, no defects, no handler errors
+        assertEquals(2.0, meters.counter(BRIDGE_DATA_FRAMES).count());
+        assertEquals(24.0, meters.counter(BRIDGE_DATA_BYTES).count());
+        assertEquals(0.0, meters.counter(BRIDGE_DATA_HANDLER_ERRORS).count());
+    }
+
+    @Test
+    void defectiveDataFrameIsNotDispatchedAndIsMeteredByCoarseCategory() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 64);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.data(sink);
+        inbound.onNext(dataFrame("st-1", 0, 65)); // exceeds the 64-byte cap
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+        assertEquals("data-frame-too-large", sink.firstError().getError().getCode());
+
+        assertTrue(dataPlane.frames.isEmpty()); // a defective frame is NEVER handed to the seam
+        assertEquals(1.0, meters.counter(BRIDGE_DATA_DEFECTS, "reason", "too-large").count());
+        assertEquals(0.0, meters.counter(BRIDGE_DATA_FRAMES).count());
+    }
+
+    @Test
+    void consumerFaultClosesTheDataStreamMeteredAndNeverKills() throws Exception {
+        dataPlane.throwOnNext = true; // a real (T-4) consumer faulting
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.data(sink);
+        inbound.onNext(dataFrame("st-1", 0, 8));
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+
+        assertEquals("data-handler-error", sink.firstError().getError().getCode());
+        assertEquals(1, dataPlane.frames.size()); // the frame WAS handed over (then the consumer threw)
+        assertEquals(1.0, meters.counter(BRIDGE_DATA_HANDLER_ERRORS).count());
+        // transport close (ErrorFrame on DATA), NOT a session Kill — the transport never escalates
+        assertTrue(sink.received.stream().noneMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.KILL));
+    }
+
+    // ------------------------------------------------------------------
     // registry + KILL
     // ------------------------------------------------------------------
 
@@ -444,7 +524,7 @@ class RemoteBridgeConnectServiceTest {
         try {
             String name = InProcessServerBuilder.generateName();
             RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
-                    scheduler, 30, 1024, System::currentTimeMillis, "rb-v1");
+                    dataPlane, meters, scheduler, 30, 1024, System::currentTimeMillis, "rb-v1");
             server = InProcessServerBuilder.forName(name).directExecutor()
                     .intercept(new InjectIdentity(PEER)).addService(service).build().start();
             channel = InProcessChannelBuilder.forName(name).directExecutor().build();
@@ -480,7 +560,7 @@ class RemoteBridgeConnectServiceTest {
         try {
             String name = InProcessServerBuilder.generateName();
             RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
-                    scheduler, 1, 1024, System::currentTimeMillis, "rb-v1"); // aggressive heartbeat
+                    dataPlane, meters, scheduler, 1, 1024, System::currentTimeMillis, "rb-v1"); // aggressive heartbeat
             server = InProcessServerBuilder.forName(name).directExecutor()
                     .intercept(new InjectIdentity(PEER)).addService(service).build().start();
             channel = InProcessChannelBuilder.forName(name).directExecutor().build();
@@ -512,7 +592,7 @@ class RemoteBridgeConnectServiceTest {
         try {
             String name = InProcessServerBuilder.generateName();
             RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
-                    scheduler, 50, 1024, System::currentTimeMillis, "rb-v1");
+                    dataPlane, meters, scheduler, 50, 1024, System::currentTimeMillis, "rb-v1");
             server = InProcessServerBuilder.forName(name).directExecutor()
                     .intercept(new InjectIdentity(PEER)).addService(service).build().start();
             channel = InProcessChannelBuilder.forName(name).directExecutor().build();

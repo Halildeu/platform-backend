@@ -87,6 +87,25 @@ public final class RemoteAccessMetrics {
      */
     public static final String CERT_BINDING_REJECT_TOTAL = "remote_access_cert_binding_reject_total";
 
+    // ---- Faz 22.6 T-2b / #1588 broker-side DATA-stream consumption (Codex 019ecbc5) ----
+
+    /** Accepted DATA frames dispatched to the data-plane handler (the broker actually consumed the stream). */
+    public static final String BRIDGE_DATA_FRAMES = "remote_access_bridge_data_frames_total";
+    /** Accepted DATA-frame payload bytes — stream throughput. */
+    public static final String BRIDGE_DATA_BYTES = "remote_access_bridge_data_bytes_total";
+    /**
+     * DATA frames rejected by the transport guard, tagged {@code reason} with a COARSE fixed category
+     * (seq / too-large / channel / payload / stream-id / envelope / other) — bounded cardinality, never the
+     * raw defect string. A rising {@code seq} rate means a lossy/misordered producer.
+     */
+    public static final String BRIDGE_DATA_DEFECTS = "remote_access_bridge_data_defects_total";
+    /**
+     * The data-plane handler threw on an accepted frame: the DATA stream is closed (transport-level), the
+     * frame is dropped, and the counter rises. The INERT T-2b handler never throws, so this stays 0 until a
+     * real (owner-gated) consumer is wired — it is NEVER a session kill from the transport.
+     */
+    public static final String BRIDGE_DATA_HANDLER_ERRORS = "remote_access_bridge_data_handler_errors_total";
+
     private RemoteAccessMetrics() {
     }
 }
