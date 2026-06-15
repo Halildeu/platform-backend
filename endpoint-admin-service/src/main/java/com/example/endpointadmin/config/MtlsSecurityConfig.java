@@ -34,9 +34,16 @@ public class MtlsSecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.GET,
+                                "/api/v1/endpoint-agent/commands/next").permitAll()
                         .requestMatchers(HttpMethod.POST,
                                 "/api/v1/endpoint-agent/endpoint-enrollments/auto",
-                                "/api/v1/endpoint-agent/heartbeat").permitAll()
+                                "/api/v1/endpoint-agent/heartbeat",
+                                // Security matcher stays path-wide enough to let
+                                // Spring MVC return the UUID conversion 400 for
+                                // malformed ids; method-level deny tests keep
+                                // non-POST variants closed.
+                                "/api/v1/endpoint-agent/commands/*/result").permitAll()
                         .anyRequest().denyAll()
                 );
         return http.build();
