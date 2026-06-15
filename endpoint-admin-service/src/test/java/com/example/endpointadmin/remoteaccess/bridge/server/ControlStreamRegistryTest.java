@@ -82,6 +82,38 @@ class ControlStreamRegistryTest {
     }
 
     @Test
+    void sendsOperationDispatchOnControlToTheLivePeer() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+
+        boolean sent = registry.sendOperationDispatch("peer-1",
+                new RemoteBridgeMessages.OperationDispatch(permit("sess-1", "op-1"), "hostname"), 9_000L);
+
+        assertTrue(sent);
+        assertEquals(1, observer.sent.size());
+        Envelope env = observer.sent.get(0);
+        assertEquals(ChannelType.CONTROL, env.getChannelType());
+        assertEquals("sess-1", env.getSessionId());
+        assertTrue(env.hasOperationDispatch(), "the payload must be an operation dispatch");
+        assertEquals("op-1", env.getOperationDispatch().getPermit().getOperationId());
+        assertEquals("hostname", env.getOperationDispatch().getCommandLine(),
+                "the plaintext command must travel with the signed permit");
+        assertFalse(observer.completed, "an operation dispatch must NOT close the stream (session continues)");
+    }
+
+    @Test
+    void operationDispatchFailsClosedOnNullOrUnknownPeer() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        registry.register(peer("peer-1"), new ControlStreamHandle(new CapturingObserver()));
+        assertFalse(registry.sendOperationDispatch("peer-1", null, 1L), "null dispatch");
+        assertFalse(registry.sendOperationDispatch("peer-1",
+                new RemoteBridgeMessages.OperationDispatch(null, "hostname"), 1L), "null permit");
+        assertFalse(registry.sendOperationDispatch("ghost",
+                new RemoteBridgeMessages.OperationDispatch(permit("sess-1", "op-1"), "hostname"), 1L), "unknown peer");
+    }
+
+    @Test
     void sendsConsentPromptOnControlToTheLivePeer() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();

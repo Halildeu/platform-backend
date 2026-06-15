@@ -1,10 +1,13 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
+import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeTrustEvidence;
+import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.ConsentPrompt;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationDispatch;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.OpenResult;
@@ -150,7 +153,25 @@ public final class RemoteBridgeOperatorService {
 
         return switch (outcome.kind()) {
             case PERMIT -> {
-                boolean pushed = registry.sendOperationPermit(session.transportPeerKey(), outcome.permit(), now);
+                OperationPermit permit = outcome.permit();
+                boolean pushed;
+                if (permit.capability() == RemoteSessionCapability.CONSTRAINED_PTY) {
+                    // CONSTRAINED_PTY carries the plaintext command alongside the signed permit
+                    // (OperationDispatch). The command is bound to the SIGNED permit by the hash (the agent
+                    // re-derives CanonicalCommand.hash == permit.commandHash) and is never trusted raw.
+                    // Fail-closed UPSTREAM (Codex 019ecd07): a PTY permit without its command is a defect —
+                    // push nothing rather than a command-less dispatch the agent would reject anyway.
+                    String commandLine = request.commandLine();
+                    pushed = commandLine != null && !commandLine.isBlank()
+                            && registry.sendOperationDispatch(session.transportPeerKey(),
+                                    new OperationDispatch(permit, commandLine), now);
+                } else {
+                    // VIEW_ONLY (and any non-command capability) carries no command — push the bare signed permit.
+                    pushed = registry.sendOperationPermit(session.transportPeerKey(), permit, now);
+                }
+                // The PERMIT branch only fires under a full policy pass, exercised at the owner-gated real-PERMIT
+                // e2e once the B1.4d / step-up trust roots land — forcing a PERMIT here would manufacture trust
+                // the system does not have (the e2e is deliberately PERMIT-agnostic).
                 yield OperatorOutcome.handled(outcome, pushed);
             }
             case KILL -> {
