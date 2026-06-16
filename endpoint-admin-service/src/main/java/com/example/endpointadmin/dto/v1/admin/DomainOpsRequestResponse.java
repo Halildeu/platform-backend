@@ -14,7 +14,10 @@ public record DomainOpsRequestResponse(
         String reasonCode,
         long ttlSeconds,
         String requestedBy,
-        Instant createdAt
+        Instant createdAt,
+        Instant expiresAt,
+        String connectorName,
+        String connectorAttemptId
 ) {
     public static DomainOpsRequestResponse from(DomainOpsResult result) {
         return new DomainOpsRequestResponse(
@@ -26,6 +29,9 @@ public record DomainOpsRequestResponse(
                 result.reasonCode(),
                 result.ttlSeconds(),
                 result.requestedBy(),
-                result.createdAt());
+                result.createdAt(),
+                result.expiresAt(),
+                result.connectorName(),
+                result.connectorAttemptId());
     }
 }

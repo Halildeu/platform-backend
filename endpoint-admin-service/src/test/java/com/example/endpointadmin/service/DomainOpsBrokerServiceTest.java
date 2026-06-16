@@ -2,20 +2,29 @@ package com.example.endpointadmin.service;
 
 import com.example.endpointadmin.audit.NoOpAuditChainLock;
 import com.example.endpointadmin.config.TimeConfig;
+import com.example.endpointadmin.domainops.DomainOpsConnector;
+import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchResult;
 import com.example.endpointadmin.domainops.DomainOpsStatus;
 import com.example.endpointadmin.dto.v1.admin.CreateDomainOpsRequest;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointAuditEvent;
 import com.example.endpointadmin.model.EndpointDevice;
+import com.example.endpointadmin.model.EndpointDomainOpsRequest;
 import com.example.endpointadmin.model.OsType;
 import com.example.endpointadmin.repository.EndpointAuditEventRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
+import com.example.endpointadmin.repository.EndpointDomainOpsRequestRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.testsupport.IsolatedH2DataJpaTest;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
@@ -33,23 +42,34 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         EndpointAuditService.class,
         NoOpAuditChainLock.class
 })
+@Transactional(propagation = Propagation.NOT_SUPPORTED)
 class DomainOpsBrokerServiceTest {
 
     private static final UUID TENANT = UUID.fromString("77777777-7777-7777-7777-777777777777");
     private static final String SUBJECT = "admin@example.com";
+    private static final String CREDENTIAL_REF = "vault:domain-ops/pilot";
 
     @Autowired private EndpointDeviceRepository deviceRepository;
+    @Autowired private EndpointDomainOpsRequestRepository domainOpsRequestRepository;
     @Autowired private EndpointAuditEventRepository auditRepository;
     @Autowired private EndpointAuditService auditService;
     @Autowired private Clock clock;
+    @Autowired private PlatformTransactionManager transactionManager;
+
+    @BeforeEach
+    void cleanDatabase() {
+        domainOpsRequestRepository.deleteAll();
+        auditRepository.deleteAll();
+        deviceRepository.deleteAll();
+    }
 
     @Test
-    void disabledBrokerDeniesAndPersistsAudit() {
+    void disabledBrokerDeniesAndPersistsAuditWithoutDurableRequest() {
         EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
         DomainOpsBrokerService service = service(false, Duration.ofMinutes(15));
 
         assertThatThrownBy(() -> service.create(context(), device.getId(), request(
-                "DOMAIN_SECURE_CHANNEL_VERIFY", 300)))
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, CREDENTIAL_REF)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasFieldOrPropertyWithValue("statusCode", HttpStatus.FORBIDDEN);
 
@@ -63,33 +83,242 @@ class DomainOpsBrokerServiceTest {
                 .containsEntry("deviceId", device.getId().toString())
                 .containsEntry("operation", "DOMAIN_SECURE_CHANNEL_VERIFY")
                 .containsEntry("reasonCode", "domain-ops-disabled")
-                .containsEntry("ttlSeconds", 300L);
-        assertThat(event.getMetadata().keySet())
-                .doesNotContain("commandLine", "rawCommand", "password", "credential");
+                .containsEntry("credentialRefPresent", true)
+                .containsEntry("credentialRefAccepted", false);
+        assertThat(event.getMetadata().get("ttlSeconds").toString()).isEqualTo("300");
+        assertNoRawCredentialInAudit(event);
+        assertThat(domainOpsRequestRepository.findAll()).isEmpty();
     }
 
     @Test
-    void enabledBrokerAcceptsSafePilotOperationAsPendingDispatch() {
+    void enabledBrokerRejectsMissingCredentialRefWithDurableDeniedState() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
+
+        assertThatThrownBy(() -> service.create(context(), device.getId(), request(
+                "gpo-force-refresh", 600, null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
+
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.DENIED);
+        assertThat(stored.getReasonCode()).isEqualTo("credential-ref-required");
+        assertThat(stored.getCredentialRef()).isNull();
+        assertThat(stored.getCredentialRefHash()).isNull();
+        assertThat(stored.getCompletedAt()).isNotNull();
+
+        EndpointAuditEvent event = onlyAuditEvent();
+        assertThat(event.getEventType()).isEqualTo(DomainOpsBrokerService.EVENT_TYPE_DENIED);
+        assertThat(event.getMetadata())
+                .containsEntry("operation", "GPO_FORCE_REFRESH")
+                .containsEntry("status", DomainOpsStatus.DENIED.name())
+                .containsEntry("reasonCode", "credential-ref-required")
+                .containsEntry("credentialRefPresent", false)
+                .containsEntry("credentialRefAccepted", false);
+        assertNoRawCredentialInAudit(event);
+    }
+
+    @Test
+    void enabledBrokerRejectsUnsafeCredentialRefWithoutLeakingRawValue() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
+
+        assertThatThrownBy(() -> service.create(context(), device.getId(), request(
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, "password=not-a-ref")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
+
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.DENIED);
+        assertThat(stored.getReasonCode()).isEqualTo("credential-ref-invalid");
+        assertThat(stored.getCredentialRef()).isNull();
+        assertThat(stored.getCredentialRefHash()).isNull();
+
+        EndpointAuditEvent event = onlyAuditEvent();
+        assertThat(event.getMetadata())
+                .containsEntry("credentialRefPresent", true)
+                .containsEntry("credentialRefAccepted", false)
+                .containsEntry("credentialRefHash", null);
+        assertThat(event.getMetadata().toString()).doesNotContain("password=not-a-ref");
+    }
+
+    @Test
+    void enabledBrokerRejectsShellMetacharacterCredentialRef() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
+
+        assertThatThrownBy(() -> service.create(context(), device.getId(), request(
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, "vault:domain-ops/pilot;rm")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
+
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.DENIED);
+        assertThat(stored.getReasonCode()).isEqualTo("credential-ref-invalid");
+        assertThat(stored.getCredentialRef()).isNull();
+
+        EndpointAuditEvent event = onlyAuditEvent();
+        assertThat(event.getMetadata())
+                .containsEntry("credentialRefPresent", true)
+                .containsEntry("credentialRefAccepted", false);
+        assertThat(event.getMetadata().toString()).doesNotContain("vault:domain-ops/pilot;rm");
+    }
+
+    @Test
+    void unavailableConnectorPersistsFailedResultAndRedactedCredentialCustody() {
         EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
         DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
 
         var result = service.create(context(), device.getId(), request(
-                "gpo-force-refresh", 600));
+                "gpo-force-refresh", 600, CREDENTIAL_REF));
 
-        assertThat(result.status()).isEqualTo(DomainOpsStatus.PENDING_DISPATCH);
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.FAILED);
         assertThat(result.operation()).isEqualTo("GPO_FORCE_REFRESH");
         assertThat(result.ttlSeconds()).isEqualTo(600);
-        assertThat(result.reasonCode()).isEqualTo("awaiting-domain-connector");
+        assertThat(result.reasonCode()).isEqualTo("connector-unavailable");
+        assertThat(result.connectorName()).isEqualTo("unavailable");
+        assertThat(result.expiresAt()).isNotNull();
 
-        EndpointAuditEvent event = onlyAuditEvent();
-        assertThat(event.getEventType()).isEqualTo(DomainOpsBrokerService.EVENT_TYPE_REQUESTED);
-        assertThat(event.getAction()).isEqualTo("domain-ops.requested");
-        assertThat(event.getMetadata())
-                .containsEntry("operation", "GPO_FORCE_REFRESH")
-                .containsEntry("status", DomainOpsStatus.PENDING_DISPATCH.name())
-                .containsEntry("ttlSeconds", 600L)
-                .containsEntry("contract", "agent-198:max-permit-ttl-15m,mtls-only,no-raw-shell");
-        assertThat((String) event.getMetadata().get("idempotencyKeyHash")).hasSize(64);
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.FAILED);
+        assertThat(stored.getReasonCode()).isEqualTo("connector-unavailable");
+        assertThat(stored.getCredentialRef()).isEqualTo(CREDENTIAL_REF);
+        assertThat(stored.getCredentialRefHash()).hasSize(64);
+        assertThat(stored.getConnectorName()).isEqualTo("unavailable");
+        assertThat(stored.getCompletedAt()).isNotNull();
+
+        List<EndpointAuditEvent> events = auditRepository.findAll();
+        assertThat(events).hasSize(2);
+        assertThat(events).extracting(EndpointAuditEvent::getEventType)
+                .containsExactly(
+                        DomainOpsBrokerService.EVENT_TYPE_REQUESTED,
+                        DomainOpsBrokerService.EVENT_TYPE_FAILED);
+        for (EndpointAuditEvent event : events) {
+            assertThat(event.getMetadata())
+                    .containsEntry("credentialRefPresent", true)
+                    .containsEntry("credentialRefAccepted", true);
+            assertThat((String) event.getMetadata().get("credentialRefHash")).hasSize(64);
+            assertNoRawCredentialInAudit(event);
+        }
+    }
+
+    @Test
+    void typedConnectorDispatchCanReturnSucceededAttempt() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.SUCCEEDED,
+                "secure-channel-verified",
+                "attempt-001",
+                Map.of("exitCode", 0, "signal", "redacted-ok")));
+
+        var result = service.create(context(), device.getId(), request(
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, "delegated-worker:domain-ops/pilot"));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(result.reasonCode()).isEqualTo("secure-channel-verified");
+        assertThat(result.connectorName()).isEqualTo("fake-domain-connector");
+        assertThat(result.connectorAttemptId()).isEqualTo("attempt-001");
+
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(stored.getConnectorAttemptId()).isEqualTo("attempt-001");
+        assertThat(stored.getRedactedResult()).containsEntry("signal", "redacted-ok");
+        assertThat(stored.getStateUpdatedAt()).isEqualTo(stored.getCompletedAt());
+
+        assertThat(auditRepository.findAll()).extracting(EndpointAuditEvent::getEventType)
+                .containsExactly(
+                        DomainOpsBrokerService.EVENT_TYPE_REQUESTED,
+                DomainOpsBrokerService.EVENT_TYPE_SUCCEEDED);
+    }
+
+    @Test
+    void typedConnectorSeesCommittedAcceptedRequestBeforeDispatch() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), new DomainOpsConnector() {
+            @Override
+            public String name() {
+                return "commit-visible-connector";
+            }
+
+            @Override
+            public DomainOpsConnectorDispatchResult dispatch(com.example.endpointadmin.domainops.DomainOpsConnectorDispatchRequest request) {
+                return tx().execute(status -> {
+                    EndpointDomainOpsRequest visible = domainOpsRequestRepository.findById(request.requestId())
+                            .orElseThrow();
+                    assertThat(visible.getState()).isEqualTo(DomainOpsStatus.ACCEPTED);
+                    assertThat(visible.getCredentialRef()).isEqualTo(CREDENTIAL_REF);
+                    assertThat(auditRepository.findAll()).extracting(EndpointAuditEvent::getEventType)
+                            .containsExactly(DomainOpsBrokerService.EVENT_TYPE_REQUESTED);
+                    return new DomainOpsConnectorDispatchResult(
+                            DomainOpsStatus.SUCCEEDED,
+                            "committed-before-dispatch",
+                            "attempt-committed",
+                            Map.of("visibility", "committed"));
+                });
+            }
+        });
+
+        var result = service.create(context(), device.getId(), request(
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, CREDENTIAL_REF));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(result.reasonCode()).isEqualTo("committed-before-dispatch");
+        assertThat(auditRepository.findAll()).extracting(EndpointAuditEvent::getEventType)
+                .containsExactly(
+                        DomainOpsBrokerService.EVENT_TYPE_REQUESTED,
+                        DomainOpsBrokerService.EVENT_TYPE_SUCCEEDED);
+    }
+
+    @Test
+    void opaqueCredentialRefMayContainTokenPathSegment() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.SUCCEEDED,
+                "ok",
+                "attempt-token-path",
+                Map.of("accepted", true)));
+
+        var result = service.create(context(), device.getId(), request(
+                "CERT_AUTOENROLL_PULSE", 300, "vault:domain-ops/token-renewer"));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getCredentialRef()).isEqualTo("vault:domain-ops/token-renewer");
+        assertThat(stored.getCredentialRefHash()).hasSize(64);
+    }
+
+    @Test
+    void connectorReasonCodeFallsBackWhenSanitizedBlank() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.SUCCEEDED,
+                ";",
+                "attempt-bad-reason",
+                Map.of("accepted", true)));
+
+        var result = service.create(context(), device.getId(), request(
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, CREDENTIAL_REF));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(result.reasonCode()).isEqualTo("connector-dispatched");
+        assertThat(onlyDomainOpsRequest().getReasonCode()).isEqualTo("connector-dispatched");
+    }
+
+    @Test
+    void idempotencyReplayReturnsExistingDurableRequestWithoutNewAudit() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
+        String idempotencyKey = "domops-stable-" + UUID.randomUUID();
+
+        var first = service.create(context(), device.getId(), request(
+                "CERT_AUTOENROLL_PULSE", 300, CREDENTIAL_REF, idempotencyKey));
+        var second = service.create(context(), device.getId(), request(
+                "CERT_AUTOENROLL_PULSE", 300, "vault:domain-ops/other", idempotencyKey));
+
+        assertThat(second.operationId()).isEqualTo(first.operationId());
+        assertThat(second.status()).isEqualTo(first.status());
+        assertThat(domainOpsRequestRepository.findAll()).hasSize(1);
+        assertThat(auditRepository.findAll()).hasSize(2);
     }
 
     @Test
@@ -98,15 +327,16 @@ class DomainOpsBrokerServiceTest {
         DomainOpsBrokerService service = service(true, Duration.ofHours(2));
 
         assertThatThrownBy(() -> service.create(context(), device.getId(), request(
-                "CERT_AUTOENROLL_PULSE", 901)))
+                "CERT_AUTOENROLL_PULSE", 901, CREDENTIAL_REF)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
 
         EndpointAuditEvent event = onlyAuditEvent();
         assertThat(event.getEventType()).isEqualTo(DomainOpsBrokerService.EVENT_TYPE_DENIED);
         assertThat(event.getMetadata())
-                .containsEntry("reasonCode", "ttl-exceeds-max")
-                .containsEntry("maxPermitTtlSeconds", 900L);
+                .containsEntry("reasonCode", "ttl-exceeds-max");
+        assertThat(event.getMetadata().get("maxPermitTtlSeconds").toString()).isEqualTo("900");
+        assertThat(domainOpsRequestRepository.findAll()).isEmpty();
     }
 
     @Test
@@ -115,7 +345,7 @@ class DomainOpsBrokerServiceTest {
         DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
 
         assertThatThrownBy(() -> service.create(context(), device.getId(), request(
-                "AD_USER_PASSWORD_RESET", 300)))
+                "AD_USER_PASSWORD_RESET", 300, CREDENTIAL_REF)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
 
@@ -124,6 +354,7 @@ class DomainOpsBrokerServiceTest {
         assertThat(event.getMetadata())
                 .containsEntry("operation", "AD_USER_PASSWORD_RESET")
                 .containsEntry("reasonCode", "unsupported-operation");
+        assertThat(domainOpsRequestRepository.findAll()).isEmpty();
     }
 
     @Test
@@ -135,23 +366,80 @@ class DomainOpsBrokerServiceTest {
                 SUBJECT);
 
         assertThatThrownBy(() -> service.create(otherTenant, device.getId(), request(
-                "DOMAIN_SECURE_CHANNEL_VERIFY", 300)))
+                "DOMAIN_SECURE_CHANNEL_VERIFY", 300, CREDENTIAL_REF)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasFieldOrPropertyWithValue("statusCode", HttpStatus.NOT_FOUND);
 
         assertThat(auditRepository.findAll()).isEmpty();
+        assertThat(domainOpsRequestRepository.findAll()).isEmpty();
     }
 
     private DomainOpsBrokerService service(boolean enabled, Duration maxTtl) {
-        return new DomainOpsBrokerService(deviceRepository, auditService, clock, enabled, maxTtl);
+        return new DomainOpsBrokerService(
+                deviceRepository,
+                domainOpsRequestRepository,
+                auditService,
+                clock,
+                transactionManager,
+                enabled,
+                maxTtl);
+    }
+
+    private DomainOpsBrokerService service(boolean enabled,
+                                           Duration maxTtl,
+                                           DomainOpsConnector connector) {
+        return new DomainOpsBrokerService(
+                deviceRepository,
+                domainOpsRequestRepository,
+                auditService,
+                clock,
+                transactionManager,
+                connector,
+                enabled,
+                maxTtl);
+    }
+
+    private TransactionTemplate tx() {
+        return new TransactionTemplate(transactionManager);
+    }
+
+    private DomainOpsConnector fakeConnector(DomainOpsStatus status,
+                                             String reasonCode,
+                                             String attemptId,
+                                             Map<String, Object> redactedResult) {
+        return new DomainOpsConnector() {
+            @Override
+            public String name() {
+                return "fake-domain-connector";
+            }
+
+            @Override
+            public DomainOpsConnectorDispatchResult dispatch(com.example.endpointadmin.domainops.DomainOpsConnectorDispatchRequest request) {
+                assertThat(request.credentialRef()).isNotBlank();
+                assertThat(request.expiresAt()).isNotNull();
+                return new DomainOpsConnectorDispatchResult(status, reasonCode, attemptId, redactedResult);
+            }
+        };
     }
 
     private AdminTenantContext context() {
         return new AdminTenantContext(TENANT, SUBJECT);
     }
 
-    private CreateDomainOpsRequest request(String operation, long ttlSeconds) {
-        return new CreateDomainOpsRequest(operation, "pilot validation", ttlSeconds, "domops-" + UUID.randomUUID());
+    private CreateDomainOpsRequest request(String operation, long ttlSeconds, String credentialRef) {
+        return request(operation, ttlSeconds, credentialRef, "domops-" + UUID.randomUUID());
+    }
+
+    private CreateDomainOpsRequest request(String operation,
+                                           long ttlSeconds,
+                                           String credentialRef,
+                                           String idempotencyKey) {
+        return new CreateDomainOpsRequest(
+                operation,
+                "pilot validation",
+                ttlSeconds,
+                idempotencyKey,
+                credentialRef);
     }
 
     private EndpointDevice persistDevice(UUID tenantId, String hostname) {
@@ -172,5 +460,17 @@ class DomainOpsBrokerServiceTest {
         List<EndpointAuditEvent> events = auditRepository.findAll();
         assertThat(events).hasSize(1);
         return events.get(0);
+    }
+
+    private EndpointDomainOpsRequest onlyDomainOpsRequest() {
+        List<EndpointDomainOpsRequest> requests = domainOpsRequestRepository.findAll();
+        assertThat(requests).hasSize(1);
+        return requests.getFirst();
+    }
+
+    private void assertNoRawCredentialInAudit(EndpointAuditEvent event) {
+        assertThat(event.getMetadata().keySet())
+                .doesNotContain("commandLine", "rawCommand", "password", "credential", "credentialRef");
+        assertThat(event.getMetadata().toString()).doesNotContain(CREDENTIAL_REF);
     }
 }

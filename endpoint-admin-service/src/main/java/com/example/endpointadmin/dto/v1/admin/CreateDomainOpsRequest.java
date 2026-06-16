@@ -14,6 +14,9 @@ public record CreateDomainOpsRequest(
         Long ttlSeconds,
 
         @Size(max = 128)
-        String idempotencyKey
+        String idempotencyKey,
+
+        @Size(max = 256)
+        String credentialRef
 ) {
 }
