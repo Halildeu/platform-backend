@@ -47,6 +47,47 @@ public class CsvStreamingExporter {
                                           ExportQuery query,
                                           List<ExportColumn> columns,
                                           OutputStream out) {
+        exportWithColumns(jdbc, query, columns, out, NO_ROW_CAP);
+    }
+
+    /**
+     * Sentinel value for {@link #exportWithColumns(NamedParameterJdbcTemplate,
+     * ExportQuery, List, OutputStream, long)} meaning "no hard row cap"; the
+     * stream runs the query to completion (legacy behaviour).
+     */
+    public static final long NO_ROW_CAP = -1L;
+
+    /**
+     * Streaming CSV export with an optional <em>hard</em> row cap. When
+     * {@code maxRows >= 0} the writer aborts by throwing
+     * {@link ExportRowCapExceededException} the instant it is asked to write
+     * the {@code (maxRows + 1)}-th data row — BEFORE that row (or any further
+     * byte) is emitted — so a cap-exceeding export is <em>data</em>-fail-closed:
+     * the over-cap row is never written and the result is never a
+     * truncated-but-otherwise-valid CSV that silently drops rows. (Whether the
+     * caller can still turn that into a clean 4xx <em>status</em> depends on
+     * whether the HTTP response has already been committed; on a committed
+     * streaming response the body is aborted/truncated instead — the
+     * no-over-cap-row guarantee holds regardless.)
+     *
+     * <p>The caller is expected to have run the query with a SQL
+     * {@code LIMIT maxRows + 1} so at most one extra row is ever fetched. The
+     * <b>authoritative</b> over-cap gate is the caller's preflight count
+     * (clean 400 before streaming); this in-stream guard is the second line of
+     * defence (defense-in-depth) that catches a row count grown by a concurrent
+     * insert between a preflight count and the stream (the count↔stream TOCTOU).
+     * {@code maxRows == NO_ROW_CAP} disables the guard (identical to the 4-arg
+     * overload).
+     *
+     * <p>The CSV byte contract (UTF-8 BOM, {@code ;} separator, formula-
+     * injection escaping) is identical to the uncapped path — the ONLY
+     * difference is the abort.
+     */
+    public static void exportWithColumns(NamedParameterJdbcTemplate jdbc,
+                                          ExportQuery query,
+                                          List<ExportColumn> columns,
+                                          OutputStream out,
+                                          long maxRows) {
         try {
             out.write(UTF8_BOM);
             PrintWriter writer = new PrintWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8));
@@ -62,7 +103,13 @@ public class CsvStreamingExporter {
             }
             writer.println(headerLine);
 
+            long[] rowCount = {0L};
             jdbc.query(query.sql(), query.params(), rs -> {
+                // Hard cap: refuse to write the (maxRows + 1)-th row. Throw
+                // BEFORE emitting it so the partial body never exceeds the cap.
+                if (maxRows != NO_ROW_CAP && rowCount[0] >= maxRows) {
+                    throw new ExportRowCapExceededException(maxRows);
+                }
                 StringBuilder line = new StringBuilder();
                 for (int i = 0; i < columns.size(); i++) {
                     if (i > 0) {
@@ -74,9 +121,14 @@ public class CsvStreamingExporter {
                     }
                 }
                 writer.println(line);
+                rowCount[0]++;
             });
 
             writer.flush();
+        } catch (ExportRowCapExceededException e) {
+            // Propagate the cap signal verbatim (do not wrap as a generic
+            // "CSV export failed") so callers can map it to a 4xx fail-closed.
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("CSV export failed", e);
         }

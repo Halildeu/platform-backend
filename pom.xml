@@ -28,5 +28,6 @@
         <module>report-service</module>
         <module>notification-orchestrator</module>
         <module>audio-gateway-service</module>
+        <module>transcript-service</module>
     </modules>
 </project>

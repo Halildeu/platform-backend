@@ -30,6 +30,7 @@ on:
           - notification-orchestrator
           - audio-gateway-service
           - meeting-service
+          - transcript-service
 
 permissions:
   contents: read
@@ -62,6 +63,7 @@ jobs:
           - notification-orchestrator
           - audio-gateway-service
           - meeting-service
+          - transcript-service
 
     steps:
       - name: Checkout
