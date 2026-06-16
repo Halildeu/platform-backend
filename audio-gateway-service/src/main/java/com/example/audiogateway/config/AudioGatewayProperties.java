@@ -29,6 +29,7 @@ public class AudioGatewayProperties {
     private final Dispatcher dispatcher = new Dispatcher();
     private final Jwt jwt = new Jwt();
     private final Idempotency idempotency = new Idempotency();
+    private final Audit audit = new Audit();
 
     public Contract getContract() {
         return contract;
@@ -48,6 +49,10 @@ public class AudioGatewayProperties {
 
     public Idempotency getIdempotency() {
         return idempotency;
+    }
+
+    public Audit getAudit() {
+        return audit;
     }
 
     public static class Contract {
@@ -319,6 +324,75 @@ public class AudioGatewayProperties {
 
         public void setReplayCacheSize(final int replayCacheSize) {
             this.replayCacheSize = replayCacheSize;
+        }
+    }
+
+    /**
+     * Audit sink config — Faz 24 KVKK audit pipeline (gitops#1249).
+     *
+     * <p>The {@code AudioGatewayAuditSink} emission point is wired to a Redis
+     * Stream producer ({@code RedisStreamAuditSink}) only when
+     * {@code audiogateway.audit.redis.enabled=true}. DEFAULT-OFF: the
+     * {@link com.example.audiogateway.service.NoOpAudioGatewayAuditSink} stays
+     * the bean otherwise, so live behaviour does not change until an overlay
+     * flips the flag (mirrors the dispatcher {@code mode=noop|redis} discipline).
+     *
+     * <p>The audit stream key is independent of the audio chunk partitions
+     * ({@code audio:chunks:pNN}) — audit events land on a single
+     * {@code audit:events} stream consumed by {@code audit-event-consumer-service}.
+     */
+    public static class Audit {
+        private final Redis redis = new Redis();
+
+        public Redis getRedis() {
+            return redis;
+        }
+
+        public static class Redis {
+            /** DEFAULT-OFF — see {@link Audit}. */
+            private boolean enabled = false;
+            /** Audit event stream key (consumer reads the same key). */
+            private String streamKey = "audit:events";
+            /**
+             * Optional MAXLEN cap on the audit stream (approximate trim).
+             *
+             * <p><b>DEFAULT 0 = NO producer-side trim — and it must stay that
+             * way for KVKK audit integrity.</b> A positive MAXLEN would let the
+             * producer evict the oldest audit entries before the immutable
+             * consumer has persisted them → audit-event loss (KVKK m.12 violation).
+             * Stream growth is instead bounded by (a) the consumer keeping up
+             * (its consumer-lag health indicator surfaces backpressure / XPENDING
+             * over threshold as DOWN) and (b) poison entries being parked in the
+             * consumer's DLQ stream rather than looping. The 7yr archive/expiry of
+             * persisted rows is the #1250 retention-worker follow-up, not a
+             * producer trim. Only set a cap if a non-KVKK stream ever reuses this
+             * sink.
+             */
+            private long maxLen = 0L;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getStreamKey() {
+                return streamKey;
+            }
+
+            public void setStreamKey(final String streamKey) {
+                this.streamKey = streamKey;
+            }
+
+            public long getMaxLen() {
+                return maxLen;
+            }
+
+            public void setMaxLen(final long maxLen) {
+                this.maxLen = maxLen;
+            }
         }
     }
 }

@@ -1,0 +1,12 @@
+# k8s overlay — audit-event-consumer-service (Faz 24 KVKK audit pipeline, gitops#1249)
+management:
+  server:
+    # Actuator on a separate management port (drift gate spring-actuator probe
+    # contract requires management:8081 — gitops probe_contract_rules.py).
+    port: 8081
+
+# Eureka stays off by default here (the consumer has no service-to-service
+# callers today); flip via EUREKA_CLIENT_ENABLED if it needs discovery.
+eureka:
+  client:
+    enabled: ${EUREKA_CLIENT_ENABLED:false}
