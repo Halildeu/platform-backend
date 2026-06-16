@@ -157,8 +157,9 @@ public final class PtyArgumentPolicy {
     }
 
     /**
-     * The pilot per-argument policy — the SAME six commands as {@link PtyCommandGuard#PILOT_DEFAULT_ALLOWLIST},
-     * each now constrained to a closed flag set. {@code ping -t} (infinite) and the netstat refresh-interval
+     * The pilot per-argument policy — the SAME five commands as {@link PtyCommandGuard#PILOT_DEFAULT_ALLOWLIST}
+     * (the shell-builtin {@code ver} was dropped from both sets, board #1613 — see that allowlist's javadoc),
+     * each constrained to a closed flag set. {@code ping -t} (infinite) and the netstat refresh-interval
      * operand (also infinite) are closed; numeric flags are range-bounded ({@code ping -l} capped well below the
      * jumbo-ICMP ceiling); no command takes a remote ({@code /S /U /P}) or file-output flag (those commands are
      * not even admitted by D-2 yet). The few info-richer read-only flags kept here ({@code netstat -b},
@@ -167,7 +168,6 @@ public final class PtyArgumentPolicy {
      */
     public static final PtyArgumentPolicy PILOT_DEFAULT_POLICY = new PtyArgumentPolicy(Map.of(
             "hostname", new CommandSpec(Set.of(), Map.of(), Set.of(), OperandRule.NONE, 0),
-            "ver", new CommandSpec(Set.of(), Map.of(), Set.of(), OperandRule.NONE, 0),
             "whoami", new CommandSpec(
                     Set.of("/all", "/groups", "/priv", "/user", "/fqdn", "/upn", "/logonid", "/nh"),
                     Map.of("/fo", ValueSpec.oneOf("csv", "table", "list")),
