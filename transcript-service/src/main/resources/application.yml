@@ -1,0 +1,71 @@
+spring:
+  threads:
+    virtual:
+      enabled: true
+  application:
+    name: transcript-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:${TRANSCRIPT_DB_URL:jdbc:postgresql://localhost:5432/transcript}}
+    username: ${SPRING_DATASOURCE_USERNAME:${TRANSCRIPT_DB_USERNAME:postgres}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${TRANSCRIPT_DB_PASSWORD:postgres}}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: ${TRANSCRIPT_DB_SCHEMA:transcript_service}
+        format_sql: true
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    table: transcript_flyway_history
+    default-schema: ${TRANSCRIPT_DB_SCHEMA:transcript_service}
+    schemas: ${TRANSCRIPT_DB_SCHEMA:transcript_service}
+    locations: ${TRANSCRIPT_FLYWAY_LOCATIONS:classpath:db/migration}
+
+server:
+  port: ${SERVER_PORT:8098}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+  instance:
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS:false}
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:127.0.0.1}
+    instance-id: ${spring.application.name}:${eureka.instance.hostname}:${server.port}
+
+security:
+  jwt:
+    audience: ${SECURITY_JWT_AUDIENCE:transcript-service,frontend,account,serban-web}
+    allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}
+
+transcript:
+  tenant:
+    local-default-tenant-id: ${TRANSCRIPT_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+  export:
+    # Hard cap on rows materialized into a single CSV/Excel export (DoS + memory
+    # guard). Export beyond this is rejected 400.
+    max-rows: ${TRANSCRIPT_EXPORT_MAX_ROWS:50000}
+  search:
+    # Default + max page size for the segment list/search endpoints.
+    default-page-size: ${TRANSCRIPT_SEARCH_DEFAULT_PAGE_SIZE:50}
+    max-page-size: ${TRANSCRIPT_SEARCH_MAX_PAGE_SIZE:200}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+
+logging:
+  level:
+    org.springframework.security: INFO
+    org.springframework.web: INFO
