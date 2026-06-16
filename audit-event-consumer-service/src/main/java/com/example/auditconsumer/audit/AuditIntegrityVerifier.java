@@ -26,9 +26,9 @@ public class AuditIntegrityVerifier {
         this.repository = repository;
     }
 
-    /** Verify the full chain for one tenant. */
+    /** Verify the full chain for one tenant (numeric companyId). */
     @Transactional(readOnly = true)
-    public Result verifyTenant(UUID tenantId) {
+    public Result verifyTenant(Long tenantId) {
         List<AuditEvent> chain = repository.findByTenantIdOrderBySeqAsc(tenantId);
         if (chain.isEmpty()) {
             return new Result(tenantId, true, 0, null, "No audit rows for tenant (empty chain).");
@@ -65,9 +65,9 @@ public class AuditIntegrityVerifier {
         return hash == null ? "<GENESIS/null>" : hash;
     }
 
-    /** Verification outcome. */
+    /** Verification outcome. {@code tenantId} is the numeric companyId; {@code firstFailureEventId} is the row UUID. */
     public record Result(
-            UUID tenantId,
+            Long tenantId,
             boolean valid,
             int checkedCount,
             UUID firstFailureEventId,

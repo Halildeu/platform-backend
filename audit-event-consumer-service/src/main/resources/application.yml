@@ -52,6 +52,8 @@ eureka:
 audit:
   consumer:
     enabled: ${AUDIT_CONSUMER_ENABLED:true}
+    # Dead-letter stream for poison/INVALID events (parked, not dropped — KVKK audit-loss guard).
+    dlq-stream-key: ${AUDIT_CONSUMER_DLQ_STREAM_KEY:audit:events:dlq}
     stream:
       key: ${AUDIT_CONSUMER_STREAM_KEY:audit:events}
     group:

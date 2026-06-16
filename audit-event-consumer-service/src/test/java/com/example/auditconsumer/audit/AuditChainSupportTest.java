@@ -15,13 +15,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class AuditChainSupportTest {
 
-    private static final UUID TENANT = UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final long TENANT = 4242L;
 
     private AuditEvent sampleEvent() {
         AuditEvent event = new AuditEvent();
         event.setId(UUID.fromString("22222222-2222-2222-2222-222222222222"));
         event.setTenantId(TENANT);
-        event.setOrgId(TENANT);
         event.setEventType("CHUNK_ADMISSION_REJECTED");
         event.setSessionId("sess-1");
         event.setUserId(7L);
@@ -42,6 +41,26 @@ class AuditChainSupportTest {
     void canonicalPayloadIsDeterministic() {
         assertThat(AuditChainSupport.canonicalPayload(sampleEvent()))
                 .isEqualTo(AuditChainSupport.canonicalPayload(sampleEvent()));
+    }
+
+    @Test
+    void canonicalPayloadSerializesTenantAndUserAsNumbersNoOrgId() {
+        // Producer contract: tenant_id/user_id are numeric companyId/userId, NOT
+        // UUIDs; and there is no org_id column. The canonical JSON must reflect
+        // that (numbers, unquoted) or a re-read row would not re-hash identically.
+        String json = AuditChainSupport.canonicalPayload(sampleEvent());
+        assertThat(json).contains("\"tenant_id\":4242");
+        assertThat(json).contains("\"user_id\":7");
+        assertThat(json).doesNotContain("org_id");
+        assertThat(json).doesNotContain("\"tenant_id\":\"");
+    }
+
+    @Test
+    void changedTenantChangesHash() {
+        String baseline = AuditChainSupport.computeEntryHash(null, sampleEvent());
+        AuditEvent mutated = sampleEvent();
+        mutated.setTenantId(9999L);
+        assertThat(AuditChainSupport.computeEntryHash(null, mutated)).isNotEqualTo(baseline);
     }
 
     @Test

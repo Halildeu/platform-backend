@@ -19,6 +19,16 @@ public class AuditConsumerProperties {
      */
     private boolean enabled = true;
 
+    /**
+     * Dead-letter stream key for poison/INVALID events. A malformed or
+     * unmappable stream entry is XADDed here (raw fields + error + original
+     * entry id) BEFORE it is ACKed, so an event that cannot be persisted is
+     * parked — never silently dropped (KVKK audit-loss guard) and never wedged
+     * in an infinite redelivery loop. If the DLQ XADD itself fails, the entry is
+     * NOT ACKed and stays in the PEL for retry.
+     */
+    private String dlqStreamKey = "audit:events:dlq";
+
     private final Stream stream = new Stream();
     private final Group group = new Group();
     private final Poll poll = new Poll();
@@ -30,6 +40,14 @@ public class AuditConsumerProperties {
 
     public void setEnabled(final boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public String getDlqStreamKey() {
+        return dlqStreamKey;
+    }
+
+    public void setDlqStreamKey(final String dlqStreamKey) {
+        this.dlqStreamKey = dlqStreamKey;
     }
 
     public Stream getStream() {

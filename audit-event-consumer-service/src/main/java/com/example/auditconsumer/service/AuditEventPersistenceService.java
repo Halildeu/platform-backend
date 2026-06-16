@@ -26,14 +26,29 @@ import java.util.UUID;
  *       does not even take the chain lock);</li>
  *   <li>acquire the per-tenant {@link AuditChainLock};</li>
  *   <li>read the chain tail under the lock → {@code prev_hash};</li>
- *   <li>compute {@code entry_hash} and INSERT.</li>
+ *   <li>compute {@code entry_hash} and INSERT atomically with
+ *       {@code ON CONFLICT (dedup_key) DO NOTHING}.</li>
  * </ol>
  *
- * <p>Idempotency is enforced two ways: an existence probe (fast path) and the
- * DB {@code dedup_key} UNIQUE constraint (authoritative). A concurrent / racing
- * duplicate that slips past the probe surfaces as a
- * {@link DataIntegrityViolationException} which is treated as "already persisted"
- * → {@link PersistResult#DUPLICATE} (ack-and-skip).
+ * <p>Idempotency is enforced two ways: an existence probe (fast path) and an
+ * atomic {@code INSERT ... ON CONFLICT (dedup_key) DO NOTHING} (authoritative).
+ * The atomic upsert is what makes a redelivery <em>race</em> safe on real
+ * PostgreSQL: it returns 1 (inserted) or 0 (dedup_key already present →
+ * ack-able DUPLICATE) <em>without</em> raising a unique-violation, so the
+ * transaction is never left in PG's aborted state. A {@code save()}→catch→
+ * {@code existsByDedupKey} classifier would instead trip the unique constraint,
+ * abort the transaction, and then fail the follow-up SELECT with "current
+ * transaction is aborted" — turning a benign duplicate into an unacked
+ * retry/PEL loop. Any OTHER integrity violation (the {@code UNIQUE(id)}, a
+ * {@code NOT NULL}, or the require-hash trigger) is NOT a {@code dedup_key}
+ * conflict, so the native insert still raises a
+ * {@link DataIntegrityViolationException} that propagates out — the consumer
+ * does NOT ACK it and the event stays in the PEL for retry/DLQ rather than
+ * being silently lost.
+ *
+ * <p>Tenant identity is the numeric backend companyId (audio-gateway JWT-claim
+ * contract: {@code tenantId}/{@code userId} XADDed as numeric strings), NOT a
+ * UUID org_id — this consumer aligns to the live producer contract.
  */
 @Service
 public class AuditEventPersistenceService {
@@ -46,8 +61,23 @@ public class AuditEventPersistenceService {
         PERSISTED,
         /** Already present (idempotent redelivery) — ack and skip. */
         DUPLICATE,
-        /** Malformed / unmappable record — ack and skip (poison-message safe). */
+        /** Malformed / unmappable record — route to DLQ then ack (poison-message safe). */
         INVALID
+    }
+
+    /**
+     * Persist outcome + (for {@link PersistResult#INVALID}) the parse-failure
+     * reason so the consumer can record an actionable DLQ entry. {@code reason}
+     * is null for non-INVALID outcomes.
+     */
+    public record PersistOutcome(PersistResult result, String reason) {
+        static PersistOutcome of(PersistResult result) {
+            return new PersistOutcome(result, null);
+        }
+
+        static PersistOutcome invalid(String reason) {
+            return new PersistOutcome(PersistResult.INVALID, reason);
+        }
     }
 
     private final AuditEventRepository repository;
@@ -70,16 +100,24 @@ public class AuditEventPersistenceService {
      * <p>{@code REQUIRES_NEW} so each event commits in its own transaction —
      * one poison/duplicate event never rolls back a batch of good ones, and the
      * advisory lock is scoped to exactly this event's write.
+     *
+     * <p>The write is an atomic {@code INSERT ... ON CONFLICT (dedup_key) DO
+     * NOTHING}: a {@code dedup_key} redelivery race resolves to a DUPLICATE
+     * (0 affected rows) without raising — so the transaction is never aborted.
+     * A non-dedup {@link DataIntegrityViolationException} (a different
+     * constraint) still propagates out of this method (it is NOT swallowed as a
+     * duplicate) so the consumer leaves the entry unacked for redelivery — only
+     * a dedup_key collision is an ack-able duplicate.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public PersistResult persist(Map<String, String> fields, String streamEntryId) {
+    public PersistOutcome persist(Map<String, String> fields, String streamEntryId) {
         final AuditEvent event;
         try {
             event = map(fields);
         } catch (RuntimeException ex) {
             log.warn("Dropping malformed audit record entryId={} err={} msg={}",
                     streamEntryId, ex.getClass().getSimpleName(), ex.getMessage());
-            return PersistResult.INVALID;
+            return PersistOutcome.invalid(ex.getClass().getSimpleName() + ": " + ex.getMessage());
         }
         event.setStreamEntryId(streamEntryId);
 
@@ -87,7 +125,7 @@ public class AuditEventPersistenceService {
         if (repository.existsByDedupKey(event.getDedupKey())) {
             log.debug("Skipping duplicate audit event dedupKey={} entryId={}",
                     event.getDedupKey(), streamEntryId);
-            return PersistResult.DUPLICATE;
+            return PersistOutcome.of(PersistResult.DUPLICATE);
         }
 
         // Lock the tenant chain BEFORE reading the tail so the prev_hash link is
@@ -102,15 +140,30 @@ public class AuditEventPersistenceService {
         event.setPrevHash(prevHash);
         event.setEntryHash(AuditChainSupport.computeEntryHash(prevHash, event));
 
-        try {
-            repository.save(event);
-            return PersistResult.PERSISTED;
-        } catch (DataIntegrityViolationException ex) {
-            // Lost a race on the dedup_key unique constraint — already persisted.
-            log.debug("Duplicate on insert (unique dedup_key) dedupKey={} entryId={}",
+        // Atomic idempotent insert: ON CONFLICT (dedup_key) DO NOTHING returns
+        // the affected-row count. 1 = inserted; 0 = a racing duplicate slipped
+        // past the existence probe and the dedup_key already exists — an ack-able
+        // DUPLICATE that, unlike a save()→unique-violation→catch path, does NOT
+        // abort the transaction (so no "current transaction is aborted" on any
+        // follow-up statement, and the consumer can ACK it cleanly).
+        //
+        // A NON-dedup integrity violation (UNIQUE(id), NOT NULL, the require-hash
+        // BEFORE-INSERT trigger) is NOT the ON CONFLICT target, so it raises a
+        // DataIntegrityViolationException here that propagates out — REQUIRES_NEW
+        // rolls back and the consumer leaves the entry unacked for redelivery/DLQ
+        // (no silent audit loss).
+        int affected = repository.insertOnConflictDoNothing(
+                event.getId(), event.getTenantId(), event.getEventType(), event.getSessionId(),
+                event.getUserId(), event.getChunkSeq(), event.getHttpStatus(), event.getRejectionCode(),
+                event.getRetryAfterSeconds(), event.getCorrelationId(), event.getEventTimestamp(),
+                event.getDedupKey(), event.getStreamEntryId(), event.getPrevHash(),
+                event.getEntryHash(), event.getEntryHashAlg(), event.getEntryHashVersion());
+        if (affected == 0) {
+            log.debug("Duplicate on insert (ON CONFLICT dedup_key) dedupKey={} entryId={}",
                     event.getDedupKey(), streamEntryId);
-            return PersistResult.DUPLICATE;
+            return PersistOutcome.of(PersistResult.DUPLICATE);
         }
+        return PersistOutcome.of(PersistResult.PERSISTED);
     }
 
     /**
@@ -121,19 +174,15 @@ public class AuditEventPersistenceService {
      */
     private AuditEvent map(Map<String, String> fields) {
         final String eventType = required(fields, "eventType");
-        final UUID tenantId = parseTenantId(req(fields, "tenantId"));
+        // Producer contract: tenantId is the numeric backend companyId, XADDed as
+        // a numeric string (NOT a UUID). UUID-parsing it would fail every live
+        // event → event loss; parse as Long to match the producer.
+        final long tenantId = parseLongStrict(req(fields, "tenantId"), "tenantId");
         final long timestampMs = parseLongStrict(req(fields, "timestampMs"), "timestampMs");
 
         final AuditEvent event = new AuditEvent();
         event.setId(UUID.randomUUID());
         event.setTenantId(tenantId);
-        // Set org_id = tenant_id in the APPLICATION (not only via the DB compat
-        // trigger) so the value hashed before INSERT matches the value re-read on
-        // verification. If org_id were left null here, the canonical payload would
-        // hash org_id=null while the trigger backfills it to tenant_id → the
-        // verifier's re-hash would mismatch the stored entry_hash. The DB trigger
-        // stays as a redundant safety net for any other writer.
-        event.setOrgId(tenantId);
         event.setEventType(eventType);
         event.setSessionId(emptyToNull(fields.get("sessionId")));
         event.setUserId(parseLongOrNull(fields.get("userId")));
@@ -180,14 +229,6 @@ public class AuditEventPersistenceService {
 
     private static String req(Map<String, String> fields, String key) {
         return required(fields, key);
-    }
-
-    private static UUID parseTenantId(String raw) {
-        try {
-            return UUID.fromString(raw);
-        } catch (IllegalArgumentException ex) {
-            throw new IllegalArgumentException("tenantId is not a UUID: '" + raw + "'");
-        }
     }
 
     private static long parseLongStrict(String raw, String field) {

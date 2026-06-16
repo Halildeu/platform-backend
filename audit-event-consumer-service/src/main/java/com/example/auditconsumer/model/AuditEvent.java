@@ -32,8 +32,7 @@ import java.util.UUID;
 @Table(name = "audit_event",
         indexes = {
                 @Index(name = "idx_audit_event_tenant_seq", columnList = "tenant_id,seq DESC"),
-                @Index(name = "idx_audit_event_event_timestamp", columnList = "event_timestamp"),
-                @Index(name = "idx_audit_event_org_id", columnList = "org_id"),
+                @Index(name = "idx_audit_event_tenant_timestamp", columnList = "tenant_id,event_timestamp"),
                 @Index(name = "idx_audit_event_event_type", columnList = "event_type")
         })
 public class AuditEvent {
@@ -46,11 +45,13 @@ public class AuditEvent {
     @Column(name = "id", nullable = false, unique = true, updatable = false)
     private UUID id;
 
+    /**
+     * Numeric tenant key (backend companyId — audio-gateway JWT-claim contract).
+     * NOT a UUID org_id: audit events are companyId-keyed, not the UUID-org-scoped
+     * CRUD rows the Faz 21.1 endpoint-admin org_id canonicalization covers.
+     */
     @Column(name = "tenant_id", nullable = false, updatable = false)
-    private UUID tenantId;
-
-    @Column(name = "org_id", updatable = false)
-    private UUID orgId;
+    private Long tenantId;
 
     @Column(name = "event_type", nullable = false, length = 100, updatable = false)
     private String eventType;
@@ -116,20 +117,12 @@ public class AuditEvent {
         this.id = id;
     }
 
-    public UUID getTenantId() {
+    public Long getTenantId() {
         return tenantId;
     }
 
-    public void setTenantId(UUID tenantId) {
+    public void setTenantId(Long tenantId) {
         this.tenantId = tenantId;
-    }
-
-    public UUID getOrgId() {
-        return orgId;
-    }
-
-    public void setOrgId(UUID orgId) {
-        this.orgId = orgId;
     }
 
     public String getEventType() {

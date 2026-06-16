@@ -354,10 +354,19 @@ public class AudioGatewayProperties {
             /** Audit event stream key (consumer reads the same key). */
             private String streamKey = "audit:events";
             /**
-             * Optional MAXLEN cap on the audit stream (approximate trim). 0 or
-             * negative = no producer-side trim (consumer + retention worker own
-             * lifecycle; KVKK m.12 7yr archive is #1250 follow-up). Kept off by
-             * default so the immutable consumer never loses an un-persisted event.
+             * Optional MAXLEN cap on the audit stream (approximate trim).
+             *
+             * <p><b>DEFAULT 0 = NO producer-side trim — and it must stay that
+             * way for KVKK audit integrity.</b> A positive MAXLEN would let the
+             * producer evict the oldest audit entries before the immutable
+             * consumer has persisted them → audit-event loss (KVKK m.12 violation).
+             * Stream growth is instead bounded by (a) the consumer keeping up
+             * (its consumer-lag health indicator surfaces backpressure / XPENDING
+             * over threshold as DOWN) and (b) poison entries being parked in the
+             * consumer's DLQ stream rather than looping. The 7yr archive/expiry of
+             * persisted rows is the #1250 retention-worker follow-up, not a
+             * producer trim. Only set a cap if a non-KVKK stream ever reuses this
+             * sink.
              */
             private long maxLen = 0L;
 

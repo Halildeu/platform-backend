@@ -1,7 +1,5 @@
 package com.example.auditconsumer.audit;
 
-import java.util.UUID;
-
 /**
  * Faz 24 KVKK audit pipeline (gitops#1249) — tenant-scoped serialization lock
  * for the audit hash-chain (BE-016 {@code endpoint-admin AuditChainLock} reuse).
@@ -17,21 +15,18 @@ import java.util.UUID;
  * loop, so chain forking is already avoided by construction. The lock is kept
  * for defence-in-depth and so a future multi-instance/parallel-persist refactor
  * (or a manual/replay write path) stays correct.
+ *
+ * <p>The tenant key is the numeric companyId (producer contract); it is fed
+ * directly to {@code pg_advisory_xact_lock(bigint)} — no hashing/XOR is needed
+ * (unlike the endpoint-admin UUID variant).
  */
 public interface AuditChainLock {
 
     /**
      * Acquire the per-tenant audit-chain lock within the current transaction.
      * Must be called inside an active transaction; the lock is held until that
-     * transaction ends.
+     * transaction ends. {@code tenantId} is the numeric companyId — the 64-bit
+     * advisory-lock key directly.
      */
-    void lockTenantChain(UUID tenantId);
-
-    /**
-     * Derive a stable 64-bit lock key from a tenant UUID — XOR of the two 64-bit
-     * halves (full-width, not the 32-bit {@code UUID.hashCode()}).
-     */
-    static long lockKey(UUID tenantId) {
-        return tenantId.getMostSignificantBits() ^ tenantId.getLeastSignificantBits();
-    }
+    void lockTenantChain(long tenantId);
 }

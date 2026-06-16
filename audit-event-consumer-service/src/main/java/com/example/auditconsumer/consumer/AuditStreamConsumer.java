@@ -2,7 +2,7 @@ package com.example.auditconsumer.consumer;
 
 import com.example.auditconsumer.config.AuditConsumerProperties;
 import com.example.auditconsumer.service.AuditEventPersistenceService;
-import com.example.auditconsumer.service.AuditEventPersistenceService.PersistResult;
+import com.example.auditconsumer.service.AuditEventPersistenceService.PersistOutcome;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +17,7 @@ import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamReadOptions;
+import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StreamOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -234,18 +235,82 @@ public class AuditStreamConsumer {
         return claimed.size();
     }
 
-    /** Persist one record then ACK (ACK only after successful/idempotent persist). */
+    /**
+     * Persist one record then ACK. ACK semantics (no audit loss):
+     * <ul>
+     *   <li>PERSISTED / DUPLICATE → ACK (the row is durably stored / already was);</li>
+     *   <li>INVALID (poison) → XADD the raw entry to the DLQ stream, and ACK
+     *       ONLY if the DLQ write succeeds. A failed DLQ write leaves the entry
+     *       in the PEL (no ACK) so the poison event is never lost;</li>
+     *   <li>a non-dedup integrity violation propagates out of
+     *       {@code persist(...)} → caught here, NOT ACKed → stays in the PEL for
+     *       redelivery (per-record isolation: one bad record does not abort the
+     *       batch or wedge the others).</li>
+     * </ul>
+     */
     private void handleRecord(MapRecord<String, Object, Object> record) {
         java.util.Map<String, String> fields = toStringFields(record);
         String entryId = record.getId() == null ? null : record.getId().getValue();
-        PersistResult result = persistence.persist(fields, entryId);
-        switch (result) {
-            case PERSISTED, DUPLICATE, INVALID ->
-                    redis.opsForStream().acknowledge(
-                            props.getStream().getKey(), props.getGroup().getName(), record.getId());
+
+        final PersistOutcome outcome;
+        try {
+            outcome = persistence.persist(fields, entryId);
+        } catch (DataAccessException ex) {
+            // Non-dedup integrity / DB error: do NOT ACK — leave it in the PEL so
+            // a transient DB issue redelivers rather than dropping the event.
+            log.warn("Audit persist failed (left unacked for redelivery) entryId={} err={} msg={}",
+                    entryId, ex.getClass().getSimpleName(), ex.getMessage());
+            return;
         }
-        if (result == PersistResult.PERSISTED) {
-            log.debug("Persisted audit event entryId={} type={}", entryId, fields.get("eventType"));
+
+        switch (outcome.result()) {
+            case PERSISTED -> {
+                ack(record);
+                log.debug("Persisted audit event entryId={} type={}", entryId, fields.get("eventType"));
+            }
+            case DUPLICATE -> ack(record);
+            case INVALID -> {
+                // Park the poison event in the DLQ BEFORE acking. If the DLQ XADD
+                // fails, we do NOT ack — the entry stays in the PEL (retry) so an
+                // audit event is never silently dropped (KVKK m.12 audit-loss guard).
+                if (writeToDlq(fields, entryId, outcome.reason())) {
+                    ack(record);
+                } else {
+                    log.error("DLQ write failed; leaving poison entry unacked entryId={}", entryId);
+                }
+            }
+        }
+    }
+
+    private void ack(MapRecord<String, Object, Object> record) {
+        redis.opsForStream().acknowledge(
+                props.getStream().getKey(), props.getGroup().getName(), record.getId());
+    }
+
+    /**
+     * XADD the poison entry to the dead-letter stream: the verbatim source fields
+     * plus the parse-failure reason + original entry id + source stream, so the
+     * DLQ holds an actionable forensic record. Returns true on success; false (no
+     * throw) so the caller can leave the entry unacked when the DLQ is itself
+     * unavailable.
+     */
+    private boolean writeToDlq(java.util.Map<String, String> sourceFields, String entryId, String reason) {
+        try {
+            java.util.Map<String, String> dlq = new java.util.LinkedHashMap<>(sourceFields);
+            // Prefix the diagnostic fields so they never collide with a source field.
+            dlq.put("_dlqReason", reason == null ? "INVALID" : reason);
+            dlq.put("_dlqSourceEntryId", entryId == null ? "" : entryId);
+            dlq.put("_dlqSourceStream", props.getStream().getKey());
+            dlq.put("_dlqAtMs", Long.toString(System.currentTimeMillis()));
+            redis.opsForStream().add(
+                    StreamRecords.mapBacked(dlq).withStreamKey(props.getDlqStreamKey()));
+            log.warn("Routed poison audit entry to DLQ stream={} sourceEntryId={} reason={}",
+                    props.getDlqStreamKey(), entryId, reason);
+            return true;
+        } catch (DataAccessException ex) {
+            log.error("DLQ XADD failed stream={} sourceEntryId={} err={} msg={}",
+                    props.getDlqStreamKey(), entryId, ex.getClass().getSimpleName(), ex.getMessage());
+            return false;
         }
     }
 

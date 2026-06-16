@@ -28,18 +28,24 @@
 --   NOTHING in the consumer). `stream_entry_id` records the Redis entry id for
 --   audit/forensics.
 
--- org_id compat (Faz 21.1 endpoint org_id pattern reuse): every tenant-scoped
--- row carries both tenant_id (NOT NULL) and org_id. A BEFORE INSERT/UPDATE
--- trigger backfills org_id from tenant_id for legacy writers, and a CHECK keeps
--- them consistent once both are present.
+-- Tenancy key (Faz 24 producer contract — NOT the Faz 21.1 org_id UUID model):
+--   The audio-gateway emits `tenantId`/`userId` as the backend NUMERIC
+--   companyId/userId (JWT claims `companyId`/`userId` parsed to Long), XADDed as
+--   numeric strings. Audit events are companyId-keyed — they are NOT the
+--   UUID-org-scoped CRUD rows the endpoint-admin org_id canonicalization covers,
+--   so this table carries `tenant_id BIGINT` (partition key) directly, with no
+--   org_id UUID column / compat trigger / consistency CHECK. Applying the org_id
+--   pattern here was a contract mismatch (consumer UUID-parse of a numeric
+--   tenantId fails → event loss); BIGINT aligns the schema with the live producer.
 
 CREATE TABLE audit_event (
     -- BIGSERIAL hash-chain ordering anchor + monotonic ingest order.
     seq                  BIGSERIAL    PRIMARY KEY,
     id                   UUID         NOT NULL UNIQUE,
 
-    tenant_id            UUID         NOT NULL,
-    org_id               UUID,
+    -- Numeric companyId/userId (producer JWT-claim contract). tenant_id is the
+    -- partition key; it feeds pg_advisory_xact_lock(bigint) directly.
+    tenant_id            BIGINT       NOT NULL,
 
     event_type           VARCHAR(100) NOT NULL,
     session_id           VARCHAR(128),
@@ -62,16 +68,17 @@ CREATE TABLE audit_event (
     prev_hash            VARCHAR(64),
     entry_hash           VARCHAR(64)  NOT NULL,
     entry_hash_alg       VARCHAR(32)  NOT NULL,
-    entry_hash_version   INTEGER      NOT NULL,
-
-    CONSTRAINT chk_audit_event_org_id_consistent
-        CHECK (org_id IS NULL OR tenant_id IS NULL OR org_id = tenant_id)
+    entry_hash_version   INTEGER      NOT NULL
 );
 
 COMMENT ON TABLE audit_event IS
-    'Faz 24 KVKK audit pipeline (gitops#1249): immutable, tenant-scoped, hash-chained audit events consumed from the audio-gateway audit:events Redis stream. Append-only; 7yr retention archival is #1250 follow-up.';
+    'Faz 24 KVKK audit pipeline (gitops#1249): immutable, tenant-scoped (numeric companyId), hash-chained audit events consumed from the audio-gateway audit:events Redis stream. Append-only; 7yr retention archival is #1250 follow-up.';
 COMMENT ON COLUMN audit_event.seq IS
     'Monotonic ingest/hash-chain ordering anchor (BIGSERIAL).';
+COMMENT ON COLUMN audit_event.tenant_id IS
+    'Numeric tenant key (backend companyId from the audio-gateway JWT-claim contract). Partition key + per-tenant advisory-lock key.';
+COMMENT ON COLUMN audit_event.user_id IS
+    'Numeric actor key (backend userId; nullable for non-attributed rejections).';
 COMMENT ON COLUMN audit_event.dedup_key IS
     'Natural-key idempotency token (e.g. sessionId:chunkSeq:eventType). UNIQUE — at-least-once redelivery does not duplicate.';
 COMMENT ON COLUMN audit_event.prev_hash IS
@@ -83,27 +90,9 @@ COMMENT ON COLUMN audit_event.event_timestamp IS
 
 -- Per-tenant chain-tail lookup: latest row for a tenant by seq.
 CREATE INDEX idx_audit_event_tenant_seq        ON audit_event (tenant_id, seq DESC);
-CREATE INDEX idx_audit_event_event_timestamp   ON audit_event (event_timestamp);
-CREATE INDEX idx_audit_event_org_id            ON audit_event (org_id);
+-- Reporting / retention scan by lawful-basis event time, tenant-scoped.
+CREATE INDEX idx_audit_event_tenant_timestamp  ON audit_event (tenant_id, event_timestamp);
 CREATE INDEX idx_audit_event_event_type        ON audit_event (event_type);
-
--- ---------------------------------------------------------------------------
--- org_id compat trigger (Faz 21.1 reuse): fill org_id from tenant_id when the
--- writer leaves it null. Side-effect-free for writers that supply org_id.
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION audit_event_org_id_compat_fill()
-    RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.org_id IS NULL AND NEW.tenant_id IS NOT NULL THEN
-        NEW.org_id := NEW.tenant_id;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_audit_event_org_id_compat
-    BEFORE INSERT OR UPDATE ON audit_event
-    FOR EACH ROW EXECUTE FUNCTION audit_event_org_id_compat_fill();
 
 -- ---------------------------------------------------------------------------
 -- Append-only enforcement (BE-016 reuse): reject ANY direct UPDATE/DELETE at

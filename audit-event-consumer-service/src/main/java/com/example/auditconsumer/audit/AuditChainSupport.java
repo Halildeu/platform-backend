@@ -23,12 +23,13 @@ import java.util.UUID;
  *
  * <h2>Canonical payload — fixed field set</h2>
  * Covers exactly: {@code chunk_seq, correlation_id, dedup_key, entry_hash_alg,
- * entry_hash_version, event_timestamp, event_type, http_status, id, org_id,
+ * entry_hash_version, event_timestamp, event_type, http_status, id,
  * rejection_code, retry_after_seconds, session_id, tenant_id, user_id}.
- * The chain columns ({@code entry_hash}, {@code prev_hash}) and the DB-assigned
- * {@code seq}/{@code ingested_at} are NEVER part of the canonical payload —
- * chain linkage is an outer composition, and DB-side timing must not affect the
- * content hash.
+ * {@code tenant_id} and {@code user_id} are numeric (backend companyId/userId),
+ * serialized as JSON numbers — there is no org_id UUID column. The chain columns
+ * ({@code entry_hash}, {@code prev_hash}) and the DB-assigned {@code seq}/
+ * {@code ingested_at} are NEVER part of the canonical payload — chain linkage is
+ * an outer composition, and DB-side timing must not affect the content hash.
  *
  * <h2>Determinism</h2>
  * Alphabetic field order on the root object; {@link Instant} normalized to
@@ -65,11 +66,10 @@ public final class AuditChainSupport {
         root.put("event_type", event.getEventType());
         root.put("http_status", event.getHttpStatus());
         root.put("id", uuidOrNull(event.getId()));
-        root.put("org_id", uuidOrNull(event.getOrgId()));
         root.put("rejection_code", event.getRejectionCode());
         putLong(root, "retry_after_seconds", event.getRetryAfterSeconds());
         root.put("session_id", event.getSessionId());
-        root.put("tenant_id", uuidOrNull(event.getTenantId()));
+        putLong(root, "tenant_id", event.getTenantId());
         putLong(root, "user_id", event.getUserId());
         try {
             return CANONICAL_MAPPER.writeValueAsString(root);
