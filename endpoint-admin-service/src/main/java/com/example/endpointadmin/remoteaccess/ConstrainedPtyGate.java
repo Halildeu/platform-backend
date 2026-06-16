@@ -33,7 +33,8 @@ public final class ConstrainedPtyGate {
         this.argumentPolicy = argumentPolicy;
     }
 
-    /** The pilot gate — composes the D-2 and D-3 pilot defaults over the same six commands. */
+    /** The pilot gate — composes the D-2 and D-3 pilot defaults over the same five commands (the shell-builtin
+     *  {@code ver} was dropped from both, board #1613). */
     public static final ConstrainedPtyGate PILOT = new ConstrainedPtyGate(
             new PtyCommandGuard(PtyCommandGuard.PILOT_DEFAULT_ALLOWLIST),
             PtyArgumentPolicy.PILOT_DEFAULT_POLICY);
