@@ -57,7 +57,10 @@ class AdminDomainOpsControllerTest {
                         "awaiting-domain-connector",
                         300,
                         "admin@example.com",
-                        Instant.parse("2026-06-16T19:00:00Z")));
+                        Instant.parse("2026-06-16T19:00:00Z"),
+                        Instant.parse("2026-06-16T19:05:00Z"),
+                        "domain-broker",
+                        "attempt-001"));
 
         mockMvc.perform(post("/api/v1/admin/endpoint-devices/{deviceId}/domain-ops", DEVICE_ID)
                         .contentType("application/json")
@@ -66,7 +69,8 @@ class AdminDomainOpsControllerTest {
                                   "operation": "DOMAIN_SECURE_CHANNEL_VERIFY",
                                   "reason": "pilot secure channel smoke",
                                   "ttlSeconds": 300,
-                                  "idempotencyKey": "domops-smoke-001"
+                                  "idempotencyKey": "domops-smoke-001",
+                                  "credentialRef": "vault:domain-ops/pilot"
                                 }
                                 """))
                 .andExpect(status().isOk())
@@ -74,7 +78,10 @@ class AdminDomainOpsControllerTest {
                 .andExpect(jsonPath("$.deviceId").value(DEVICE_ID.toString()))
                 .andExpect(jsonPath("$.operation").value("DOMAIN_SECURE_CHANNEL_VERIFY"))
                 .andExpect(jsonPath("$.status").value("PENDING_DISPATCH"))
-                .andExpect(jsonPath("$.ttlSeconds").value(300));
+                .andExpect(jsonPath("$.ttlSeconds").value(300))
+                .andExpect(jsonPath("$.expiresAt").value("2026-06-16T19:05:00Z"))
+                .andExpect(jsonPath("$.connectorName").value("domain-broker"))
+                .andExpect(jsonPath("$.connectorAttemptId").value("attempt-001"));
 
         verify(domainOpsBrokerService).create(eq(context), eq(DEVICE_ID), any());
     }

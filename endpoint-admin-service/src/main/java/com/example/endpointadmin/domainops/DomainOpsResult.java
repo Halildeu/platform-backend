@@ -12,6 +12,9 @@ public record DomainOpsResult(
         String reasonCode,
         long ttlSeconds,
         String requestedBy,
-        Instant createdAt
+        Instant createdAt,
+        Instant expiresAt,
+        String connectorName,
+        String connectorAttemptId
 ) {
 }
