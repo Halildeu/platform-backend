@@ -29,6 +29,7 @@ on:
           - discovery-server
           - notification-orchestrator
           - audio-gateway-service
+          - meeting-service
 
 permissions:
   contents: read
@@ -60,6 +61,7 @@ jobs:
           - discovery-server
           - notification-orchestrator
           - audio-gateway-service
+          - meeting-service
 
     steps:
       - name: Checkout
