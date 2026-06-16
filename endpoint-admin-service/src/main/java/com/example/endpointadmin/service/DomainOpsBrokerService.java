@@ -14,6 +14,7 @@ import com.example.endpointadmin.model.EndpointDomainOpsRequest;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointDomainOpsRequestRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -58,6 +59,7 @@ public class DomainOpsBrokerService {
     private final boolean enabled;
     private final Duration configuredMaxPermitTtl;
 
+    @Autowired
     public DomainOpsBrokerService(EndpointDeviceRepository deviceRepository,
                                   EndpointDomainOpsRequestRepository requestRepository,
                                   EndpointAuditService auditService,
