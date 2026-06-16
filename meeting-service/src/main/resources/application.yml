@@ -1,0 +1,63 @@
+spring:
+  threads:
+    virtual:
+      enabled: true
+  application:
+    name: meeting-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:${MEETING_DB_URL:jdbc:postgresql://localhost:5432/meeting}}
+    username: ${SPRING_DATASOURCE_USERNAME:${MEETING_DB_USERNAME:postgres}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${MEETING_DB_PASSWORD:postgres}}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: ${MEETING_DB_SCHEMA:meeting_service}
+        format_sql: true
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    table: meeting_flyway_history
+    default-schema: ${MEETING_DB_SCHEMA:meeting_service}
+    schemas: ${MEETING_DB_SCHEMA:meeting_service}
+    locations: ${MEETING_FLYWAY_LOCATIONS:classpath:db/migration}
+
+server:
+  port: ${SERVER_PORT:8097}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+  instance:
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS:false}
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:127.0.0.1}
+    instance-id: ${spring.application.name}:${eureka.instance.hostname}:${server.port}
+
+security:
+  jwt:
+    audience: ${SECURITY_JWT_AUDIENCE:meeting-service,frontend,account,serban-web}
+    allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}
+
+meeting:
+  tenant:
+    local-default-tenant-id: ${MEETING_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+
+logging:
+  level:
+    org.springframework.security: INFO
+    org.springframework.web: INFO

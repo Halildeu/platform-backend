@@ -1,0 +1,29 @@
+spring:
+  cloud:
+    discovery:
+      enabled: false
+    service-registry:
+      auto-registration:
+        enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    default-schema: ${MEETING_DB_SCHEMA:meeting_service}
+    schemas: ${MEETING_DB_SCHEMA:meeting_service}
+    locations: classpath:db/migration
+
+# Integration profile keeps OpenFGA disabled so the @RequireModule interceptor
+# is a fail-open no-op (no live OpenFGA backend in the integration harness).
+erp:
+  openfga:
+    enabled: false
+
+eureka:
+  client:
+    enabled: false
+    register-with-eureka: false
+    fetch-registry: false
