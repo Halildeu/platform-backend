@@ -3,6 +3,7 @@ package com.example.transcript.service;
 import com.example.commonexport.CsvStreamingExporter;
 import com.example.commonexport.ExportColumn;
 import com.example.commonexport.ExportQuery;
+import com.example.commonexport.ExportRowCapExceededException;
 import com.example.transcript.security.AdminTenantContext;
 import java.io.OutputStream;
 import java.util.List;
@@ -26,9 +27,22 @@ import org.springframework.web.server.ResponseStatusException;
  * against a strict identifier allow-list to keep it out of the interpolated SQL
  * as an injection vector.
  *
- * <p>{@link #prepareCsv} runs the cap preflight (refuse over-cap, never silent
- * truncation) and writes the KVKK m.12 EXPORT access-audit row BEFORE any byte
- * is streamed; {@link #streamCsv} then streams the full result set.
+ * <p><b>Cap enforcement is two-layered with an honest contract:</b>
+ * {@link #prepareCsv} runs a {@code LIMIT cap+1} preflight count and, when the
+ * scope is over-cap, throws a clean {@code HTTP 400} BEFORE any byte is streamed
+ * — this is the <em>authoritative</em> over-cap gate and the normal way an
+ * over-cap export is refused. It also writes the KVKK m.12 EXPORT access-audit
+ * row (bounded count) BEFORE the stream starts. {@link #streamCsv} then carries
+ * a second {@code LIMIT cap+1} + an in-stream hard-abort that is a
+ * defense-in-depth backstop for the narrow {@code preflight↔stream} window: it
+ * GUARANTEES no over-cap personal-data row is ever written even if a concurrent
+ * insert grows the result set after the preflight count. In that rare race the
+ * HTTP 200 status line has already been committed by the streaming response, so
+ * the response is aborted/truncated mid-stream (NOT a clean 400). The
+ * data-protection invariant — at most {@code cap} rows are ever exported — holds
+ * either way; only the over-cap <em>status code</em> differs between the
+ * (authoritative) preflight path (400) and the (race-only) backstop path
+ * (aborted 200).
  *
  * <p>Column order matches {@link #COLUMNS}; the {@code text_draft}/{@code
  * text_final} transcript columns ARE in the CSV (this is the export of the
@@ -78,20 +92,42 @@ public class TranscriptExportService {
                           String filename, String contentType) {}
 
     /**
-     * Cap preflight + KVKK m.12 EXPORT audit, BOTH before any byte is streamed.
-     * Refuses an over-cap export with {@code 400} (never a silent truncation).
+     * <b>Authoritative over-cap gate</b> + KVKK m.12 EXPORT audit, BOTH before
+     * any byte is streamed. This is the PRIMARY enforcement of the row cap: the
+     * preflight {@code count(*)} is bounded by {@code LIMIT exportMaxRows + 1},
+     * and an over-cap scope is refused here with a clean {@code HTTP 400}
+     * (via {@link ResponseStatusException}) — no body, no audit row, no stream.
+     * Because this runs before the streaming response commits its 200 status
+     * line, the normal over-cap case is a true fail-closed 400.
+     *
+     * <p>On the allowed path the audit {@code result_count} is the exact bounded
+     * count (never the unbounded total). The streamed query (built here) also
+     * carries {@code LIMIT exportMaxRows + 1}; combined with the in-stream
+     * hard-abort in {@link #streamCsv}, this is a defense-in-depth backstop that
+     * GUARANTEES no over-cap personal-data row is ever written even if a
+     * concurrent insert grows the result set between this count and the stream.
+     * That backstop fires only in the {@code preflight↔stream} race window —
+     * see {@link #streamCsv} for why the race-path outcome is an aborted 200,
+     * not a clean 400.
      */
     public CsvPlan prepareCsv(AdminTenantContext context, UUID meetingId) {
         UUID orgId = context.tenantId();
 
-        // Bounded preflight: count rows in scope; refuse over-cap before bytes.
+        // Authoritative over-cap gate: count rows in scope bounded to cap+1, so
+        // the audit result_count matches the (bounded) rows we will actually
+        // stream AND we refuse an over-cap scope with a clean 400 before any
+        // byte / audit row — before the streaming response commits its 200.
         MapSqlParameterSource countParams = new MapSqlParameterSource()
                 .addValue("orgId", orgId)
-                .addValue("meetingId", meetingId);
+                .addValue("meetingId", meetingId)
+                .addValue("maxRows", (long) exportMaxRows + 1);
         Long matched = jdbc.queryForObject(
-                "SELECT count(*) FROM " + schema + ".transcript_segments "
-                        + "WHERE (org_id = :orgId OR (org_id IS NULL AND tenant_id = :orgId)) "
-                        + "  AND meeting_id = :meetingId",
+                "SELECT count(*) FROM ("
+                        + "  SELECT id FROM " + schema + ".transcript_segments "
+                        + "  WHERE (org_id = :orgId OR (org_id IS NULL AND tenant_id = :orgId)) "
+                        + "    AND meeting_id = :meetingId "
+                        + "  LIMIT :maxRows"
+                        + ") capped",
                 countParams, Long.class);
         long rowCount = matched == null ? 0L : matched;
         if (rowCount > exportMaxRows) {
@@ -100,27 +136,61 @@ public class TranscriptExportService {
                             + " segments; narrow the scope.");
         }
 
-        // KVKK m.12: record the EXPORT (count only) AFTER the cap check,
-        // BEFORE the stream.
+        // KVKK m.12: record the EXPORT (bounded count only) AFTER the cap
+        // check, BEFORE the stream. result_count == the rows we will stream.
         accessAuditService.recordExport(context, meetingId, (int) rowCount);
 
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("orgId", orgId)
-                .addValue("meetingId", meetingId);
+                .addValue("meetingId", meetingId)
+                .addValue("maxRows", (long) exportMaxRows + 1);
+        // LIMIT exportMaxRows + 1: the stream fetches at most one row beyond the
+        // cap so the in-stream hard-abort (streamCsv) can distinguish "exactly
+        // at cap" from "over cap" deterministically, without scanning the whole
+        // table on a runaway scope.
         String sql = "SELECT id, meeting_id, session_id, speaker_id, start_time, end_time, "
                 + "       text_draft, text_final, confidence, status, created_at, updated_at "
                 + "FROM " + schema + ".transcript_segments "
                 + "WHERE (org_id = :orgId OR (org_id IS NULL AND tenant_id = :orgId)) "
                 + "  AND meeting_id = :meetingId "
-                + "ORDER BY start_time ASC, id ASC";
+                + "ORDER BY start_time ASC, id ASC "
+                + "LIMIT :maxRows";
         ExportQuery query = new ExportQuery(sql, params);
         String filename = "transcript-" + meetingId + ".csv";
         return new CsvPlan(query, COLUMNS, filename, "text/csv; charset=UTF-8");
     }
 
-    /** Stream the prepared CSV to {@code out} via the shared exporter. */
+    /**
+     * Stream the prepared CSV to {@code out} via the shared exporter, with the
+     * {@code exportMaxRows} hard cap enforced in-stream as a
+     * <b>defense-in-depth backstop</b> (the authoritative over-cap gate is the
+     * {@link #prepareCsv} preflight, which already refused any over-cap scope
+     * with a clean 400). This in-stream guard exists ONLY for the
+     * {@code preflight↔stream} race: if a concurrent insert grows the result
+     * set so the cursor reaches {@code exportMaxRows + 1} rows, the exporter
+     * throws {@link ExportRowCapExceededException} BEFORE writing the over-cap
+     * row — so the over-cap personal-data row is never emitted and the
+     * data-protection invariant (at most {@code cap} rows exported) is
+     * guaranteed even under the race.
+     *
+     * <p><b>Honest status contract:</b> we re-map the cap signal to a
+     * {@link ResponseStatusException} {@code 400}, but on the streaming path the
+     * HTTP 200 status line has typically already been committed by the
+     * {@code StreamingResponseBody}; the container therefore aborts/truncates
+     * the in-flight 200 response rather than producing a clean 400. The 400
+     * re-map is still correct for non-committed callers and keeps the
+     * fail-closed signal distinct from a generic 500. Either way, no
+     * cap-exceeding body is ever written.
+     */
     public void streamCsv(CsvPlan plan, OutputStream out) {
-        CsvStreamingExporter.exportWithColumns(jdbc, plan.query(), plan.columns(), out);
+        try {
+            CsvStreamingExporter.exportWithColumns(
+                    jdbc, plan.query(), plan.columns(), out, exportMaxRows);
+        } catch (ExportRowCapExceededException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Export exceeds the maximum of " + exportMaxRows
+                            + " segments; narrow the scope.", e);
+        }
     }
 
     /**

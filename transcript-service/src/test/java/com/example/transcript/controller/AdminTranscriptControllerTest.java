@@ -1,7 +1,9 @@
 package com.example.transcript.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -27,9 +29,12 @@ import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * MockMvc slice test for {@link AdminTranscriptController} request/response
@@ -126,6 +131,38 @@ class AdminTranscriptControllerTest {
         // The JSON export goes through the audited service path (which writes
         // the KVKK m.12 EXPORT row).
         verify(segmentService).exportByMeeting(any(), eq(MEETING));
+    }
+
+    /**
+     * The PRIMARY (authoritative) over-cap gate, proven at the HTTP boundary:
+     * when {@code prepareCsv} refuses an over-cap scope with a
+     * {@link ResponseStatusException} {@code 400}, the controller returns a
+     * clean HTTP 400 — BEFORE the streaming response commits its 200 status —
+     * and {@code streamCsv} is NEVER invoked (no byte streamed, no committed
+     * 200, no cap-exceeding body). This is the HTTP-level counterpart to the
+     * service-level race-path backstop test in {@code TranscriptExportServiceTest}.
+     */
+    @Test
+    void export_csvFormat_overCapPreflight_returns400_andNeverStreams() throws Exception {
+        when(exportService.prepareCsv(any(), eq(MEETING)))
+                .thenThrow(new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Export exceeds the maximum of 50000 segments; narrow the scope."));
+
+        MvcResult result = mockMvc.perform(get("/api/v1/admin/transcripts/export")
+                        .param("meetingId", MEETING.toString())
+                        .param("format", "csv"))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        // Authoritative gate fired before streaming: the response is a clean
+        // 400 (not an aborted/committed 200) and no CSV bytes were produced —
+        // i.e. the over-cap body (UTF-8 BOM + header + rows) is absent.
+        String bom = "\uFEFF"; // UTF-8 BOM the streaming exporter writes first
+        assertThat(result.getResponse().getContentAsString())
+                .doesNotContain(bom)
+                .doesNotContain("Segment Id");
+        // streamCsv must NOT run for a preflight-refused export.
+        verify(exportService, never()).streamCsv(any(), any());
     }
 
     @Test

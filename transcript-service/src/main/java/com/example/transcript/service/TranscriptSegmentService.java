@@ -73,6 +73,19 @@ public class TranscriptSegmentService {
         // Canonical org_id write: set BOTH columns to the same tenant UUID.
         segment.setTenantId(tenantId);
         segment.setOrgId(tenantId);
+        // Segment create is tenant-scoped (tenantId is stamped from the
+        // authenticated context, never from the request body). meetingId is a
+        // producer-supplied reference: cross-service meeting parent
+        // existence/ownership verification is DEFERRED (no meeting-service
+        // client in v1; the absence of a cross-service FK is deliberate —
+        // meeting-service owns a separate schema). This is NOT a "parent-gate
+        // 404-no-leak" guarantee for create — that property holds for READS
+        // (tenant-gated, see the repository effective-org predicate); on create
+        // we are tenant-scoped + producer-trusted. A meetingId belonging to
+        // another tenant would only ever become a dangling reference that is
+        // never joinable across tenants on read (no cross-tenant leak). The
+        // @NotNull on CreateTranscriptSegmentRequest.meetingId is the defensive
+        // floor (reject a null reference outright).
         segment.setMeetingId(request.meetingId());
         segment.setSessionId(request.sessionId());
         segment.setSpeakerId(request.speakerId());
