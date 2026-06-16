@@ -46,3 +46,12 @@ audio:
     jwt:
       tenant-claim: ${AUDIO_GATEWAY_JWT_TENANT_CLAIM:companyId}
       user-claim: ${AUDIO_GATEWAY_JWT_USER_CLAIM:userId}
+
+# Faz 24 KVKK audit pipeline (gitops#1249). DEFAULT-OFF; overlay configmap flips
+# AUDIO_GATEWAY_AUDIT_REDIS_ENABLED=true once audit-event-consumer-service is up.
+audiogateway:
+  audit:
+    redis:
+      enabled: ${AUDIO_GATEWAY_AUDIT_REDIS_ENABLED:false}
+      stream-key: ${AUDIO_GATEWAY_AUDIT_STREAM_KEY:audit:events}
+      max-len: ${AUDIO_GATEWAY_AUDIT_STREAM_MAX_LEN:0}

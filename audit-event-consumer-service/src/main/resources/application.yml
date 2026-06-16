@@ -1,0 +1,85 @@
+# audit-event-consumer-service — Faz 24 KVKK audit pipeline (gitops#1249)
+spring:
+  threads:
+    virtual:
+      enabled: true
+  application:
+    name: audit-event-consumer-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:${AUDIT_CONSUMER_DB_URL:jdbc:postgresql://localhost:5432/audit_event}}
+    username: ${SPRING_DATASOURCE_USERNAME:${AUDIT_CONSUMER_DB_USERNAME:postgres}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${AUDIT_CONSUMER_DB_PASSWORD:postgres}}
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: ${AUDIT_CONSUMER_DB_SCHEMA:audit_event}
+        format_sql: true
+    show-sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    table: audit_consumer_flyway_history
+    default-schema: ${AUDIT_CONSUMER_DB_SCHEMA:audit_event}
+    schemas: ${AUDIT_CONSUMER_DB_SCHEMA:audit_event}
+    locations: ${AUDIT_CONSUMER_FLYWAY_LOCATIONS:classpath:db/migration}
+  data:
+    redis:
+      host: ${AUDIT_CONSUMER_REDIS_HOST:localhost}
+      port: ${AUDIT_CONSUMER_REDIS_PORT:6379}
+      username: ${AUDIT_CONSUMER_REDIS_USERNAME:}
+      password: ${AUDIT_CONSUMER_REDIS_PASSWORD:}
+      ssl:
+        enabled: ${AUDIT_CONSUMER_REDIS_SSL_ENABLED:false}
+
+server:
+  port: ${SERVER_PORT:8099}
+  shutdown: graceful
+
+eureka:
+  client:
+    enabled: ${EUREKA_CLIENT_ENABLED:false}
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+  instance:
+    prefer-ip-address: ${EUREKA_PREFER_IP_ADDRESS:false}
+    hostname: ${EUREKA_INSTANCE_HOSTNAME:127.0.0.1}
+    instance-id: ${spring.application.name}:${eureka.instance.hostname}:${server.port}
+
+# Faz 24 KVKK audit pipeline consumer (gitops#1249)
+audit:
+  consumer:
+    enabled: ${AUDIT_CONSUMER_ENABLED:true}
+    stream:
+      key: ${AUDIT_CONSUMER_STREAM_KEY:audit:events}
+    group:
+      name: ${AUDIT_CONSUMER_GROUP_NAME:audit-persist-v1}
+      consumer: ${AUDIT_CONSUMER_INSTANCE_NAME:${HOSTNAME:audit-consumer-1}}
+    poll:
+      batch-size: ${AUDIT_CONSUMER_POLL_BATCH_SIZE:64}
+      block-millis: ${AUDIT_CONSUMER_POLL_BLOCK_MILLIS:2000}
+      error-backoff-millis: ${AUDIT_CONSUMER_POLL_ERROR_BACKOFF_MILLIS:1000}
+      claim-min-idle-millis: ${AUDIT_CONSUMER_POLL_CLAIM_MIN_IDLE_MILLIS:60000}
+      claim-batch-size: ${AUDIT_CONSUMER_POLL_CLAIM_BATCH_SIZE:64}
+    health:
+      max-pending-for-healthy: ${AUDIT_CONSUMER_HEALTH_MAX_PENDING:50000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+
+logging:
+  level:
+    com.example.auditconsumer: INFO

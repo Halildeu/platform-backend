@@ -29,5 +29,6 @@
         <module>notification-orchestrator</module>
         <module>audio-gateway-service</module>
         <module>transcript-service</module>
+        <module>audit-event-consumer-service</module>
     </modules>
 </project>
