@@ -19,7 +19,6 @@ class PtyArgumentPolicyTest {
     @Test
     void inPolicyCommandsWithAllowedFlagsAndOperandsAreAllowed() {
         assertEquals(Decision.ALLOWED, pilot.decide("hostname"));
-        assertEquals(Decision.ALLOWED, pilot.decide("ver"));
         assertEquals(Decision.ALLOWED, pilot.decide("whoami /all"));
         assertEquals(Decision.ALLOWED, pilot.decide("whoami /groups /priv"));
         assertEquals(Decision.ALLOWED, pilot.decide("whoami /fo csv"));
@@ -38,6 +37,13 @@ class PtyArgumentPolicyTest {
         assertEquals(Decision.ALLOWED, pilot.decide("PING -N 4 EXAMPLE.com"));
         assertEquals(Decision.ALLOWED, pilot.decide("WhoAmI /ALL"));
         assertEquals(Decision.ALLOWED, pilot.decide("netstat -P TCP"));
+    }
+
+    @Test
+    void aCommandWithNoPolicyIsRefused_verDroppedAsUnrunnableShellBuiltin() {
+        // board #1613: `ver` was removed from the policy table (a cmd.exe shell-builtin the no-shell agent
+        // cannot run, dropped from both pilot sets). A command with no policy entry fails closed.
+        assertEquals(Decision.DENIED_NO_POLICY, pilot.decide("ver"));
     }
 
     @Test

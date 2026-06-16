@@ -22,7 +22,15 @@ class PtyCommandGuardTest {
         assertEquals(Decision.ALLOWED, pilot.decide("ping 2001:db8::1"));   // IPv6 colons are safe punctuation
         assertEquals(Decision.ALLOWED, pilot.decide("tracert example.com"));
         assertEquals(Decision.ALLOWED, pilot.decide("netstat -an"));
-        assertEquals(Decision.ALLOWED, pilot.decide("ver"));
+    }
+
+    @Test
+    void verIsNotAllowlisted_shellBuiltinTheNoShellAgentCannotRun() {
+        // board #1613: `ver` is a cmd.exe shell-BUILTIN with no standalone ver.exe — the agent's no-shell
+        // executor (CreateProcess direct) cannot run it, so it was dropped from the pilot allowlist to keep
+        // the issuance set EXACTLY equal to the agent-runnable set. (Distinct from the argument-unsafe
+        // exclusions below: `ver` is not unsafe, it is un-runnable.)
+        assertEquals(Decision.DENIED_NOT_ALLOWLISTED, pilot.decide("ver"));
     }
 
     @Test

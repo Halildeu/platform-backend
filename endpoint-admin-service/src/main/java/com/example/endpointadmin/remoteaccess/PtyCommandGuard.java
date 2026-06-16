@@ -90,13 +90,19 @@ public final class PtyCommandGuard {
      * diagnostics that are argument-safe with NO flag policy — for each, no argument representable in the safe
      * character class can write a file, reach a remote host, carry a credential, exec code, or open an
      * interactive sub-shell ({@code whoami}/{@code netstat} have no {@code /S} remote flag and no file-output;
-     * {@code ping}/{@code tracert} only probe; {@code hostname}/{@code ver} just print). Commands that need an
+     * {@code ping}/{@code tracert} only probe; {@code hostname} just prints). Commands that need an
      * argument policy to be safe ({@code gpresult}, {@code systeminfo}, {@code tasklist}, {@code getmac},
      * {@code driverquery}, {@code nslookup}, and the host/network-mutating families) are intentionally ABSENT
      * — a bare command-name allow cannot make them safe; D-3 re-admits them with explicit allowed-flag sets.
+     *
+     * <p>{@code ver} was REMOVED (board #1613): it is a {@code cmd.exe} shell-BUILTIN with no standalone
+     * {@code ver.exe}, so the agent's no-shell executor (CreateProcess direct, the ADR-0034 D-2 invariant)
+     * cannot run it — issuing a {@code ver} permit was inert. Dropping it keeps this issuance set EXACTLY
+     * equal to the agent-runnable set (platform-agent {@code ptyexec.DefaultAllowlist}), the invariant the
+     * D-3 cross-gate test pins ({@link PtyArgumentPolicy#PILOT_DEFAULT_POLICY} commands == this set).
      */
     public static final Set<String> PILOT_DEFAULT_ALLOWLIST = Set.of(
-            "hostname", "whoami", "ver", "netstat", "ping", "tracert");
+            "hostname", "whoami", "netstat", "ping", "tracert");
 
     private final Set<String> allowlist;
 

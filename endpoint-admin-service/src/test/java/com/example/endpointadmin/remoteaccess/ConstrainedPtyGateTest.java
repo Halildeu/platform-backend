@@ -39,6 +39,14 @@ class ConstrainedPtyGateTest {
         assertFalse(notAllowed.permitted());
         assertEquals(PtyCommandGuard.Decision.DENIED_NOT_ALLOWLISTED, notAllowed.command());
         assertNull(notAllowed.argument());
+
+        // board #1613: the dropped shell-builtin `ver` is cut at the COMMAND layer (D-2), so the composed
+        // gate refuses it and never reaches D-3 (argument == null) — the agent's no-shell executor could not
+        // run it anyway.
+        Result ver = gate.evaluate("ver");
+        assertFalse(ver.permitted());
+        assertEquals(PtyCommandGuard.Decision.DENIED_NOT_ALLOWLISTED, ver.command());
+        assertNull(ver.argument());
     }
 
     @Test
