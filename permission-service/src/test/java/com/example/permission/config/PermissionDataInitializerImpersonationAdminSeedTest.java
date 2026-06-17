@@ -152,6 +152,13 @@ class PermissionDataInitializerImpersonationAdminSeedTest {
                 admin, PermissionType.MODULE, "SUGGESTIONS", GrantType.MANAGE));
         admin.addRolePermission(new RolePermission(
                 admin, PermissionType.MODULE, "ETHIC", GrantType.MANAGE));
+        // Faz 24 (ADR-0041 §5): MEETING / TRANSCRIPT MANAGE module granules are
+        // also seeded onto ADMIN by buildAdminGranules(); pre-seed them so this
+        // pass stays a true no-op.
+        admin.addRolePermission(new RolePermission(
+                admin, PermissionType.MODULE, "MEETING", GrantType.MANAGE));
+        admin.addRolePermission(new RolePermission(
+                admin, PermissionType.MODULE, "TRANSCRIPT", GrantType.MANAGE));
         when(roleRepository.findAll()).thenReturn(List.of(admin));
 
         initializer.run();
@@ -211,6 +218,37 @@ class PermissionDataInitializerImpersonationAdminSeedTest {
         ArgumentCaptor<RolePermission> rpCaptor = ArgumentCaptor.forClass(RolePermission.class);
         verify(rolePermissionRepository, atLeastOnce()).save(rpCaptor.capture());
         for (String moduleKey : List.of("SUGGESTIONS", "ETHIC")) {
+            RolePermission grant = rpCaptor.getAllValues().stream()
+                    .filter(rp -> rp.getPermissionType() == PermissionType.MODULE
+                            && moduleKey.equals(rp.getPermissionKey()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "ADMIN must get MODULE:" + moduleKey + ":MANAGE granule"));
+            assertThat(grant.getGrantType()).isEqualTo(GrantType.MANAGE);
+            assertThat(grant.getRole()).isSameAs(admin);
+            assertThat(grant.getPermission())
+                    .as("granule shortcut row must have permission_id NULL")
+                    .isNull();
+        }
+    }
+
+    @Test
+    void run_freshAdminRole_seedsMeetingAndTranscriptManageModuleGranules() throws Exception {
+        // Faz 24 Meeting Intelligence (ADR-0041 §5 prod-promotion gate): ADMIN
+        // gets MODULE:MEETING:MANAGE + MODULE:TRANSCRIPT:MANAGE so the prod authz
+        // path (catalog → granule → TupleSyncService → OpenFGA module:MEETING /
+        // module:TRANSCRIPT) replaces the test-only direct seed. The permission_key
+        // MUST be the UPPERCASE module id — it is written verbatim as the OpenFGA
+        // object id (no case transform) and must equal MeetingAuthz.MODULE /
+        // TranscriptAuthz.MODULE ("MEETING" / "TRANSCRIPT", Option A).
+        Role admin = adminRoleWithGranuleMarker(99L);
+        when(roleRepository.findAll()).thenReturn(List.of(admin));
+
+        initializer.run();
+
+        ArgumentCaptor<RolePermission> rpCaptor = ArgumentCaptor.forClass(RolePermission.class);
+        verify(rolePermissionRepository, atLeastOnce()).save(rpCaptor.capture());
+        for (String moduleKey : List.of("MEETING", "TRANSCRIPT")) {
             RolePermission grant = rpCaptor.getAllValues().stream()
                     .filter(rp -> rp.getPermissionType() == PermissionType.MODULE
                             && moduleKey.equals(rp.getPermissionKey()))

@@ -47,8 +47,8 @@ spring:
 # Reference: ADR-0012-EA — OpenFGA tuple writer is permission-service
 # (DD-EA-2 boundary). meeting-service writes owner tuples ONLY on create of a
 # meeting it owns (Zanzibar ReBAC owner/participant/viewer); all reads go
-# through check(). The seed of the `module:meeting` instance + relations lives
-# in gitops bootstrap/openfga.
+# through check(). The seed of the `module:MEETING` instance + relations lives
+# in gitops bootstrap/openfga (prod path: permission-service writer, ADR-0041 §5).
 erp:
   openfga:
     enabled: ${ERP_OPENFGA_ENABLED:false}

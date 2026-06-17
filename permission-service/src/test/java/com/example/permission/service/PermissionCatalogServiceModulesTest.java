@@ -64,6 +64,41 @@ class PermissionCatalogServiceModulesTest {
     }
 
     @Test
+    void catalogExposesMeetingModule() {
+        // Faz 24 Meeting Intelligence (ADR-0041 §5 prod-promotion gate): the
+        // catalog key MUST be the UPPERCASE "MEETING" — identical to the
+        // role_permissions.permission_key, the OpenFGA object id the prod writer
+        // path emits, and the meeting-service @RequireModule literal
+        // (MeetingAuthz.MODULE). The MODULE write path applies no case transform,
+        // so a mismatch here would make every prod meeting grant inert.
+        ModuleCatalogItem meeting = module("MEETING")
+                .orElseThrow(() -> new AssertionError("MEETING module missing from catalog"));
+        assertThat(meeting.label()).isEqualTo("Toplantı");
+        assertThat(meeting.levels()).containsExactly("VIEW", "MANAGE");
+        assertThat(service.getModuleKeys()).contains("MEETING");
+    }
+
+    @Test
+    void catalogExposesTranscriptModule() {
+        ModuleCatalogItem transcript = module("TRANSCRIPT")
+                .orElseThrow(() -> new AssertionError("TRANSCRIPT module missing from catalog"));
+        assertThat(transcript.label()).isEqualTo("Transkript");
+        assertThat(transcript.levels()).containsExactly("VIEW", "MANAGE");
+        assertThat(service.getModuleKeys()).contains("TRANSCRIPT");
+    }
+
+    @Test
+    void meetingAndTranscriptModuleKeysAreUppercase() {
+        // Guards the Option A invariant (Codex 019ed603): catalog key == OpenFGA
+        // object id == service @RequireModule literal. The services were
+        // uppercase-aligned in the same bundle; a lowercase regression here would
+        // silently break prod authz (tuple miss → fail-closed deny).
+        assertThat(service.getModuleKeys())
+                .contains("MEETING", "TRANSCRIPT")
+                .doesNotContain("meeting", "transcript");
+    }
+
+    @Test
     void moduleKeysHaveNoDuplicates() {
         List<String> keys = service.getModuleKeys();
         assertThat(keys).doesNotHaveDuplicates();

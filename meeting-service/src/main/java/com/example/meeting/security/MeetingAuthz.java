@@ -9,11 +9,17 @@ package com.example.meeting.security;
  * <ol>
  *   <li><b>Module gate</b> (route-level, {@code @RequireModule}): the
  *       caller must hold {@link #VIEWER} ({@code can_view}) on
- *       {@code module:meeting} to read, or {@link #MANAGER}
- *       ({@code can_manage}) to mutate. Mirrors the endpoint-admin
- *       {@code module:endpoint-admin} contract — kebab-case object id,
- *       canonical {@code can_view}/{@code can_manage} relations matching
- *       the gitops OpenFGA seed.</li>
+ *       {@code module:MEETING} to read, or {@link #MANAGER}
+ *       ({@code can_manage}) to mutate. The object id is the UPPERCASE
+ *       module key {@code MEETING} — identical to the permission-service
+ *       catalog key, the {@code role_permissions.permission_key}, and the
+ *       OpenFGA object id the prod writer path emits (ADR-0041 §5, Option A,
+ *       Codex 019ed603). All four are the SAME string because the MODULE
+ *       write path applies no case transform; this aligns with the core-module
+ *       convention ({@code module:ACCESS}/{@code module:AUDIT}). NOTE: this is
+ *       NOT the endpoint-admin {@code module:endpoint-admin} shape — that
+ *       catalog-UPPER/object-lowercase split is a legacy exception whose
+ *       auto-grant bridge is not wired, deliberately not copied here.</li>
  *   <li><b>Object ReBAC</b> (Zanzibar owner/participant/viewer): on
  *       create of a {@code meeting:&lt;id&gt;} object the service writes an
  *       {@link #OWNER} tuple binding the creator. {@link #PARTICIPANT}
@@ -23,7 +29,7 @@ package com.example.meeting.security;
  *
  * <p>Tuple shapes:
  * <pre>
- *   module gate : user:&lt;id&gt; # can_view|can_manage @ module:meeting
+ *   module gate : user:&lt;id&gt; # can_view|can_manage @ module:MEETING
  *   object ReBAC: user:&lt;id&gt; # owner|participant|viewer @ meeting:&lt;uuid&gt;
  * </pre>
  *
@@ -34,8 +40,14 @@ package com.example.meeting.security;
  */
 public final class MeetingAuthz {
 
-    /** Module object id — kebab/lowercase, matches the gitops OpenFGA seed. */
-    public static final String MODULE = "meeting";
+    /**
+     * Module gate object id — UPPERCASE {@code MEETING}, identical to the
+     * permission-service catalog key + {@code role_permissions.permission_key}
+     * + the prod OpenFGA tuple object id (ADR-0041 §5, Option A). Distinct from
+     * {@link #OBJECT_TYPE} below (the lowercase OpenFGA model TYPE name for
+     * per-meeting ReBAC objects {@code meeting:<uuid>}).
+     */
+    public static final String MODULE = "MEETING";
 
     /** Module read relation — OpenFGA {@code module#can_view}. */
     public static final String VIEWER = "can_view";

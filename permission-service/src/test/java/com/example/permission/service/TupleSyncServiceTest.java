@@ -2,7 +2,9 @@ package com.example.permission.service;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.commonauth.scope.ScopeContextCache;
+import com.example.permission.model.GrantType;
 import com.example.permission.model.Permission;
+import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
 import com.example.permission.model.UserRoleAssignment;
@@ -121,5 +123,29 @@ class TupleSyncServiceTest {
 
         verify(authzService, never()).writeTuple(anyString(), anyString(), anyString(), anyString());
         verify(authzVersionService, never()).incrementVersion();
+    }
+
+    @Test
+    void syncFeatureTuplesForUser_faz24ModuleGranule_writesUppercaseObjectIdVerbatim() {
+        // ADR-0041 §5 / Option A keystone invariant (Codex 019ed603): a
+        // MODULE:MEETING:MANAGE / MODULE:TRANSCRIPT:MANAGE granule must produce the
+        // OpenFGA tuple module:MEETING#can_manage / module:TRANSCRIPT#can_manage
+        // VERBATIM — the MODULE write path applies NO case transform. This object
+        // id is exactly what meeting-service/transcript-service @RequireModule check
+        // (MeetingAuthz.MODULE="MEETING" / TranscriptAuthz.MODULE="TRANSCRIPT"), so a
+        // lowercase drift would make every prod grant inert (tuple miss → deny).
+        Role role = new Role();
+        role.setId(7L);
+        List<RolePermission> granules = List.of(
+                new RolePermission(role, PermissionType.MODULE, "MEETING", GrantType.MANAGE),
+                new RolePermission(role, PermissionType.MODULE, "TRANSCRIPT", GrantType.MANAGE));
+
+        service.syncFeatureTuplesForUser("101", granules);
+
+        verify(authzService).writeTuple("101", "can_manage", "module", "MEETING");
+        verify(authzService).writeTuple("101", "can_manage", "module", "TRANSCRIPT");
+        // Defend the invariant: the lowercase service-divergent ids must NEVER be written.
+        verify(authzService, never()).writeTuple(eq("101"), anyString(), eq("module"), eq("meeting"));
+        verify(authzService, never()).writeTuple(eq("101"), anyString(), eq("module"), eq("transcript"));
     }
 }
