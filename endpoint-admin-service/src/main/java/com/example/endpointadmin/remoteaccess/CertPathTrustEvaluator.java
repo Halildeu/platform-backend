@@ -133,6 +133,12 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
             return TrustDecision.ALLOW;
         } catch (CertPathValidatorException e) {
             TrustDecision classified = classify(e);
+            if (classified == TrustDecision.UNKNOWN) {
+                TrustDecision compatible = evaluateAdCsCompatibleChain(chain, now);
+                return compatible == TrustDecision.ALLOW || compatible == TrustDecision.REVOKED
+                        ? compatible
+                        : TrustDecision.UNKNOWN;
+            }
             if (classified != TrustDecision.NOT_TRUSTED) {
                 return classified;
             }
