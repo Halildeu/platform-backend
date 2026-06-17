@@ -43,8 +43,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Faz 22.6 T-4a-ii slice-4b-2 (Codex 019ebd7f) — the operator service routes the broker verdict to the
  * transport: a duress (AMBIGUOUS until wired) KILLs + drives the session terminal + evicts (Codex S1); a
- * deny pushes nothing; an unknown/malformed request is rejected before the broker is consulted. The PERMIT
- * happy path (a full policy pass) is the e2e slice (4b-4). In the server package for ControlStreamHandle access.
+ * deny pushes nothing but frees the peer slot; an unknown/malformed request is rejected before the broker is
+ * consulted. The PERMIT happy path (a full policy pass) is the e2e slice (4b-4). In the server package for
+ * ControlStreamHandle access.
  */
 class RemoteBridgeOperatorServiceTest {
 
@@ -165,13 +166,14 @@ class RemoteBridgeOperatorServiceTest {
     }
 
     @Test
-    void aCleanDuressWithNoGrantedCapabilityIsDeniedAndPushesNothing() {
+    void aCleanDuressWithNoGrantedCapabilityIsDeniedAndFreesThePeerSlot() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         ControlStreamRegistry registry = new ControlStreamRegistry();
         CapturingObserver observer = new CapturingObserver();
-        registry.register(new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()),
-                new ControlStreamHandle(observer));
-        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        RemoteBridgeSession deniedSession = activeSession(store, "s1", "peer-1",
+                Set.of(RemoteSessionCapability.VIEW_ONLY));
 
         // a clean duress source → the broker reaches the policy engine; DENY_ALL gate → no capability → DENY
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -183,7 +185,17 @@ class RemoteBridgeOperatorServiceTest {
         assertEquals(Kind.DENY, outcome.brokerOutcome().kind());
         assertFalse(outcome.transportPushed());
         assertTrue(observer.sent.isEmpty(), "a deny pushes nothing to the agent");
-        assertTrue(store.bySessionId("s1").isPresent(), "a deny does NOT evict the session");
+        assertTrue(deniedSession.state().isTerminal(), "a deny terminalizes the operator session locally");
+        assertTrue(store.bySessionId("s1").isEmpty(), "a deny evicts the session so no ACTIVE ghost remains");
+
+        SessionOpenOutcome reopened = service.openSession(
+                new SessionRequest("s2", "dev-1", "operator@x", "retry support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X");
+
+        assertTrue(reopened.opened(), "a denied policy decision must not block a follow-up attended session");
+        assertEquals("s2", reopened.sessionId());
+        assertTrue(observer.sent.stream().anyMatch(Envelope::hasConsentPrompt),
+                "the reopened session must push a fresh consent prompt");
     }
 
     // --- slice-4b-3 consent flow (openSession) ------------------------------
