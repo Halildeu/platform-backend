@@ -2,17 +2,13 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import com.example.endpointadmin.remoteaccess.AttestationVerifier;
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
-import com.example.endpointadmin.remoteaccess.DbRecordingSink;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
-import com.example.endpointadmin.remoteaccess.RecordingAnchorSigner;
 import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
 import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
-import com.example.endpointadmin.remoteaccess.SessionRecorder;
-import com.example.endpointadmin.remoteaccess.SessionRecordingChain;
 import com.example.endpointadmin.remoteaccess.bridge.DurableRemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
@@ -143,6 +139,11 @@ public class RemoteBridgeServerConfig {
         return new ControlStreamRegistry();
     }
 
+    @Bean
+    public RemoteBridgeOperationStreamRegistry remoteBridgeOperationStreamRegistry() {
+        return new RemoteBridgeOperationStreamRegistry();
+    }
+
     @Bean(destroyMethod = "shutdownNow")
     public ScheduledExecutorService remoteBridgeHeartbeatScheduler() {
         return Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -198,39 +199,26 @@ public class RemoteBridgeServerConfig {
      * its Postgres behaviour is proven in {@code DbRecordingSinkPostgresIntegrationTest}.
      */
     @Bean
-    public DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink(
+    public RemoteBridgeSessionRecorderRegistry remoteBridgeSessionRecorderRegistry(
             JdbcTemplate jdbcTemplate,
             @Value("${ENDPOINT_ADMIN_DB_SCHEMA:endpoint_admin_service}") String schema,
             @Value("${remote-bridge.recording.anchor-key.path:}") String anchorKeyPath,
             @Value("${remote-bridge.recording.anchor-key.algorithm:SHA256withECDSA}") String anchorAlgorithm) {
         PrivateKey anchorKey =
                 Pkcs8EcPrivateKeyLoader.loadFromFile(anchorKeyPath, "remote-bridge.recording.anchor-key.path");
-        // Codex slice-3c REVISE: prevalidate at refresh so an enabled boot really IS config-validated — a
-        // malformed schema or a bad/incompatible anchor algorithm must fail HERE, not lazily at the first record.
         try {
-            // schema identifier guard: DbRecordingSink's ctor runs the [a-z_][a-z0-9_]* SQL-identifier check
-            // (null/blank/uppercase/dotted all rejected), so a malformed schema fails at refresh. The probe
-            // holds the JdbcTemplate reference only — no DB I/O at construction.
-            new DbRecordingSink("__startup_probe__", jdbcTemplate, schema);
-        } catch (RuntimeException e) {
-            throw new IllegalStateException("ENDPOINT_ADMIN_DB_SCHEMA is invalid for an enabled broker ("
-                    + schema + ") — refusing to start", e);
-        }
-        try {
-            // startup probe — the ctor runs SignatureAlgorithms.require(alg) (allowlist), and a real anchor
-            // over an empty chain runs Signature.initSign(anchorKey), so an UNSUPPORTED alg AND an alg that is
-            // allowed-but-incompatible with the key (e.g. an EC key + SHA256withRSA) both fail at refresh, not
-            // lazily at the first record (Codex slice-3c REVISE-2). The probe instances are discarded.
-            new RecordingAnchorSigner("__startup_probe__", anchorKey, anchorAlgorithm)
-                    .anchor(new SessionRecordingChain(), 0L);
+            return new RemoteBridgeSessionRecorderRegistry(jdbcTemplate, schema, anchorKey, anchorAlgorithm);
         } catch (RuntimeException e) {
             throw new IllegalStateException("remote-bridge.recording.anchor-key.algorithm is invalid or "
-                    + "incompatible with the anchor key for an enabled broker (" + anchorAlgorithm
-                    + ") — refusing to start", e);
+                    + "incompatible with the anchor key, or ENDPOINT_ADMIN_DB_SCHEMA is invalid for an enabled "
+                    + "broker — refusing to start", e);
         }
-        return new DurableRemoteBridgeAuditSink(sessionId -> new SessionRecorder(
-                new DbRecordingSink(sessionId, jdbcTemplate, schema),
-                new RecordingAnchorSigner(sessionId, anchorKey, anchorAlgorithm)));
+    }
+
+    @Bean
+    public DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink(
+            RemoteBridgeSessionRecorderRegistry remoteBridgeSessionRecorderRegistry) {
+        return new DurableRemoteBridgeAuditSink(remoteBridgeSessionRecorderRegistry::recorderFor);
     }
 
     /**
@@ -465,10 +453,11 @@ public class RemoteBridgeServerConfig {
             TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler,
             RemoteBridgeBroker remoteBridgeBroker,
             ControlStreamRegistry remoteBridgeControlStreamRegistry,
+            RemoteBridgeOperationStreamRegistry remoteBridgeOperationStreamRegistry,
             @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis) {
         return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
-                remoteBridgeBroker, remoteBridgeControlStreamRegistry, System::currentTimeMillis,
-                consentPromptTtlMillis);
+                remoteBridgeBroker, remoteBridgeControlStreamRegistry, remoteBridgeOperationStreamRegistry,
+                System::currentTimeMillis, consentPromptTtlMillis);
     }
 
     /**
@@ -486,14 +475,19 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
-     * Faz 22.6 T-2b / #1588 (Codex 019ecbc5) — the DATA-plane consumption seam. {@code INERT} in T-2b
-     * (accept-and-drop): the transport validates + meters DATA frames but consumes nothing. Durable WORM
-     * recording of the DATA stream + operator viewer fan-out are the owner-gated T-4 consumer, behind their
-     * own flag + fail-closed recording policy — they REPLACE this bean then, never the transport.
+     * Faz 22.6 D10 product gate — the DATA-plane recorder. The transport validates + meters DATA frames, then
+     * this consumer records metadata hashes to the session WORM chain as {@code AGENT_OUTPUT}. Current pilot
+     * agents may omit {@code Envelope.session_id}; the operation stream registry resolves their
+     * {@code DataFrame.stream_id == operationId} back to the broker session until all agents send the richer
+     * DATA routing header.
      */
     @Bean
-    public DataPlaneHandler remoteBridgeDataPlane() {
-        return DataPlaneHandler.INERT;
+    public DataPlaneHandler remoteBridgeDataPlane(
+            RemoteBridgeSessionRecorderRegistry remoteBridgeSessionRecorderRegistry,
+            RemoteBridgeOperationStreamRegistry remoteBridgeOperationStreamRegistry) {
+        return new DurableRemoteBridgeDataPlaneHandler(remoteBridgeSessionRecorderRegistry::recorderFor,
+                streamId -> remoteBridgeOperationStreamRegistry.sessionFor(streamId).orElse(null),
+                System::currentTimeMillis);
     }
 
     @Bean

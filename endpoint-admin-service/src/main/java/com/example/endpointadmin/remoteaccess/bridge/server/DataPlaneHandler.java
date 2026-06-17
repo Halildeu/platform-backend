@@ -9,9 +9,8 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.DataFrame;
  * {@code envelope.frameSeq==0}, per-{@code streamId} {@code DataFrame.frameSeq} sequencing, the byte cap) and
  * hands ACCEPTED frames here together with the AUTHENTICATED {@link PeerIdentity}.
  *
- * <p>It deliberately does NOT record or forward frames yet: durable WORM recording of the DATA stream +
- * operator viewer fan-out are the owner-gated T-4 wiring (ADR-0034 §13/D10), behind their own flag and
- * fail-closed recording policy. The payload is opaque in T-2b (no business decode).
+ * <p>Implementations receive the already validated routing context. T-4 durable DATA recording uses
+ * {@code sessionId} as the WORM chain id and {@code frame.streamId} as the operation/data-stream id.
  *
  * <p>{@link #INERT} is the default (and only) T-2b implementation: accept-and-drop, so the transport slice
  * stays content-free and behaviour is unchanged. A real handler MUST NOT assume it can throw safely: a throw
@@ -21,10 +20,10 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.DataFrame;
  */
 public interface DataPlaneHandler {
 
-    /** An accepted, validated DATA frame from an authenticated peer (opaque payload; no business decode in T-2b). */
-    void onDataFrame(PeerIdentity peer, DataFrame frame);
+    /** An accepted, validated DATA frame from an authenticated peer (opaque payload; no business decode here). */
+    void onDataFrame(PeerIdentity peer, String sessionId, DataFrame frame);
 
     /** T-2b default: accept-and-drop. Real data-plane consumption (record / fan-out) is owner-gated T-4. */
-    DataPlaneHandler INERT = (peer, frame) -> {
+    DataPlaneHandler INERT = (peer, sessionId, frame) -> {
     };
 }

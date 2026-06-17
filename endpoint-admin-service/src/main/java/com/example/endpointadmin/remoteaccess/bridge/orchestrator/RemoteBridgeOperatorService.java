@@ -14,6 +14,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Opened;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Refused;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
+import com.example.endpointadmin.remoteaccess.bridge.server.RemoteBridgeOperationStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 
 import java.util.Objects;
@@ -60,16 +61,26 @@ public final class RemoteBridgeOperatorService {
     private final TrustEvidenceAssembler assembler;
     private final RemoteBridgeBroker broker;
     private final ControlStreamRegistry registry;
+    private final RemoteBridgeOperationStreamRegistry operationStreams;
     private final LongSupplier clock;
     private final long consentPromptTtlMillis;
 
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
                                        RemoteBridgeBroker broker, ControlStreamRegistry registry,
                                        LongSupplier clock, long consentPromptTtlMillis) {
+        this(store, assembler, broker, registry, new RemoteBridgeOperationStreamRegistry(), clock,
+                consentPromptTtlMillis);
+    }
+
+    public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
+                                       RemoteBridgeBroker broker, ControlStreamRegistry registry,
+                                       RemoteBridgeOperationStreamRegistry operationStreams,
+                                       LongSupplier clock, long consentPromptTtlMillis) {
         this.store = Objects.requireNonNull(store, "store");
         this.assembler = Objects.requireNonNull(assembler, "assembler");
         this.broker = Objects.requireNonNull(broker, "broker");
         this.registry = Objects.requireNonNull(registry, "registry");
+        this.operationStreams = Objects.requireNonNull(operationStreams, "operationStreams");
         this.clock = Objects.requireNonNull(clock, "clock");
         if (consentPromptTtlMillis <= 0) {
             throw new IllegalArgumentException("consentPromptTtlMillis must be positive");
@@ -165,6 +176,9 @@ public final class RemoteBridgeOperatorService {
                     pushed = commandLine != null && !commandLine.isBlank()
                             && registry.sendOperationDispatch(session.transportPeerKey(),
                                     new OperationDispatch(permit, commandLine), now);
+                    if (pushed) {
+                        operationStreams.bind(permit.operationId(), permit.sessionId());
+                    }
                 } else {
                     // VIEW_ONLY (and any non-command capability) carries no command — push the bare signed permit.
                     pushed = registry.sendOperationPermit(session.transportPeerKey(), permit, now);

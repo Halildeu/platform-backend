@@ -105,12 +105,14 @@ class RemoteBridgeConnectServiceTest {
     /** Captures the ACCEPTED DATA frames the transport dispatched (T-2b seam); optionally throws to test fault. */
     private static final class RecordingDataPlane implements DataPlaneHandler {
         final ConcurrentLinkedQueue<DataFrame> frames = new ConcurrentLinkedQueue<>();
+        final ConcurrentLinkedQueue<String> sessionIds = new ConcurrentLinkedQueue<>();
         volatile PeerIdentity lastPeer;
         volatile boolean throwOnNext;
 
         @Override
-        public void onDataFrame(PeerIdentity peer, DataFrame frame) {
+        public void onDataFrame(PeerIdentity peer, String sessionId, DataFrame frame) {
             lastPeer = peer;
+            sessionIds.add(sessionId);
             frames.add(frame);
             if (throwOnNext) {
                 throw new RuntimeException("simulated consumer fault");
@@ -367,6 +369,7 @@ class RemoteBridgeConnectServiceTest {
         var it = dataPlane.frames.iterator();
         assertEquals(0, it.next().getFrameSeq());
         assertEquals(1, it.next().getFrameSeq());
+        assertEquals(List.of("", ""), List.copyOf(dataPlane.sessionIds));
         assertEquals(PEER, dataPlane.lastPeer);
         // metered: 2 frames, 24 payload bytes, no defects, no handler errors
         assertEquals(2.0, meters.counter(BRIDGE_DATA_FRAMES).count());
