@@ -1,5 +1,6 @@
 package com.example.endpointadmin.controller;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.agent.ConsumeMaintenanceTokenRequest;
 import com.example.endpointadmin.dto.v1.agent.ConsumeMaintenanceTokenResponse;
 import com.example.endpointadmin.security.DeviceCredentialResult;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/agent/maintenance-tokens")
+@ConditionalOnPrimaryEndpointPlane
 public class AgentMaintenanceTokenController {
 
     private final EndpointMaintenanceTokenService maintenanceTokenService;

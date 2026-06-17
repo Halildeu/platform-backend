@@ -40,6 +40,7 @@ public class SecurityConfig {
 
     @Bean
     @Order(1)
+    @ConditionalOnPrimaryEndpointPlane
     public SecurityFilterChain agentSecurityFilterChain(HttpSecurity http,
                                                         DeviceCredentialProvider deviceCredentialProvider) throws Exception {
         DeviceCredentialAuthenticationFilter deviceCredentialAuthenticationFilter =

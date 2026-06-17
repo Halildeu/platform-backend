@@ -1,5 +1,6 @@
 package com.example.endpointadmin.controller;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.agent.AgentCommandResponse;
 import com.example.endpointadmin.dto.v1.agent.AgentCommandResultRequest;
 import com.example.endpointadmin.security.DeviceCredentialResult;
@@ -40,6 +41,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/endpoint-agent/commands")
+@ConditionalOnPrimaryEndpointPlane
 public class AgentMachineCertCommandController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentMachineCertCommandController.class);

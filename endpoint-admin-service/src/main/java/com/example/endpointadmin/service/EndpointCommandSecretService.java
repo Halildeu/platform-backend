@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.EndpointCommand;
 import com.example.endpointadmin.model.EndpointCommandSecret;
@@ -23,6 +24,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointCommandSecretService {
 
     private static final String LOCAL_PASSWORD_SECRET_NAME = "newPassword";

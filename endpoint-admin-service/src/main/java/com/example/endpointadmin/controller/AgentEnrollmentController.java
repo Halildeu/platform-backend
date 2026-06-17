@@ -1,5 +1,6 @@
 package com.example.endpointadmin.controller;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.agent.ConsumeEnrollmentRequest;
 import com.example.endpointadmin.dto.v1.agent.ConsumeEnrollmentResponse;
 import com.example.endpointadmin.service.EndpointEnrollmentService;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/agent/enrollments")
+@ConditionalOnPrimaryEndpointPlane
 public class AgentEnrollmentController {
 
     private final EndpointEnrollmentService enrollmentService;

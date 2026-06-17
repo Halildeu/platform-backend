@@ -1,5 +1,6 @@
 package com.example.endpointadmin.security;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
@@ -11,6 +12,7 @@ import java.security.GeneralSecurityException;
 import java.util.Base64;
 
 @Component
+@ConditionalOnPrimaryEndpointPlane
 public class EnrollmentTokenHasher {
 
     private static final String HMAC_ALGORITHM = "HmacSHA256";

@@ -1,5 +1,6 @@
 package com.example.endpointadmin.tpmattest;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.model.EndpointEnrollment;
 import com.example.endpointadmin.model.EnrollmentStatus;
 import com.example.endpointadmin.repository.EndpointEnrollmentRepository;
@@ -18,6 +19,7 @@ import java.util.UUID;
  * the /attest completion (gate-4d-2) handle the lifecycle. Fail-closed on any invalid input.
  */
 @Component
+@ConditionalOnPrimaryEndpointPlane
 public class DefaultTpmEnrollmentScopeResolver implements TpmEnrollmentScopeResolver {
 
     private final EnrollmentTokenHasher tokenHasher;

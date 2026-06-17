@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointDeviceCredential;
 import com.example.endpointadmin.repository.EndpointDeviceCredentialRepository;
@@ -14,6 +15,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class DeviceCredentialService {
 
     private final EndpointDeviceCredentialRepository repository;
