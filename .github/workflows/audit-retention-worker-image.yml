@@ -1,0 +1,139 @@
+name: audit-retention-worker — image build + GHCR push
+
+# Faz 24 KVKK audit pipeline (gitops#1250) — standalone WORM archival worker
+# (ADR-0042). Mirrors etl-worker-image.yml: build locally, run a no-external-deps
+# container smoke (the worker boots and FAILS-CLOSED without a database), then
+# push an immutable `sha-<short>` tag whose digest the gitops D-slice CronJob pins.
+# No deploy dispatch — the worker is deployed by an explicit gitops PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'audit-retention-worker/**'
+      - '.github/workflows/audit-retention-worker-image.yml'
+  pull_request:
+    paths:
+      - 'audit-retention-worker/**'
+      - '.github/workflows/audit-retention-worker-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: halildeu
+  IMAGE_NAME: platform-backend-audit-retention-worker
+
+concurrency:
+  group: audit-retention-worker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-smoke-push:
+    name: build + container smoke + push
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # GHCR push only from main (workflow_dispatch defaults to any branch).
+      - name: Login to GHCR
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Build image (local load for smoke)
+        id: build-local
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: audit-retention-worker/Dockerfile
+          push: false
+          load: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:smoke
+          cache-from: type=gha,scope=audit-retention-worker
+          cache-to: type=gha,scope=audit-retention-worker,mode=max
+          provenance: false
+
+      # Container smoke — the worker boots the correct app and FAILS-CLOSED with a
+      # non-zero exit when no database is reachable (run-once mode hits the cursor
+      # read and aborts). Proves the jar is the worker + the run-once wiring works,
+      # with no external services.
+      - name: Container smoke — boots + fails-closed without DB
+        run: |
+          set +e
+          out=$(timeout 90 docker run --rm \
+            -e SPRING_FLYWAY_ENABLED=false \
+            -e AUDIT_RETENTION_RUN_ONCE=true \
+            -e SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:1/unreachable \
+            -e SPRING_DATASOURCE_USERNAME=nobody \
+            -e SPRING_DATASOURCE_PASSWORD=nobody \
+            -e MINIO_ACCESS_KEY=smoke \
+            -e MINIO_SECRET_KEY=smokesecret \
+            ${{ env.IMAGE_NAME }}:smoke 2>&1)
+          code=$?
+          echo "$out" | tail -40
+          if [ "$code" -eq 0 ]; then
+            echo "::error::worker exited 0 without a database — expected fail-closed non-zero"
+            exit 1
+          fi
+          echo "$out" | grep -q "AuditRetentionWorkerApplication" || {
+            echo "::error::startup banner missing AuditRetentionWorkerApplication — wrong artifact?"; exit 1; }
+          echo "smoke OK: booted the worker, failed-closed (exit $code) without a DB"
+
+      - name: Build + Push image (immutable tag)
+        id: build-push
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: audit-retention-worker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}:sha-${{ steps.sha.outputs.short }}
+          cache-from: type=gha,scope=audit-retention-worker
+          cache-to: type=gha,scope=audit-retention-worker,mode=max
+          provenance: false
+
+      - name: Container smoke — pinned digest boots + fails-closed
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        run: |
+          set +e
+          image="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}@${{ steps.build-push.outputs.digest }}"
+          echo "Smoking pushed digest: $image"
+          out=$(timeout 90 docker run --rm \
+            -e SPRING_FLYWAY_ENABLED=false \
+            -e AUDIT_RETENTION_RUN_ONCE=true \
+            -e SPRING_DATASOURCE_URL=jdbc:postgresql://127.0.0.1:1/unreachable \
+            -e MINIO_ACCESS_KEY=smoke \
+            -e MINIO_SECRET_KEY=smokesecret \
+            "$image" 2>&1)
+          code=$?
+          echo "$out" | grep -q "AuditRetentionWorkerApplication" || { echo "::error::wrong artifact"; exit 1; }
+          [ "$code" -ne 0 ] || { echo "::error::expected fail-closed non-zero"; exit 1; }
+
+      - name: Summary — digest (gitops D-slice pin için kanıt)
+        if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        run: |
+          echo "### audit-retention-worker image push" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: \`sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Digest**: \`${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Pinnable**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ env.IMAGE_NAME }}@${{ steps.build-push.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "gitops #1250 D-slice CronJob consumes the **Pinnable** form for an immutable digest pin." >> $GITHUB_STEP_SUMMARY

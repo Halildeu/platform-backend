@@ -1,0 +1,7 @@
+# k8s overlay — audit-retention-worker (Faz 24 KVKK audit pipeline, gitops#1250)
+management:
+  server:
+    # Separate management port (drift-gate spring-actuator probe contract
+    # requires management:8081 — gitops probe_contract_rules.py). Only reachable
+    # in Deployment/scheduler mode; a run-once CronJob exits before scrape.
+    port: 8081
