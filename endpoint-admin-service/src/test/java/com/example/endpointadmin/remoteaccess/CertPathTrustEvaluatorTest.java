@@ -1,17 +1,40 @@
 package com.example.endpointadmin.remoteaccess;
 
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator.TrustDecision;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.ExtendedKeyUsage;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
+import org.bouncycastle.asn1.x509.KeyPurposeId;
+import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.cert.X509v2CRLBuilder;
+import org.bouncycastle.cert.X509v3CertificateBuilder;
+import org.bouncycastle.cert.jcajce.JcaX509CRLConverter;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.Security;
 import java.security.cert.CertificateException;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509CRL;
+import java.security.cert.X509Certificate;
 import java.time.Instant;
+import java.util.Date;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -24,6 +47,13 @@ class CertPathTrustEvaluatorTest {
 
     /** A clock at which leaf-valid is inside its window and leaf-expired is well past its 2021 notAfter. */
     private static final Instant AT_2035 = Instant.parse("2035-01-01T00:00:00Z");
+    private static final Instant AT_2026 = Instant.parse("2026-06-17T11:00:00Z");
+
+    static {
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+            Security.addProvider(new BouncyCastleProvider());
+        }
+    }
 
     private static byte[] fx(String name) {
         try (InputStream in = CertPathTrustEvaluatorTest.class.getResourceAsStream("/remoteaccess/pki/" + name)) {
@@ -171,5 +201,98 @@ class CertPathTrustEvaluatorTest {
         var eval = new CertPathTrustEvaluator(rootAnchors(), true, true, staleCrl);
         var d = eval.evaluate(presented(fx("leaf-valid.pem"), fx("intermediate-ca.pem")), AT_2035);
         assertEquals(TrustDecision.UNKNOWN, d);
+    }
+
+    @Test
+    void adCsClientAuthLeafWithAdcomputerUriSanStillAllowsWhenSignatureAndCrlHold()
+            throws Exception {
+        // Windows AD CS can issue machine certs with a custom URI SAN of the form adcomputer:<objectGUID>.
+        // Some PKIX providers reject that GeneralName syntax before reaching signature/CRL checks. The
+        // evaluator's compatibility fallback must keep the security properties: trusted issuer signature,
+        // validity, clientAuth EKU, and a fresh non-revoking CRL.
+        KeyPair rootKey = keyPair();
+        KeyPair leafKey = keyPair();
+        X500Name rootName = new X500Name("CN=Acik-Endpoint-CA,DC=acik,DC=local");
+        X509Certificate root = rootCert(rootName, rootKey);
+        X509Certificate leaf = adCsLeaf(rootName, rootKey, leafKey,
+                "adcomputer:" + UUID.randomUUID());
+        X509CRL crl = crl(rootName, rootKey);
+
+        var eval = new CertPathTrustEvaluator(Set.of(new TrustAnchor(root, null)), true, true, List.of(crl));
+        var d = eval.evaluate(presented(leaf.getEncoded()), AT_2026);
+
+        assertEquals(TrustDecision.ALLOW, d);
+    }
+
+    private static KeyPair keyPair() throws GeneralSecurityException {
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+        kpg.initialize(2048);
+        return kpg.generateKeyPair();
+    }
+
+    private static X509Certificate rootCert(X500Name subject, KeyPair keyPair) throws Exception {
+        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
+                subject,
+                BigInteger.valueOf(100),
+                Date.from(AT_2026.minusSeconds(3600)),
+                Date.from(AT_2026.plusSeconds(365L * 24L * 3600L)),
+                subject,
+                keyPair.getPublic()
+        );
+        builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(true));
+        builder.addExtension(Extension.keyUsage, true,
+                new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyCertSign | KeyUsage.cRLSign));
+        return certificate(builder, keyPair);
+    }
+
+    private static X509Certificate adCsLeaf(X500Name issuer, KeyPair issuerKey, KeyPair leafKey, String sanUri)
+            throws Exception {
+        X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
+                issuer,
+                BigInteger.valueOf(200),
+                Date.from(AT_2026.minusSeconds(3600)),
+                Date.from(AT_2026.plusSeconds(24L * 3600L)),
+                new X500Name("CN=SRB-AIDENETIMPC.acik.local"),
+                leafKey.getPublic()
+        );
+        builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
+        builder.addExtension(Extension.keyUsage, true,
+                new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment));
+        builder.addExtension(Extension.extendedKeyUsage, false,
+                new ExtendedKeyUsage(KeyPurposeId.id_kp_clientAuth));
+        builder.addExtension(Extension.subjectAlternativeName, false,
+                new GeneralNames(new GeneralName(GeneralName.uniformResourceIdentifier, sanUri)));
+        return certificate(builder, issuerKey);
+    }
+
+    private static X509Certificate certificate(X509v3CertificateBuilder builder, KeyPair signingKey)
+            throws GeneralSecurityException {
+        try {
+            ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
+                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                    .build(signingKey.getPrivate());
+            return new JcaX509CertificateConverter()
+                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                    .getCertificate(builder.build(signer));
+        } catch (Exception e) {
+            throw new GeneralSecurityException(e);
+        }
+    }
+
+    private static X509CRL crl(X500Name issuer, KeyPair issuerKey) throws GeneralSecurityException {
+        try {
+            X509v2CRLBuilder builder = new X509v2CRLBuilder(
+                    issuer,
+                    Date.from(AT_2026.minusSeconds(3600)));
+            builder.setNextUpdate(Date.from(AT_2026.plusSeconds(24L * 3600L)));
+            ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
+                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                    .build(issuerKey.getPrivate());
+            return new JcaX509CRLConverter()
+                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+                    .getCRL(builder.build(signer));
+        } catch (Exception e) {
+            throw new GeneralSecurityException(e);
+        }
     }
 }

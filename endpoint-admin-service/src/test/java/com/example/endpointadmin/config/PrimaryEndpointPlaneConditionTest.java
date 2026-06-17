@@ -3,7 +3,9 @@ package com.example.endpointadmin.config;
 import com.example.endpointadmin.controller.EndpointAgentStatusController;
 import com.example.endpointadmin.security.AesGcmDeviceSecretProtector;
 import com.example.endpointadmin.security.DeviceSecretProtector;
+import com.example.endpointadmin.security.EndpointRequestNonceCleanupJob;
 import com.example.endpointadmin.security.EnrollmentTokenHasher;
+import com.example.endpointadmin.service.DomainOpsDispatchRecoveryJob;
 import com.example.endpointadmin.service.EndpointAgentStatusService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -26,6 +28,17 @@ class PrimaryEndpointPlaneConditionTest {
                     assertThat(context).doesNotHaveBean(EnrollmentTokenHasher.class);
                     assertThat(context).doesNotHaveBean(EndpointAgentStatusService.class);
                     assertThat(context).doesNotHaveBean(EndpointAgentStatusController.class);
+                });
+    }
+
+    @Test
+    void disabledPrimaryPlaneDoesNotCreatePrimaryPlaneScheduledJobs() {
+        runner.withUserConfiguration(EndpointRequestNonceCleanupJob.class, DomainOpsDispatchRecoveryJob.class)
+                .withPropertyValues("endpoint-admin.primary-plane.enabled=false")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(EndpointRequestNonceCleanupJob.class);
+                    assertThat(context).doesNotHaveBean(DomainOpsDispatchRecoveryJob.class);
                 });
     }
 

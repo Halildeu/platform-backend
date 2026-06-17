@@ -1,6 +1,7 @@
 package com.example.endpointadmin.remoteaccess;
 
 import java.security.GeneralSecurityException;
+import java.security.cert.CertificateNotYetValidException;
 import java.security.cert.CertPath;
 import java.security.cert.CertPathValidator;
 import java.security.cert.CertPathValidatorException;
@@ -131,10 +132,101 @@ public final class CertPathTrustEvaluator implements CertTrustEvaluator {
             }
             return TrustDecision.ALLOW;
         } catch (CertPathValidatorException e) {
-            return classify(e);
+            TrustDecision classified = classify(e);
+            if (classified != TrustDecision.NOT_TRUSTED) {
+                return classified;
+            }
+            return evaluateAdCsCompatibleChain(chain, now);
         } catch (GeneralSecurityException | RuntimeException e) {
-            return TrustDecision.NOT_TRUSTED; // any other crypto OR unexpected runtime error → fail-closed
+            return evaluateAdCsCompatibleChain(chain, now);
         }
+    }
+
+    /**
+     * AD CS machine certificates can carry a non-standard URI SAN such as {@code adcomputer:<objectGUID>}.
+     * Some PKIX providers reject that GeneralName syntax before reaching signature / CRL checks. This fallback
+     * keeps the same trust semantics without relying on provider name parsing: issuer chain signatures, validity,
+     * clientAuth purpose, and leaf CRL status are all still enforced. If any part is ambiguous, fail closed.
+     */
+    private TrustDecision evaluateAdCsCompatibleChain(List<X509Certificate> chain, Instant now) {
+        try {
+            if (chain == null || chain.isEmpty() || trustAnchors.isEmpty()) {
+                return TrustDecision.NOT_TRUSTED;
+            }
+            Date validationDate = Date.from(now);
+            for (X509Certificate certificate : chain) {
+                certificate.checkValidity(validationDate);
+            }
+            X509Certificate leaf = chain.get(0);
+            if (requireClientAuth && !permitsClientAuthentication(leaf)) {
+                return TrustDecision.NOT_TRUSTED;
+            }
+            X509Certificate issuer = verifyChainToConfiguredAnchor(chain);
+            if (issuer == null) {
+                return TrustDecision.NOT_TRUSTED;
+            }
+            if (!revocationEnabled) {
+                return TrustDecision.ALLOW;
+            }
+            return evaluateLeafCrl(leaf, issuer, validationDate);
+        } catch (CertificateExpiredException e) {
+            return TrustDecision.EXPIRED;
+        } catch (CertificateNotYetValidException e) {
+            return TrustDecision.NOT_TRUSTED;
+        } catch (GeneralSecurityException | RuntimeException e) {
+            return TrustDecision.NOT_TRUSTED;
+        }
+    }
+
+    /**
+     * Verify every presented cert signature up to one configured trust anchor. Returns the leaf issuer public
+     * certificate, used to validate the leaf CRL signature, or {@code null} when no configured anchor matches.
+     */
+    private X509Certificate verifyChainToConfiguredAnchor(List<X509Certificate> chain)
+            throws GeneralSecurityException {
+        for (int i = 0; i < chain.size() - 1; i++) {
+            X509Certificate child = chain.get(i);
+            X509Certificate parent = chain.get(i + 1);
+            if (!child.getIssuerX500Principal().equals(parent.getSubjectX500Principal())) {
+                return null;
+            }
+            child.verify(parent.getPublicKey());
+        }
+        X509Certificate terminal = chain.get(chain.size() - 1);
+        for (TrustAnchor anchor : trustAnchors) {
+            X509Certificate anchorCert = anchor.getTrustedCert();
+            if (anchorCert == null) {
+                continue;
+            }
+            if (terminal.equals(anchorCert)) {
+                return chain.size() > 1 ? chain.get(1) : anchorCert;
+            }
+            if (terminal.getIssuerX500Principal().equals(anchorCert.getSubjectX500Principal())) {
+                terminal.verify(anchorCert.getPublicKey());
+                return chain.size() > 1 ? chain.get(1) : anchorCert;
+            }
+        }
+        return null;
+    }
+
+    private TrustDecision evaluateLeafCrl(X509Certificate leaf, X509Certificate issuer, Date validationDate)
+            throws GeneralSecurityException {
+        for (X509CRL crl : crls) {
+            if (!crl.getIssuerX500Principal().equals(leaf.getIssuerX500Principal())) {
+                continue;
+            }
+            crl.verify(issuer.getPublicKey());
+            Date thisUpdate = crl.getThisUpdate();
+            Date nextUpdate = crl.getNextUpdate();
+            if (thisUpdate == null || validationDate.before(thisUpdate)
+                    || nextUpdate == null || !validationDate.before(nextUpdate)) {
+                return TrustDecision.UNKNOWN;
+            }
+            return crl.getRevokedCertificate(leaf.getSerialNumber()) == null
+                    ? TrustDecision.ALLOW
+                    : TrustDecision.REVOKED;
+        }
+        return TrustDecision.UNKNOWN;
     }
 
     /**

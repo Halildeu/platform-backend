@@ -1,5 +1,6 @@
 package com.example.endpointadmin.security;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.repository.EndpointRequestNonceRepository;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -9,6 +10,7 @@ import java.time.Clock;
 import java.time.Instant;
 
 @Component
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointRequestNonceCleanupJob {
 
     private final EndpointRequestNonceRepository nonceRepository;
