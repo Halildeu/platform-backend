@@ -1,0 +1,75 @@
+# audit-retention-worker — Faz 24 KVKK audit pipeline (gitops#1250)
+# ADR-0042: standalone 7yr WORM archival worker. Reads audit_event.audit_event
+# (SELECT-only, cross-schema), writes audit_archive.* + MinIO segments.
+spring:
+  threads:
+    virtual:
+      enabled: true
+  application:
+    name: audit-retention-worker
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:${AUDIT_RETENTION_DB_URL:jdbc:postgresql://localhost:5432/audit_event}}
+    username: ${SPRING_DATASOURCE_USERNAME:${AUDIT_RETENTION_DB_USERNAME:postgres}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${AUDIT_RETENTION_DB_PASSWORD:postgres}}
+  # Flyway owns ONLY the audit_archive schema (separate history table). It never
+  # touches audit_event (the consumer owns that). createSchemas=true bootstraps
+  # the audit_archive schema on a fresh DB.
+  flyway:
+    enabled: true
+    create-schemas: true
+    baseline-on-migrate: true
+    table: audit_retention_flyway_history
+    default-schema: ${AUDIT_RETENTION_DB_SCHEMA:audit_archive}
+    schemas: ${AUDIT_RETENTION_DB_SCHEMA:audit_archive}
+    locations: classpath:db/migration
+
+server:
+  port: ${SERVER_PORT:8101}
+  shutdown: graceful
+
+# ADR-0042 worker contract knobs.
+audit:
+  retention:
+    # Run-once (CronJob): perform a single archive pass then exit. Mutually
+    # exclusive with scheduler.enabled (Deployment mode).
+    run-once: ${AUDIT_RETENTION_RUN_ONCE:true}
+    scheduler:
+      enabled: ${AUDIT_RETENTION_SCHEDULER_ENABLED:false}
+      fixed-delay-millis: ${AUDIT_RETENTION_SCHEDULER_FIXED_DELAY_MILLIS:900000}
+    # Eligibility: a row is "cooled" once event_timestamp < now() - hot-window.
+    hot-window-days: ${AUDIT_RETENTION_HOT_WINDOW_DAYS:90}
+    # WORM retention horizon (KVKK audit-archive 7yr). 2557 days = 7*365 + ~2.
+    retention-years: ${AUDIT_RETENTION_YEARS:7}
+    # Rows scanned per DB batch; rows per emitted object (segment).
+    scan-batch-size: ${AUDIT_RETENTION_SCAN_BATCH_SIZE:5000}
+    max-segment-rows: ${AUDIT_RETENTION_MAX_SEGMENT_ROWS:50000}
+    # Source (immutable audit table) — explicitly schema-qualified everywhere.
+    source-schema: ${AUDIT_RETENTION_SOURCE_SCHEMA:audit_event}
+    source-table: ${AUDIT_RETENTION_SOURCE_TABLE:audit_event}
+    s3:
+      endpoint: ${AUDIT_RETENTION_S3_ENDPOINT:http://localhost:9000}
+      region: ${AUDIT_RETENTION_S3_REGION:us-east-1}
+      bucket: ${AUDIT_RETENTION_S3_BUCKET:audit-archive}
+      key-prefix: ${AUDIT_RETENTION_S3_KEY_PREFIX:segments}
+      path-style-access: ${AUDIT_RETENTION_S3_PATH_STYLE:true}
+      access-key: ${MINIO_ACCESS_KEY:${AUDIT_RETENTION_S3_ACCESS_KEY:}}
+      secret-key: ${MINIO_SECRET_KEY:${AUDIT_RETENTION_S3_SECRET_KEY:}}
+    worker-image-digest: ${AUDIT_RETENTION_WORKER_IMAGE_DIGEST:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+
+logging:
+  level:
+    com.example.auditretention: INFO
