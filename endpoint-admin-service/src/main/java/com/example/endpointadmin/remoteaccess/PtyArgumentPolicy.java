@@ -262,6 +262,14 @@ public final class PtyArgumentPolicy {
     }
 
     /**
+     * Immutable policy table for drift guards. This is intentionally read-only exposure for tests and contract
+     * tooling; callers still use {@link #decide(String)} for enforcement.
+     */
+    public Map<String, CommandSpec> commandSpecs() {
+        return specs;
+    }
+
+    /**
      * The value-flags of {@code command} whose VALUE is sensitive and must be redacted in the audit/WORM
      * record (consumed by the Phase C/D recording chokepoint). Empty for the pilot; D-4 populates it.
      */
