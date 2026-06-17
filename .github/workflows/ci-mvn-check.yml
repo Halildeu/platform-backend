@@ -223,6 +223,35 @@ jobs:
       - name: Run audit-event-consumer-service tests
         run: ./mvnw -pl audit-event-consumer-service test
 
+  audit-retention-worker-test:
+    name: audit-retention-worker Testcontainers PG+MinIO test (Faz 24 #1250 audit-archive 7yr WORM)
+    runs-on: ubuntu-latest
+    needs: [full-reactor-build]
+    timeout-minutes: 20
+
+    # Faz 24 #1250 (ADR-0042) — full-reactor-build runs `verify -DskipTests`, so
+    # the worker's archival proof never executes there. This lane runs the full
+    # worker surface on Testcontainers Postgres (append-only/require-hash triggers)
+    # + MinIO (Object Lock COMPLIANCE + versioning): PER_TENANT verify-before-archive
+    # fail-closed, version-id idempotency, latest-version anomaly, COMPLIANCE
+    # delete-denied, contiguous-prefix no-skip, deterministic NDJSON.gz, plus the
+    # golden-vector parity backstop. The worker has no internal module deps, so no
+    # common-auth/common-export pre-install is needed.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Run audit-retention-worker tests
+        run: ./mvnw -pl audit-retention-worker test
+
   audio-gateway-service-test:
     name: audio-gateway-service test (Faz 24 #1249 RedisStreamAuditSink producer + gw surface)
     runs-on: ubuntu-latest

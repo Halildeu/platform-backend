@@ -30,5 +30,6 @@
         <module>audio-gateway-service</module>
         <module>transcript-service</module>
         <module>audit-event-consumer-service</module>
+        <module>audit-retention-worker</module>
     </modules>
 </project>
