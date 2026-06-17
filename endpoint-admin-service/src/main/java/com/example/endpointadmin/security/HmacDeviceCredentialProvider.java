@@ -1,5 +1,6 @@
 package com.example.endpointadmin.security;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointDeviceCredential;
 import com.example.endpointadmin.model.EndpointRequestNonce;
@@ -15,6 +16,7 @@ import java.time.Duration;
 import java.time.Instant;
 
 @Component
+@ConditionalOnPrimaryEndpointPlane
 public class HmacDeviceCredentialProvider implements DeviceCredentialProvider {
 
     private final EndpointDeviceCredentialRepository credentialRepository;

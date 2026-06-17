@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -8,6 +9,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
+@ConditionalOnPrimaryEndpointPlane
 @ConditionalOnProperty(
         value = "endpoint-admin.domain-ops.reconciler.enabled",
         havingValue = "true",

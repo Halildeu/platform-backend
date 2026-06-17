@@ -1,6 +1,7 @@
 package com.example.endpointadmin.controller;
 
 import com.example.commonauth.openfga.RequireModule;
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateAgentUpdateRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
@@ -33,6 +34,7 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/admin")
+@ConditionalOnPrimaryEndpointPlane
 public class AdminEndpointCommandController {
 
     private static final Set<String> CREATE_AGENT_UPDATE_ALLOWED_FIELDS = Set.of(

@@ -1,6 +1,7 @@
 package com.example.endpointadmin.controller;
 
 import com.example.commonauth.openfga.RequireModule;
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointEnrollmentRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointEnrollmentResponse;
 import com.example.endpointadmin.dto.v1.admin.EndpointEnrollmentDto;
@@ -21,6 +22,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/admin/endpoint-enrollments")
+@ConditionalOnPrimaryEndpointPlane
 public class AdminEndpointEnrollmentController {
 
     private final EndpointEnrollmentService enrollmentService;

@@ -10,6 +10,7 @@ import com.example.endpointadmin.model.UninstallRequestState;
 import com.example.endpointadmin.repository.EndpointCommandRepository;
 import com.example.endpointadmin.repository.EndpointMaintenanceTokenRepository;
 import com.example.endpointadmin.repository.EndpointUninstallRequestRepository;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
@@ -51,13 +52,13 @@ public class EndpointDeviceLifecycleCascade {
     }
 
     private final EndpointCommandRepository commandRepository;
-    private final EndpointCommandSecretService commandSecretService;
+    private final ObjectProvider<EndpointCommandSecretService> commandSecretService;
     private final EndpointMaintenanceTokenRepository maintenanceTokenRepository;
     private final EndpointUninstallRequestRepository uninstallRequestRepository;
 
     public EndpointDeviceLifecycleCascade(
             EndpointCommandRepository commandRepository,
-            EndpointCommandSecretService commandSecretService,
+            ObjectProvider<EndpointCommandSecretService> commandSecretService,
             EndpointMaintenanceTokenRepository maintenanceTokenRepository,
             EndpointUninstallRequestRepository uninstallRequestRepository) {
         this.commandRepository = commandRepository;
@@ -83,7 +84,7 @@ public class EndpointDeviceLifecycleCascade {
             command.setStatus(CommandStatus.CANCELLED);
             command.setCancelledAt(now);
             commandRepository.save(command);
-            commandSecretService.clearIfTerminal(command);
+            commandSecretService.ifAvailable(service -> service.clearIfTerminal(command));
             cancelledCommands++;
         }
 

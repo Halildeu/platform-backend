@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.agent.AgentCommandResponse;
 import com.example.endpointadmin.dto.v1.agent.AgentCommandResultRequest;
 import com.example.endpointadmin.model.CommandResultStatus;
@@ -36,6 +37,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointAgentCommandService {
 
     // QUEUED commands are retry-visible but not actively held; only live claims

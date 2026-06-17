@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointEnrollmentRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointEnrollmentResponse;
 import com.example.endpointadmin.dto.v1.admin.EndpointEnrollmentDto;
@@ -27,6 +28,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointEnrollmentService {
 
     private final EndpointEnrollmentRepository repository;

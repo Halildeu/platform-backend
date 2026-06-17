@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.EndpointAgentServiceStatusDto;
 import com.example.endpointadmin.security.DeviceCredentialProvider;
 import java.time.Clock;
@@ -7,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointAgentStatusService {
 
     private final String serviceName;

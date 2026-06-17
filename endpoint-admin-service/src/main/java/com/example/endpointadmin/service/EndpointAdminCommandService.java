@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.ApproveEndpointCommandRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateAgentUpdateRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateEndpointCommandRequest;
@@ -54,6 +55,7 @@ import java.util.Set;
 import java.util.UUID;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointAdminCommandService {
 
     /**

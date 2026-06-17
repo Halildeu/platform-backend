@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service.diff;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -36,6 +37,7 @@ import org.springframework.stereotype.Component;
  * idempotency makes duplicate sweeps safe functionally even without lock.
  */
 @Component
+@ConditionalOnPrimaryEndpointPlane
 @ConditionalOnProperty(
         name = "endpoint-admin.diff-cache.backfill-enabled",
         havingValue = "true",

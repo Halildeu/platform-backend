@@ -1,5 +1,6 @@
 package com.example.endpointadmin.security;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
@@ -14,6 +15,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 
 @Component
+@ConditionalOnPrimaryEndpointPlane
 public class AesGcmDeviceSecretProtector implements DeviceSecretProtector {
 
     private static final String CIPHER = "AES/GCM/NoPadding";
