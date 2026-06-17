@@ -241,6 +241,21 @@ class ArchiveServiceIntegrationTest {
     }
 
     @Test
+    void failsClosed_whenRecordedVersionContentMismatches() {
+        insertChain(7L, 2, hoursAgo(48));
+        archiveService.runOnce();
+        // Corrupt the ledger's recorded object_sha256 — the recorded version still
+        // exists, but version-specific verification must reject the content mismatch.
+        jdbc.update("UPDATE audit_archive.audit_archive_ledger SET object_sha256 = ?", "0".repeat(64));
+        jdbc.update("UPDATE audit_archive.audit_archive_cursor SET last_archived_seq = 0 WHERE id = 1");
+
+        assertThatThrownBy(() -> archiveService.runOnce())
+                .isInstanceOf(ArchiveAnomalyException.class)
+                .hasMessageContaining("checksum mismatch");
+        assertThat(stateStore.readCursor()).isZero();
+    }
+
+    @Test
     void complianceObjectCannotBeDeleted() {
         insertChain(7L, 2, hoursAgo(48));
         archiveService.runOnce();
