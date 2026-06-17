@@ -1,6 +1,7 @@
 package com.example.endpointadmin.controller;
 
 import com.example.commonauth.openfga.RequireModule;
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.CreateMaintenanceTokenRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateMaintenanceTokenResponse;
 import com.example.endpointadmin.dto.v1.admin.EndpointMaintenanceTokenDto;
@@ -24,6 +25,7 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/admin")
+@ConditionalOnPrimaryEndpointPlane
 public class AdminMaintenanceTokenController {
 
     private final EndpointMaintenanceTokenService maintenanceTokenService;

@@ -1,6 +1,7 @@
 package com.example.endpointadmin.controller;
 
 import com.example.commonauth.openfga.RequireModule;
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.AdminUninstallAuditResponse;
 import com.example.endpointadmin.dto.v1.admin.AdminUninstallRequestApproval;
 import com.example.endpointadmin.dto.v1.admin.AdminUninstallRequestCreate;
@@ -69,6 +70,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/admin/endpoint-devices/{deviceId}/uninstalls")
+@ConditionalOnPrimaryEndpointPlane
 public class AdminEndpointUninstallController {
 
     private final EndpointUninstallService service;

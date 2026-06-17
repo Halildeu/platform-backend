@@ -1,5 +1,6 @@
 package com.example.endpointadmin.tpmattest;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.ObjectProvider;
@@ -37,6 +38,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/v1/agent/enrollments/tpm")
+@ConditionalOnPrimaryEndpointPlane
 public class TpmEnrollmentController {
 
     /** Conservative overall request-body cap (defense beyond per-field @Size). */

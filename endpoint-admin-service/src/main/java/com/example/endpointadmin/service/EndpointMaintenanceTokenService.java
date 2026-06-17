@@ -1,5 +1,6 @@
 package com.example.endpointadmin.service;
 
+import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
 import com.example.endpointadmin.dto.v1.admin.CreateMaintenanceTokenRequest;
 import com.example.endpointadmin.dto.v1.admin.CreateMaintenanceTokenResponse;
 import com.example.endpointadmin.dto.v1.admin.EndpointMaintenanceTokenDto;
@@ -31,6 +32,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @Service
+@ConditionalOnPrimaryEndpointPlane
 public class EndpointMaintenanceTokenService {
 
     private final EndpointMaintenanceTokenRepository tokenRepository;
