@@ -7,10 +7,14 @@ import com.example.endpointadmin.security.EndpointRequestNonceCleanupJob;
 import com.example.endpointadmin.security.EnrollmentTokenHasher;
 import com.example.endpointadmin.service.DomainOpsDispatchRecoveryJob;
 import com.example.endpointadmin.service.EndpointAgentStatusService;
+import com.example.endpointadmin.service.diff.DiffCacheBackfillService;
+import com.example.endpointadmin.service.diff.DiffCacheBackfillWorker;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class PrimaryEndpointPlaneConditionTest {
 
@@ -33,12 +37,14 @@ class PrimaryEndpointPlaneConditionTest {
 
     @Test
     void disabledPrimaryPlaneDoesNotCreatePrimaryPlaneScheduledJobs() {
-        runner.withUserConfiguration(EndpointRequestNonceCleanupJob.class, DomainOpsDispatchRecoveryJob.class)
+        runner.withUserConfiguration(EndpointRequestNonceCleanupJob.class, DomainOpsDispatchRecoveryJob.class,
+                        DiffCacheBackfillWorker.class)
                 .withPropertyValues("endpoint-admin.primary-plane.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).doesNotHaveBean(EndpointRequestNonceCleanupJob.class);
                     assertThat(context).doesNotHaveBean(DomainOpsDispatchRecoveryJob.class);
+                    assertThat(context).doesNotHaveBean(DiffCacheBackfillWorker.class);
                 });
     }
 
@@ -50,6 +56,18 @@ class PrimaryEndpointPlaneConditionTest {
                     assertThat(context).hasSingleBean(DeviceSecretProtector.class);
                     assertThat(context).hasSingleBean(AesGcmDeviceSecretProtector.class);
                     assertThat(context).hasSingleBean(EnrollmentTokenHasher.class);
+                });
+    }
+
+    @Test
+    void defaultPrimaryPlaneKeepsDiffCacheBackfillWorkerWhenBackfillIsEnabled() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(DiffCacheBackfillWorker.class)
+                .withBean(DiffCacheBackfillService.class, () -> mock(DiffCacheBackfillService.class))
+                .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(DiffCacheBackfillWorker.class);
                 });
     }
 }
