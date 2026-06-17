@@ -20,21 +20,33 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.AbstractPlatformTransactionManager;
+import org.springframework.transaction.support.DefaultTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @IsolatedH2DataJpaTest
 @Import({
@@ -322,6 +334,95 @@ class DomainOpsBrokerServiceTest {
     }
 
     @Test
+    void idempotencyConstraintRaceReplaysExistingDurableRequestWithoutRawDbError() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        EndpointDomainOpsRequest existing = storedDomainOpsRequest(
+                device,
+                DomainOpsStatus.FAILED,
+                clock.instant().minusSeconds(60),
+                clock.instant().plusSeconds(240));
+        existing.markConnectorResult(
+                DomainOpsStatus.FAILED,
+                "connector-unavailable",
+                "unavailable",
+                null,
+                Map.of(),
+                clock.instant().minusSeconds(30));
+
+        EndpointDeviceRepository devices = mock(EndpointDeviceRepository.class);
+        EndpointDomainOpsRequestRepository requests = mock(EndpointDomainOpsRequestRepository.class);
+        EndpointAuditService audits = mock(EndpointAuditService.class);
+        when(devices.findVisibleToOrgAndId(TENANT, device.getId())).thenReturn(Optional.of(device));
+        when(requests.findByTenantIdAndIdempotencyKeyHash(eq(TENANT), anyString()))
+                .thenReturn(Optional.empty(), Optional.of(existing));
+        when(requests.saveAndFlush(any(EndpointDomainOpsRequest.class)))
+                .thenThrow(new DataIntegrityViolationException("duplicate key"));
+
+        DomainOpsBrokerService service = new DomainOpsBrokerService(
+                devices,
+                requests,
+                audits,
+                clock,
+                noOpTransactionManager(),
+                fakeConnector(DomainOpsStatus.SUCCEEDED, "should-not-dispatch", "attempt", Map.of()),
+                true,
+                Duration.ofMinutes(15));
+
+        var result = service.create(context(), device.getId(), request(
+                "CERT_AUTOENROLL_PULSE", 300, CREDENTIAL_REF, "same-idempotency-key"));
+
+        assertThat(result.operationId()).isEqualTo(existing.getId());
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.FAILED);
+        assertThat(result.reasonCode()).isEqualTo("connector-unavailable");
+        verify(requests).saveAndFlush(any(EndpointDomainOpsRequest.class));
+    }
+
+    @Test
+    void reconcilerExpiresStaleAcceptedAndPendingDispatchRowsWithAudit() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        EndpointDomainOpsRequest accepted = domainOpsRequestRepository.saveAndFlush(storedDomainOpsRequest(
+                device,
+                DomainOpsStatus.ACCEPTED,
+                clock.instant().minusSeconds(600),
+                clock.instant().minusSeconds(60)));
+        EndpointDomainOpsRequest pending = domainOpsRequestRepository.saveAndFlush(storedDomainOpsRequest(
+                device,
+                DomainOpsStatus.PENDING_DISPATCH,
+                clock.instant().minusSeconds(500),
+                clock.instant().minusSeconds(30)));
+        EndpointDomainOpsRequest fresh = domainOpsRequestRepository.saveAndFlush(storedDomainOpsRequest(
+                device,
+                DomainOpsStatus.ACCEPTED,
+                clock.instant().minusSeconds(60),
+                clock.instant().plusSeconds(300)));
+
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
+
+        int expired = service.expireStaleDispatchWindows(10);
+
+        assertThat(expired).isEqualTo(2);
+        assertThat(domainOpsRequestRepository.findById(accepted.getId()).orElseThrow().getState())
+                .isEqualTo(DomainOpsStatus.EXPIRED);
+        assertThat(domainOpsRequestRepository.findById(pending.getId()).orElseThrow().getState())
+                .isEqualTo(DomainOpsStatus.EXPIRED);
+        assertThat(domainOpsRequestRepository.findById(fresh.getId()).orElseThrow().getState())
+                .isEqualTo(DomainOpsStatus.ACCEPTED);
+
+        List<EndpointAuditEvent> events = auditRepository.findAll();
+        assertThat(events).hasSize(2);
+        assertThat(events).extracting(EndpointAuditEvent::getEventType)
+                .containsOnly(DomainOpsBrokerService.EVENT_TYPE_EXPIRED);
+        for (EndpointAuditEvent event : events) {
+            assertThat(event.getMetadata())
+                    .containsEntry("status", DomainOpsStatus.EXPIRED.name())
+                    .containsEntry("reasonCode", "dispatch-window-expired")
+                    .containsEntry("credentialRefPresent", true)
+                    .containsEntry("credentialRefAccepted", true);
+            assertNoRawCredentialInAudit(event);
+        }
+    }
+
+    @Test
     void ttlOverFifteenMinutesIsDeniedEvenWhenConfiguredHigher() {
         EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
         DomainOpsBrokerService service = service(true, Duration.ofHours(2));
@@ -443,6 +544,10 @@ class DomainOpsBrokerServiceTest {
     }
 
     private EndpointDevice persistDevice(UUID tenantId, String hostname) {
+        return deviceRepository.saveAndFlush(deviceOnly(tenantId, hostname));
+    }
+
+    private EndpointDevice deviceOnly(UUID tenantId, String hostname) {
         EndpointDevice device = new EndpointDevice();
         device.setTenantId(tenantId);
         device.setOrgId(tenantId);
@@ -453,7 +558,53 @@ class DomainOpsBrokerServiceTest {
         device.setMachineFingerprint("fp-" + UUID.randomUUID());
         device.setDomainName("acik.local");
         device.setStatus(DeviceStatus.ONLINE);
-        return deviceRepository.saveAndFlush(device);
+        return device;
+    }
+
+    private EndpointDomainOpsRequest storedDomainOpsRequest(EndpointDevice device,
+                                                            DomainOpsStatus state,
+                                                            Instant requestedAt,
+                                                            Instant expiresAt) {
+        EndpointDomainOpsRequest request = new EndpointDomainOpsRequest();
+        request.setId(UUID.randomUUID());
+        request.setTenantId(device.getTenantId());
+        request.setOrgId(device.getTenantId());
+        request.setDeviceId(device.getId());
+        request.setOperation(com.example.endpointadmin.domainops.DomainOpsOperation.CERT_AUTOENROLL_PULSE);
+        request.setState(state);
+        request.setReason("pilot validation");
+        request.setReasonCode(state == DomainOpsStatus.PENDING_DISPATCH ? "pending-dispatch" : "accepted");
+        request.setIdempotencyKeyHash("a".repeat(63) + UUID.randomUUID().toString().substring(0, 1));
+        request.setCredentialRef(CREDENTIAL_REF);
+        request.setCredentialRefHash("b".repeat(64));
+        request.setRequestedBy(SUBJECT);
+        request.setTtlSeconds(Duration.between(requestedAt, expiresAt).toSeconds());
+        request.setRequestedAt(requestedAt);
+        request.setExpiresAt(expiresAt);
+        request.setStateUpdatedAt(requestedAt);
+        request.setRedactedResult(Map.of());
+        return request;
+    }
+
+    private PlatformTransactionManager noOpTransactionManager() {
+        return new AbstractPlatformTransactionManager() {
+            @Override
+            protected Object doGetTransaction() {
+                return new Object();
+            }
+
+            @Override
+            protected void doBegin(Object transaction, TransactionDefinition definition) {
+            }
+
+            @Override
+            protected void doCommit(DefaultTransactionStatus status) {
+            }
+
+            @Override
+            protected void doRollback(DefaultTransactionStatus status) {
+            }
+        };
     }
 
     private EndpointAuditEvent onlyAuditEvent() {

@@ -17,6 +17,8 @@ import com.example.endpointadmin.security.AdminTenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -32,6 +34,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -131,8 +134,14 @@ public class DomainOpsBrokerService {
                     "Domain ops request body is required.");
         }
 
-        TxOutcome outcome = transactionTemplate.execute(status ->
-                createDurableRequest(resolved, deviceId, request));
+        TxOutcome outcome;
+        try {
+            outcome = transactionTemplate.execute(status ->
+                    createDurableRequest(resolved, deviceId, request));
+        } catch (DataIntegrityViolationException ex) {
+            outcome = transactionTemplate.execute(status ->
+                    replayAfterIdempotencyConflict(resolved, request, ex));
+        }
         if (outcome instanceof TxRejected rejected) {
             throw rejected.exception();
         }
@@ -144,6 +153,53 @@ public class DomainOpsBrokerService {
         DomainOpsConnectorDispatchResult dispatchResult = dispatch(accepted.plan());
         return transactionTemplate.execute(status ->
                 persistDispatchResult(accepted.plan().requestId(), dispatchResult));
+    }
+
+    public int expireStaleDispatchWindows(int maxRequests) {
+        if (maxRequests <= 0) {
+            return 0;
+        }
+        int bounded = Math.min(maxRequests, 500);
+        return transactionTemplate.execute(status -> {
+            Instant now = clock.instant();
+            List<EndpointDomainOpsRequest> candidates = requestRepository.findExpiredDispatchCandidates(
+                    List.of(DomainOpsStatus.ACCEPTED, DomainOpsStatus.PENDING_DISPATCH),
+                    now,
+                    PageRequest.of(0, bounded));
+            int expired = 0;
+            for (EndpointDomainOpsRequest stored : candidates) {
+                stored.markConnectorResult(
+                        DomainOpsStatus.EXPIRED,
+                        "dispatch-window-expired",
+                        "domain-ops-reconciler",
+                        null,
+                        Map.of("reconciledBy", "domain-ops-reconciler"),
+                        now);
+                stored = requestRepository.saveAndFlush(stored);
+                EndpointDevice device = deviceRepository.findById(stored.getDeviceId()).orElse(null);
+                auditStoredRequest(stored,
+                        device,
+                        EVENT_TYPE_EXPIRED,
+                        "domain-ops.expired",
+                        stored.getCredentialRef() != null,
+                        stored.getCredentialRefHash() != null);
+                expired++;
+            }
+            return expired;
+        });
+    }
+
+    private TxOutcome replayAfterIdempotencyConflict(AdminTenantContext resolved,
+                                                     CreateDomainOpsRequest request,
+                                                     DataIntegrityViolationException cause) {
+        String idempotencyKeyHash = sha256OrNull(request == null ? null : request.idempotencyKey());
+        if (idempotencyKeyHash == null) {
+            throw cause;
+        }
+        return requestRepository.findByTenantIdAndIdempotencyKeyHash(
+                        resolved.tenantId(), idempotencyKeyHash)
+                .<TxOutcome>map(existing -> new TxReplay(toResult(existing)))
+                .orElseThrow(() -> cause);
     }
 
     private TxOutcome createDurableRequest(AdminTenantContext resolved,
