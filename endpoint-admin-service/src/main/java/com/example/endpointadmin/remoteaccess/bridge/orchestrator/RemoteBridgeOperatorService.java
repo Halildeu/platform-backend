@@ -36,7 +36,8 @@ import java.util.function.LongSupplier;
  *   <li><b>KILL</b> → kill the transport stream AND drive the session state machine to a terminal state +
  *       evict it (so no ACTIVE ghost session lingers — Codex S1). A duress that is AMBIGUOUS because the
  *       transport duress-classification is not yet wired surfaces here as a KILL — fail-closed.</li>
- *   <li><b>DENY</b> → nothing pushed; the broker already recorded the denial.</li>
+ *   <li><b>DENY</b> → nothing pushed; the broker already recorded the denial. The session is also driven
+ *       terminal + evicted so a denied policy decision cannot strand the peer slot.</li>
  * </ul>
  */
 public final class RemoteBridgeOperatorService {
@@ -182,7 +183,13 @@ public final class RemoteBridgeOperatorService {
                 store.evictIfTerminal(request.sessionId());
                 yield OperatorOutcome.handled(outcome, false);
             }
-            case DENY -> OperatorOutcome.handled(outcome, false); // broker already recorded the denial
+            case DENY -> {
+                // Broker already recorded the denial; do not push anything to the agent. Still close the
+                // operator session locally so policy DENY cannot leave an ACTIVE ghost that blocks a retry.
+                session.transition(Event.CLOSE);
+                store.evictIfTerminal(request.sessionId());
+                yield OperatorOutcome.handled(outcome, false);
+            }
         };
     }
 }
