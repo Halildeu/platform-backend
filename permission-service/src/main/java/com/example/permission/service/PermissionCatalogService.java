@@ -42,7 +42,27 @@ public class PermissionCatalogService {
             // for tuple-holders. Deliberately NOT seeded into the ADMIN role by
             // PermissionDataInitializer: owner decision (2026-06-10) keeps device
             // management opt-in per user/role, not blanket-admin.
-            new ModuleCatalogItem("ENDPOINT_ADMIN", "Cihaz Kayıt Yönetimi", List.of("VIEW", "MANAGE"))
+            new ModuleCatalogItem("ENDPOINT_ADMIN", "Cihaz Kayıt Yönetimi", List.of("VIEW", "MANAGE")),
+            // Faz 24 Meeting Intelligence (ADR-0041 §5 prod-promotion gate): meeting-service
+            // (#410) + transcript-service (#411) admin endpoints are @RequireModule-gated on
+            // module:MEETING / module:TRANSCRIPT. This catalog entry moves the prod grant path
+            // off the test-only direct OpenFGA seed (scripts/faz24/openfga-meeting-transcript-seed.sh)
+            // onto the DD-EA-2 writer path: role/granule grant → TupleSyncService → outbox → OpenFGA.
+            //
+            // INVARIANT (Codex 019ed603, Option A): catalog key == role_permissions.permission_key
+            // == OpenFGA object id == the services' @RequireModule(value=...) literal. All four are
+            // the SAME string — there is NO case transform on the MODULE write path
+            // (TupleSyncService objectId=key verbatim; AccessControllerV1 stores key.trim() verbatim).
+            // The services were uppercase-aligned (MeetingAuthz.MODULE/TranscriptAuthz.MODULE =
+            // "MEETING"/"TRANSCRIPT") in the same promotion bundle so the chain is consistent with the
+            // core-module convention (ACCESS/AUDIT/...). endpoint-admin's catalog-UPPER/object-lowercase
+            // split is a legacy exception (its auto-grant bridge is NOT wired) — explicitly NOT a precedent.
+            //
+            // Seeded into the ADMIN role by default (PermissionDataInitializer.buildAdminGranules,
+            // IMPERSONATION_AUDIT/SUGGESTIONS/ETHIC precedent) — meeting/transcript admin consoles are
+            // platform-admin surfaces. Non-admin roles receive explicit grants via the access drawer.
+            new ModuleCatalogItem("MEETING", "Toplantı", List.of("VIEW", "MANAGE")),
+            new ModuleCatalogItem("TRANSCRIPT", "Transkript", List.of("VIEW", "MANAGE"))
     );
 
     private static final List<ActionCatalogItem> ACTIONS = List.of(

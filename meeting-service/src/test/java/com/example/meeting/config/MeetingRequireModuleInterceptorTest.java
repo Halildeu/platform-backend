@@ -26,7 +26,7 @@ import org.springframework.web.method.HandlerMethod;
 /**
  * Unit tests for {@link MeetingRequireModuleInterceptor} — Faz 24 (#410).
  * Proves the OpenFGA module gate using the canonical {@link MeetingAuthz}
- * constants ({@code module:meeting} + {@code can_view}/{@code can_manage}):
+ * constants ({@code module:MEETING} + {@code can_view}/{@code can_manage}):
  * fail-open when disabled, 403 on deny, 401 when no principal, allow on
  * grant.
  */

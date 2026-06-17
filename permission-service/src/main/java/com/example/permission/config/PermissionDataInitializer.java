@@ -151,6 +151,26 @@ public class PermissionDataInitializer implements CommandLineRunner {
     private static final GranuleSeed ETHIC_ADMIN_GRANULE = new GranuleSeed(
             PermissionType.MODULE, "ETHIC", GrantType.MANAGE);
 
+    /**
+     * Faz 24 Meeting Intelligence (ADR-0041 §5 prod-promotion gate):
+     * {@code MODULE:MEETING:MANAGE} / {@code MODULE:TRANSCRIPT:MANAGE} granules
+     * seeded onto the ADMIN role. The meeting-service (#410) + transcript-service
+     * (#411) admin consoles are platform-admin surfaces, so they follow the
+     * "ADMIN has every core platform module" contract (same path as
+     * {@link #IMPERSONATION_AUDIT_ADMIN_GRANULE}) — NOT the opt-in endpoint-admin
+     * exception. The granule {@code permission_key} is the uppercase module id
+     * ({@code MEETING}/{@code TRANSCRIPT}) so TupleSyncService writes
+     * {@code module:MEETING can_manage user:<adminUserId>} — the exact object id
+     * the services' {@code @RequireModule} check, after the Option A
+     * uppercase-align (Codex 019ed603). This replaces the test-only direct
+     * OpenFGA seed with the DD-EA-2 writer path in production.
+     */
+    private static final GranuleSeed MEETING_ADMIN_GRANULE = new GranuleSeed(
+            PermissionType.MODULE, "MEETING", GrantType.MANAGE);
+
+    private static final GranuleSeed TRANSCRIPT_ADMIN_GRANULE = new GranuleSeed(
+            PermissionType.MODULE, "TRANSCRIPT", GrantType.MANAGE);
+
     private static final Map<String, List<GranuleSeed>> DEFAULT_ROLE_GRANULES = Map.ofEntries(
             Map.entry("ADMIN",           buildAdminGranules()),
             Map.entry("REPORT_MANAGER",  combine(
@@ -184,7 +204,8 @@ public class PermissionDataInitializer implements CommandLineRunner {
     /**
      * ADMIN granule seed list = dashboard MANAGE (HR + Finans) + report_group
      * MANAGE (R16 PR-B-2) + dedicated IMPERSONATION_AUDIT MANAGE module
-     * grant (PR-D2) + SUGGESTIONS / ETHIC MANAGE module grants.
+     * grant (PR-D2) + SUGGESTIONS / ETHIC MANAGE module grants + Faz 24
+     * MEETING / TRANSCRIPT MANAGE module grants (ADR-0041 §5).
      */
     private static List<GranuleSeed> buildAdminGranules() {
         List<GranuleSeed> out = new ArrayList<>(buildDashboardGranules(
@@ -194,6 +215,10 @@ public class PermissionDataInitializer implements CommandLineRunner {
         out.add(IMPERSONATION_AUDIT_ADMIN_GRANULE);
         out.add(SUGGESTIONS_ADMIN_GRANULE);
         out.add(ETHIC_ADMIN_GRANULE);
+        // Faz 24 Meeting Intelligence (ADR-0041 §5): admin consoles for
+        // meeting-service (#410) + transcript-service (#411).
+        out.add(MEETING_ADMIN_GRANULE);
+        out.add(TRANSCRIPT_ADMIN_GRANULE);
         return List.copyOf(out);
     }
 
