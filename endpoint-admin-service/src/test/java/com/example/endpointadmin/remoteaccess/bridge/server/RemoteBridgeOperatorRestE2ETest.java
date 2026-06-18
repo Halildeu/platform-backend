@@ -8,6 +8,7 @@ import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
 import com.example.endpointadmin.remoteaccess.InMemoryOperatorStepUpVerifier;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrength;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
@@ -131,7 +132,8 @@ class RemoteBridgeOperatorRestE2ETest {
         OperatorStepUpHandler stepUp = new OperatorStepUpHandler(
                 new InMemoryOperatorStepUpVerifier(MethodStrength.WEBAUTHN_USER_VERIFICATION, ORIGIN), store, ORIGIN, 120_000L);
         RemoteBridgeOperatorController controller = new RemoteBridgeOperatorController(operator, stepUp,
-                new InMemoryOperatorAuthenticator(TOKEN, OPERATOR, TENANT.toString()), store, resolverFor(registry), () -> NOW);
+                new InMemoryOperatorAuthenticator(TOKEN, OPERATOR, TENANT.toString()), store, resolverFor(registry),
+                RemoteOperationCatalog.standard(60_000L), () -> NOW);
         MockMvc mvc = MockMvcBuilders.standaloneSetup(controller).build();
         String auth = "Bearer " + TOKEN;
 

@@ -4,6 +4,10 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpAsser
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChallenge;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.Entry;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.Resolution;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.ResolutionStatus;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
@@ -23,6 +27,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -82,6 +87,7 @@ public class RemoteBridgeOperatorController {
     private final OperatorAuthenticator authenticator;
     private final RemoteBridgeSessionStore sessionStore;
     private final ConnectedDeviceResolver deviceResolver;
+    private final RemoteOperationCatalog operationCatalog;
     private final LongSupplier clock;
 
     @Autowired
@@ -89,8 +95,10 @@ public class RemoteBridgeOperatorController {
                                           OperatorStepUpHandler stepUpHandler,
                                           OperatorAuthenticator authenticator,
                                           RemoteBridgeSessionStore sessionStore,
-                                          ConnectedDeviceResolver deviceResolver) {
-        this(operatorService, stepUpHandler, authenticator, sessionStore, deviceResolver, System::currentTimeMillis);
+                                          ConnectedDeviceResolver deviceResolver,
+                                          RemoteOperationCatalog operationCatalog) {
+        this(operatorService, stepUpHandler, authenticator, sessionStore, deviceResolver, operationCatalog,
+                System::currentTimeMillis);
     }
 
     /** Package-private seam so a test can pin the clock. */
@@ -99,13 +107,27 @@ public class RemoteBridgeOperatorController {
                                    OperatorAuthenticator authenticator,
                                    RemoteBridgeSessionStore sessionStore,
                                    ConnectedDeviceResolver deviceResolver,
+                                   RemoteOperationCatalog operationCatalog,
                                    LongSupplier clock) {
         this.operatorService = Objects.requireNonNull(operatorService, "operatorService");
         this.stepUpHandler = Objects.requireNonNull(stepUpHandler, "stepUpHandler");
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
         this.deviceResolver = Objects.requireNonNull(deviceResolver, "deviceResolver");
+        this.operationCatalog = Objects.requireNonNull(operationCatalog, "operationCatalog");
         this.clock = Objects.requireNonNull(clock, "clock");
+    }
+
+    /** Query the server-owned approved operation catalog. Operator auth is required; no session is needed. */
+    @GetMapping("/operation-catalog")
+    public ResponseEntity<?> operationCatalog(HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        return ResponseEntity.ok(operationCatalog.entries().stream()
+                .map(CatalogEntryResponse::from)
+                .toList());
     }
 
     /**
@@ -231,14 +253,40 @@ public class RemoteBridgeOperatorController {
         if (ownedSession(sessionId, identity).isEmpty()) {
             return notFound();
         }
-        if (body == null || body.operationId() == null || body.operationId().isBlank() || body.operation() == null) {
+        if (body == null || body.operationId() == null || body.operationId().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
-        RemoteOperation operation;
-        try {
-            operation = RemoteOperation.valueOf(body.operation());
-        } catch (IllegalArgumentException unknownOperation) {
-            return ResponseEntity.badRequest().build(); // an unknown operation name is a malformed request, not a leak
+        String catalogOperationId = body.catalogOperationId();
+        RemoteOperation operation = null;
+        if (body.operation() != null) {
+            try {
+                operation = RemoteOperation.valueOf(body.operation());
+            } catch (IllegalArgumentException unknownOperation) {
+                return ResponseEntity.badRequest().build(); // an unknown operation name is a malformed request, not a leak
+            }
+        }
+        if (catalogOperationId == null || catalogOperationId.isBlank()) {
+            if (operation == null) {
+                return ResponseEntity.badRequest().build();
+            }
+            if (operation == RemoteOperation.PTY_COMMAND) {
+                return ResponseEntity.badRequest().body(new RejectedResponse("catalog-operation-required"));
+            }
+        } else {
+            Resolution resolution = operationCatalog.resolve(catalogOperationId, operation, body.commandLine());
+            if (resolution.status() == ResolutionStatus.UNKNOWN
+                    || resolution.status() == ResolutionStatus.OPERATION_MISMATCH
+                    || resolution.status() == ResolutionStatus.OVERRIDE_ATTEMPT) {
+                return ResponseEntity.badRequest().body(new RejectedResponse(resolution.reason()));
+            }
+            if (resolution.status() == ResolutionStatus.DISABLED) {
+                return ResponseEntity.unprocessableEntity().body(new RejectedResponse(resolution.reason()));
+            }
+            Entry entry = resolution.entry();
+            operation = entry.operation();
+            catalogOperationId = entry.id();
+            // commandLine becomes server-owned catalog data; the request body cannot widen it.
+            body = new OperationRequestBody(body.operationId(), operation.name(), entry.commandLine(), entry.id());
         }
         // sessionId is taken from the PATH (the ownership-validated one), never from the body
         OperationRequest opRequest =
@@ -250,7 +298,8 @@ public class RemoteBridgeOperatorController {
         return ResponseEntity.ok(new OperationResponse(outcome.brokerOutcome().kind().name(),
                 outcome.transportPushed(),
                 PermitMetadata.from(outcome.brokerOutcome().permit(), clock.getAsLong()),
-                DenyMetadata.from(outcome.brokerOutcome())));
+                DenyMetadata.from(outcome.brokerOutcome()),
+                catalogOperationId));
     }
 
     private OperatorIdentity authenticate(HttpServletRequest request) {
@@ -335,10 +384,32 @@ public class RemoteBridgeOperatorController {
     public record VerifyResponse(boolean verified, String achievedStrength) {
     }
 
-    public record OperationRequestBody(String operationId, String operation, String commandLine) {
+    public record OperationRequestBody(String operationId, String operation, String commandLine,
+                                       String catalogOperationId) {
     }
 
-    public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit, DenyMetadata deny) {
+    public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit, DenyMetadata deny,
+                                    String catalogOperationId) {
+    }
+
+    public record CatalogEntryResponse(String id,
+                                       String displayName,
+                                       String operation,
+                                       String requiredCapability,
+                                       String riskLevel,
+                                       String approvalRequirement,
+                                       boolean consentRequired,
+                                       long permitTtlMillis,
+                                       String outputRetention,
+                                       String redactionClass,
+                                       boolean enabled,
+                                       String disabledReason) {
+        static CatalogEntryResponse from(Entry entry) {
+            return new CatalogEntryResponse(entry.id(), entry.displayName(), entry.operation().name(),
+                    entry.requiredCapability().name(), entry.riskLevel().name(), entry.approvalRequirement().name(),
+                    entry.consentRequired(), entry.permitTtlMillis(), entry.outputRetention().name(),
+                    entry.redactionClass().name(), entry.enabled(), entry.disabledReason());
+        }
     }
 
     public record DenyMetadata(String reason, String policyGate, String policyDetail) {
