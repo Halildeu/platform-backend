@@ -11,6 +11,7 @@ public record DomainOpsExecutionConnectorProperties(
         List<String> allowedCredentialRefPrefixes
 ) {
     public static final String DISPATCH_PLAN_ONLY_MODE = "dispatch-plan-only";
+    public static final String EXECUTION_PACKAGE_MODE = "execution-package";
 
     public DomainOpsExecutionConnectorProperties {
         mode = mode == null || mode.isBlank() ? DISPATCH_PLAN_ONLY_MODE : mode.trim();
