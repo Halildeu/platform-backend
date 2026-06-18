@@ -92,8 +92,10 @@ public final class TrustEvidenceAssembler {
         // The decision's basis is auditable + honest (enrollment != hardware key attestation).
         SessionDeviceTrustVerifier.DeviceTrustDecision deviceDecision =
                 deviceTrustVerifier.verify(session, trust, nowEpochMillis);
-        boolean deviceTrusted = deviceDecision.trusted()
-                && deviceIdentitiesConsistent(trust, session.deviceId());
+        boolean identitiesConsistent = deviceIdentitiesConsistent(trust, session.deviceId());
+        boolean deviceTrusted = deviceDecision.trusted() && identitiesConsistent;
+        String cryptoIdentityDetail = cryptoIdentityDetail(certTrusted, attestationVerified, deviceDecision,
+                identitiesConsistent);
 
         Set<RemoteSessionCapability> granted = OwnerTokenGate.effectiveGrant(
                 ownerGate.grantedCapabilities(new OwnerTokenGate.OwnerGrantContext(session.sessionId(),
@@ -108,8 +110,8 @@ public final class TrustEvidenceAssembler {
         StepUpState stepUp = new StepUpState(session.lastStepUpEpochMillis(),
                 session.sessionStartEpochMillis(), session.stepUpStrength());
 
-        return new RemoteBridgeTrustEvidence(certTrusted, attestationVerified, deviceTrusted, stepUp, duress,
-                granted, session.lease(), session.deviceId(), session.operatorSubject());
+        return new RemoteBridgeTrustEvidence(certTrusted, attestationVerified, deviceTrusted, cryptoIdentityDetail,
+                stepUp, duress, granted, session.lease(), session.deviceId(), session.operatorSubject());
     }
 
     private DuressSignal classifyDuress(String sessionId, long nowEpochMillis) {
@@ -127,5 +129,32 @@ public final class TrustEvidenceAssembler {
             return false; // no peer-trust evidence (or no session device id) cannot confirm device consistency
         }
         return trust.certBoundDeviceId().map(sessionDeviceId::equals).orElse(true);
+    }
+
+    private static String cryptoIdentityDetail(boolean certTrusted,
+                                               boolean attestationVerified,
+                                               SessionDeviceTrustVerifier.DeviceTrustDecision deviceDecision,
+                                               boolean identitiesConsistent) {
+        if (!certTrusted) {
+            return "cert-untrusted";
+        }
+        if (!attestationVerified) {
+            return "attestation-unverified";
+        }
+        if (deviceDecision == null || !deviceDecision.trusted()) {
+            return safeDetail(deviceDecision == null ? null : deviceDecision.reason(), "device-untrusted");
+        }
+        if (!identitiesConsistent) {
+            return "device-identity-mismatch";
+        }
+        return null;
+    }
+
+    private static String safeDetail(String reason, String fallback) {
+        if (reason == null || reason.isBlank()) {
+            return fallback;
+        }
+        String canonical = reason.trim();
+        return canonical.matches("^[a-z0-9-]{1,64}$") ? canonical : fallback;
     }
 }

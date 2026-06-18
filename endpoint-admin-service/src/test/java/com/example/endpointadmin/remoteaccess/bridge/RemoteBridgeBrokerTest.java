@@ -120,6 +120,19 @@ class RemoteBridgeBrokerTest {
     }
 
     @Test
+    void aCryptoIdentityDenyCarriesOnlyBoundedPolicyDetailWhenProvided() {
+        RemoteBridgeTrustEvidence evidence = new RemoteBridgeTrustEvidence(true, true, false,
+                "no-active-enrolled-connected-peer", UV, DuressSignal.NONE,
+                Set.of(RemoteSessionCapability.CONSTRAINED_PTY), LEASE, "dev-1", "operator@x");
+
+        BrokerOutcome o = broker.handle(pty("hostname"), evidence, State.ACTIVE, 1L, NOW);
+
+        assertEquals(BrokerOutcome.Kind.DENY, o.kind());
+        assertEquals("policy:CRYPTO_IDENTITY", o.reason());
+        assertEquals("no-active-enrolled-connected-peer", o.policyDetail());
+    }
+
+    @Test
     void theConsentLeaseMustBeActive() {
         // no lease
         assertEquals("no-active-consent-lease",
