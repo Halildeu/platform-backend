@@ -5,6 +5,7 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChall
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
+import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.WireContract;
@@ -27,8 +28,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.EnumSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -240,7 +245,8 @@ public class RemoteBridgeOperatorController {
         if (!outcome.accepted()) {
             return ResponseEntity.unprocessableEntity().body(new RejectedResponse(outcome.rejectReason()));
         }
-        return ResponseEntity.ok(new OperationResponse(outcome.brokerOutcome().kind().name(), outcome.transportPushed()));
+        return ResponseEntity.ok(new OperationResponse(outcome.brokerOutcome().kind().name(),
+                outcome.transportPushed(), PermitMetadata.from(outcome.brokerOutcome().permit(), clock.getAsLong())));
     }
 
     private OperatorIdentity authenticate(HttpServletRequest request) {
@@ -328,9 +334,63 @@ public class RemoteBridgeOperatorController {
     public record OperationRequestBody(String operationId, String operation, String commandLine) {
     }
 
-    public record OperationResponse(String kind, boolean transportPushed) {
+    public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit) {
+    }
+
+    public record PermitMetadata(String alg,
+                                 String kid,
+                                 int permitVersion,
+                                 String policyVersion,
+                                 String decisionId,
+                                 String sessionId,
+                                 String operationId,
+                                 String deviceIdSha256,
+                                 String operatorSubjectSha256,
+                                 String capability,
+                                 String commandHash,
+                                 long issuedAtEpochMillis,
+                                 long expiresAtEpochMillis,
+                                 long seq,
+                                 boolean signaturePresent,
+                                 String canonicalPayloadSha256,
+                                 boolean freshAtResponseTime) {
+        static PermitMetadata from(OperationPermit permit, long nowEpochMillis) {
+            if (permit == null) {
+                return null;
+            }
+            return new PermitMetadata(
+                    permit.alg(),
+                    permit.kid(),
+                    permit.permitVersion(),
+                    permit.policyVersion(),
+                    permit.decisionId(),
+                    permit.sessionId(),
+                    permit.operationId(),
+                    sha256Hex(permit.deviceId()),
+                    sha256Hex(permit.operatorSubject()),
+                    permit.capability() == null ? null : permit.capability().name(),
+                    permit.commandHash(),
+                    permit.issuedAtEpochMillis(),
+                    permit.expiresAtEpochMillis(),
+                    permit.seq(),
+                    permit.signatureB64() != null && !permit.signatureB64().isBlank(),
+                    sha256Hex(permit.canonicalPayload()),
+                    permit.isFresh(nowEpochMillis));
+        }
     }
 
     public record RejectedResponse(String reason) {
+    }
+
+    private static String sha256Hex(String value) {
+        return sha256Hex(value == null ? new byte[0] : value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 }
