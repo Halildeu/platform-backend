@@ -7,6 +7,8 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.Verdict;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
+import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
@@ -228,6 +230,54 @@ class RemoteBridgeOperatorControllerTest {
         assertEquals("s-owned", captor.getValue().sessionId(), "the session id must come from the PATH, not the body");
         assertEquals("op-1", captor.getValue().operationId());
         assertEquals(RemoteOperation.SCREEN_VIEW, captor.getValue().operation());
+    }
+
+    @Test
+    void aPermittedOperationReturnsOnlyRedactedPermitMetadata() throws Exception {
+        OperationPermit permit = new OperationPermit(
+                RemoteBridgePermitSigner.PERMIT_ALG,
+                "rb-permit-kid-1",
+                RemoteBridgePermitSigner.PERMIT_VERSION,
+                "rb-v1",
+                "decision-1",
+                "s-owned",
+                "op-1",
+                "dev-owned",
+                OWNER,
+                RemoteSessionCapability.VIEW_ONLY,
+                "",
+                NOW - 100,
+                NOW + 60_000,
+                7,
+                "redacted-signature-b64");
+        when(operatorService.handleOperationRequest(any()))
+                .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.PERMIT, permit, null,
+                        "permitted"), true, null));
+
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"operation\":\"SCREEN_VIEW\",\"commandLine\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kind").value("PERMIT"))
+                .andExpect(jsonPath("$.transportPushed").value(true))
+                .andExpect(jsonPath("$.permit.alg").value(RemoteBridgePermitSigner.PERMIT_ALG))
+                .andExpect(jsonPath("$.permit.kid").value("rb-permit-kid-1"))
+                .andExpect(jsonPath("$.permit.permitVersion").value(RemoteBridgePermitSigner.PERMIT_VERSION))
+                .andExpect(jsonPath("$.permit.policyVersion").value("rb-v1"))
+                .andExpect(jsonPath("$.permit.decisionId").value("decision-1"))
+                .andExpect(jsonPath("$.permit.sessionId").value("s-owned"))
+                .andExpect(jsonPath("$.permit.operationId").value("op-1"))
+                .andExpect(jsonPath("$.permit.capability").value("VIEW_ONLY"))
+                .andExpect(jsonPath("$.permit.commandHash").value(""))
+                .andExpect(jsonPath("$.permit.seq").value(7))
+                .andExpect(jsonPath("$.permit.signaturePresent").value(true))
+                .andExpect(jsonPath("$.permit.freshAtResponseTime").value(true))
+                .andExpect(jsonPath("$.permit.canonicalPayloadSha256").exists())
+                .andExpect(jsonPath("$.permit.deviceIdSha256").exists())
+                .andExpect(jsonPath("$.permit.operatorSubjectSha256").exists())
+                .andExpect(jsonPath("$.permit.signatureB64").doesNotExist())
+                .andExpect(jsonPath("$.permit.deviceId").doesNotExist())
+                .andExpect(jsonPath("$.permit.operatorSubject").doesNotExist());
     }
 
     @Test
