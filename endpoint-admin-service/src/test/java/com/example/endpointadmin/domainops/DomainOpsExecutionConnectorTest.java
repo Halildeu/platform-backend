@@ -25,6 +25,12 @@ class DomainOpsExecutionConnectorTest {
                     "dispatch-plan-only",
                     List.of("vault:domain-ops/")),
             CLOCK);
+    private final DomainOpsExecutionConnector packageConnector = new DomainOpsExecutionConnector(
+            new DomainOpsExecutionConnectorProperties(
+                    true,
+                    "execution-package",
+                    List.of("vault:domain-ops/")),
+            CLOCK);
 
     @Test
     void gpoMsiDeploymentCreatesRedactedDispatchPlan() {
@@ -78,9 +84,97 @@ class DomainOpsExecutionConnectorTest {
     }
 
     @Test
+    void gpoMsiDeploymentCreatesSealedExecutionPackage() {
+        DomainOpsConnectorDispatchResult result = packageConnector.dispatch(request(
+                DomainOpsOperation.ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT,
+                gpoMsiPayload(),
+                CREDENTIAL_REF,
+                CLOCK.instant().plusSeconds(300)));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.DISPATCHED);
+        assertThat(result.reasonCode()).isEqualTo("gpo-msi-execution-package-created");
+        assertThat(result.connectorAttemptId()).isEqualTo("domops-1111111122223333");
+        assertThat(result.redactedResult())
+                .containsEntry("packageFormat", "domain-ops-execution-package.v1")
+                .containsEntry("dispatchKind", "GPO_MSI_EXECUTION_PACKAGE")
+                .containsEntry("connectorMode", "execution-package")
+                .containsEntry("operation", "ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT")
+                .containsEntry("artifactHost", "github.com")
+                .containsEntry("artifactSha256", "5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571")
+                .containsEntry("targetComputerCount", 2)
+                .containsEntry("ttlSeconds", 300L);
+        assertThat(result.redactedResult())
+                .containsKeys(
+                        "payloadSha256",
+                        "credentialRefSha256",
+                        "targetComputerSetSha256",
+                        "packageSha256");
+        assertThat(result.redactedResult().get("expectedEvidenceContract"))
+                .asList()
+                .containsExactly(
+                        "MSI_DIGEST_VERIFIED",
+                        "GPO_LINK_SCOPED_TO_PILOT",
+                        "PILOT_SECURITY_FILTER_APPLIED",
+                        "GPUPDATE_REQUESTED_OR_NATURAL_REFRESH_RECORDED",
+                        "ROLLOUT_COLLECTOR_QUEUED");
+        assertRedacted(result);
+    }
+
+    @Test
+    void rolloutCollectorCreatesSealedExecutionPackage() {
+        DomainOpsConnectorDispatchResult result = packageConnector.dispatch(request(
+                DomainOpsOperation.ENDPOINT_AGENT_ROLLOUT_COLLECTOR,
+                collectorPayload(),
+                CREDENTIAL_REF,
+                CLOCK.instant().plusSeconds(120)));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.DISPATCHED);
+        assertThat(result.reasonCode()).isEqualTo("rollout-collector-execution-package-created");
+        assertThat(result.redactedResult())
+                .containsEntry("packageFormat", "domain-ops-execution-package.v1")
+                .containsEntry("dispatchKind", "ROLLOUT_COLLECTOR_EXECUTION_PACKAGE")
+                .containsEntry("connectorMode", "execution-package")
+                .containsEntry("operation", "ENDPOINT_AGENT_ROLLOUT_COLLECTOR")
+                .containsEntry("expectedApiHost", "mtls.testai.acik.com")
+                .containsEntry("expectedMsiSha256", "5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571")
+                .containsEntry("targetComputerCount", 2)
+                .containsEntry("restartServiceBeforeCollect", false)
+                .containsEntry("ttlSeconds", 120L);
+        assertThat(result.redactedResult())
+                .containsKeys(
+                        "payloadSha256",
+                        "credentialRefSha256",
+                        "targetComputerSetSha256",
+                        "packageSha256");
+        assertThat(result.redactedResult().get("expectedEvidenceContract"))
+                .asList()
+                .containsExactly(
+                        "MACHINE_CLIENT_AUTH_CERT_PRESENT",
+                        "ENDPOINT_AGENT_SERVICE_RUNNING_AUTOMATIC_LOCALSYSTEM",
+                        "ENDPOINT_AGENT_BINARY_DIGEST_MATCHES_EXPECTED_MSI",
+                        "MTLS_HOST_REACHABLE_AND_CONFIGURED",
+                        "REDACTED_GPRESULT_OR_EQUIVALENT_POLICY_EVIDENCE",
+                        "AGENT_LOG_TAIL_REDACTED");
+        assertRedacted(result);
+    }
+
+    @Test
     void unsupportedLegacyOperationFailsClosed() {
         DomainOpsConnectorDispatchResult result = connector.dispatch(request(
                 DomainOpsOperation.GPO_FORCE_REFRESH,
+                Map.of(),
+                CREDENTIAL_REF,
+                CLOCK.instant().plusSeconds(300)));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.FAILED);
+        assertThat(result.reasonCode()).isEqualTo("operation-not-supported-by-execution-connector");
+        assertThat(result.redactedResult()).isEmpty();
+    }
+
+    @Test
+    void executionPackageModeRejectsUnsupportedLegacyOperation() {
+        DomainOpsConnectorDispatchResult result = packageConnector.dispatch(request(
+                DomainOpsOperation.CERT_AUTOENROLL_PULSE,
                 Map.of(),
                 CREDENTIAL_REF,
                 CLOCK.instant().plusSeconds(300)));
