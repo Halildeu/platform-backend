@@ -4,6 +4,7 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy.MethodStrengt
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChallenge;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.Verdict;
+import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
@@ -70,6 +71,7 @@ class RemoteBridgeOperatorControllerTest {
     private final ConnectedDeviceResolver deviceResolver = mock(ConnectedDeviceResolver.class);
     private final RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
     private final RemoteOperationCatalog operationCatalog = RemoteOperationCatalog.standard(60_000L);
+    private final ApprovedRemoteScriptCatalog approvedScriptCatalog = ApprovedRemoteScriptCatalog.standard(60_000L);
     private MockMvc mvc;
 
     @BeforeEach
@@ -80,7 +82,8 @@ class RemoteBridgeOperatorControllerTest {
         openSession("s-cross-tenant", OWNER, OTHER_TENANT, "dev-ct", "peer-ct");
         OperatorAuthenticator authenticator = new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT);
         RemoteBridgeOperatorController controller = new RemoteBridgeOperatorController(
-                operatorService, stepUpHandler, authenticator, store, deviceResolver, operationCatalog, () -> NOW);
+                operatorService, stepUpHandler, authenticator, store, deviceResolver, operationCatalog,
+                approvedScriptCatalog, () -> NOW);
         mvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -118,6 +121,13 @@ class RemoteBridgeOperatorControllerTest {
     void anUnauthenticatedCatalogQueryIs401() throws Exception {
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .get("/internal/remote-bridge/operator/operation-catalog"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void anUnauthenticatedApprovedScriptQueryIs401() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/internal/remote-bridge/operator/approved-scripts"))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -238,6 +248,21 @@ class RemoteBridgeOperatorControllerTest {
     }
 
     @Test
+    void theApprovedScriptCatalogListsMetadataWithoutScriptBodyOrCommandTemplate() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/internal/remote-bridge/operator/approved-scripts").header("Authorization", AUTH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.scriptId == 'DIAG_HOSTNAME')].enabled").value(contains(true)))
+                .andExpect(jsonPath("$[?(@.scriptId == 'DIAG_HOSTNAME')].version").value(contains("1")))
+                .andExpect(jsonPath("$[?(@.scriptId == 'DIAG_HOSTNAME')].scriptHash").isNotEmpty())
+                .andExpect(jsonPath("$[?(@.scriptId == 'DIAG_HOSTNAME')].approvalRequirements[0]")
+                        .value(contains("WEBAUTHN_STEP_UP")))
+                .andExpect(jsonPath("$[?(@.scriptId == 'DIAG_HOSTNAME')].scriptBody").doesNotExist())
+                .andExpect(jsonPath("$[?(@.scriptId == 'DIAG_HOSTNAME')].commandTemplate").doesNotExist())
+                .andExpect(jsonPath("$[?(@.scriptId == 'COLLECT_SUPPORT_BUNDLE')].revoked").value(contains(true)));
+    }
+
+    @Test
     void anOperationForTheOwnSessionIsDelegatedWithThePathSessionIdAndMapped() throws Exception {
         when(operatorService.handleOperationRequest(any()))
                 .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null, "policy:x"),
@@ -277,6 +302,80 @@ class RemoteBridgeOperatorControllerTest {
         assertEquals("op-2", captor.getValue().operationId());
         assertEquals(RemoteOperation.PTY_COMMAND, captor.getValue().operation());
         assertEquals("hostname", captor.getValue().commandLine());
+    }
+
+    @Test
+    void anApprovedScriptInvocationIsDelegatedWithTheServerOwnedCommand() throws Exception {
+        ApprovedRemoteScriptCatalog.Definition script = approvedScriptCatalog.find("DIAG_HOSTNAME", "1").orElseThrow();
+        when(operatorService.handleOperationRequest(any()))
+                .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null, "policy:x"),
+                        false, null));
+
+        mvc.perform(post(BASE + "s-owned/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(approvedScriptBody("op-script-1", script)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kind").value("DENY"))
+                .andExpect(jsonPath("$.approvedScript.scriptId").value("DIAG_HOSTNAME"))
+                .andExpect(jsonPath("$.approvedScript.version").value("1"))
+                .andExpect(jsonPath("$.approvedScript.scriptHash").value(script.scriptBodySha256()))
+                .andExpect(jsonPath("$.approvedScript.approvalRequirements[0]").value("WEBAUTHN_STEP_UP"))
+                .andExpect(jsonPath("$.approvedScript.scriptBody").doesNotExist())
+                .andExpect(jsonPath("$.approvedScript.commandTemplate").doesNotExist());
+
+        ArgumentCaptor<OperationRequest> captor = ArgumentCaptor.forClass(OperationRequest.class);
+        verify(operatorService).handleOperationRequest(captor.capture());
+        assertEquals("s-owned", captor.getValue().sessionId());
+        assertEquals("op-script-1", captor.getValue().operationId());
+        assertEquals(RemoteOperation.PTY_COMMAND, captor.getValue().operation());
+        assertEquals("hostname", captor.getValue().commandLine());
+    }
+
+    @Test
+    void approvedScriptNegativeRequestsFailClosedBeforeService() throws Exception {
+        ApprovedRemoteScriptCatalog.Definition script = approvedScriptCatalog.find("DIAG_HOSTNAME", "1").orElseThrow();
+        ApprovedRemoteScriptCatalog.Definition disabled = approvedScriptCatalog.find("DIAG_IPCONFIG", "1").orElseThrow();
+        ApprovedRemoteScriptCatalog.Definition revoked = approvedScriptCatalog.find("COLLECT_SUPPORT_BUNDLE", "1")
+                .orElseThrow();
+
+        mvc.perform(post(BASE + "s-owned/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(approvedScriptBody("op-raw", script, "\"rawScriptText\":\"hostname\"")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("approved-script-raw-text-denied"));
+        mvc.perform(post(BASE + "s-owned/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-hash\",\"scriptId\":\"DIAG_HOSTNAME\",\"scriptVersion\":\"1\","
+                        + "\"scriptHash\":\"" + "0".repeat(64) + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("approved-script-hash-mismatch"));
+        mvc.perform(post(BASE + "s-owned/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(approvedScriptBody("op-disabled", disabled)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.reason").value("approved-script-disabled"));
+        mvc.perform(post(BASE + "s-owned/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(approvedScriptBody("op-revoked", revoked)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.reason").value("approved-script-revoked"));
+        mvc.perform(post(BASE + "s-owned/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(approvedScriptBody("op-args", script, "\"args\":{\"extra\":\"value\"}")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("approved-script-arg-schema-invalid"));
+
+        verify(operatorService, never()).handleOperationRequest(any());
+    }
+
+    @Test
+    void approvedScriptForAnotherOperatorsSessionIs404AndTouchesNoService() throws Exception {
+        ApprovedRemoteScriptCatalog.Definition script = approvedScriptCatalog.find("DIAG_HOSTNAME", "1").orElseThrow();
+        mvc.perform(post(BASE + "s-foreign/approved-scripts").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(approvedScriptBody("op-script-1", script)))
+                .andExpect(status().isNotFound());
+        verify(operatorService, never()).handleOperationRequest(any());
     }
 
     @Test
@@ -435,6 +534,18 @@ class RemoteBridgeOperatorControllerTest {
                 + "\",\"reason\":\"support\",\"capabilities\":[\"VIEW_ONLY\"]}";
     }
 
+    private static String approvedScriptBody(String operationId, ApprovedRemoteScriptCatalog.Definition script,
+                                             String... extraFields) {
+        StringBuilder body = new StringBuilder("{\"operationId\":\"").append(operationId)
+                .append("\",\"scriptId\":\"").append(script.scriptId())
+                .append("\",\"scriptVersion\":\"").append(script.version())
+                .append("\",\"scriptHash\":\"").append(script.scriptBodySha256()).append("\"");
+        for (String field : extraFields) {
+            body.append(',').append(field);
+        }
+        return body.append('}').toString();
+    }
+
     @Test
     void anUnauthenticatedOpenSessionIs401AndTouchesNothing() throws Exception {
         mvc.perform(post(OPEN).contentType(MediaType.APPLICATION_JSON).content(openBody("s-new", DEVICE_UUID)))
@@ -534,7 +645,7 @@ class RemoteBridgeOperatorControllerTest {
         // a verified subject that is not a valid wire id is an auth/IdP misconfig → fail-closed before the data plane
         RemoteBridgeOperatorController badSubject = new RemoteBridgeOperatorController(operatorService, stepUpHandler,
                 new InMemoryOperatorAuthenticator(TOKEN, "bad subject!", TENANT), store, deviceResolver,
-                operationCatalog, () -> NOW);
+                operationCatalog, approvedScriptCatalog, () -> NOW);
         MockMvc mvcBad = MockMvcBuilders.standaloneSetup(badSubject).build();
         mvcBad.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
                 .content(openBody("s-new", DEVICE_UUID)))
@@ -563,7 +674,7 @@ class RemoteBridgeOperatorControllerTest {
         // a verified identity with a non-UUID tenant is unusable for tenant-scoping → fail-closed before the data plane
         RemoteBridgeOperatorController badTenant = new RemoteBridgeOperatorController(operatorService, stepUpHandler,
                 new InMemoryOperatorAuthenticator(TOKEN, OWNER, "not-a-uuid"), store, deviceResolver,
-                operationCatalog, () -> NOW);
+                operationCatalog, approvedScriptCatalog, () -> NOW);
         MockMvc mvcBad = MockMvcBuilders.standaloneSetup(badTenant).build();
         mvcBad.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
                 .content(openBody("s-new", DEVICE_UUID)))
@@ -582,6 +693,7 @@ class RemoteBridgeOperatorControllerTest {
                 .withBean(RemoteBridgeSessionStore.class, RemoteBridgeSessionStore::new)
                 .withBean(ConnectedDeviceResolver.class, () -> mock(ConnectedDeviceResolver.class))
                 .withBean(RemoteOperationCatalog.class, () -> RemoteOperationCatalog.standard(60_000L))
+                .withBean(ApprovedRemoteScriptCatalog.class, () -> ApprovedRemoteScriptCatalog.standard(60_000L))
                 .withConfiguration(UserConfigurations.of(RemoteBridgeOperatorController.class));
 
         // default (property absent) → fail-closed: no controller bean, no endpoint

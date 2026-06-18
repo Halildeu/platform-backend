@@ -3,11 +3,13 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpAssertion;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChallenge;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
+import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog;
+import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog.PreparedScript;
+import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog.ResolutionStatus;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
 import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.Entry;
 import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.Resolution;
-import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.ResolutionStatus;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
@@ -88,6 +90,7 @@ public class RemoteBridgeOperatorController {
     private final RemoteBridgeSessionStore sessionStore;
     private final ConnectedDeviceResolver deviceResolver;
     private final RemoteOperationCatalog operationCatalog;
+    private final ApprovedRemoteScriptCatalog approvedScriptCatalog;
     private final LongSupplier clock;
 
     @Autowired
@@ -96,9 +99,10 @@ public class RemoteBridgeOperatorController {
                                           OperatorAuthenticator authenticator,
                                           RemoteBridgeSessionStore sessionStore,
                                           ConnectedDeviceResolver deviceResolver,
-                                          RemoteOperationCatalog operationCatalog) {
+                                          RemoteOperationCatalog operationCatalog,
+                                          ApprovedRemoteScriptCatalog approvedScriptCatalog) {
         this(operatorService, stepUpHandler, authenticator, sessionStore, deviceResolver, operationCatalog,
-                System::currentTimeMillis);
+                approvedScriptCatalog, System::currentTimeMillis);
     }
 
     /** Package-private seam so a test can pin the clock. */
@@ -108,6 +112,7 @@ public class RemoteBridgeOperatorController {
                                    RemoteBridgeSessionStore sessionStore,
                                    ConnectedDeviceResolver deviceResolver,
                                    RemoteOperationCatalog operationCatalog,
+                                   ApprovedRemoteScriptCatalog approvedScriptCatalog,
                                    LongSupplier clock) {
         this.operatorService = Objects.requireNonNull(operatorService, "operatorService");
         this.stepUpHandler = Objects.requireNonNull(stepUpHandler, "stepUpHandler");
@@ -115,6 +120,7 @@ public class RemoteBridgeOperatorController {
         this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
         this.deviceResolver = Objects.requireNonNull(deviceResolver, "deviceResolver");
         this.operationCatalog = Objects.requireNonNull(operationCatalog, "operationCatalog");
+        this.approvedScriptCatalog = Objects.requireNonNull(approvedScriptCatalog, "approvedScriptCatalog");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -127,6 +133,18 @@ public class RemoteBridgeOperatorController {
         }
         return ResponseEntity.ok(operationCatalog.entries().stream()
                 .map(CatalogEntryResponse::from)
+                .toList());
+    }
+
+    /** Query the approved script library. The response intentionally omits script bodies and command templates. */
+    @GetMapping("/approved-scripts")
+    public ResponseEntity<?> approvedScripts(HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        return ResponseEntity.ok(approvedScriptCatalog.definitions().stream()
+                .map(ApprovedScriptEntryResponse::from)
                 .toList());
     }
 
@@ -274,12 +292,12 @@ public class RemoteBridgeOperatorController {
             }
         } else {
             Resolution resolution = operationCatalog.resolve(catalogOperationId, operation, body.commandLine());
-            if (resolution.status() == ResolutionStatus.UNKNOWN
-                    || resolution.status() == ResolutionStatus.OPERATION_MISMATCH
-                    || resolution.status() == ResolutionStatus.OVERRIDE_ATTEMPT) {
+            if (resolution.status() == RemoteOperationCatalog.ResolutionStatus.UNKNOWN
+                    || resolution.status() == RemoteOperationCatalog.ResolutionStatus.OPERATION_MISMATCH
+                    || resolution.status() == RemoteOperationCatalog.ResolutionStatus.OVERRIDE_ATTEMPT) {
                 return ResponseEntity.badRequest().body(new RejectedResponse(resolution.reason()));
             }
-            if (resolution.status() == ResolutionStatus.DISABLED) {
+            if (resolution.status() == RemoteOperationCatalog.ResolutionStatus.DISABLED) {
                 return ResponseEntity.unprocessableEntity().body(new RejectedResponse(resolution.reason()));
             }
             Entry entry = resolution.entry();
@@ -300,6 +318,54 @@ public class RemoteBridgeOperatorController {
                 PermitMetadata.from(outcome.brokerOutcome().permit(), clock.getAsLong()),
                 DenyMetadata.from(outcome.brokerOutcome()),
                 catalogOperationId));
+    }
+
+    /**
+     * Submit an approved script invocation on the operator's own session. The request references immutable
+     * script metadata only; any pasted script text or command override is refused before the broker is touched.
+     */
+    @PostMapping("/sessions/{sessionId}/approved-scripts")
+    public ResponseEntity<?> submitApprovedScript(@PathVariable String sessionId,
+                                                  @RequestBody(required = false) ApprovedScriptRequestBody body,
+                                                  HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        UUID tenantId = parseUuidOrNull(identity.tenantId());
+        if (tenantId == null) {
+            return unauthenticated();
+        }
+        if (ownedSession(sessionId, identity).isEmpty()) {
+            return notFound();
+        }
+        if (body == null || body.operationId() == null || body.operationId().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        ApprovedRemoteScriptCatalog.Resolution resolution = approvedScriptCatalog.resolve(
+                tenantId.toString(),
+                new ApprovedRemoteScriptCatalog.Invocation(body.scriptId(), body.scriptVersion(), body.scriptHash(),
+                        body.args(), body.rawScriptText(), body.scriptText(), body.scriptBody(), body.commandLine()),
+                clock.getAsLong());
+        if (!resolution.allowed()) {
+            ResponseEntity.BodyBuilder builder = scriptResolutionIsBadRequest(resolution.status())
+                    ? ResponseEntity.badRequest()
+                    : ResponseEntity.unprocessableEntity();
+            return builder.body(new RejectedResponse(resolution.reason()));
+        }
+
+        PreparedScript prepared = resolution.prepared();
+        OperationRequest opRequest = new OperationRequest(sessionId, body.operationId(), RemoteOperation.PTY_COMMAND,
+                prepared.commandLine());
+        OperatorOutcome outcome = operatorService.handleOperationRequest(opRequest);
+        if (!outcome.accepted()) {
+            return ResponseEntity.unprocessableEntity().body(new RejectedResponse(outcome.rejectReason()));
+        }
+        return ResponseEntity.ok(new ApprovedScriptOperationResponse(outcome.brokerOutcome().kind().name(),
+                outcome.transportPushed(),
+                PermitMetadata.from(outcome.brokerOutcome().permit(), clock.getAsLong()),
+                DenyMetadata.from(outcome.brokerOutcome()),
+                ApprovedScriptInvocationResponse.from(prepared)));
     }
 
     private OperatorIdentity authenticate(HttpServletRequest request) {
@@ -388,8 +454,26 @@ public class RemoteBridgeOperatorController {
                                        String catalogOperationId) {
     }
 
+    public record ApprovedScriptRequestBody(String operationId,
+                                            String scriptId,
+                                            String scriptVersion,
+                                            String scriptHash,
+                                            java.util.Map<String, String> args,
+                                            String rawScriptText,
+                                            String scriptText,
+                                            String scriptBody,
+                                            String commandLine) {
+    }
+
     public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit, DenyMetadata deny,
                                     String catalogOperationId) {
+    }
+
+    public record ApprovedScriptOperationResponse(String kind,
+                                                  boolean transportPushed,
+                                                  PermitMetadata permit,
+                                                  DenyMetadata deny,
+                                                  ApprovedScriptInvocationResponse approvedScript) {
     }
 
     public record CatalogEntryResponse(String id,
@@ -409,6 +493,79 @@ public class RemoteBridgeOperatorController {
                     entry.requiredCapability().name(), entry.riskLevel().name(), entry.approvalRequirement().name(),
                     entry.consentRequired(), entry.permitTtlMillis(), entry.outputRetention().name(),
                     entry.redactionClass().name(), entry.enabled(), entry.disabledReason());
+        }
+    }
+
+    public record ApprovedScriptEntryResponse(String scriptId,
+                                              String version,
+                                              String displayName,
+                                              String scriptHash,
+                                              String signer,
+                                              String approver,
+                                              String approvalId,
+                                              long approvalExpiresAtEpochMillis,
+                                              String riskLevel,
+                                              List<String> approvalRequirements,
+                                              String requiredCapability,
+                                              long timeoutMillis,
+                                              String outputRetention,
+                                              String redactionClass,
+                                              String cleanupNote,
+                                              List<ApprovedScriptArgumentResponse> argsSchema,
+                                              boolean enabled,
+                                              boolean revoked,
+                                              String disabledReason) {
+        static ApprovedScriptEntryResponse from(ApprovedRemoteScriptCatalog.Definition definition) {
+            return new ApprovedScriptEntryResponse(
+                    definition.scriptId(),
+                    definition.version(),
+                    definition.displayName(),
+                    definition.scriptBodySha256(),
+                    definition.signer(),
+                    definition.approver(),
+                    definition.approvalId(),
+                    definition.approvalExpiresAtEpochMillis(),
+                    definition.riskLevel().name(),
+                    definition.approvalRequirements().stream().map(Enum::name).sorted().toList(),
+                    definition.requiredCapability().name(),
+                    definition.timeoutMillis(),
+                    definition.outputRetention().name(),
+                    definition.redactionClass().name(),
+                    definition.cleanupNote(),
+                    definition.argsSchema().stream().map(ApprovedScriptArgumentResponse::from).toList(),
+                    definition.enabled(),
+                    definition.revoked(),
+                    definition.disabledReason());
+        }
+    }
+
+    public record ApprovedScriptArgumentResponse(String name,
+                                                 String type,
+                                                 boolean required,
+                                                 List<String> enumValues,
+                                                 int maxLength) {
+        static ApprovedScriptArgumentResponse from(ApprovedRemoteScriptCatalog.ArgumentSpec spec) {
+            return new ApprovedScriptArgumentResponse(spec.name(), spec.type().name(), spec.required(),
+                    spec.enumValues().stream().sorted().toList(), spec.maxLength());
+        }
+    }
+
+    public record ApprovedScriptInvocationResponse(String scriptId,
+                                                   String version,
+                                                   String scriptHash,
+                                                   String riskLevel,
+                                                   List<String> approvalRequirements,
+                                                   String requiredCapability,
+                                                   long timeoutMillis,
+                                                   String outputRetention,
+                                                   String redactionClass) {
+        static ApprovedScriptInvocationResponse from(PreparedScript script) {
+            ApprovedRemoteScriptCatalog.Definition definition = script.definition();
+            return new ApprovedScriptInvocationResponse(definition.scriptId(), definition.version(),
+                    definition.scriptBodySha256(), definition.riskLevel().name(),
+                    definition.approvalRequirements().stream().map(Enum::name).sorted().toList(),
+                    definition.requiredCapability().name(), definition.timeoutMillis(),
+                    definition.outputRetention().name(), definition.redactionClass().name());
         }
     }
 
@@ -504,5 +661,13 @@ public class RemoteBridgeOperatorController {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);
         }
+    }
+
+    private static boolean scriptResolutionIsBadRequest(ResolutionStatus status) {
+        return switch (status) {
+            case UNKNOWN, VERSION_MISMATCH, HASH_MISMATCH, TENANT_DENIED, RAW_SCRIPT_TEXT_DENIED,
+                    ARG_SCHEMA_INVALID, ARG_SECRET_MATERIAL, COMMAND_POLICY_DENIED -> true;
+            case DISABLED, REVOKED, APPROVAL_EXPIRED, ALLOWED -> false;
+        };
     }
 }
