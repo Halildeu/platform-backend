@@ -30,9 +30,12 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
+import java.util.HexFormat;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -60,6 +63,16 @@ class RemoteBridgeOperatorServiceTest {
             KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
             g.initialize(new ECGenParameterSpec("secp256r1"));
             return g.generateKeyPair();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private static String operatorSubjectAuditHash(String operatorSubject) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(operatorSubject.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
@@ -225,13 +238,18 @@ class RemoteBridgeOperatorServiceTest {
         assertFalse(blocked.opened(), "the single-live-session guard must still block before explicit close");
         assertEquals("peer-already-has-live-session", blocked.rejectReason());
 
-        SessionCloseOutcome close = service.closeSession("s1");
+        SessionCloseOutcome close = service.closeSession("s1", "operator@x");
 
         assertTrue(close.accepted());
         assertTrue(store.bySessionId("s1").isEmpty(), "the closed session must be evicted");
         assertEquals(1, closeAudits.size(), "close must be durably audited before evicting");
         assertEquals("s1", closeAudits.get(0).sessionId());
         assertEquals("SESSION_CLOSE:OPERATOR", closeAudits.get(0).eventType());
+        assertEquals(operatorSubjectAuditHash("operator@x"), closeAudits.get(0).contentHash());
+        assertEquals(64, closeAudits.get(0).contentHash().length(),
+                "close audit contentHash must remain wire-compatible SHA-256 hex");
+        assertFalse(closeAudits.get(0).contentHash().contains("operator@x"),
+                "the operator subject must not be written raw into the close audit event");
 
         SessionOpenOutcome reopened = service.openSession(
                 new SessionRequest("s2", "dev-1", "operator@x", "retry support",
@@ -256,7 +274,7 @@ class RemoteBridgeOperatorServiceTest {
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, throwingAudit,
                 () -> NOW, 120_000L);
 
-        SessionCloseOutcome close = service.closeSession("s1");
+        SessionCloseOutcome close = service.closeSession("s1", "operator@x");
 
         assertFalse(close.accepted());
         assertEquals("recording-failed", close.rejectReason());
@@ -270,6 +288,29 @@ class RemoteBridgeOperatorServiceTest {
                 peer, TENANT, "Operator X");
         assertFalse(blocked.opened(), "a failed close audit must preserve the one-live-session guard");
         assertEquals("peer-already-has-live-session", blocked.rejectReason());
+    }
+
+    @Test
+    void explicitCloseRejectsWithoutAuditWhenTheSessionIsNotCloseable() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        store.open(new SessionRequest("s1", "dev-1", "operator@x", "support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X", NOW + 60_000L, NOW);
+        List<AuditEvent> closeAudits = new ArrayList<>();
+
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, closeAudits::add,
+                () -> NOW, 120_000L);
+
+        SessionCloseOutcome close = service.closeSession("s1", "operator@x");
+
+        assertFalse(close.accepted());
+        assertEquals("session-close-refused", close.rejectReason());
+        assertTrue(closeAudits.isEmpty(), "a refused close must not write a ghost close audit");
+        assertTrue(store.bySessionId("s1").isPresent(), "the refused session must remain live for its owner path");
     }
 
     // --- slice-4b-3 consent flow (openSession) ------------------------------

@@ -19,6 +19,10 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.function.LongSupplier;
 
@@ -164,33 +168,49 @@ public final class RemoteBridgeOperatorService {
      * durable session recorder is the authority boundary: if the close event cannot be recorded, the session is
      * deliberately left live so a cleanup path cannot silently bypass the audit chain.
      */
-    public SessionCloseOutcome closeSession(String sessionId) {
+    public SessionCloseOutcome closeSession(String sessionId, String operatorSubject) {
         if (sessionId == null || sessionId.isBlank()) {
             return SessionCloseOutcome.rejected(sessionId, "malformed-request");
+        }
+        if (operatorSubject == null || operatorSubject.isBlank()) {
+            return SessionCloseOutcome.rejected(sessionId, "malformed-operator");
         }
         long now = clock.getAsLong();
         RemoteBridgeSession session = store.bySessionId(sessionId).orElse(null);
         if (session == null) {
             return SessionCloseOutcome.rejected(sessionId, "unknown-session");
         }
-        if (session.isTerminal()) {
-            store.evictIfTerminal(sessionId);
-            return SessionCloseOutcome.rejected(sessionId, "session-not-live");
-        }
-        State state = session.state();
-        if (!state.isActive() && state != State.REVOKING) {
-            return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
-        }
-        try {
-            auditSink.record(new AuditEvent(session.sessionId(), "SESSION_CLOSE:OPERATOR", "", now));
-        } catch (RuntimeException recordingFailure) {
-            return SessionCloseOutcome.rejected(sessionId, "recording-failed");
-        }
-        if (!session.transition(Event.CLOSE).accepted()) {
-            return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
+        synchronized (session) {
+            if (session.isTerminal()) {
+                store.evictIfTerminal(sessionId);
+                return SessionCloseOutcome.rejected(sessionId, "session-not-live");
+            }
+            State state = session.state();
+            if (!state.isActive() && state != State.REVOKING) {
+                return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
+            }
+            try {
+                auditSink.record(new AuditEvent(session.sessionId(), "SESSION_CLOSE:OPERATOR",
+                        operatorSubjectAuditHash(operatorSubject), now));
+            } catch (RuntimeException recordingFailure) {
+                return SessionCloseOutcome.rejected(sessionId, "recording-failed");
+            }
+            if (!session.transition(Event.CLOSE).accepted()) {
+                return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
+            }
         }
         store.evictIfTerminal(sessionId);
         return SessionCloseOutcome.closed(sessionId);
+    }
+
+    private static String operatorSubjectAuditHash(String operatorSubject) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(operatorSubject.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
     }
 
     public OperatorOutcome handleOperationRequest(OperationRequest request) {

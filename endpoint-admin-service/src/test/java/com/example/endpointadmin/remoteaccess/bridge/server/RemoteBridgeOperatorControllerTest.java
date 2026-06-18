@@ -121,7 +121,7 @@ class RemoteBridgeOperatorControllerTest {
     @Test
     void anUnauthenticatedCloseIs401AndTouchesNoService() throws Exception {
         mvc.perform(post(BASE + "s-owned/close")).andExpect(status().isUnauthorized());
-        verify(operatorService, never()).closeSession(any());
+        verify(operatorService, never()).closeSession(any(), any());
     }
 
     @Test
@@ -167,7 +167,7 @@ class RemoteBridgeOperatorControllerTest {
     void aCloseForAnotherOperatorsSessionIs404() throws Exception {
         mvc.perform(post(BASE + "s-foreign/close").header("Authorization", AUTH))
                 .andExpect(status().isNotFound());
-        verify(operatorService, never()).closeSession(any());
+        verify(operatorService, never()).closeSession(any(), any());
     }
 
     @Test
@@ -189,7 +189,7 @@ class RemoteBridgeOperatorControllerTest {
         verify(stepUpHandler, never()).issueChallenge(any(), anyLong());
         verify(stepUpHandler, never()).verifyAndRecord(any(), any(), anyLong());
         verify(operatorService, never()).handleOperationRequest(any());
-        verify(operatorService, never()).closeSession(any());
+        verify(operatorService, never()).closeSession(any(), any());
     }
 
     // ---- step-up challenge ----
@@ -546,18 +546,18 @@ class RemoteBridgeOperatorControllerTest {
 
     @Test
     void aCloseForTheOwnSessionDelegatesAndReturns204() throws Exception {
-        when(operatorService.closeSession("s-owned"))
+        when(operatorService.closeSession("s-owned", OWNER))
                 .thenReturn(new SessionCloseOutcome("s-owned", true, null));
 
         mvc.perform(post(BASE + "s-owned/close").header("Authorization", AUTH))
                 .andExpect(status().isNoContent());
 
-        verify(operatorService).closeSession("s-owned");
+        verify(operatorService).closeSession("s-owned", OWNER);
     }
 
     @Test
     void aCloseTheServiceRefusesIs409WithGenericReason() throws Exception {
-        when(operatorService.closeSession("s-owned"))
+        when(operatorService.closeSession("s-owned", OWNER))
                 .thenReturn(new SessionCloseOutcome("s-owned", false, "recording-failed"));
 
         mvc.perform(post(BASE + "s-owned/close").header("Authorization", AUTH))

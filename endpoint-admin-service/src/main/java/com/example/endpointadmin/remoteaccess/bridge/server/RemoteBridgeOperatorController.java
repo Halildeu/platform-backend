@@ -229,7 +229,7 @@ public class RemoteBridgeOperatorController {
         if (ownedSession(sessionId, identity).isEmpty()) {
             return notFound();
         }
-        SessionCloseOutcome outcome = operatorService.closeSession(sessionId);
+        SessionCloseOutcome outcome = operatorService.closeSession(sessionId, identity.operatorSubject());
         if (!outcome.accepted()) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(new RejectedResponse("session-close-refused"));
         }
