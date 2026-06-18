@@ -1,6 +1,7 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import com.example.endpointadmin.remoteaccess.AttestationVerifier;
+import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog;
 import com.example.endpointadmin.remoteaccess.CertTrustEvaluator;
 import com.example.endpointadmin.remoteaccess.DbRecordingSink;
 import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
@@ -260,6 +261,17 @@ public class RemoteBridgeServerConfig {
     public RemoteOperationCatalog remoteBridgeOperationCatalog(
             @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
         return RemoteOperationCatalog.standard(permitTtlMillis);
+    }
+
+    /**
+     * Faz 22.6.2 - approved Remote Response script catalog. Operator requests reference immutable
+     * scriptId/version/hash metadata from this library; script bodies and command templates are not exposed by
+     * the REST response and cannot be supplied by the caller.
+     */
+    @Bean
+    public ApprovedRemoteScriptCatalog remoteBridgeApprovedScriptCatalog(
+            @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
+        return ApprovedRemoteScriptCatalog.standard(permitTtlMillis);
     }
 
     /**
