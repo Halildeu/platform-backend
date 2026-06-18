@@ -19,9 +19,10 @@ import java.util.Set;
  *       (no fresh verifier evidence ⇒ untrusted).</li>
  *   <li><b>device:</b> from the injected {@link SessionDeviceTrustVerifier} (D10.1 slice-3b) — e.g. the
  *       enrolled-active machine-cert basis — NOT the ledger's (future) hardware-attestation {@code deviceTrusted}.
- *       It is ANDed with ledger device-identity CONSISTENCY: a {@code helloDeviceId}/{@code certBoundDeviceId} that
- *       disagrees with the session's device id, or a missing peer trust (null), ⇒ {@code deviceTrusted=false}
- *       (fail-closed, Codex hardening).</li>
+ *       It is ANDed with transport identity consistency: a missing peer trust (null), or a certificate-bound device
+ *       id that disagrees with the session's device id, ⇒ {@code deviceTrusted=false} (fail-closed). Advisory
+ *       {@code AgentHello.deviceId} is deliberately not authoritative; the enrolled certificate + connected peer
+ *       resolver is the binding source.</li>
  *   <li><b>granted capabilities:</b> {@link OwnerTokenGate#effectiveGrant}(owner-token grant ∩ session
  *       request ∩ pilot allowlist) — owner-authoritative, request-narrowing, pilot-bounded.</li>
  *   <li><b>duress:</b> from an injected {@link DuressSignalSource}. Until the transport duress-classification
@@ -85,10 +86,10 @@ public final class TrustEvidenceAssembler {
         boolean certTrusted = trust != null && trust.certTrusted();
         boolean attestationVerified = trust != null && trust.attestationVerified();
         // device trust now comes from the session device-trust verifier (slice-3b): the enrolled-active machine
-        // cert basis, NOT the ledger's (pilot-empty) hardware-attestation deviceTrusted. The ledger device-identity
-        // cross-check still ANDs in — a peer presenting a different device id voids it, and a missing peer trust
-        // (null) cannot confirm consistency → false (fail-closed). The decision's basis is auditable + honest
-        // (enrollment ≠ hardware key attestation).
+        // cert basis, NOT the ledger's (pilot-empty) hardware-attestation deviceTrusted. Transport consistency
+        // still ANDs in: a missing peer trust (null), or a cert-bound device id that contradicts the session,
+        // voids trust. AgentHello.deviceId is advisory and cannot veto the certificate/enrollment binding.
+        // The decision's basis is auditable + honest (enrollment != hardware key attestation).
         SessionDeviceTrustVerifier.DeviceTrustDecision deviceDecision =
                 deviceTrustVerifier.verify(session, trust, nowEpochMillis);
         boolean deviceTrusted = deviceDecision.trusted()
@@ -117,16 +118,13 @@ public final class TrustEvidenceAssembler {
     }
 
     /**
-     * The ledger device identities must agree with the session's device id: a {@code helloDeviceId} that
-     * disagrees, or a present {@code certBoundDeviceId} that disagrees, voids device trust (a trusted peer
-     * presenting a different device id is exactly the binding attack device trust must refuse).
+     * Transport-bound device identity must agree with the session's device id. A present certificate-bound device
+     * id that disagrees voids device trust. AgentHello.deviceId is advisory-only and is intentionally ignored here:
+     * the load-bearing binding is {@code session device -> active machine cert thumbprint -> connected peer}.
      */
     static boolean deviceIdentitiesConsistent(PeerTrust trust, String sessionDeviceId) {
         if (trust == null || sessionDeviceId == null || sessionDeviceId.isBlank()) {
             return false; // no peer-trust evidence (or no session device id) cannot confirm device consistency
-        }
-        if (trust.helloDeviceId() != null && !trust.helloDeviceId().equals(sessionDeviceId)) {
-            return false;
         }
         return trust.certBoundDeviceId().map(sessionDeviceId::equals).orElse(true);
     }

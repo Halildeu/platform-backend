@@ -64,6 +64,10 @@ class TrustEvidenceAssemblerTest {
         return new PeerIdentity(key, Optional.of("dev-1"), java.util.List.of());
     }
 
+    private static PeerIdentity peerWithoutCertBoundDevice(String key) {
+        return new PeerIdentity(key, Optional.empty(), java.util.List.of());
+    }
+
     private static com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AgentHello hello() {
         return new com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AgentHello(
                 "0.2.3", "dev-1", "ab12", "ZXZpZGVuY2U=", "rb-v1", Set.of());
@@ -123,19 +127,20 @@ class TrustEvidenceAssemblerTest {
     }
 
     @Test
-    void anEnrollingVerifierIsStillVoidedByAnInconsistentLedgerDeviceId() {
+    void anEnrollingVerifierIsNotVoidedByAnAdvisoryHelloDeviceIdMismatch() {
         PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
-        ledger.record(peer("peer-1"), hello(), NOW); // fresh trust; helloDeviceId == "dev-1"
+        ledger.record(peerWithoutCertBoundDevice("peer-1"), hello(), NOW); // fresh trust; helloDeviceId == "dev-1"
         SessionDeviceTrustVerifier enrolled =
                 (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.enrolledActive();
         TrustEvidenceAssembler assembler =
                 new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, enrolled, null);
 
-        // the session targets a DIFFERENT device than the ledger's helloDeviceId → consistency AND voids it
+        // AgentHello.deviceId is advisory; cert-bound identity is absent, so the enrollment verifier is
+        // the load-bearing binding for this pilot path.
         RemoteBridgeTrustEvidence ev = assembler.assemble(
                 session("s1", "peer-1", "dev-OTHER", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
 
-        assertFalse(ev.deviceTrusted(), "a lying-agent device id voids device trust even when enrollment passes");
+        assertTrue(ev.deviceTrusted(), "advisory hello device id cannot veto active machine-cert enrollment trust");
     }
 
     @Test
@@ -200,9 +205,9 @@ class TrustEvidenceAssemblerTest {
     }
 
     @Test
-    void aHelloDeviceIdMismatchVoidsConsistency() {
+    void aHelloDeviceIdMismatchDoesNotVoidConsistency() {
         PeerTrust trust = new PeerTrust(true, true, true, Optional.empty(), "dev-OTHER", NOW);
-        assertFalse(TrustEvidenceAssembler.deviceIdentitiesConsistent(trust, "dev-1"));
+        assertTrue(TrustEvidenceAssembler.deviceIdentitiesConsistent(trust, "dev-1"));
     }
 
     @Test
