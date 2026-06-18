@@ -5,6 +5,7 @@ import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchRequest;
 import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchResult;
 import com.example.endpointadmin.domainops.DomainOpsCredentialRefPolicy;
 import com.example.endpointadmin.domainops.DomainOpsOperation;
+import com.example.endpointadmin.domainops.DomainOpsOperationPayloadPolicy;
 import com.example.endpointadmin.domainops.DomainOpsResult;
 import com.example.endpointadmin.domainops.DomainOpsStatus;
 import com.example.endpointadmin.domainops.UnavailableDomainOpsConnector;
@@ -239,6 +240,10 @@ public class DomainOpsBrokerService {
         if (reason.rejection() != null) {
             return new TxRejected(reason.rejection());
         }
+        PayloadResolution payload = normalizePayload(resolved, device, request, operation);
+        if (payload.rejection() != null) {
+            return new TxRejected(payload.rejection());
+        }
         String idempotencyKeyHash = sha256OrNull(request.idempotencyKey());
         if (idempotencyKeyHash != null) {
             var existing = requestRepository.findByTenantIdAndIdempotencyKeyHash(
@@ -273,6 +278,7 @@ public class DomainOpsBrokerService {
                 idempotencyKeyHash,
                 credentialRef.value(),
                 credentialRefHash,
+                payload.value(),
                 ttl,
                 requestedAt,
                 expiresAt);
@@ -288,6 +294,7 @@ public class DomainOpsBrokerService {
                 device.getHostname(),
                 device.getDomainName(),
                 stored.getOperation(),
+                stored.getOperationPayload(),
                 credentialRef.value(),
                 stored.getExpiresAt(),
                 stored.getReason()));
@@ -364,6 +371,7 @@ public class DomainOpsBrokerService {
                     idempotencyKeyHash,
                     null,
                     null,
+                    Map.of(),
                     ttl,
                     requestedAt,
                     expiresAt);
@@ -375,6 +383,20 @@ public class DomainOpsBrokerService {
         }
     }
 
+    private PayloadResolution normalizePayload(AdminTenantContext context,
+                                               EndpointDevice device,
+                                               CreateDomainOpsRequest request,
+                                               DomainOpsOperation operation) {
+        try {
+            return new PayloadResolution(
+                    DomainOpsOperationPayloadPolicy.normalize(operation, request.payload()),
+                    null);
+        } catch (ResponseStatusException ex) {
+            auditDenied(context, device, request, "payload-invalid");
+            return new PayloadResolution(null, ex);
+        }
+    }
+
     private EndpointDomainOpsRequest newRequest(AdminTenantContext context,
                                                 EndpointDevice device,
                                                 DomainOpsOperation operation,
@@ -382,6 +404,7 @@ public class DomainOpsBrokerService {
                                                 String idempotencyKeyHash,
                                                 String credentialRef,
                                                 String credentialRefHash,
+                                                Map<String, Object> operationPayload,
                                                 Duration ttl,
                                                 Instant requestedAt,
                                                 Instant expiresAt) {
@@ -395,6 +418,7 @@ public class DomainOpsBrokerService {
         stored.setIdempotencyKeyHash(idempotencyKeyHash);
         stored.setCredentialRef(credentialRef);
         stored.setCredentialRefHash(credentialRefHash);
+        stored.setOperationPayload(operationPayload);
         stored.setRequestedBy(context.subject());
         stored.setTtlSeconds(ttl.toSeconds());
         stored.setRequestedAt(requestedAt);
@@ -413,6 +437,7 @@ public class DomainOpsBrokerService {
                     plan.hostname(),
                     plan.domainName(),
                     plan.operation(),
+                    plan.operationPayload(),
                     plan.credentialRef(),
                     plan.expiresAt(),
                     plan.reason()));
@@ -444,6 +469,7 @@ public class DomainOpsBrokerService {
                         stored.getReason(),
                         stored.getIdempotencyKeyHash(),
                         stored.getCredentialRefHash(),
+                        stored.getOperationPayload(),
                         credentialRefPresent,
                         credentialRefAccepted),
                 null,
@@ -489,6 +515,7 @@ public class DomainOpsBrokerService {
                         normalizeReason(request == null ? null : request.reason()),
                         sha256OrNull(request == null ? null : request.idempotencyKey()),
                         null,
+                        safePayloadShape(request == null ? null : request.payload()),
                         request != null && request.credentialRef() != null && !request.credentialRef().trim().isEmpty(),
                         false),
                 null,
@@ -615,6 +642,7 @@ public class DomainOpsBrokerService {
                                          String reason,
                                          String idempotencyKeyHash,
                                          String credentialRefHash,
+                                         Map<String, Object> operationPayload,
                                          boolean credentialRefPresent,
                                          boolean credentialRefAccepted) {
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -631,6 +659,8 @@ public class DomainOpsBrokerService {
         metadata.put("credentialRefPresent", credentialRefPresent);
         metadata.put("credentialRefAccepted", credentialRefAccepted);
         metadata.put("credentialRefHash", credentialRefHash);
+        metadata.put("operationPayloadPresent", operationPayload != null && !operationPayload.isEmpty());
+        metadata.put("operationPayloadFieldCount", operationPayload == null ? 0 : operationPayload.size());
         metadata.put("expiresAt", result.expiresAt() == null ? null : result.expiresAt().toString());
         metadata.put("connectorName", result.connectorName());
         metadata.put("connectorAttemptId", result.connectorAttemptId());
@@ -661,6 +691,19 @@ public class DomainOpsBrokerService {
         return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength);
     }
 
+    private Map<String, Object> safePayloadShape(Map<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> shape = new LinkedHashMap<>();
+        int index = 0;
+        for (String ignored : payload.keySet()) {
+            shape.put("field" + index, true);
+            index++;
+        }
+        return shape;
+    }
+
     private interface TxOutcome { }
 
     private record TxAccepted(DispatchPlan plan) implements TxOutcome { }
@@ -673,12 +716,15 @@ public class DomainOpsBrokerService {
 
     private record CredentialRefResolution(String value, ResponseStatusException rejection) { }
 
+    private record PayloadResolution(Map<String, Object> value, ResponseStatusException rejection) { }
+
     private record DispatchPlan(UUID requestId,
                                 UUID tenantId,
                                 UUID deviceId,
                                 String hostname,
                                 String domainName,
                                 DomainOpsOperation operation,
+                                Map<String, Object> operationPayload,
                                 String credentialRef,
                                 Instant expiresAt,
                                 String reason) { }

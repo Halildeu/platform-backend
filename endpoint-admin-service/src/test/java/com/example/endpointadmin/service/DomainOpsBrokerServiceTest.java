@@ -3,6 +3,7 @@ package com.example.endpointadmin.service;
 import com.example.endpointadmin.audit.NoOpAuditChainLock;
 import com.example.endpointadmin.config.TimeConfig;
 import com.example.endpointadmin.domainops.DomainOpsConnector;
+import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchRequest;
 import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchResult;
 import com.example.endpointadmin.domainops.DomainOpsStatus;
 import com.example.endpointadmin.dto.v1.admin.CreateDomainOpsRequest;
@@ -317,6 +318,137 @@ class DomainOpsBrokerServiceTest {
     }
 
     @Test
+    void gpoMsiDeploymentPayloadIsValidatedStoredAndDispatched() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        Map<String, Object> payload = gpoMsiPayload();
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), assertingConnector(request -> {
+            assertThat(request.operation().name()).isEqualTo("ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT");
+            assertThat(request.operationPayload())
+                    .containsEntry("deploymentMethod", "gpo-msi")
+                    .containsEntry("artifactVersion", "0.2.9")
+                    .containsEntry("artifactSha256", "5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571")
+                    .containsEntry("pilotOu", "OU=EndpointTest,DC=acik,DC=local")
+                    .containsEntry("pilotGroup", "EndpointAgentPilotComputers")
+                    .containsEntry("gpoName", "EndpointAgent Pilot - AGENTPC2")
+                    .containsEntry("rollbackStrategy", "gpo-unlink-or-security-filter");
+            assertThat(request.operationPayload().get("targetComputers"))
+                    .isEqualTo(List.of("ERP-MOBIL", "SRB-AIDENETIMPC"));
+            return new DomainOpsConnectorDispatchResult(
+                    DomainOpsStatus.SUCCEEDED,
+                    "gpo-msi-deployment-queued",
+                    "attempt-gpo-msi",
+                    Map.of("connectorSignal", "queued"));
+        }));
+
+        var result = service.create(context(), device.getId(), request(
+                "ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT", 300, CREDENTIAL_REF, payload));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getOperationPayload()).containsEntry("deploymentMethod", "gpo-msi");
+        assertThat(stored.getOperationPayload().toString())
+                .doesNotContain("password")
+                .doesNotContain("powershell")
+                .doesNotContain("cmd");
+
+        List<EndpointAuditEvent> events = auditRepository.findAll();
+        assertThat(events).hasSize(2);
+        for (EndpointAuditEvent event : events) {
+            assertThat(event.getMetadata())
+                    .containsEntry("operationPayloadPresent", true)
+                    .containsEntry("operationPayloadFieldCount", 9);
+            assertThat(event.getMetadata().toString())
+                    .doesNotContain("EndpointAgent-0.2.9-signed.msi")
+                    .doesNotContain("5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571");
+        }
+    }
+
+    @Test
+    void rolloutCollectorPayloadIsValidatedStoredAndDispatched() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        Map<String, Object> payload = Map.of(
+                "expectedApiHost", "mtls.testai.acik.com",
+                "expectedMsiSha256", "5CAB18D460720E5BF89DDf0038F5B1C4D5AE04AFC031DDA0DC15D9810C969571",
+                "targetComputers", List.of("AgentPc2"),
+                "includeGpResultHtml", true,
+                "includeServiceStatus", true,
+                "includeAgentLogTail", true,
+                "restartServiceBeforeCollect", false);
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), assertingConnector(request -> {
+            assertThat(request.operation().name()).isEqualTo("ENDPOINT_AGENT_ROLLOUT_COLLECTOR");
+            assertThat(request.operationPayload())
+                    .containsEntry("expectedApiHost", "mtls.testai.acik.com")
+                    .containsEntry("expectedMsiSha256", "5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571")
+                    .containsEntry("includeGpResultHtml", true)
+                    .containsEntry("restartServiceBeforeCollect", false);
+            assertThat(request.operationPayload().get("targetComputers"))
+                    .isEqualTo(List.of("AGENTPC2"));
+            return new DomainOpsConnectorDispatchResult(
+                    DomainOpsStatus.SUCCEEDED,
+                    "collector-queued",
+                    "attempt-collector",
+                    Map.of("collectorSignal", "queued"));
+        }));
+
+        var result = service.create(context(), device.getId(), request(
+                "endpoint-agent-rollout-collector", 300, CREDENTIAL_REF, payload));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(onlyDomainOpsRequest().getOperationPayload())
+                .containsEntry("expectedApiHost", "mtls.testai.acik.com");
+    }
+
+    @Test
+    void payloadRejectsRawCommandAndCredentialLikeFieldsWithoutDurableRequest() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.SUCCEEDED,
+                "must-not-run",
+                "attempt",
+                Map.of()));
+        Map<String, Object> payload = new java.util.LinkedHashMap<>(gpoMsiPayload());
+        payload.put("script", "powershell -EncodedCommand AAAA");
+
+        assertThatThrownBy(() -> service.create(context(), device.getId(), request(
+                "ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT", 300, CREDENTIAL_REF, payload)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST)
+                .extracting("reason")
+                .asString()
+                .doesNotContain("script")
+                .doesNotContain("powershell")
+                .doesNotContain("EncodedCommand");
+
+        EndpointAuditEvent event = onlyAuditEvent();
+        assertThat(event.getEventType()).isEqualTo(DomainOpsBrokerService.EVENT_TYPE_DENIED);
+        assertThat(event.getMetadata())
+                .containsEntry("reasonCode", "payload-invalid")
+                .containsEntry("operationPayloadPresent", true)
+                .containsEntry("operationPayloadFieldCount", 10);
+        assertThat(event.getMetadata().toString()).doesNotContain("EncodedCommand");
+        assertThat(domainOpsRequestRepository.findAll()).isEmpty();
+    }
+
+    @Test
+    void legacyDomainOpsRejectNonEmptyPayload() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
+
+        assertThatThrownBy(() -> service.create(context(), device.getId(), request(
+                "GPO_FORCE_REFRESH", 300, CREDENTIAL_REF, Map.of("targetComputers", List.of("PC1")))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST);
+
+        EndpointAuditEvent event = onlyAuditEvent();
+        assertThat(event.getMetadata())
+                .containsEntry("reasonCode", "payload-invalid")
+                .containsEntry("operation", "GPO_FORCE_REFRESH")
+                .containsEntry("operationPayloadPresent", true)
+                .containsEntry("operationPayloadFieldCount", 1);
+        assertThat(domainOpsRequestRepository.findAll()).isEmpty();
+    }
+
+    @Test
     void idempotencyReplayReturnsExistingDurableRequestWithoutNewAudit() {
         EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
         DomainOpsBrokerService service = service(true, Duration.ofMinutes(15));
@@ -523,6 +655,23 @@ class DomainOpsBrokerServiceTest {
         };
     }
 
+    private DomainOpsConnector assertingConnector(java.util.function.Function<DomainOpsConnectorDispatchRequest,
+            DomainOpsConnectorDispatchResult> dispatcher) {
+        return new DomainOpsConnector() {
+            @Override
+            public String name() {
+                return "asserting-domain-connector";
+            }
+
+            @Override
+            public DomainOpsConnectorDispatchResult dispatch(DomainOpsConnectorDispatchRequest request) {
+                assertThat(request.credentialRef()).isNotBlank();
+                assertThat(request.expiresAt()).isNotNull();
+                return dispatcher.apply(request);
+            }
+        };
+    }
+
     private AdminTenantContext context() {
         return new AdminTenantContext(TENANT, SUBJECT);
     }
@@ -534,13 +683,42 @@ class DomainOpsBrokerServiceTest {
     private CreateDomainOpsRequest request(String operation,
                                            long ttlSeconds,
                                            String credentialRef,
+                                           Map<String, Object> payload) {
+        return request(operation, ttlSeconds, credentialRef, "domops-" + UUID.randomUUID(), payload);
+    }
+
+    private CreateDomainOpsRequest request(String operation,
+                                           long ttlSeconds,
+                                           String credentialRef,
                                            String idempotencyKey) {
+        return request(operation, ttlSeconds, credentialRef, idempotencyKey, null);
+    }
+
+    private CreateDomainOpsRequest request(String operation,
+                                           long ttlSeconds,
+                                           String credentialRef,
+                                           String idempotencyKey,
+                                           Map<String, Object> payload) {
         return new CreateDomainOpsRequest(
                 operation,
                 "pilot validation",
                 ttlSeconds,
                 idempotencyKey,
-                credentialRef);
+                credentialRef,
+                payload);
+    }
+
+    private Map<String, Object> gpoMsiPayload() {
+        return Map.of(
+                "deploymentMethod", "gpo-msi",
+                "artifactVersion", "0.2.9",
+                "artifactUrl", "https://github.com/Halildeu/platform-agent/releases/download/v0.2.9/EndpointAgent-0.2.9-signed.msi",
+                "artifactSha256", "5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571",
+                "pilotOu", "OU=EndpointTest,DC=acik,DC=local",
+                "pilotGroup", "EndpointAgentPilotComputers",
+                "gpoName", "EndpointAgent Pilot - AGENTPC2",
+                "targetComputers", List.of("ERP-MOBIL", "SRB-AIDENETIMPC"),
+                "rollbackStrategy", "gpo-unlink-or-security-filter");
     }
 
     private EndpointDevice persistDevice(UUID tenantId, String hostname) {
@@ -577,6 +755,7 @@ class DomainOpsBrokerServiceTest {
         request.setIdempotencyKeyHash("a".repeat(63) + UUID.randomUUID().toString().substring(0, 1));
         request.setCredentialRef(CREDENTIAL_REF);
         request.setCredentialRefHash("b".repeat(64));
+        request.setOperationPayload(Map.of());
         request.setRequestedBy(SUBJECT);
         request.setTtlSeconds(Duration.between(requestedAt, expiresAt).toSeconds());
         request.setRequestedAt(requestedAt);

@@ -22,11 +22,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * V71 regression guard for durable Domain Ops Broker request state.
+ * V71/V72 regression guard for durable Domain Ops Broker request state.
  *
  * <p>Pins the PostgreSQL-only pieces behind #676: JSONB result shape, bounded
- * TTL, explicit operation allowlist, opaque credential-ref shape, org/tenant
- * parity, and tenant-scoped idempotency uniqueness.
+ * TTL, explicit operation allowlist, typed payload shape, opaque credential-ref
+ * shape, org/tenant parity, and tenant-scoped idempotency uniqueness.
  */
 @Testcontainers
 @DataJpaTest
@@ -79,6 +79,19 @@ class V71EndpointDomainOpsRequestsPostgresIntegrationTest {
     }
 
     @Test
+    void flywayAppliesV72AndOperationPayloadShapeAcceptsObjects() {
+        UUID org = UUID.randomUUID();
+        UUID device = seedDevice(org);
+        UUID request = insertDomainOps(org, device, "ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT",
+                "FAILED", "vault:domain-ops/pilot", HASH, 300);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT jsonb_typeof(operation_payload) FROM " + DOMAIN_OPS + " WHERE id = ?",
+                String.class,
+                request)).isEqualTo("object");
+    }
+
+    @Test
     void credentialRefShapeAllowsOpaqueRefsAndRejectsRawOrShellLikeValues() {
         UUID org = UUID.randomUUID();
         UUID device = seedDevice(org);
@@ -122,6 +135,9 @@ class V71EndpointDomainOpsRequestsPostgresIntegrationTest {
                 "FAILED", "vault:domain-ops/pilot", HASH, 300))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
+        insertDomainOps(org, device, "ENDPOINT_AGENT_ROLLOUT_COLLECTOR",
+                "FAILED", "vault:domain-ops/pilot", "f".repeat(64), 300);
+
         assertThatThrownBy(() -> insertDomainOps(org, device, "DOMAIN_SECURE_CHANNEL_VERIFY",
                 "FAILED", "vault:domain-ops/pilot", HASH, 901))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -138,10 +154,11 @@ class V71EndpointDomainOpsRequestsPostgresIntegrationTest {
         assertThatThrownBy(() -> jdbc.update("INSERT INTO " + DOMAIN_OPS + " ("
                         + "id, tenant_id, org_id, device_id, operation, state, reason, reason_code, "
                         + "idempotency_key_hash, credential_ref, credential_ref_hash, requested_by, "
-                        + "ttl_seconds, requested_at, expires_at, state_updated_at, redacted_result, version) "
+                        + "ttl_seconds, requested_at, expires_at, state_updated_at, "
+                        + "operation_payload, redacted_result, version) "
                         + "VALUES (?, ?, ?, ?, 'DOMAIN_SECURE_CHANNEL_VERIFY', 'FAILED', 'r', "
                         + "'connector-unavailable', ?, 'vault:domain-ops/pilot', ?, "
-                        + "'admin@example.com', 300, ?, ?, ?, '{}'::jsonb, 0)",
+                        + "'admin@example.com', 300, ?, ?, ?, '{}'::jsonb, '{}'::jsonb, 0)",
                 request, org, otherOrg, device, "e".repeat(64), HASH,
                 now, Timestamp.from(now.toInstant().plusSeconds(300)), now))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -172,10 +189,11 @@ class V71EndpointDomainOpsRequestsPostgresIntegrationTest {
         jdbc.update("INSERT INTO " + DOMAIN_OPS + " ("
                         + "id, tenant_id, org_id, device_id, operation, state, reason, reason_code, "
                         + "idempotency_key_hash, credential_ref, credential_ref_hash, requested_by, "
-                        + "ttl_seconds, requested_at, expires_at, state_updated_at, redacted_result, version) "
+                        + "ttl_seconds, requested_at, expires_at, state_updated_at, "
+                        + "operation_payload, redacted_result, version) "
                         + "VALUES (?, ?, ?, ?, ?, ?, 'pilot validation', 'connector-unavailable', "
                         + "?, ?, ?, 'admin@example.com', ?, ?, ?, ?, "
-                        + "'{\"signal\":\"redacted\"}'::jsonb, 0)",
+                        + "'{}'::jsonb, '{\"signal\":\"redacted\"}'::jsonb, 0)",
                 id, org, org, device, operation, state, idempotencyHash, credentialRef, HASH,
                 ttlSeconds, now, Timestamp.from(now.toInstant().plusSeconds(ttlSeconds)), now);
         return id;

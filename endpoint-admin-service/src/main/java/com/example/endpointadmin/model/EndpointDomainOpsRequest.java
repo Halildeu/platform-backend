@@ -69,6 +69,10 @@ public class EndpointDomainOpsRequest {
     @Column(name = "credential_ref_hash", length = 64)
     private String credentialRefHash;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "operation_payload", nullable = false, columnDefinition = "jsonb")
+    private Map<String, Object> operationPayload = new HashMap<>();
+
     @Column(name = "requested_by", nullable = false, length = 255)
     private String requestedBy;
 
@@ -122,6 +126,9 @@ public class EndpointDomainOpsRequest {
         if (redactedResult == null) {
             redactedResult = new HashMap<>();
         }
+        if (operationPayload == null) {
+            operationPayload = new HashMap<>();
+        }
         canonicalizeOrgId();
     }
 
@@ -132,6 +139,9 @@ public class EndpointDomainOpsRequest {
         }
         if (redactedResult == null) {
             redactedResult = new HashMap<>();
+        }
+        if (operationPayload == null) {
+            operationPayload = new HashMap<>();
         }
         canonicalizeOrgId();
     }
@@ -210,6 +220,10 @@ public class EndpointDomainOpsRequest {
     public void setCredentialRef(String credentialRef) { this.credentialRef = credentialRef; }
     public String getCredentialRefHash() { return credentialRefHash; }
     public void setCredentialRefHash(String credentialRefHash) { this.credentialRefHash = credentialRefHash; }
+    public Map<String, Object> getOperationPayload() { return operationPayload; }
+    public void setOperationPayload(Map<String, Object> operationPayload) {
+        this.operationPayload = operationPayload == null ? new HashMap<>() : new HashMap<>(operationPayload);
+    }
     public String getRequestedBy() { return requestedBy; }
     public void setRequestedBy(String requestedBy) { this.requestedBy = requestedBy; }
     public Long getTtlSeconds() { return ttlSeconds; }

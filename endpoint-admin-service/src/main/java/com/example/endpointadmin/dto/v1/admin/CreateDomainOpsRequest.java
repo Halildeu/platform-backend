@@ -3,6 +3,8 @@ package com.example.endpointadmin.dto.v1.admin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
+import java.util.Map;
+
 public record CreateDomainOpsRequest(
         @NotBlank
         String operation,
@@ -17,6 +19,8 @@ public record CreateDomainOpsRequest(
         String idempotencyKey,
 
         @Size(max = 256)
-        String credentialRef
+        String credentialRef,
+
+        Map<String, Object> payload
 ) {
 }
