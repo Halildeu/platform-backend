@@ -24,6 +24,14 @@ public interface EndpointDomainOpsRequestRepository extends JpaRepository<Endpoi
     @Query("""
             select r
               from EndpointDomainOpsRequest r
+             where r.id = :id
+            """)
+    Optional<EndpointDomainOpsRequest> findByIdForUpdate(@Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select r
+              from EndpointDomainOpsRequest r
              where r.state in :states
                and r.expiresAt <= :now
              order by r.expiresAt asc

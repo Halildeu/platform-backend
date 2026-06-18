@@ -7,9 +7,11 @@ import com.example.endpointadmin.domainops.DomainOpsCredentialRefPolicy;
 import com.example.endpointadmin.domainops.DomainOpsOperation;
 import com.example.endpointadmin.domainops.DomainOpsOperationPayloadPolicy;
 import com.example.endpointadmin.domainops.DomainOpsResult;
+import com.example.endpointadmin.domainops.DomainOpsResultSubmitPolicy;
 import com.example.endpointadmin.domainops.DomainOpsStatus;
 import com.example.endpointadmin.domainops.UnavailableDomainOpsConnector;
 import com.example.endpointadmin.dto.v1.admin.CreateDomainOpsRequest;
+import com.example.endpointadmin.dto.v1.admin.SubmitDomainOpsResultRequest;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointDomainOpsRequest;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
@@ -38,6 +40,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -156,6 +159,32 @@ public class DomainOpsBrokerService {
                 persistDispatchResult(accepted.plan().requestId(), dispatchResult));
     }
 
+    public DomainOpsResult submitResult(AdminTenantContext context,
+                                        UUID deviceId,
+                                        UUID operationId,
+                                        SubmitDomainOpsResultRequest request) {
+        AdminTenantContext resolved = requireContext(context);
+        if (deviceId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Endpoint device id is required.");
+        }
+        if (operationId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Domain ops operation id is required.");
+        }
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Domain ops result body is required.");
+        }
+
+        TxOutcome outcome = transactionTemplate.execute(status ->
+                persistSubmittedResult(resolved, deviceId, operationId, request));
+        if (outcome instanceof TxRejected rejected) {
+            throw rejected.exception();
+        }
+        return ((TxReplay) outcome).result();
+    }
+
     public int expireStaleDispatchWindows(int maxRequests) {
         if (maxRequests <= 0) {
             return 0;
@@ -164,7 +193,7 @@ public class DomainOpsBrokerService {
         return transactionTemplate.execute(status -> {
             Instant now = clock.instant();
             List<EndpointDomainOpsRequest> candidates = requestRepository.findExpiredDispatchCandidates(
-                    List.of(DomainOpsStatus.ACCEPTED, DomainOpsStatus.PENDING_DISPATCH),
+                    List.of(DomainOpsStatus.ACCEPTED, DomainOpsStatus.PENDING_DISPATCH, DomainOpsStatus.DISPATCHED),
                     now,
                     PageRequest.of(0, bounded));
             int expired = 0;
@@ -327,6 +356,97 @@ public class DomainOpsBrokerService {
         auditStoredRequest(stored, device, eventTypeFor(stored.getState()), actionFor(stored.getState()),
                 true, true);
         return toResult(stored);
+    }
+
+    private TxOutcome persistSubmittedResult(AdminTenantContext context,
+                                             UUID deviceId,
+                                             UUID operationId,
+                                             SubmitDomainOpsResultRequest request) {
+        EndpointDevice device = deviceRepository.findVisibleToOrgAndId(context.tenantId(), deviceId)
+                .orElse(null);
+        if (device == null) {
+            return new TxRejected(new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Endpoint device was not found."));
+        }
+        EndpointDomainOpsRequest stored = requestRepository.findByIdForUpdate(operationId)
+                .orElse(null);
+        if (stored == null
+                || !Objects.equals(stored.getTenantId(), context.tenantId())
+                || !Objects.equals(stored.getDeviceId(), deviceId)) {
+            return new TxRejected(new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "Domain ops request was not found."));
+        }
+        Instant now = clock.instant();
+        if (stored.getState() != DomainOpsStatus.DISPATCHED) {
+            return new TxRejected(new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Domain ops request is not awaiting an executor result."));
+        }
+        if (!now.isBefore(stored.getExpiresAt())) {
+            stored.markConnectorResult(
+                    DomainOpsStatus.EXPIRED,
+                    "dispatch-window-expired",
+                    stored.getConnectorName(),
+                    stored.getConnectorAttemptId(),
+                    Map.of("reconciledBy", "domain-ops-result-submit"),
+                    now);
+            stored = requestRepository.saveAndFlush(stored);
+            auditStoredRequest(stored, device, EVENT_TYPE_EXPIRED, "domain-ops.expired",
+                    stored.getCredentialRef() != null,
+                    stored.getCredentialRefHash() != null);
+            return new TxRejected(new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Domain ops dispatch window expired."));
+        }
+
+        DomainOpsStatus terminalStatus = parseSubmittedStatus(request.status());
+        String expectedPackageSha256 = expectedPackageSha256(stored);
+        if (expectedPackageSha256 != null) {
+            String submittedPackageSha256 = DomainOpsResultSubmitPolicy.normalizeSha256(
+                    request.packageSha256(), "packageSha256");
+            if (!expectedPackageSha256.equals(submittedPackageSha256)) {
+                return new TxRejected(new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Domain ops result package digest does not match the dispatched package."));
+            }
+        } else if (request.packageSha256() != null && !request.packageSha256().isBlank()) {
+            DomainOpsResultSubmitPolicy.normalizeSha256(request.packageSha256(), "packageSha256");
+        }
+        String submittedAttemptId = trimToMax(request.connectorAttemptId(), 128);
+        if (submittedAttemptId != null
+                && stored.getConnectorAttemptId() != null
+                && !stored.getConnectorAttemptId().equals(submittedAttemptId)) {
+            return new TxRejected(new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Domain ops connector attempt id does not match the dispatched package."));
+        }
+
+        Map<String, Object> executorResult = DomainOpsResultSubmitPolicy.normalize(request.result());
+        Object resultPackageSha256 = executorResult.get("packageSha256");
+        if (expectedPackageSha256 != null
+                && resultPackageSha256 instanceof String resultPackage
+                && !expectedPackageSha256.equals(resultPackage)) {
+            return new TxRejected(new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Domain ops result package digest does not match the dispatched package."));
+        }
+        Map<String, Object> redactedResult = new LinkedHashMap<>(
+                stored.getRedactedResult() == null ? Map.of() : stored.getRedactedResult());
+        redactedResult.put("executorResult", executorResult);
+        redactedResult.put("executorResultSubmittedAt", now.toString());
+        redactedResult.put("executorResultStatus", terminalStatus.name());
+
+        String defaultReason = terminalStatus == DomainOpsStatus.SUCCEEDED
+                ? "executor-result-succeeded"
+                : "executor-result-failed";
+        String reasonCode = safeReasonCode(request.reasonCode(), defaultReason);
+        stored.markConnectorResult(
+                terminalStatus,
+                reasonCode,
+                stored.getConnectorName(),
+                stored.getConnectorAttemptId(),
+                Map.copyOf(redactedResult),
+                now);
+        stored = requestRepository.saveAndFlush(stored);
+        auditStoredRequest(stored, device, eventTypeFor(stored.getState()), actionFor(stored.getState()),
+                stored.getCredentialRef() != null,
+                stored.getCredentialRefHash() != null);
+        return new TxReplay(toResult(stored));
     }
 
     private ReasonResolution normalizeRequiredReason(AdminTenantContext context,
@@ -602,6 +722,35 @@ public class DomainOpsBrokerService {
             return result.status();
         }
         return DomainOpsStatus.FAILED;
+    }
+
+    private DomainOpsStatus parseSubmittedStatus(String value) {
+        if (value == null || value.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Domain ops result status is required.");
+        }
+        try {
+            DomainOpsStatus status = DomainOpsStatus.valueOf(value.trim().toUpperCase(Locale.ROOT));
+            if (status == DomainOpsStatus.SUCCEEDED || status == DomainOpsStatus.FAILED) {
+                return status;
+            }
+        } catch (IllegalArgumentException ignored) {
+            // Fall through to the consistent 400 below.
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "Domain ops result status must be SUCCEEDED or FAILED.");
+    }
+
+    private String expectedPackageSha256(EndpointDomainOpsRequest stored) {
+        Map<String, Object> result = stored.getRedactedResult();
+        if (result == null) {
+            return null;
+        }
+        Object value = result.get("packageSha256");
+        if (value instanceof String sha && !sha.isBlank()) {
+            return DomainOpsResultSubmitPolicy.normalizeSha256(sha, "stored packageSha256");
+        }
+        return null;
     }
 
     private String safeReasonCode(String value, String fallback) {

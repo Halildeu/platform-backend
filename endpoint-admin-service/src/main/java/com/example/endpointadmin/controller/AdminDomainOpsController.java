@@ -3,6 +3,7 @@ package com.example.endpointadmin.controller;
 import com.example.commonauth.openfga.RequireModule;
 import com.example.endpointadmin.dto.v1.admin.CreateDomainOpsRequest;
 import com.example.endpointadmin.dto.v1.admin.DomainOpsRequestResponse;
+import com.example.endpointadmin.dto.v1.admin.SubmitDomainOpsResultRequest;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.EndpointAdminAuthz;
 import com.example.endpointadmin.security.TenantContextResolver;
@@ -36,5 +37,15 @@ public class AdminDomainOpsController {
         AdminTenantContext context = tenantContextResolver.resolveRequired();
         return DomainOpsRequestResponse.from(
                 domainOpsBrokerService.create(context, deviceId, request));
+    }
+
+    @PostMapping("/endpoint-devices/{deviceId}/domain-ops/{operationId}/result")
+    @RequireModule(value = EndpointAdminAuthz.MODULE, relation = EndpointAdminAuthz.MANAGER)
+    public DomainOpsRequestResponse submitResult(@PathVariable UUID deviceId,
+                                                 @PathVariable UUID operationId,
+                                                 @Valid @RequestBody SubmitDomainOpsResultRequest request) {
+        AdminTenantContext context = tenantContextResolver.resolveRequired();
+        return DomainOpsRequestResponse.from(
+                domainOpsBrokerService.submitResult(context, deviceId, operationId, request));
     }
 }
