@@ -7,14 +7,18 @@ import java.util.Set;
 public enum DomainOpsOperation {
     DOMAIN_SECURE_CHANNEL_VERIFY,
     GPO_FORCE_REFRESH,
-    CERT_AUTOENROLL_PULSE;
+    CERT_AUTOENROLL_PULSE,
+    ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT,
+    ENDPOINT_AGENT_ROLLOUT_COLLECTOR;
 
     // Deliberately explicit opt-in: adding an enum constant must not
     // automatically make a new domain operation broker-dispatchable.
     private static final Set<DomainOpsOperation> SAFE_PILOT_OPERATIONS = Set.of(
             DOMAIN_SECURE_CHANNEL_VERIFY,
             GPO_FORCE_REFRESH,
-            CERT_AUTOENROLL_PULSE);
+            CERT_AUTOENROLL_PULSE,
+            ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT,
+            ENDPOINT_AGENT_ROLLOUT_COLLECTOR);
 
     public static Optional<DomainOpsOperation> parse(String raw) {
         if (raw == null) {
