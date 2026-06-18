@@ -7,6 +7,7 @@ import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchRequest;
 import com.example.endpointadmin.domainops.DomainOpsConnectorDispatchResult;
 import com.example.endpointadmin.domainops.DomainOpsStatus;
 import com.example.endpointadmin.dto.v1.admin.CreateDomainOpsRequest;
+import com.example.endpointadmin.dto.v1.admin.SubmitDomainOpsResultRequest;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointAuditEvent;
 import com.example.endpointadmin.model.EndpointDevice;
@@ -399,6 +400,150 @@ class DomainOpsBrokerServiceTest {
     }
 
     @Test
+    void executorResultSubmitCompletesDispatchedExecutionPackageWithRedactedEvidence() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        String packageSha256 = "f".repeat(64);
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.DISPATCHED,
+                "gpo-msi-execution-package-created",
+                "attempt-gpo-msi",
+                Map.of(
+                        "packageFormat", "domain-ops-execution-package.v1",
+                        "packageSha256", packageSha256,
+                        "targetComputerSetSha256", "c".repeat(64))));
+
+        var created = service.create(context(), device.getId(), request(
+                "ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT", 300, CREDENTIAL_REF, gpoMsiPayload()));
+
+        assertThat(created.status()).isEqualTo(DomainOpsStatus.DISPATCHED);
+
+        var result = service.submitResult(context(), device.getId(), created.operationId(),
+                new SubmitDomainOpsResultRequest(
+                        "SUCCEEDED",
+                        "collector-evidence-accepted",
+                        "attempt-gpo-msi",
+                        packageSha256,
+                        Map.of(
+                                "durationMs", 42_000,
+                                "evidenceBundleSha256", "a".repeat(64),
+                                "evidenceCount", 3,
+                                "evidenceTypes", List.of("SERVICE_STATUS", "GPRESULT_HTML", "AGENT_LOG_TAIL"),
+                                "executorIdHash", "d".repeat(64),
+                                "resultSha256", "e".repeat(64),
+                                "summaryCode", "two-device-pilot-green")));
+
+        assertThat(result.status()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(result.reasonCode()).isEqualTo("collector-evidence-accepted");
+
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.SUCCEEDED);
+        assertThat(stored.getCompletedAt()).isNotNull();
+        assertThat(stored.getRedactedResult())
+                .containsEntry("packageSha256", packageSha256)
+                .containsEntry("executorResultStatus", "SUCCEEDED");
+        assertThat(stored.getRedactedResult().toString())
+                .contains("SERVICE_STATUS")
+                .doesNotContain(CREDENTIAL_REF)
+                .doesNotContain("ERP-MOBIL")
+                .doesNotContain("SRB-AIDENETIMPC")
+                .doesNotContain("powershell");
+
+        assertThat(auditRepository.findAll()).extracting(EndpointAuditEvent::getEventType)
+                .containsExactly(
+                        DomainOpsBrokerService.EVENT_TYPE_REQUESTED,
+                        DomainOpsBrokerService.EVENT_TYPE_DISPATCHED,
+                        DomainOpsBrokerService.EVENT_TYPE_SUCCEEDED);
+    }
+
+    @Test
+    void executorResultSubmitRejectsDuplicateTerminalUpdate() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        String packageSha256 = "f".repeat(64);
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.DISPATCHED,
+                "collector-package-created",
+                "attempt-collector",
+                Map.of("packageSha256", packageSha256)));
+        var created = service.create(context(), device.getId(), request(
+                "ENDPOINT_AGENT_ROLLOUT_COLLECTOR", 300, CREDENTIAL_REF, collectorPayload()));
+        SubmitDomainOpsResultRequest submit = new SubmitDomainOpsResultRequest(
+                "FAILED",
+                "service-not-running",
+                "attempt-collector",
+                packageSha256,
+                Map.of(
+                        "evidenceCount", 1,
+                        "evidenceTypes", List.of("SERVICE_STATUS"),
+                        "failureCode", "service-not-running",
+                        "resultSha256", "e".repeat(64)));
+
+        service.submitResult(context(), device.getId(), created.operationId(), submit);
+
+        assertThatThrownBy(() -> service.submitResult(context(), device.getId(), created.operationId(), submit))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT);
+        assertThat(onlyDomainOpsRequest().getState()).isEqualTo(DomainOpsStatus.FAILED);
+    }
+
+    @Test
+    void executorResultSubmitRejectsPackageDigestMismatch() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.DISPATCHED,
+                "gpo-msi-execution-package-created",
+                "attempt-gpo-msi",
+                Map.of("packageSha256", "f".repeat(64))));
+        var created = service.create(context(), device.getId(), request(
+                "ENDPOINT_AGENT_GPO_MSI_DEPLOYMENT", 300, CREDENTIAL_REF, gpoMsiPayload()));
+
+        assertThatThrownBy(() -> service.submitResult(context(), device.getId(), created.operationId(),
+                new SubmitDomainOpsResultRequest(
+                        "SUCCEEDED",
+                        "must-not-complete",
+                        "attempt-gpo-msi",
+                        "0".repeat(64),
+                        Map.of("evidenceCount", 1, "evidenceTypes", List.of("SERVICE_STATUS")))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.CONFLICT);
+
+        assertThat(onlyDomainOpsRequest().getState()).isEqualTo(DomainOpsStatus.DISPATCHED);
+    }
+
+    @Test
+    void executorResultSubmitRejectsUnsafeEvidenceFieldsWithoutLeakingValues() {
+        EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
+        String packageSha256 = "f".repeat(64);
+        DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
+                DomainOpsStatus.DISPATCHED,
+                "collector-package-created",
+                "attempt-collector",
+                Map.of("packageSha256", packageSha256)));
+        var created = service.create(context(), device.getId(), request(
+                "ENDPOINT_AGENT_ROLLOUT_COLLECTOR", 300, CREDENTIAL_REF, collectorPayload()));
+
+        assertThatThrownBy(() -> service.submitResult(context(), device.getId(), created.operationId(),
+                new SubmitDomainOpsResultRequest(
+                        "SUCCEEDED",
+                        "unsafe-result",
+                        "attempt-collector",
+                        packageSha256,
+                        Map.of("stdout", "secret token and raw command output"))))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasFieldOrPropertyWithValue("statusCode", HttpStatus.BAD_REQUEST)
+                .extracting("reason")
+                .asString()
+                .doesNotContain("secret")
+                .doesNotContain("token")
+                .doesNotContain("raw command");
+
+        EndpointDomainOpsRequest stored = onlyDomainOpsRequest();
+        assertThat(stored.getState()).isEqualTo(DomainOpsStatus.DISPATCHED);
+        assertThat(stored.getRedactedResult().toString())
+                .doesNotContain("secret")
+                .doesNotContain("raw command");
+    }
+
+    @Test
     void payloadRejectsRawCommandAndCredentialLikeFieldsWithoutDurableRequest() {
         EndpointDevice device = persistDevice(TENANT, "PC-DOMOPS");
         DomainOpsBrokerService service = service(true, Duration.ofMinutes(15), fakeConnector(
@@ -522,6 +667,19 @@ class DomainOpsBrokerServiceTest {
                 DomainOpsStatus.PENDING_DISPATCH,
                 clock.instant().minusSeconds(500),
                 clock.instant().minusSeconds(30)));
+        EndpointDomainOpsRequest dispatched = storedDomainOpsRequest(
+                device,
+                DomainOpsStatus.DISPATCHED,
+                clock.instant().minusSeconds(500),
+                clock.instant().minusSeconds(15));
+        dispatched.markConnectorResult(
+                DomainOpsStatus.DISPATCHED,
+                "package-created",
+                "domain-ops-execution-connector",
+                "attempt-expired",
+                Map.of("packageSha256", "f".repeat(64)),
+                clock.instant().minusSeconds(480));
+        dispatched = domainOpsRequestRepository.saveAndFlush(dispatched);
         EndpointDomainOpsRequest fresh = domainOpsRequestRepository.saveAndFlush(storedDomainOpsRequest(
                 device,
                 DomainOpsStatus.ACCEPTED,
@@ -532,16 +690,18 @@ class DomainOpsBrokerServiceTest {
 
         int expired = service.expireStaleDispatchWindows(10);
 
-        assertThat(expired).isEqualTo(2);
+        assertThat(expired).isEqualTo(3);
         assertThat(domainOpsRequestRepository.findById(accepted.getId()).orElseThrow().getState())
                 .isEqualTo(DomainOpsStatus.EXPIRED);
         assertThat(domainOpsRequestRepository.findById(pending.getId()).orElseThrow().getState())
+                .isEqualTo(DomainOpsStatus.EXPIRED);
+        assertThat(domainOpsRequestRepository.findById(dispatched.getId()).orElseThrow().getState())
                 .isEqualTo(DomainOpsStatus.EXPIRED);
         assertThat(domainOpsRequestRepository.findById(fresh.getId()).orElseThrow().getState())
                 .isEqualTo(DomainOpsStatus.ACCEPTED);
 
         List<EndpointAuditEvent> events = auditRepository.findAll();
-        assertThat(events).hasSize(2);
+        assertThat(events).hasSize(3);
         assertThat(events).extracting(EndpointAuditEvent::getEventType)
                 .containsOnly(DomainOpsBrokerService.EVENT_TYPE_EXPIRED);
         for (EndpointAuditEvent event : events) {
@@ -719,6 +879,17 @@ class DomainOpsBrokerServiceTest {
                 "gpoName", "EndpointAgent Pilot - AGENTPC2",
                 "targetComputers", List.of("ERP-MOBIL", "SRB-AIDENETIMPC"),
                 "rollbackStrategy", "gpo-unlink-or-security-filter");
+    }
+
+    private Map<String, Object> collectorPayload() {
+        return Map.of(
+                "expectedApiHost", "mtls.testai.acik.com",
+                "expectedMsiSha256", "5cab18d460720e5bf89ddf0038f5b1c4d5ae04afc031dda0dc15d9810c969571",
+                "targetComputers", List.of("ERP-MOBIL", "SRB-AIDENETIMPC"),
+                "includeGpResultHtml", true,
+                "includeServiceStatus", true,
+                "includeAgentLogTail", true,
+                "restartServiceBeforeCollect", false);
     }
 
     private EndpointDevice persistDevice(UUID tenantId, String hostname) {

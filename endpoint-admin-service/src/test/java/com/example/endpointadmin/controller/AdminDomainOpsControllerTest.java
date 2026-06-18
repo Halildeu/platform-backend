@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -30,9 +31,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(SecurityConfigLocal.class)
 class AdminDomainOpsControllerTest {
 
-    private static final UUID TENANT_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
-    private static final UUID DEVICE_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
-    private static final UUID OPERATION_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
+    private static final UUID TENANT_ID =
+            UUID.fromString("11111111-1111-1111-1111-111111111111");
+    private static final UUID DEVICE_ID =
+            UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID OPERATION_ID =
+            UUID.fromString("33333333-3333-3333-3333-333333333333");
 
     @Autowired
     private MockMvc mockMvc;
@@ -63,7 +67,7 @@ class AdminDomainOpsControllerTest {
                         "attempt-001"));
 
         mockMvc.perform(post("/api/v1/admin/endpoint-devices/{deviceId}/domain-ops", DEVICE_ID)
-                        .contentType("application/json")
+                        .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "operation": "DOMAIN_SECURE_CHANNEL_VERIFY",
@@ -84,5 +88,69 @@ class AdminDomainOpsControllerTest {
                 .andExpect(jsonPath("$.connectorAttemptId").value("attempt-001"));
 
         verify(domainOpsBrokerService).create(eq(context), eq(DEVICE_ID), any());
+    }
+
+    @Test
+    void submitResultReturnsServiceResult() throws Exception {
+        AdminTenantContext context = new AdminTenantContext(TENANT_ID, "admin@example.com");
+        when(tenantContextResolver.resolveRequired()).thenReturn(context);
+        when(domainOpsBrokerService.submitResult(eq(context), eq(DEVICE_ID), eq(OPERATION_ID), any()))
+                .thenReturn(new DomainOpsResult(
+                        OPERATION_ID,
+                        TENANT_ID,
+                        DEVICE_ID,
+                        "ENDPOINT_AGENT_ROLLOUT_COLLECTOR",
+                        DomainOpsStatus.SUCCEEDED,
+                        "collector-evidence-accepted",
+                        300,
+                        "admin@example.com",
+                        Instant.parse("2026-06-18T18:00:00Z"),
+                        Instant.parse("2026-06-18T18:05:00Z"),
+                        "domain-ops-execution-connector",
+                        "attempt-collector"));
+
+        mockMvc.perform(post(
+                        "/api/v1/admin/endpoint-devices/{deviceId}/domain-ops/{operationId}/result",
+                        DEVICE_ID,
+                        OPERATION_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "status": "SUCCEEDED",
+                                  "reasonCode": "collector-evidence-accepted",
+                                  "connectorAttemptId": "attempt-collector",
+                                  "packageSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                                  "result": {
+                                    "evidenceCount": 3,
+                                    "evidenceTypes": ["SERVICE_STATUS"],
+                                    "resultSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                                  }
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.operationId").value(OPERATION_ID.toString()))
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.reasonCode").value("collector-evidence-accepted"))
+                .andExpect(jsonPath("$.connectorName").value("domain-ops-execution-connector"));
+
+        verify(domainOpsBrokerService).submitResult(eq(context), eq(DEVICE_ID), eq(OPERATION_ID), any());
+    }
+
+    @Test
+    void submitResultMissingStatusReturns400() throws Exception {
+        when(tenantContextResolver.resolveRequired())
+                .thenReturn(new AdminTenantContext(TENANT_ID, "admin@example.com"));
+
+        mockMvc.perform(post(
+                        "/api/v1/admin/endpoint-devices/{deviceId}/domain-ops/{operationId}/result",
+                        DEVICE_ID,
+                        OPERATION_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "packageSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                                }
+                                """))
+                .andExpect(status().isBadRequest());
     }
 }
