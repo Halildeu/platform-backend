@@ -5,6 +5,7 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChall
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.Verdict;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
+import static org.hamcrest.Matchers.contains;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -67,6 +69,7 @@ class RemoteBridgeOperatorControllerTest {
     private final OperatorStepUpHandler stepUpHandler = mock(OperatorStepUpHandler.class);
     private final ConnectedDeviceResolver deviceResolver = mock(ConnectedDeviceResolver.class);
     private final RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+    private final RemoteOperationCatalog operationCatalog = RemoteOperationCatalog.standard(60_000L);
     private MockMvc mvc;
 
     @BeforeEach
@@ -77,7 +80,7 @@ class RemoteBridgeOperatorControllerTest {
         openSession("s-cross-tenant", OWNER, OTHER_TENANT, "dev-ct", "peer-ct");
         OperatorAuthenticator authenticator = new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT);
         RemoteBridgeOperatorController controller = new RemoteBridgeOperatorController(
-                operatorService, stepUpHandler, authenticator, store, deviceResolver, () -> NOW);
+                operatorService, stepUpHandler, authenticator, store, deviceResolver, operationCatalog, () -> NOW);
         mvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
@@ -109,6 +112,13 @@ class RemoteBridgeOperatorControllerTest {
                 .content("{\"operationId\":\"op-1\",\"operation\":\"SCREEN_VIEW\"}"))
                 .andExpect(status().isUnauthorized());
         verify(operatorService, never()).handleOperationRequest(any());
+    }
+
+    @Test
+    void anUnauthenticatedCatalogQueryIs401() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/internal/remote-bridge/operator/operation-catalog"))
+                .andExpect(status().isUnauthorized());
     }
 
     // ---- ownership: missing AND not-owned both 404 (no existence oracle) ----
@@ -214,6 +224,20 @@ class RemoteBridgeOperatorControllerTest {
     // ---- operations ----
 
     @Test
+    void theOperationCatalogListsEnabledAndDisabledServerOwnedOperations() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/internal/remote-bridge/operator/operation-catalog").header("Authorization", AUTH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == 'GET_HOSTNAME')].enabled").value(contains(true)))
+                .andExpect(jsonPath("$[?(@.id == 'GET_HOSTNAME')].operation").value(contains("PTY_COMMAND")))
+                .andExpect(jsonPath("$[?(@.id == 'GET_HOSTNAME')].approvalRequirement")
+                        .value(contains("WEBAUTHN_STEP_UP")))
+                .andExpect(jsonPath("$[?(@.id == 'GET_SERVICE_STATUS')].enabled").value(contains(false)))
+                .andExpect(jsonPath("$[?(@.id == 'GET_SERVICE_STATUS')].disabledReason")
+                        .value(contains("service-status-argument-policy-not-implemented")));
+    }
+
+    @Test
     void anOperationForTheOwnSessionIsDelegatedWithThePathSessionIdAndMapped() throws Exception {
         when(operatorService.handleOperationRequest(any()))
                 .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null, "policy:x"),
@@ -232,6 +256,61 @@ class RemoteBridgeOperatorControllerTest {
         assertEquals("s-owned", captor.getValue().sessionId(), "the session id must come from the PATH, not the body");
         assertEquals("op-1", captor.getValue().operationId());
         assertEquals(RemoteOperation.SCREEN_VIEW, captor.getValue().operation());
+    }
+
+    @Test
+    void aCatalogOperationIsDelegatedWithTheServerOwnedCommand() throws Exception {
+        when(operatorService.handleOperationRequest(any()))
+                .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null, "policy:x"),
+                        false, null));
+
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-2\",\"catalogOperationId\":\"GET_HOSTNAME\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kind").value("DENY"))
+                .andExpect(jsonPath("$.catalogOperationId").value("GET_HOSTNAME"));
+
+        ArgumentCaptor<OperationRequest> captor = ArgumentCaptor.forClass(OperationRequest.class);
+        verify(operatorService).handleOperationRequest(captor.capture());
+        assertEquals("s-owned", captor.getValue().sessionId());
+        assertEquals("op-2", captor.getValue().operationId());
+        assertEquals(RemoteOperation.PTY_COMMAND, captor.getValue().operation());
+        assertEquals("hostname", captor.getValue().commandLine());
+    }
+
+    @Test
+    void ptyCommandWithoutCatalogIdIs400AndTouchesNoService() throws Exception {
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"operation\":\"PTY_COMMAND\",\"commandLine\":\"hostname\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("catalog-operation-required"));
+        verify(operatorService, never()).handleOperationRequest(any());
+    }
+
+    @Test
+    void unknownDisabledOrOverriddenCatalogOperationFailsClosedBeforeService() throws Exception {
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"catalogOperationId\":\"NOT_IN_CATALOG\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("catalog-operation-unknown"));
+
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"catalogOperationId\":\"GET_SERVICE_STATUS\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.reason").value("catalog-operation-disabled"));
+
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"catalogOperationId\":\"GET_HOSTNAME\","
+                        + "\"commandLine\":\"hostname\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.reason").value("catalog-command-override"));
+
+        verify(operatorService, never()).handleOperationRequest(any());
     }
 
     @Test
@@ -291,7 +370,7 @@ class RemoteBridgeOperatorControllerTest {
 
         mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"operationId\":\"op-1\",\"operation\":\"PTY_COMMAND\",\"commandLine\":\"hostname\"}"))
+                .content("{\"operationId\":\"op-1\",\"catalogOperationId\":\"GET_HOSTNAME\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.kind").value("DENY"))
                 .andExpect(jsonPath("$.transportPushed").value(false))
@@ -312,7 +391,7 @@ class RemoteBridgeOperatorControllerTest {
 
         mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"operationId\":\"op-1\",\"operation\":\"PTY_COMMAND\",\"commandLine\":\"hostname\"}"))
+                .content("{\"operationId\":\"op-1\",\"catalogOperationId\":\"GET_HOSTNAME\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.kind").value("DENY"))
                 .andExpect(jsonPath("$.deny.reason").value("policy:CRYPTO_IDENTITY"))
@@ -454,7 +533,8 @@ class RemoteBridgeOperatorControllerTest {
     void anOpenSessionWithANonWireIdOperatorSubjectIs401AndNeverResolves() throws Exception {
         // a verified subject that is not a valid wire id is an auth/IdP misconfig → fail-closed before the data plane
         RemoteBridgeOperatorController badSubject = new RemoteBridgeOperatorController(operatorService, stepUpHandler,
-                new InMemoryOperatorAuthenticator(TOKEN, "bad subject!", TENANT), store, deviceResolver, () -> NOW);
+                new InMemoryOperatorAuthenticator(TOKEN, "bad subject!", TENANT), store, deviceResolver,
+                operationCatalog, () -> NOW);
         MockMvc mvcBad = MockMvcBuilders.standaloneSetup(badSubject).build();
         mvcBad.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
                 .content(openBody("s-new", DEVICE_UUID)))
@@ -482,7 +562,8 @@ class RemoteBridgeOperatorControllerTest {
     void anOpenSessionWithANonUuidIdentityTenantIs401AndNeverResolves() throws Exception {
         // a verified identity with a non-UUID tenant is unusable for tenant-scoping → fail-closed before the data plane
         RemoteBridgeOperatorController badTenant = new RemoteBridgeOperatorController(operatorService, stepUpHandler,
-                new InMemoryOperatorAuthenticator(TOKEN, OWNER, "not-a-uuid"), store, deviceResolver, () -> NOW);
+                new InMemoryOperatorAuthenticator(TOKEN, OWNER, "not-a-uuid"), store, deviceResolver,
+                operationCatalog, () -> NOW);
         MockMvc mvcBad = MockMvcBuilders.standaloneSetup(badTenant).build();
         mvcBad.perform(post(OPEN).header("Authorization", AUTH).contentType(MediaType.APPLICATION_JSON)
                 .content(openBody("s-new", DEVICE_UUID)))
@@ -500,6 +581,7 @@ class RemoteBridgeOperatorControllerTest {
                 .withBean(OperatorAuthenticator.class, () -> new InMemoryOperatorAuthenticator(TOKEN, OWNER, TENANT))
                 .withBean(RemoteBridgeSessionStore.class, RemoteBridgeSessionStore::new)
                 .withBean(ConnectedDeviceResolver.class, () -> mock(ConnectedDeviceResolver.class))
+                .withBean(RemoteOperationCatalog.class, () -> RemoteOperationCatalog.standard(60_000L))
                 .withConfiguration(UserConfigurations.of(RemoteBridgeOperatorController.class));
 
         // default (property absent) → fail-closed: no controller bean, no endpoint

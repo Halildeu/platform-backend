@@ -9,6 +9,7 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.RecordingAnchorSigner;
+import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
 import com.example.endpointadmin.remoteaccess.RemoteAccessVerifierFactory;
 import com.example.endpointadmin.remoteaccess.RemoteSessionPolicyEngine;
 import com.example.endpointadmin.remoteaccess.SessionRecorder;
@@ -249,6 +250,16 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
         return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, remoteBridgePermitSigner,
                 remoteBridgeDurableAuditSink, policyVersion, permitTtlMillis);
+    }
+
+    /**
+     * Faz 22.6.1 — approved Remote Response operation catalog. This is server-owned authority metadata; the
+     * operator REST endpoint can reference ids from it, but cannot paste or override the command text.
+     */
+    @Bean
+    public RemoteOperationCatalog remoteBridgeOperationCatalog(
+            @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
+        return RemoteOperationCatalog.standard(permitTtlMillis);
     }
 
     /**
