@@ -5,6 +5,7 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpChall
 import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerification;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.UUID;
 import java.util.function.LongSupplier;
 
@@ -246,7 +248,9 @@ public class RemoteBridgeOperatorController {
             return ResponseEntity.unprocessableEntity().body(new RejectedResponse(outcome.rejectReason()));
         }
         return ResponseEntity.ok(new OperationResponse(outcome.brokerOutcome().kind().name(),
-                outcome.transportPushed(), PermitMetadata.from(outcome.brokerOutcome().permit(), clock.getAsLong())));
+                outcome.transportPushed(),
+                PermitMetadata.from(outcome.brokerOutcome().permit(), clock.getAsLong()),
+                DenyMetadata.from(outcome.brokerOutcome())));
     }
 
     private OperatorIdentity authenticate(HttpServletRequest request) {
@@ -334,7 +338,33 @@ public class RemoteBridgeOperatorController {
     public record OperationRequestBody(String operationId, String operation, String commandLine) {
     }
 
-    public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit) {
+    public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit, DenyMetadata deny) {
+    }
+
+    public record DenyMetadata(String reason, String policyGate) {
+        private static final Pattern SAFE_REASON =
+                Pattern.compile("^[A-Za-z0-9:_-]{1,64}$");
+
+        static DenyMetadata from(RemoteBridgeBroker.BrokerOutcome outcome) {
+            if (outcome == null || outcome.kind() != RemoteBridgeBroker.BrokerOutcome.Kind.DENY) {
+                return null;
+            }
+            String reason = safeReason(outcome.reason());
+            String gate = null;
+            if (reason.startsWith("policy:")) {
+                String candidate = reason.substring("policy:".length());
+                gate = candidate.matches("^[A-Z_]{1,32}$") ? candidate : null;
+            }
+            return new DenyMetadata(reason, gate);
+        }
+
+        private static String safeReason(String reason) {
+            if (reason == null || reason.isBlank()) {
+                return "denied";
+            }
+            String canonical = reason.trim();
+            return SAFE_REASON.matcher(canonical).matches() ? canonical : "denied";
+        }
     }
 
     public record PermitMetadata(String alg,

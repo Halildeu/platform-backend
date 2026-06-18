@@ -223,7 +223,9 @@ class RemoteBridgeOperatorControllerTest {
                 .content("{\"operationId\":\"op-1\",\"operation\":\"SCREEN_VIEW\",\"commandLine\":null}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.kind").value("DENY"))
-                .andExpect(jsonPath("$.transportPushed").value(false));
+                .andExpect(jsonPath("$.transportPushed").value(false))
+                .andExpect(jsonPath("$.deny.reason").value("policy:x"))
+                .andExpect(jsonPath("$.deny.policyGate").doesNotExist());
 
         ArgumentCaptor<OperationRequest> captor = ArgumentCaptor.forClass(OperationRequest.class);
         verify(operatorService).handleOperationRequest(captor.capture());
@@ -275,9 +277,30 @@ class RemoteBridgeOperatorControllerTest {
                 .andExpect(jsonPath("$.permit.canonicalPayloadSha256").exists())
                 .andExpect(jsonPath("$.permit.deviceIdSha256").exists())
                 .andExpect(jsonPath("$.permit.operatorSubjectSha256").exists())
+                .andExpect(jsonPath("$.deny").doesNotExist())
                 .andExpect(jsonPath("$.permit.signatureB64").doesNotExist())
                 .andExpect(jsonPath("$.permit.deviceId").doesNotExist())
                 .andExpect(jsonPath("$.permit.operatorSubject").doesNotExist());
+    }
+
+    @Test
+    void aPolicyDeniedOperationReturnsOnlyRedactedDenyMetadata() throws Exception {
+        when(operatorService.handleOperationRequest(any()))
+                .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null,
+                        "policy:CRYPTO_IDENTITY"), false, null));
+
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"operation\":\"PTY_COMMAND\",\"commandLine\":\"hostname\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kind").value("DENY"))
+                .andExpect(jsonPath("$.transportPushed").value(false))
+                .andExpect(jsonPath("$.permit").doesNotExist())
+                .andExpect(jsonPath("$.deny.reason").value("policy:CRYPTO_IDENTITY"))
+                .andExpect(jsonPath("$.deny.policyGate").value("CRYPTO_IDENTITY"))
+                .andExpect(jsonPath("$.deny.deviceId").doesNotExist())
+                .andExpect(jsonPath("$.deny.operatorSubject").doesNotExist())
+                .andExpect(jsonPath("$.deny.signatureB64").doesNotExist());
     }
 
     @Test
