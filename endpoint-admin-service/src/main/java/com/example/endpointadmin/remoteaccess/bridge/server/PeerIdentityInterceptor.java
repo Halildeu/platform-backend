@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
+import com.example.endpointadmin.security.MachineCertExtractor;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.Grpc;
@@ -13,10 +14,13 @@ import javax.net.ssl.SSLSession;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateParsingException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Matcher;
 
 /**
  * Faz 22.6 T-2b (Codex 019eb9fb) — reads the mTLS peer certificate off the transport
@@ -27,11 +31,14 @@ import java.util.Optional;
  * infrastructure (T-4 + gitops). In-process tests inject a {@link PeerIdentity} directly via
  * {@link #PEER_IDENTITY} (the seam), exercising the same fail-closed paths.
  *
- * <p>The cert SAN → device-id extraction is intentionally NOT done here: B1.4's {@code CertIdentityGuard}
- * owns SAN parsing. This interceptor only establishes a stable transport key (leaf fingerprint) + carries the
- * chain for downstream verifiers. Transport identity is NOT device trust.
+ * <p>The cert SAN → endpoint device-id extraction is intentionally NOT done here: B1.4's
+ * {@code CertIdentityGuard} owns device-id parsing. The interceptor does extract the AD computer objectGUID
+ * SAN URI when it is unambiguous, so the operator resolver can bind a live mTLS stream to a renewed AD CS
+ * machine cert without trusting {@code AgentHello}. Transport identity is NOT device trust.
  */
 public final class PeerIdentityInterceptor implements ServerInterceptor {
+
+    private static final int SAN_TYPE_URI = 6;
 
     /** The authenticated transport identity of the calling stream; absent = anonymous = refuse. */
     public static final Context.Key<PeerIdentity> PEER_IDENTITY = Context.key("remote-bridge-peer-identity");
@@ -67,9 +74,38 @@ public final class PeerIdentityInterceptor implements ServerInterceptor {
                     chain.add(x509);
                 }
             }
-            return new PeerIdentity(fingerprint(leaf), Optional.empty(), chain);
+            return new PeerIdentity(fingerprint(leaf), Optional.empty(), certBoundAdComputerId(leaf), chain);
         } catch (SSLPeerUnverifiedException e) {
             return null; // unverified peer = anonymous = the service refuses
+        }
+    }
+
+    private static Optional<String> certBoundAdComputerId(X509Certificate leaf) {
+        try {
+            Collection<List<?>> sans = leaf.getSubjectAlternativeNames();
+            if (sans == null) {
+                return Optional.empty();
+            }
+            String match = null;
+            int matchCount = 0;
+            for (List<?> entry : sans) {
+                if (entry.size() < 2) {
+                    continue;
+                }
+                Object typeTag = entry.get(0);
+                Object value = entry.get(1);
+                if (!(typeTag instanceof Integer type) || type != SAN_TYPE_URI || !(value instanceof String uri)) {
+                    continue;
+                }
+                Matcher matcher = MachineCertExtractor.SAN_URI_PATTERN.matcher(uri);
+                if (matcher.matches()) {
+                    match = matcher.group(1);
+                    matchCount++;
+                }
+            }
+            return matchCount == 1 ? Optional.of(match) : Optional.empty();
+        } catch (CertificateParsingException e) {
+            return Optional.empty();
         }
     }
 

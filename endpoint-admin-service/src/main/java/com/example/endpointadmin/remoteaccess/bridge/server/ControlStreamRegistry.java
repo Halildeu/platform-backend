@@ -9,6 +9,7 @@ import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapt
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -72,6 +73,34 @@ public final class ControlStreamRegistry {
         }
         ConnectedPeer entry = streams.get(transportPeerKey);
         return entry == null ? Optional.empty() : Optional.of(entry.peer());
+    }
+
+    /**
+     * Resolve a live peer by the AD CS machine certificate's {@code adcomputer:{objectGUID}} SAN binding.
+     * This is a fallback for certificate renewal / DB thumbprint drift cases only; exact transport thumbprint
+     * lookup remains the primary path. The lookup is fail-closed: invalid GUID input, missing SAN binding, or a
+     * dropped stream all return empty.
+     */
+    public Optional<PeerIdentity> connectedPeerByAdComputerId(String adComputerId) {
+        String wanted = canonicalAdComputerId(adComputerId);
+        if (wanted == null) {
+            return Optional.empty();
+        }
+        return streams.values().stream()
+                .map(ConnectedPeer::peer)
+                .filter(peer -> peer.certBoundAdComputerId().filter(wanted::equals).isPresent())
+                .findFirst();
+    }
+
+    private static String canonicalAdComputerId(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(raw.trim()).toString();
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     /**

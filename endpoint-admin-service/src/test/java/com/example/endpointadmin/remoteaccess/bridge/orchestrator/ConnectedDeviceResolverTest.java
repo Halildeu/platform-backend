@@ -34,6 +34,7 @@ class ConnectedDeviceResolverTest {
     private static final UUID TENANT = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID OTHER_TENANT = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final UUID DEVICE = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID OBJECT_GUID = UUID.fromString("44444444-4444-4444-4444-444444444444");
     private static final String THUMBPRINT = "a".repeat(64); // canonical lowercase 64-hex
     private static final Instant NOW = Instant.parse("2026-06-13T12:00:00Z");
 
@@ -54,6 +55,7 @@ class ConnectedDeviceResolverTest {
         when(cert.getCertThumbprint()).thenReturn(thumbprint);
         when(cert.getCertNotBefore()).thenReturn(notBefore);
         when(cert.getCertNotAfter()).thenReturn(notAfter);
+        when(cert.getObjectGuid()).thenReturn(OBJECT_GUID);
         when(cert.getDevice()).thenReturn(device);
         return cert;
     }
@@ -77,6 +79,7 @@ class ConnectedDeviceResolverTest {
         assertTrue(resolved.isPresent());
         assertEquals(peer, resolved.get());
         verify(registry).connectedPeer(THUMBPRINT);
+        verify(registry, never()).connectedPeerByAdComputerId(anyString());
     }
 
     @Test
@@ -93,7 +96,38 @@ class ConnectedDeviceResolverTest {
     void aResolvedButDroppedPeerIsEmpty() {
         activeCertIs(validCert());
         when(registry.connectedPeer(THUMBPRINT)).thenReturn(Optional.empty());
+        when(registry.connectedPeerByAdComputerId(OBJECT_GUID.toString())).thenReturn(Optional.empty());
         assertTrue(resolver.resolveConnectedPeer(TENANT, DEVICE, NOW).isEmpty());
+        verify(registry).connectedPeer(THUMBPRINT);
+        verify(registry).connectedPeerByAdComputerId(OBJECT_GUID.toString());
+    }
+
+    @Test
+    void aThumbprintMissCanResolveThroughTheSameAdComputerObjectGuidSan() {
+        PeerIdentity peer = new PeerIdentity("b".repeat(64), Optional.empty(),
+                Optional.of(OBJECT_GUID.toString()), List.of());
+        activeCertIs(validCert());
+        when(registry.connectedPeer(THUMBPRINT)).thenReturn(Optional.empty());
+        when(registry.connectedPeerByAdComputerId(OBJECT_GUID.toString())).thenReturn(Optional.of(peer));
+
+        Optional<PeerIdentity> resolved = resolver.resolveConnectedPeer(TENANT, DEVICE, NOW);
+
+        assertEquals(Optional.of(peer), resolved);
+        verify(registry).connectedPeer(THUMBPRINT);
+        verify(registry).connectedPeerByAdComputerId(OBJECT_GUID.toString());
+    }
+
+    @Test
+    void aThumbprintMissWithoutAnAdComputerObjectGuidIsEmpty() {
+        EndpointMachineCert cert = validCert();
+        when(cert.getObjectGuid()).thenReturn(null);
+        activeCertIs(cert);
+        when(registry.connectedPeer(THUMBPRINT)).thenReturn(Optional.empty());
+
+        assertTrue(resolver.resolveConnectedPeer(TENANT, DEVICE, NOW).isEmpty());
+
+        verify(registry).connectedPeer(THUMBPRINT);
+        verify(registry, never()).connectedPeerByAdComputerId(anyString());
     }
 
     // ---- fail-closed gates: each is empty AND never reaches the registry ----

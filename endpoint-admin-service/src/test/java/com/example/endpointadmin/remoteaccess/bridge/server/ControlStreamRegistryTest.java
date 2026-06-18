@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -49,6 +50,11 @@ class ControlStreamRegistryTest {
 
     private static PeerIdentity peer(String key) {
         return new PeerIdentity(key, Optional.empty(), List.<X509Certificate>of());
+    }
+
+    private static PeerIdentity peerByAdComputer(String key, UUID objectGuid) {
+        return new PeerIdentity(key, Optional.empty(), Optional.of(objectGuid.toString()),
+                List.<X509Certificate>of());
     }
 
     private static OperationPermit permit(String sessionId, String operationId) {
@@ -158,6 +164,32 @@ class ControlStreamRegistryTest {
         assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
         assertTrue(registry.connectedPeer("ghost").isEmpty());
         assertTrue(registry.connectedPeer(null).isEmpty());
+    }
+
+    @Test
+    void connectedPeerByAdComputerIdFindsOnlyACurrentRegisteredSanBoundPeer() {
+        UUID objectGuid = UUID.fromString("44444444-4444-4444-4444-444444444444");
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peerByAdComputer("peer-1", objectGuid);
+        ControlStreamHandle handle = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, handle);
+
+        assertEquals(p, registry.connectedPeerByAdComputerId(objectGuid.toString()).orElseThrow());
+        assertEquals(p, registry.connectedPeerByAdComputerId(objectGuid.toString().toUpperCase()).orElseThrow());
+        assertTrue(registry.connectedPeerByAdComputerId("not-a-guid").isEmpty());
+        assertTrue(registry.connectedPeerByAdComputerId(null).isEmpty());
+        assertTrue(registry.connectedPeerByAdComputerId(UUID.randomUUID().toString()).isEmpty());
+
+        registry.unregister(p, handle);
+        assertTrue(registry.connectedPeerByAdComputerId(objectGuid.toString()).isEmpty());
+    }
+
+    @Test
+    void connectedPeerByAdComputerIdDoesNotMatchPeersWithoutACertSanBinding() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        registry.register(peer("peer-1"), new ControlStreamHandle(new CapturingObserver()));
+
+        assertTrue(registry.connectedPeerByAdComputerId("44444444-4444-4444-4444-444444444444").isEmpty());
     }
 
     @Test

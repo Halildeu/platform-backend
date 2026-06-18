@@ -18,10 +18,12 @@ import java.util.regex.Pattern;
 /**
  * Faz 22.6 slice-4c-2b-2a (Codex 019ebe06) — resolves an operator-supplied {@code (tenantId, deviceId)} to the
  * connected agent {@link PeerIdentity}, the verified device→peer mapping {@code openSession} needs. Lazy, not a
- * connect-time index: a device's single ACTIVE cert thumbprint EQUALS the agent's {@code transportPeerKey}
- * (both are the lowercase SHA-256 hex of the leaf DER), so the resolve is
- * {@code (tenant, deviceId) → active cert → thumbprint → connectedPeer} — fresh on every call, so a
- * revoked/expired cert or a dropped peer is caught at open time, not cached.
+ * connect-time index: the primary resolve path is the device's single ACTIVE cert thumbprint equaling the
+ * agent's {@code transportPeerKey} (both are the lowercase SHA-256 hex of the leaf DER):
+ * {@code (tenant, deviceId) → active cert → thumbprint → connectedPeer}. If an AD CS machine cert renewed while
+ * the active-cert row still references the previous thumbprint, a bounded fallback may resolve by the same
+ * cert row's AD computer objectGUID and the live mTLS cert's {@code adcomputer:{objectGUID}} SAN. Both paths are
+ * fresh on every call, so a revoked/expired cert or a dropped peer is caught at open time, not cached.
  *
  * <p><b>Fail-closed, every gate (Codex REVISE):</b>
  * <ul>
@@ -77,8 +79,20 @@ public final class ConnectedDeviceResolver {
         if (thumbprint == null) {
             return Optional.empty(); // a non-canonical thumbprint can never equal a transport key — fail-closed
         }
-        // the device's active-cert thumbprint == the connected peer's transportPeerKey; a live peer, or empty
-        return registry.connectedPeer(thumbprint);
+        // Primary: the device's active-cert thumbprint == the connected peer's transportPeerKey.
+        Optional<PeerIdentity> exactTransportPeer = registry.connectedPeer(thumbprint);
+        if (exactTransportPeer.isPresent()) {
+            return exactTransportPeer;
+        }
+
+        // Bounded renewal/drift fallback: a live mTLS cert carrying the SAME AD computer objectGUID may still
+        // represent this device even when the active cert thumbprint row has not caught up yet. The registry
+        // lookup is fail-closed unless the live stream's authenticated cert has exactly one adcomputer SAN.
+        UUID objectGuid = cert.getObjectGuid();
+        if (objectGuid == null) {
+            return Optional.empty();
+        }
+        return registry.connectedPeerByAdComputerId(objectGuid.toString());
     }
 
     private static boolean withinValidity(EndpointMachineCert cert, Instant now) {
