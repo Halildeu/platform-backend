@@ -488,9 +488,11 @@ public class RemoteBridgeServerConfig {
             TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler,
             RemoteBridgeBroker remoteBridgeBroker,
             ControlStreamRegistry remoteBridgeControlStreamRegistry,
+            DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
             @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis) {
         return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
-                remoteBridgeBroker, remoteBridgeControlStreamRegistry, System::currentTimeMillis,
+                remoteBridgeBroker, remoteBridgeControlStreamRegistry, remoteBridgeDurableAuditSink,
+                System::currentTimeMillis,
                 consentPromptTtlMillis);
     }
 

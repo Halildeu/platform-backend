@@ -15,11 +15,13 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMac
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionCloseOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSession;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
@@ -71,6 +73,10 @@ class RemoteBridgeOperatorServiceTest {
         return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "rb-v1", 60_000L);
     }
 
+    private static RemoteBridgeAuditSink operatorAuditSink() {
+        return event -> { };
+    }
+
     private static PeerTrustLedger emptyLedger() {
         return new PeerTrustLedger(
                 (cert, now) -> CertTrustEvaluator.TrustDecision.NOT_TRUSTED,
@@ -119,7 +125,7 @@ class RemoteBridgeOperatorServiceTest {
     void aMalformedRequestIsRejectedBeforeTheBroker() {
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(
                 new RemoteBridgeSessionStore(), assembler((sid, now) -> DuressSignal.NONE), broker(),
-                new ControlStreamRegistry(), () -> NOW, 120_000L);
+                new ControlStreamRegistry(), operatorAuditSink(), () -> NOW, 120_000L);
 
         OperatorOutcome outcome = service.handleOperationRequest(
                 new OperationRequest(" ", "op-1", RemoteOperation.SCREEN_VIEW, null));
@@ -132,7 +138,7 @@ class RemoteBridgeOperatorServiceTest {
     void anUnknownSessionIsRejectedBeforeTheBroker() {
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(
                 new RemoteBridgeSessionStore(), assembler((sid, now) -> DuressSignal.NONE), broker(),
-                new ControlStreamRegistry(), () -> NOW, 120_000L);
+                new ControlStreamRegistry(), operatorAuditSink(), () -> NOW, 120_000L);
 
         OperatorOutcome outcome = service.handleOperationRequest(
                 new OperationRequest("ghost", "op-1", RemoteOperation.SCREEN_VIEW, null));
@@ -152,7 +158,7 @@ class RemoteBridgeOperatorServiceTest {
 
         // the UNWIRED duress source (AMBIGUOUS) → the broker kills regardless of capability
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry,
+                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry, operatorAuditSink(),
                 () -> NOW, 120_000L);
 
         OperatorOutcome outcome = service.handleOperationRequest(
@@ -177,7 +183,7 @@ class RemoteBridgeOperatorServiceTest {
 
         // a clean duress source → the broker reaches the policy engine; DENY_ALL gate → no capability → DENY
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW, 120_000L);
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 
         OperatorOutcome outcome = service.handleOperationRequest(
                 new OperationRequest("s1", "op-1", RemoteOperation.SCREEN_VIEW, null));
@@ -198,6 +204,74 @@ class RemoteBridgeOperatorServiceTest {
                 "the reopened session must push a fresh consent prompt");
     }
 
+    @Test
+    void explicitCloseOfAnActiveSessionRecordsAuditEvictsAndFreesThePeerSlot() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        List<AuditEvent> closeAudits = new ArrayList<>();
+
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, closeAudits::add,
+                () -> NOW, 120_000L);
+
+        SessionOpenOutcome blocked = service.openSession(
+                new SessionRequest("s2", "dev-1", "operator@x", "retry support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X");
+        assertFalse(blocked.opened(), "the single-live-session guard must still block before explicit close");
+        assertEquals("peer-already-has-live-session", blocked.rejectReason());
+
+        SessionCloseOutcome close = service.closeSession("s1");
+
+        assertTrue(close.accepted());
+        assertTrue(store.bySessionId("s1").isEmpty(), "the closed session must be evicted");
+        assertEquals(1, closeAudits.size(), "close must be durably audited before evicting");
+        assertEquals("s1", closeAudits.get(0).sessionId());
+        assertEquals("SESSION_CLOSE:OPERATOR", closeAudits.get(0).eventType());
+
+        SessionOpenOutcome reopened = service.openSession(
+                new SessionRequest("s2", "dev-1", "operator@x", "retry support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X");
+        assertTrue(reopened.opened(), "explicit close must free the peer slot for a follow-up session");
+        assertEquals("s2", reopened.sessionId());
+    }
+
+    @Test
+    void explicitCloseFailsClosedWhenAuditWriteFailsAndKeepsThePeerSlot() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        RemoteBridgeAuditSink throwingAudit = event -> {
+            throw new RuntimeException("durable audit unavailable");
+        };
+
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, throwingAudit,
+                () -> NOW, 120_000L);
+
+        SessionCloseOutcome close = service.closeSession("s1");
+
+        assertFalse(close.accepted());
+        assertEquals("recording-failed", close.rejectReason());
+        assertTrue(store.bySessionId("s1").isPresent(), "a failed close audit must not evict the live session");
+        assertFalse(store.bySessionId("s1").orElseThrow().isTerminal(),
+                "a failed close audit must leave the session non-terminal");
+
+        SessionOpenOutcome blocked = service.openSession(
+                new SessionRequest("s2", "dev-1", "operator@x", "retry support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X");
+        assertFalse(blocked.opened(), "a failed close audit must preserve the one-live-session guard");
+        assertEquals("peer-already-has-live-session", blocked.rejectReason());
+    }
+
     // --- slice-4b-3 consent flow (openSession) ------------------------------
 
     @Test
@@ -208,7 +282,7 @@ class RemoteBridgeOperatorServiceTest {
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         registry.register(peer, new ControlStreamHandle(observer));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW, 120_000L);
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support", Set.of(RemoteSessionCapability.VIEW_ONLY)),
@@ -228,7 +302,7 @@ class RemoteBridgeOperatorServiceTest {
     void openSessionRefusesAPeerWithNoLiveStreamBeforeCreatingTheSession() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler((sid, now) -> DuressSignal.NONE), broker(), new ControlStreamRegistry(), () -> NOW,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), new ControlStreamRegistry(), operatorAuditSink(), () -> NOW,
                 120_000L);
 
         SessionOpenOutcome outcome = service.openSession(
@@ -243,7 +317,7 @@ class RemoteBridgeOperatorServiceTest {
     @Test
     void openSessionRejectsAMalformedRequest() {
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(new RemoteBridgeSessionStore(),
-                assembler((sid, now) -> DuressSignal.NONE), broker(), new ControlStreamRegistry(), () -> NOW,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), new ControlStreamRegistry(), operatorAuditSink(), () -> NOW,
                 120_000L);
 
         SessionOpenOutcome outcome = service.openSession(null, null, TENANT, "Operator X");
@@ -262,7 +336,7 @@ class RemoteBridgeOperatorServiceTest {
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         registry.register(peer, new ControlStreamHandle(observer));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW, 120_000L);
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 
         // a CONNECTED peer (the pre-guard passes) but a BLANK tenant — the store refuses past the pre-guard
         SessionOpenOutcome outcome = service.openSession(
@@ -282,7 +356,7 @@ class RemoteBridgeOperatorServiceTest {
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, () -> NOW, 120_000L);
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW, 120_000L);
 
         // "t-1" is a non-UUID tenant on a connected peer — a future caller passing a non-canonical tenant must
         // not silently weaken the controller's tenant-scoped ownership guard

@@ -105,7 +105,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         TrustEvidenceAssembler assembler = new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL,
                 (sid, now) -> DuressSignal.NONE); // clean duress so the chain reaches the policy engine
         RemoteBridgeOperatorService operator = new RemoteBridgeOperatorService(store, assembler, broker(),
-                registry, () -> NOW, 120_000L);
+                registry, event -> { }, () -> NOW, 120_000L);
 
         CapturingObserver agent = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity(PEER, Optional.of("dev-1"), List.of());
@@ -149,7 +149,7 @@ class RemoteBridgeRemoteAccessE2ETest {
         TrustEvidenceAssembler assembler = new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL,
                 (sid, now) -> DuressSignal.NONE);
         RemoteBridgeOperatorService operator = new RemoteBridgeOperatorService(store, assembler, broker(),
-                registry, () -> NOW, 120_000L);
+                registry, event -> { }, () -> NOW, 120_000L);
 
         CapturingObserver agent = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity(PEER, Optional.of("dev-1"), List.of());

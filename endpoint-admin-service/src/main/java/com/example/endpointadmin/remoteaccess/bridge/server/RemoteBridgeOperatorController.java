@@ -20,6 +20,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDevic
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionCloseOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSession;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
@@ -216,6 +217,23 @@ public class RemoteBridgeOperatorController {
             return ResponseEntity.unprocessableEntity().body(new RejectedResponse("open-session-refused"));
         }
         return ResponseEntity.ok(new OpenSessionResponse(outcome.sessionId(), outcome.consentPromptSent()));
+    }
+
+    /** Explicitly close the operator's own attended session once the approved operation flow is finished. */
+    @PostMapping("/sessions/{sessionId}/close")
+    public ResponseEntity<?> closeSession(@PathVariable String sessionId, HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        if (ownedSession(sessionId, identity).isEmpty()) {
+            return notFound();
+        }
+        SessionCloseOutcome outcome = operatorService.closeSession(sessionId);
+        if (!outcome.accepted()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(new RejectedResponse("session-close-refused"));
+        }
+        return ResponseEntity.noContent().build();
     }
 
     /** Issue a fresh step-up challenge for the operator's own session (replaces any prior pending one). */

@@ -17,6 +17,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDevic
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUpHandler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionCloseOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -118,6 +119,12 @@ class RemoteBridgeOperatorControllerTest {
     }
 
     @Test
+    void anUnauthenticatedCloseIs401AndTouchesNoService() throws Exception {
+        mvc.perform(post(BASE + "s-owned/close")).andExpect(status().isUnauthorized());
+        verify(operatorService, never()).closeSession(any());
+    }
+
+    @Test
     void anUnauthenticatedCatalogQueryIs401() throws Exception {
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .get("/internal/remote-bridge/operator/operation-catalog"))
@@ -157,6 +164,13 @@ class RemoteBridgeOperatorControllerTest {
     }
 
     @Test
+    void aCloseForAnotherOperatorsSessionIs404() throws Exception {
+        mvc.perform(post(BASE + "s-foreign/close").header("Authorization", AUTH))
+                .andExpect(status().isNotFound());
+        verify(operatorService, never()).closeSession(any());
+    }
+
+    @Test
     void aSessionOwnedBySameSubjectInAnotherTenantIs404OnEveryFollowUp() throws Exception {
         // Codex REVISE: ownership is tenant AND subject — the authenticated operator (same subject, tenant
         // TENANT) must NOT act on s-cross-tenant (same subject, OTHER_TENANT). Every follow-up verb → 404, no call.
@@ -170,9 +184,12 @@ class RemoteBridgeOperatorControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"operationId\":\"op-1\",\"operation\":\"SCREEN_VIEW\"}"))
                 .andExpect(status().isNotFound());
+        mvc.perform(post(BASE + "s-cross-tenant/close").header("Authorization", AUTH))
+                .andExpect(status().isNotFound());
         verify(stepUpHandler, never()).issueChallenge(any(), anyLong());
         verify(stepUpHandler, never()).verifyAndRecord(any(), any(), anyLong());
         verify(operatorService, never()).handleOperationRequest(any());
+        verify(operatorService, never()).closeSession(any());
     }
 
     // ---- step-up challenge ----
@@ -525,6 +542,27 @@ class RemoteBridgeOperatorControllerTest {
                 .content("{\"operationId\":\"\",\"operation\":\"SCREEN_VIEW\"}"))
                 .andExpect(status().isBadRequest());
         verify(operatorService, never()).handleOperationRequest(any());
+    }
+
+    @Test
+    void aCloseForTheOwnSessionDelegatesAndReturns204() throws Exception {
+        when(operatorService.closeSession("s-owned"))
+                .thenReturn(new SessionCloseOutcome("s-owned", true, null));
+
+        mvc.perform(post(BASE + "s-owned/close").header("Authorization", AUTH))
+                .andExpect(status().isNoContent());
+
+        verify(operatorService).closeSession("s-owned");
+    }
+
+    @Test
+    void aCloseTheServiceRefusesIs409WithGenericReason() throws Exception {
+        when(operatorService.closeSession("s-owned"))
+                .thenReturn(new SessionCloseOutcome("s-owned", false, "recording-failed"));
+
+        mvc.perform(post(BASE + "s-owned/close").header("Authorization", AUTH))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.reason").value("session-close-refused"));
     }
 
     // ---- openSession: resolve the verified peer (tenant from identity, deviceId from body), then consent flow ----
