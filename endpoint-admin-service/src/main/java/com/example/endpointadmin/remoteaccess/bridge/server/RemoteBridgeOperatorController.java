@@ -341,9 +341,11 @@ public class RemoteBridgeOperatorController {
     public record OperationResponse(String kind, boolean transportPushed, PermitMetadata permit, DenyMetadata deny) {
     }
 
-    public record DenyMetadata(String reason, String policyGate) {
+    public record DenyMetadata(String reason, String policyGate, String policyDetail) {
         private static final Pattern SAFE_REASON =
                 Pattern.compile("^[A-Za-z0-9:_-]{1,64}$");
+        private static final Pattern SAFE_DETAIL =
+                Pattern.compile("^[a-z0-9-]{1,64}$");
 
         static DenyMetadata from(RemoteBridgeBroker.BrokerOutcome outcome) {
             if (outcome == null || outcome.kind() != RemoteBridgeBroker.BrokerOutcome.Kind.DENY) {
@@ -355,7 +357,8 @@ public class RemoteBridgeOperatorController {
                 String candidate = reason.substring("policy:".length());
                 gate = candidate.matches("^[A-Z_]{1,32}$") ? candidate : null;
             }
-            return new DenyMetadata(reason, gate);
+            String detail = gate == null ? null : safeDetail(outcome.policyDetail());
+            return new DenyMetadata(reason, gate, detail);
         }
 
         private static String safeReason(String reason) {
@@ -364,6 +367,14 @@ public class RemoteBridgeOperatorController {
             }
             String canonical = reason.trim();
             return SAFE_REASON.matcher(canonical).matches() ? canonical : "denied";
+        }
+
+        private static String safeDetail(String detail) {
+            if (detail == null || detail.isBlank()) {
+                return null;
+            }
+            String canonical = detail.trim();
+            return SAFE_DETAIL.matcher(canonical).matches() ? canonical : null;
         }
     }
 

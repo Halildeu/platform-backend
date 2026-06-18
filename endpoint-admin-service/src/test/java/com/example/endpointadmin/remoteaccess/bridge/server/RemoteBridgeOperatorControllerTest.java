@@ -287,7 +287,7 @@ class RemoteBridgeOperatorControllerTest {
     void aPolicyDeniedOperationReturnsOnlyRedactedDenyMetadata() throws Exception {
         when(operatorService.handleOperationRequest(any()))
                 .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null,
-                        "policy:CRYPTO_IDENTITY"), false, null));
+                        "policy:CRYPTO_IDENTITY", "no-active-enrolled-connected-peer"), false, null));
 
         mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
                 .contentType(MediaType.APPLICATION_JSON)
@@ -298,9 +298,26 @@ class RemoteBridgeOperatorControllerTest {
                 .andExpect(jsonPath("$.permit").doesNotExist())
                 .andExpect(jsonPath("$.deny.reason").value("policy:CRYPTO_IDENTITY"))
                 .andExpect(jsonPath("$.deny.policyGate").value("CRYPTO_IDENTITY"))
+                .andExpect(jsonPath("$.deny.policyDetail").value("no-active-enrolled-connected-peer"))
                 .andExpect(jsonPath("$.deny.deviceId").doesNotExist())
                 .andExpect(jsonPath("$.deny.operatorSubject").doesNotExist())
                 .andExpect(jsonPath("$.deny.signatureB64").doesNotExist());
+    }
+
+    @Test
+    void unsafePolicyDetailIsNotReturned() throws Exception {
+        when(operatorService.handleOperationRequest(any()))
+                .thenReturn(new OperatorOutcome(new BrokerOutcome(BrokerOutcome.Kind.DENY, null, null,
+                        "policy:CRYPTO_IDENTITY", "thumbprint:abcdef"), false, null));
+
+        mvc.perform(post(BASE + "s-owned/operations").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"operationId\":\"op-1\",\"operation\":\"PTY_COMMAND\",\"commandLine\":\"hostname\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kind").value("DENY"))
+                .andExpect(jsonPath("$.deny.reason").value("policy:CRYPTO_IDENTITY"))
+                .andExpect(jsonPath("$.deny.policyGate").value("CRYPTO_IDENTITY"))
+                .andExpect(jsonPath("$.deny.policyDetail").doesNotExist());
     }
 
     @Test

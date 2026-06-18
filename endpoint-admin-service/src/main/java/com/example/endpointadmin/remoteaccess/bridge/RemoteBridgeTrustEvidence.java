@@ -23,6 +23,7 @@ import java.util.Set;
 public record RemoteBridgeTrustEvidence(boolean certTrusted,
                                         boolean attestationVerified,
                                         boolean deviceTrusted,
+                                        String cryptoIdentityDetail,
                                         OperatorStepUpPolicy.StepUpState stepUpState,
                                         DuressResponsePolicy.DuressSignal duressSignal,
                                         Set<RemoteSessionCapability> grantedCapabilities,
@@ -32,5 +33,18 @@ public record RemoteBridgeTrustEvidence(boolean certTrusted,
 
     public RemoteBridgeTrustEvidence {
         grantedCapabilities = grantedCapabilities == null ? Set.of() : Set.copyOf(grantedCapabilities);
+    }
+
+    public RemoteBridgeTrustEvidence(boolean certTrusted,
+                                     boolean attestationVerified,
+                                     boolean deviceTrusted,
+                                     OperatorStepUpPolicy.StepUpState stepUpState,
+                                     DuressResponsePolicy.DuressSignal duressSignal,
+                                     Set<RemoteSessionCapability> grantedCapabilities,
+                                     ConsentLease consentLease,
+                                     String deviceId,
+                                     String operatorSubject) {
+        this(certTrusted, attestationVerified, deviceTrusted, null, stepUpState, duressSignal,
+                grantedCapabilities, consentLease, deviceId, operatorSubject);
     }
 }

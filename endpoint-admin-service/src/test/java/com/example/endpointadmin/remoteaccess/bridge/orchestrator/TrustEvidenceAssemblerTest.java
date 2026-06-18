@@ -156,6 +156,23 @@ class TrustEvidenceAssemblerTest {
                 session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
 
         assertFalse(ev.deviceTrusted(), "a denying device-trust verifier → deviceTrusted false");
+        assertEquals("not-enrolled", ev.cryptoIdentityDetail());
+    }
+
+    @Test
+    void aDeviceIdentityMismatchIsExposedAsBoundedCryptoIdentityDetail() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        ledger.record(peer("peer-1"), hello(), NOW); // cert-bound device id = dev-1
+        SessionDeviceTrustVerifier enrolled =
+                (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.enrolledActive();
+        TrustEvidenceAssembler assembler =
+                new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, enrolled, null);
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-OTHER", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertFalse(ev.deviceTrusted());
+        assertEquals("device-identity-mismatch", ev.cryptoIdentityDetail());
     }
 
     @Test

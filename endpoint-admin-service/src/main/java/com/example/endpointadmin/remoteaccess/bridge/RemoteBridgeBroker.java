@@ -39,23 +39,31 @@ import java.util.Optional;
 public final class RemoteBridgeBroker {
 
     /** The broker's verdict for one operation. */
-    public record BrokerOutcome(Kind kind, OperationPermit permit, Kill kill, String reason) {
+    public record BrokerOutcome(Kind kind, OperationPermit permit, Kill kill, String reason, String policyDetail) {
         public enum Kind { PERMIT, KILL, DENY }
+
+        public BrokerOutcome(Kind kind, OperationPermit permit, Kill kill, String reason) {
+            this(kind, permit, kill, reason, null);
+        }
 
         public boolean permitted() {
             return kind == Kind.PERMIT;
         }
 
         static BrokerOutcome permit(OperationPermit p) {
-            return new BrokerOutcome(Kind.PERMIT, p, null, "permitted");
+            return new BrokerOutcome(Kind.PERMIT, p, null, "permitted", null);
         }
 
         static BrokerOutcome kill(Kill k) {
-            return new BrokerOutcome(Kind.KILL, null, k, "duress");
+            return new BrokerOutcome(Kind.KILL, null, k, "duress", null);
         }
 
         static BrokerOutcome deny(String reason) {
-            return new BrokerOutcome(Kind.DENY, null, null, reason);
+            return deny(reason, null);
+        }
+
+        static BrokerOutcome deny(String reason, String policyDetail) {
+            return new BrokerOutcome(Kind.DENY, null, null, reason, policyDetail);
         }
     }
 
@@ -139,7 +147,9 @@ public final class RemoteBridgeBroker {
         }
         if (decision.outcome() != Outcome.ALLOW) {
             recordBestEffort(request.sessionId(), "DENY:" + decision.gate(), command.hash(), nowEpochMillis);
-            return BrokerOutcome.deny("policy:" + decision.gate());
+            String detail = decision.gate() == RemoteSessionPolicyEngine.Gate.CRYPTO_IDENTITY
+                    ? evidence.cryptoIdentityDetail() : null;
+            return BrokerOutcome.deny("policy:" + decision.gate(), detail);
         }
         // ALLOW — the decision MUST be durably recorded BEFORE a permit is issued (fail-closed: ADR-0034). The
         // event is ALLOW_DECISION (the permit may still be refused by the signer below — it is not yet issued).
