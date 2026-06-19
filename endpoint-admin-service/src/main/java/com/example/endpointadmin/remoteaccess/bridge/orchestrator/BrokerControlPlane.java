@@ -8,7 +8,9 @@ import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
 /**
@@ -46,6 +48,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     private final RemoteBridgeSessionStore store;
     private final RemoteBridgeAuditSink auditSink;
     private final LongSupplier clock;
+    private final Map<String, RemoteBridgeMessages.AgentHello> lastHelloByPeer = new ConcurrentHashMap<>();
 
     public BrokerControlPlane(PeerTrustLedger ledger,
                               RemoteBridgeSessionStore store,
@@ -63,8 +66,21 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     @Override
     public void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
         PeerTrustLedger.PeerTrust trust = ledger.record(peer, hello, clock.getAsLong());
+        lastHelloByPeer.put(peer.transportPeerKey(), hello);
         recordBestEffort("ledger", "HELLO_VERIFIED:cert=" + trust.certTrusted()
                 + ",attestation=" + trust.attestationVerified() + ",device=" + trust.deviceTrusted());
+    }
+
+    @Override
+    public void onHeartbeat(PeerIdentity peer) {
+        RemoteBridgeMessages.AgentHello hello = lastHelloByPeer.get(peer.transportPeerKey());
+        if (hello == null) {
+            return;
+        }
+        // A heartbeat is not authority and does not create trust. It only re-runs the same fail-closed
+        // verifier path over the last AgentHello evidence while bound to the current authenticated mTLS peer,
+        // keeping long-lived control streams from losing trust solely because the initial AgentHello aged out.
+        ledger.record(peer, hello, clock.getAsLong());
     }
 
     @Override
