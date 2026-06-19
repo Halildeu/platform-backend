@@ -14,6 +14,7 @@ import com.example.endpointadmin.security.MachineCertExtractor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -39,9 +41,12 @@ import java.util.UUID;
  *   <li>Parse the presented cert via {@link MachineCertExtractor}
  *       (validity + EKU + SAN URI exactly-one). Failure → 401 with stable
  *       error code.</li>
- *   <li>Idempotent lookup by SAN URI: if an active row exists, return it as
- *       {@code already-enrolled} (HTTP 200). Cross-tenant attempt detected
- *       here → 403.</li>
+ *   <li>Idempotent lookup by SAN URI: if an active row exists for the same
+ *       presented certificate, return it as {@code already-enrolled}
+ *       (HTTP 200). If the SAN is the same but the certificate identity has
+ *       changed, rotate the active cert row before returning HTTP 200 so
+ *       downstream mTLS device binding uses the current thumbprint.
+ *       Cross-tenant attempt detected here → 403.</li>
  *   <li>Otherwise: dedupe by {@code machineFingerprint} within the tenant. A
  *       conflicting active fingerprint → 409.</li>
  *   <li>Create a new {@link EndpointDevice} (or reuse an existing un-enrolled
@@ -142,13 +147,17 @@ public class MachineCertAutoEnrollService {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
                         "Endpoint device is decommissioned; admin reactivation is required before re-enrollment.");
             }
-            recordSuccess(tenantId, active.getDevice(), parsed, request, "already-enrolled");
+            EndpointMachineCert responseCert = rotateActiveCertIfNeeded(active, tenantId, parsed, request, now);
+            String auditOutcome = Objects.equals(responseCert.getId(), active.getId())
+                    ? "already-enrolled"
+                    : "cert-rotated";
+            recordSuccess(tenantId, responseCert.getDevice(), parsed, request, auditOutcome);
             return new Outcome(
                     HttpStatus.OK,
                     new AutoEnrollmentResponse(
-                            active.getDevice().getId(),
+                            responseCert.getDevice().getId(),
                             "already-enrolled",
-                            active.getEnrolledAt(),
+                            responseCert.getEnrolledAt(),
                             new AutoEnrollmentResponse.CertInfo(
                                     parsed.sanUri(),
                                     parsed.objectGuid(),
@@ -203,21 +212,7 @@ public class MachineCertAutoEnrollService {
         // Insert cert row. Codex 019e6dc9 P0-1: do NOT try a same-tx re-read
         // after DataIntegrityViolation — PG tx is aborted. Surface 409 and
         // let the caller retry; the retry's pre-check finds the winner.
-        EndpointMachineCert certRow = new EndpointMachineCert();
-        // Do NOT setId() — @GeneratedValue handles it; manual id makes
-        // Hibernate treat the entity as detached with null version.
-        certRow.setDevice(device);
-        certRow.setTenantId(tenantId);
-        certRow.setSanUri(parsed.sanUri());
-        certRow.setObjectGuid(parsed.objectGuid());
-        certRow.setCertSerial(parsed.serial());
-        certRow.setCertThumbprint(parsed.thumbprint());
-        certRow.setCertIssuer(parsed.issuer());
-        certRow.setCertSubject(parsed.subject());
-        certRow.setCertNotBefore(parsed.notBefore());
-        certRow.setCertNotAfter(parsed.notAfter());
-        certRow.setMachineFingerprint(request.machineFingerprint());
-        certRow.setEnrolledAt(now);
+        EndpointMachineCert certRow = buildCertRow(device, tenantId, parsed, request, now);
 
         try {
             certRepository.saveAndFlush(certRow);
@@ -286,6 +281,95 @@ public class MachineCertAutoEnrollService {
                 "machine-cert:" + active.getId(),
                 now
         );
+    }
+
+    private EndpointMachineCert rotateActiveCertIfNeeded(EndpointMachineCert active,
+                                                          UUID tenantId,
+                                                          MachineCertExtractor.ParsedCert parsed,
+                                                          AutoEnrollmentRequest request,
+                                                          Instant now) {
+        if (samePresentedCertificate(active, parsed)) {
+            return active;
+        }
+
+        rejectConflictingFingerprintForRotation(active, tenantId, parsed, request);
+
+        active.setRevokedAt(now);
+        active.setRevokedReason("CERT_ROTATED");
+
+        EndpointMachineCert replacement = buildCertRow(active.getDevice(), tenantId, parsed, request, now);
+        try {
+            certRepository.saveAndFlush(active);
+            return certRepository.saveAndFlush(replacement);
+        } catch (DataIntegrityViolationException | OptimisticLockingFailureException ex) {
+            log.info("Cert rotation race sanUri={}: {}", parsed.sanUri(), raceMessage(ex));
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "ENROLLMENT_RACE");
+        }
+    }
+
+    private void rejectConflictingFingerprintForRotation(EndpointMachineCert active,
+                                                         UUID tenantId,
+                                                         MachineCertExtractor.ParsedCert parsed,
+                                                         AutoEnrollmentRequest request) {
+        List<EndpointMachineCert> fpClashes = certRepository
+                .findActiveByTenantAndMachineFingerprint(tenantId, request.machineFingerprint())
+                .stream()
+                .filter(c -> !Objects.equals(c.getId(), active.getId()))
+                .toList();
+        if (fpClashes.isEmpty()) {
+            return;
+        }
+
+        recordFailure(tenantId, parsed, "FINGERPRINT_CONFLICT",
+                Map.of(
+                        "reason", "FINGERPRINT_CONFLICT",
+                        "certThumbprint", parsed.thumbprint(),
+                        "hostname", safe(request.hostname()),
+                        "conflictingDeviceIds",
+                        fpClashes.stream().map(c -> c.getDevice().getId().toString()).toList()
+                ));
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "FINGERPRINT_CONFLICT");
+    }
+
+    private boolean samePresentedCertificate(EndpointMachineCert active,
+                                              MachineCertExtractor.ParsedCert parsed) {
+        return Objects.equals(active.getCertThumbprint(), parsed.thumbprint())
+                && Objects.equals(active.getCertSerial(), parsed.serial())
+                && Objects.equals(active.getCertNotBefore(), parsed.notBefore())
+                && Objects.equals(active.getCertNotAfter(), parsed.notAfter())
+                && Objects.equals(active.getCertIssuer(), parsed.issuer())
+                && Objects.equals(active.getCertSubject(), parsed.subject());
+    }
+
+    private EndpointMachineCert buildCertRow(EndpointDevice device,
+                                             UUID tenantId,
+                                             MachineCertExtractor.ParsedCert parsed,
+                                             AutoEnrollmentRequest request,
+                                             Instant enrolledAt) {
+        EndpointMachineCert certRow = new EndpointMachineCert();
+        // Do NOT setId() — @GeneratedValue handles it; manual id makes
+        // Hibernate treat the entity as detached with null version.
+        certRow.setDevice(device);
+        certRow.setTenantId(tenantId);
+        certRow.setSanUri(parsed.sanUri());
+        certRow.setObjectGuid(parsed.objectGuid());
+        certRow.setCertSerial(parsed.serial());
+        certRow.setCertThumbprint(parsed.thumbprint());
+        certRow.setCertIssuer(parsed.issuer());
+        certRow.setCertSubject(parsed.subject());
+        certRow.setCertNotBefore(parsed.notBefore());
+        certRow.setCertNotAfter(parsed.notAfter());
+        certRow.setMachineFingerprint(request.machineFingerprint());
+        certRow.setEnrolledAt(enrolledAt);
+        return certRow;
+    }
+
+    private String raceMessage(Exception ex) {
+        if (ex instanceof DataIntegrityViolationException dive && dive.getMostSpecificCause() != null) {
+            return dive.getMostSpecificCause().getMessage();
+        }
+        return ex.getMessage();
     }
 
     private EndpointDevice adoptOrCreateDevice(UUID tenantId,

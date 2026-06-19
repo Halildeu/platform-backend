@@ -6,6 +6,7 @@ import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.repository.EndpointAuditEventRepository;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
+import com.example.endpointadmin.security.MachineCertExtractor;
 import com.example.endpointadmin.security.TestX509Certs;
 import com.example.endpointadmin.testsupport.IsolatedH2DataJpaTest;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.security.cert.X509Certificate;
+import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -111,12 +113,21 @@ class MachineCertAutoEnrollServiceTest {
         X509Certificate cert = TestX509Certs.validClientCert(guid);
 
         var first = service.autoEnroll(cert, TENANT_A, sampleRequest("fp-idem"));
+        String sanUri = first.body().certInfo().sanUri();
+        var firstActive = certRepository.findActiveBySanUri(sanUri).orElseThrow();
         var second = service.autoEnroll(cert, TENANT_A, sampleRequest("fp-idem"));
 
         assertThat(first.status()).isEqualTo(HttpStatus.CREATED);
         assertThat(second.status()).isEqualTo(HttpStatus.OK);
         assertThat(second.body().status()).isEqualTo("already-enrolled");
         assertThat(second.body().deviceId()).isEqualTo(first.body().deviceId());
+
+        var stillActive = certRepository.findActiveBySanUri(sanUri).orElseThrow();
+        assertThat(stillActive.getId()).isEqualTo(firstActive.getId());
+        assertThat(certRepository.findAll().stream()
+                .filter(c -> sanUri.equals(c.getSanUri()))
+                .filter(c -> c.getRevokedAt() != null)
+                .count()).isZero();
     }
 
     @Test
@@ -172,6 +183,94 @@ class MachineCertAutoEnrollServiceTest {
                         .isEqualTo(HttpStatus.CONFLICT))
                 .satisfies(e -> assertThat(((ResponseStatusException) e).getReason())
                         .containsIgnoringCase("decommission"));
+    }
+
+    @Test
+    void reenrollmentWithSameSanAndNewCertRotatesActiveCertRow() {
+        UUID guid = UUID.randomUUID();
+        X509Certificate firstCert = TestX509Certs.builder()
+                .objectGuid(guid)
+                .clientAuth(true)
+                .validForDays(30)
+                .build();
+        X509Certificate renewedCert = TestX509Certs.builder()
+                .objectGuid(guid)
+                .clientAuth(true)
+                .validForDays(60)
+                .build();
+
+        var first = service.autoEnroll(firstCert, TENANT_A, sampleRequest("fp-rotate"));
+        String sanUri = first.body().certInfo().sanUri();
+        var firstActive = certRepository.findActiveBySanUri(sanUri).orElseThrow();
+        String firstThumbprint = firstActive.getCertThumbprint();
+        var renewedParsed = MachineCertExtractor.extract(renewedCert, Instant.now());
+
+        var second = service.autoEnroll(renewedCert, TENANT_A, sampleRequest("fp-rotate"));
+
+        assertThat(second.status()).isEqualTo(HttpStatus.OK);
+        assertThat(second.body().status()).isEqualTo("already-enrolled");
+        assertThat(second.body().deviceId()).isEqualTo(first.body().deviceId());
+        assertThat(second.body().certInfo().thumbprint()).isEqualTo(renewedParsed.thumbprint());
+
+        var rotatedActive = certRepository.findActiveBySanUri(sanUri).orElseThrow();
+        assertThat(rotatedActive.getId()).isNotEqualTo(firstActive.getId());
+        assertThat(rotatedActive.getCertThumbprint()).isEqualTo(renewedParsed.thumbprint());
+        assertThat(rotatedActive.getCertSerial()).isEqualTo(renewedParsed.serial());
+        assertThat(rotatedActive.getRevokedAt()).isNull();
+
+        var revokedPrevious = certRepository.findById(firstActive.getId()).orElseThrow();
+        assertThat(revokedPrevious.getCertThumbprint()).isEqualTo(firstThumbprint);
+        assertThat(revokedPrevious.getRevokedAt()).isNotNull();
+        assertThat(revokedPrevious.getRevokedReason()).isEqualTo("CERT_ROTATED");
+
+        long rotatedAuditEvents = auditRepository.findAll().stream()
+                .filter(e -> e.getEventType().equals(MachineCertAutoEnrollService.EVENT_SUCCESS))
+                .filter(e -> "cert-rotated".equals(e.getMetadata().get("outcome")))
+                .count();
+        assertThat(rotatedAuditEvents).isEqualTo(1);
+    }
+
+    @Test
+    void reenrollmentWithSameSanAndConflictingFingerprintReturns409() {
+        UUID guid1 = UUID.randomUUID();
+        UUID guid2 = UUID.randomUUID();
+        X509Certificate firstCert = TestX509Certs.builder()
+                .objectGuid(guid1)
+                .clientAuth(true)
+                .validForDays(30)
+                .build();
+        X509Certificate renewedCert = TestX509Certs.builder()
+                .objectGuid(guid1)
+                .clientAuth(true)
+                .validForDays(60)
+                .build();
+        X509Certificate otherCert = TestX509Certs.validClientCert(guid2);
+
+        var first = service.autoEnroll(firstCert, TENANT_A, sampleRequest("fp-rotate-original"));
+        service.autoEnroll(otherCert, TENANT_A, sampleRequest("fp-other-active"));
+        String sanUri = first.body().certInfo().sanUri();
+        var originalActive = certRepository.findActiveBySanUri(sanUri).orElseThrow();
+
+        assertThatThrownBy(() ->
+                service.autoEnroll(renewedCert, TENANT_A, sampleRequest("fp-other-active")))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(e -> assertThat(((ResponseStatusException) e).getStatusCode())
+                        .isEqualTo(HttpStatus.CONFLICT))
+                .hasMessageContaining("FINGERPRINT_CONFLICT");
+
+        var stillActive = certRepository.findActiveBySanUri(sanUri).orElseThrow();
+        assertThat(stillActive.getId()).isEqualTo(originalActive.getId());
+        assertThat(stillActive.getCertThumbprint()).isEqualTo(originalActive.getCertThumbprint());
+        assertThat(stillActive.getRevokedAt()).isNull();
+
+        long failed = auditRepository.findAll().stream()
+                .filter(e -> e.getEventType().equals(MachineCertAutoEnrollService.EVENT_FAILED))
+                .filter(e -> e.getTenantId().equals(TENANT_A))
+                .filter(e -> "FINGERPRINT_CONFLICT".equals(e.getMetadata().get("reason")))
+                .count();
+        assertThat(failed)
+                .as("same-SAN rotation must preserve fingerprint conflict fail-close")
+                .isEqualTo(1);
     }
 
     /**
