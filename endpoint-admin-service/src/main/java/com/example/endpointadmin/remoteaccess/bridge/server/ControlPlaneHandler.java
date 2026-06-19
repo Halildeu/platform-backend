@@ -17,6 +17,13 @@ public interface ControlPlaneHandler {
     /** Advisory hello from an authenticated peer (still NEVER an authorization input). */
     void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello);
 
+    /**
+     * Authenticated CONTROL liveness from a peer. A heartbeat is never authority by itself; orchestrators may use
+     * it only to re-evaluate previously presented peer evidence against the current authenticated transport.
+     */
+    default void onHeartbeat(PeerIdentity peer) {
+    }
+
     /** The endpoint user's consent outcome, reported by the agent. */
     void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result);
 

@@ -196,8 +196,9 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
                     .ifOk(result -> controlPlane.onConsentResult(peer, result));
             case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent())
                     .ifOk(event -> controlPlane.onAuditEvent(peer, event));
+            case HEARTBEAT -> controlPlane.onHeartbeat(peer);
             default -> {
-                // HEARTBEAT / ERROR are liveness + diagnostics — no control-plane action in T-2b
+                // ERROR is diagnostics — no control-plane action in T-2b
             }
         }
     }

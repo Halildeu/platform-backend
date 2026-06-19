@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -150,6 +151,37 @@ class BrokerControlPlaneTest {
         assertTrue(ledger.fresh("peer-1", NOW + 30_001).isEmpty()); // stale = no verification
         assertTrue(ledger.fresh("peer-1", NOW - 1).isEmpty());      // clock went backwards = no trust
         assertTrue(ledger.fresh("unknown", NOW).isEmpty());
+    }
+
+    @Test
+    void heartbeatDoesNotCreateTrustBeforeAgentHello() {
+        AtomicLong now = new AtomicLong(NOW);
+        PeerTrustLedger ledger = ledger(presentingParser(), true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        BrokerControlPlane plane = new BrokerControlPlane(ledger, new RemoteBridgeSessionStore(),
+                new RecordingSinkStub(), now::get);
+
+        plane.onHeartbeat(PEER);
+
+        assertTrue(ledger.fresh("peer-1", NOW).isEmpty());
+    }
+
+    @Test
+    void heartbeatRefreshesTheLastHelloEvidenceForLongLivedControlStreams() {
+        AtomicLong now = new AtomicLong(NOW);
+        PeerTrustLedger ledger = ledger(presentingParser(), true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        BrokerControlPlane plane = new BrokerControlPlane(ledger, new RemoteBridgeSessionStore(),
+                new RecordingSinkStub(), now::get);
+
+        plane.onAgentHello(PEER, hello());
+        assertTrue(ledger.fresh("peer-1", NOW + 30_001).isEmpty()); // stale without an inbound heartbeat
+
+        now.set(NOW + 29_000);
+        plane.onHeartbeat(PEER);
+
+        assertTrue(ledger.fresh("peer-1", NOW + 59_000).isPresent());
+        assertTrue(ledger.fresh("peer-1", NOW + 59_001).isEmpty());
     }
 
     // --- RemoteBridgeSessionStore -------------------------------------------

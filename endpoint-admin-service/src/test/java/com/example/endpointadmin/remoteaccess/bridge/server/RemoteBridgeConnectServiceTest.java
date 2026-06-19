@@ -81,6 +81,7 @@ class RemoteBridgeConnectServiceTest {
 
     private static final class RecordingControlPlane implements ControlPlaneHandler {
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AgentHello> hellos = new ConcurrentLinkedQueue<>();
+        final ConcurrentLinkedQueue<PeerIdentity> heartbeats = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.ConsentResult> consents = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
         volatile PeerIdentity lastPeer;
@@ -89,6 +90,11 @@ class RemoteBridgeConnectServiceTest {
         public void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
             lastPeer = peer;
             hellos.add(hello);
+        }
+
+        @Override
+        public void onHeartbeat(PeerIdentity peer) {
+            heartbeats.add(peer);
         }
 
         @Override
@@ -267,15 +273,17 @@ class RemoteBridgeConnectServiceTest {
         ClientSink sink = new ClientSink();
         StreamObserver<Envelope> inbound = stub.connect(sink);
         inbound.onNext(control(0, hello("dev-1")));
-        inbound.onNext(control(1, Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
+        inbound.onNext(control(1, heartbeat()));
+        inbound.onNext(control(2, Envelope.newBuilder().setConsentResult(ConsentResult.newBuilder()
                 .setSessionId("sess-1").setGranted(true).setWindowsInteractiveSession("Console")
                 .setGrantedAtEpochMillis(1000).setExpiryEpochMillis(2000))));
-        inbound.onNext(control(2, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
+        inbound.onNext(control(3, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
                 .setSessionId("sess-1").setEventType("LOCAL_ABORT").setEpochMillis(1500))));
         inbound.onCompleted();
         assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
         assertNull(sink.firstError());
         assertEquals(1, controlPlane.hellos.size());
+        assertEquals(1, controlPlane.heartbeats.size());
         assertEquals(1, controlPlane.consents.size());
         assertEquals(1, controlPlane.audits.size());
         assertEquals("peer-fp-1", controlPlane.lastPeer.transportPeerKey()); // seam sees the AUTHENTICATED identity
