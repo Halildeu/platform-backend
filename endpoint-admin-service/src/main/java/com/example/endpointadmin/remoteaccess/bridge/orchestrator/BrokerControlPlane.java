@@ -120,6 +120,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
             return;
         }
+        refreshTrustFromLastHello(peer, session.sessionId(), now);
         session.grantConsent(true, result.expiryEpochMillis()); // clamped to the broker prompt window
         recordBestEffort(session.sessionId(), "CONSENT_GRANTED:lease-until="
                 + session.lease().expiryEpochMillis());
@@ -177,5 +178,19 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         }
         String cleaned = type.replaceAll("[^A-Za-z0-9_:-]", "_");
         return cleaned.length() > 64 ? cleaned.substring(0, 64) : cleaned;
+    }
+
+    private void refreshTrustFromLastHello(PeerIdentity peer, String sessionId, long now) {
+        RemoteBridgeMessages.AgentHello hello = lastHelloByPeer.get(peer.transportPeerKey());
+        if (hello == null) {
+            return;
+        }
+        // A valid consent result is an authenticated inbound control-plane event from the same mTLS peer as the
+        // session. It does not create trust by itself; it only re-runs the same fail-closed verifier path over
+        // the peer's cached AgentHello evidence so legacy agents without HEARTBEAT frames do not lose trust
+        // solely because the operator took longer than the ledger freshness TTL to approve and run an operation.
+        PeerTrustLedger.PeerTrust trust = ledger.record(peer, hello, now);
+        recordBestEffort(sessionId, "CONSENT_TRUST_REFRESHED:cert=" + trust.certTrusted()
+                + ",attestation=" + trust.attestationVerified() + ",device=" + trust.deviceTrusted());
     }
 }

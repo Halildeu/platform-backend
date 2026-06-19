@@ -184,6 +184,29 @@ class BrokerControlPlaneTest {
         assertTrue(ledger.fresh("peer-1", NOW + 59_001).isEmpty());
     }
 
+    @Test
+    void acceptedConsentRefreshesLastHelloEvidenceForAgentsWithoutHeartbeatFrames() {
+        AtomicLong now = new AtomicLong(NOW);
+        PeerTrustLedger ledger = ledger(presentingParser(), true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(ledger, store, sink, now::get);
+
+        plane.onAgentHello(PEER, hello());
+        assertTrue(ledger.fresh("peer-1", NOW + 30_001).isEmpty());
+
+        now.set(NOW + 31_000);
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW + 31_000, PROMPT_EXPIRY));
+
+        assertEquals(State.ACTIVE, session.state());
+        assertTrue(ledger.fresh("peer-1", NOW + 60_999).isPresent());
+        assertTrue(ledger.fresh("peer-1", NOW + 61_001).isEmpty());
+        assertTrue(sink.has("CONSENT_TRUST_REFRESHED:cert=true,attestation=true,device=false"));
+    }
+
     // --- RemoteBridgeSessionStore -------------------------------------------
 
     @Test
