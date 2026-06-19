@@ -1,11 +1,14 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeTrustEvidence;
 import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.ConsentPrompt;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationDispatch;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
@@ -16,6 +19,10 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.function.LongSupplier;
 
@@ -61,16 +68,19 @@ public final class RemoteBridgeOperatorService {
     private final TrustEvidenceAssembler assembler;
     private final RemoteBridgeBroker broker;
     private final ControlStreamRegistry registry;
+    private final RemoteBridgeAuditSink auditSink;
     private final LongSupplier clock;
     private final long consentPromptTtlMillis;
 
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
                                        RemoteBridgeBroker broker, ControlStreamRegistry registry,
-                                       LongSupplier clock, long consentPromptTtlMillis) {
+                                       RemoteBridgeAuditSink auditSink, LongSupplier clock,
+                                       long consentPromptTtlMillis) {
         this.store = Objects.requireNonNull(store, "store");
         this.assembler = Objects.requireNonNull(assembler, "assembler");
         this.broker = Objects.requireNonNull(broker, "broker");
         this.registry = Objects.requireNonNull(registry, "registry");
+        this.auditSink = Objects.requireNonNull(auditSink, "auditSink");
         this.clock = Objects.requireNonNull(clock, "clock");
         if (consentPromptTtlMillis <= 0) {
             throw new IllegalArgumentException("consentPromptTtlMillis must be positive");
@@ -90,6 +100,21 @@ public final class RemoteBridgeOperatorService {
 
         static SessionOpenOutcome rejected(String sessionId, String reason) {
             return new SessionOpenOutcome(sessionId, false, reason);
+        }
+    }
+
+    /** Explicit operator close outcome. A failed durable close audit refuses the close and keeps the slot live. */
+    public record SessionCloseOutcome(String sessionId, boolean closed, String rejectReason) {
+        public boolean accepted() {
+            return closed && rejectReason == null;
+        }
+
+        static SessionCloseOutcome closed(String sessionId) {
+            return new SessionCloseOutcome(sessionId, true, null);
+        }
+
+        static SessionCloseOutcome rejected(String sessionId, String reason) {
+            return new SessionCloseOutcome(sessionId, false, reason);
         }
     }
 
@@ -136,6 +161,56 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(session.sessionId(), "consent-prompt-not-delivered");
         }
         return SessionOpenOutcome.prompted(session.sessionId());
+    }
+
+    /**
+     * Close an already ACTIVE attended session after the operator has finished the approved operation. The
+     * durable session recorder is the authority boundary: if the close event cannot be recorded, the session is
+     * deliberately left live so a cleanup path cannot silently bypass the audit chain.
+     */
+    public SessionCloseOutcome closeSession(String sessionId, String operatorSubject) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return SessionCloseOutcome.rejected(sessionId, "malformed-request");
+        }
+        if (operatorSubject == null || operatorSubject.isBlank()) {
+            return SessionCloseOutcome.rejected(sessionId, "malformed-operator");
+        }
+        long now = clock.getAsLong();
+        RemoteBridgeSession session = store.bySessionId(sessionId).orElse(null);
+        if (session == null) {
+            return SessionCloseOutcome.rejected(sessionId, "unknown-session");
+        }
+        synchronized (session) {
+            if (session.isTerminal()) {
+                store.evictIfTerminal(sessionId);
+                return SessionCloseOutcome.rejected(sessionId, "session-not-live");
+            }
+            State state = session.state();
+            if (!state.isActive() && state != State.REVOKING) {
+                return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
+            }
+            try {
+                auditSink.record(new AuditEvent(session.sessionId(), "SESSION_CLOSE:OPERATOR",
+                        operatorSubjectAuditHash(operatorSubject), now));
+            } catch (RuntimeException recordingFailure) {
+                return SessionCloseOutcome.rejected(sessionId, "recording-failed");
+            }
+            if (!session.transition(Event.CLOSE).accepted()) {
+                return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
+            }
+        }
+        store.evictIfTerminal(sessionId);
+        return SessionCloseOutcome.closed(sessionId);
+    }
+
+    private static String operatorSubjectAuditHash(String operatorSubject) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(operatorSubject.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
     }
 
     public OperatorOutcome handleOperationRequest(OperationRequest request) {

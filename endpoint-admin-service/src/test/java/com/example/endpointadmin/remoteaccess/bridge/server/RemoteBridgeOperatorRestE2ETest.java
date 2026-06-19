@@ -124,7 +124,7 @@ class RemoteBridgeOperatorRestE2ETest {
         TrustEvidenceAssembler assembler = new TrustEvidenceAssembler(ledger(), OwnerTokenGate.DENY_ALL,
                 (sid, now) -> DuressSignal.NONE);
         RemoteBridgeOperatorService operator = new RemoteBridgeOperatorService(store, assembler, broker(),
-                registry, () -> NOW, 120_000L);
+                registry, event -> { }, () -> NOW, 120_000L);
 
         // the live agent peer, keyed by a canonical-64hex transport key (== the device's enrolled cert thumbprint)
         CapturingObserver agent = new CapturingObserver();
