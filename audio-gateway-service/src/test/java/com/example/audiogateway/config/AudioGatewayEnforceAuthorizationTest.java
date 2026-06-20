@@ -1,5 +1,6 @@
 package com.example.audiogateway.config;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
 
 import org.junit.jupiter.api.Test;
@@ -49,10 +50,21 @@ class AudioGatewayEnforceAuthorizationTest {
 
     @Test
     void tokenWithoutAudioRecordRoleIsForbidden() {
+        // Codex 019ee73d: supply companyId/userId so the controller tenant gate is NOT
+        // the cause of 403 — if the role gate were off/broken, this request would reach
+        // the controller and 404 (not 403). The body-not-MEETING_FORBIDDEN assertion pins
+        // the 403 to the filter-chain role denial, never the controller's tenant 403.
         webTestClient
-                .mutateWith(mockJwt().authorities(new SimpleGrantedAuthority("SCOPE_profile")))
+                .mutateWith(mockJwt()
+                        .jwt(jwt -> jwt.claim("companyId", 1).claim("userId", 1))
+                        .authorities(new SimpleGrantedAuthority("SCOPE_profile")))
                 .get().uri(SECURED).exchange()
-                .expectStatus().isForbidden();
+                .expectStatus().isForbidden()
+                // Filter-chain 403 has no body; controller tenant 403 carries the JSON
+                // code. null/empty body therefore confirms the filter-chain (role) denial.
+                .expectBody(String.class)
+                .value(body -> assertThat(body == null ? "" : body)
+                        .doesNotContain("AUDIO_GATEWAY_MEETING_FORBIDDEN"));
     }
 
     @Test
