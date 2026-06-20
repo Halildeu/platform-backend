@@ -17,6 +17,17 @@ spring:
           issuer-uri: ${AUDIO_GATEWAY_JWT_ISSUER_URI}
           jwk-set-uri: ${AUDIO_GATEWAY_JWT_JWKS_URI}
 
+# Faz 24 (#716, cross-AI 019ee16b) — shared-realm authz hardening, DEFAULT-OFF.
+# Migration-safe (mappers-first): audience+role protocol mappers are deployed to legit
+# recorder clients and tokens verified (runbook steps 1-3 DONE for platform-desktop)
+# BEFORE these flip to true at enforce time (step 7). Enforce-first would 401 in-flight
+# tokens. resource-client-id = required aud value + resource_access roles key.
+audio-gateway:
+  security:
+    resource-client-id: ${AUDIO_GATEWAY_SECURITY_RESOURCE_CLIENT_ID:audio-gateway-service}
+    enforce-audience: ${AUDIO_GATEWAY_SECURITY_ENFORCE_AUDIENCE:false}
+    require-audio-record-role: ${AUDIO_GATEWAY_SECURITY_REQUIRE_AUDIO_RECORD_ROLE:false}
+
 management:
   server:
     # k8s'te actuator ayrı management portunda (tüm Spring servislerle aynı
