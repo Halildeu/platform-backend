@@ -115,7 +115,7 @@ class RemoteBridgeConnectServiceTest {
         volatile boolean throwOnNext;
 
         @Override
-        public void onDataFrame(PeerIdentity peer, DataFrame frame) {
+        public void onDataFrame(PeerIdentity peer, String sessionId, DataFrame frame) {
             lastPeer = peer;
             frames.add(frame);
             if (throwOnNext) {

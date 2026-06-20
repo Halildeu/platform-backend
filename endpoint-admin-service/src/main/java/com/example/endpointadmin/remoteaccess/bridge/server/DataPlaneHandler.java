@@ -21,10 +21,14 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.DataFrame;
  */
 public interface DataPlaneHandler {
 
-    /** An accepted, validated DATA frame from an authenticated peer (opaque payload; no business decode in T-2b). */
-    void onDataFrame(PeerIdentity peer, DataFrame frame);
+    /**
+     * An accepted, validated DATA frame from an authenticated peer.
+     *
+     * @param sessionId the enclosing envelope session id; this is the WORM chain id for session recording
+     */
+    void onDataFrame(PeerIdentity peer, String sessionId, DataFrame frame);
 
     /** T-2b default: accept-and-drop. Real data-plane consumption (record / fan-out) is owner-gated T-4. */
-    DataPlaneHandler INERT = (peer, frame) -> {
+    DataPlaneHandler INERT = (peer, sessionId, frame) -> {
     };
 }
