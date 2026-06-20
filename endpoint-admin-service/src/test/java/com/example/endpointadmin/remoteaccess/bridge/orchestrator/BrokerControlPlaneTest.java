@@ -456,8 +456,8 @@ class BrokerControlPlaneTest {
     void seqIsMonotonicAndStateOnlyMovesThroughTheMachine() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");
-        assertEquals(0, session.nextSeq());
         assertEquals(1, session.nextSeq());
+        assertEquals(2, session.nextSeq());
         assertFalse(session.transition(Event.ACTIVATE).accepted()); // CONSENT_PENDING → ACTIVATE illegal
         assertEquals(State.CONSENT_PENDING, session.state());
         assertTrue(session.transition(Event.KILL).accepted());      // safety override always fires

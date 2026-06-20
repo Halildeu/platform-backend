@@ -144,13 +144,16 @@ class RemoteBridgePermitSignerTest {
     }
 
     @Test
-    void theSignerRejectsAWrongVersionOrNegativeSeq() throws Exception {
+    void theSignerRejectsAWrongVersionOrNonPositiveSeq() throws Exception {
         RemoteBridgePermitSigner signer = new RemoteBridgePermitSigner(ec().getPrivate(), "kid-1", ALG);
         OperationPermit wrongVersion = new OperationPermit(ALG, "kid-1", 2, "policy-1", "dec-1", "sess-1", "op-1",
                 "dev-1", "operator@x", RemoteSessionCapability.VIEW_ONLY, "", 1000L, 1300L, 7L, null);
+        OperationPermit zeroSeq = new OperationPermit(ALG, "kid-1", 1, "policy-1", "dec-1", "sess-1", "op-1",
+                "dev-1", "operator@x", RemoteSessionCapability.VIEW_ONLY, "", 1000L, 1300L, 0L, null);
         OperationPermit negativeSeq = new OperationPermit(ALG, "kid-1", 1, "policy-1", "dec-1", "sess-1", "op-1",
                 "dev-1", "operator@x", RemoteSessionCapability.VIEW_ONLY, "", 1000L, 1300L, -1L, null);
         assertTrue(signer.sign(wrongVersion).isEmpty());
+        assertTrue(signer.sign(zeroSeq).isEmpty());
         assertTrue(signer.sign(negativeSeq).isEmpty());
     }
 

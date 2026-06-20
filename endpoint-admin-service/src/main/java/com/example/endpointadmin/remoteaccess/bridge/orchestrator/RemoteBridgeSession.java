@@ -36,7 +36,7 @@ public final class RemoteBridgeSession {
     private final Set<RemoteSessionCapability> requestedCapabilities;
     private final long promptExpiryEpochMillis;
     private final long sessionStartEpochMillis;
-    private final AtomicLong seq = new AtomicLong();
+    private final AtomicLong seq = new AtomicLong(1L);
 
     private State state;
     private ConsentLease lease = ConsentLease.NONE;
