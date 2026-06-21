@@ -11,6 +11,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMac
 import com.example.endpointadmin.remoteaccess.bridge.contract.CanonicalCommand;
 import com.example.endpointadmin.remoteaccess.bridge.contract.ConsentLease;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier.Basis;
 import org.junit.jupiter.api.Test;
 
 import java.security.KeyPair;
@@ -130,6 +131,48 @@ class RemoteBridgeBrokerTest {
         assertEquals(BrokerOutcome.Kind.DENY, o.kind());
         assertEquals("policy:CRYPTO_IDENTITY", o.reason());
         assertEquals("no-active-enrolled-connected-peer", o.policyDetail());
+    }
+
+    @Test
+    void defaultBrokerStillDeniesEnrollmentBackedDeviceTrustWithoutHardwareAttestation() {
+        RemoteBridgeTrustEvidence evidence = new RemoteBridgeTrustEvidence(true, false, true,
+                Basis.MACHINE_CERT_ENROLLMENT, "attestation-unverified", UV, DuressSignal.NONE,
+                Set.of(RemoteSessionCapability.CONSTRAINED_PTY), LEASE, "dev-1", "operator@x");
+
+        BrokerOutcome o = broker.handle(pty("hostname"), evidence, State.ACTIVE, 1L, NOW);
+
+        assertEquals(BrokerOutcome.Kind.DENY, o.kind());
+        assertEquals("policy:CRYPTO_IDENTITY", o.reason());
+        assertEquals("attestation-unverified", o.policyDetail());
+    }
+
+    @Test
+    void enrollmentBackedPilotBrokerPermitsConstrainedOperationWithMachineCertDeviceTrust() {
+        RemoteBridgeBroker enrollmentBackedBroker = new RemoteBridgeBroker(true,
+                RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED, signer, sink, "policy-1", TTL);
+        RemoteBridgeTrustEvidence evidence = new RemoteBridgeTrustEvidence(true, false, true,
+                Basis.MACHINE_CERT_ENROLLMENT, "attestation-unverified", UV, DuressSignal.NONE,
+                Set.of(RemoteSessionCapability.CONSTRAINED_PTY), LEASE, "dev-1", "operator@x");
+
+        BrokerOutcome o = enrollmentBackedBroker.handle(pty("hostname"), evidence, State.ACTIVE, 1L, NOW);
+
+        assertTrue(o.permitted());
+        assertEquals(RemoteSessionCapability.CONSTRAINED_PTY, o.permit().capability());
+        assertTrue(verifier.verify(o.permit(), NOW));
+    }
+
+    @Test
+    void enrollmentBackedPilotBrokerStillDeniesWhenBasisIsNotEnrollment() {
+        RemoteBridgeBroker enrollmentBackedBroker = new RemoteBridgeBroker(true,
+                RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED, signer, sink, "policy-1", TTL);
+        RemoteBridgeTrustEvidence evidence = new RemoteBridgeTrustEvidence(true, false, true,
+                Basis.NONE, "attestation-unverified", UV, DuressSignal.NONE,
+                Set.of(RemoteSessionCapability.CONSTRAINED_PTY), LEASE, "dev-1", "operator@x");
+
+        BrokerOutcome o = enrollmentBackedBroker.handle(pty("hostname"), evidence, State.ACTIVE, 1L, NOW);
+
+        assertEquals(BrokerOutcome.Kind.DENY, o.kind());
+        assertEquals("policy:CRYPTO_IDENTITY", o.reason());
     }
 
     @Test

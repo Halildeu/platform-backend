@@ -90,6 +90,7 @@ class TrustEvidenceAssemblerTest {
         assertFalse(ev.certTrusted());
         assertFalse(ev.attestationVerified());
         assertFalse(ev.deviceTrusted());
+        assertEquals(SessionDeviceTrustVerifier.Basis.NONE, ev.deviceTrustBasis());
         assertTrue(ev.grantedCapabilities().isEmpty(), "DENY_ALL gate → no grant");
         assertEquals(DuressSignal.AMBIGUOUS, ev.duressSignal(), "unwired duress source → AMBIGUOUS, not NONE");
     }
@@ -124,6 +125,7 @@ class TrustEvidenceAssemblerTest {
                 session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
 
         assertTrue(ev.deviceTrusted(), "enrolled-active verifier + consistent ledger device id → deviceTrusted");
+        assertEquals(SessionDeviceTrustVerifier.Basis.MACHINE_CERT_ENROLLMENT, ev.deviceTrustBasis());
     }
 
     @Test
@@ -141,6 +143,7 @@ class TrustEvidenceAssemblerTest {
                 session("s1", "peer-1", "dev-OTHER", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
 
         assertTrue(ev.deviceTrusted(), "advisory hello device id cannot veto active machine-cert enrollment trust");
+        assertEquals(SessionDeviceTrustVerifier.Basis.MACHINE_CERT_ENROLLMENT, ev.deviceTrustBasis());
     }
 
     @Test
@@ -156,6 +159,7 @@ class TrustEvidenceAssemblerTest {
                 session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
 
         assertFalse(ev.deviceTrusted(), "a denying device-trust verifier → deviceTrusted false");
+        assertEquals(SessionDeviceTrustVerifier.Basis.NONE, ev.deviceTrustBasis());
         assertEquals("not-enrolled", ev.cryptoIdentityDetail());
     }
 
@@ -172,6 +176,7 @@ class TrustEvidenceAssemblerTest {
                 session("s1", "peer-1", "dev-OTHER", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
 
         assertFalse(ev.deviceTrusted());
+        assertEquals(SessionDeviceTrustVerifier.Basis.NONE, ev.deviceTrustBasis());
         assertEquals("device-identity-mismatch", ev.cryptoIdentityDetail());
     }
 

@@ -74,6 +74,39 @@ class RemoteSessionPolicyEngineTest {
     }
 
     @Test
+    void defaultPilotStillRequiresHardwareAttestationEvenWhenDeviceTrustIsEnrollmentBacked() {
+        SessionContext enrollmentBacked = new SessionContext(DuressSignal.NONE, true, false, true, true, UV,
+                Set.of(RemoteSessionCapability.VIEW_ONLY), RemoteOperation.SCREEN_VIEW, null, NOW);
+
+        SessionDecision d = RemoteSessionPolicyEngine.PILOT.evaluate(enrollmentBacked);
+
+        assertEquals(Outcome.DENY, d.outcome());
+        assertEquals(Gate.CRYPTO_IDENTITY, d.gate());
+    }
+
+    @Test
+    void explicitEnrollmentBackedPilotAcceptsMachineCertDeviceTrustWithoutHardwareAttestation() {
+        SessionContext enrollmentBacked = new SessionContext(DuressSignal.NONE, true, false, true, true, UV,
+                Set.of(RemoteSessionCapability.VIEW_ONLY), RemoteOperation.SCREEN_VIEW, null, NOW);
+
+        SessionDecision d = RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED.evaluate(enrollmentBacked);
+
+        assertEquals(Outcome.ALLOW, d.outcome());
+        assertEquals(Gate.NONE, d.gate());
+    }
+
+    @Test
+    void enrollmentBackedPilotStillDeniesMissingEnrollmentBasis() {
+        SessionContext noEnrollmentBasis = new SessionContext(DuressSignal.NONE, true, false, true, false, UV,
+                Set.of(RemoteSessionCapability.VIEW_ONLY), RemoteOperation.SCREEN_VIEW, null, NOW);
+
+        SessionDecision d = RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED.evaluate(noEnrollmentBasis);
+
+        assertEquals(Outcome.DENY, d.outcome());
+        assertEquals(Gate.CRYPTO_IDENTITY, d.gate());
+    }
+
+    @Test
     void aStaleOrWeakStepUpIsDenied() {
         SessionDecision d = engine.evaluate(new SessionContext(DuressSignal.NONE, true, true, true,
                 new StepUpState(T0 + 1000, T0, MethodStrength.NONE),

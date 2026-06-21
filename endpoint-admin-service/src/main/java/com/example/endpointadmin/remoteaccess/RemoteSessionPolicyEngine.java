@@ -57,26 +57,48 @@ public final class RemoteSessionPolicyEngine {
                                  boolean certTrusted,
                                  boolean attestationVerified,
                                  boolean deviceTrusted,
+                                 boolean enrollmentBackedDeviceTrust,
                                  OperatorStepUpPolicy.StepUpState stepUpState,
                                  Set<RemoteSessionCapability> granted,
                                  RemoteOperation operation,
                                  String commandLine,
                                  long nowEpochMillis) {
+        public SessionContext(DuressResponsePolicy.DuressSignal duressSignal,
+                              boolean certTrusted,
+                              boolean attestationVerified,
+                              boolean deviceTrusted,
+                              OperatorStepUpPolicy.StepUpState stepUpState,
+                              Set<RemoteSessionCapability> granted,
+                              RemoteOperation operation,
+                              String commandLine,
+                              long nowEpochMillis) {
+            this(duressSignal, certTrusted, attestationVerified, deviceTrusted, false, stepUpState, granted,
+                    operation, commandLine, nowEpochMillis);
+        }
     }
 
     private final RemoteOperationGuard operationGuard;
     private final OperatorStepUpPolicy stepUpPolicy;
     private final ConstrainedPtyGate ptyGate;
+    private final boolean allowEnrollmentBackedCryptoIdentity;
 
     public RemoteSessionPolicyEngine(RemoteOperationGuard operationGuard,
                                      OperatorStepUpPolicy stepUpPolicy,
                                      ConstrainedPtyGate ptyGate) {
+        this(operationGuard, stepUpPolicy, ptyGate, false);
+    }
+
+    public RemoteSessionPolicyEngine(RemoteOperationGuard operationGuard,
+                                     OperatorStepUpPolicy stepUpPolicy,
+                                     ConstrainedPtyGate ptyGate,
+                                     boolean allowEnrollmentBackedCryptoIdentity) {
         if (operationGuard == null || stepUpPolicy == null || ptyGate == null) {
             throw new IllegalArgumentException("all three gates are required");
         }
         this.operationGuard = operationGuard;
         this.stepUpPolicy = stepUpPolicy;
         this.ptyGate = ptyGate;
+        this.allowEnrollmentBackedCryptoIdentity = allowEnrollmentBackedCryptoIdentity;
     }
 
     /** The pilot engine — composes the D-1 (pilot strictness), D-6, and D-2+D-3 pilot defaults. */
@@ -84,6 +106,18 @@ public final class RemoteSessionPolicyEngine {
             new RemoteOperationGuard(true),
             OperatorStepUpPolicy.PILOT_DEFAULT_POLICY,
             ConstrainedPtyGate.PILOT);
+
+    /**
+     * Bounded non-prod pilot engine for enrollment-backed device trust. This accepts the already-audited
+     * active machine-cert enrollment basis as the crypto-identity device binding when hardware attestation is
+     * not yet wired, but only for callers that explicitly select this engine. The default {@link #PILOT}
+     * remains hardware-attestation-strict.
+     */
+    public static final RemoteSessionPolicyEngine PILOT_ENROLLMENT_BACKED = new RemoteSessionPolicyEngine(
+            new RemoteOperationGuard(true),
+            OperatorStepUpPolicy.PILOT_DEFAULT_POLICY,
+            ConstrainedPtyGate.PILOT,
+            true);
 
     /** Evaluate one operation. Total, fail-closed; first failure (in priority order) wins. */
     public SessionDecision evaluate(SessionContext ctx) {
@@ -113,7 +147,8 @@ public final class RemoteSessionPolicyEngine {
         if (!ctx.deviceTrusted()) {
             return deny(Gate.CRYPTO_IDENTITY, "device untrusted");
         }
-        if (!ctx.attestationVerified()) {
+        if (!ctx.attestationVerified()
+                && !(allowEnrollmentBackedCryptoIdentity && ctx.enrollmentBackedDeviceTrust())) {
             return deny(Gate.CRYPTO_IDENTITY, "attestation unverified");
         }
         // step-up freshness

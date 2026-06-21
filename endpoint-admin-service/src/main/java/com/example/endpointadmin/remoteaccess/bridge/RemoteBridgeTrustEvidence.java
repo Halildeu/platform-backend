@@ -4,6 +4,7 @@ import com.example.endpointadmin.remoteaccess.DuressResponsePolicy;
 import com.example.endpointadmin.remoteaccess.OperatorStepUpPolicy;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.contract.ConsentLease;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier.Basis;
 
 import java.util.Set;
 
@@ -23,6 +24,7 @@ import java.util.Set;
 public record RemoteBridgeTrustEvidence(boolean certTrusted,
                                         boolean attestationVerified,
                                         boolean deviceTrusted,
+                                        Basis deviceTrustBasis,
                                         String cryptoIdentityDetail,
                                         OperatorStepUpPolicy.StepUpState stepUpState,
                                         DuressResponsePolicy.DuressSignal duressSignal,
@@ -33,6 +35,7 @@ public record RemoteBridgeTrustEvidence(boolean certTrusted,
 
     public RemoteBridgeTrustEvidence {
         grantedCapabilities = grantedCapabilities == null ? Set.of() : Set.copyOf(grantedCapabilities);
+        deviceTrustBasis = deviceTrustBasis == null ? Basis.NONE : deviceTrustBasis;
     }
 
     public RemoteBridgeTrustEvidence(boolean certTrusted,
@@ -44,7 +47,21 @@ public record RemoteBridgeTrustEvidence(boolean certTrusted,
                                      ConsentLease consentLease,
                                      String deviceId,
                                      String operatorSubject) {
-        this(certTrusted, attestationVerified, deviceTrusted, null, stepUpState, duressSignal,
+        this(certTrusted, attestationVerified, deviceTrusted, Basis.NONE, null, stepUpState, duressSignal,
                 grantedCapabilities, consentLease, deviceId, operatorSubject);
+    }
+
+    public RemoteBridgeTrustEvidence(boolean certTrusted,
+                                     boolean attestationVerified,
+                                     boolean deviceTrusted,
+                                     String cryptoIdentityDetail,
+                                     OperatorStepUpPolicy.StepUpState stepUpState,
+                                     DuressResponsePolicy.DuressSignal duressSignal,
+                                     Set<RemoteSessionCapability> grantedCapabilities,
+                                     ConsentLease consentLease,
+                                     String deviceId,
+                                     String operatorSubject) {
+        this(certTrusted, attestationVerified, deviceTrusted, Basis.NONE, cryptoIdentityDetail, stepUpState,
+                duressSignal, grantedCapabilities, consentLease, deviceId, operatorSubject);
     }
 }

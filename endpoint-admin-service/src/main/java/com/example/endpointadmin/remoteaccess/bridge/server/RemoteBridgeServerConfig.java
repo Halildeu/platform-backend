@@ -112,9 +112,7 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.peer-trust.freshness-ttl-millis:30000}") long freshnessTtlMillis,
             @Value("${remote-bridge.peer-evidence.parser:FAIL_CLOSED}") String peerEvidenceParserType) {
         // a prod-like profile refuses the test-only escapes (Codex 019eb6d9) — same rule as the driver
-        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
-                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
-        boolean productionLike = profiles.contains("prod");
+        boolean productionLike = isProductionLike(environment);
         CertTrustEvaluator certTrust = RemoteAccessVerifierFactory.buildTrustEvaluator(
                 certEvaluator, certRevocationMode, certTrustAnchorPem, certCrlPem,
                 certAllowInsecureNoRevocation, productionLike, certTrustMaxAgeMs);
@@ -245,11 +243,21 @@ public class RemoteBridgeServerConfig {
      */
     @Bean
     public RemoteBridgeBroker remoteBridgeBroker(
+            Environment environment,
             RemoteBridgePermitSigner remoteBridgePermitSigner,
             DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
             @Value("${remote-bridge.broker.policy-version:rb-pilot-v1}") String policyVersion,
-            @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis) {
-        return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, remoteBridgePermitSigner,
+            @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis,
+            @Value("${remote-bridge.broker.enrollment-backed-crypto-identity-pilot-risk-accepted:false}")
+                    boolean enrollmentBackedCryptoIdentityPilotRiskAccepted) {
+        boolean productionLike = isProductionLike(environment);
+        if (enrollmentBackedCryptoIdentityPilotRiskAccepted && productionLike) {
+            throw new IllegalStateException("remote-bridge.broker.enrollment-backed-crypto-identity-pilot-risk-accepted "
+                    + "is a bounded non-prod pilot exception and is forbidden in a production-like profile");
+        }
+        RemoteSessionPolicyEngine policyEngine = enrollmentBackedCryptoIdentityPilotRiskAccepted
+                ? RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED : RemoteSessionPolicyEngine.PILOT;
+        return new RemoteBridgeBroker(true, policyEngine, remoteBridgePermitSigner,
                 remoteBridgeDurableAuditSink, policyVersion, permitTtlMillis);
     }
 
@@ -307,9 +315,7 @@ public class RemoteBridgeServerConfig {
             Environment environment,
             ApprovalGrantStore remoteBridgeApprovalGrantStore,
             @Value("${remote-bridge.owner-grant.gate-type:DENY_ALL}") String gateType) {
-        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
-                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
-        boolean productionLike = profiles.contains("prod");
+        boolean productionLike = isProductionLike(environment);
         return OwnerGrantGateFactory.create(
                 OwnerGrantGateFactory.GateType.valueOf(gateType), remoteBridgeApprovalGrantStore, productionLike);
     }
@@ -328,9 +334,7 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.duress.pilot-risk-accepted:false}") boolean duressPilotRiskAccepted) {
         // disabling the human-protection kill is forbidden in a prod-like profile (Codex REVISE) — even with
         // risk-acceptance, a prod deployment must use a real duress source
-        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
-                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
-        boolean productionLike = profiles.contains("prod");
+        boolean productionLike = isProductionLike(environment);
         return DuressSignalSourceFactory.create(
                 DuressSignalSourceFactory.SourceType.valueOf(duressSourceType), duressPilotRiskAccepted,
                 productionLike);
@@ -349,9 +353,7 @@ public class RemoteBridgeServerConfig {
             Environment environment,
             ConnectedDeviceResolver remoteBridgeConnectedDeviceResolver,
             @Value("${remote-bridge.device-trust.verifier:FAIL_CLOSED}") String deviceTrustVerifierType) {
-        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
-                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
-        boolean productionLike = profiles.contains("prod");
+        boolean productionLike = isProductionLike(environment);
         return SessionDeviceTrustVerifierFactory.create(
                 deviceTrustVerifierType, productionLike, remoteBridgeConnectedDeviceResolver);
     }
@@ -390,9 +392,7 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.step-up.expected-origin:}") String expectedOrigin,
             @Value("${remote-bridge.step-up.expected-rp-id:}") String expectedRpId) {
         // a prod-like profile refuses the placeholder IN_MEMORY verifier (same rule as cert-trust/attestation)
-        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
-                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
-        boolean productionLike = profiles.contains("prod");
+        boolean productionLike = isProductionLike(environment);
         return OperatorStepUpVerifierFactory.create(
                 OperatorStepUpVerifierFactory.VerifierType.valueOf(verifierType),
                 MethodStrength.valueOf(inMemoryStrength),
@@ -446,9 +446,7 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.operator-auth.jwt.required-operator-role:remote-bridge-operator}")
             String jwtRequiredOperatorRole) {
         // a prod-like profile refuses the placeholder IN_MEMORY authenticator (same rule as the verifiers)
-        String profiles = environment.getActiveProfiles().length == 0 ? "" : String.join(",",
-                environment.getActiveProfiles()).toLowerCase(Locale.ROOT);
-        boolean productionLike = profiles.contains("prod");
+        boolean productionLike = isProductionLike(environment);
 
         OperatorAuthenticatorFactory.AuthenticatorType type =
                 OperatorAuthenticatorFactory.AuthenticatorType.valueOf(authenticatorType);
@@ -538,5 +536,18 @@ public class RemoteBridgeServerConfig {
                                                          RemoteBridgeConnectService service,
                                                          ControlStreamRegistry registry) {
         return new RemoteBridgeGrpcServer(properties, service, registry);
+    }
+
+    private static boolean isProductionLike(Environment environment) {
+        if (environment == null) {
+            return false;
+        }
+        for (String profile : environment.getActiveProfiles()) {
+            String normalized = profile == null ? "" : profile.strip().toLowerCase(Locale.ROOT);
+            if ("prod".equals(normalized) || "production".equals(normalized)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

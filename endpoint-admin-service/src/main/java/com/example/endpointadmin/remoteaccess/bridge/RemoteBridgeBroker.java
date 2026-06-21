@@ -14,6 +14,7 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessag
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.Kill;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.WireContract;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier.Basis;
 
 import java.util.Optional;
 
@@ -137,7 +138,8 @@ public final class RemoteBridgeBroker {
         }
 
         SessionContext ctx = new SessionContext(evidence.duressSignal(), evidence.certTrusted(),
-                evidence.attestationVerified(), evidence.deviceTrusted(), evidence.stepUpState(),
+                evidence.attestationVerified(), evidence.deviceTrusted(),
+                evidence.deviceTrustBasis() == Basis.MACHINE_CERT_ENROLLMENT, evidence.stepUpState(),
                 evidence.grantedCapabilities(), request.operation(), request.commandLine(), nowEpochMillis);
         SessionDecision decision = engine.evaluate(ctx);
 

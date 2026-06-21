@@ -133,6 +133,7 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
     private long peerTrustFreshnessTtlMillis = 3_600_000L; // the stale-trust negative shrinks this below the gap
     private boolean builderRevoked = false;              // revoke the attestation builder before recording
     private String expectedPolicy = POLICY;              // the policy-rotation negative drifts this from the evidence
+    private boolean enrollmentBackedPolicyEngine = false; // bounded pilot exception, never the default
 
     /**
      * Wire the FULL real chain with the current knobs and return the broker outcome for one operation. Every
@@ -215,7 +216,9 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
         RemoteBridgeAuditSink auditSink = auditThrows
                 ? event -> { throw new IllegalStateException("durable record failed"); }
                 : event -> { };
-        RemoteBridgeBroker broker = new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer,
+        RemoteSessionPolicyEngine policyEngine = enrollmentBackedPolicyEngine
+                ? RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED : RemoteSessionPolicyEngine.PILOT;
+        RemoteBridgeBroker broker = new RemoteBridgeBroker(true, policyEngine, signer,
                 auditSink, "rb-pilot-v1", 60_000L);
 
         String commandLine = operation == RemoteOperation.PTY_COMMAND ? "whoami" : null;
@@ -251,6 +254,20 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
         BrokerOutcome outcome = run();
         assertEquals(Kind.DENY, outcome.kind());
         assertEquals("policy:CRYPTO_IDENTITY", outcome.reason());
+    }
+
+    @Test
+    void enrollmentBackedPilotCanPermitWhenOnlyHardwareAttestationIsMissing() {
+        validAttestation = false;
+        enrollmentBackedPolicyEngine = true;
+
+        BrokerOutcome outcome = run();
+
+        assertEquals(Kind.PERMIT, outcome.kind(),
+                "bounded non-prod policy accepts enrolled-active machine-cert device trust when attestation is missing");
+        assertNotNull(outcome.permit(), "a signed operation permit is issued");
+        assertTrue(new RemoteBridgePermitVerifier(permitKeys.getPublic(), "rb-permit-kid-1")
+                .verify(outcome.permit(), NOW + 2_000L), "the issued permit signature verifies");
     }
 
     @Test

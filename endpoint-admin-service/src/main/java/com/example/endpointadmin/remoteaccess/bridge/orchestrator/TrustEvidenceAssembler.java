@@ -94,6 +94,8 @@ public final class TrustEvidenceAssembler {
                 deviceTrustVerifier.verify(session, trust, nowEpochMillis);
         boolean identitiesConsistent = deviceIdentitiesConsistent(trust, session.deviceId());
         boolean deviceTrusted = deviceDecision.trusted() && identitiesConsistent;
+        SessionDeviceTrustVerifier.Basis deviceTrustBasis = deviceTrusted
+                ? deviceDecision.basis() : SessionDeviceTrustVerifier.Basis.NONE;
         String cryptoIdentityDetail = cryptoIdentityDetail(certTrusted, attestationVerified, deviceDecision,
                 identitiesConsistent);
 
@@ -110,8 +112,9 @@ public final class TrustEvidenceAssembler {
         StepUpState stepUp = new StepUpState(session.lastStepUpEpochMillis(),
                 session.sessionStartEpochMillis(), session.stepUpStrength());
 
-        return new RemoteBridgeTrustEvidence(certTrusted, attestationVerified, deviceTrusted, cryptoIdentityDetail,
-                stepUp, duress, granted, session.lease(), session.deviceId(), session.operatorSubject());
+        return new RemoteBridgeTrustEvidence(certTrusted, attestationVerified, deviceTrusted, deviceTrustBasis,
+                cryptoIdentityDetail, stepUp, duress, granted, session.lease(), session.deviceId(),
+                session.operatorSubject());
     }
 
     private DuressSignal classifyDuress(String sessionId, long nowEpochMillis) {
