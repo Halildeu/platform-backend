@@ -254,6 +254,28 @@ class DiagnosticsPayloadPolicyTest {
     }
 
     @Test
+    void agentVersionWithVPrefixOk() {
+        Map<String, Object> p = goldenWindows();
+        p.put("agentVersion", "v0.2.14");
+        assertThatCode(() -> policy.projectAndHash(p)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void agentVersionOnlySingleLowercaseVPrefixOk() {
+        Map<String, Object> uppercase = goldenWindows();
+        uppercase.put("agentVersion", "V0.2.14");
+        assertThatThrownBy(() -> policy.projectAndHash(uppercase))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("agentVersion");
+
+        Map<String, Object> repeated = goldenWindows();
+        repeated.put("agentVersion", "vv0.2.14");
+        assertThatThrownBy(() -> policy.projectAndHash(repeated))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("agentVersion");
+    }
+
+    @Test
     void agentVersionPreReleaseOk() {
         // Codex 019e82d7 iter-2 #5: prerelease/build metadata accepted.
         Map<String, Object> p = goldenWindows();
