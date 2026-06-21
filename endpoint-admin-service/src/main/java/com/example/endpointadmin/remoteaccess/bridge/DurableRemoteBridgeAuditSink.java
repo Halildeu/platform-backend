@@ -49,16 +49,15 @@ public final class DurableRemoteBridgeAuditSink implements RemoteBridgeAuditSink
             // fail-closed: a broker that cannot identify the session to record against must not get a permit
             throw new IllegalStateException("remote-bridge durable audit requires a non-blank session id");
         }
-        SessionRecorder recorder = recorders.computeIfAbsent(event.sessionId(), recorderFactory);
-        if (recorder == null) {
-            throw new IllegalStateException(
-                    "remote-bridge durable audit recorder factory returned null for session=" + event.sessionId());
-        }
-        boolean committed = recorder.record(mapKind(event.eventType()), event.contentHash(), event.epochMillis());
-        if (!committed) {
-            throw new IllegalStateException(
-                    "remote-bridge durable audit write did not commit for session=" + event.sessionId());
-        }
+        recordKind(event.sessionId(), mapKind(event.eventType()), event.contentHash(), event.epochMillis());
+    }
+
+    public void recordAgentOutput(String sessionId, String contentHash, long epochMillis) {
+        recordKind(sessionId, RecordKind.AGENT_OUTPUT, contentHash, epochMillis);
+    }
+
+    public void recordSessionEnd(String sessionId, String contentHash, long epochMillis) {
+        recordKind(sessionId, RecordKind.SESSION_END, contentHash, epochMillis);
     }
 
     /** The broker's audit event-type prefix for a duress/kill record (everything else is a policy event). */
@@ -73,5 +72,21 @@ public final class DurableRemoteBridgeAuditSink implements RemoteBridgeAuditSink
             return RecordKind.KILL;
         }
         return RecordKind.POLICY_EVENT;
+    }
+
+    private void recordKind(String sessionId, RecordKind kind, String contentHash, long epochMillis) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalStateException("remote-bridge durable audit requires a non-blank session id");
+        }
+        SessionRecorder recorder = recorders.computeIfAbsent(sessionId, recorderFactory);
+        if (recorder == null) {
+            throw new IllegalStateException(
+                    "remote-bridge durable audit recorder factory returned null for session=" + sessionId);
+        }
+        boolean committed = recorder.record(kind, contentHash, epochMillis);
+        if (!committed) {
+            throw new IllegalStateException(
+                    "remote-bridge durable audit write did not commit for session=" + sessionId);
+        }
     }
 }

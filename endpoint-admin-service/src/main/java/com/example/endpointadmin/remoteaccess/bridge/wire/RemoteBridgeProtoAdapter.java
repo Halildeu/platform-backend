@@ -13,6 +13,7 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentPrompt;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentResult;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
+import com.example.endpointadmin.remoteaccess.bridge.proto.ErrorFrame;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
 import com.example.endpointadmin.remoteaccess.bridge.proto.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.proto.SessionRequest;
@@ -373,13 +374,28 @@ public final class RemoteBridgeProtoAdapter {
                 .build();
     }
 
+    public static DecodeResult<RemoteBridgeMessages.AgentErrorFrame> decode(String sessionId, ErrorFrame error) {
+        if (error == null) {
+            return DecodeResult.reject("error-frame-null");
+        }
+        if (!sessionId.isEmpty() && !WireContract.isValidId(sessionId)) {
+            return DecodeResult.reject("error-frame-session-id");
+        }
+        String defect = errorFrameDefect(error);
+        if (defect != null) {
+            return DecodeResult.reject(defect);
+        }
+        return DecodeResult.ok(new RemoteBridgeMessages.AgentErrorFrame(emptyToNull(sessionId), error.getCode(),
+                error.getRetryable(), emptyToNull(error.getDetail())));
+    }
+
     // ------------------------------------------------------------------
     // OperationPermit — the signed artifact; strictest decode on the wire
     // ------------------------------------------------------------------
 
     /**
      * Strict decode: schema-version pin, alg pin, id allowlists, pilot capability, capability↔commandHash
-     * consistency (the signer's invariant, re-enforced at the wire), positive validity window, non-negative
+     * consistency (the signer's invariant, re-enforced at the wire), positive validity window, positive
      * seq, base64-checked signature. The decoded record's {@link OperationPermit#canonicalPayload()} is
      * byte-identical to the encoded one's, so the broker's signature still verifies.
      */
@@ -419,7 +435,7 @@ public final class RemoteBridgeProtoAdapter {
                 || permit.getExpiresAtEpochMillis() <= permit.getIssuedAtEpochMillis()) {
             return DecodeResult.reject("permit-validity-window");
         }
-        if (permit.getSeq() < 0) {
+        if (permit.getSeq() <= 0) {
             return DecodeResult.reject("permit-seq");
         }
         String signature = permit.getSignatureB64();

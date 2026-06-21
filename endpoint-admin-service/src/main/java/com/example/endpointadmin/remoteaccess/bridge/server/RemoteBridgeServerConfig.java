@@ -509,14 +509,13 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
-     * Faz 22.6 T-2b / #1588 (Codex 019ecbc5) — the DATA-plane consumption seam. {@code INERT} in T-2b
-     * (accept-and-drop): the transport validates + meters DATA frames but consumes nothing. Durable WORM
-     * recording of the DATA stream + operator viewer fan-out are the owner-gated T-4 consumer, behind their
-     * own flag + fail-closed recording policy — they REPLACE this bean then, never the transport.
+     * Faz 22.6 T-4 — the DATA-plane consumption seam. Accepted DATA frames are hashed and appended to the same
+     * durable WORM session chain as broker policy decisions. Raw endpoint output is not stored in the long
+     * retention metadata chain.
      */
     @Bean
-    public DataPlaneHandler remoteBridgeDataPlane() {
-        return DataPlaneHandler.INERT;
+    public DataPlaneHandler remoteBridgeDataPlane(DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink) {
+        return new DurableRecordingDataPlaneHandler(remoteBridgeDurableAuditSink);
     }
 
     @Bean

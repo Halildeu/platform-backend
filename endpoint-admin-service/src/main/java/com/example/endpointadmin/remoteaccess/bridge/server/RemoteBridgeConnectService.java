@@ -197,8 +197,10 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent())
                     .ifOk(event -> controlPlane.onAuditEvent(peer, event));
             case HEARTBEAT -> controlPlane.onHeartbeat(peer);
+            case ERROR -> RemoteBridgeProtoAdapter.decode(envelope.getSessionId(), envelope.getError())
+                    .ifOk(error -> controlPlane.onAgentErrorFrame(peer, error));
             default -> {
-                // ERROR is diagnostics — no control-plane action in T-2b
+                // Directional allowlist already refused broker-originated control payloads.
             }
         }
     }
@@ -251,7 +253,7 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
                     meters.counter(BRIDGE_DATA_FRAMES).increment();
                     meters.counter(BRIDGE_DATA_BYTES).increment(frame.getPayload().size());
                     try {
-                        dataPlane.onDataFrame(peer, frame);
+                        dataPlane.onDataFrame(peer, envelope.getSessionId(), frame);
                     } catch (RuntimeException e) {
                         // a consumer fault closes the DATA stream (transport-level) — NEVER a session kill
                         // from the transport (kill-on-recording-failure is the owner-gated recording slice)

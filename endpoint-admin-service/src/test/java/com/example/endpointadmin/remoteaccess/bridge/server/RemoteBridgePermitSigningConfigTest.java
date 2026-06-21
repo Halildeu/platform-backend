@@ -101,7 +101,7 @@ class RemoteBridgePermitSigningConfigTest {
             OperationPermit unsigned = new OperationPermit(RemoteBridgePermitSigner.PERMIT_ALG, "kid-1",
                     RemoteBridgePermitSigner.PERMIT_VERSION, "policy-1", "sess-1:op-1", "sess-1", "op-1",
                     "dev-1", "operator@x", RemoteSessionCapability.CONSTRAINED_PTY,
-                    CanonicalCommand.of("hostname").hash(), 1000L, 1300L, 0L, null);
+                    CanonicalCommand.of("hostname").hash(), 1000L, 1300L, 1L, null);
             Optional<OperationPermit> signed = signer.sign(unsigned);
             assertTrue(signed.isPresent());
             PublicKey pub = kp.getPublic();

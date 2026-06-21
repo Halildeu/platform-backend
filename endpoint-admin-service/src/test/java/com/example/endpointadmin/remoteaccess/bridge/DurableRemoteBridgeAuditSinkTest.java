@@ -99,6 +99,19 @@ class DurableRemoteBridgeAuditSinkTest {
     }
 
     @Test
+    void agentSessionEndIsDurablyRecordedAsSessionEnd() {
+        CapturingSink sink = new CapturingSink();
+        DurableRemoteBridgeAuditSink durable =
+                new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id));
+
+        durable.recordSessionEnd("sess-1", "h9", 2_000L);
+
+        assertEquals(1, sink.entries.size());
+        assertEquals(RecordKind.SESSION_END, sink.entries.get(0).kind());
+        assertEquals("h9", sink.entries.get(0).contentHash());
+    }
+
+    @Test
     void anOperationIdThatMerelyContainsKillIsNotMisclassified() {
         // the broker records decisions as "ALLOW_DECISION:<operationId>" — an opId containing "kill" must
         // map to POLICY_EVENT, NOT KILL (prefix-match, not substring — Codex slice-3b note)

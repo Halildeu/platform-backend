@@ -292,6 +292,7 @@ class RemoteBridgeProtoAdapterTest {
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setIssuedAtEpochMillis(0).build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(
                 valid.toBuilder().setExpiresAtEpochMillis(valid.getIssuedAtEpochMillis()).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setSeq(0).build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setSeq(-1).build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setSignatureB64("").build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(valid.toBuilder().setSignatureB64("%%%").build()).isOk());

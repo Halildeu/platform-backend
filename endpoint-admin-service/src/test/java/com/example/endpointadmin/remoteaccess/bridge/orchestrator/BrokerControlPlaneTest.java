@@ -439,6 +439,18 @@ class BrokerControlPlaneTest {
     }
 
     @Test
+    void agentErrorFramesAreRecordedAsMetadataOnly() {
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(new RemoteBridgeSessionStore(), sink);
+
+        plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame("sess-1",
+                "operation-dispatch-failed", false, "contains local details but is not persisted"));
+
+        assertTrue(sink.has("AGENT_ERROR:operation-dispatch-failed:retryable=false"));
+        assertFalse(sink.events.stream().anyMatch(e -> e.eventType().contains("local details")));
+    }
+
+    @Test
     void aDownRecorderNeverBlocksTheSafeOutcome() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");
@@ -456,8 +468,8 @@ class BrokerControlPlaneTest {
     void seqIsMonotonicAndStateOnlyMovesThroughTheMachine() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");
-        assertEquals(0, session.nextSeq());
         assertEquals(1, session.nextSeq());
+        assertEquals(2, session.nextSeq());
         assertFalse(session.transition(Event.ACTIVATE).accepted()); // CONSENT_PENDING → ACTIVATE illegal
         assertEquals(State.CONSENT_PENDING, session.state());
         assertTrue(session.transition(Event.KILL).accepted());      // safety override always fires

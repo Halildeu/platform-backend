@@ -115,7 +115,7 @@ public final class RemoteBridgePermitSigner {
     private boolean isSignable(OperationPermit p) {
         if (p == null
                 || !alg.equals(p.alg()) || !kid.equals(p.kid())
-                || p.permitVersion() != PERMIT_VERSION || p.seq() < 0
+                || p.permitVersion() != PERMIT_VERSION || p.seq() <= 0
                 || !notBlank(p.policyVersion()) || !notBlank(p.decisionId()) || !notBlank(p.sessionId())
                 || !notBlank(p.operationId()) || !notBlank(p.deviceId()) || !notBlank(p.operatorSubject())
                 || p.commandHash() == null
