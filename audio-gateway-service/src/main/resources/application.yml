@@ -66,6 +66,19 @@ audio:
       mode: noop                     # noop | redis (PR-gw-01C cross-server Streams producer)
       queue-full-retry-after-seconds: 5
       unavailable-retry-after-seconds: 30
+    # Faz 24 issue #182 — direct HTTP forward gateway→live-stt /transcribe (architecture "A":
+    # Codex 019eeb45 + Claude AGREE; impl contract hardened by Codex 019eeb5f REVISE absorb).
+    # DEFAULT-OFF: DirectSttForwardingDispatcher bean is not registered until enabled=true;
+    # when on, it decorates the mode-selected base dispatcher (Redis metadata path preserved)
+    # and best-effort/bounded fire-and-forward audio to transcribe-url. Raw audio NEVER
+    # persisted/logged; transcript text NEVER logged.
+    direct-stt:
+      enabled: false                 # opt-in; overlay flips true once live-stt /transcribe reachable
+      transcribe-url: ""             # e.g. https://10.99.0.2:8000/transcribe (WireGuard+mTLS, ADR-0031 D2). Required when enabled.
+      max-in-flight: 32              # bounded concurrent forwards; saturation → drop (best-effort), admission unaffected
+      connect-timeout-ms: 3000
+      response-timeout-ms: 30000     # GPU /transcribe can take hundreds of ms to seconds
+      max-response-bytes: 262144     # small JSON response decode cap
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
       # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".

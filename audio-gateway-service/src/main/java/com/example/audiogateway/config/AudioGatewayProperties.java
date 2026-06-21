@@ -21,6 +21,7 @@ public class AudioGatewayProperties {
     @jakarta.annotation.PostConstruct
     public void validate() {
         dispatcher.validate();
+        directStt.validate();
     }
 
 
@@ -30,6 +31,7 @@ public class AudioGatewayProperties {
     private final Jwt jwt = new Jwt();
     private final Idempotency idempotency = new Idempotency();
     private final Audit audit = new Audit();
+    private final DirectStt directStt = new DirectStt();
 
     public Contract getContract() {
         return contract;
@@ -53,6 +55,10 @@ public class AudioGatewayProperties {
 
     public Audit getAudit() {
         return audit;
+    }
+
+    public DirectStt getDirectStt() {
+        return directStt;
     }
 
     public static class Contract {
@@ -264,6 +270,146 @@ public class AudioGatewayProperties {
 
         public void setFailoverRetryAfterSeconds(final long failoverRetryAfterSeconds) {
             this.failoverRetryAfterSeconds = failoverRetryAfterSeconds;
+        }
+    }
+
+    /**
+     * Direct-STT forwarding config — Faz 24 issue #182 (architecture "A":
+     * direct HTTP POST gateway→live-stt {@code /transcribe}; Redis stays
+     * metadata/coordination-only; raw audio NEVER persisted). Cross-AI decision
+     * Codex {@code 019eeb45} + Claude AGREE; implementation contract hardened by
+     * Codex {@code 019eeb5f} REVISE absorb (bounded in-flight + hard async boundary
+     * + strict config validation).
+     *
+     * <p>DEFAULT-OFF: when {@code enabled=false} (default) the
+     * {@link com.example.audiogateway.service.DirectSttForwardingDispatcher} bean is
+     * NOT registered and live behaviour is unchanged (mirrors the dispatcher
+     * {@code mode=noop|redis} discipline). When {@code enabled=true} the decorator
+     * wraps whichever base dispatcher the {@code dispatcher.mode} selects and adds a
+     * best-effort, bounded, fire-and-forget audio forward to {@code transcribe-url}.
+     */
+    public static class DirectStt {
+        /** DEFAULT-OFF — see {@link DirectStt}. */
+        private boolean enabled = false;
+
+        /**
+         * live-stt {@code /transcribe} absolute URL (e.g.
+         * {@code https://10.99.0.2:8000/transcribe} over the WireGuard+mTLS tunnel,
+         * ADR-0031 §D2). Required + must be http/https when {@code enabled=true};
+         * validated fail-closed at startup. Never logged in full (may carry sensitive
+         * query material).
+         */
+        private String transcribeUrl = "";
+
+        /**
+         * Max concurrent in-flight direct-STT forwards (Codex {@code 019eeb5f} REVISE
+         * point 3 — bounded heap-of-raw-audio + outbound concurrency). Acquired
+         * non-blocking in the admission monitor; on saturation the forward is DROPPED
+         * (best-effort), the chunk admission outcome is unaffected, and the
+         * {@code dropped_saturation} metric is incremented.
+         */
+        private int maxInFlight = 32;
+
+        /** WebClient TCP connect timeout (ms). */
+        private long connectTimeoutMs = 3_000L;
+
+        /**
+         * WebClient response timeout (ms) — GPU {@code /transcribe} can take hundreds
+         * of ms to seconds; this caps how long a forward holds an in-flight permit.
+         */
+        private long responseTimeoutMs = 30_000L;
+
+        /** Max in-memory bytes for decoding the (small) {@code /transcribe} JSON response. */
+        private int maxResponseBytes = 262_144;
+
+        /**
+         * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
+         * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
+         * startup error — silent fallback that hides misconfiguration is YASAK.
+         */
+        public void validate() {
+            if (!enabled) {
+                return;
+            }
+            if (transcribeUrl == null || transcribeUrl.isBlank()) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcribe-url must be set when direct-stt is enabled");
+            }
+            final java.net.URI uri;
+            try {
+                uri = java.net.URI.create(transcribeUrl.trim());
+            } catch (final IllegalArgumentException ex) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcribe-url is not a valid URI", ex);
+            }
+            final String scheme = uri.getScheme();
+            if (scheme == null
+                    || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcribe-url must be http or https, got scheme="
+                                + scheme);
+            }
+            if (maxInFlight <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.max-in-flight must be positive, got " + maxInFlight);
+            }
+            if (connectTimeoutMs <= 0 || responseTimeoutMs <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt connect/response timeouts must be positive");
+            }
+            if (maxResponseBytes <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.max-response-bytes must be positive, got "
+                                + maxResponseBytes);
+            }
+        }
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(final boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getTranscribeUrl() {
+            return transcribeUrl;
+        }
+
+        public void setTranscribeUrl(final String transcribeUrl) {
+            this.transcribeUrl = transcribeUrl;
+        }
+
+        public int getMaxInFlight() {
+            return maxInFlight;
+        }
+
+        public void setMaxInFlight(final int maxInFlight) {
+            this.maxInFlight = maxInFlight;
+        }
+
+        public long getConnectTimeoutMs() {
+            return connectTimeoutMs;
+        }
+
+        public void setConnectTimeoutMs(final long connectTimeoutMs) {
+            this.connectTimeoutMs = connectTimeoutMs;
+        }
+
+        public long getResponseTimeoutMs() {
+            return responseTimeoutMs;
+        }
+
+        public void setResponseTimeoutMs(final long responseTimeoutMs) {
+            this.responseTimeoutMs = responseTimeoutMs;
+        }
+
+        public int getMaxResponseBytes() {
+            return maxResponseBytes;
+        }
+
+        public void setMaxResponseBytes(final int maxResponseBytes) {
+            this.maxResponseBytes = maxResponseBytes;
         }
     }
 
