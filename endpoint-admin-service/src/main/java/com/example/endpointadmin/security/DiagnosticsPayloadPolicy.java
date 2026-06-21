@@ -182,7 +182,7 @@ public class DiagnosticsPayloadPolicy {
                     + "\\.com|\\.net|\\.org|\\.io|\\.local|::ffff:|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})");
 
     private static final Pattern AGENT_VERSION_RE = Pattern.compile(
-            "^(unknown|[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?(\\+[A-Za-z0-9.-]+)?)$");
+            "^(unknown|v?[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?(\\+[A-Za-z0-9.-]+)?)$");
 
     private static final Pattern CONFIG_HASH_RE = Pattern.compile(
             "^([0-9a-f]{64}|unknown)$");
