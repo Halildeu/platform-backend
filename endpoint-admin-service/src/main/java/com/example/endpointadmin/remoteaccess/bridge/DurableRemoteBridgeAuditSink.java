@@ -56,6 +56,10 @@ public final class DurableRemoteBridgeAuditSink implements RemoteBridgeAuditSink
         recordKind(sessionId, RecordKind.AGENT_OUTPUT, contentHash, epochMillis);
     }
 
+    public void recordSessionEnd(String sessionId, String contentHash, long epochMillis) {
+        recordKind(sessionId, RecordKind.SESSION_END, contentHash, epochMillis);
+    }
+
     /** The broker's audit event-type prefix for a duress/kill record (everything else is a policy event). */
     static final String KILL_EVENT_PREFIX = "KILL";
 

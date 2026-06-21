@@ -32,10 +32,14 @@ public final class DurableRecordingDataPlaneHandler implements DataPlaneHandler 
         if (peer == null || sessionId == null || sessionId.isBlank() || frame == null) {
             throw new IllegalArgumentException("peer + sessionId + frame are required");
         }
-        if (frame.getPayload().isEmpty()) {
-            return;
+        long now = System.currentTimeMillis();
+        String contentHash = frameContentHash(sessionId, frame);
+        if (!frame.getPayload().isEmpty()) {
+            auditSink.recordAgentOutput(sessionId, contentHash, now);
         }
-        auditSink.recordAgentOutput(sessionId, frameContentHash(sessionId, frame), System.currentTimeMillis());
+        if (frame.getEndStream()) {
+            auditSink.recordSessionEnd(sessionId, contentHash, now);
+        }
     }
 
     static String frameContentHash(String sessionId, DataFrame frame) {

@@ -87,14 +87,47 @@ class DurableRecordingDataPlaneHandlerTest {
     }
 
     @Test
-    void emptyTerminalFramesDoNotCreateLongRetentionMetadataRecords() {
+    void emptyTerminalFramesCreateSessionEndMetadataRecords() {
         CapturingSink sink = new CapturingSink();
         DurableRecordingDataPlaneHandler handler = new DurableRecordingDataPlaneHandler(
                 new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id)));
 
-        handler.onDataFrame(PEER, "sess-1", frame("op-1", 1, "text/plain", new byte[0], true));
+        DataFrame frame = frame("op-1", 1, "text/plain", new byte[0], true);
+        handler.onDataFrame(PEER, "sess-1", frame);
+
+        assertEquals(1, sink.entries.size());
+        assertEquals(RecordKind.SESSION_END, sink.entries.get(0).kind());
+        assertEquals(DurableRecordingDataPlaneHandler.frameContentHash("sess-1", frame),
+                sink.entries.get(0).contentHash());
+    }
+
+    @Test
+    void emptyNonTerminalFramesDoNotCreateLongRetentionMetadataRecords() {
+        CapturingSink sink = new CapturingSink();
+        DurableRecordingDataPlaneHandler handler = new DurableRecordingDataPlaneHandler(
+                new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id)));
+
+        handler.onDataFrame(PEER, "sess-1", frame("op-1", 1, "text/plain", new byte[0], false));
 
         assertTrue(sink.entries.isEmpty());
+    }
+
+    @Test
+    void payloadFrameWithEndStreamRecordsOutputThenSessionEnd() {
+        CapturingSink sink = new CapturingSink();
+        DurableRecordingDataPlaneHandler handler = new DurableRecordingDataPlaneHandler(
+                new DurableRemoteBridgeAuditSink(id -> recorderWith(sink, id)));
+
+        DataFrame frame = frame("op-1", 0, "text/plain", "AgentPc2\r\n".getBytes(), true);
+        handler.onDataFrame(PEER, "sess-1", frame);
+
+        assertEquals(2, sink.entries.size());
+        assertEquals(RecordKind.AGENT_OUTPUT, sink.entries.get(0).kind());
+        assertEquals(RecordKind.SESSION_END, sink.entries.get(1).kind());
+        assertEquals(DurableRecordingDataPlaneHandler.frameContentHash("sess-1", frame),
+                sink.entries.get(0).contentHash());
+        assertEquals(DurableRecordingDataPlaneHandler.frameContentHash("sess-1", frame),
+                sink.entries.get(1).contentHash());
     }
 
     @Test
