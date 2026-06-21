@@ -220,7 +220,7 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
 
         String commandLine = operation == RemoteOperation.PTY_COMMAND ? "whoami" : null;
         return broker.handle(new OperationRequest(SESSION_ID, "op-1", operation, commandLine),
-                evidence, sessionState, 0L, evalNow);
+                evidence, sessionState, 1L, evalNow);
     }
 
     // ============================ the POSITIVE proof ============================
