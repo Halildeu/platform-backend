@@ -439,6 +439,18 @@ class BrokerControlPlaneTest {
     }
 
     @Test
+    void agentErrorFramesAreRecordedAsMetadataOnly() {
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = plane(new RemoteBridgeSessionStore(), sink);
+
+        plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame("sess-1",
+                "operation-dispatch-failed", false, "contains local details but is not persisted"));
+
+        assertTrue(sink.has("AGENT_ERROR:operation-dispatch-failed:retryable=false"));
+        assertFalse(sink.events.stream().anyMatch(e -> e.eventType().contains("local details")));
+    }
+
+    @Test
     void aDownRecorderNeverBlocksTheSafeOutcome() {
         RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
         RemoteBridgeSession session = opened(store, "sess-1");

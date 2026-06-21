@@ -197,8 +197,10 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent())
                     .ifOk(event -> controlPlane.onAuditEvent(peer, event));
             case HEARTBEAT -> controlPlane.onHeartbeat(peer);
+            case ERROR -> RemoteBridgeProtoAdapter.decode(envelope.getSessionId(), envelope.getError())
+                    .ifOk(error -> controlPlane.onAgentErrorFrame(peer, error));
             default -> {
-                // ERROR is diagnostics — no control-plane action in T-2b
+                // Directional allowlist already refused broker-originated control payloads.
             }
         }
     }

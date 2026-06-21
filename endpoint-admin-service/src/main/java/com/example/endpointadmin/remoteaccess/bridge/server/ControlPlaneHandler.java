@@ -30,6 +30,13 @@ public interface ControlPlaneHandler {
     /** Agent-originated control-plane audit metadata (content hash, never raw payload). */
     void onAuditEvent(PeerIdentity peer, RemoteBridgeMessages.AuditEvent event);
 
+    /**
+     * Agent-originated diagnostic frame for a local dispatch/transport failure. This is observability only: it
+     * must not authorize, retry, or mutate policy state by itself.
+     */
+    default void onAgentErrorFrame(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
+    }
+
     /** T-2b default: accept-and-ignore. Real control-plane wiring is T-4. */
     ControlPlaneHandler INERT = new ControlPlaneHandler() {
         @Override

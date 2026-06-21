@@ -102,4 +102,8 @@ public final class RemoteBridgeMessages {
     /** Either side → the recorder: a control-plane audit event (metadata + content hash, never raw payload). */
     public record AuditEvent(String sessionId, String eventType, String contentHash, long epochMillis) {
     }
+
+    /** Agent → broker: diagnostics for a failed local dispatch; broker records metadata only, never raw output. */
+    public record AgentErrorFrame(String sessionId, String code, boolean retryable, String detail) {
+    }
 }

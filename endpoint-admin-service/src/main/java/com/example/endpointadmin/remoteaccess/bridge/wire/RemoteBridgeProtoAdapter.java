@@ -13,6 +13,7 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentPrompt;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentResult;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
+import com.example.endpointadmin.remoteaccess.bridge.proto.ErrorFrame;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
 import com.example.endpointadmin.remoteaccess.bridge.proto.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.proto.SessionRequest;
@@ -371,6 +372,21 @@ public final class RemoteBridgeProtoAdapter {
                 .setContentHash(nullToEmpty(event.contentHash()))
                 .setEpochMillis(event.epochMillis())
                 .build();
+    }
+
+    public static DecodeResult<RemoteBridgeMessages.AgentErrorFrame> decode(String sessionId, ErrorFrame error) {
+        if (error == null) {
+            return DecodeResult.reject("error-frame-null");
+        }
+        if (!sessionId.isEmpty() && !WireContract.isValidId(sessionId)) {
+            return DecodeResult.reject("error-frame-session-id");
+        }
+        String defect = errorFrameDefect(error);
+        if (defect != null) {
+            return DecodeResult.reject(defect);
+        }
+        return DecodeResult.ok(new RemoteBridgeMessages.AgentErrorFrame(emptyToNull(sessionId), error.getCode(),
+                error.getRetryable(), emptyToNull(error.getDetail())));
     }
 
     // ------------------------------------------------------------------

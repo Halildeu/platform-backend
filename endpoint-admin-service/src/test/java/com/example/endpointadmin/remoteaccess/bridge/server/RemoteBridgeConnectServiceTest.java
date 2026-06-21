@@ -84,6 +84,7 @@ class RemoteBridgeConnectServiceTest {
         final ConcurrentLinkedQueue<PeerIdentity> heartbeats = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.ConsentResult> consents = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+        final ConcurrentLinkedQueue<RemoteBridgeMessages.AgentErrorFrame> errors = new ConcurrentLinkedQueue<>();
         volatile PeerIdentity lastPeer;
 
         @Override
@@ -105,6 +106,12 @@ class RemoteBridgeConnectServiceTest {
         @Override
         public void onAuditEvent(PeerIdentity peer, RemoteBridgeMessages.AuditEvent event) {
             audits.add(event);
+        }
+
+        @Override
+        public void onAgentErrorFrame(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
+            lastPeer = peer;
+            errors.add(error);
         }
     }
 
@@ -279,6 +286,8 @@ class RemoteBridgeConnectServiceTest {
                 .setGrantedAtEpochMillis(1000).setExpiryEpochMillis(2000))));
         inbound.onNext(control(3, Envelope.newBuilder().setAuditEvent(AuditEvent.newBuilder()
                 .setSessionId("sess-1").setEventType("LOCAL_ABORT").setEpochMillis(1500))));
+        inbound.onNext(control(4, Envelope.newBuilder().setSessionId("sess-1").setError(ErrorFrame.newBuilder()
+                .setCode("operation-dispatch-failed").setRetryable(false).setDetail("gate denied"))));
         inbound.onCompleted();
         assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
         assertNull(sink.firstError());
@@ -286,6 +295,9 @@ class RemoteBridgeConnectServiceTest {
         assertEquals(1, controlPlane.heartbeats.size());
         assertEquals(1, controlPlane.consents.size());
         assertEquals(1, controlPlane.audits.size());
+        assertEquals(1, controlPlane.errors.size());
+        assertEquals("operation-dispatch-failed", controlPlane.errors.peek().code());
+        assertEquals("sess-1", controlPlane.errors.peek().sessionId());
         assertEquals("peer-fp-1", controlPlane.lastPeer.transportPeerKey()); // seam sees the AUTHENTICATED identity
     }
 

@@ -159,6 +159,15 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         }
     }
 
+    @Override
+    public void onAgentErrorFrame(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
+        String sessionId = error.sessionId() == null || error.sessionId().isBlank() ? "ledger" : error.sessionId();
+        String eventType = "AGENT_ERROR:" + safeType(error.code()) + ":retryable=" + error.retryable();
+        recordBestEffort(sessionId, eventType);
+        log.warn("remote-bridge agent error frame peer={} session={} code={} retryable={}",
+                peer.transportPeerKey(), sessionId, safeType(error.code()), error.retryable());
+    }
+
     /**
      * Inbound absorption is best-effort on the recorder: a recording failure must never make the broker
      * IGNORE a consent denial or a local abort (the safe outcome proceeds). The durable-record-BEFORE-permit
