@@ -4,19 +4,26 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.junit.jupiter.api.io.TempDir;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
+import com.example.endpointadmin.remoteaccess.bridge.DurableRemoteBridgeAuditSink;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
+import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.env.MockEnvironment;
 
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
@@ -58,6 +65,19 @@ class RemoteBridgeServerLifecycleTest {
     /** T-4a-ii slice-3c: the recording-anchor key is a SEPARATE forensic key from the permit key (Codex S2). */
     private static String anchorKeyPath() throws Exception {
         return ecKeyPath("lifecycle-anchor.pem");
+    }
+
+    private static RemoteBridgePermitSigner permitSigner(String kid) throws Exception {
+        KeyPairGenerator g = KeyPairGenerator.getInstance("EC");
+        g.initialize(new ECGenParameterSpec("secp256r1"));
+        KeyPair kp = g.generateKeyPair();
+        return new RemoteBridgePermitSigner(kp.getPrivate(), kid, RemoteBridgePermitSigner.PERMIT_ALG);
+    }
+
+    private static DurableRemoteBridgeAuditSink unusedDurableSink() {
+        return new DurableRemoteBridgeAuditSink(sessionId -> {
+            throw new AssertionError("unused recorder factory");
+        });
     }
 
     @Test
@@ -122,6 +142,32 @@ class RemoteBridgeServerLifecycleTest {
             assertTrue(root.getMessage() != null && root.getMessage().contains("requires mutual TLS"),
                     "root cause was: " + root);
         });
+    }
+
+    @Test
+    void enrollmentBackedPilotPolicyIsRejectedInProdProfile() throws Exception {
+        RemoteBridgeServerConfig config = new RemoteBridgeServerConfig();
+        MockEnvironment prod = new MockEnvironment();
+        prod.setActiveProfiles("prod");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> config.remoteBridgeBroker(prod, permitSigner("kid-1"), unusedDurableSink(),
+                        "policy-1", 60_000L, true));
+
+        assertTrue(thrown.getMessage().contains("enrollment-backed-crypto-identity-pilot-risk-accepted"),
+                "message was: " + thrown.getMessage());
+    }
+
+    @Test
+    void productionProfileCheckDoesNotSubstringMatchNonProd() throws Exception {
+        RemoteBridgeServerConfig config = new RemoteBridgeServerConfig();
+        MockEnvironment nonprod = new MockEnvironment();
+        nonprod.setActiveProfiles("nonprod");
+
+        RemoteBridgeBroker broker = config.remoteBridgeBroker(nonprod, permitSigner("kid-1"), unusedDurableSink(),
+                "policy-1", 60_000L, true);
+
+        assertNotNull(broker);
     }
 
     @Test
