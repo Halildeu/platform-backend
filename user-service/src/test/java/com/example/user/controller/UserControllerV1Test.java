@@ -159,13 +159,17 @@ class UserControllerV1Test {
     }
 
     /**
-     * A numeric {@code userId} claim that no longer maps to a row is a
-     * stale token / deleted profile — fail closed with
-     * {@code 403 PROFILE_MISSING}; it must NOT be treated as a first login
-     * and auto-provisioned.
+     * An M365 gate-passing token carrying a numeric {@code userId} claim that
+     * maps to NO row is the ORPHANED-attribute first-login case — a Keycloak
+     * {@code userId} attribute left over from a provisioning before a dev-DB
+     * reset, present while no backend row exists. Post-fix (Codex 019ef0a7)
+     * the numeric claim is no longer a deny authority: it must NOT fail closed
+     * with PROFILE_MISSING. Instead it is auto-provisioned as a passive row,
+     * then the activation gate returns {@code 403 ACCOUNT_DISABLED} (an admin
+     * activates it later). This is the live owner-account lockout this fixes.
      */
     @Test
-    void listUsers_staleNumericUserId_returns403_notAutoProvisioned() throws Exception {
+    void listUsers_m365OrphanedUserIdClaim_provisionsPassive_returns403AccountDisabled() throws Exception {
         Instant now = Instant.now();
         JwtClaimsSet claims = JwtClaimsSet.builder()
                 .subject("kc-sub-stale")
@@ -183,9 +187,12 @@ class UserControllerV1Test {
         mockMvc.perform(get("/api/v1/users?page=1&pageSize=10")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
                 .andExpect(status().isForbidden())
-                .andExpect(content().string(containsString("PROFILE_MISSING")));
+                .andExpect(content().string(containsString("ACCOUNT_DISABLED")));
 
-        Assertions.assertThat(userRepository.findByEmail("stale@example.com")).isEmpty();
+        var provisioned = userRepository.findByEmail("stale@example.com");
+        Assertions.assertThat(provisioned).isPresent();
+        Assertions.assertThat(provisioned.get().isEnabled()).isFalse();
+        Assertions.assertThat(provisioned.get().getKcSubject()).isEqualTo("kc-sub-stale");
     }
 
     /**

@@ -214,32 +214,45 @@ class JwtAutoProvisionGateTest {
     }
 
     @Test
-    void evaluate_deniesWhenNumericUserIdClaimPresent() {
-        // A numeric userId marks an established profile — a stale/deleted
-        // one must fail closed with 403, not be re-provisioned.
+    void evaluate_allowsWhenNumericUserIdClaimPresent() {
+        // Changed 2026-06-22 (Codex 019eeffd): a numeric `userId` claim is
+        // NO LONGER a gate-level deny. An M365 `userId` attribute can be
+        // ORPHANED (left from an earlier provisioning before a dev-DB reset),
+        // so its mere presence must not lock the identity out of
+        // auto-provision. An otherwise-valid M365 token that also carries a
+        // numeric `userId` is therefore ALLOWED; whether a profile actually
+        // exists/was deleted is decided downstream from the DB row state, not
+        // from the claim.
         Map<String, Object> claims = m365Claims();
         claims.put("userId", 4242);
 
         JwtAutoProvisionGate.Decision decision = gateWith(defaultProps()).evaluate(jwt(claims));
 
-        assertThat(decision.allowed()).isFalse();
-        assertThat(decision.denyReason()).isEqualTo("has-user-id-claim");
+        assertThat(decision.allowed()).isTrue();
+        UserService.LazyProvisionCommand command = decision.command();
+        assertThat(command).isNotNull();
+        assertThat(command.kcSubject()).isEqualTo("kc-subject-uuid");
+        assertThat(command.email()).isEqualTo("person@example.com");
     }
 
     @Test
-    void evaluate_deniesWhenStringNumericUserIdClaimPresent() {
+    void evaluate_allowsWhenStringNumericUserIdClaimPresent() {
+        // Same as above for the string-encoded numeric `userId` form — the
+        // claim is not a gate condition, so the token is allowed and carries
+        // the provision command.
         Map<String, Object> claims = m365Claims();
         claims.put("userId", "777");
 
         JwtAutoProvisionGate.Decision decision = gateWith(defaultProps()).evaluate(jwt(claims));
 
-        assertThat(decision.allowed()).isFalse();
-        assertThat(decision.denyReason()).isEqualTo("has-user-id-claim");
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.command()).isNotNull();
+        assertThat(decision.command().email()).isEqualTo("person@example.com");
     }
 
     @Test
     void evaluate_allowsWhenUserIdClaimIsNonNumeric() {
-        // A non-numeric userId is not a backend id — treated as absent,
+        // A `userId` claim — numeric or not — is no longer a gate condition,
         // so a genuine first-login still provisions.
         Map<String, Object> claims = m365Claims();
         claims.put("userId", "not-a-number");
