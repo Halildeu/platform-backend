@@ -31,13 +31,20 @@ import java.util.regex.Pattern;
  *   <li>if an {@code email_verified} claim is present, it is {@code true};</li>
  *   <li>the JWT carries the M365 marker claim {@code entra_tid} — unless
  *       {@code auto-provision.allow-local-keycloak} is enabled;</li>
- *   <li>the JWT does NOT carry a numeric {@code userId} claim — a numeric
- *       {@code userId} marks an already-established profile, so if it no
- *       longer resolves the token is stale / the profile was deleted, not
- *       a first login; that case must fail closed with
- *       {@code 403 PROFILE_MISSING} and never be re-provisioned.</li>
  * </ol>
- * A token failing any check is left to fail closed with
+ *
+ * <p>A numeric {@code userId} claim is deliberately NOT a gate condition
+ * (changed 2026-06-22, Codex 019eeffd): an M365 Keycloak {@code userId}
+ * attribute can be orphaned — left from an earlier provisioning before a
+ * dev-DB reset — so the claim may be present while no backend row exists,
+ * which used to lock the user out of auto-provision permanently. Whether a
+ * profile already exists / was deleted is authoritative from the DB row
+ * state ({@code kc_subject} / email / {@code deleted_at} tombstone),
+ * resolved once in {@link UserService#lazyProvisionFromJwt} and enforced by
+ * the identity-aware {@code CurrentUserResolver} — never from the claim,
+ * which is at most a DB-verified hint downstream.
+ *
+ * <p>A token failing any check is left to fail closed with
  * {@code 403 PROFILE_MISSING} when no profile exists.
  */
 @Component
@@ -110,13 +117,18 @@ public class JwtAutoProvisionGate {
             return Decision.deny("issuer-not-allowed:" + issuer);
         }
 
-        // A numeric userId claim means an established backend profile —
-        // never a first login. If it does not resolve the caller path
-        // (CurrentUserResolver) fails closed with 403 PROFILE_MISSING; the
-        // gate must not re-provision a row for a stale/deleted profile.
-        if (hasNumericUserIdClaim(jwt)) {
-            return Decision.deny("has-user-id-claim");
-        }
+        // NOTE (2026-06-22, Codex thread 019eeffd): a numeric `userId`
+        // claim is NO LONGER a gate-level deny reason. It used to fail
+        // closed as "an established profile exists", but an M365 Keycloak
+        // `userId` attribute can be ORPHANED — left over from an earlier
+        // provisioning before a dev-DB reset — so the claim is present
+        // while NO backend row exists, permanently locking the user out of
+        // auto-provision (the live owner-account lockout this change fixes).
+        // Authority for "does a profile exist / was it deleted" is the
+        // actual DB row state (kc_subject / email / deleted_at tombstone),
+        // resolved once in UserService#lazyProvisionFromJwt and enforced by
+        // the identity-aware CurrentUserResolver — never the mere presence
+        // of the claim, which is at most a DB-verified hint downstream.
 
         String subject = blankToNull(jwt.getSubject());
         if (subject == null) {
@@ -183,27 +195,6 @@ public class JwtAutoProvisionGate {
             }
         }
         return canonicalEmail;
-    }
-
-    /**
-     * Returns true when the JWT carries a {@code userId} claim that is (or
-     * parses to) a number — the marker of an already-established backend
-     * profile. A non-numeric {@code userId} is ignored (treated as absent).
-     */
-    private static boolean hasNumericUserIdClaim(Jwt jwt) {
-        Object raw = jwt.getClaim("userId");
-        if (raw instanceof Number) {
-            return true;
-        }
-        if (raw instanceof String str && !str.isBlank()) {
-            try {
-                Long.parseLong(str.trim());
-                return true;
-            } catch (NumberFormatException ignored) {
-                return false;
-            }
-        }
-        return false;
     }
 
     /**

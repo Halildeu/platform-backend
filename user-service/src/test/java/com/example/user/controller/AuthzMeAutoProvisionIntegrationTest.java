@@ -242,6 +242,114 @@ class AuthzMeAutoProvisionIntegrationTest {
     }
 
     /**
+     * Orphaned-attribute regression (the live owner-account lockout this
+     * change fixes, Codex 019eeffd). An M365 first-login whose token ALSO
+     * carries a numeric {@code userId} claim pointing at a NON-existent id —
+     * a stale Keycloak attribute left over from an earlier provisioning
+     * before a dev-DB reset — must STILL auto-provision via {@code sub}/email.
+     * Before the fix the numeric {@code userId} was a gate-level deny
+     * ({@code has-user-id-claim}) and the {@code findById}-first resolver
+     * path 403'd, permanently locking the user out. The created row is the
+     * usual passive ({@code enabled=false}) first-login profile awaiting
+     * admin activation.
+     */
+    @Test
+    void m365FirstLogin_withStaleUserIdClaim_stillProvisions() throws Exception {
+        String email = "stale-userid-first@example.com";
+        String subject = "kc-sub-stale-userid-first";
+        assertThat(userRepository.findByEmail(email)).isEmpty();
+        // A userId that maps to no row — and well past any id this fresh DB
+        // would mint — proving resolution is by sub/email, never the claim.
+        long orphanUserId = 987654L;
+        assertThat(userRepository.findById(orphanUserId)).isEmpty();
+
+        String token = issueM365TokenWithUserId(email, subject,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", orphanUserId);
+
+        // by-email self-probe goes through the auto-provision filter +
+        // CurrentUserResolver safety net; for a passive first-login the row
+        // is created then the lookup succeeds (200) on the now-existing row.
+        mockMvc.perform(get("/api/users/by-email/{email}", email)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+
+        // The row now exists for the token's own sub/email and is passive —
+        // NOT keyed off the orphaned numeric userId claim.
+        User provisioned = userRepository.findByEmail(email).orElseThrow();
+        assertThat(provisioned.getKcSubject()).isEqualTo(subject);
+        assertThat(provisioned.isEnabled()).isFalse();          // passive — admin must activate
+        assertThat(provisioned.getRole()).isEqualTo("USER");
+        // The provisioned row got a fresh DB id, never the orphaned claim id.
+        assertThat(provisioned.getId()).isNotEqualTo(orphanUserId);
+    }
+
+    /**
+     * Gate-denied local-token path still honors a numeric {@code userId}
+     * claim when the resolved row actually belongs to this identity. A token
+     * with NO {@code entra_tid} (so the gate denies {@code missing-entra-tid})
+     * whose {@code sub}=email per the local-issuer convention, carrying
+     * {@code userId} = an EXISTING active row whose email matches the token,
+     * resolves that row (the normal backend-issued-token path is unbroken).
+     */
+    @Test
+    void gateDenied_numericUserIdClaim_matchingEmail_resolvesOwnRow() throws Exception {
+        String email = "local-own-row@example.com";
+        User seeded = seedActiveUser(email, "kc-sub-local-own-row");
+
+        // Gate-denied (no entra_tid), sub = email (local convention), userId
+        // = the user's OWN existing row id.
+        String token = issueLocalTokenWithUserId(email, seeded.getId());
+
+        mockMvc.perform(get("/api/v1/users/me/profile")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(seeded.getId().intValue()))
+                .andExpect(jsonPath("$.email").value(email));
+    }
+
+    /**
+     * Anti-cross-user — the core security assertion (Codex 019eeffd). Seed
+     * user A and a DIFFERENT user B. A gate-denied token for identity A
+     * ({@code sub}/email = A) that carries {@code userId} = B's id must NOT
+     * resolve B; the resolver ignores the mismatched claim
+     * ({@code stale-user-id-claim-mismatch}) and resolves A's OWN row by
+     * email. A stale/reused id can never let one identity transact as
+     * another.
+     */
+    @Test
+    void gateDenied_staleUserIdClaim_mapsToDifferentUser_doesNotCrossResolve() throws Exception {
+        String emailA = "cross-a@example.com";
+        String emailB = "cross-b@example.com";
+        User userA = seedActiveUser(emailA, "kc-sub-cross-a");
+        User userB = seedActiveUser(emailB, "kc-sub-cross-b");
+        assertThat(userA.getId()).isNotEqualTo(userB.getId());
+
+        // Token is identity A (sub/email = A) but carries B's id as userId.
+        String token = issueLocalTokenWithUserId(emailA, userB.getId());
+
+        mockMvc.perform(get("/api/v1/users/me/profile")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                // Resolves A's OWN row by email — never B's.
+                .andExpect(jsonPath("$.id").value(userA.getId().intValue()))
+                .andExpect(jsonPath("$.email").value(emailA))
+                .andExpect(jsonPath("$.id").value(org.hamcrest.Matchers.not(userB.getId().intValue())))
+                .andExpect(jsonPath("$.email").value(org.hamcrest.Matchers.not(emailB)));
+    }
+
+    /** Seeds an ENABLED, active backend user row with the given email + kc subject. */
+    private User seedActiveUser(String email, String kcSubject) {
+        User user = new User();
+        user.setEmail(email);
+        user.setName(email);
+        user.setPassword("x");
+        user.setEnabled(true);
+        user.setRole("ADMIN");
+        user.setKcSubject(kcSubject);
+        return userRepository.save(user);
+    }
+
+    /**
      * Issues an RS256 token simulating an M365 first-login: allow-listed
      * issuer ({@code platform-test}), the {@code entra_tid} marker claim,
      * {@code email_verified=true}, an explicit {@code sub} — and crucially
@@ -259,6 +367,49 @@ class AuthzMeAutoProvisionIntegrationTest {
                 .claim("email", email)
                 .claim("entra_tid", entraTid)
                 .claim("email_verified", Boolean.TRUE)
+                .build();
+        return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
+    }
+
+    /**
+     * Same gate-PASSING M365 token as {@link #issueM365Token}, but ALSO
+     * carrying a numeric {@code userId} claim — the orphaned-attribute case.
+     * After the fix the claim is not a gate condition, so the token is still
+     * allowed and provisions via {@code sub}/email.
+     */
+    private String issueM365TokenWithUserId(String email, String subject, String entraTid, long userId) {
+        Instant now = Instant.now();
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .subject(subject)
+                .issuer("platform-test")
+                .audience(List.of("user-service"))
+                .issuedAt(now)
+                .expiresAt(now.plusSeconds(600))
+                .claim("email", email)
+                .claim("entra_tid", entraTid)
+                .claim("email_verified", Boolean.TRUE)
+                .claim("userId", userId)
+                .build();
+        return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
+    }
+
+    /**
+     * Issues a gate-DENIED local/backend token: allow-listed issuer but NO
+     * {@code entra_tid} marker (so the gate denies {@code missing-entra-tid}
+     * while {@code allow-local-keycloak} stays false), {@code sub}=email per
+     * the local-issuer convention, plus a numeric {@code userId} claim —
+     * exercising {@code CurrentUserResolver}'s gate-denied numeric-userId path.
+     */
+    private String issueLocalTokenWithUserId(String email, long userId) {
+        Instant now = Instant.now();
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .subject(email) // local-issuer convention: sub carries the email
+                .issuer("platform-test")
+                .audience(List.of("user-service"))
+                .issuedAt(now)
+                .expiresAt(now.plusSeconds(600))
+                .claim("email", email)
+                .claim("userId", userId)
                 .build();
         return jwtEncoder.encode(JwtEncoderParameters.from(claims)).getTokenValue();
     }

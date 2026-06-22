@@ -150,46 +150,6 @@ public class CurrentUserResolver {
     }
 
     private User resolveFromJwt(Jwt jwt, Authentication authentication) {
-        // 1. Numeric userId claim — an established profile id. If it no
-        //    longer resolves the token is stale / the profile was
-        //    deleted: fail closed, do NOT treat as a first login.
-        Long numericUserId = extractNumericUserId(jwt);
-        if (numericUserId != null) {
-            return userRepository.findById(numericUserId)
-                    .orElseThrow(() -> {
-                        log.warn("JWT userId mevcut ancak yerel profil yok (stale token): {}", numericUserId);
-                        return new ResponseStatusException(HttpStatus.FORBIDDEN, "PROFILE_MISSING");
-                    });
-        }
-
-        // 2. Gate-passing JWT (M365 bridge identity) — delegate to the
-        //    single subject-aware implementation. The gate is what
-        //    certifies the JWT `sub` is a trustworthy Keycloak subject
-        //    UUID; only then may UserService#lazyProvisionFromJwt link
-        //    it to a profile (kcSubject hit → return / email-match →
-        //    backfill or 403 IDENTITY_LINK_CONFLICT / no match → insert).
-        //
-        //    This MUST be driven by the gate decision's command, NOT by
-        //    the raw jwt.getSubject(): local/service issuers (e.g.
-        //    `auth-service`) put the *email* in `sub`, and backfilling an
-        //    email into kc_subject — or version-bumping the row — would
-        //    be a bug. Such tokens fail the gate and take path 3 below.
-        //
-        //    lazyProvisionFromJwt may throw 403 IDENTITY_LINK_CONFLICT;
-        //    that is intentional fail-closed and must NOT be downgraded
-        //    to PROFILE_MISSING.
-        JwtAutoProvisionGate.Decision decision = autoProvisionGate.evaluate(jwt);
-        if (decision.allowed()) {
-            log.debug("CurrentUserResolver resolving M365 identity via lazy-provision bridge sub={} email={}",
-                    decision.command().kcSubject(), decision.command().email());
-            return userService.lazyProvisionFromJwt(decision.command());
-        }
-
-        // 3. Gate-denied JWT — NOT an auto-provision bridge identity.
-        //    Resolve an existing profile with a plain, non-mutating
-        //    lookup (kcSubject then canonical email): no backfill, no
-        //    identity-link conflict, no version bump — `sub` here is not
-        //    a certified Keycloak subject. Fail closed when none exists.
         String subject = blankToNull(jwt.getSubject());
         String email = firstNonBlank(
                 jwt.getClaimAsString("email"),
@@ -197,6 +157,54 @@ public class CurrentUserResolver {
                 authentication.getName());
         String canonicalEmail = UserService.canonicalEmail(email);
 
+        // 1. Gate-passing JWT (M365 bridge identity) — `sub`/email is the
+        //    authority. The gate certifies the JWT `sub` is a trustworthy
+        //    Keycloak subject; only then may UserService#lazyProvisionFromJwt
+        //    link it (kcSubject hit → return / email-match → backfill or
+        //    403 IDENTITY_LINK_CONFLICT / no match → insert passive).
+        //
+        //    Evaluated FIRST, ahead of any numeric `userId` claim (changed
+        //    2026-06-22, Codex 019eeffd): an M365 Keycloak `userId` attribute
+        //    can be ORPHANED — a stale id with no backend row, left from an
+        //    earlier provisioning before a dev-DB reset. Keying on it would
+        //    either lock the user out (old 403 PROFILE_MISSING) or, worse,
+        //    resolve a row belonging to a DIFFERENT identity. So an M365
+        //    first-login — even one carrying a stale userId claim —
+        //    provisions correctly here.
+        //
+        //    lazyProvisionFromJwt may throw 403 IDENTITY_LINK_CONFLICT; that
+        //    is intentional fail-closed and must NOT be downgraded to
+        //    PROFILE_MISSING.
+        JwtAutoProvisionGate.Decision decision = autoProvisionGate.evaluate(jwt);
+        if (decision.allowed()) {
+            log.debug("CurrentUserResolver resolving M365 identity via lazy-provision bridge sub={} email={}",
+                    decision.command().kcSubject(), decision.command().email());
+            return userService.lazyProvisionFromJwt(decision.command());
+        }
+
+        // 2. Gate-denied JWT (e.g. a local/auth-service token whose
+        //    backend-issued `userId` claim is authoritative). Honor the
+        //    numeric userId ONLY when the resolved row actually belongs to
+        //    this token identity (kcSubject == sub, or canonical email
+        //    match) — a stale/reused id that maps to a DIFFERENT row, or to
+        //    none, must never resolve as the current user (anti-cross-user).
+        //    On mismatch/absence, ignore the claim and fall through to the
+        //    plain identity lookup; the resolved row's own deleted/disabled
+        //    state is still enforced by resolveCurrentUser(). (Codex 019eeffd.)
+        Long numericUserId = extractNumericUserId(jwt);
+        if (numericUserId != null) {
+            Optional<User> byId = userRepository.findById(numericUserId);
+            if (byId.isPresent() && rowMatchesTokenIdentity(byId.get(), subject, canonicalEmail)) {
+                return byId.get();
+            }
+            log.warn("stale-user-id-claim-mismatch: userId claim {} did not resolve to a row matching "
+                    + "the token identity; ignoring claim", numericUserId);
+        }
+
+        // 3. Plain non-mutating profile lookup (kcSubject then canonical
+        //    email): no backfill, no identity-link conflict, no version bump
+        //    — `sub` here is not a certified Keycloak subject. Fail closed
+        //    when none exists.
         Optional<User> existing = findExistingWithoutProvision(subject, canonicalEmail);
         if (existing.isPresent()) {
             return existing.get();
@@ -205,6 +213,25 @@ public class CurrentUserResolver {
         log.warn("Keycloak kullanıcısı için yerel profil yok ve auto-provision reddedildi (reason={}): email={}",
                 decision.denyReason(), canonicalEmail);
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "PROFILE_MISSING");
+    }
+
+    /**
+     * True when the resolved row actually belongs to the token's identity —
+     * its {@code kcSubject} equals the JWT {@code sub}, or its canonical
+     * email matches the token's. Guards the numeric {@code userId} claim
+     * (gate-denied path) against a stale/reused id that maps to a DIFFERENT
+     * user's row: without this an attacker-or-stale token could resolve
+     * another user as the current user (cross-user). (Codex 019eeffd.)
+     */
+    private static boolean rowMatchesTokenIdentity(User row, String subject, String canonicalEmail) {
+        if (StringUtils.hasText(subject)
+                && subject.equals(blankToNull(row.getKcSubject()))) {
+            return true;
+        }
+        if (StringUtils.hasText(canonicalEmail)) {
+            return canonicalEmail.equalsIgnoreCase(UserService.canonicalEmail(row.getEmail()));
+        }
+        return false;
     }
 
     /**
