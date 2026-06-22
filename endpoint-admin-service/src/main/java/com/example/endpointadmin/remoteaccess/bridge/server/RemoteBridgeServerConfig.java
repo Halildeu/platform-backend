@@ -30,6 +30,8 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParserFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeAgentErrorLedger;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeNegativeProbeService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier;
@@ -167,6 +169,12 @@ public class RemoteBridgeServerConfig {
                 event.sessionId(), event.eventType(), event.epochMillis());
     }
 
+    @Bean
+    public RemoteBridgeAgentErrorLedger remoteBridgeAgentErrorLedger(
+            @Value("${remote-bridge.agent-error-ledger.max-entries:256}") int maxEntries) {
+        return new RemoteBridgeAgentErrorLedger(maxEntries);
+    }
+
     /**
      * Faz 22.6 T-4a-ii slice-2c — the REAL inbound control plane: replaces {@code ControlPlaneHandler.INERT}.
      * Agent events (hello → ledger trust evidence; consent → session lease; local-abort/indicator-loss → kill)
@@ -177,11 +185,12 @@ public class RemoteBridgeServerConfig {
     public BrokerControlPlane remoteBridgeControlPlane(PeerTrustLedger ledger,
                                                        RemoteBridgeSessionStore store,
                                                        @Qualifier("remoteBridgeInboundAuditSink")
-                                                       RemoteBridgeAuditSink auditSink) {
+                                                       RemoteBridgeAuditSink auditSink,
+                                                       RemoteBridgeAgentErrorLedger agentErrorLedger) {
         // pin the BEST-EFFORT inbound sink explicitly: slice-3c adds a second RemoteBridgeAuditSink bean (the
         // DURABLE broker recorder) — the control plane's inbound audit must stay the best-effort log sink, so
         // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds)
-        return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis);
+        return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis, agentErrorLedger);
     }
 
     /**
@@ -492,6 +501,17 @@ public class RemoteBridgeServerConfig {
                 remoteBridgeBroker, remoteBridgeControlStreamRegistry, remoteBridgeDurableAuditSink,
                 System::currentTimeMillis,
                 consentPromptTtlMillis);
+    }
+
+    @Bean
+    public RemoteBridgeNegativeProbeService remoteBridgeNegativeProbeService(
+            ControlStreamRegistry remoteBridgeControlStreamRegistry,
+            RemoteBridgePermitSigner remoteBridgePermitSigner,
+            RemoteBridgeAgentErrorLedger remoteBridgeAgentErrorLedger,
+            @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis,
+            @Value("${remote-bridge.negative-probes.observation-timeout-millis:3000}") long observationTimeoutMillis) {
+        return new RemoteBridgeNegativeProbeService(remoteBridgeControlStreamRegistry, remoteBridgePermitSigner,
+                remoteBridgeAgentErrorLedger, System::currentTimeMillis, permitTtlMillis, observationTimeoutMillis);
     }
 
     /**

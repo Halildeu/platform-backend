@@ -48,12 +48,21 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     private final RemoteBridgeSessionStore store;
     private final RemoteBridgeAuditSink auditSink;
     private final LongSupplier clock;
+    private final RemoteBridgeAgentErrorLedger agentErrorLedger;
     private final Map<String, RemoteBridgeMessages.AgentHello> lastHelloByPeer = new ConcurrentHashMap<>();
 
     public BrokerControlPlane(PeerTrustLedger ledger,
                               RemoteBridgeSessionStore store,
                               RemoteBridgeAuditSink auditSink,
                               LongSupplier clock) {
+        this(ledger, store, auditSink, clock, new RemoteBridgeAgentErrorLedger(0));
+    }
+
+    public BrokerControlPlane(PeerTrustLedger ledger,
+                              RemoteBridgeSessionStore store,
+                              RemoteBridgeAuditSink auditSink,
+                              LongSupplier clock,
+                              RemoteBridgeAgentErrorLedger agentErrorLedger) {
         if (ledger == null || store == null || auditSink == null || clock == null) {
             throw new IllegalArgumentException("ledger, store, auditSink and clock are required");
         }
@@ -61,6 +70,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         this.store = store;
         this.auditSink = auditSink;
         this.clock = clock;
+        this.agentErrorLedger = agentErrorLedger == null ? new RemoteBridgeAgentErrorLedger(0) : agentErrorLedger;
     }
 
     @Override
@@ -163,6 +173,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     public void onAgentErrorFrame(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
         String sessionId = error.sessionId() == null || error.sessionId().isBlank() ? "ledger" : error.sessionId();
         String eventType = "AGENT_ERROR:" + safeType(error.code()) + ":retryable=" + error.retryable();
+        agentErrorLedger.record(peer, error, clock.getAsLong());
         recordBestEffort(sessionId, eventType);
         log.warn("remote-bridge agent error frame peer={} session={} code={} retryable={}",
                 peer.transportPeerKey(), sessionId, safeType(error.code()), error.retryable());
