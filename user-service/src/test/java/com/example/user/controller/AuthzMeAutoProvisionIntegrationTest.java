@@ -186,6 +186,62 @@ class AuthzMeAutoProvisionIntegrationTest {
     }
 
     /**
+     * Regression for the M365 lazy-provision deadlock (the live bug). The
+     * frontend's first-login self-probe hits
+     * {@code GET /api/users/by-email/{self}}, which {@code shouldNotFilter}
+     * previously EXCLUDED — so the authenticated request never triggered
+     * auto-provision, the backend row was never created, the probe 404'd
+     * forever and login deadlocked. With the exclusion removed, a gate-passing
+     * M365 self-probe must create the row in the SAME request (the provision
+     * commits in a {@code REQUIRES_NEW} tx before the controller's lookup).
+     */
+    @Test
+    void byEmailSelfProbe_m365FirstLogin_createsRow() throws Exception {
+        String email = "byemail-self@example.com";
+        String subject = "kc-sub-byemail-self";
+        assertThat(userRepository.findByEmail(email)).isEmpty();
+
+        String token = issueM365Token(email, subject,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        mockMvc.perform(get("/api/users/by-email/{email}", email)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk());
+
+        User provisioned = userRepository.findByEmail(email).orElseThrow();
+        assertThat(provisioned.getKcSubject()).isEqualTo(subject);
+        assertThat(provisioned.getRole()).isEqualTo("USER");
+    }
+
+    /**
+     * Security invariant (Codex cross-AI review): on a {@code by-email}
+     * request the filter provisions ONLY the token's own identity, never the
+     * email in the path variable. An authenticated M365 caller looking up a
+     * DIFFERENT user's email gets its OWN row ensured (idempotently); the
+     * looked-up "victim" is NOT provisioned — the gate reads the token's
+     * {@code sub}/{@code email}, not the path.
+     */
+    @Test
+    void byEmail_provisionsTokenOwnerOnly_notPathEmail() throws Exception {
+        String callerEmail = "byemail-caller@example.com";
+        String callerSubject = "kc-sub-byemail-caller";
+        String victimEmail = "byemail-victim@example.com";
+        assertThat(userRepository.findByEmail(callerEmail)).isEmpty();
+        assertThat(userRepository.findByEmail(victimEmail)).isEmpty();
+
+        String callerToken = issueM365Token(callerEmail, callerSubject,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        // Caller (valid M365) looks up the VICTIM's email.
+        mockMvc.perform(get("/api/users/by-email/{email}", victimEmail)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + callerToken));
+
+        // The caller's OWN row was ensured; the victim's was NOT created.
+        assertThat(userRepository.findByEmail(callerEmail)).isPresent();
+        assertThat(userRepository.findByEmail(victimEmail)).isEmpty();
+    }
+
+    /**
      * Issues an RS256 token simulating an M365 first-login: allow-listed
      * issuer ({@code platform-test}), the {@code entra_tid} marker claim,
      * {@code email_verified=true}, an explicit {@code sub} — and crucially
