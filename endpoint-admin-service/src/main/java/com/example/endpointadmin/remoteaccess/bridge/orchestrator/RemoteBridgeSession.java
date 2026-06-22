@@ -171,6 +171,14 @@ public final class RemoteBridgeSession {
         return seq.getAndIncrement();
     }
 
+    /**
+     * The next broker-owned permit sequence without consuming it. Used by bounded non-prod acceptance probes
+     * to avoid minting replay evidence before a normal product operation has advanced the session.
+     */
+    public long nextSeqValue() {
+        return seq.get();
+    }
+
     public String sessionId() {
         return sessionId;
     }
