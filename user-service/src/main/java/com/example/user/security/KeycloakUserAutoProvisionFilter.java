@@ -48,7 +48,8 @@ import java.io.IOException;
  *   <li>Excludes internal service-token paths
  *       ({@code /api/**\/internal/**}, covering
  *       {@code /api/v1/users/internal/provision}) and the public
- *       register / by-email paths — see {@link #shouldNotFilter}.</li>
+ *       register paths — see {@link #shouldNotFilter}. The {@code by-email}
+ *       lookup is intentionally NOT excluded (M365 first-login self-probe).</li>
  *   <li>Never aborts the request. The gate decision and any provision
  *       failure are logged; a request that is not auto-provisioned still
  *       proceeds and the controller's {@code CurrentUserResolver} applies
@@ -74,10 +75,21 @@ public class KeycloakUserAutoProvisionFilter extends OncePerRequestFilter {
      *   <li>internal service-token paths — {@code /api/users/internal/**}
      *       and {@code /api/v1/users/internal/**}; this also covers the
      *       explicit {@code /internal/provision} endpoint itself;</li>
-     *   <li>the public register paths ({@code .../register}) and the
-     *       by-email lookup paths, which are {@code permitAll} and not
-     *       normal authenticated-user traffic.</li>
+     *   <li>the public register paths ({@code .../register}).</li>
      * </ul>
+     *
+     * <p>The {@code /by-email} lookup is deliberately NOT excluded. An M365
+     * first-login frontend probes {@code GET /api/users/by-email/{self}} to
+     * discover its own profile; if that authenticated request does not trigger
+     * lazy-provision the profile is never created — the probe returns 404
+     * forever and login deadlocks (the original bug: M365 users stuck out of
+     * the user list). {@code by-email} is {@code permitAll}, so an
+     * unauthenticated probe carries no {@link Jwt} principal and
+     * {@link #doFilterInternal} no-ops; only an authenticated caller that
+     * passes the {@link JwtAutoProvisionGate} (M365 {@code entra_tid}) is
+     * provisioned, and only ever its OWN profile — the gate reads the token's
+     * {@code sub}/{@code email}, never the path's email — idempotently, so an
+     * admin looking up another user simply re-ensures the admin's own row.
      */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -88,10 +100,7 @@ public class KeycloakUserAutoProvisionFilter extends OncePerRequestFilter {
         if (path.contains("/internal/")) {
             return true;
         }
-        if (path.endsWith("/register") || path.contains("/public/register")) {
-            return true;
-        }
-        return path.contains("/by-email");
+        return path.endsWith("/register") || path.contains("/public/register");
     }
 
     @Override
@@ -117,7 +126,7 @@ public class KeycloakUserAutoProvisionFilter extends OncePerRequestFilter {
     private void maybeProvision(Jwt jwt) {
         JwtAutoProvisionGate.Decision decision = autoProvisionGate.evaluate(jwt);
         if (!decision.allowed()) {
-            log.debug("Auto-provision atlandı (reason={})", decision.denyReason());
+            log.debug("Auto-provision atlandı (sub={} reason={})", jwt.getSubject(), decision.denyReason());
             return;
         }
         UserService.LazyProvisionCommand command = decision.command();
