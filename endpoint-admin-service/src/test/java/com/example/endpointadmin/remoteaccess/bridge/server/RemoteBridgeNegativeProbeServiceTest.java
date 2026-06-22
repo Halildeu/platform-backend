@@ -95,13 +95,16 @@ class RemoteBridgeNegativeProbeServiceTest {
         waitForDispatch(observer);
         now.set(NOW + 10L);
         ledger.record(PEER, new AgentErrorFrame("sess-1",
-                RemoteBridgeNegativeProbeService.EXPIRED_PERMIT_DENY_CODE, false, "expired"), now.get());
+                RemoteBridgeNegativeProbeService.EXPIRED_PERMIT_DENY_CODE + ":not-fresh", false, "expired"),
+                now.get());
 
         ProbeOutcome outcome = future.get(2, TimeUnit.SECONDS);
         Envelope dispatch = observer.get(0);
 
         assertTrue(outcome.observedDeny());
         assertEquals("expired-permit-denied", outcome.reason());
+        assertEquals(RemoteBridgeNegativeProbeService.EXPIRED_PERMIT_DENY_CODE + ":not-fresh",
+                outcome.agentErrorCode());
         assertTrue(dispatch.hasOperationDispatch());
         assertEquals("hostname", dispatch.getOperationDispatch().getCommandLine());
         assertTrue(dispatch.getOperationDispatch().getPermit().getExpiresAtEpochMillis() < NOW,

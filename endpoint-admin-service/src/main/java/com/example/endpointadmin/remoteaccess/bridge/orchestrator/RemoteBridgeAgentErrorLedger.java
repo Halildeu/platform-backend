@@ -57,8 +57,13 @@ public final class RemoteBridgeAgentErrorLedger {
                 .filter(o -> o.observedAtEpochMillis() >= notBeforeEpochMillis)
                 .filter(o -> Objects.equals(sessionId, o.sessionId()))
                 .filter(o -> Objects.equals(transportPeerKey, o.transportPeerKey()))
-                .filter(o -> Objects.equals(code, o.code()))
+                .filter(o -> matchesCodeFamily(o.code(), code))
                 .reduce((first, second) -> second);
+    }
+
+    private static boolean matchesCodeFamily(String observedCode, String expectedCode) {
+        return Objects.equals(expectedCode, observedCode)
+                || (observedCode != null && observedCode.startsWith(expectedCode + ":"));
     }
 
     private static boolean isBlank(String value) {
