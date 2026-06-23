@@ -57,6 +57,9 @@ class UserServiceTest {
     @Mock
     private UserAuditMirrorClient userAuditMirrorClient;
 
+    @Mock
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     private FakeAuthzService authorizationContextService;
 
     private UserAuditEventService userAuditEventService;
@@ -92,7 +95,7 @@ class UserServiceTest {
         userAuditEventService = new UserAuditEventService(userAuditEventRepository, userAuditMirrorClient);
         authorizationContextService = new FakeAuthzService();
         userService = new UserService(userRepository, passwordEncoder, userAuditEventService,
-                authorizationContextService, new InlineTransactionManager(), 1440);
+                authorizationContextService, new InlineTransactionManager(), eventPublisher, 1440);
         SecurityContextHolder.clearContext();
     }
 
@@ -448,6 +451,9 @@ class UserServiceTest {
         assertNull(created.getCompanyId());                 // companyId stays null
         assertEquals("sub-1", created.getKcSubject());
         assertEquals("New Person", result.getName());
+        // #734: a NEW passive user provision publishes exactly one
+        // PendingActivationUserProvisionedEvent (drives the admin email).
+        verify(eventPublisher).publishEvent(any(com.example.user.event.PendingActivationUserProvisionedEvent.class));
     }
 
     @Test
@@ -466,6 +472,8 @@ class UserServiceTest {
         // kcSubject match short-circuits — no email lookup, no insert.
         verify(userRepository, never()).findByEmailIgnoreCase(any());
         verify(userRepository, never()).saveAndFlush(any());
+        // #734: existing-row path must NOT publish the provision event (no email).
+        verify(eventPublisher, never()).publishEvent(any());
     }
 
     @Test

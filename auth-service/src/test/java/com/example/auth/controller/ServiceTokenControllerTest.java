@@ -19,8 +19,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         // Allow a known client and mint policy for tests
         "security.service-clients.user-service=test-secret",
-        "security.service-mint.allowed-audiences=permission-service,user-service",
-        "security.service-mint.allowed-permissions=permissions:read,permissions:write",
+        "security.service-mint.allowed-audiences=permission-service,user-service,notification-orchestrator",
+        "security.service-mint.allowed-permissions=permissions:read,permissions:write,notify:intents:system",
         "security.service-mint.rate-limit-per-minute=1",
         // H2 ile test, discovery kapalı
         "spring.datasource.url=jdbc:h2:mem:testdb;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
@@ -66,6 +66,19 @@ class ServiceTokenControllerTest {
                         .header("Authorization", basic("user-service", "test-secret"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=permission-service&permissions=permissions:read"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").exists())
+                .andExpect(jsonPath("$.token_type").value("Bearer"));
+    }
+
+    @Test
+    void mint_success_notificationOrchestrator_systemPermission() throws Exception {
+        // #734: user-service mints a notification-orchestrator-audience token with
+        // notify:intents:system for the internal admin-email system-submit path.
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("user-service", "test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=notification-orchestrator&permissions=notify:intents:system"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.access_token").exists())
                 .andExpect(jsonPath("$.token_type").value("Bearer"));

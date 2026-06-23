@@ -96,6 +96,13 @@ public class SecurityConfig {
                 // /api/v1/admin/notify/** — @PreAuthorize method-level (AdminErasureController)
                 // Burada path-level authenticated() yeterli; role gate method seviyesinde.
                 .requestMatchers("/api/v1/admin/notify/**").authenticated()
+                // #734 (Codex 019ef41c): internal SYSTEM-submit path for trusted
+                // backend services (user-service M365 first-login admin email).
+                // Gated by the service-token `notify:intents:system` authority
+                // (auth-service-minted, aud=notification-orchestrator); the org
+                // gate is intentionally NOT applied here (system principal, no
+                // org). Distinct prefix from the public /api/v1/notify/** rule.
+                .requestMatchers("/api/v1/internal/notify/**").hasAuthority("SVC_notify:intents:system")
                 // /api/v1/notify/** intent submission API
                 .requestMatchers("/api/v1/notify/**").authenticated()
                 .anyRequest().authenticated()
@@ -201,6 +208,41 @@ public class SecurityConfig {
                 "frontend,admin-cli,serban-web"
         );
 
+        JwtDecoder keycloakDecoder = buildDecoder(jwkSetUri, issuer, audiences, allowedClientIds);
+
+        // #734 (Codex 019ef41c): optional SECONDARY decoder for short-lived
+        // auth-service SERVICE tokens used by the internal system-submit path
+        // (/api/v1/internal/notify/**). Env-gated — only active when the
+        // JWK-set URI is configured (NOTIFY_INTERNAL_SERVICE_JWT_*), so the
+        // user-facing Keycloak path is untouched where it isn't set. Ported
+        // FallbackJwtDecoder pattern from permission-service: try Keycloak
+        // first, then the service issuer.
+        String serviceJwkSetUri = firstNonBlank(
+                environment.getProperty("NOTIFY_INTERNAL_SERVICE_JWT_JWK_SET_URI"),
+                environment.getProperty("notify.internal.service-jwt.jwk-set-uri")
+        );
+        if (!StringUtils.hasText(serviceJwkSetUri)) {
+            return keycloakDecoder;
+        }
+        String serviceIssuer = firstNonBlank(
+                environment.getProperty("NOTIFY_INTERNAL_SERVICE_JWT_ISSUER"),
+                environment.getProperty("notify.internal.service-jwt.issuer"),
+                "auth-service"
+        );
+        Collection<String> serviceAudiences = resolveCsv(
+                environment.getProperty("NOTIFY_INTERNAL_SERVICE_JWT_AUDIENCE"),
+                environment.getProperty("notify.internal.service-jwt.audience"),
+                "notification-orchestrator"
+        );
+        // Service tokens carry no Keycloak azp/client_id, so no client-id allow-list.
+        JwtDecoder serviceDecoder = buildDecoder(serviceJwkSetUri, serviceIssuer, serviceAudiences, Set.of());
+        return new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
+    }
+
+    private static JwtDecoder buildDecoder(String jwkSetUri,
+                                           String issuer,
+                                           Collection<String> audiences,
+                                           Collection<String> allowedClientIds) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
         decoder.setJwtValidator(buildServiceValidator(issuer, audiences, allowedClientIds));
         return decoder;
@@ -270,16 +312,38 @@ public class SecurityConfig {
      */
     @Bean
     public JwtAuthenticationConverter notifyJwtAuthenticationConverter() {
+        // #734 (Codex 019ef41c REVISE): the auth-service service-token `perm`
+        // claim is mapped to a DISTINCT `SVC_` authority namespace and ONLY when
+        // the token's issuer is the configured service issuer — so a Keycloak
+        // USER token can never gain the internal system authority even if it
+        // somehow carried a `perm`/`permissions=notify:intents:system` claim.
+        final String serviceIssuer = firstNonBlank(
+                environment.getProperty("NOTIFY_INTERNAL_SERVICE_JWT_ISSUER"),
+                environment.getProperty("notify.internal.service-jwt.issuer"),
+                "auth-service");
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setPrincipalClaimName("sub");
         converter.setJwtGrantedAuthoritiesConverter(jwt -> {
             Set<GrantedAuthority> authorities = new LinkedHashSet<>();
 
-            // 1. permissions claim
+            // 1. permissions claim (frontend-injected, user tokens)
             List<String> permissions = jwt.getClaimAsStringList("permissions");
             if (permissions != null) {
                 permissions.forEach(p ->
                     authorities.add(new SimpleGrantedAuthority(p)));
+            }
+
+            // 1b. perm claim (#734 — auth-service SERVICE tokens ONLY). Mapped to
+            // a SVC_-prefixed authority and gated on iss == serviceIssuer, so the
+            // internal system-submit path (hasAuthority("SVC_notify:intents:system"))
+            // is reachable ONLY by an auth-service-issued service token — never a
+            // user token, regardless of its permissions/perm claims.
+            if (serviceIssuer.equals(jwt.getClaimAsString("iss"))) {
+                List<String> servicePerms = jwt.getClaimAsStringList("perm");
+                if (servicePerms != null) {
+                    servicePerms.forEach(p ->
+                        authorities.add(new SimpleGrantedAuthority("SVC_" + p)));
+                }
             }
 
             // 2. realm_access.roles (Keycloak)
