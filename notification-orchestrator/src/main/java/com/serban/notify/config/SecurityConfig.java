@@ -102,7 +102,7 @@ public class SecurityConfig {
                 // (auth-service-minted, aud=notification-orchestrator); the org
                 // gate is intentionally NOT applied here (system principal, no
                 // org). Distinct prefix from the public /api/v1/notify/** rule.
-                .requestMatchers("/api/v1/internal/notify/**").hasAuthority("notify:intents:system")
+                .requestMatchers("/api/v1/internal/notify/**").hasAuthority("SVC_notify:intents:system")
                 // /api/v1/notify/** intent submission API
                 .requestMatchers("/api/v1/notify/**").authenticated()
                 .anyRequest().authenticated()
@@ -312,6 +312,15 @@ public class SecurityConfig {
      */
     @Bean
     public JwtAuthenticationConverter notifyJwtAuthenticationConverter() {
+        // #734 (Codex 019ef41c REVISE): the auth-service service-token `perm`
+        // claim is mapped to a DISTINCT `SVC_` authority namespace and ONLY when
+        // the token's issuer is the configured service issuer — so a Keycloak
+        // USER token can never gain the internal system authority even if it
+        // somehow carried a `perm`/`permissions=notify:intents:system` claim.
+        final String serviceIssuer = firstNonBlank(
+                environment.getProperty("NOTIFY_INTERNAL_SERVICE_JWT_ISSUER"),
+                environment.getProperty("notify.internal.service-jwt.issuer"),
+                "auth-service");
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setPrincipalClaimName("sub");
         converter.setJwtGrantedAuthoritiesConverter(jwt -> {
@@ -324,14 +333,17 @@ public class SecurityConfig {
                     authorities.add(new SimpleGrantedAuthority(p)));
             }
 
-            // 1b. perm claim (#734 — auth-service SERVICE tokens). Mapped raw
-            // (no prefix), matching the existing `permissions` convention, so a
-            // service token with perm=["notify:intents:system"] gates the
-            // internal system-submit path via hasAuthority("notify:intents:system").
-            List<String> servicePerms = jwt.getClaimAsStringList("perm");
-            if (servicePerms != null) {
-                servicePerms.forEach(p ->
-                    authorities.add(new SimpleGrantedAuthority(p)));
+            // 1b. perm claim (#734 — auth-service SERVICE tokens ONLY). Mapped to
+            // a SVC_-prefixed authority and gated on iss == serviceIssuer, so the
+            // internal system-submit path (hasAuthority("SVC_notify:intents:system"))
+            // is reachable ONLY by an auth-service-issued service token — never a
+            // user token, regardless of its permissions/perm claims.
+            if (serviceIssuer.equals(jwt.getClaimAsString("iss"))) {
+                List<String> servicePerms = jwt.getClaimAsStringList("perm");
+                if (servicePerms != null) {
+                    servicePerms.forEach(p ->
+                        authorities.add(new SimpleGrantedAuthority("SVC_" + p)));
+                }
             }
 
             // 2. realm_access.roles (Keycloak)

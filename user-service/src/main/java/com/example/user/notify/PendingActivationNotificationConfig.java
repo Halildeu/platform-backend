@@ -1,7 +1,8 @@
 package com.example.user.notify;
 
 import java.util.concurrent.Executor;
-import java.util.concurrent.ThreadPoolExecutor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,6 +19,8 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 @EnableConfigurationProperties(PendingActivationNotificationProperties.class)
 public class PendingActivationNotificationConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(PendingActivationNotificationConfig.class);
+
     @Bean("pendingActivationNotificationExecutor")
     public Executor pendingActivationNotificationExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
@@ -25,9 +28,13 @@ public class PendingActivationNotificationConfig {
         executor.setMaxPoolSize(2);
         executor.setQueueCapacity(100);
         executor.setThreadNamePrefix("pending-activation-notify-");
-        // Drop (and let the caller log) rather than block the publishing thread
-        // if the small queue ever fills — this is a best-effort convenience email.
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        // #734 (Codex 019ef41c REVISE): NON-THROWING reject handler. AbortPolicy
+        // throws RejectedExecutionException, which could surface on the
+        // after-commit callback path and affect the login/provisioning flow. This
+        // is a best-effort convenience email, so a full queue silently drops the
+        // task (logged) rather than throwing.
+        executor.setRejectedExecutionHandler((r, ex) ->
+                log.warn("#734 pending-activation notify queue full; dropping best-effort task"));
         executor.initialize();
         return executor;
     }

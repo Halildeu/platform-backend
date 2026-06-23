@@ -46,7 +46,7 @@ public class InternalNotificationIntentController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAuthority('notify:intents:system')")
+    @PreAuthorize("hasAuthority('SVC_notify:intents:system')")
     public ResponseEntity<SubmitIntentResponse> submitInternal(@Valid @RequestBody SubmitIntentRequest request) {
         SubmitIntentResponse response = submissionService.submit(request);
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);

@@ -43,13 +43,27 @@ class SecurityConfigConverterTest {
     }
 
     @Test
-    void serviceTokenPermClaim_mapsToRawAuthority() {
-        // auth-service service token: perm=["notify:intents:system"], svc principal.
+    void serviceTokenPermClaim_fromServiceIssuer_mapsToSvcAuthority() {
+        // auth-service service token (iss=auth-service): perm → SVC_ authority.
         Set<String> a = authorities(jwt(Map.of(
+                "iss", "auth-service",
                 "svc", "user-service",
                 "perm", List.of("notify:intents:system"))));
-        assertTrue(a.contains("notify:intents:system"),
-                "service perm claim must map to the raw authority used by the internal path gate");
+        assertTrue(a.contains("SVC_notify:intents:system"),
+                "service perm claim from the service issuer must map to the SVC_ authority the internal path gate requires");
+    }
+
+    @Test
+    void permClaim_fromNonServiceIssuer_doesNotGetSvcAuthority() {
+        // A token whose iss is NOT the service issuer (e.g. a Keycloak user token)
+        // must NEVER gain the internal system authority, even carrying perm/permissions.
+        Set<String> a = authorities(jwt(Map.of(
+                "iss", "https://keycloak.example/realms/platform",
+                "sub", "kc-uuid",
+                "perm", List.of("notify:intents:system"),
+                "permissions", List.of("notify:intents:system"))));
+        assertFalse(a.contains("SVC_notify:intents:system"),
+                "non-service-issuer token must not gain SVC_ system authority");
     }
 
     @Test
