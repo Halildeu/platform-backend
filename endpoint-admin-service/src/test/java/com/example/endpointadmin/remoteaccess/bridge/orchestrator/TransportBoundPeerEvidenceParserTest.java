@@ -3,6 +3,7 @@ package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 import com.example.endpointadmin.remoteaccess.AttestationEvidence;
 import com.example.endpointadmin.remoteaccess.CertRef;
 import com.example.endpointadmin.remoteaccess.CertThumbprint;
+import com.example.endpointadmin.remoteaccess.DeviceIdentityVerifier;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AgentHello;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser.ParsedEvidence;
@@ -94,10 +95,46 @@ class TransportBoundPeerEvidenceParserTest {
         return Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 
+    private static String b64Bytes(byte[] raw) {
+        return Base64.getEncoder().encodeToString(raw);
+    }
+
     /** A hello with a (deliberately bogus) self-claimed certFingerprint + the given attestation payload. */
     private static AgentHello hello(String selfClaimedFingerprint, String attestationB64) {
         return new AgentHello("1.0.0", "dev-1", selfClaimedFingerprint, attestationB64, "rb-v1",
                 Set.of(RemoteSessionCapability.VIEW_ONLY));
+    }
+
+    private static String slsaJson() {
+        return """
+                {
+                  "binaryDigest": "binDigest",
+                  "builderId": "builderX",
+                  "slsaPredicateHash": "predHash",
+                  "predicateSignature": "sigZ"
+                }
+                """;
+    }
+
+    private static String deviceKeyJson() {
+        return """
+                {
+                  "keyDer": "%s",
+                  "protectionLevel": "SECURE_ELEMENT_OR_TPM",
+                  "nonExportable": true,
+                  "signature": "%s",
+                  "algorithm": "SHA256withECDSA",
+                  "chainDer": ["%s", "%s"]
+                }
+                """.formatted(
+                b64Bytes(new byte[] {0x01, 0x02, 0x03}),
+                b64Bytes(new byte[] {0x04, 0x05}),
+                b64Bytes(new byte[] {0x06, 0x07}),
+                b64Bytes(new byte[] {0x08, 0x09}));
+    }
+
+    private static String envelope(String body) {
+        return b64(body);
     }
 
     // ---- CertRef from the transport leaf --------------------------------
@@ -237,6 +274,56 @@ class TransportBoundPeerEvidenceParserTest {
     }
 
     @Test
+    void jsonEnvelopeCanCarrySlsaOnly() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {"v":1,"slsa":%s}
+                """.formatted(slsaJson()))));
+
+        AttestationEvidence att = parsed.attestation().orElseThrow();
+        assertEquals("binDigest", att.binaryDigest());
+        assertEquals("builderX", att.builderId());
+        assertTrue(parsed.deviceKey().isEmpty());
+    }
+
+    @Test
+    void jsonEnvelopeCanCarryDeviceKeyOnly() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {"v":1,"deviceKey":%s}
+                """.formatted(deviceKeyJson()))));
+
+        assertTrue(parsed.attestation().isEmpty());
+        DeviceIdentityVerifier.DeviceKeyAttestation device = parsed.deviceKey().orElseThrow();
+        assertArrayEquals(new byte[] {0x01, 0x02, 0x03}, device.deviceKeyDer());
+        assertEquals(DeviceIdentityVerifier.DeviceProtectionLevel.SECURE_ELEMENT_OR_TPM,
+                device.claimedProtectionLevel());
+        assertTrue(device.nonExportable());
+        assertArrayEquals(new byte[] {0x04, 0x05}, device.attestationSignature());
+        assertEquals("SHA256withECDSA", device.signatureAlgorithm());
+        assertEquals(2, device.attestationChainDer().size());
+        assertArrayEquals(new byte[] {0x06, 0x07}, device.attestationChainDer().get(0));
+        assertArrayEquals(new byte[] {0x08, 0x09}, device.attestationChainDer().get(1));
+    }
+
+    @Test
+    void jsonEnvelopeCanCarrySlsaAndDeviceKeyTogether() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {"v":1,"slsa":%s,"deviceKey":%s}
+                """.formatted(slsaJson(), deviceKeyJson()))));
+
+        assertTrue(parsed.attestation().isPresent());
+        assertTrue(parsed.deviceKey().isPresent());
+    }
+
+    @Test
     void aBlankOrMissingAttestationYieldsEmpty() {
         X509Certificate leaf = selfSigned("agent-leaf");
         PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
@@ -274,19 +361,96 @@ class TransportBoundPeerEvidenceParserTest {
     void anOversizedAttestationYieldsEmpty() {
         X509Certificate leaf = selfSigned("agent-leaf");
         PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
-        String huge = "A".repeat(9000); // > MAX_ATTESTATION_B64_LEN (8192)
+        String huge = "A".repeat(17_000); // > MAX_ATTESTATION_B64_LEN (16 KiB)
         assertTrue(parser.parse(peer, hello(null, huge)).attestation().isEmpty(),
                 "an oversized field is bounded → empty (no unbounded decode)");
     }
 
-    // ---- device key is never produced here ------------------------------
+    @Test
+    void anUnknownEnvelopeVersionYieldsEmpty() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {"v":2,"slsa":%s,"deviceKey":%s}
+                """.formatted(slsaJson(), deviceKeyJson()))));
+
+        assertTrue(parsed.attestation().isEmpty());
+        assertTrue(parsed.deviceKey().isEmpty());
+    }
 
     @Test
-    void theDeviceKeyIsAlwaysEmpty() {
+    void aMalformedEnvelopeYieldsEmpty() {
         X509Certificate leaf = selfSigned("agent-leaf");
-        // even with a certBoundDeviceId present, the parser produces no device-key attestation (slice-3b)
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("{\"v\":1,\"slsa\":")));
+
+        assertTrue(parsed.attestation().isEmpty());
+        assertTrue(parsed.deviceKey().isEmpty());
+    }
+
+    @Test
+    void anEnvelopeWithUnknownFieldsYieldsEmpty() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {"v":1,"slsa":%s,"debug":"not-allowed"}
+                """.formatted(slsaJson()))));
+
+        assertTrue(parsed.attestation().isEmpty());
+        assertTrue(parsed.deviceKey().isEmpty());
+    }
+
+    @Test
+    void aDeviceKeyWithMissingRequiredFieldsYieldsEmpty() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {"v":1,"deviceKey":{"keyDer":"%s","protectionLevel":"SECURE_ELEMENT_OR_TPM"}}
+                """.formatted(b64Bytes(new byte[] {0x01})))));
+
+        assertTrue(parsed.attestation().isEmpty());
+        assertTrue(parsed.deviceKey().isEmpty());
+    }
+
+    @Test
+    void aDeviceKeyWithNestedUnexpectedFieldsYieldsEmpty() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.empty(), List.of(leaf));
+
+        ParsedEvidence parsed = parser.parse(peer, hello(null, envelope("""
+                {
+                  "v": 1,
+                  "deviceKey": {
+                    "keyDer": "%s",
+                    "protectionLevel": "SECURE_ELEMENT_OR_TPM",
+                    "nonExportable": true,
+                    "signature": "%s",
+                    "algorithm": "SHA256withECDSA",
+                    "chainDer": ["%s"],
+                    "extra": {}
+                  }
+                }
+                """.formatted(
+                b64Bytes(new byte[] {0x01, 0x02, 0x03}),
+                b64Bytes(new byte[] {0x04, 0x05}),
+                b64Bytes(new byte[] {0x06, 0x07})))));
+
+        assertTrue(parsed.attestation().isEmpty());
+        assertTrue(parsed.deviceKey().isEmpty());
+    }
+
+    // ---- device key is opt-in envelope evidence -------------------------
+
+    @Test
+    void aLegacyPayloadDoesNotProduceDeviceKey() {
+        X509Certificate leaf = selfSigned("agent-leaf");
+        // even with a certBoundDeviceId present, legacy SLSA does not become device-key attestation.
         PeerIdentity peer = new PeerIdentity(thumbprint(leaf), Optional.of("dev-bound-id"), List.of(leaf));
         assertFalse(parser.parse(peer, hello(null, b64("d|b|h|s"))).deviceKey().isPresent(),
-                "device trust is the DB machine-cert binding, a separate slice — not produced here");
+                "device trust requires explicit v1 envelope device-key evidence, not a device id string");
     }
 }
