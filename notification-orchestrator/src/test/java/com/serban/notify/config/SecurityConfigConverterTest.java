@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * #734 (Codex 019ef41c): the notify JWT authorities converter must map the
  * auth-service SERVICE-token `perm` claim (raw, no prefix) so the internal
- * system-submit path's {@code hasAuthority("notify:intents:system")} gate is
+ * system-submit path's {@code hasAuthority("SVC_notify:intents:system")} gate is
  * satisfied — while still mapping the user-token `permissions` claim and
  * Keycloak `realm_access.roles`.
  */

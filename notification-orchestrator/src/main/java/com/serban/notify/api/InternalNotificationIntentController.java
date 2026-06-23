@@ -24,8 +24,10 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p><strong>Trust model:</strong> a short-lived auth-service-minted SERVICE
  * token ({@code iss=auth-service}, {@code aud=notification-orchestrator},
- * {@code perm=["notify:intents:system"]}). The path is gated in
- * {@code SecurityConfig} by {@code hasAuthority("notify:intents:system")}; the
+ * {@code perm=["notify:intents:system"]}, iss=auth-service). The path is gated
+ * in {@code SecurityConfig} by {@code hasAuthority("SVC_notify:intents:system")}
+ * — the converter only emits {@code SVC_*} from the {@code perm} claim of a
+ * service-issuer token, so a user token can never reach it; the
  * {@code @PreAuthorize} below is defense-in-depth. The org-access guard is
  * intentionally NOT invoked — authorization here is the service-principal
  * authority, not an org match — so the strict-flip does not affect it. The
