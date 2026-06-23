@@ -180,12 +180,13 @@ public class RequireModuleInterceptor implements HandlerInterceptor {
                 }
             }
 
-            // Fallback: legacy claim extraction (kept for environments where lookup
-            // service is unavailable, e.g. lightweight tests).
-            Object userIdClaim = jwt.getClaim("userId");
-            if (userIdClaim != null) {
-                return String.valueOf(userIdClaim);
-            }
+            // Slice 2b (#727, Codex 019ef3ca): NO raw userId-claim fallback. A
+            // stale/foreign numeric claim must never become the authz identity
+            // — that is exactly the cross-user risk this slice closes, and it
+            // would silently undo the resolver's cheap guard (which already
+            // returns the verified subject, not the claim, for a distrusted
+            // token). Fail-closed to the verified subject: a KC UUID won't
+            // match the numeric OpenFGA tuples → module access denied.
             return jwt.getSubject();
         }
         if (principal instanceof String s && !"anonymousUser".equals(s)) {

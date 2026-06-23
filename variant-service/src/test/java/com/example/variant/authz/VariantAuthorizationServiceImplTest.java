@@ -68,6 +68,33 @@ class VariantAuthorizationServiceImplTest {
     }
 
     @Test
+    void buildContext_prefersAuthzMeUserIdOverClaim() {
+        // Slice 2c (#727, Codex 019ef3ca): the permission-service /authz/me
+        // userId is AUTHORITATIVE over the local claim-derived id. The token
+        // carries uid=1201 but /authz/me (now hardened in permission-service)
+        // resolves userId=999 → the context must use 999, not the claim. Without
+        // the precedence inversion this would be 1201.
+        CountingStubClient client = new CountingStubClient();
+        AuthzMeResponse authz = new AuthzMeResponse();
+        authz.setUserId("999");
+        client.setResponse(authz);
+
+        VariantAuthorizationServiceImpl service = new VariantAuthorizationServiceImpl(client, Duration.ofSeconds(1));
+
+        Jwt jwt = Jwt.withTokenValue("t")
+                .header("alg", "RS256")
+                .subject("kc-uuid-not-numeric")
+                .claim("uid", 1201)
+                .claim("email", "u@example.com")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(60))
+                .build();
+
+        AuthorizationContext ctx = service.buildContext(jwt);
+        assertEquals(999L, ctx.getUserId());
+    }
+
+    @Test
     void buildsContextFromAuthzRolesWhenJwtRolesMissing() {
         CountingStubClient client = new CountingStubClient();
         AuthzMeResponse response = new AuthzMeResponse();

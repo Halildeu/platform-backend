@@ -141,6 +141,29 @@ public class AuthorizationControllerV1 {
         dto.setUserId(resolvedUser.responseUserId());
 
             Long numericUserId = resolvedUser.numericUserId();
+
+            // Slice 2b (#727, Codex 019ef3ca REVISE): when the cheap guard
+            // DISTRUSTED a numeric claim and no verified id could be resolved,
+            // /authz/me MUST fail closed — it must NOT rebuild permissions /
+            // modules / superAdmin / scopes from the JWT permissions/roles
+            // claims (that is the same claim-as-authority hole this slice
+            // closes). Return an empty, non-privileged snapshot keyed to the
+            // verified subject (already set above as responseUserId).
+            if (resolvedUser.claimDistrusted() && numericUserId == null) {
+                log.warn("authz/me: distrusted userId claim with no verified identity — failing closed (empty authz).");
+                dto.setSubscriberId(null);
+                dto.setPermissions(Set.of());
+                dto.setAllowedModules(List.of());
+                dto.setModules(Map.of());
+                dto.setScopes(List.of());
+                dto.setAllowedScopes(List.of());
+                dto.setRoles(List.of());
+                dto.setActions(Map.of());
+                dto.setReports(Map.of());
+                dto.setSuperAdmin(false);
+                dto.setAuthzVersion(authzVersionService != null ? authzVersionService.getCurrentVersion() : 0L);
+                return ResponseEntity.ok(dto);
+            }
             // Faz 23.5 hardening (Codex thread 019e0316 iter-3 AGREE):
             // additive `subscriberId` mirrors the numeric DB user id when
             // resolution succeeds; UUID/sub fallbacks leave it null so the
@@ -240,13 +263,19 @@ public class AuthorizationControllerV1 {
                 if (resolved.numericUserId() != null) {
                     return Long.toString(resolved.numericUserId());
                 }
+                // Slice 2b (#727, Codex 019ef3ca): use the resolver's HARDENED
+                // responseUserId (the verified subject for a distrusted/
+                // unresolved claim — never the raw claim), not the raw uid.
+                String responseUserId = resolved.responseUserId();
+                if (responseUserId != null && !responseUserId.isBlank()) {
+                    return responseUserId;
+                }
             } catch (RuntimeException ex) {
-                log.warn("Authz /check numeric userId resolution failed; falling back to JWT claims. cause={}", ex.getMessage());
+                log.warn("Authz /check userId resolution failed; failing closed to subject. cause={}", ex.getMessage());
             }
-            Object uid = jwt.getClaim("uid");
-            if (uid != null) {
-                return uid.toString();
-            }
+            // Slice 2b: NO raw uid-claim fallback — a foreign uid claim must not
+            // become the OpenFGA check principal. Fail-closed to the verified
+            // subject (then "0"). A KC UUID principal won't match numeric tuples.
             String sub = jwt.getSubject();
             if (sub != null && !sub.isBlank()) {
                 return sub;
@@ -704,7 +733,8 @@ public class AuthorizationControllerV1 {
             return new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
                     null,
                     fallbackResponseUserId(jwt),
-                    fallbackEmail(jwt)
+                    fallbackEmail(jwt),
+                    false
             );
         }
     }
@@ -898,9 +928,12 @@ public class AuthorizationControllerV1 {
     }
 
     private String fallbackResponseUserId(Jwt jwt) {
+        // Slice 2b (#727, Codex 019ef3ca): the /authz/me resolve()-failure
+        // fallback must NOT echo the raw userId/uid claim (numericUserId is
+        // already null here so permissions/scopes/modules are empty/fail-closed
+        // — but the displayed id must not surface a stale/foreign claim either).
+        // Verified subject first, then email.
         return firstNonBlank(
-                stringClaim(jwt, "userId"),
-                stringClaim(jwt, "uid"),
                 jwt.getSubject(),
                 fallbackEmail(jwt)
         );

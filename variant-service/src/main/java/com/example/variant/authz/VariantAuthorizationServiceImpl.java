@@ -71,7 +71,14 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         Long resolvedUserId = userId;
         Set<String> effectiveRoles = new HashSet<>(roles);
         if (authz != null) {
-            resolvedUserId = firstNonNull(resolvedUserId, toLong(authz.getUserId()));
+            // Slice 2c (#727, Codex 019ef3ca): trust the permission-service
+            // /authz/me userId OVER the local claim-derived id. permission-service
+            // now hardens identity resolution (cheap guard + no raw-claim
+            // fallback), so its authoritative numericUserId must take precedence
+            // — a stale/foreign `userId`/`uid` claim on the token no longer wins.
+            // The claim-derived id remains only as a fallback when /authz/me
+            // doesn't return one.
+            resolvedUserId = firstNonNull(toLong(authz.getUserId()), resolvedUserId);
             if (authz.getRoles() != null) {
                 authz.getRoles().stream()
                         .filter(Objects::nonNull)

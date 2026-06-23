@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -121,6 +122,37 @@ class AuthorizationControllerV1Test {
         assertEquals(Set.of("VIEW_USERS"), body.getPermissions());
         assertEquals(List.of(), body.getAllowedScopes());
         assertEquals(List.of(), body.getScopes());
+    }
+
+    @Test
+    void getMe_distrustedClaimUnresolved_failsClosedIgnoringJwtPermissions() {
+        // Slice 2b (#727, Codex 019ef3ca REVISE): a DISTRUSTED numeric claim
+        // that resolves to no verified id must NOT have authz rebuilt from JWT
+        // permissions/roles — even an "admin" permissions claim yields an empty,
+        // non-privileged /authz/me snapshot keyed to the verified subject.
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("kc-uuid-not-numeric")
+                .claim("uid", 42L)
+                .claim("email", "ghost@example.com")
+                .claim("permissions", List.of("admin", "MANAGE_USERS"))
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        when(authenticatedUserLookupService.resolve(jwt))
+                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                        null, "kc-uuid-not-numeric", "ghost@example.com", true));
+
+        ResponseEntity<AuthzMeResponseDto> response = controller.getMe(jwt);
+
+        assertEquals(200, response.getStatusCode().value());
+        AuthzMeResponseDto body = response.getBody();
+        assertNotNull(body);
+        assertEquals("kc-uuid-not-numeric", body.getUserId());
+        assertNull(body.getSubscriberId());
+        assertTrue(body.getPermissions().isEmpty());
+        assertTrue(body.getAllowedModules().isEmpty());
+        assertFalse(body.isSuperAdmin());
     }
 
     @Test

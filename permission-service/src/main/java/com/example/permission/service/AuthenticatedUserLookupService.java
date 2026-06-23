@@ -57,27 +57,50 @@ public class AuthenticatedUserLookupService {
 
     public ResolvedAuthenticatedUser resolve(Jwt jwt) {
         if (jwt == null) {
-            return new ResolvedAuthenticatedUser(null, null, null);
+            return new ResolvedAuthenticatedUser(null, null, null, false);
         }
 
         String subject = blankToNull(jwt.getSubject());
         String email = firstNonBlank(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
 
-        Long numericUserId = firstNonNull(
-                extractLongClaim(jwt, "userId"),
-                extractLongClaim(jwt, "uid"),
-                tryParseLong(subject)
-        );
+        // Slice 2b cheap guard (#727, Codex 019ef3ca): a numeric userId/uid
+        // CLAIM is NOT trusted as authority when the token's subject is a
+        // non-numeric Keycloak UUID and an email is present — such a claim may
+        // be stale/foreign (the cross-user risk this slice closes). Resolve by
+        // the token's verified email instead, and NEVER fall back to the raw
+        // claim (fail-closed). permission-service can't run the 2a-style local
+        // kc_subject cross-check (its `user_service.users` is cross-DB →
+        // to_regclass null → RestClient /by-email which returns only {id}), so
+        // email-authority is the available verified-identity path here.
+        // Browser/M365 tokens carry NO numeric claim (sub+email only) → this
+        // guard never engages for them (no added hot-path call); it only bites
+        // legacy/service claim-bearing tokens.
+        Long claim = firstNonNull(extractLongClaim(jwt, "userId"), extractLongClaim(jwt, "uid"));
+        boolean distrustClaim = claim != null && email != null
+                && subject != null && tryParseLong(subject) == null;
 
-        if (numericUserId == null && email != null) {
+        Long numericUserId;
+        if (distrustClaim) {
             numericUserId = lookupUserIdByEmail(email);
+        } else {
+            numericUserId = firstNonNull(claim, tryParseLong(subject));
+            if (numericUserId == null && email != null) {
+                numericUserId = lookupUserIdByEmail(email);
+            }
         }
 
-        String responseUserId = numericUserId != null
-                ? Long.toString(numericUserId)
-                : firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject);
+        String responseUserId;
+        if (numericUserId != null) {
+            responseUserId = Long.toString(numericUserId);
+        } else if (distrustClaim) {
+            // Distrusted claim + email unresolved → fail-closed; echo the
+            // verified subject (KC UUID), NEVER the discarded numeric claim.
+            responseUserId = subject;
+        } else {
+            responseUserId = firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject);
+        }
 
-        return new ResolvedAuthenticatedUser(numericUserId, responseUserId, email);
+        return new ResolvedAuthenticatedUser(numericUserId, responseUserId, email, distrustClaim);
     }
 
     private Long lookupUserIdByEmail(String email) {
@@ -216,7 +239,21 @@ public class AuthenticatedUserLookupService {
         return value;
     }
 
-    public record ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email) {
+    /**
+     * @param claimDistrusted Slice 2b (#727, Codex 019ef3ca REVISE): true when a
+     *        numeric userId/uid claim was DISTRUSTED by the cheap guard (UUID
+     *        subject + email present). When this is true AND numericUserId is
+     *        null, callers (notably /authz/me) MUST fail closed — they must NOT
+     *        rebuild authz from JWT permissions/roles claims, which would re-open
+     *        the very claim-as-authority hole this slice closes.
+     */
+    public record ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email,
+                                            boolean claimDistrusted) {
+        /** Backward-compatible 3-arg form (claimDistrusted=false) for callers/tests
+         *  that don't set the guard flag. */
+        public ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email) {
+            this(numericUserId, responseUserId, email, false);
+        }
     }
 
     private record UserLookupResponse(Long id) {
