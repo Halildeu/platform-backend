@@ -54,9 +54,41 @@ Required/optional + validation per field; `req` = required (validated), `opt` = 
 | 1 | agentVersion | string | req | |
 | 2 | deviceId | string | req | the broker re-derives device trust via B1.4d, never trusts this |
 | 3 | certFingerprint | string | req | advisory; the broker uses the real mTLS peer cert |
-| 4 | attestationEvidenceB64 | string | req | passed to the B1.4d verifier; never trusted as a boolean |
+| 4 | attestationEvidenceB64 | string | req | passed to the B1.4d verifier; never trusted as a boolean; max 16 KiB |
 | 5 | protocolVersion | string | req | |
 | 6 | advertisedCapabilities | repeated Capability | opt | advisory; the broker computes the granted set |
+
+#### `AgentHello.attestationEvidenceB64` payloads
+
+The field is an outer Base64-encoded UTF-8 payload. It has two accepted parse forms:
+
+1. **Legacy bounded-pilot provenance:** `binaryDigest|builderId|slsaPredicateHash|predicateSignature`.
+   This remains accepted for the existing enrollment-backed staging path and produces only
+   `AttestationEvidence`; it never produces `DeviceKeyAttestation`.
+2. **B1.4d v1 envelope:** a strict JSON object with only `v`, `slsa`, and `deviceKey` fields. `v` must be
+   exactly `1`. `slsa`, when present, uses the same four provenance fields as the legacy form. `deviceKey`, when
+   present, must contain:
+
+   ```json
+   {
+     "keyDer": "<base64 DER public key>",
+     "protectionLevel": "SECURE_ELEMENT_OR_TPM",
+     "nonExportable": true,
+     "signature": "<base64 attestation signature>",
+     "algorithm": "SHA256withECDSA",
+     "chainDer": ["<base64 DER attestation CA leaf>", "..."]
+   }
+   ```
+
+Malformed Base64, invalid UTF-8, unknown envelope versions, unknown JSON fields, missing required device-key
+fields, unsupported protection levels, and oversized payloads all fail closed to empty parsed evidence. This parser
+only extracts structured evidence; it does not mark the device trusted. `DeviceIdentityVerifier` and the configured
+device-attestation roots still decide trust.
+
+**#548 boundary:** this backend wire parser is necessary but not sufficient for true TPM/device-key readiness. The
+issue remains open until an agent producer presents real hardware-backed device-key evidence on this field, the
+broker verifies it against provisioned device-attestation roots, and live negative/positive field evidence is
+accepted.
 
 ### `SessionRequest` (proto `SessionRequest`)
 | # | field | type | r/o | validation |
