@@ -1,6 +1,7 @@
 package com.example.user.service;
 
 import com.example.user.dto.KeycloakUserProvisionRequest;
+import com.example.user.event.PendingActivationUserProvisionedEvent;
 import com.example.user.dto.RegisterRequest;
 import com.example.user.dto.UpdateUserRequest;
 import com.example.user.model.User;
@@ -158,16 +159,20 @@ public class UserService implements UserDetailsService { // UserDetailsService a
         }
     }
 
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     public UserService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        UserAuditEventService userAuditEventService,
                        AuthorizationContextService authorizationContextService,
                        PlatformTransactionManager transactionManager,
+                       org.springframework.context.ApplicationEventPublisher eventPublisher,
                        @Value("${user.session-timeout.max-minutes:1440}") int configuredMaxSessionTimeoutMinutes) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.userAuditEventService = userAuditEventService;
         this.authorizationContextService = authorizationContextService;
+        this.eventPublisher = eventPublisher;
         this.maxSessionTimeoutMinutes = Math.max(User.DEFAULT_SESSION_TIMEOUT_MINUTES, configuredMaxSessionTimeoutMinutes);
         TransactionTemplate template = new TransactionTemplate(transactionManager);
         template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -481,7 +486,16 @@ public class UserService implements UserDetailsService { // UserDetailsService a
                 fresh.setTimezone(User.DEFAULT_TIMEZONE);
                 fresh.setDateFormat(User.DEFAULT_DATE_FORMAT);
                 fresh.setTimeFormat(User.DEFAULT_TIME_FORMAT);
-                return userRepository.saveAndFlush(fresh);
+                User saved = userRepository.saveAndFlush(fresh);
+                // #734: a NEW passive M365 user was just provisioned — emit an
+                // event so an admin gets a "awaiting activation" email. Published
+                // INSIDE the REQUIRES_NEW tx so the AFTER_COMMIT listener fires
+                // only after this insert commits, and ONLY on this first-insert
+                // path — never the existing-row return above nor the race-loser
+                // re-fetch below — so exactly one email per new user.
+                eventPublisher.publishEvent(new PendingActivationUserProvisionedEvent(
+                        saved.getId(), saved.getEmail(), saved.getName(), saved.getKcSubject()));
+                return saved;
             });
         } catch (DataIntegrityViolationException race) {
             // Concurrent first request won — re-fetch the committed row

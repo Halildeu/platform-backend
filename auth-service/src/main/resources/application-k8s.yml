@@ -122,8 +122,11 @@ security:
   service-clients:
     user-service: ${SERVICE_CLIENT_USER_SERVICE_SECRET:}
   service-mint:
-    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service}
-    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write}
+    # #734: notification-orchestrator + notify:intents:system added to the
+    # defaults so the user-service admin-email mint works even before the gitops
+    # env override; gitops sets the canonical list explicitly.
+    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system}
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
   admin-fallback:
     enabled: ${SECURITY_ADMIN_FALLBACK_ENABLED:false}

@@ -24,7 +24,11 @@ public class ServiceTokenProvider {
     private final String serviceId;
     private final WebClient webClient;
 
-    private volatile TokenCache cache;
+    // #734: cache per (audience|permissions) so the default permission-service
+    // token and the notification-orchestrator/notify:intents:system token don't
+    // evict each other.
+    private final java.util.concurrent.ConcurrentHashMap<String, TokenCache> cacheByKey =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     public ServiceTokenProvider(ServiceTokenProperties serviceTokenProperties,
                                 ServiceTokenClientProperties clientProperties,
@@ -36,22 +40,34 @@ public class ServiceTokenProvider {
         this.webClient = webClientBuilder.build();
     }
 
+    /** Token for the default configured audience + permissions. */
     public String getToken() {
-        TokenCache localCache = cache;
+        return getToken(serviceTokenProperties.getAudience(), serviceTokenProperties.getPermissions());
+    }
+
+    /**
+     * #734: mint (and cache) a token for an EXPLICIT audience + permissions, so
+     * the notification-orchestrator system-submit token (aud=notification-
+     * orchestrator, perm=notify:intents:system) coexists with the default
+     * permission-service token. Cache is keyed by audience+permissions.
+     */
+    public String getToken(String audience, List<String> permissions) {
+        String key = audience + "|" + (permissions == null ? "" : String.join(",", permissions));
         Instant now = Instant.now();
+        TokenCache localCache = cacheByKey.get(key);
         if (localCache == null || now.isAfter(localCache.refreshAfter())) {
-            synchronized (this) {
-                localCache = cache;
+            synchronized (cacheByKey) {
+                localCache = cacheByKey.get(key);
                 if (localCache == null || now.isAfter(localCache.refreshAfter())) {
-                    cache = mintFromAuth(now);
-                    localCache = cache;
+                    localCache = mintFromAuth(now, audience, permissions);
+                    cacheByKey.put(key, localCache);
                 }
             }
         }
         return Objects.requireNonNull(localCache).value();
     }
 
-    private TokenCache mintFromAuth(Instant now) {
+    private TokenCache mintFromAuth(Instant now, String audience, List<String> permissions) {
         if (!clientProperties.isEnabled()) {
             throw new IllegalStateException("Service token mint client disabled");
         }
@@ -62,8 +78,7 @@ public class ServiceTokenProvider {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("grant_type", "client_credentials");
-        form.add("audience", serviceTokenProperties.getAudience());
-        List<String> permissions = serviceTokenProperties.getPermissions();
+        form.add("audience", audience);
         if (permissions != null) {
             for (String p : permissions) form.add("permissions", p);
         }
