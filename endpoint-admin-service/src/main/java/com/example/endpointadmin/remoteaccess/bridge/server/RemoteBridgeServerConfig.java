@@ -354,8 +354,10 @@ public class RemoteBridgeServerConfig {
      * remote-bridge.device-trust.verifier}. DEFAULT {@code FAIL_CLOSED}: device trust never established →
      * {@code deviceTrusted=false} → the broker stays gated (behaviour unchanged). {@code MACHINE_CERT_ENROLLMENT}
      * (non-prod only) trusts a session whose peer is the active ENROLLED machine cert for the tenant/device (via
-     * {@link ConnectedDeviceResolver}) — enrollment identity, NOT hardware key attestation; the factory forbids it
-     * in a prod-like profile until the policy/D29-EA accepts that basis.
+     * {@link ConnectedDeviceResolver}) — enrollment identity, NOT hardware key attestation. {@code
+     * DEVICE_KEY_ATTESTATION} promotes fresh peer device-key evidence only for non-prod diagnostics. {@code
+     * REQUIRE_ENROLLMENT_AND_DEVICE_KEY} requires both enrollment identity and verified device-key evidence; it is
+     * still gated by parser/provisioning/live TPM acceptance before broad rollout.
      */
     @Bean
     public SessionDeviceTrustVerifier remoteBridgeSessionDeviceTrustVerifier(

@@ -49,5 +49,15 @@ public interface SessionDeviceTrustVerifier {
         public static DeviceTrustDecision enrolledActive() {
             return new DeviceTrustDecision(true, Basis.MACHINE_CERT_ENROLLMENT, "enrolled-active-machine-cert");
         }
+
+        public static DeviceTrustDecision hardwareKeyAttested() {
+            return new DeviceTrustDecision(true, Basis.HARDWARE_KEY_ATTESTATION,
+                    "hardware-key-attestation-verified");
+        }
+
+        public static DeviceTrustDecision enrollmentAndHardwareKeyAttested() {
+            return new DeviceTrustDecision(true, Basis.COMPOSITE,
+                    "enrollment-and-hardware-key-attested");
+        }
     }
 }

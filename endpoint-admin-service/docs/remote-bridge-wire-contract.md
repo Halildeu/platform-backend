@@ -85,6 +85,12 @@ fields, unsupported protection levels, and oversized payloads all fail closed to
 only extracts structured evidence; it does not mark the device trusted. `DeviceIdentityVerifier` and the configured
 device-attestation roots still decide trust.
 
+Session policy consumes the parsed result only through explicit `remote-bridge.device-trust.verifier` modes:
+`FAIL_CLOSED` is the default, `MACHINE_CERT_ENROLLMENT` is enrollment-only and non-prod, `DEVICE_KEY_ATTESTATION`
+promotes fresh peer device-key evidence for non-prod diagnostics, and `REQUIRE_ENROLLMENT_AND_DEVICE_KEY` requires
+both active machine-cert enrollment and verified device-key evidence. Parser/verifier presence is therefore not a
+closure signal by itself.
+
 **#548 boundary:** this backend wire parser is necessary but not sufficient for true TPM/device-key readiness. The
 issue remains open until an agent producer presents real hardware-backed device-key evidence on this field, the
 broker verifies it against provisioned device-attestation roots, and live negative/positive field evidence is
