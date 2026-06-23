@@ -57,7 +57,7 @@ public class AuthenticatedUserLookupService {
 
     public ResolvedAuthenticatedUser resolve(Jwt jwt) {
         if (jwt == null) {
-            return new ResolvedAuthenticatedUser(null, null, null);
+            return new ResolvedAuthenticatedUser(null, null, null, false);
         }
 
         String subject = blankToNull(jwt.getSubject());
@@ -100,7 +100,7 @@ public class AuthenticatedUserLookupService {
             responseUserId = firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject);
         }
 
-        return new ResolvedAuthenticatedUser(numericUserId, responseUserId, email);
+        return new ResolvedAuthenticatedUser(numericUserId, responseUserId, email, distrustClaim);
     }
 
     private Long lookupUserIdByEmail(String email) {
@@ -239,7 +239,21 @@ public class AuthenticatedUserLookupService {
         return value;
     }
 
-    public record ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email) {
+    /**
+     * @param claimDistrusted Slice 2b (#727, Codex 019ef3ca REVISE): true when a
+     *        numeric userId/uid claim was DISTRUSTED by the cheap guard (UUID
+     *        subject + email present). When this is true AND numericUserId is
+     *        null, callers (notably /authz/me) MUST fail closed — they must NOT
+     *        rebuild authz from JWT permissions/roles claims, which would re-open
+     *        the very claim-as-authority hole this slice closes.
+     */
+    public record ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email,
+                                            boolean claimDistrusted) {
+        /** Backward-compatible 3-arg form (claimDistrusted=false) for callers/tests
+         *  that don't set the guard flag. */
+        public ResolvedAuthenticatedUser(Long numericUserId, String responseUserId, String email) {
+            this(numericUserId, responseUserId, email, false);
+        }
     }
 
     private record UserLookupResponse(Long id) {
