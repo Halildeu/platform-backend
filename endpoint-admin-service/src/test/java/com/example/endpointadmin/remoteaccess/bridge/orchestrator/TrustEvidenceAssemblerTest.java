@@ -129,6 +129,22 @@ class TrustEvidenceAssemblerTest {
     }
 
     @Test
+    void aHardwareKeyDeviceTrustVerifierYieldsHardwareBasisWhenIdentitiesAreConsistent() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
+        ledger.record(peer("peer-1"), hello(), NOW); // fresh trust; cert-bound device id == "dev-1"
+        SessionDeviceTrustVerifier hardware =
+                (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.hardwareKeyAttested();
+        TrustEvidenceAssembler assembler =
+                new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, hardware, null);
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertTrue(ev.deviceTrusted());
+        assertEquals(SessionDeviceTrustVerifier.Basis.HARDWARE_KEY_ATTESTATION, ev.deviceTrustBasis());
+    }
+
+    @Test
     void anEnrollingVerifierIsNotVoidedByAnAdvisoryHelloDeviceIdMismatch() {
         PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
         ledger.record(peerWithoutCertBoundDevice("peer-1"), hello(), NOW); // fresh trust; helloDeviceId == "dev-1"

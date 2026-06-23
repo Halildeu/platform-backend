@@ -12,7 +12,8 @@ import static org.mockito.Mockito.mock;
 /**
  * Faz 22.6 D10.1 slice-3b (#634, Codex 019ec29a) — the {@link SessionDeviceTrustVerifierFactory} blocking matrix:
  * FAIL_CLOSED (and the default) is the deny-all verifier, allowed in every profile; MACHINE_CERT_ENROLLMENT is the
- * non-prod pilot verifier, refused fail-fast in a prod-like profile, and requires a resolver.
+ * non-prod pilot verifier; DEVICE_KEY_ATTESTATION is hardware-only diagnostic wiring; and
+ * REQUIRE_ENROLLMENT_AND_DEVICE_KEY is the production-shaped composite path.
  */
 class SessionDeviceTrustVerifierFactoryTest {
 
@@ -51,6 +52,33 @@ class SessionDeviceTrustVerifierFactoryTest {
     }
 
     @Test
+    void deviceKeyAttestationIsTheNonProdHardwareOnlyVerifier() {
+        assertSame(PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE,
+                SessionDeviceTrustVerifierFactory.create(VerifierType.DEVICE_KEY_ATTESTATION, false, null));
+    }
+
+    @Test
+    void deviceKeyAttestationAloneIsRefusedInAProdLikeProfile() {
+        IllegalStateException rejected = assertThrows(IllegalStateException.class, () ->
+                SessionDeviceTrustVerifierFactory.create(VerifierType.DEVICE_KEY_ATTESTATION, true, resolver()));
+        assertTrue(rejected.getMessage().contains("DEVICE_KEY_ATTESTATION"), "the rejection names the type");
+    }
+
+    @Test
+    void compositeEnrollmentAndDeviceKeyVerifierRequiresAResolver() {
+        assertThrows(IllegalStateException.class, () ->
+                SessionDeviceTrustVerifierFactory.create(
+                        VerifierType.REQUIRE_ENROLLMENT_AND_DEVICE_KEY, false, null));
+    }
+
+    @Test
+    void compositeEnrollmentAndDeviceKeyVerifierIsAvailableInProdLikeProfiles() {
+        assertInstanceOf(CompositeSessionDeviceTrustVerifier.class,
+                SessionDeviceTrustVerifierFactory.create(
+                        VerifierType.REQUIRE_ENROLLMENT_AND_DEVICE_KEY, true, resolver()));
+    }
+
+    @Test
     void theConfigStringEntryPointIsCaseAndSpaceInsensitiveAndFailClosed() {
         assertSame(DenyAllSessionDeviceTrustVerifier.INSTANCE,
                 SessionDeviceTrustVerifierFactory.create("", false, resolver()));
@@ -60,11 +88,18 @@ class SessionDeviceTrustVerifierFactoryTest {
                 SessionDeviceTrustVerifierFactory.create("  fail_closed  ", true, null));
         assertInstanceOf(MachineCertEnrollmentDeviceTrustVerifier.class,
                 SessionDeviceTrustVerifierFactory.create("machine_cert_enrollment", false, resolver()));
+        assertSame(PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE,
+                SessionDeviceTrustVerifierFactory.create("device_key_attestation", false, resolver()));
+        assertInstanceOf(CompositeSessionDeviceTrustVerifier.class,
+                SessionDeviceTrustVerifierFactory.create(
+                        "require_enrollment_and_device_key", true, resolver()));
         // an unknown config value is rejected fail-fast (not silently defaulted, not fail-open)
         assertThrows(IllegalStateException.class,
                 () -> SessionDeviceTrustVerifierFactory.create("BOGUS", false, resolver()));
         // the prod-forbid still applies through the string entry point
         assertThrows(IllegalStateException.class,
                 () -> SessionDeviceTrustVerifierFactory.create("machine_cert_enrollment", true, resolver()));
+        assertThrows(IllegalStateException.class,
+                () -> SessionDeviceTrustVerifierFactory.create("device_key_attestation", true, resolver()));
     }
 }

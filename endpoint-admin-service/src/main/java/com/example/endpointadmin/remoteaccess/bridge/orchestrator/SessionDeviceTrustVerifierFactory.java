@@ -14,16 +14,24 @@ import java.util.Locale;
  *   <li><b>MACHINE_CERT_ENROLLMENT</b> — {@link MachineCertEnrollmentDeviceTrustVerifier}: the session peer is the
  *       active enrolled machine cert for the tenant/device. FORBIDDEN in a production-like profile — this is
  *       enrollment identity, NOT hardware key attestation; prod device trust needs the policy/D29-EA to explicitly
- *       accept this basis (or the future {@code DeviceKeyAttestation} path).</li>
+ *       accept this basis.</li>
+ *   <li><b>DEVICE_KEY_ATTESTATION</b> — {@link PeerDeviceKeyAttestationSessionDeviceTrustVerifier}: the fresh
+ *       peer-trust ledger has verified device-key / TPM attestation evidence. FORBIDDEN in a production-like
+ *       profile by itself because it is hardware binding without tenant/device enrollment binding.</li>
+ *   <li><b>REQUIRE_ENROLLMENT_AND_DEVICE_KEY</b> — {@link CompositeSessionDeviceTrustVerifier}: requires both
+ *       active machine-cert enrollment and verified device-key attestation.</li>
  * </ul>
- * Future modes ({@code DEVICE_KEY_ATTESTATION_REAL}, {@code REQUIRE_ENROLLMENT_AND_DEVICE_KEY}) arrive only once
- * the agent wire contract carries a real device-key attestation.
  */
 public final class SessionDeviceTrustVerifierFactory {
 
     private static final Logger log = LoggerFactory.getLogger(SessionDeviceTrustVerifierFactory.class);
 
-    public enum VerifierType { FAIL_CLOSED, MACHINE_CERT_ENROLLMENT }
+    public enum VerifierType {
+        FAIL_CLOSED,
+        MACHINE_CERT_ENROLLMENT,
+        DEVICE_KEY_ATTESTATION,
+        REQUIRE_ENROLLMENT_AND_DEVICE_KEY
+    }
 
     private SessionDeviceTrustVerifierFactory() {
     }
@@ -48,7 +56,8 @@ public final class SessionDeviceTrustVerifierFactory {
                 type = VerifierType.valueOf(raw.toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException unknown) {
                 throw reject("unknown device-trust verifier type '" + raw
-                        + "' (expected FAIL_CLOSED|MACHINE_CERT_ENROLLMENT)");
+                        + "' (expected FAIL_CLOSED|MACHINE_CERT_ENROLLMENT|DEVICE_KEY_ATTESTATION|"
+                        + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY)");
             }
         }
         return create(type, productionLikeProfile, resolver);
@@ -75,6 +84,23 @@ public final class SessionDeviceTrustVerifierFactory {
                     throw reject("device-trust verifier MACHINE_CERT_ENROLLMENT requires a ConnectedDeviceResolver");
                 }
                 return new MachineCertEnrollmentDeviceTrustVerifier(resolver);
+            }
+            case DEVICE_KEY_ATTESTATION -> {
+                if (productionLikeProfile) {
+                    throw reject("device-trust verifier DEVICE_KEY_ATTESTATION verifies hardware-key evidence "
+                            + "but does not bind that key to the requested tenant/device; use "
+                            + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY for production-shaped device trust");
+                }
+                return PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE;
+            }
+            case REQUIRE_ENROLLMENT_AND_DEVICE_KEY -> {
+                if (resolver == null) {
+                    throw reject("device-trust verifier REQUIRE_ENROLLMENT_AND_DEVICE_KEY requires a "
+                            + "ConnectedDeviceResolver");
+                }
+                return new CompositeSessionDeviceTrustVerifier(
+                        new MachineCertEnrollmentDeviceTrustVerifier(resolver),
+                        PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE);
             }
             default -> throw reject("unreachable device-trust verifier type " + t);
         }
