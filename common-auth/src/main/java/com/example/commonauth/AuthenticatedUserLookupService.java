@@ -23,9 +23,15 @@ public class AuthenticatedUserLookupService {
     private final JdbcTemplate jdbcTemplate;
     private final String userTable;
     private final String softDeleteColumn;
+    private final String kcSubjectColumn;
+
+    // Capability probe cache (Codex 019ef349): hasQueryableLocalUserTable()
+    // is on the hot /authz/me + id-lookup path. The relation's existence is
+    // process-stable, so probe once and memoize. null = not yet probed.
+    private volatile Boolean tableQueryableCache;
 
     public AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable) {
-        this(jdbcTemplate, userTable, null);
+        this(jdbcTemplate, userTable, null, null);
     }
 
     /**
@@ -39,9 +45,30 @@ public class AuthenticatedUserLookupService {
      *        value is validated as a bare SQL identifier (no injection).
      */
     public AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable, String softDeleteColumn) {
+        this(jdbcTemplate, userTable, softDeleteColumn, null);
+    }
+
+    /**
+     * @param kcSubjectColumn optional Keycloak-subject column (e.g.
+     *        {@code kc_subject}). When non-blank, this service HARDENS the
+     *        numeric {@code userId}/{@code uid}/numeric-{@code sub} claim from
+     *        an AUTHORITY into a DB-verified HINT (Slice 2, Codex 019ef349):
+     *        the claimed id is accepted only when the row it points to belongs
+     *        to the SAME token identity ({@code kc_subject == sub} OR canonical
+     *        email match). A claim that maps to a DIFFERENT (or absent /
+     *        tombstoned) row is discarded and resolution falls back to the
+     *        token's own {@code sub}/email — so a stale or mis-bound claim can
+     *        never resolve a foreign {@code user:<id>} into the authz context.
+     *        Pass {@code null}/blank (or use the 2-/3-arg constructor) to keep
+     *        the legacy claim-first behaviour (backward compatible — the cross
+     *        check is opt-in per consumer). Validated as a bare SQL identifier.
+     */
+    public AuthenticatedUserLookupService(JdbcTemplate jdbcTemplate, String userTable,
+                                          String softDeleteColumn, String kcSubjectColumn) {
         this.jdbcTemplate = jdbcTemplate;
         this.userTable = normalizeTableName(userTable);
         this.softDeleteColumn = normalizeSoftDeleteColumn(softDeleteColumn);
+        this.kcSubjectColumn = normalizeColumnName(kcSubjectColumn, "kc-subject");
     }
 
     public ResolvedAuthenticatedUser resolve(Jwt jwt) {
@@ -52,33 +79,68 @@ public class AuthenticatedUserLookupService {
         String subject = blankToNull(jwt.getSubject());
         String email = firstNonBlank(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
 
-        Long numericUserId = firstNonNull(
+        Long claimUserId = firstNonNull(
                 extractLongClaim(jwt, "userId"),
                 extractLongClaim(jwt, "uid"),
                 tryParseLong(subject)
         );
 
-        // Soft-delete (Codex 019ea573, #770 Phase 2): when a soft-delete column
-        // is configured, a numeric id taken from a CLAIM (userId / uid /
-        // numeric sub) is NOT yet DB-verified — a still-valid JWT issued before
-        // (or after) the soft-delete would otherwise resolve a tombstoned
-        // user:<id> into the authz context. Validate it against the table; if
-        // it is a tombstone (or no longer present), suppress it so neither the
-        // numericUserId nor the responseUserId echoes a deleted identity. The
-        // email path below already filters tombstones via lookupUserIdByEmail.
+        Long numericUserId = null;
         boolean suppressedDeletedNumeric = false;
-        if (numericUserId == null && email != null) {
-            numericUserId = lookupUserIdByEmail(email);
-        } else if (numericUserId != null && softDeleteColumn != null && !isActiveById(numericUserId)) {
-            numericUserId = null;
-            suppressedDeletedNumeric = true;
+        boolean discardedClaimMismatch = false;
+
+        if (kcSubjectColumn != null) {
+            // HARDENED path (Slice 2, Codex 019ef349): the numeric claim is a
+            // DB-verified HINT, not authority. Accept it only when the row it
+            // points to is active AND belongs to THIS token (kc_subject == sub
+            // OR canonical email match); otherwise DISCARD it and resolve by the
+            // token's own verified identity (kc_subject first, then email). A
+            // stale / reused / mis-bound claim therefore never resolves a
+            // foreign user:<id> into the authz context.
+            if (claimUserId != null) {
+                if (claimIdMatchesTokenIdentity(claimUserId, subject, email)) {
+                    numericUserId = claimUserId;
+                } else {
+                    discardedClaimMismatch = true;
+                    log.warn("userid-claim cross-check failed: claimed id {} is not an active row owned by "
+                            + "this token (sub/email); discarding claim, resolving by verified identity.", claimUserId);
+                }
+            }
+            if (numericUserId == null) {
+                numericUserId = lookupUserIdByKcSubject(subject);
+                if (numericUserId == null) {
+                    numericUserId = lookupUserIdByEmail(email);
+                }
+            }
+        } else {
+            // LEGACY path — unchanged behaviour for consumers that have NOT
+            // opted into the kc_subject cross-check (Codex 019ea573, #770
+            // Phase 2 soft-delete suppression preserved verbatim).
+            numericUserId = claimUserId;
+            if (numericUserId == null && email != null) {
+                numericUserId = lookupUserIdByEmail(email);
+            } else if (numericUserId != null && softDeleteColumn != null && !isActiveById(numericUserId)) {
+                numericUserId = null;
+                suppressedDeletedNumeric = true;
+            }
         }
 
-        String responseUserId = numericUserId != null
-                ? Long.toString(numericUserId)
-                : (suppressedDeletedNumeric
-                        ? null
-                        : firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject));
+        String responseUserId;
+        if (numericUserId != null) {
+            responseUserId = Long.toString(numericUserId);
+        } else if (suppressedDeletedNumeric) {
+            // Legacy soft-delete: the caller's OWN row is a tombstone — echo
+            // nothing (a deleted identity must not surface). Preserved verbatim
+            // from the pre-Slice-2 behaviour (Codex 019ea573, #770 Phase 2).
+            responseUserId = null;
+        } else if (discardedClaimMismatch) {
+            // Hardened path: a FOREIGN numeric claim was discarded, but the
+            // token's own identity (subject) is valid — echo the verified
+            // subject, never the discarded foreign claim id.
+            responseUserId = subject;
+        } else {
+            responseUserId = firstNonBlank(stringClaim(jwt, "userId"), stringClaim(jwt, "uid"), subject);
+        }
 
         return new ResolvedAuthenticatedUser(numericUserId, responseUserId, email);
     }
@@ -108,6 +170,69 @@ public class AuthenticatedUserLookupService {
     }
 
     /**
+     * Resolve a numeric user id by the token's Keycloak subject — the
+     * strongest verified identity (Slice 2, Codex 019ef349). Only used on the
+     * hardened path ({@code kcSubjectColumn} configured). Tombstone-filtered
+     * when a soft-delete column is set. Returns {@code null} when no subject,
+     * no kc-subject column, the table is not queryable, or no active row.
+     */
+    private Long lookupUserIdByKcSubject(String subject) {
+        if (subject == null || subject.isBlank() || kcSubjectColumn == null) {
+            return null;
+        }
+        if (!hasQueryableLocalUserTable()) {
+            return null;
+        }
+        String softDeleteFilter = softDeleteColumn == null ? "" : " and " + softDeleteColumn + " is null";
+        String sql = "select id from " + userTable + " where " + kcSubjectColumn + " = ?" + softDeleteFilter + " limit 1";
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, subject);
+            if (rows.isEmpty()) {
+                return null;
+            }
+            Object idValue = rows.get(0).get("id");
+            return idValue instanceof Number number ? number.longValue() : null;
+        } catch (DataAccessException ex) {
+            log.warn("Authenticated user kc-subject lookup failed. cause={}", ex.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Cross-check (Slice 2, Codex 019ef349): is the claimed numeric id an
+     * ACTIVE row that belongs to THIS token? True iff a non-tombstoned row at
+     * {@code claimId} exists AND its {@code kc_subject} equals the token
+     * {@code sub} OR its canonical email equals the token's canonical email.
+     * Fail-closed: any query error or a missing/foreign row returns
+     * {@code false}, so the claim is discarded (never trusted on doubt).
+     */
+    private boolean claimIdMatchesTokenIdentity(long claimId, String subject, String tokenEmail) {
+        if (kcSubjectColumn == null || !hasQueryableLocalUserTable()) {
+            return false;
+        }
+        String softDeleteFilter = softDeleteColumn == null ? "" : " and " + softDeleteColumn + " is null";
+        String sql = "select " + kcSubjectColumn + " as kc_sub, email from " + userTable
+                + " where id = ?" + softDeleteFilter + " limit 1";
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, claimId);
+            if (rows.isEmpty()) {
+                return false;
+            }
+            Map<String, Object> row = rows.get(0);
+            String rowSubject = row.get("kc_sub") == null ? null : String.valueOf(row.get("kc_sub"));
+            String rowEmail = row.get("email") == null ? null : String.valueOf(row.get("email"));
+            boolean subjectMatch = subject != null && subject.equals(blankToNull(rowSubject));
+            boolean emailMatch = tokenEmail != null && rowEmail != null
+                    && tokenEmail.toLowerCase(Locale.ROOT).equals(rowEmail.toLowerCase(Locale.ROOT));
+            return subjectMatch || emailMatch;
+        } catch (DataAccessException ex) {
+            log.warn("Authenticated user claim cross-check failed (fail-closed → discard claim). id={} cause={}",
+                    claimId, ex.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Confirms the given numeric id is an <em>active</em> (non-tombstoned)
      * row, used to validate a numeric claim when a soft-delete column is
      * configured (Codex 019ea573, #770 Phase 2). Fail-open: when the column
@@ -130,13 +255,25 @@ public class AuthenticatedUserLookupService {
     }
 
     private boolean hasQueryableLocalUserTable() {
+        // Capability probe cache (Codex 019ef349): the relation's existence is
+        // process-stable, so memoize a positive result to keep the hot
+        // /authz/me + id-lookup path off a per-call to_regclass round-trip. Only
+        // the TRUE outcome is cached — a transient false/error re-probes next
+        // call so a one-off DB hiccup can't permanently disable lookups.
+        if (Boolean.TRUE.equals(tableQueryableCache)) {
+            return true;
+        }
         try {
             String relationName = jdbcTemplate.queryForObject(
                     "select to_regclass(?)::text",
                     String.class,
                     userTable
             );
-            return StringUtils.hasText(relationName);
+            boolean present = StringUtils.hasText(relationName);
+            if (present) {
+                tableQueryableCache = Boolean.TRUE;
+            }
+            return present;
         } catch (DataAccessException ex) {
             log.warn("Authenticated user lookup tablo kontrolü başarısız oldu. table={} cause={}",
                     userTable, ex.getMessage());
@@ -216,6 +353,17 @@ public class AuthenticatedUserLookupService {
         }
         if (!COLUMN_NAME.matcher(value).matches()) {
             throw new IllegalArgumentException("Invalid soft-delete column reference: " + raw);
+        }
+        return value;
+    }
+
+    private static String normalizeColumnName(String raw, String label) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.isEmpty()) {
+            return null;
+        }
+        if (!COLUMN_NAME.matcher(value).matches()) {
+            throw new IllegalArgumentException("Invalid " + label + " column reference: " + raw);
         }
         return value;
     }
