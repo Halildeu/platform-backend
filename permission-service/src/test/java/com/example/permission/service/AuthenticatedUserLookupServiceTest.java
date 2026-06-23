@@ -29,18 +29,51 @@ class AuthenticatedUserLookupServiceTest {
     private JdbcTemplate jdbcTemplate;
 
     @Test
-    void resolve_prefersNumericUidClaim() {
+    void resolve_distrustsUidClaim_whenSubjectIsUuid_resolvesByEmail() {
+        // Slice 2b cheap guard (#727, Codex 019ef3ca): a numeric uid claim is
+        // NOT trusted when the subject is a non-numeric KC UUID and an email is
+        // present — it may be stale/foreign. Resolve by the verified email; the
+        // claim (42) must not win over the email's id (7).
         AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(jdbcTemplate, "users");
-        Jwt jwt = buildJwt(Map.of(
-                "uid", 42L,
-                "email", "admin@example.com"
-        ), "kc-user-uuid");
+        when(jdbcTemplate.queryForObject(anyString(), eq(String.class), any())).thenReturn("users");
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of("id", 7L)));
+        Jwt jwt = buildJwt(Map.of("uid", 42L, "email", "admin@example.com"), "kc-user-uuid");
+
+        var resolved = service.resolve(jwt);
+
+        assertEquals(7L, resolved.numericUserId());
+        assertEquals("7", resolved.responseUserId());
+        assertEquals("admin@example.com", resolved.email());
+    }
+
+    @Test
+    void resolve_distrustedUidClaim_emailUnresolved_failsClosedToSubject() {
+        // Distrusted claim + email does not resolve → fail-closed: numericUserId
+        // null and responseUserId is the verified subject, NEVER the claim "42".
+        AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(jdbcTemplate, "users");
+        when(jdbcTemplate.queryForObject(anyString(), eq(String.class), any())).thenReturn("users");
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+        Jwt jwt = buildJwt(Map.of("uid", 42L, "email", "ghost@example.com"), "kc-user-uuid");
+
+        var resolved = service.resolve(jwt);
+
+        assertNull(resolved.numericUserId());
+        assertEquals("kc-user-uuid", resolved.responseUserId());
+        assertEquals("ghost@example.com", resolved.email());
+    }
+
+    @Test
+    void resolve_trustsNumericSubClaim_whenSubjectIsNumeric() {
+        // Legacy numeric-sub token (sub == the numeric id): the guard does NOT
+        // engage (subject is itself the verified numeric identity) → the claim
+        // is trusted with no DB lookup.
+        AuthenticatedUserLookupService service = new AuthenticatedUserLookupService(jdbcTemplate, "users");
+        Jwt jwt = buildJwt(Map.of("uid", 42L), "42");
 
         var resolved = service.resolve(jwt);
 
         assertEquals(42L, resolved.numericUserId());
         assertEquals("42", resolved.responseUserId());
-        assertEquals("admin@example.com", resolved.email());
         verifyNoInteractions(jdbcTemplate);
     }
 

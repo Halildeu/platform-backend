@@ -240,13 +240,19 @@ public class AuthorizationControllerV1 {
                 if (resolved.numericUserId() != null) {
                     return Long.toString(resolved.numericUserId());
                 }
+                // Slice 2b (#727, Codex 019ef3ca): use the resolver's HARDENED
+                // responseUserId (the verified subject for a distrusted/
+                // unresolved claim — never the raw claim), not the raw uid.
+                String responseUserId = resolved.responseUserId();
+                if (responseUserId != null && !responseUserId.isBlank()) {
+                    return responseUserId;
+                }
             } catch (RuntimeException ex) {
-                log.warn("Authz /check numeric userId resolution failed; falling back to JWT claims. cause={}", ex.getMessage());
+                log.warn("Authz /check userId resolution failed; failing closed to subject. cause={}", ex.getMessage());
             }
-            Object uid = jwt.getClaim("uid");
-            if (uid != null) {
-                return uid.toString();
-            }
+            // Slice 2b: NO raw uid-claim fallback — a foreign uid claim must not
+            // become the OpenFGA check principal. Fail-closed to the verified
+            // subject (then "0"). A KC UUID principal won't match numeric tuples.
             String sub = jwt.getSubject();
             if (sub != null && !sub.isBlank()) {
                 return sub;
@@ -898,9 +904,12 @@ public class AuthorizationControllerV1 {
     }
 
     private String fallbackResponseUserId(Jwt jwt) {
+        // Slice 2b (#727, Codex 019ef3ca): the /authz/me resolve()-failure
+        // fallback must NOT echo the raw userId/uid claim (numericUserId is
+        // already null here so permissions/scopes/modules are empty/fail-closed
+        // — but the displayed id must not surface a stale/foreign claim either).
+        // Verified subject first, then email.
         return firstNonBlank(
-                stringClaim(jwt, "userId"),
-                stringClaim(jwt, "uid"),
                 jwt.getSubject(),
                 fallbackEmail(jwt)
         );
