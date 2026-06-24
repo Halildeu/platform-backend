@@ -1,0 +1,112 @@
+# Faz 24 — meeting/transcript object ReBAC assertions.
+#
+# Locks the model shape needed by meeting-service's create path:
+# user:<id>#owner@meeting:<uuid>. Module-level gates remain covered by the
+# existing module type and live GitOps seed; this file focuses on object-level
+# owner/participant/viewer semantics.
+
+name: meeting_transcript_object_rebac
+
+model_file: ../model.fga
+
+tuples:
+  - user: user:owner
+    relation: owner
+    object: meeting:m1
+  - user: user:participant
+    relation: participant
+    object: meeting:m1
+  - user: user:direct_viewer
+    relation: viewer
+    object: meeting:m1
+  - user: user:blocked_owner
+    relation: owner
+    object: meeting:m_blocked
+  - user: user:blocked_owner
+    relation: blocked
+    object: meeting:m_blocked
+
+  - user: user:owner
+    relation: owner
+    object: transcript:t1
+  - user: user:participant
+    relation: participant
+    object: transcript:t1
+  - user: user:direct_viewer
+    relation: viewer
+    object: transcript:t1
+  - user: user:blocked_owner
+    relation: owner
+    object: transcript:t_blocked
+  - user: user:blocked_owner
+    relation: blocked
+    object: transcript:t_blocked
+
+tests:
+  - name: meeting_owner_and_participant_are_viewers
+    check:
+      - user: user:owner
+        object: meeting:m1
+        assertions:
+          owner: true
+          viewer: true
+      - user: user:participant
+        object: meeting:m1
+        assertions:
+          participant: true
+          viewer: true
+      - user: user:direct_viewer
+        object: meeting:m1
+        assertions:
+          owner: false
+          participant: false
+          viewer: true
+      - user: user:nobody
+        object: meeting:m1
+        assertions:
+          owner: false
+          participant: false
+          viewer: false
+
+  - name: meeting_blocked_overrides_owner
+    check:
+      - user: user:blocked_owner
+        object: meeting:m_blocked
+        assertions:
+          blocked: true
+          owner: false
+          viewer: false
+
+  - name: transcript_owner_and_participant_are_viewers
+    check:
+      - user: user:owner
+        object: transcript:t1
+        assertions:
+          owner: true
+          viewer: true
+      - user: user:participant
+        object: transcript:t1
+        assertions:
+          participant: true
+          viewer: true
+      - user: user:direct_viewer
+        object: transcript:t1
+        assertions:
+          owner: false
+          participant: false
+          viewer: true
+      - user: user:nobody
+        object: transcript:t1
+        assertions:
+          owner: false
+          participant: false
+          viewer: false
+
+  - name: transcript_blocked_overrides_owner
+    check:
+      - user: user:blocked_owner
+        object: transcript:t_blocked
+        assertions:
+          blocked: true
+          owner: false
+          viewer: false
