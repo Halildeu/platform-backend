@@ -42,10 +42,9 @@ import org.springframework.stereotype.Service;
  * primary response. We additionally guard the failure path with a PII-safe
  * WARN log so a silent audit drop is at least observable.
  *
- * <p><b>PII boundary (ADR-0030 + AudioGatewayAuditSink javadoc):</b> only the
- * non-PII admission fields are written — sessionId, tenantId, userId, chunkSeq,
- * httpStatus, rejectionCode, retryAfterSeconds, correlationId, timestampMs. No
- * Idempotency-Key, no audio bytes, no transcript.
+ * <p><b>PII boundary (ADR-0030 + AudioGatewayAuditSink javadoc):</b> only
+ * non-PII recorder/audit identifiers are written. No Idempotency-Key, no bearer
+ * token/auth-code, no raw consent text, no audio bytes, no transcript.
  *
  * <p><b>Field mapping is null-safe:</b> {@code tenantId}/{@code userId}/
  * {@code retryAfterSeconds} are nullable {@link Long}s — absent values are
@@ -61,6 +60,8 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
 
     /** Canonical audit event type discriminator for {@code ChunkAdmissionRejected}. */
     static final String EVENT_TYPE_CHUNK_ADMISSION_REJECTED = "CHUNK_ADMISSION_REJECTED";
+    /** Canonical audit event type discriminator for recorder consent proof. */
+    static final String EVENT_TYPE_RECORDING_CONSENT_GRANTED = "RECORDING_CONSENT_GRANTED";
 
     private final StringRedisTemplate redis;
     private final AudioGatewayProperties.Audit.Redis cfg;
@@ -77,8 +78,12 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
             emitChunkAdmissionRejected(rejected);
             return;
         }
+        if (event instanceof AuditEvent.RecordingConsentGranted consent) {
+            emitRecordingConsentGranted(consent);
+            return;
+        }
         // Future AuditEvent variants (SessionLifecycle / ChunkForwarded ...) are
-        // not B3 scope; ignore unknown types rather than mis-map them.
+        // not current scope; ignore unknown types rather than mis-map them.
         log.debug("Ignoring unmapped audit event type {}", event.getClass().getSimpleName());
     }
 
@@ -111,6 +116,36 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
             // the swallow's own logging contract).
             log.warn("ALERT audit XADD failed; event may be lost err={} sessionId={} chunkSeq={} status={}",
                     ex.getClass().getSimpleName(), e.sessionId(), e.chunkSeq(), e.httpStatus());
+            throw ex;
+        }
+    }
+
+    private void emitRecordingConsentGranted(final AuditEvent.RecordingConsentGranted e) {
+        final Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("eventType", EVENT_TYPE_RECORDING_CONSENT_GRANTED);
+        fields.put("meetingId", nullSafe(e.meetingId()));
+        fields.put("captureId", nullSafe(e.captureId()));
+        fields.put("tenantId", longOrEmpty(e.tenantId()));
+        fields.put("userId", longOrEmpty(e.userId()));
+        fields.put("subjectId", nullSafe(e.subjectId()));
+        fields.put("consentVersion", nullSafe(e.consentVersion()));
+        fields.put("consentTextHash", nullSafe(e.consentTextHash()));
+        fields.put("locale", nullSafe(e.locale()));
+        fields.put("correlationId", nullSafe(e.correlationId()));
+        fields.put("acceptedAtMs", Long.toString(e.acceptedAtMs()));
+
+        try {
+            final MapRecord<String, String, String> record =
+                    StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
+            if (cfg.getMaxLen() > 0) {
+                redis.opsForStream().add(record,
+                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
+            } else {
+                redis.opsForStream().add(record);
+            }
+        } catch (final DataAccessException ex) {
+            log.warn("ALERT consent audit XADD failed; event may be lost err={} meetingId={} captureId={}",
+                    ex.getClass().getSimpleName(), e.meetingId(), e.captureId());
             throw ex;
         }
     }

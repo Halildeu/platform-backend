@@ -7,6 +7,8 @@ import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.ChunkAdmissionResponse;
 import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.FinishResponse;
+import com.example.audiogateway.dto.RecordingConsentRequest;
+import com.example.audiogateway.dto.RecordingConsentResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
@@ -30,6 +32,8 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -66,6 +70,8 @@ import reactor.core.publisher.Mono;
 @RequestMapping("/api/v1/audio-gateway")
 public class AudioSessionController {
 
+    private static final Logger log = LoggerFactory.getLogger(AudioSessionController.class);
+
     private static final Pattern IDEMPOTENCY_KEY_PATTERN =
             Pattern.compile("^[A-Za-z0-9._:\\-]{16,128}$");
 
@@ -96,6 +102,74 @@ public class AudioSessionController {
     }
 
     // ----- POST /sessions ---------------------------------------------------
+
+    /**
+     * Server-time recorder consent proof. This endpoint is intentionally
+     * separate from start-session so desktop can fail closed before audio
+     * capture starts when the legal/audit proof cannot be persisted.
+     */
+    @PostMapping("/consents")
+    public Mono<ResponseEntity<?>> recordConsent(
+            @Valid @RequestBody final RecordingConsentRequest req,
+            @AuthenticationPrincipal final Jwt jwt,
+            final ServerWebExchange exchange) {
+
+        final String corrId = correlationId(exchange);
+
+        final ResponseEntity<?> authErr = validateAuth(jwt, corrId);
+        if (authErr != null) return Mono.just(authErr);
+
+        final Long tenantId = claimAsLong(jwt, props.getJwt().getTenantClaim());
+        final Long userId = claimAsLong(jwt, props.getJwt().getUserClaim());
+        if (tenantId == null) return Mono.just(forbidden(props.getJwt().getTenantClaim(), corrId));
+        if (userId == null) return Mono.just(forbidden(props.getJwt().getUserClaim(), corrId));
+
+        return meetingAccessValidator.validate(req.meetingId(), jwt, corrId)
+                .map(decision -> decision.allowed()
+                        ? recordConsentAudit(req, tenantId, userId, jwt.getSubject(), corrId)
+                        : meetingAccessError(decision, corrId));
+    }
+
+    private ResponseEntity<?> recordConsentAudit(
+            final RecordingConsentRequest req,
+            final Long tenantId,
+            final Long userId,
+            final String subjectId,
+            final String corrId) {
+        final long acceptedAtMs = Instant.now().toEpochMilli();
+        try {
+            auditSink.emit(new AuditEvent.RecordingConsentGranted(
+                    req.meetingId(),
+                    req.captureId(),
+                    tenantId,
+                    userId,
+                    subjectId,
+                    req.consentVersion(),
+                    req.consentTextHash(),
+                    req.locale(),
+                    corrId,
+                    acceptedAtMs));
+        } catch (Exception ex) {
+            log.warn("ALERT consent audit persist failed; recording denied err={} meetingId={} captureId={}",
+                    ex.getClass().getSimpleName(), req.meetingId(), req.captureId());
+            return ResponseEntity
+                    .status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(ErrorResponse.of(
+                            ErrorResponse.CODE_AUDIT_UNAVAILABLE,
+                            "Recording consent audit persistence unavailable",
+                            corrId,
+                            true));
+        }
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(new RecordingConsentResponse(
+                req.meetingId(),
+                req.captureId(),
+                req.consentVersion(),
+                req.consentTextHash(),
+                req.locale(),
+                corrId,
+                acceptedAtMs));
+    }
 
     @PostMapping("/sessions")
     public Mono<ResponseEntity<?>> startSession(

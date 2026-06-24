@@ -28,6 +28,79 @@
 
 ## 1. Client → Gateway
 
+### 1.0 POST `/api/v1/audio-gateway/consents` — Recording Consent Proof (Faz 24 desktop recorder gate)
+
+**Authentication**: `Authorization: Bearer <jwt>` required.
+
+Desktop/mobile clients MUST call this endpoint after the user accepts the recorder
+consent text and before local audio capture starts. The Gateway derives actor,
+tenant, user, and server time from JWT/server state; clients MUST NOT send
+`acceptedAt` or raw consent text.
+
+**Body** (`application/json`):
+
+```json
+{
+  "meetingId": "22222222-2222-4222-8222-222222222222",
+  "captureId": "33333333-3333-4333-8333-333333333333",
+  "consentVersion": "recorder-consent-v1",
+  "consentTextHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "locale": "tr-TR"
+}
+```
+
+**Validation**:
+
+| Field | Rule |
+|---|---|
+| `meetingId` | Canonical meeting-service UUID from `MeetingResponse.id`; same meeting-access visibility check as `POST /sessions` |
+| `captureId` | Client-generated UUID for this local capture attempt; generated before recording starts |
+| `consentVersion` | 1-64 char opaque token `[A-Za-z0-9._:-]` |
+| `consentTextHash` | `sha256:<64 lowercase hex>` over the exact visible consent text |
+| `locale` | ISO language or language-region (`tr`, `tr-TR`, `en`) |
+
+**Response** (`201 Created`):
+
+```json
+{
+  "meetingId": "22222222-2222-4222-8222-222222222222",
+  "captureId": "33333333-3333-4333-8333-333333333333",
+  "consentVersion": "recorder-consent-v1",
+  "consentTextHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "locale": "tr-TR",
+  "correlationId": "c0ffee...",
+  "acceptedAtMs": 1781820000123
+}
+```
+
+**Audit persistence semantics**:
+
+- Gateway emits `RECORDING_CONSENT_GRANTED` to the configured
+  `AudioGatewayAuditSink` before returning success.
+- `acceptedAtMs` is server time; any client-side clock value is ignored.
+- Audit event fields: `eventType`, `meetingId`, `captureId`, `tenantId`, `userId`,
+  `subjectId`, `consentVersion`, `consentTextHash`, `locale`, `correlationId`,
+  `acceptedAtMs`.
+- PII/raw payload guard: no bearer token, auth-code, raw consent text, email,
+  audio bytes, or transcript text.
+- If the audit sink cannot persist the event, response is
+  `503 AUDIO_GATEWAY_AUDIT_UNAVAILABLE`, `retryable=true`; recording MUST NOT
+  start.
+- This endpoint does not yet expose the `/sessions` `Idempotency-Key` registry.
+  Client retry after an unknown network result may produce more than one audit
+  record for the same `meetingId + captureId`; audit consumers MUST treat that
+  tuple as the deduplication key until a server-side consent registry is added.
+
+**Errors**:
+
+| Status | Code | Anlam |
+|---|---|---|
+| 400 | `AUDIO_GATEWAY_VALIDATION` | Body validation |
+| 401 | `AUDIO_GATEWAY_AUTH_INVALID` | JWT missing/invalid |
+| 403 | `AUDIO_GATEWAY_MEETING_FORBIDDEN` | Tenant/user claim eksik veya meeting-service visibility check deny |
+| 503 | `AUDIO_GATEWAY_MEETING_VALIDATION_UNAVAILABLE` | meeting-service visibility check timeout / 5xx / transport failure |
+| 503 | `AUDIO_GATEWAY_AUDIT_UNAVAILABLE` | consent audit sink persist edemedi; recording fail-closed |
+
 ### 1.1 POST `/api/v1/audio-gateway/sessions` — Start Session (PR-gw-01A LIVE)
 
 **Authentication**: `Authorization: Bearer <jwt>` required (Keycloak realm `platform`).
