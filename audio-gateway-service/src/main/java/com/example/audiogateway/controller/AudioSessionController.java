@@ -19,6 +19,8 @@ import com.example.audiogateway.service.AudioSessionRegistry.ChunkRecordCommand;
 import com.example.audiogateway.service.AudioSessionRegistry.CreateOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.FinishOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.SessionCreateCommand;
+import com.example.audiogateway.service.MeetingAccessValidator;
+import com.example.audiogateway.service.MeetingAccessValidator.Decision;
 import com.example.audiogateway.service.SessionRecord;
 import com.example.audiogateway.service.SessionState;
 
@@ -79,15 +81,18 @@ public class AudioSessionController {
     private final AudioSessionRegistry registry;
     private final AudioChunkDispatcher dispatcher;
     private final AudioGatewayAuditSink auditSink;
+    private final MeetingAccessValidator meetingAccessValidator;
 
     public AudioSessionController(final AudioGatewayProperties props,
                                   final AudioSessionRegistry registry,
                                   final AudioChunkDispatcher dispatcher,
-                                  final AudioGatewayAuditSink auditSink) {
+                                  final AudioGatewayAuditSink auditSink,
+                                  final MeetingAccessValidator meetingAccessValidator) {
         this.props = props;
         this.registry = registry;
         this.dispatcher = dispatcher;
         this.auditSink = auditSink;
+        this.meetingAccessValidator = meetingAccessValidator;
     }
 
     // ----- POST /sessions ---------------------------------------------------
@@ -115,13 +120,25 @@ public class AudioSessionController {
         if (tenantId == null) return Mono.just(forbidden(props.getJwt().getTenantClaim(), corrId));
         if (userId == null) return Mono.just(forbidden(props.getJwt().getUserClaim(), corrId));
 
+        return meetingAccessValidator.validate(req.meetingId(), jwt, corrId)
+                .map(decision -> decision.allowed()
+                        ? createSession(req, idempotencyKey, tenantId, userId, corrId)
+                        : meetingAccessError(decision, corrId));
+    }
+
+    private ResponseEntity<?> createSession(
+            final StartSessionRequest req,
+            final String idempotencyKey,
+            final Long tenantId,
+            final Long userId,
+            final String corrId) {
         final long now = Instant.now().toEpochMilli();
         final CreateOutcome outcome = registry.create(new SessionCreateCommand(
                 tenantId, userId, req.meetingId(), req.deviceId(), req.language(),
                 req.audioFormat(), req.sampleRateHz(), req.channels(),
                 idempotencyKey, now));
 
-        return Mono.just(switch (outcome) {
+        return switch (outcome) {
             case CreateOutcome.Created c -> ResponseEntity
                     .status(HttpStatus.CREATED)
                     .body(buildStartResponse(c.record(), corrId));
@@ -141,7 +158,15 @@ public class AudioSessionController {
                             ErrorResponse.CODE_SESSION_REGISTRY_FULL,
                             "Session registry full (capacity=" + rf.capacity() + ")",
                             corrId, true));
-        });
+        };
+    }
+
+    private ResponseEntity<?> meetingAccessError(final Decision decision, final String corrId) {
+        final String code = decision.status() == HttpStatus.SERVICE_UNAVAILABLE
+                ? ErrorResponse.CODE_MEETING_VALIDATION_UNAVAILABLE
+                : ErrorResponse.CODE_MEETING_FORBIDDEN;
+        return ResponseEntity.status(decision.status())
+                .body(ErrorResponse.of(code, decision.message(), corrId, decision.retryable()));
     }
 
     // ----- POST /sessions/{sessionId}/chunks (PR-gw-01B-core + B3) ----------

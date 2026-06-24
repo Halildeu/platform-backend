@@ -38,7 +38,7 @@ class SessionLifecycleContractTest {
 
     private static StartSessionRequest validRequest() {
         return new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV, 16000, 1);
+                "22222222-2222-4222-8222-222222222222", "device-1", "tr", AudioFormat.WAV, 16000, 1);
     }
 
     private WebTestClient asUser(final long companyId, final long userId) {

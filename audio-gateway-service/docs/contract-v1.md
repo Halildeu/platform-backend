@@ -1,8 +1,8 @@
 # Audio Gateway Contract v1.0
 
-> **Status**: REVISION 2026-06-03 (PR-gw-01A normalize) — ADR-0031 two-server topology + Codex `019e8c26` iter-2 AGREE PR-gw-01A absorb. "FROZEN" iddiası bu PR squash merge sonrası geçerli olur.
+> **Status**: REVISION 2026-06-24 (Faz 24 desktop recorder gate) — ADR-0031 two-server topology + Codex `019e8c26` iter-2 AGREE PR-gw-01A absorb + meeting-service UUID alignment. This is the final pre-freeze correction; "FROZEN" iddiası bu PR squash merge sonrası geçerli olur.
 >
-> Değişiklik = breaking change → yeni major version (v2) + ADR + Codex consensus.
+> Bu revision sonrası breaking change → yeni major version (v2) + ADR + Codex consensus.
 
 ## Mutabakat Trail
 
@@ -44,7 +44,7 @@
 
 ```json
 {
-  "meetingId": "MTG-2026-0042",
+  "meetingId": "22222222-2222-4222-8222-222222222222",
   "deviceId": "iphone-h-12345",
   "language": "tr",
   "audioFormat": "WAV",
@@ -57,13 +57,20 @@
 
 | Field | Rule |
 |---|---|
-| `meetingId` | `^MTG-[0-9]{4}-[0-9]{1,8}$` (e.g. `MTG-2026-0042`) |
+| `meetingId` | Canonical meeting-service UUID from `MeetingResponse.id` (`[0-9a-fA-F]{8}-...-{12}`). Clients MUST NOT fabricate random meeting IDs or send legacy `MTG-*` codes. |
 | `deviceId` | Opaque token `^[A-Za-z0-9._-]{1,64}$` |
 | `language` | ISO 639-1 `^[a-z]{2}(-[A-Z]{2})?$` (`tr`, `en`, `de`, `tr-TR`) |
 | `audioFormat` | Enum: `WAV` / `WEBM_OPUS` / `PCM16` (client-allowed subset) |
 | `sampleRateHz` | `16000` veya `48000` |
 | `channels` | `1` (PoC mono only) |
 | `Idempotency-Key` header | 16-128 char `[A-Za-z0-9._:-]` opaque token |
+
+**Meeting access validation**:
+
+- Gateway calls `meeting-service` `GET /api/v1/admin/meetings/{meetingId}` with the caller's bearer token before creating an audio session.
+- `2xx` = meeting is visible to the caller; session creation may continue.
+- `401` / `403` / `404` / other `4xx` = `403 AUDIO_GATEWAY_MEETING_FORBIDDEN` without leaking whether the meeting exists.
+- `5xx`, timeout, or transport failure = `503 AUDIO_GATEWAY_MEETING_VALIDATION_UNAVAILABLE` and `retryable=true`.
 
 **Response** (201 Created on fresh, 200 OK on replay):
 
@@ -93,9 +100,10 @@
 | 400 | `AUDIO_GATEWAY_IDEMPOTENCY_INVALID` | Key 16-128 char policy ihlal |
 | 400 | `AUDIO_GATEWAY_VALIDATION` | Body validation (jakarta.validation) |
 | 401 | `AUDIO_GATEWAY_AUTH_INVALID` | JWT decode/signature fail |
-| 403 | `AUDIO_GATEWAY_MEETING_FORBIDDEN` | Tenant/user claim eksik veya meeting access yok |
+| 403 | `AUDIO_GATEWAY_MEETING_FORBIDDEN` | Tenant/user claim eksik veya meeting-service visibility check deny |
 | 409 | `AUDIO_GATEWAY_IDEMPOTENCY_CONFLICT` | Same key + materially different request |
 | 415 | `AUDIO_GATEWAY_FORMAT_REJECTED` | Audio format / sample rate / channels desteklenmiyor |
+| 503 | `AUDIO_GATEWAY_MEETING_VALIDATION_UNAVAILABLE` | meeting-service visibility check timeout / 5xx / transport failure |
 | 503 | `AUDIO_GATEWAY_SESSION_REGISTRY_FULL` | In-memory registry cap aşıldı (retry-after) |
 
 ### 1.2 GET `/api/v1/audio-gateway/sessions/{sessionId}/status` — Session State (PR-gw-01A LIVE)
@@ -384,7 +392,7 @@ Gateway emit eder her session lifecycle event:
   "timestamp": "...",
   "actor": { "user_id": "kc-sub-...", "user_email_hash": "...", "role": "meeting_owner" },
   "action": "audio_session.start",
-  "resource": { "meeting_id": "MTG-2026-0042", "session_id": "SES-...", "tenant_id": "workcube-main" },
+  "resource": { "meeting_id": "22222222-2222-4222-8222-222222222222", "session_id": "SES-...", "tenant_id": "workcube-main" },
   "result": "ok",
   "client_ip_hash": "...",
   "user_agent_class": "mobile_react_native"

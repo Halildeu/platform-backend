@@ -57,6 +57,12 @@ audio:
     jwt:
       tenant-claim: ${AUDIO_GATEWAY_JWT_TENANT_CLAIM:companyId}
       user-claim: ${AUDIO_GATEWAY_JWT_USER_CLAIM:userId}
+    meeting-access:
+      validation-enabled: ${AUDIO_GATEWAY_MEETING_ACCESS_VALIDATION_ENABLED:true}
+      base-url: ${AUDIO_GATEWAY_MEETING_SERVICE_BASE_URL:http://meeting-service:8097}
+      connect-timeout-ms: ${AUDIO_GATEWAY_MEETING_SERVICE_CONNECT_TIMEOUT_MS:2000}
+      response-timeout-ms: ${AUDIO_GATEWAY_MEETING_SERVICE_RESPONSE_TIMEOUT_MS:3000}
+      max-response-bytes: ${AUDIO_GATEWAY_MEETING_SERVICE_MAX_RESPONSE_BYTES:32768}
 
 # Faz 24 KVKK audit pipeline (gitops#1249). DEFAULT-OFF; overlay configmap flips
 # AUDIO_GATEWAY_AUDIT_REDIS_ENABLED=true once audit-event-consumer-service is up.

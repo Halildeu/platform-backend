@@ -19,8 +19,11 @@ public record StartSessionRequest(
 
         @NotBlank
         @Size(max = 64)
-        @Pattern(regexp = "^MTG-[0-9]{4}-[0-9]{1,8}$",
-                message = "meetingId must match MTG-YYYY-N format")
+        @Pattern(regexp = "^"
+                + "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                + "[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+                + "$",
+                message = "meetingId must be a meeting-service UUID")
         String meetingId,
 
         @NotBlank
