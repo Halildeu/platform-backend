@@ -1,5 +1,8 @@
 package com.example.audiogateway.config;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -329,6 +332,13 @@ public class AudioGatewayProperties {
         private int maxResponseBytes = 262_144;
 
         /**
+         * App-layer TLS / mTLS settings for the direct-STT hop. DEFAULT-OFF so existing
+         * local/test HTTP MockWebServer paths stay unchanged; real cross-server meeting
+         * audio enables this per ADR-0031 + B+ I7.
+         */
+        private final Tls tls = new Tls();
+
+        /**
          * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
          * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
          * startup error — silent fallback that hides misconfiguration is YASAK.
@@ -355,6 +365,11 @@ public class AudioGatewayProperties {
                         "audio.gateway.direct-stt.transcribe-url must be http or https, got scheme="
                                 + scheme);
             }
+            if (tls.isEnabled() && !"https".equalsIgnoreCase(scheme)) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.tls.enabled=true requires an https transcribe-url");
+            }
+            tls.validate();
             if (maxInFlight <= 0) {
                 throw new IllegalStateException(
                         "audio.gateway.direct-stt.max-in-flight must be positive, got " + maxInFlight);
@@ -416,6 +431,78 @@ public class AudioGatewayProperties {
 
         public void setMaxResponseBytes(final int maxResponseBytes) {
             this.maxResponseBytes = maxResponseBytes;
+        }
+
+        public Tls getTls() {
+            return tls;
+        }
+
+        public static class Tls {
+            /** Enables client-auth TLS for the direct-STT WebClient. */
+            private boolean enabled = false;
+
+            /** PEM CA bundle used to verify the live-stt/Caddy server certificate. */
+            private String caCertificatePath = "";
+
+            /** PEM client certificate presented by audio-gateway to the Caddy mTLS proxy. */
+            private String clientCertificatePath = "";
+
+            /** PEM private key matching {@link #clientCertificatePath}. */
+            private String clientPrivateKeyPath = "";
+
+            void validate() {
+                if (!enabled) {
+                    return;
+                }
+                requireReadableFile("audio.gateway.direct-stt.tls.ca-certificate-path",
+                        caCertificatePath);
+                requireReadableFile("audio.gateway.direct-stt.tls.client-certificate-path",
+                        clientCertificatePath);
+                requireReadableFile("audio.gateway.direct-stt.tls.client-private-key-path",
+                        clientPrivateKeyPath);
+            }
+
+            private static void requireReadableFile(final String propertyName, final String value) {
+                if (value == null || value.isBlank()) {
+                    throw new IllegalStateException(propertyName + " must be set when direct-stt TLS is enabled");
+                }
+                final Path path = Path.of(value.trim());
+                if (!Files.isRegularFile(path) || !Files.isReadable(path)) {
+                    throw new IllegalStateException(propertyName + " must point to a readable file");
+                }
+            }
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getCaCertificatePath() {
+                return caCertificatePath;
+            }
+
+            public void setCaCertificatePath(final String caCertificatePath) {
+                this.caCertificatePath = caCertificatePath;
+            }
+
+            public String getClientCertificatePath() {
+                return clientCertificatePath;
+            }
+
+            public void setClientCertificatePath(final String clientCertificatePath) {
+                this.clientCertificatePath = clientCertificatePath;
+            }
+
+            public String getClientPrivateKeyPath() {
+                return clientPrivateKeyPath;
+            }
+
+            public void setClientPrivateKeyPath(final String clientPrivateKeyPath) {
+                this.clientPrivateKeyPath = clientPrivateKeyPath;
+            }
         }
     }
 
