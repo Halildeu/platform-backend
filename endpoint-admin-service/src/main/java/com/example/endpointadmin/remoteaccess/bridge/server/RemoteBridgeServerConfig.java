@@ -547,21 +547,25 @@ public class RemoteBridgeServerConfig {
             ControlStreamRegistry remoteBridgeControlStreamRegistry,
             DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
             DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
+            TpmDeviceKeySessionEvidenceStore remoteBridgeDeviceKeySessionEvidenceStore,
             @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis,
             @Value("${remote-bridge.device-trust.verifier:FAIL_CLOSED}") String deviceTrustVerifierType,
-            @Value("${remote-bridge.device-trust.device-key-session.challenge-ttl-millis:120000}")
+            @Value("${remote-bridge.device-trust.device-key-session.challenge-ttl-millis:180000}")
                     long deviceKeyChallengeTtlMillis) {
         // Faz 22.6 #548 step-5b — derive issuance ON exactly when the canonical TPM-native (REAL) verifier is the
         // active device-trust basis, so there is NO config gap (REAL verifier on ⇒ challenges issued) and non-REAL
-        // deployments emit no challenges agents would not answer. The TTL must cover the consent + operation
-        // window (else the evidence expires before PERMIT-time and the verifier false-denies).
+        // deployments emit no challenges agents would not answer. The challenge TTL MUST exceed the consent-prompt
+        // window plus a margin for the first operation (default 180s > the 120s consent default), else the session
+        // evidence would expire before PERMIT-time and the REAL verifier would false-deny (Codex Q3). The evidence
+        // + pending-challenge stores let the service clear stale state on terminal + at reused-sessionId open (F1).
         String type = deviceTrustVerifierType == null ? "" : deviceTrustVerifierType.strip();
         boolean deviceKeySessionEnabled = type.equalsIgnoreCase("DEVICE_KEY_ATTESTATION_REAL")
                 || type.equalsIgnoreCase("REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL");
         return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
                 remoteBridgeBroker, remoteBridgeControlStreamRegistry, remoteBridgeDurableAuditSink,
                 System::currentTimeMillis, consentPromptTtlMillis,
-                remoteBridgeDeviceKeyChallengeStore, deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
+                remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore,
+                deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
     }
 
     @Bean

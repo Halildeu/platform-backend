@@ -17,6 +17,7 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessag
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DeviceKeyChallengeStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TpmDeviceKeySessionEvidenceStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
@@ -158,7 +159,7 @@ class RemoteBridgeOperatorServiceTest {
         registry.register(peer, new ControlStreamHandle(observer));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
-                120_000L, new DeviceKeyChallengeStore(), true, 120_000L);
+                120_000L, new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support",
@@ -181,7 +182,7 @@ class RemoteBridgeOperatorServiceTest {
         registry.register(peer, new ControlStreamHandle(throwingObserver()));
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
                 assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
-                120_000L, new DeviceKeyChallengeStore(), true, 120_000L);
+                120_000L, new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
 
         SessionOpenOutcome outcome = service.openSession(
                 new SessionRequest("s1", "dev-1", "operator@x", "remote support",
@@ -213,6 +214,32 @@ class RemoteBridgeOperatorServiceTest {
                 "a non-REAL deployment emits NO device-key challenge");
         assertTrue(observer.sent.stream().anyMatch(Envelope::hasConsentPrompt),
                 "the consent prompt still goes out");
+    }
+
+    @Test
+    void aReusedSessionIdDoesNotInheritThePriorSessionsPendingChallenge() {
+        // Codex REVISE F1: the broker sessionId is client-supplied + reusable after the prior session is evicted.
+        // A NEW session reusing the id must clear the prior pending challenge so a late response for it can never
+        // be redeemed into the new same-id session — openSession evicts stale (sessionId, peer) state before issue.
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
+                120_000L, challengeStore, new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
+
+        // a prior "s1" left a still-valid pending challenge for (s1, peer-1) behind
+        var stale = challengeStore.issue("s1", "peer-1", 600_000L, NOW);
+
+        SessionOpenOutcome reopened = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "retry", Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X");
+
+        assertTrue(reopened.opened());
+        assertTrue(challengeStore.consume(stale.challengeId(), "peer-1", "s1", NOW).isEmpty(),
+                "a late response for the prior session's evicted challenge cannot be redeemed into the reused id");
     }
 
     @Test

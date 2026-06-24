@@ -119,6 +119,22 @@ public final class DeviceKeyChallengeStore {
         return Optional.ofNullable(consumed[0]);
     }
 
+    /**
+     * Evict every pending challenge for {@code (sessionId, transportPeerKey)} (Codex #548 step-5b REVISE F1): a
+     * broker {@code sessionId} is client-supplied and can be reused after the prior session goes terminal, so on
+     * session terminal — and defensively at a fresh {@code openSession} for the same id — the prior session's
+     * pending challenge MUST be cleared, or a late response for it could be redeemed into the new same-id session.
+     * Idempotent; a blank input is a no-op.
+     */
+    public void evictSession(String sessionId, String transportPeerKey) {
+        if (sessionId == null || sessionId.isBlank()
+                || transportPeerKey == null || transportPeerKey.isBlank()) {
+            return;
+        }
+        pending.values().removeIf(p -> p.sessionId().equals(sessionId)
+                && p.challenge().transportPeerKey().equals(transportPeerKey));
+    }
+
     /** Pending (un-consumed, possibly-expired-until-next-issue) challenge count — tests / metrics only. */
     int pendingCount() {
         return pending.size();

@@ -137,6 +137,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         if (!result.granted()) {
             if (session.transition(Event.CONSENT_DENIED).accepted()) {
                 store.evictIfTerminal(session.sessionId());
+                evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 terminal cleanup
                 recordBestEffort(session.sessionId(), "CONSENT_DENIED");
             } else {
                 recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
@@ -187,6 +188,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                         session.abortLeaseLocally();
                         if (session.transition(Event.LOCAL_ABORT).accepted()) {
                             store.evictIfTerminal(session.sessionId());
+                            evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 cleanup
                             recordBestEffort(session.sessionId(), "KILLED:" + cause);
                         }
                     });
@@ -249,6 +251,21 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                         challenge, mapped.get(), now, challenge.expiresAtEpochMillis()));
         recordBestEffort(session.sessionId(),
                 "DEVICE_KEY_EVIDENCE_STORED:challenge=" + safeType(challenge.challengeId()));
+    }
+
+    /**
+     * Clear any pending device-key challenge + stored session evidence for a TERMINATING session (Codex REVISE
+     * F1): the broker {@code sessionId} is client-supplied + reusable, so on terminal the prior session's
+     * device-key state MUST be dropped or a reused id could inherit it. Null-safe (a no-op when the device-key
+     * path is not wired).
+     */
+    private void evictDeviceKeySession(String sessionId, String transportPeerKey) {
+        if (deviceKeyChallengeStore != null) {
+            deviceKeyChallengeStore.evictSession(sessionId, transportPeerKey);
+        }
+        if (deviceKeyEvidenceStore != null) {
+            deviceKeyEvidenceStore.evict(sessionId, transportPeerKey);
+        }
     }
 
     /**
