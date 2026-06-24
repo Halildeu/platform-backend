@@ -17,8 +17,55 @@ DIRECT_BRACKET_RE = re.compile(r"\[([^\]]*)\]")
 IDENT_RE = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
 
 
+def strip_outer_parens(expr: str) -> str:
+  expr = expr.strip()
+  while expr.startswith("(") and expr.endswith(")"):
+    depth = 0
+    balanced_outer = True
+    for idx, ch in enumerate(expr):
+      if ch == "(":
+        depth += 1
+      elif ch == ")":
+        depth -= 1
+        if depth == 0 and idx != len(expr) - 1:
+          balanced_outer = False
+          break
+      if depth < 0:
+        balanced_outer = False
+        break
+    if not balanced_outer or depth != 0:
+      break
+    expr = expr[1:-1].strip()
+  return expr
+
+
+def split_top_level_or(expr: str) -> list[str]:
+  parts: list[str] = []
+  start = 0
+  depth = 0
+  idx = 0
+  while idx < len(expr):
+    ch = expr[idx]
+    if ch == "(":
+      depth += 1
+      idx += 1
+      continue
+    if ch == ")":
+      depth -= 1
+      idx += 1
+      continue
+    if depth == 0 and expr.startswith(" or ", idx):
+      parts.append(expr[start:idx].strip())
+      idx += 4
+      start = idx
+      continue
+    idx += 1
+  parts.append(expr[start:].strip())
+  return [part for part in parts if part]
+
+
 def parse_term(term: str) -> dict:
-  term = term.strip()
+  term = strip_outer_parens(term)
   if term.startswith("[") and term.endswith("]"):
     return {"this": {}}
 
@@ -35,16 +82,38 @@ def parse_term(term: str) -> dict:
 
 
 def parse_union(expr: str) -> dict:
-  parts = [part.strip() for part in expr.split(" or ") if part.strip()]
+  expr = strip_outer_parens(expr)
+  parts = split_top_level_or(expr)
   if len(parts) == 1:
     return parse_term(parts[0])
-  return {"union": {"child": [parse_term(part) for part in parts]}}
+  children = []
+  for part in parts:
+    child = parse_expr(part)
+    if "union" in child:
+      children.extend(child["union"]["child"])
+    else:
+      children.append(child)
+  return {"union": {"child": children}}
 
 
 def parse_expr(expr: str) -> dict:
-  expr = expr.strip()
-  if " but not " in expr:
-    base, subtract = [part.strip() for part in expr.split(" but not ", 1)]
+  expr = strip_outer_parens(expr)
+  depth = 0
+  split_at = -1
+  idx = 0
+  while idx < len(expr):
+    ch = expr[idx]
+    if ch == "(":
+      depth += 1
+    elif ch == ")":
+      depth -= 1
+    elif depth == 0 and expr.startswith(" but not ", idx):
+      split_at = idx
+      break
+    idx += 1
+  if split_at >= 0:
+    base = expr[:split_at].strip()
+    subtract = expr[split_at + len(" but not "):].strip()
     return {
       "difference": {
         "base": parse_union(base),
@@ -116,7 +185,7 @@ def parse_model(text: str) -> dict:
 
   for raw_line in text.splitlines():
     stripped = raw_line.strip()
-    if not stripped or stripped == "model" or stripped == "relations" or stripped.startswith("schema "):
+    if not stripped or stripped.startswith("#") or stripped == "model" or stripped == "relations" or stripped.startswith("schema "):
       continue
 
     type_match = TYPE_LINE_RE.match(stripped)

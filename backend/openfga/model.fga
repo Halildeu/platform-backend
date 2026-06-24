@@ -45,8 +45,8 @@ type branch
 type module
   relations
     define can_edit: [user] but not blocked
-    define can_manage: [user] or can_edit but not blocked
-    define can_view: [user] or can_manage but not blocked
+    define can_manage: ([user] or can_edit) but not blocked
+    define can_view: ([user] or can_manage) but not blocked
     define blocked: [user]
 
 type action
@@ -57,7 +57,7 @@ type action
 type report
   relations
     define can_edit: [user] but not blocked
-    define can_view: [user] or can_edit but not blocked
+    define can_view: ([user] or can_edit) but not blocked
     define blocked: [user]
 
 # R16 PR-B (Codex 019e27f5 Option 3) — report_group authz contract repair.
@@ -72,7 +72,7 @@ type report
 type report_group
   relations
     define can_edit: [user] but not blocked
-    define can_view: [user] or can_edit but not blocked
+    define can_view: ([user] or can_edit) but not blocked
     define blocked: [user]
 
 # ── Faz 23.7 M3-supplement: Notification authorization (Codex 019e2651 Yol A) ──
@@ -114,3 +114,27 @@ type template
     define topic: [notification_topic]
     define can_receive: can_receive from topic
     define can_publish: can_publish from topic
+
+# ── Faz 24 Meeting Intelligence object ReBAC ──
+# Route-level authorization stays module-scoped:
+#   module:MEETING / module:TRANSCRIPT can_view|can_manage
+#
+# meeting-service additionally writes the per-object owner tuple during create:
+#   user:<id>#owner@meeting:<uuid>
+#
+# transcript-service is currently module-gated only, but the transcript object
+# type is added in the same model revision so object ReBAC can be activated
+# without a second model-gap failure when transcript ownership/sharing lands.
+type meeting
+  relations
+    define blocked: [user]
+    define owner: [user] but not blocked
+    define participant: [user] but not blocked
+    define viewer: (([user] or participant) or owner) but not blocked
+
+type transcript
+  relations
+    define blocked: [user]
+    define owner: [user] but not blocked
+    define participant: [user] but not blocked
+    define viewer: (([user] or participant) or owner) but not blocked
