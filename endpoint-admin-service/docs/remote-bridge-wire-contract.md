@@ -212,6 +212,36 @@ this prevents retry/replay amplification and closes the double-execute window.
 | 3 | contentHash | string |
 | 4 | epochMillis | int64 |
 
+### `DeviceKeyChallenge` (proto `DeviceKeyChallenge`) — broker→agent CONTROL, Faz 22.6 #548 Path A
+One-shot, TTL-bounded device-key liveness challenge. ADVISORY transport frame; full design in
+`docs/faz22.6-device-key-session-attestation-design.md` (Codex 019efada). The agent answers with a
+`DeviceKeyAttestationResponse` signed over a canonical binding context derived from these fields.
+| # | field | type | notes |
+|---|---|---|---|
+| 1 | challengeId | string | wire-id; broker replay-cache key |
+| 2 | nonceB64 | string | base64 (32 raw bytes), bounded |
+| 3 | issuedAtEpochMillis | int64 | > 0 |
+| 4 | expiresAtEpochMillis | int64 | > issuedAt (positive validity window; short TTL) |
+| 5 | transportPeerKey | string | broker-observed mTLS leaf SHA-256 (binding anchor) |
+| 6 | protocolVersion | string | `device-key-session-v1` |
+
+### `DeviceKeyAttestationResponse` (proto `DeviceKeyAttestationResponse`) — agent→broker CONTROL, Faz 22.6 #548 Path A
+Fresh device-key session attestation. ADVISORY shape — the `DEVICE_KEY_ATTESTATION_REAL` verifier (later slice)
+re-derives every fact (deviceKeyPub == mTLS leaf key; deviceKeySig over the binding context; AK-certify;
+EK→pinned-root). `ekCert*` OPTIONAL at the wire (bounded-lab pilot may omit). NEVER carries secrets.
+| # | field | type | notes |
+|---|---|---|---|
+| 1 | challengeId | string | wire-id; echoes the challenge |
+| 2 | schema | string | `faz22.6.device-key-session.v1` |
+| 3 | deviceKeyPubB64 | string | required b64; verifier checks == mTLS leaf key |
+| 4–6 | akPubB64, akNameB64, ekPubB64 | string | required b64 |
+| 7–8 | ekCertB64, ekCertChainB64[] | string / repeated | OPTIONAL (strong path); chain ≤ 10 entries |
+| 9–10 | certifyInfoB64, certifySigB64 | string | required b64 (AK-certify of device key) |
+| 11–12 | quoteB64, quoteSigB64 | string | required b64 (quote.extraData = hash(bindingContext)) |
+| 13 | bindingContextB64 | string | required b64; canonical `label‖challengeId‖nonce‖transportPeerKey‖expiry` |
+| 14 | deviceKeySigB64 | string | required b64; device key signs bindingContext (live possession) |
+| 15 | signedAtEpochMillis | int64 | > 0 |
+
 ## Service + Envelope (FINALIZED in T-2a — Codex 019eb9fb)
 
 ```proto
@@ -234,7 +264,7 @@ The agent initiates both streams (outbound-only, NAT-friendly); the broker pushe
 | 4 | frameSeq | int64 | ≥ 0 |
 | 5 | streamId | string | optional; validates when set |
 | 6 | sentAtEpochMillis | int64 | ≥ 0 |
-| 10–21 | oneof payload | | agent_hello(10), session_request(11), consent_prompt(12), consent_result(13), operation_request(14), operation_permit(15), kill(16), audit_event(17), heartbeat(18), data_frame(19), error(20), **operation_dispatch(21)** — T-4 design-spec, proto-pending |
+| 10–23 | oneof payload | | agent_hello(10), session_request(11), consent_prompt(12), consent_result(13), operation_request(14), operation_permit(15), kill(16), audit_event(17), heartbeat(18), data_frame(19), error(20), operation_dispatch(21), **device_key_challenge(22)** (broker→agent), **device_key_attestation_response(23)** (agent→broker) — Faz 22.6 #548 Path A device-key session attestation |
 
 **Channel/payload compatibility** (statically enforced by `RemoteBridgeProtoAdapter.validateEnvelope`, tested):
 

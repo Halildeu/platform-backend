@@ -12,6 +12,8 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.Capability;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentPrompt;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentResult;
+import com.example.endpointadmin.remoteaccess.bridge.proto.DeviceKeyAttestationResponse;
+import com.example.endpointadmin.remoteaccess.bridge.proto.DeviceKeyChallenge;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ErrorFrame;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
@@ -72,6 +74,32 @@ public final class RemoteBridgeProtoAdapter {
             return !required;
         }
         return s.length() <= MAX_TEXT && s.chars().noneMatch(c -> c < 0x20 || c == 0x7F);
+    }
+
+    /**
+     * Faz 22.6 #548 device-key session attestation fields are base64 (EK/AK/device-key pub, certify, quote,
+     * signatures, binding context). Bounded so a malformed/oversized field cannot drive unbounded work; the
+     * adapter checks ONLY well-formedness + size — the {@code DEVICE_KEY_ATTESTATION_REAL} verifier owns the
+     * crypto (chain-to-root, signature verify, leaf-key match).
+     */
+    private static final int MAX_DEVICE_KEY_B64 = 8192;
+    private static final int MAX_EK_CHAIN_ENTRIES = 10;
+    private static final int MAX_NONCE_B64 = 128; // 32 raw bytes ≈ 44 b64 chars; generous bound
+
+    /** A base64 field: {@code required} → non-blank; present → {@code <= max} chars + strict base64 decode. */
+    private static boolean isBoundedB64(String s, boolean required, int max) {
+        if (s == null || s.isEmpty()) {
+            return !required;
+        }
+        if (s.length() > max) {
+            return false;
+        }
+        try {
+            Base64.getDecoder().decode(s);
+            return true;
+        } catch (IllegalArgumentException notBase64) {
+            return false;
+        }
     }
 
     /** Optional proto3 string → domain: empty means absent. */
@@ -527,6 +555,123 @@ public final class RemoteBridgeProtoAdapter {
                 .setPermit(encode(dispatch.permit()))
                 .setCommandLine(nullToEmpty(dispatch.commandLine()))
                 .build();
+    }
+
+    // ------------------------------------------------------------------
+    // Device-key session attestation (Faz 22.6 #548 Path A) — challenge + response
+    // ------------------------------------------------------------------
+
+    /**
+     * Broker → agent CONTROL. The challenge is broker-built; this decoder is the agent-side gate AND the
+     * round-trip contract: a valid id, a bounded base64 nonce, bounded text for the transport-binding anchor
+     * + protocol version, and a positive validity window. ADVISORY — the agent NEVER trusts it as
+     * authorization; it only signs a response over the canonical binding context derived from these fields.
+     */
+    public static DecodeResult<RemoteBridgeMessages.DeviceKeyChallenge> decode(DeviceKeyChallenge challenge) {
+        if (challenge == null) {
+            return DecodeResult.reject("device-key-challenge-null");
+        }
+        if (!WireContract.isValidId(challenge.getChallengeId())) {
+            return DecodeResult.reject("device-key-challenge-id");
+        }
+        if (!isBoundedB64(challenge.getNonceB64(), true, MAX_NONCE_B64)) {
+            return DecodeResult.reject("device-key-challenge-nonce");
+        }
+        if (!isSafeText(challenge.getTransportPeerKey(), true) || !isSafeText(challenge.getProtocolVersion(), true)) {
+            return DecodeResult.reject("device-key-challenge-text");
+        }
+        if (challenge.getIssuedAtEpochMillis() <= 0
+                || challenge.getExpiresAtEpochMillis() <= challenge.getIssuedAtEpochMillis()) {
+            return DecodeResult.reject("device-key-challenge-validity-window");
+        }
+        return DecodeResult.ok(new RemoteBridgeMessages.DeviceKeyChallenge(challenge.getChallengeId(),
+                challenge.getNonceB64(), challenge.getIssuedAtEpochMillis(), challenge.getExpiresAtEpochMillis(),
+                challenge.getTransportPeerKey(), challenge.getProtocolVersion()));
+    }
+
+    public static DeviceKeyChallenge encode(RemoteBridgeMessages.DeviceKeyChallenge challenge) {
+        return DeviceKeyChallenge.newBuilder()
+                .setChallengeId(nullToEmpty(challenge.challengeId()))
+                .setNonceB64(nullToEmpty(challenge.nonceB64()))
+                .setIssuedAtEpochMillis(challenge.issuedAtEpochMillis())
+                .setExpiresAtEpochMillis(challenge.expiresAtEpochMillis())
+                .setTransportPeerKey(nullToEmpty(challenge.transportPeerKey()))
+                .setProtocolVersion(nullToEmpty(challenge.protocolVersion()))
+                .build();
+    }
+
+    /**
+     * Agent → broker CONTROL. ADVISORY shape: the adapter validates well-formedness + bounds ONLY (id,
+     * required-vs-optional base64 fields, bounded EK chain, positive timestamp). It NEVER sets trust — the
+     * {@code DEVICE_KEY_ATTESTATION_REAL} verifier re-derives every authoritative fact ({@code deviceKeyPub}
+     * == mTLS leaf key; fresh {@code deviceKeySig} over the binding context; AK-certify of the device key;
+     * EK→pinned-root). {@code ekCert}/{@code ekCertChain} are OPTIONAL at the wire (a bounded-lab pilot may
+     * omit them) — the verifier enforces the strong-path root policy. No secret ever travels here.
+     */
+    public static DecodeResult<RemoteBridgeMessages.DeviceKeyAttestationResponse> decode(
+            DeviceKeyAttestationResponse response) {
+        if (response == null) {
+            return DecodeResult.reject("device-key-response-null");
+        }
+        if (!WireContract.isValidId(response.getChallengeId())) {
+            return DecodeResult.reject("device-key-response-challenge-id");
+        }
+        if (!isSafeText(response.getSchema(), true)) {
+            return DecodeResult.reject("device-key-response-schema");
+        }
+        if (!isBoundedB64(response.getDeviceKeyPubB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getAkPubB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getAkNameB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getEkPubB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getCertifyInfoB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getCertifySigB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getQuoteB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getQuoteSigB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getBindingContextB64(), true, MAX_DEVICE_KEY_B64)
+                || !isBoundedB64(response.getDeviceKeySigB64(), true, MAX_DEVICE_KEY_B64)) {
+            return DecodeResult.reject("device-key-response-proof-b64");
+        }
+        if (!isBoundedB64(response.getEkCertB64(), false, MAX_DEVICE_KEY_B64)) { // optional (strong path only)
+            return DecodeResult.reject("device-key-response-ek-cert");
+        }
+        List<String> chain = response.getEkCertChainB64List();
+        if (chain.size() > MAX_EK_CHAIN_ENTRIES) {
+            return DecodeResult.reject("device-key-response-ek-chain-size");
+        }
+        for (String entry : chain) {
+            if (!isBoundedB64(entry, true, MAX_DEVICE_KEY_B64)) {
+                return DecodeResult.reject("device-key-response-ek-chain-entry");
+            }
+        }
+        if (response.getSignedAtEpochMillis() <= 0) {
+            return DecodeResult.reject("device-key-response-signed-at");
+        }
+        return DecodeResult.ok(new RemoteBridgeMessages.DeviceKeyAttestationResponse(response.getChallengeId(),
+                response.getSchema(), response.getDeviceKeyPubB64(), response.getAkPubB64(),
+                response.getAkNameB64(), response.getEkPubB64(), emptyToNull(response.getEkCertB64()),
+                List.copyOf(chain), response.getCertifyInfoB64(), response.getCertifySigB64(),
+                response.getQuoteB64(), response.getQuoteSigB64(), response.getBindingContextB64(),
+                response.getDeviceKeySigB64(), response.getSignedAtEpochMillis()));
+    }
+
+    public static DeviceKeyAttestationResponse encode(RemoteBridgeMessages.DeviceKeyAttestationResponse response) {
+        DeviceKeyAttestationResponse.Builder builder = DeviceKeyAttestationResponse.newBuilder()
+                .setChallengeId(nullToEmpty(response.challengeId()))
+                .setSchema(nullToEmpty(response.schema()))
+                .setDeviceKeyPubB64(nullToEmpty(response.deviceKeyPubB64()))
+                .setAkPubB64(nullToEmpty(response.akPubB64()))
+                .setAkNameB64(nullToEmpty(response.akNameB64()))
+                .setEkPubB64(nullToEmpty(response.ekPubB64()))
+                .setEkCertB64(nullToEmpty(response.ekCertB64()))
+                .setCertifyInfoB64(nullToEmpty(response.certifyInfoB64()))
+                .setCertifySigB64(nullToEmpty(response.certifySigB64()))
+                .setQuoteB64(nullToEmpty(response.quoteB64()))
+                .setQuoteSigB64(nullToEmpty(response.quoteSigB64()))
+                .setBindingContextB64(nullToEmpty(response.bindingContextB64()))
+                .setDeviceKeySigB64(nullToEmpty(response.deviceKeySigB64()))
+                .setSignedAtEpochMillis(response.signedAtEpochMillis());
+        response.ekCertChainB64().forEach(builder::addEkCertChainB64);
+        return builder.build();
     }
 
     // ------------------------------------------------------------------

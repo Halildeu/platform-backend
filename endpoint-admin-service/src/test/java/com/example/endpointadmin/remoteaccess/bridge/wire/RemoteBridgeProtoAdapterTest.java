@@ -14,6 +14,8 @@ import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentPrompt;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ConsentResult;
 import com.example.endpointadmin.remoteaccess.bridge.proto.DataFrame;
+import com.example.endpointadmin.remoteaccess.bridge.proto.DeviceKeyAttestationResponse;
+import com.example.endpointadmin.remoteaccess.bridge.proto.DeviceKeyChallenge;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ErrorFrame;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Heartbeat;
@@ -25,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -160,6 +163,77 @@ class RemoteBridgeProtoAdapterTest {
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setWindowsInteractiveSession("").build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setWindowsInteractiveSession("a\nb").build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setGrantedAtEpochMillis(-1).build()).isOk());
+    }
+
+    // ---- Faz 22.6 #548 Path A: device-key session attestation (challenge + response) ----
+
+    @Test
+    void deviceKeyChallengeRoundTripsAndRejectsBadFields() {
+        RemoteBridgeMessages.DeviceKeyChallenge challenge = new RemoteBridgeMessages.DeviceKeyChallenge(
+                "chal-1", "QUJD", 1000L, 2000L, "leaf-sha256-fp", "device-key-session-v1");
+        DeviceKeyChallenge proto = RemoteBridgeProtoAdapter.encode(challenge);
+        assertEquals(challenge, RemoteBridgeProtoAdapter.decode(proto).orElseThrow());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().clearChallengeId().build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setNonceB64("@@@@").build()).isOk()); // malformed b64
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setTransportPeerKey("").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setProtocolVersion("").build()).isOk());
+        // expires <= issued is not a positive validity window
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setExpiresAtEpochMillis(1000L).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setIssuedAtEpochMillis(0).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((DeviceKeyChallenge) null).isOk());
+    }
+
+    @Test
+    void deviceKeyChallengeTravelsOnlyOnControl() {
+        DeviceKeyChallenge proto = RemoteBridgeProtoAdapter.encode(new RemoteBridgeMessages.DeviceKeyChallenge(
+                "chal-1", "QUJD", 1000L, 2000L, "leaf-fp", "device-key-session-v1"));
+        assertTrue(RemoteBridgeProtoAdapter.validateEnvelope(Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL).setDeviceKeyChallenge(proto).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(Envelope.newBuilder()
+                .setChannelType(ChannelType.DATA).setDeviceKeyChallenge(proto).build()).isOk());
+    }
+
+    @Test
+    void deviceKeyAttestationResponseRoundTripsWithAndWithoutEkCertAndRejectsBadFields() {
+        RemoteBridgeMessages.DeviceKeyAttestationResponse full =
+                new RemoteBridgeMessages.DeviceKeyAttestationResponse("chal-1", "faz22.6.device-key-session.v1",
+                        "QUJD", "QUJD", "QUJD", "QUJD", "QUJD", List.of("QUJD", "RUZH"),
+                        "QUJD", "QUJD", "QUJD", "QUJD", "QUJD", "QUJD", 1500L);
+        DeviceKeyAttestationResponse proto = RemoteBridgeProtoAdapter.encode(full);
+        assertEquals(full, RemoteBridgeProtoAdapter.decode(proto).orElseThrow());
+
+        // optional EK cert + chain omitted → ek cert normalises null, chain empty
+        RemoteBridgeMessages.DeviceKeyAttestationResponse minimal =
+                new RemoteBridgeMessages.DeviceKeyAttestationResponse("chal-1", "faz22.6.device-key-session.v1",
+                        "QUJD", "QUJD", "QUJD", "QUJD", null, List.of(),
+                        "QUJD", "QUJD", "QUJD", "QUJD", "QUJD", "QUJD", 1500L);
+        assertEquals(minimal, RemoteBridgeProtoAdapter.decode(RemoteBridgeProtoAdapter.encode(minimal)).orElseThrow());
+
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().clearChallengeId().build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setSchema("").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().clearDeviceKeyPubB64().build()).isOk()); // required
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setQuoteB64("@@@@").build()).isOk()); // malformed b64
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setDeviceKeySigB64("").build()).isOk()); // required
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setSignedAtEpochMillis(0).build()).isOk());
+        // oversized EK chain (> MAX_EK_CHAIN_ENTRIES)
+        DeviceKeyAttestationResponse.Builder over = proto.toBuilder().clearEkCertChainB64();
+        for (int i = 0; i < 11; i++) {
+            over.addEkCertChainB64("QUJD");
+        }
+        assertFalse(RemoteBridgeProtoAdapter.decode(over.build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode((DeviceKeyAttestationResponse) null).isOk());
+    }
+
+    @Test
+    void deviceKeyAttestationResponseTravelsOnlyOnControl() {
+        DeviceKeyAttestationResponse proto = RemoteBridgeProtoAdapter.encode(
+                new RemoteBridgeMessages.DeviceKeyAttestationResponse("chal-1", "faz22.6.device-key-session.v1",
+                        "QUJD", "QUJD", "QUJD", "QUJD", null, List.of(), "QUJD", "QUJD", "QUJD", "QUJD",
+                        "QUJD", "QUJD", 1500L));
+        assertTrue(RemoteBridgeProtoAdapter.validateEnvelope(Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL).setDeviceKeyAttestationResponse(proto).build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.validateEnvelope(Envelope.newBuilder()
+                .setChannelType(ChannelType.DATA).setDeviceKeyAttestationResponse(proto).build()).isOk());
     }
 
     @Test

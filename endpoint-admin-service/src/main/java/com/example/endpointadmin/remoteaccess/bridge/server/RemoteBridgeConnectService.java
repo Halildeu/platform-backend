@@ -155,7 +155,7 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         }
         // Directional allowlist — inbound is the AGENT side of the tunnel
         switch (envelope.getPayloadCase()) {
-            case AGENT_HELLO, CONSENT_RESULT, AUDIT_EVENT, HEARTBEAT, ERROR -> {
+            case AGENT_HELLO, CONSENT_RESULT, AUDIT_EVENT, HEARTBEAT, ERROR, DEVICE_KEY_ATTESTATION_RESPONSE -> {
             }
             default -> {
                 return "control-inbound-payload-refused";
@@ -170,6 +170,8 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
             case AGENT_HELLO -> agentHelloDefect(envelope, peer);
             case CONSENT_RESULT -> RemoteBridgeProtoAdapter.decode(envelope.getConsentResult()).rejectReason();
             case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent()).rejectReason();
+            case DEVICE_KEY_ATTESTATION_RESPONSE ->
+                    RemoteBridgeProtoAdapter.decode(envelope.getDeviceKeyAttestationResponse()).rejectReason();
             default -> null; // HEARTBEAT/ERROR content already validated by validateEnvelope
         };
     }
@@ -196,6 +198,9 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
                     .ifOk(result -> controlPlane.onConsentResult(peer, result));
             case AUDIT_EVENT -> RemoteBridgeProtoAdapter.decode(envelope.getAuditEvent())
                     .ifOk(event -> controlPlane.onAuditEvent(peer, event));
+            case DEVICE_KEY_ATTESTATION_RESPONSE -> RemoteBridgeProtoAdapter.decode(
+                            envelope.getDeviceKeyAttestationResponse())
+                    .ifOk(response -> controlPlane.onDeviceKeyAttestationResponse(peer, response));
             case HEARTBEAT -> controlPlane.onHeartbeat(peer);
             case ERROR -> RemoteBridgeProtoAdapter.decode(envelope.getSessionId(), envelope.getError())
                     .ifOk(error -> controlPlane.onAgentErrorFrame(peer, error));

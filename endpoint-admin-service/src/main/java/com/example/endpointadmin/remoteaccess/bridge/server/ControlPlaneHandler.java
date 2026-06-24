@@ -37,6 +37,15 @@ public interface ControlPlaneHandler {
     default void onAgentErrorFrame(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
     }
 
+    /**
+     * Agent-originated fresh device-key session attestation (Faz 22.6 #548 Path A) answering a broker
+     * {@code DeviceKeyChallenge}. Seam/observability only in this slice — the {@code DEVICE_KEY_ATTESTATION_REAL}
+     * verifier (a later slice) consumes it to decide device trust; by itself it authorizes nothing.
+     */
+    default void onDeviceKeyAttestationResponse(PeerIdentity peer,
+                                                RemoteBridgeMessages.DeviceKeyAttestationResponse response) {
+    }
+
     /** T-2b default: accept-and-ignore. Real control-plane wiring is T-4. */
     ControlPlaneHandler INERT = new ControlPlaneHandler() {
         @Override
