@@ -97,7 +97,10 @@ or `COMPOSITE` if enrollment AND hardware are both required) **iff ALL** hold (e
 1. **Backend (source-of-truth):** proto (the 2 CONTROL payloads) + domain records (`DeviceKeyChallenge`,
    `DeviceKeySessionAttestationV1`) + wire adapters (decode + re-validate, fail-closed) + directional
    allowlists + round-trip/byte tests. **No verifier yet.**
-2. **Backend:** parser populates `ParsedEvidence.deviceKey` from a validated response (still no trust set).
+2. **Backend:** map a validated `DeviceKeyAttestationResponse` → a new TPM-native evidence record
+   (`TpmDeviceKeySessionAttestation`: decoded device-key/AK/EK/certify/quote/binding bytes) and place it in the
+   challenge/session evidence store — **NOT** `ParsedEvidence.deviceKey` (that slot now holds the #732 CA-static
+   model; see §6). Shape-only, still no trust set.
 3. **Backend:** challenge issuance + TTL store + single-use replay-cache.
 4. **Backend:** `DEVICE_KEY_ATTESTATION_REAL` verifier (§2) + factory mode + profile gating + negative matrix.
 5. **Agent (Go):** regenerate vendored proto; produce the `DeviceKeyAttestationResponse` (fresh Certify/Quote
@@ -108,3 +111,36 @@ or `COMPOSITE` if enrollment AND hardware are both required) **iff ALL** hold (e
 
 > Do NOT ship a field-7-only / AgentHello-carried variant — it would re-open the "source proof but no session
 > freshness" finding. Steps 1-5 are agent-doable; step 6 needs operator (live Vault) + real-hardware + owner sign.
+
+## 6. Reconciliation with #732 (CA-static AgentHello path) — Codex `019efada`
+
+A parallel session landed **PR #732** ("Wire device-key attestation into session trust") concurrently. It took a
+**different evidence family**: `TransportBoundPeerEvidenceParser` now parses `AgentHello.attestation_evidence_b64`
+as a JSON envelope `{v, slsa, deviceKey:{keyDer, signature, chainDer, protectionLevel, nonExportable, algorithm}}`
+→ `DeviceIdentityVerifier.DeviceKeyAttestation` (a **CA-attestation** model: a device-attestation CA signs over
+the device key; the chain builds to a configured device root) → `PeerTrustLedger.deviceTrusted` →
+`PeerDeviceKeyAttestationSessionDeviceTrustVerifier` → `DeviceTrustDecision.hardwareKeyAttested()`. It added the
+factory modes `DEVICE_KEY_ATTESTATION` + `REQUIRE_ENROLLMENT_AND_DEVICE_KEY`. #732's own body states it does
+**not** close #548 (no live TPM material, no seeded device-attestation roots, no live positive/negative evidence).
+
+This is precisely the AgentHello-carried shape **§0 rejected** for the canonical path (first message, no broker
+nonce → replayable). Reconciliation (Codex decision authority, CLAUDE.md §8):
+
+- **Canonical #548 strong path stays this TPM-native challenge-response** (PR #741 wire-contract + the
+  `DEVICE_KEY_ATTESTATION_REAL` verifier, §2). It is **not** retracted.
+- **#732 is NOT wholesale-reverted.** Its `SessionDeviceTrustVerifier` seam + the CA-envelope parser are kept as
+  an **auxiliary, non-live, CA-static** path — valuable later for multi-platform (Android/Apple/MDM) CA
+  attestation, behind its own broker-challenge protocol if it ever goes production.
+- **Quarantine (guard PR, this PR):** the CA-static composite `REQUIRE_ENROLLMENT_AND_DEVICE_KEY` is **REFUSED in
+  a production-like profile** until the live `DEVICE_KEY_ATTESTATION_REAL` verifier backs the composite's hardware
+  leg. This closes a **latent false-acceptance**: the composite's "hardware" leg promoted the non-live,
+  replay-prone `peerTrust.deviceTrusted`, which in a prod-like profile would have read as production-grade
+  hardware device trust.
+- **The two models must never collapse under one `deviceTrusted` boolean.** The TPM-native flow uses its own slot
+  (`TpmDeviceKeySessionAttestation`, §5 step 2) + store + the `DEVICE_KEY_ATTESTATION_REAL` verifier; it does
+  **not** consume `peerTrust.deviceTrusted` (the CA-static boolean).
+- **Critical verifier invariant (Codex):** an EK-cert chaining to a trusted root does **not** by itself prove the
+  AK belongs to that EK/TPM. The `DEVICE_KEY_ATTESTATION_REAL` verifier must bind AK↔EK either by matching the
+  session response against the **stored enrollment TPM record** (the enrollment `MakeCredential/ActivateCredential`
+  already proved AK↔EK at V10) or by a fresh session-time credential activation. "AK signed certify/quote + EK
+  chains to root" alone is insufficient.
