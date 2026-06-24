@@ -39,8 +39,12 @@ public final class DeviceKeyChallengeStore {
     private static final int NONCE_BYTES = 32;
     private static final int CHALLENGE_ID_BYTES = 16;
 
+    /** A pending challenge bound to BOTH the requesting peer (in the challenge) AND its broker session. */
+    private record Pending(DeviceKeyChallenge challenge, String sessionId) {
+    }
+
     private final SecureRandom random;
-    private final ConcurrentMap<String, DeviceKeyChallenge> pending = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Pending> pending = new ConcurrentHashMap<>();
 
     public DeviceKeyChallengeStore() {
         this(new SecureRandom());
@@ -51,13 +55,21 @@ public final class DeviceKeyChallengeStore {
     }
 
     /**
-     * Issue a fresh challenge bound to {@code transportPeerKey}, valid for {@code ttlMillis} from
-     * {@code nowEpochMillis}. Returns the challenge to send to the agent over the CONTROL stream; the pending
-     * state is recorded for a later single-use {@link #consume}.
+     * Issue a fresh challenge bound to {@code sessionId} + {@code transportPeerKey}, valid for {@code ttlMillis}
+     * from {@code nowEpochMillis}. Returns the challenge to send to the agent over the CONTROL stream; the pending
+     * state (including the owning broker {@code sessionId}) is recorded for a later single-use {@link #consume}.
      *
-     * @throws IllegalArgumentException on blank peer key or non-positive TTL (fail-fast caller misuse)
+     * <p><b>Session-bound (Codex #548 step-5a REVISE F1):</b> the {@code sessionId} pins the challenge to ONE
+     * broker session, so a late response for a closed session can never be redeemed against a NEW session that
+     * the same reconnected peer later opened. The wire {@code DeviceKeyChallenge} record is unchanged (the
+     * sessionId travels on the CONTROL envelope, not the payload).
+     *
+     * @throws IllegalArgumentException on a blank session id / peer key or non-positive TTL (fail-fast caller misuse)
      */
-    public DeviceKeyChallenge issue(String transportPeerKey, long ttlMillis, long nowEpochMillis) {
+    public DeviceKeyChallenge issue(String sessionId, String transportPeerKey, long ttlMillis, long nowEpochMillis) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId required to issue a device-key challenge");
+        }
         if (transportPeerKey == null || transportPeerKey.isBlank()) {
             throw new IllegalArgumentException("transportPeerKey required to issue a device-key challenge");
         }
@@ -74,30 +86,34 @@ public final class DeviceKeyChallengeStore {
                 nowEpochMillis + ttlMillis,
                 transportPeerKey,
                 PROTOCOL_VERSION);
-        pending.put(challenge.challengeId(), challenge);
+        pending.put(challenge.challengeId(), new Pending(challenge, sessionId));
         return challenge;
     }
 
     /**
-     * Atomically consume {@code challengeId} for {@code transportPeerKey} at {@code nowEpochMillis}. Returns the
-     * issued challenge IFF it exists, was issued to this exact peer, and has not expired — then removes it so it
-     * can never be redeemed again (single-use replay guard). A wrong-peer lookup keeps the challenge for its
-     * legitimate peer; an unknown / expired / already-consumed lookup returns {@link Optional#empty()}.
+     * Atomically consume {@code challengeId} for {@code (transportPeerKey, sessionId)} at {@code nowEpochMillis}.
+     * Returns the issued challenge IFF it exists, was issued to this exact peer AND this exact broker session, and
+     * has not expired — then removes it so it can never be redeemed again (single-use replay guard). A wrong-peer
+     * OR wrong-session lookup KEEPS the challenge for its legitimate owner (no DoS, no cross-session redeem); an
+     * unknown / expired / already-consumed lookup returns {@link Optional#empty()} — every failure mode is the
+     * same empty result (no oracle).
      */
-    public Optional<DeviceKeyChallenge> consume(String challengeId, String transportPeerKey, long nowEpochMillis) {
+    public Optional<DeviceKeyChallenge> consume(String challengeId, String transportPeerKey, String sessionId,
+                                                long nowEpochMillis) {
         if (challengeId == null || challengeId.isBlank()
-                || transportPeerKey == null || transportPeerKey.isBlank()) {
+                || transportPeerKey == null || transportPeerKey.isBlank()
+                || sessionId == null || sessionId.isBlank()) {
             return Optional.empty();
         }
         DeviceKeyChallenge[] consumed = new DeviceKeyChallenge[1];
-        pending.computeIfPresent(challengeId, (id, challenge) -> {
-            if (nowEpochMillis >= challenge.expiresAtEpochMillis()) {
-                return null; // expired → remove on any access (it is useless to the legitimate peer too)
+        pending.computeIfPresent(challengeId, (id, p) -> {
+            if (nowEpochMillis >= p.challenge().expiresAtEpochMillis()) {
+                return null; // expired → remove on any access (it is useless to the legitimate owner too)
             }
-            if (!challenge.transportPeerKey().equals(transportPeerKey)) {
-                return challenge; // wrong peer on a LIVE challenge → keep it for the legitimate peer (no DoS)
+            if (!p.challenge().transportPeerKey().equals(transportPeerKey) || !p.sessionId().equals(sessionId)) {
+                return p; // wrong peer OR wrong session on a LIVE challenge → keep it for its owner (no DoS)
             }
-            consumed[0] = challenge; // valid → capture and remove (single-use)
+            consumed[0] = p.challenge(); // valid → capture and remove (single-use)
             return null;
         });
         return Optional.ofNullable(consumed[0]);
@@ -115,6 +131,6 @@ public final class DeviceKeyChallengeStore {
     }
 
     private void evictExpired(long nowEpochMillis) {
-        pending.values().removeIf(challenge -> nowEpochMillis >= challenge.expiresAtEpochMillis());
+        pending.values().removeIf(p -> nowEpochMillis >= p.challenge().expiresAtEpochMillis());
     }
 }

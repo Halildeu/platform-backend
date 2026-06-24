@@ -78,6 +78,64 @@ public final class TpmAttestationVerifier {
         }
     }
 
+    /**
+     * Faz 22.6 #548 slice-1 step-5 — verify the DEVICE KEY's own signature over an arbitrary broker-supplied
+     * context (the canonical {@link com.example.endpointadmin.remoteaccess.bridge.orchestrator.DeviceKeySessionBindingContext}).
+     * Unlike {@link #verifyCertify}/{@link #verifyQuote} (the AK signs a TPM-internal {@code TPMS_ATTEST}), here the
+     * <b>unrestricted leaf device key</b> signs external data, proving LIVE possession of the device key bound to
+     * this session's challenge nonce + transport peer. The device key must be a signing key; its size meets the
+     * strict {@code DEVICE} policy (RSA-3072+); the signature scheme matches the key family and, when the key
+     * declares an intrinsic scheme, that scheme. Fail-closed via {@link TpmDenyCode#KEY_NOT_TPM_BOUND}.
+     *
+     * <p>TPM2 semantics: a {@code TPM2_Sign} over a hash of {@code signedData} yields a {@code TPMT_SIGNATURE};
+     * JCA {@code Signature.update(signedData)} re-hashes with the scheme hash, so verifying over the FULL context
+     * bytes matches (same as the certify/quote attest-bytes verify).
+     */
+    public static void verifyDeviceKeySignature(TpmPublicArea deviceKey, byte[] signedData, byte[] tpmtSig) {
+        if (deviceKey == null || signedData == null || signedData.length == 0) {
+            throw new TpmAttestException(TpmDenyCode.KEY_NOT_TPM_BOUND,
+                    "device-key signature inputs missing");
+        }
+        if (!deviceKey.isSign()) {
+            throw new TpmAttestException(TpmDenyCode.KEY_NOT_TPM_BOUND,
+                    "device key is not a signing key (cannot sign the session binding context)");
+        }
+        TpmtSignature sig;
+        try {
+            sig = TpmtSignature.parse(tpmtSig);
+        } catch (IllegalArgumentException e) {
+            throw new TpmAttestException(TpmDenyCode.KEY_NOT_TPM_BOUND,
+                    "malformed device-key TPMT_SIGNATURE: " + e.getMessage(), e);
+        }
+        PublicKey deviceKeyPub = deviceKey.toPublicKey();
+
+        // V12-class algorithm whitelist on the device key + the signature (strict DEVICE role: RSA-3072+).
+        TpmAlgorithmPolicy.requireStrongHash(sig.hashAlg());
+        TpmAlgorithmPolicy.requireSchemeMatchesKey(sig.sigAlg(), deviceKeyPub);
+        TpmAlgorithmPolicy.requireKeyMeetsPolicy(deviceKeyPub, TpmAlgorithmPolicy.Role.DEVICE);
+        // If the leaf declares an intrinsic signing scheme, the signature MUST use it (anti-substitution). An
+        // unrestricted leaf MAY carry ALG_NULL (scheme chosen at sign time) — then only the family match above binds.
+        int intrinsic = deviceKey.signingSchemeAlg();
+        if (intrinsic != TpmPublicArea.ALG_NULL && intrinsic != sig.sigAlg()) {
+            throw new TpmAttestException(TpmDenyCode.WEAK_ALGORITHM,
+                    "device-key signature scheme 0x" + Integer.toHexString(sig.sigAlg())
+                            + " != key intrinsic scheme 0x" + Integer.toHexString(intrinsic));
+        }
+
+        byte[] sigBytes = sig.isRsa() ? sig.rsaSignature() : sig.ecdsaDerSignature();
+        boolean ok;
+        try {
+            ok = rawVerify(deviceKeyPub, sig.sigAlg(), sig.hashAlg(), signedData, sigBytes);
+        } catch (GeneralSecurityException e) {
+            throw new TpmAttestException(TpmDenyCode.KEY_NOT_TPM_BOUND,
+                    "device-key signature verification error", e);
+        }
+        if (!ok) {
+            throw new TpmAttestException(TpmDenyCode.KEY_NOT_TPM_BOUND,
+                    "device-key signature did not verify over the session binding context");
+        }
+    }
+
     // ───────────────────────────── shared signature verification ─────────────────────────────
 
     private static void verifyAkSignature(TpmPublicArea ak, byte[] signedBytes, byte[] tpmtSig,

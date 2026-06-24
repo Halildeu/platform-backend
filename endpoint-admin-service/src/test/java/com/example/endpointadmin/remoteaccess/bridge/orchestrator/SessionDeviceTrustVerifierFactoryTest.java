@@ -1,6 +1,9 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory.DeviceKeyRealVerifierDependencies;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory.VerifierType;
+import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
+import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -22,6 +25,11 @@ class SessionDeviceTrustVerifierFactoryTest {
 
     private static ConnectedDeviceResolver resolver() {
         return mock(ConnectedDeviceResolver.class);
+    }
+
+    private static DeviceKeyRealVerifierDependencies completeRealDeps() {
+        return new DeviceKeyRealVerifierDependencies(new TpmDeviceKeySessionEvidenceStore(),
+                mock(EndpointTpmDeviceBindingRepository.class), mock(TpmEkChainValidator.class));
     }
 
     @Test
@@ -122,5 +130,57 @@ class SessionDeviceTrustVerifierFactoryTest {
                 () -> SessionDeviceTrustVerifierFactory.create("device_key_attestation", true, resolver()));
         assertThrows(IllegalStateException.class,
                 () -> SessionDeviceTrustVerifierFactory.create("require_enrollment_and_device_key", true, resolver()));
+    }
+
+    // ───────────────────────── #548 canonical TPM-native REAL verifier ─────────────────────────
+
+    @Test
+    void deviceKeyAttestationRealIsTheCanonicalVerifier_allowedEvenInProd() {
+        assertInstanceOf(DeviceKeyAttestationRealSessionDeviceTrustVerifier.class,
+                SessionDeviceTrustVerifierFactory.create(
+                        VerifierType.DEVICE_KEY_ATTESTATION_REAL, true, resolver(), completeRealDeps()));
+    }
+
+    @Test
+    void requireEnrollmentAndDeviceKeyRealComposesEnrollmentWithTheRealVerifier_allowedInProd() {
+        assertInstanceOf(CompositeSessionDeviceTrustVerifier.class,
+                SessionDeviceTrustVerifierFactory.create(
+                        VerifierType.REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL, true, resolver(), completeRealDeps()));
+    }
+
+    @Test
+    void realVerifierRequiresCompleteDependencies() {
+        // no deps at all
+        assertThrows(IllegalStateException.class, () -> SessionDeviceTrustVerifierFactory.create(
+                VerifierType.DEVICE_KEY_ATTESTATION_REAL, false, resolver(), null));
+        // an INCOMPLETE bundle (missing EK validator — e.g. endpoint-admin.tpm-attest.enabled=false) is rejected
+        DeviceKeyRealVerifierDependencies missingEk = new DeviceKeyRealVerifierDependencies(
+                new TpmDeviceKeySessionEvidenceStore(), mock(EndpointTpmDeviceBindingRepository.class), null);
+        IllegalStateException rejected = assertThrows(IllegalStateException.class, () ->
+                SessionDeviceTrustVerifierFactory.create(
+                        VerifierType.DEVICE_KEY_ATTESTATION_REAL, false, resolver(), missingEk));
+        assertTrue(rejected.getMessage().contains("EK chain validator"), "rejection points at the missing EK roots");
+        // a REAL type also needs a resolver
+        assertThrows(IllegalStateException.class, () -> SessionDeviceTrustVerifierFactory.create(
+                VerifierType.DEVICE_KEY_ATTESTATION_REAL, false, null, completeRealDeps()));
+    }
+
+    @Test
+    void realVerifierThroughBackCompatOverloadWithoutDepsIsRejected() {
+        // the 3-arg overload passes null REAL deps → a REAL type cannot be built and is rejected fail-fast
+        assertThrows(IllegalStateException.class, () -> SessionDeviceTrustVerifierFactory.create(
+                VerifierType.DEVICE_KEY_ATTESTATION_REAL, false, resolver()));
+    }
+
+    @Test
+    void realVerifierThroughConfigStringEntryPoint() {
+        assertInstanceOf(DeviceKeyAttestationRealSessionDeviceTrustVerifier.class,
+                SessionDeviceTrustVerifierFactory.create(
+                        "device_key_attestation_real", true, resolver(), completeRealDeps()));
+        // an unknown value still rejects, and the error lists the new REAL types
+        IllegalStateException rejected = assertThrows(IllegalStateException.class, () ->
+                SessionDeviceTrustVerifierFactory.create("BOGUS", false, resolver(), completeRealDeps()));
+        assertTrue(rejected.getMessage().contains("DEVICE_KEY_ATTESTATION_REAL"),
+                "the unknown-type error enumerates the canonical REAL verifier");
     }
 }

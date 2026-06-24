@@ -95,8 +95,11 @@ or `COMPOSITE` if enrollment AND hardware are both required) **iff ALL** hold (e
 
 ## 5. Implementation sequence (each its own PR + cross-AI)
 
-> **Status (2026-06-24):** steps 1-3 + the reconciliation guard are MERGED; the AK↔EK prerequisite (step 4) is
-> the next slice. See §7 for the precise next-session P0.
+> **Status (2026-06-25):** steps 1-3 + the reconciliation guard + the AK↔EK prerequisite (step 4, PR #748) are
+> MERGED; step 5 is split — **5a (this slice): the `DEVICE_KEY_ATTESTATION_REAL` verifier + its consumer + the
+> session evidence store + the factory mode** (opt-in, default-off; inert until 5b issues a challenge); **5b
+> (next): the issuance trigger** (`ControlStreamRegistry.sendDeviceKeyChallenge` + `openSession` wiring). See §7
+> for the precise next-session P0.
 
 1. ✅ **DONE — PR #741.** Backend (source-of-truth): proto (the 2 CONTROL payloads) + domain records
    (`DeviceKeyChallenge`, `DeviceKeyAttestationResponse`) + wire adapters (decode + re-validate, fail-closed) +
@@ -108,22 +111,28 @@ or `COMPOSITE` if enrollment AND hardware are both required) **iff ALL** hold (e
    `TpmDeviceKeySessionAttestation` (deeply immutable, shape-only, fail-closed) — **NOT** `ParsedEvidence.deviceKey`.
 3. ✅ **DONE — PR #746.** Backend: `DeviceKeyChallengeStore` — broker-nonced issue + atomic single-use/TTL
    consume (peer-bound, no-oracle). The freshness/replay guard.
-4. ⛔ **NEXT — prerequisite (Codex `019efada` decision A): TPM enrollment binding persistence.** Step 5's strong
+4. ✅ **DONE — PR #748 (Codex `019efada` decision A): TPM enrollment binding persistence.** Step 5's strong
    path needs the AK↔EK binding; it CANNOT rest on `device_key_pub==leaf` + `Certify` + `EK-root` alone — a
-   software AK, or a genuine EK cert *borrowed from another TPM*, would otherwise pass. The enrollment proves
-   AK↔EK at V10 but persists nothing queryable today (only the Vault-issued mTLS cert; `endpoint_machine_certs`
-   has no TPM-binding column, and `TpmEnrollmentCompletionService` notes "device-record binding by ek_pub_sha256
-   is a follow-up"). So FIRST persist — on successful `/attest`, after Vault issuance, transactionally with
-   `markConsumed` — at least: `{tenantId, deviceId, endpointEnrollmentId, akName (RAW bytes — the TPM Name is the
-   canonical compare input), akPubHash, ekCertSha256 and/or ekPubHash, deviceKeySpkiSha256, enrolledAt,
-   rootPolicyResult, revokedAt}` (digests suffice except `akName`). A `CONSUMED-but-no-binding` row stays
-   fail-closed in the strong path; a null-`deviceId` row is NOT a trustable active binding.
-5. **Backend: `DEVICE_KEY_ATTESTATION_REAL` verifier** (§2) + factory mode + profile gating + negative matrix.
-   Verifier order (Codex): challenge consume + TTL + single-use → recompute binding context + `deviceKeySig` →
-   mTLS leaf SPKI == response `deviceKeyPub` → active machine-cert tenant/device match → **persisted TPM-binding
-   lookup** by tenant/device + leaf-key digest → `akPub.computeName()` == response `akName` == persisted `akName`
-   → EK cert/root policy pass + EK fingerprint == persisted EK → `verifyCertify(ak, deviceKey)` + quote/liveness
-   → negative matrix. Only when ALL hold → `hardwareKeyAttested()`.
+   software AK, or a genuine EK cert *borrowed from another TPM*, would otherwise pass. Enrollment proves AK↔EK at
+   V10 but persisted nothing queryable; now `EndpointTpmDeviceBinding` (V74) is written on a successful `/attest`
+   transactionally with `markConsumed`: `{tenantId, deviceId, endpointEnrollmentId, akName (RAW — the TPM Name is
+   the canonical compare), akPubSha256, ekCertSha256, deviceKeySpkiSha256, enrolledAt, revokedAt}` (single active
+   per `(tenant,device)`; re-enrollment revoke-prior). A null-`deviceId` row is NOT persisted (not trustable).
+5a. ✅ **DONE (this slice): `DEVICE_KEY_ATTESTATION_REAL` verifier** (§2) + `DeviceKeySessionBindingContext`
+    (canonical, length-prefixed, agent-parity) + `TpmDeviceKeySessionEvidenceStore` (session-keyed, challenge-TTL,
+    fail-closed) + `TpmAttestationVerifier.verifyDeviceKeySignature` + the `BrokerControlPlane` consumer
+    (map → single-use consume → live-session → store) + factory modes `DEVICE_KEY_ATTESTATION_REAL` /
+    `REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL` (the ONLY device-trust bases allowed in a production-like profile).
+    Verifier order (Codex): fresh session evidence → recompute binding context + `deviceKeySig` (live possession)
+    → resolve active enrolled connected peer == this session's peer → **triple device-key SPKI equality**
+    (attested == live mTLS leaf == persisted binding) → `akPub.computeName()` == response `akName` == persisted
+    `akName` (+ restricted-signing AK, + akPub digest) → EK fingerprint == persisted + chains to a pinned root →
+    `verifyCertify(ak, deviceKey)` + `verifyQuote` over the broker nonce → negative matrix. Only when ALL hold →
+    `hardwareKeyAttested()`. Opt-in + default-off; **inert until 5b** (no challenge is issued yet → the store
+    stays empty → the verifier denies `no-fresh-device-key-evidence`).
+5b. **NEXT — the issuance trigger:** `ControlStreamRegistry.sendDeviceKeyChallenge` (CONTROL, `Envelope.sessionId`
+    correlation) + issue/send a challenge in `RemoteBridgeOperatorService.openSession` AFTER `store.open`, BEFORE
+    the consent prompt (send-fail → kill/evict), gated on the device-key session attestation being enabled.
 6. **Agent (Go):** regenerate vendored proto (`scripts/proto/generate.sh`; update `descriptor_guard_test.go`
    Len 11→13, range >20→>23, +2 oneof entries); produce the `DeviceKeyAttestationResponse` (fresh Certify/Quote
    + device-key sig over the canonical binding context) from `internal/tpmenroll`; sender allowlist; finish the
@@ -167,22 +176,26 @@ nonce → replayable). Reconciliation (Codex decision authority, CLAUDE.md §8):
   already proved AK↔EK at V10) or by a fresh session-time credential activation. "AK signed certify/quote + EK
   chains to root" alone is insufficient.
 
-## 7. Status + next-session P0 (2026-06-24, session `b8c81a4c`)
+## 7. Status + next-session P0 (2026-06-25, session `b8c81a4c`)
 
-**Done this session (all Codex `019efada` AGREE, cross-AI):** PR #741 (wire-contract) · #743 (reconciliation
-guard + the latent false-acceptance fix) · #744 (TPM-native evidence mapper) · #746 (challenge store). §5 steps
-1-3 + the guard are merged. Nothing yet establishes device trust at runtime — by design, each is a fail-closed
-foundation slice.
+**Done (all Codex `019efada` AGREE, cross-AI):** PR #741 (wire-contract) · #743 (reconciliation guard + the
+latent false-acceptance fix) · #744 (TPM-native evidence mapper) · #746 (challenge store) · #748 (AK↔EK
+enrollment-binding persistence, V74) · **this slice 5a (the `DEVICE_KEY_ATTESTATION_REAL` verifier + consumer +
+session evidence store + factory mode + canonical binding context + `verifyDeviceKeySignature`)**. §5 steps 1-4
++ 5a are merged/landing. Device trust is still NOT established at runtime — 5a is opt-in + default-off and INERT
+until 5b issues a challenge (the verifier denies `no-fresh-device-key-evidence` until then). Each is a fail-closed
+slice; the verifier's positive path + full negative matrix are proven by a synthetic software-TPM fixture test.
 
-**Resume at §5 step 4 — the AK↔EK prerequisite (Codex decision A), then step 5 (verifier), then step 6 (agent):**
-1. **§5 step 4 — TPM enrollment binding persistence** (the blocking prerequisite). New entity + repository +
-   Flyway migration + wiring into `TpmEnrollmentCompletionService` (transactional with `markConsumed`). This is
-   a DB + enrollment-path change, not a remote-bridge change — design the entity per §5 step 4, cross-AI review.
-2. **§5 step 5 — the verifier** (`DEVICE_KEY_ATTESTATION_REAL`) in the exact order in §5 + the factory mode
-   (`SessionDeviceTrustVerifierFactory` — the prod gating the §6 guard reserved) + the composite hardware leg +
-   the full negative matrix.
-3. **§5 step 6 — agent (Go)** in `platform-agent` (cross-repo): vendored-proto regen + response production +
-   EK-cert NV-read.
+**Resume at §5 step 5b — the issuance trigger, then step 6 (agent):**
+1. **§5 step 5b — issuance trigger.** `ControlStreamRegistry.sendDeviceKeyChallenge(transportPeerKey, sessionId,
+   challenge, now)` (CONTROL envelope carries the sessionId; uses `RemoteBridgeProtoAdapter.encode`) + issue +
+   send a `DeviceKeyChallenge` in `RemoteBridgeOperatorService.openSession` AFTER `store.open` and BEFORE the
+   consent prompt (a send failure kills + evicts the just-opened session, like the consent-prompt-not-delivered
+   path). Gate the issuance on the device-key session attestation being enabled so non-REAL deployments do not
+   emit challenges no agent answers. Wire the `DeviceKeyChallengeStore` (already a bean) into the operator
+   service + the evidence-store eviction on session terminal.
+2. **§5 step 6 — agent (Go)** in `platform-agent` (cross-repo): vendored-proto regen + `DeviceKeyAttestationResponse`
+   production (Certify/Quote + the device key signing `DeviceKeySessionBindingContext`) + EK-cert NV-read.
 
 **Why handed off here:** the prerequisite + verifier are the security-critical crux — a wrong AK↔EK binding is
 *fake* hardware attestation, exactly what #548 must never ship. Codex (decision authority) explicitly sanctioned

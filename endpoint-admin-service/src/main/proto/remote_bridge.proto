@@ -256,9 +256,9 @@ message DeviceKeyChallenge {
 // attestation answering a DeviceKeyChallenge. ADVISORY shape only — the broker's
 // DEVICE_KEY_ATTESTATION_REAL verifier re-derives every fact: device_key_pub MUST equal
 // the mTLS leaf public key; device_key_sig over the canonical binding context
-// (label‖challenge_id‖nonce‖transport_peer_key‖expiry) proves live possession; certify_*
-// proves TPM residency; ek_* chains to a pinned root (strong path). NEVER carries secrets
-// (no activation secret / enrollment token / private key).
+// (label‖session_id‖challenge_id‖nonce‖transport_peer_key‖expiry) proves live possession AND binds
+// the signature to THIS session; certify_* proves TPM residency; ek_* chains to a pinned root (strong
+// path). NEVER carries secrets (no activation secret / enrollment token / private key).
 message DeviceKeyAttestationResponse {
   string challenge_id = 1;
   string schema = 2;                   // "faz22.6.device-key-session.v1"
@@ -270,9 +270,9 @@ message DeviceKeyAttestationResponse {
   repeated string ek_cert_chain_b64 = 8;
   string certify_info_b64 = 9;         // TPM2_Certify(device_key) by AK
   string certify_sig_b64 = 10;
-  string quote_b64 = 11;               // quote.extraData = hash(binding_context)
+  string quote_b64 = 11;               // TPM2_Quote; quote.extraData = the broker nonce (freshness)
   string quote_sig_b64 = 12;
-  string binding_context_b64 = 13;     // canonical: label‖challenge_id‖nonce‖transport_peer_key‖expiry
+  string binding_context_b64 = 13;     // canonical: label‖session_id‖challenge_id‖nonce‖transport_peer_key‖expiry
   string device_key_sig_b64 = 14;      // device key signs binding_context
   int64  signed_at_epoch_millis = 15;
 }
