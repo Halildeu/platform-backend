@@ -136,6 +136,13 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
                 || evidence.expiresAtEpochMillis() != challenge.expiresAtEpochMillis()) {
             return DeviceTrustDecision.deny("device-key-evidence-window-invalid");
         }
+        // INCARNATION guard (Codex REVISE F1-2): the broker sessionId is client-supplied + reusable, so trust only
+        // evidence whose challengeId equals the challenge THIS session incarnation issued. A stale in-flight writer
+        // for a PRIOR incarnation of a reused (sessionId, peer) can race past eviction and re-create an evidence
+        // entry, but it carries the prior challengeId — which no longer matches, so it can never mint authority here.
+        if (challenge.challengeId() == null || !challenge.challengeId().equals(session.deviceKeyChallengeId())) {
+            return DeviceTrustDecision.deny("device-key-challenge-incarnation-mismatch");
+        }
         // the challenge MUST have been issued to THIS authenticated peer (it was, by construction — defense-in-depth)
         if (!CertThumbprint.matches(challenge.transportPeerKey(), peerKey)) {
             return DeviceTrustDecision.deny("challenge-peer-mismatch");

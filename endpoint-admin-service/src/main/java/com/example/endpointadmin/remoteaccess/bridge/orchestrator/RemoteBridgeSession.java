@@ -48,6 +48,12 @@ public final class RemoteBridgeSession {
     // One pending challenge per session (Codex S3) — a new issue replaces the prior, verify consumes it.
     private StepUpChallenge pendingStepUpChallenge = null;
     private long pendingChallengeExpiryEpochMillis = 0L;
+    // Faz 22.6 #548 step-5b (Codex REVISE F1-2) — the device-key challenge issued for THIS session incarnation.
+    // The broker sessionId is client-supplied + reusable, so the canonical (per-issue random) challengeId is what
+    // pins device-key evidence to THIS incarnation: the verifier only trusts stored evidence whose challengeId
+    // equals this. Null until openSession issues one; a stale in-flight writer for a prior incarnation therefore
+    // cannot mint authority for a reused-id session even if it races past the eviction. Restart drops it.
+    private String deviceKeyChallengeId = null;
 
     RemoteBridgeSession(String sessionId,
                         String transportPeerKey,
@@ -189,6 +195,21 @@ public final class RemoteBridgeSession {
 
     public String deviceId() {
         return deviceId;
+    }
+
+    /**
+     * Faz 22.6 #548 step-5b (Codex REVISE F1-2) — bind THIS session incarnation to the device-key challenge just
+     * issued for it (the per-issue random {@code challengeId}). The verifier trusts stored device-key evidence
+     * ONLY when its {@code challengeId} equals this — so a stale in-flight response for a prior incarnation of a
+     * reused {@code sessionId} can never mint authority for this one.
+     */
+    public synchronized void bindDeviceKeyChallenge(String challengeId) {
+        this.deviceKeyChallengeId = challengeId;
+    }
+
+    /** The device-key challenge issued for this session incarnation, or null if none was issued. */
+    public synchronized String deviceKeyChallengeId() {
+        return deviceKeyChallengeId;
     }
 
     public String operatorSubject() {

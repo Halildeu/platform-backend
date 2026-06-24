@@ -288,9 +288,10 @@ class BrokerControlPlaneTest {
                 ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
                 store, sink, () -> NOW + 1000, new RemoteBridgeAgentErrorLedger(0), challengeStore, evidenceStore);
 
-        opened(store, "sess-1");
+        RemoteBridgeSession session = opened(store, "sess-1");
         RemoteBridgeMessages.DeviceKeyChallenge challenge =
                 challengeStore.issue("sess-1", PEER.transportPeerKey(), 60_000L, NOW);
+        session.bindDeviceKeyChallenge(challenge.challengeId()); // openSession does this live (incarnation guard)
         plane.onDeviceKeyAttestationResponse(PEER, shapedDeviceKeyResponse(challenge.challengeId()));
 
         assertTrue(evidenceStore.consumeFresh("sess-1", PEER.transportPeerKey(), NOW + 1000).isPresent(),

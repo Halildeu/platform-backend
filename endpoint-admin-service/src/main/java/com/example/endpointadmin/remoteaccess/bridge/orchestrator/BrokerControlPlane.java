@@ -245,6 +245,13 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge");
             return; // unknown / expired / already-consumed / wrong-peer / wrong-session — uniform drop, no oracle
         }
+        // INCARNATION guard (Codex REVISE F1-2): the response must answer the challenge THIS live session
+        // incarnation currently expects — so a response for a superseded/prior challenge of a reused id is dropped
+        // and never pollutes the slot. (The verifier independently re-checks this incarnation at PERMIT time.)
+        if (!response.challengeId().equals(session.deviceKeyChallengeId())) {
+            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:stale-incarnation");
+            return;
+        }
         RemoteBridgeMessages.DeviceKeyChallenge challenge = consumed.get();
         deviceKeyEvidenceStore.store(session.sessionId(), peer.transportPeerKey(),
                 new TpmDeviceKeySessionEvidenceStore.StoredEvidence(

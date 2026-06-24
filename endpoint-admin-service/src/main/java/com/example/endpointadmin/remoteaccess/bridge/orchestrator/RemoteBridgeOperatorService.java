@@ -222,6 +222,9 @@ public final class RemoteBridgeOperatorService {
                 store.evictIfTerminal(session.sessionId());
                 return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
             }
+            // bind THIS incarnation to the issued challenge (Codex REVISE F1-2): the verifier trusts only evidence
+            // whose challengeId equals this, so a stale prior-incarnation response for a reused id cannot pass.
+            session.bindDeviceKeyChallenge(challenge.challengeId());
         }
 
         ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
