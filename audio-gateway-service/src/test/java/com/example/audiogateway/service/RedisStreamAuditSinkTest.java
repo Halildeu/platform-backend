@@ -50,6 +50,20 @@ class RedisStreamAuditSinkTest {
                 "sess-9", 42L, 7L, 3L, 429, "QUEUE_FULL", 10L, "corr-9", 1_000L);
     }
 
+    private static AuditEvent.RecordingConsentGranted consent() {
+        return new AuditEvent.RecordingConsentGranted(
+                "22222222-2222-4222-8222-222222222222",
+                "33333333-3333-4333-8333-333333333333",
+                42L,
+                7L,
+                "sub-123",
+                "recorder-consent-v1",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "tr-TR",
+                "corr-10",
+                3_000L);
+    }
+
     @SuppressWarnings("unchecked")
     @Test
     void emitMapsAllFieldsToStreamRecord() {
@@ -108,6 +122,48 @@ class RedisStreamAuditSinkTest {
         verify(streamOps).add(captor.capture());
         assertThat(captor.getValue().getValue())
                 .doesNotContainKeys("idempotencyKey", "Idempotency-Key", "audio", "bytes", "transcript");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitRecordingConsentMapsAllFieldsToStreamRecord() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("2-0"));
+
+        sink.emit(consent());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        final MapRecord<String, String, String> record = captor.getValue();
+        assertThat(record.getStream()).isEqualTo("audit:events");
+        assertThat(record.getValue())
+                .containsEntry("eventType", "RECORDING_CONSENT_GRANTED")
+                .containsEntry("meetingId", "22222222-2222-4222-8222-222222222222")
+                .containsEntry("captureId", "33333333-3333-4333-8333-333333333333")
+                .containsEntry("tenantId", "42")
+                .containsEntry("userId", "7")
+                .containsEntry("subjectId", "sub-123")
+                .containsEntry("consentVersion", "recorder-consent-v1")
+                .containsEntry("consentTextHash",
+                        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .containsEntry("locale", "tr-TR")
+                .containsEntry("correlationId", "corr-10")
+                .containsEntry("acceptedAtMs", "3000");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitRecordingConsentPiiBoundaryNoRawConsentNoTokenNoAudio() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("2-0"));
+
+        sink.emit(consent());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        assertThat(captor.getValue().getValue())
+                .doesNotContainKeys("consentText", "rawConsentText", "authorization",
+                        "bearer", "token", "authCode", "email", "audio", "bytes", "transcript");
     }
 
     @SuppressWarnings("unchecked")
