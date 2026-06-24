@@ -21,6 +21,8 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ConnectedDeviceResolver;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DeviceKeyChallengeStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TpmDeviceKeySessionEvidenceStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.ApprovalGrantStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DuressSignalSourceFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.InMemoryApprovalGrantStore;
@@ -37,8 +39,12 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory.DeviceKeyRealVerifierDependencies;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
+import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
+import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -145,6 +151,27 @@ public class RemoteBridgeServerConfig {
         return new ControlStreamRegistry();
     }
 
+    /**
+     * Faz 22.6 #548 slice-1 step-3 — the broker-nonced device-key challenge store (issue + single-use/TTL
+     * consume). Wired here so the control plane can consume responses; the issuance trigger (step-5b) issues a
+     * challenge per opened session.
+     */
+    @Bean
+    public DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore() {
+        return new DeviceKeyChallengeStore();
+    }
+
+    /**
+     * Faz 22.6 #548 slice-1 step-5 — the session device-key evidence store, keyed by {@code (sessionId,
+     * transportPeerKey)} with a challenge-expiry TTL. The control plane populates it from a consumed
+     * challenge-response; the {@code DEVICE_KEY_ATTESTATION_REAL} verifier reads it at PERMIT time. Holds no
+     * trust by itself.
+     */
+    @Bean
+    public TpmDeviceKeySessionEvidenceStore remoteBridgeDeviceKeySessionEvidenceStore() {
+        return new TpmDeviceKeySessionEvidenceStore();
+    }
+
     @Bean(destroyMethod = "shutdownNow")
     public ScheduledExecutorService remoteBridgeHeartbeatScheduler() {
         return Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -186,11 +213,17 @@ public class RemoteBridgeServerConfig {
                                                        RemoteBridgeSessionStore store,
                                                        @Qualifier("remoteBridgeInboundAuditSink")
                                                        RemoteBridgeAuditSink auditSink,
-                                                       RemoteBridgeAgentErrorLedger agentErrorLedger) {
+                                                       RemoteBridgeAgentErrorLedger agentErrorLedger,
+                                                       DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
+                                                       TpmDeviceKeySessionEvidenceStore
+                                                               remoteBridgeDeviceKeySessionEvidenceStore) {
         // pin the BEST-EFFORT inbound sink explicitly: slice-3c adds a second RemoteBridgeAuditSink bean (the
         // DURABLE broker recorder) — the control plane's inbound audit must stay the best-effort log sink, so
-        // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds)
-        return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis, agentErrorLedger);
+        // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds).
+        // The device-key stores wire the #548 step-5 consumer; until the step-5b issuance lands no challenge
+        // exists to consume, so the path is inert (fail-closed) even though the stores are present.
+        return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis, agentErrorLedger,
+                remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore);
     }
 
     /**
@@ -365,10 +398,23 @@ public class RemoteBridgeServerConfig {
     public SessionDeviceTrustVerifier remoteBridgeSessionDeviceTrustVerifier(
             Environment environment,
             ConnectedDeviceResolver remoteBridgeConnectedDeviceResolver,
+            TpmDeviceKeySessionEvidenceStore remoteBridgeDeviceKeySessionEvidenceStore,
+            ObjectProvider<EndpointTpmDeviceBindingRepository> endpointTpmDeviceBindingRepository,
+            ObjectProvider<TpmEkChainValidator> tpmEkChainValidator,
             @Value("${remote-bridge.device-trust.verifier:FAIL_CLOSED}") String deviceTrustVerifierType) {
         boolean productionLike = isProductionLike(environment);
+        // The REAL TPM-native verifier (DEVICE_KEY_ATTESTATION_REAL / *_REAL) needs the session evidence store,
+        // the persisted enrollment-binding repository, and the EK chain validator. The binding repository (JPA)
+        // and the EK validator bean (only present when endpoint-admin.tpm-attest.enabled=true) are injected
+        // OPTIONALLY: the factory fail-fasts at startup IF a REAL type is selected without them — selecting the
+        // strong path without pinned EK roots / the binding store is a misconfiguration, not a silent downgrade.
+        // The DEFAULT FAIL_CLOSED verifier (and the other non-REAL types) ignore these deps, so a remote-bridge
+        // deployment that does not opt into the REAL verifier needs neither bean.
+        DeviceKeyRealVerifierDependencies realDeps = new DeviceKeyRealVerifierDependencies(
+                remoteBridgeDeviceKeySessionEvidenceStore, endpointTpmDeviceBindingRepository.getIfAvailable(),
+                tpmEkChainValidator.getIfAvailable());
         return SessionDeviceTrustVerifierFactory.create(
-                deviceTrustVerifierType, productionLike, remoteBridgeConnectedDeviceResolver);
+                deviceTrustVerifierType, productionLike, remoteBridgeConnectedDeviceResolver, realDeps);
     }
 
     /**

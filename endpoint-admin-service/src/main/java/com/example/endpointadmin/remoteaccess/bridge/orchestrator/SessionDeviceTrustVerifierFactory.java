@@ -1,5 +1,7 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
+import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
+import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,7 +44,34 @@ public final class SessionDeviceTrustVerifierFactory {
         FAIL_CLOSED,
         MACHINE_CERT_ENROLLMENT,
         DEVICE_KEY_ATTESTATION,
-        REQUIRE_ENROLLMENT_AND_DEVICE_KEY
+        REQUIRE_ENROLLMENT_AND_DEVICE_KEY,
+        /**
+         * The canonical #548 TPM-native live challenge-response hardware verifier
+         * ({@link DeviceKeyAttestationRealSessionDeviceTrustVerifier}). The ONLY basis that is a genuine
+         * {@link SessionDeviceTrustVerifier.Basis#HARDWARE_KEY_ATTESTATION} — ALLOWED in a production-like profile.
+         */
+        DEVICE_KEY_ATTESTATION_REAL,
+        /**
+         * Production posture: machine-cert enrollment AND the REAL TPM-native hardware verifier composed
+         * ({@link SessionDeviceTrustVerifier.Basis#COMPOSITE}). Both must pass — defense-in-depth, ALLOWED in a
+         * production-like profile. (Distinct from {@link #REQUIRE_ENROLLMENT_AND_DEVICE_KEY}, whose hardware leg is
+         * the non-live CA-static path and is forbidden in prod.)
+         */
+        REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL
+    }
+
+    /**
+     * The extra dependencies the REAL TPM-native verifier needs ({@link DeviceKeyAttestationRealSessionDeviceTrustVerifier}):
+     * the session evidence store the control plane populates, the persisted enrollment-binding repository (the
+     * AK&harr;EK anchor), and the EK manufacturer-root chain validator. Null (or any null member) is the
+     * "not wired" state — selecting a REAL verifier type without it is REJECTED fail-fast.
+     */
+    public record DeviceKeyRealVerifierDependencies(TpmDeviceKeySessionEvidenceStore evidenceStore,
+                                                    EndpointTpmDeviceBindingRepository bindings,
+                                                    TpmEkChainValidator ekChainValidator) {
+        boolean isComplete() {
+            return evidenceStore != null && bindings != null && ekChainValidator != null;
+        }
     }
 
     private SessionDeviceTrustVerifierFactory() {
@@ -53,12 +82,19 @@ public final class SessionDeviceTrustVerifierFactory {
         return new IllegalStateException(message);
     }
 
+    /** Back-compat entry point (no REAL deps): a REAL verifier type selected here is rejected fail-fast. */
+    public static SessionDeviceTrustVerifier create(String configuredType, boolean productionLikeProfile,
+                                                    ConnectedDeviceResolver resolver) {
+        return create(configuredType, productionLikeProfile, resolver, null);
+    }
+
     /**
      * Config-string entry point (the {@code remote-bridge.device-trust.verifier} value): blank/unset → the safe
      * {@code FAIL_CLOSED} default; an unknown value is REJECTED fail-fast (never fail-open). Case/space-insensitive.
      */
     public static SessionDeviceTrustVerifier create(String configuredType, boolean productionLikeProfile,
-                                                    ConnectedDeviceResolver resolver) {
+                                                    ConnectedDeviceResolver resolver,
+                                                    DeviceKeyRealVerifierDependencies realDeps) {
         String raw = configuredType == null ? "" : configuredType.strip();
         VerifierType type;
         if (raw.isEmpty()) {
@@ -69,18 +105,29 @@ public final class SessionDeviceTrustVerifierFactory {
             } catch (IllegalArgumentException unknown) {
                 throw reject("unknown device-trust verifier type '" + raw
                         + "' (expected FAIL_CLOSED|MACHINE_CERT_ENROLLMENT|DEVICE_KEY_ATTESTATION|"
-                        + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY)");
+                        + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY|DEVICE_KEY_ATTESTATION_REAL|"
+                        + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL)");
             }
         }
-        return create(type, productionLikeProfile, resolver);
+        return create(type, productionLikeProfile, resolver, realDeps);
+    }
+
+    /** Back-compat entry point (no REAL deps): a REAL verifier type selected here is rejected fail-fast. */
+    public static SessionDeviceTrustVerifier create(VerifierType type, boolean productionLikeProfile,
+                                                    ConnectedDeviceResolver resolver) {
+        return create(type, productionLikeProfile, resolver, null);
     }
 
     /**
-     * @param productionLikeProfile when true, the enrollment-only MACHINE_CERT_ENROLLMENT verifier is REFUSED
+     * @param productionLikeProfile when true, the enrollment-only MACHINE_CERT_ENROLLMENT verifier + the
+     *                              non-live CA-static paths are REFUSED; the REAL TPM-native verifier is allowed
+     * @param realDeps              the dependencies the REAL TPM-native verifier needs; required (and complete)
+     *                              only for {@code DEVICE_KEY_ATTESTATION_REAL} / {@code *_REAL} types
      * @throws IllegalStateException on any forbidden combination (fail-fast startup)
      */
     public static SessionDeviceTrustVerifier create(VerifierType type, boolean productionLikeProfile,
-                                                    ConnectedDeviceResolver resolver) {
+                                                    ConnectedDeviceResolver resolver,
+                                                    DeviceKeyRealVerifierDependencies realDeps) {
         VerifierType t = type == null ? VerifierType.FAIL_CLOSED : type; // fail-closed default
         switch (t) {
             case FAIL_CLOSED -> {
@@ -104,7 +151,7 @@ public final class SessionDeviceTrustVerifierFactory {
                             + "replay-prone basis that also does not bind the key to the requested tenant/device. "
                             + "It is FORBIDDEN in a production-like profile; production-grade hardware device trust "
                             + "requires the canonical #548 TPM-native live challenge-response "
-                            + "(DEVICE_KEY_ATTESTATION_REAL, forthcoming) backing the composite");
+                            + "(DEVICE_KEY_ATTESTATION_REAL) backing the composite");
                 }
                 return PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE;
             }
@@ -119,15 +166,43 @@ public final class SessionDeviceTrustVerifierFactory {
                             + "promotes PeerTrust.deviceTrusted, derived from the AgentHello-carried CA attestation "
                             + "envelope — a non-live, replay-prone basis (no broker nonce, no session liveness), NOT "
                             + "the canonical #548 TPM-native live challenge-response. It is FORBIDDEN in a "
-                            + "production-like profile until the live DEVICE_KEY_ATTESTATION_REAL verifier lands and "
-                            + "backs the composite's hardware leg, so the static CA path can never silently read as "
-                            + "production-grade hardware device trust");
+                            + "production-like profile; use REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL, whose hardware "
+                            + "leg is the live DEVICE_KEY_ATTESTATION_REAL verifier");
                 }
                 return new CompositeSessionDeviceTrustVerifier(
                         new MachineCertEnrollmentDeviceTrustVerifier(resolver),
                         PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE);
             }
+            case DEVICE_KEY_ATTESTATION_REAL -> {
+                // the canonical #548 strong path — a genuine HARDWARE_KEY_ATTESTATION; ALLOWED in prod
+                return new DeviceKeyAttestationRealSessionDeviceTrustVerifier(
+                        requireRealDeps(t, resolver, realDeps).evidenceStore(),
+                        resolver, realDeps.bindings(), realDeps.ekChainValidator());
+            }
+            case REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL -> {
+                // production posture: machine-cert enrollment AND the live TPM-native hardware verifier (COMPOSITE)
+                requireRealDeps(t, resolver, realDeps);
+                return new CompositeSessionDeviceTrustVerifier(
+                        new MachineCertEnrollmentDeviceTrustVerifier(resolver),
+                        new DeviceKeyAttestationRealSessionDeviceTrustVerifier(
+                                realDeps.evidenceStore(), resolver, realDeps.bindings(),
+                                realDeps.ekChainValidator()));
+            }
             default -> throw reject("unreachable device-trust verifier type " + t);
         }
+    }
+
+    /** Both REAL types need a resolver AND complete REAL deps — fail-fast at startup otherwise (never fail-open). */
+    private static DeviceKeyRealVerifierDependencies requireRealDeps(VerifierType type,
+            ConnectedDeviceResolver resolver, DeviceKeyRealVerifierDependencies realDeps) {
+        if (resolver == null) {
+            throw reject("device-trust verifier " + type + " requires a ConnectedDeviceResolver");
+        }
+        if (realDeps == null || !realDeps.isComplete()) {
+            throw reject("device-trust verifier " + type + " requires the TPM-native dependencies "
+                    + "(session evidence store + enrollment-binding repository + EK chain validator) — the "
+                    + "EK chain validator needs endpoint-admin.tpm-attest.enabled=true with pinned manufacturer roots");
+        }
+        return realDeps;
     }
 }

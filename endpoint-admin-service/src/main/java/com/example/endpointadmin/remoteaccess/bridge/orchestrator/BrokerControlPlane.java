@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
@@ -49,6 +50,11 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     private final RemoteBridgeAuditSink auditSink;
     private final LongSupplier clock;
     private final RemoteBridgeAgentErrorLedger agentErrorLedger;
+    // Faz 22.6 #548 slice-1 step-5 — the canonical device-key challenge-response state. OPTIONAL: when either is
+    // null the device-key path stays INERT (the prior T-2b accept-and-ignore default), so existing wiring/tests
+    // are unaffected; the issuance trigger (step-5b) is what makes a challenge exist to be consumed at all.
+    private final DeviceKeyChallengeStore deviceKeyChallengeStore;
+    private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
     private final Map<String, RemoteBridgeMessages.AgentHello> lastHelloByPeer = new ConcurrentHashMap<>();
 
     public BrokerControlPlane(PeerTrustLedger ledger,
@@ -63,6 +69,22 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                               RemoteBridgeAuditSink auditSink,
                               LongSupplier clock,
                               RemoteBridgeAgentErrorLedger agentErrorLedger) {
+        this(ledger, store, auditSink, clock, agentErrorLedger, null, null);
+    }
+
+    /**
+     * Faz 22.6 #548 slice-1 step-5 — the device-key-aware control plane. {@code deviceKeyChallengeStore} +
+     * {@code deviceKeyEvidenceStore} wire the canonical TPM-native challenge-response consumer; either null
+     * leaves {@link #onDeviceKeyAttestationResponse} inert (fail-closed: no evidence is ever stored, so the
+     * {@code DEVICE_KEY_ATTESTATION_REAL} verifier denies).
+     */
+    public BrokerControlPlane(PeerTrustLedger ledger,
+                              RemoteBridgeSessionStore store,
+                              RemoteBridgeAuditSink auditSink,
+                              LongSupplier clock,
+                              RemoteBridgeAgentErrorLedger agentErrorLedger,
+                              DeviceKeyChallengeStore deviceKeyChallengeStore,
+                              TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore) {
         if (ledger == null || store == null || auditSink == null || clock == null) {
             throw new IllegalArgumentException("ledger, store, auditSink and clock are required");
         }
@@ -71,6 +93,8 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         this.auditSink = auditSink;
         this.clock = clock;
         this.agentErrorLedger = agentErrorLedger == null ? new RemoteBridgeAgentErrorLedger(0) : agentErrorLedger;
+        this.deviceKeyChallengeStore = deviceKeyChallengeStore;
+        this.deviceKeyEvidenceStore = deviceKeyEvidenceStore;
     }
 
     @Override
@@ -177,6 +201,51 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         recordBestEffort(sessionId, eventType);
         log.warn("remote-bridge agent error frame peer={} session={} code={} retryable={}",
                 peer.transportPeerKey(), sessionId, safeType(error.code()), error.retryable());
+    }
+
+    /**
+     * Faz 22.6 #548 slice-1 step-5 — the REAL consumer of the canonical TPM-native device-key attestation
+     * (overrides the T-2b inert no-op). It ABSORBS the response into broker correlation state only; it confers
+     * NO trust by itself — the {@code DEVICE_KEY_ATTESTATION_REAL} verifier re-derives every authoritative fact
+     * at PERMIT time. Fail-closed at every step (a drop never throws, never partially stores):
+     * <ol>
+     *   <li>not wired (no challenge/evidence store) → inert;</li>
+     *   <li>shape-decode the response FIRST (no state change on garbage);</li>
+     *   <li>single-use, peer-bound, TTL-bound {@link DeviceKeyChallengeStore#consume} of the broker challenge it
+     *       answers (unknown/expired/already-consumed/wrong-peer all drop uniformly — no oracle);</li>
+     *   <li>store the evidence ONLY for the peer's live, non-terminal session — keyed by
+     *       {@code (sessionId, transportPeerKey)}, with the freshness window inherited from the challenge expiry.</li>
+     * </ol>
+     */
+    @Override
+    public void onDeviceKeyAttestationResponse(PeerIdentity peer,
+                                               RemoteBridgeMessages.DeviceKeyAttestationResponse response) {
+        if (deviceKeyChallengeStore == null || deviceKeyEvidenceStore == null) {
+            return; // step-5b issuance not wired → inert (fail-closed: no evidence ever stored)
+        }
+        long now = clock.getAsLong();
+        Optional<TpmDeviceKeySessionAttestation> mapped = DeviceKeySessionAttestationMapper.map(response);
+        if (mapped.isEmpty()) {
+            recordBestEffort("ledger", "DEVICE_KEY_RESPONSE_DROPPED:unmappable");
+            return; // unmappable shape → no challenge is consumed (no state change on garbage)
+        }
+        Optional<RemoteBridgeMessages.DeviceKeyChallenge> consumed =
+                deviceKeyChallengeStore.consume(response.challengeId(), peer.transportPeerKey(), now);
+        if (consumed.isEmpty()) {
+            recordBestEffort("ledger", "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge");
+            return; // unknown / expired / already-consumed / wrong-peer — uniform drop, no oracle
+        }
+        RemoteBridgeSession session = store.liveByPeer(peer.transportPeerKey()).orElse(null);
+        if (session == null) {
+            recordBestEffort("ledger", "DEVICE_KEY_RESPONSE_DROPPED:no-live-session");
+            return; // no orphan evidence — only a live, non-terminal session's peer gets an entry
+        }
+        RemoteBridgeMessages.DeviceKeyChallenge challenge = consumed.get();
+        deviceKeyEvidenceStore.store(session.sessionId(), peer.transportPeerKey(),
+                new TpmDeviceKeySessionEvidenceStore.StoredEvidence(
+                        challenge, mapped.get(), now, challenge.expiresAtEpochMillis()));
+        recordBestEffort(session.sessionId(),
+                "DEVICE_KEY_EVIDENCE_STORED:challenge=" + safeType(challenge.challengeId()));
     }
 
     /**
