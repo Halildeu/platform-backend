@@ -1,6 +1,7 @@
 package com.example.audiogateway.config;
 
 import com.example.audiogateway.service.AudioChunkDispatcher;
+import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
@@ -107,6 +108,7 @@ public class DirectSttConfig {
     public AudioChunkDispatcher directSttForwardingDispatcher(
             final AudioGatewayProperties props,
             final MeterRegistry meters,
+            final AudioGatewayAuditSink auditSink,
             @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
             final WebClient directSttWebClient,
             final ObjectProvider<RedisStreamsAudioChunkDispatcher> redisProvider,
@@ -115,7 +117,7 @@ public class DirectSttConfig {
         final AudioChunkDispatcher delegate = resolveDelegate(
                 props.getDispatcher().getMode(), redisProvider, noOpProvider);
 
-        return new DirectSttForwardingDispatcher(delegate, directSttWebClient, props, meters);
+        return new DirectSttForwardingDispatcher(delegate, auditSink, directSttWebClient, props, meters);
     }
 
     private AudioChunkDispatcher resolveDelegate(

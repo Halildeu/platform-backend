@@ -6,7 +6,9 @@ package com.example.audiogateway.service;
  * <p>Codex {@code 019e8df2} iter-2 AGREE PR-gw-01B3 scope started with
  * {@link AuditEvent.ChunkAdmissionRejected}. Faz 24 recorder consent adds
  * {@link AuditEvent.RecordingConsentGranted} as the server-time legal proof
- * before audio capture begins. ChunkForwardedToPlatformAi remains PR-gw-01C.
+ * before audio capture begins. Faz 24 #188 adds
+ * {@link AuditEvent.ChunkForwardedToComputePlane} as the lawful-basis proof
+ * before direct-STT sends raw audio to the compute plane.
  *
  * <p><b>Emission contract:</b> response yazılmadan ÖNCE sync emit. Chunk
  * rejection uses controller {@code safeEmit(...)} because audit loss must not
@@ -76,6 +78,33 @@ public interface AudioGatewayAuditSink {
                 String locale,
                 String correlationId,
                 long acceptedAtMs
+        ) implements AuditEvent {
+        }
+
+        /**
+         * Compute-plane raw-audio transit proof — emitted after a chunk is admitted and
+         * immediately before direct-STT builds/sends the live-stt HTTP request.
+         *
+         * <p><b>PII boundary:</b> carries only routing and integrity metadata. No raw
+         * audio bytes, transcript text/segments, bearer token, idempotency key, or
+         * destination URL.
+         */
+        record ChunkForwardedToComputePlane(
+                String sessionId,
+                Long tenantId,
+                Long userId,
+                String meetingId,
+                String deviceId,
+                String language,
+                long chunkSeq,
+                String audioFormat,
+                int sampleRateHz,
+                int channels,
+                String sha256,
+                int byteLength,
+                String correlationId,
+                long forwardedAtMs,
+                String computePlane
         ) implements AuditEvent {
         }
     }

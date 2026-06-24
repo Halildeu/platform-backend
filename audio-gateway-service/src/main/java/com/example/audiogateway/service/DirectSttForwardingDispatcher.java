@@ -2,6 +2,7 @@ package com.example.audiogateway.service;
 
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.TranscriptResult;
+import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -65,6 +66,9 @@ import reactor.core.scheduler.Schedulers;
  * delegate returns {@code Accepted}, an STT error / timeout / saturation can NOT change
  * the admission outcome (the chunk is already accepted). This means accepted metadata may
  * exist without a transcript; that gap is made visible via metrics + PII-safe logs.
+ * However, raw audio is NOT sent to the compute plane unless the
+ * {@link AuditEvent.ChunkForwardedToComputePlane} event is successfully emitted first.
+ * Audit failure blocks only the direct-STT forward, not chunk admission.
  *
  * <p><b>PII boundary (ADR-0030).</b> Raw audio bytes cross the wire to live-stt (the point
  * of path A) but are NEVER persisted, NEVER sent to Redis, and NEVER logged — they live
@@ -87,6 +91,7 @@ public class DirectSttForwardingDispatcher
     private static final String AUDIO_FILENAME = "chunk.bin";
 
     private final AudioChunkDispatcher delegate;
+    private final AudioGatewayAuditSink auditSink;
     private final WebClient webClient;
     private final AudioGatewayProperties.DirectStt cfg;
     private final MeterRegistry meters;
@@ -96,10 +101,12 @@ public class DirectSttForwardingDispatcher
 
     public DirectSttForwardingDispatcher(
             final AudioChunkDispatcher delegate,
+            final AudioGatewayAuditSink auditSink,
             final WebClient webClient,
             final AudioGatewayProperties properties,
             final MeterRegistry meters) {
         this.delegate = delegate;
+        this.auditSink = auditSink;
         this.webClient = webClient;
         this.cfg = properties.getDirectStt();
         this.meters = meters;
@@ -146,8 +153,10 @@ public class DirectSttForwardingDispatcher
 
         // (4) Hand off the monitor immediately; build the request inside forward().
         final ForwardTask task = new ForwardTask(
-                audio, cmd.sessionId(), cmd.chunkSeq(), cmd.meetingId(), cmd.deviceId(),
-                cmd.language(), cmd.correlationId(), cmd.payload().sha256(), cmd.payload().length());
+                audio, cmd.sessionId(), cmd.tenantId(), cmd.userId(), cmd.chunkSeq(),
+                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
+                cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
+                cmd.payload().length());
         try {
             forwardScheduler.schedule(() -> forward(task));
         } catch (final RuntimeException ex) {
@@ -173,10 +182,15 @@ public class DirectSttForwardingDispatcher
      * in-flight permit exactly once in every terminal path.
      */
     void forward(final ForwardTask task) {
-        counter("attempted").increment();
         final AtomicBoolean released = new AtomicBoolean(false);
 
         try {
+            if (!emitComputePlaneAudit(task)) {
+                releaseOnce(released);
+                return;
+            }
+            counter("attempted").increment();
+
             final MultipartBodyBuilder body = new MultipartBodyBuilder();
             body.part(AUDIO_PART, new NamedByteArrayResource(task.audio(), AUDIO_FILENAME))
                     .contentType(MediaType.APPLICATION_OCTET_STREAM);
@@ -206,6 +220,33 @@ public class DirectSttForwardingDispatcher
             counter("exception").increment();
             log.warn("Direct-STT forward setup failed err={} {}",
                     ex.getClass().getSimpleName(), kv(task));
+        }
+    }
+
+    private boolean emitComputePlaneAudit(final ForwardTask task) {
+        try {
+            auditSink.emit(new AuditEvent.ChunkForwardedToComputePlane(
+                    task.sessionId(),
+                    task.tenantId(),
+                    task.userId(),
+                    task.meetingId(),
+                    task.deviceId(),
+                    task.language(),
+                    task.chunkSeq(),
+                    task.audioFormat(),
+                    task.sampleRateHz(),
+                    task.channels(),
+                    task.sha256(),
+                    task.length(),
+                    task.correlationId(),
+                    System.currentTimeMillis(),
+                    "live-stt"));
+            return true;
+        } catch (final Exception ex) {
+            counter("audit_blocked").increment();
+            log.warn("Direct-STT forward blocked because compute-plane audit failed err={} {}",
+                    ex.getClass().getSimpleName(), kv(task));
+            return false;
         }
     }
 
@@ -340,10 +381,15 @@ public class DirectSttForwardingDispatcher
     record ForwardTask(
             byte[] audio,
             String sessionId,
+            Long tenantId,
+            Long userId,
             long chunkSeq,
             String meetingId,
             String deviceId,
             String language,
+            String audioFormat,
+            int sampleRateHz,
+            int channels,
             String correlationId,
             String sha256,
             int length) {
