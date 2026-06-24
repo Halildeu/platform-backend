@@ -26,7 +26,7 @@ Two NEW `Envelope` CONTROL payloads (broker→agent, then agent→broker):
 // Broker → agent (CONTROL). One-shot, TTL-bounded device-key liveness challenge.
 message DeviceKeyChallenge {
   string challenge_id = 1;             // single-use; broker replay-cache keyed on this
-  bytes  nonce = 2;                    // 32 random bytes
+  string nonce_b64 = 2;                // 32 random bytes, base64 (as merged in #741; not raw `bytes`)
   int64  issued_at_epoch_millis = 3;
   int64  expires_at_epoch_millis = 4;  // short TTL (e.g. 30s)
   string transport_peer_key = 5;       // broker-observed mTLS leaf SHA-256 (the binding anchor)
@@ -187,4 +187,7 @@ foundation slice.
 **Why handed off here:** the prerequisite + verifier are the security-critical crux — a wrong AK↔EK binding is
 *fake* hardware attestation, exactly what #548 must never ship. Codex (decision authority) explicitly sanctioned
 a clean handoff at this point rather than rush the crypto + DB migration in a context-loaded tail. The full
-resolution + the rejected alternatives (B wire-extension, C bounded-lab) are in Codex thread `019efada`.
+resolution is in Codex thread `019efada`. Rejected alternatives: **(B)** a session-time `MakeCredential`/
+`ActivateCredential` is deferred — it is cryptographically clean but a larger wire/control-flow extension than
+reusing the enrollment-time V10 proof; **(C)** a bounded-lab path may exist only as a non-prod diagnostic and
+must NOT produce a strong marker or production `hardwareKeyAttested()`.
