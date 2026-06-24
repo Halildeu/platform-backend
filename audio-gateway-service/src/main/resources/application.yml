@@ -85,6 +85,15 @@ audio:
       # Absent claim → fail-closed 403 (sessiz "unknown" YASAK).
       tenant-claim: companyId
       user-claim: userId
+    # Local/dev default: disabled so contract tests do not require a live meeting-service.
+    # k8s profile enables this by default and fails session start closed when the canonical
+    # meeting-service UUID cannot be read with the caller's JWT.
+    meeting-access:
+      validation-enabled: false
+      base-url: http://localhost:8097
+      connect-timeout-ms: 2000
+      response-timeout-ms: 3000
+      max-response-bytes: 32768
     idempotency:
       # Codex 019e8c26 iter-2 AGREE: Idempotency-Key header canonical;
       # 16-128 char (UUIDv4 tavsiye, zorunlu değil); scope tenantId+userId+method+route+key.

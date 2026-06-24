@@ -22,6 +22,7 @@ public class AudioGatewayProperties {
     public void validate() {
         dispatcher.validate();
         directStt.validate();
+        meetingAccess.validate();
     }
 
 
@@ -32,6 +33,7 @@ public class AudioGatewayProperties {
     private final Idempotency idempotency = new Idempotency();
     private final Audit audit = new Audit();
     private final DirectStt directStt = new DirectStt();
+    private final MeetingAccess meetingAccess = new MeetingAccess();
 
     public Contract getContract() {
         return contract;
@@ -59,6 +61,10 @@ public class AudioGatewayProperties {
 
     public DirectStt getDirectStt() {
         return directStt;
+    }
+
+    public MeetingAccess getMeetingAccess() {
+        return meetingAccess;
     }
 
     public static class Contract {
@@ -431,6 +437,95 @@ public class AudioGatewayProperties {
 
         public void setUserClaim(final String userClaim) {
             this.userClaim = userClaim;
+        }
+    }
+
+    /**
+     * Meeting-service access validation for recorder start-session.
+     *
+     * <p>Local/default profile keeps this disabled so unit/contract tests do not require a
+     * live meeting-service. The k8s profile enables it by default and points to the cluster
+     * service DNS name. When enabled, startup fails for a blank/non-http base URL or
+     * non-positive bounds; runtime meeting-service failure fails session start closed.
+     */
+    public static class MeetingAccess {
+        private boolean validationEnabled = false;
+        private String baseUrl = "http://localhost:8097";
+        private long connectTimeoutMs = 2_000L;
+        private long responseTimeoutMs = 3_000L;
+        private int maxResponseBytes = 32_768;
+
+        public void validate() {
+            if (!validationEnabled) {
+                return;
+            }
+            if (baseUrl == null || baseUrl.isBlank()) {
+                throw new IllegalStateException(
+                        "audio.gateway.meeting-access.base-url must be set when validation is enabled");
+            }
+            final java.net.URI uri;
+            try {
+                uri = java.net.URI.create(baseUrl.trim());
+            } catch (final IllegalArgumentException ex) {
+                throw new IllegalStateException(
+                        "audio.gateway.meeting-access.base-url is not a valid URI", ex);
+            }
+            final String scheme = uri.getScheme();
+            if (scheme == null
+                    || !("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))) {
+                throw new IllegalStateException(
+                        "audio.gateway.meeting-access.base-url must be http or https, got scheme="
+                                + scheme);
+            }
+            if (connectTimeoutMs <= 0 || responseTimeoutMs <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.meeting-access connect/response timeouts must be positive");
+            }
+            if (maxResponseBytes <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.meeting-access.max-response-bytes must be positive, got "
+                                + maxResponseBytes);
+            }
+        }
+
+        public boolean isValidationEnabled() {
+            return validationEnabled;
+        }
+
+        public void setValidationEnabled(final boolean validationEnabled) {
+            this.validationEnabled = validationEnabled;
+        }
+
+        public String getBaseUrl() {
+            return baseUrl;
+        }
+
+        public void setBaseUrl(final String baseUrl) {
+            this.baseUrl = baseUrl;
+        }
+
+        public long getConnectTimeoutMs() {
+            return connectTimeoutMs;
+        }
+
+        public void setConnectTimeoutMs(final long connectTimeoutMs) {
+            this.connectTimeoutMs = connectTimeoutMs;
+        }
+
+        public long getResponseTimeoutMs() {
+            return responseTimeoutMs;
+        }
+
+        public void setResponseTimeoutMs(final long responseTimeoutMs) {
+            this.responseTimeoutMs = responseTimeoutMs;
+        }
+
+        public int getMaxResponseBytes() {
+            return maxResponseBytes;
+        }
+
+        public void setMaxResponseBytes(final int maxResponseBytes) {
+            this.maxResponseBytes = maxResponseBytes;
         }
     }
 

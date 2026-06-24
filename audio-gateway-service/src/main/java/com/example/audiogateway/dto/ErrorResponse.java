@@ -25,6 +25,8 @@ public record ErrorResponse(
     public static final String CODE_QUEUE_FULL = "AUDIO_GATEWAY_QUEUE_FULL";
     public static final String CODE_STT_UNAVAILABLE = "AUDIO_GATEWAY_STT_UNAVAILABLE";
     public static final String CODE_MEETING_FORBIDDEN = "AUDIO_GATEWAY_MEETING_FORBIDDEN";
+    public static final String CODE_MEETING_VALIDATION_UNAVAILABLE =
+            "AUDIO_GATEWAY_MEETING_VALIDATION_UNAVAILABLE";
     public static final String CODE_INTERNAL = "AUDIO_GATEWAY_INTERNAL";
     // ADR-0031 + Codex `019e8c26` iter-2 AGREE: idempotency conflict + session lifecycle.
     public static final String CODE_IDEMPOTENCY_MISSING = "AUDIO_GATEWAY_IDEMPOTENCY_MISSING";

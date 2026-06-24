@@ -4,6 +4,8 @@ import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
+import com.example.audiogateway.service.MeetingAccessValidator;
+import com.example.audiogateway.service.MeetingAccessValidator.Decision;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -11,13 +13,18 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import reactor.core.publisher.Mono;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
 
@@ -44,13 +51,23 @@ class StartSessionContractTest {
     private static final String SESSIONS_PATH = "/api/v1/audio-gateway/sessions";
     private static final String IDEMP_HEADER = "Idempotency-Key";
     private static final String VALID_IDEMP = "fixture-pr-gw-01a-startsession-1";
+    private static final String VALID_MEETING_ID = "22222222-2222-4222-8222-222222222222";
 
     @Autowired
     private WebTestClient client;
 
+    @MockitoBean
+    private MeetingAccessValidator meetingAccessValidator;
+
     private static StartSessionRequest validRequest() {
         return new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV, 16000, 1);
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.WAV, 16000, 1);
+    }
+
+    @BeforeEach
+    void allowMeetingAccess() {
+        when(meetingAccessValidator.validate(any(), any(), any()))
+                .thenReturn(Mono.just(Decision.granted()));
     }
 
     private WebTestClient withClaims() {
@@ -123,7 +140,7 @@ class StartSessionContractTest {
     @Test
     void unsupportedAudioFormat_returns415() {
         final StartSessionRequest req = new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.MP3, 16000, 1);
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.MP3, 16000, 1);
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
@@ -138,7 +155,7 @@ class StartSessionContractTest {
     @Test
     void unsupportedSampleRate_returns400() {
         final StartSessionRequest req = new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV, 22050, 1);
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.WAV, 22050, 1);
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
@@ -156,7 +173,7 @@ class StartSessionContractTest {
     @Test
     void stereoChannel_returns400() {
         final StartSessionRequest req = new StartSessionRequest(
-                "MTG-2026-0001", "device-1", "tr", AudioFormat.WAV, 16000, 2);
+                VALID_MEETING_ID, "device-1", "tr", AudioFormat.WAV, 16000, 2);
 
         withClaims()
                 .post().uri(SESSIONS_PATH)
@@ -187,6 +204,64 @@ class StartSessionContractTest {
                     assertThat(resp.chunkUploadUrl()).contains("/api/v1/audio-gateway/sessions/")
                             .endsWith("/chunks");
                     assertThat(resp.sessionStartMs()).isPositive();
+                });
+    }
+
+    @Test
+    void invalidMeetingId_returns400_validationCode() {
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-bad-meeting")
+                .header("Content-Type", "application/json")
+                .bodyValue("""
+                        {
+                          "meetingId": "meeting-123",
+                          "deviceId": "device-1",
+                          "language": "tr",
+                          "audioFormat": "WAV",
+                          "sampleRateHz": 16000,
+                          "channels": 1
+                        }
+                        """)
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_VALIDATION));
+    }
+
+    @Test
+    void meetingAccessDenied_returns403() {
+        when(meetingAccessValidator.validate(any(), any(), any()))
+                .thenReturn(Mono.just(Decision.forbidden("Meeting is not visible to caller")));
+
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-meeting-deny")
+                .bodyValue(validRequest())
+                .exchange()
+                .expectStatus().isForbidden()
+                .expectBody(ErrorResponse.class)
+                .value(err -> {
+                    assertThat(err.code()).isEqualTo(ErrorResponse.CODE_MEETING_FORBIDDEN);
+                    assertThat(err.retryable()).isFalse();
+                });
+    }
+
+    @Test
+    void meetingAccessUnavailable_returns503_retryable() {
+        when(meetingAccessValidator.validate(any(), any(), any()))
+                .thenReturn(Mono.just(Decision.unavailable("Meeting access validation unavailable")));
+
+        withClaims()
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP + "-meeting-unavailable")
+                .bodyValue(validRequest())
+                .exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody(ErrorResponse.class)
+                .value(err -> {
+                    assertThat(err.code()).isEqualTo(ErrorResponse.CODE_MEETING_VALIDATION_UNAVAILABLE);
+                    assertThat(err.retryable()).isTrue();
                 });
     }
 
@@ -225,7 +300,7 @@ class StartSessionContractTest {
                 .expectStatus().isCreated();
 
         final StartSessionRequest mutated = new StartSessionRequest(
-                "MTG-2026-0001", "device-OTHER", "tr", AudioFormat.WAV, 16000, 1);
+                VALID_MEETING_ID, "device-OTHER", "tr", AudioFormat.WAV, 16000, 1);
         withClaims()
                 .post().uri(SESSIONS_PATH)
                 .header(IDEMP_HEADER, idemp)
@@ -293,7 +368,7 @@ class StartSessionContractTest {
                 .header("Content-Type", "application/json")
                 .bodyValue("""
                         {
-                          "meetingId": "MTG-2026-0001",
+                          "meetingId": "22222222-2222-4222-8222-222222222222",
                           "deviceId": "device-1",
                           "audioFormat": "WAV",
                           "sampleRateHz": 16000,
@@ -315,7 +390,7 @@ class StartSessionContractTest {
                 .header("Content-Type", "application/json")
                 .bodyValue("""
                         {
-                          "meetingId": "MTG-2026-0001",
+                          "meetingId": "22222222-2222-4222-8222-222222222222",
                           "deviceId": "device-1",
                           "language": "tur",
                           "audioFormat": "WAV",
@@ -339,7 +414,7 @@ class StartSessionContractTest {
                 .header("Content-Type", "application/json")
                 .bodyValue("""
                         {
-                          "meetingId": "MTG-2026-0001",
+                          "meetingId": "22222222-2222-4222-8222-222222222222",
                           "deviceId": "device-1",
                           "language": "tr_TR",
                           "audioFormat": "WAV",

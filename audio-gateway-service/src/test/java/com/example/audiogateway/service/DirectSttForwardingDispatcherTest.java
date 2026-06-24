@@ -71,7 +71,7 @@ class DirectSttForwardingDispatcherTest {
     private static ChunkDispatchCommand command(final byte[] audio) {
         final AudioChunkPayload payload = AudioChunkPayload.of(audio, "deadbeefcafe0000sha");
         return new ChunkDispatchCommand(
-                "SES-abc", 42L, 7L, "MTG-2026-0042", "iphone-h-1", "tr",
+                "SES-abc", 42L, 7L, "22222222-2222-4222-8222-222222222222", "iphone-h-1", "tr",
                 AudioFormat.values()[0], 16_000, 1, 0L, 1_000L, "corr-xyz", payload);
     }
 
@@ -109,7 +109,7 @@ class DirectSttForwardingDispatcherTest {
         assertThat(req.getMethod()).isEqualTo("POST");
         assertThat(req.getPath()).startsWith("/transcribe");
         assertThat(req.getPath())
-                .contains("meeting_id=MTG-2026-0042")
+                .contains("meeting_id=22222222-2222-4222-8222-222222222222")
                 .contains("session_id=SES-abc")
                 .contains("device_id=iphone-h-1")
                 .contains("language=tr");
@@ -222,7 +222,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = new DirectSttForwardingDispatcher(
                 acceptDelegate(), webClient, props(4), meters);
         final ChunkDispatchCommand cmd = new ChunkDispatchCommand(
-                "SES-1", 1L, 1L, "MTG-2026-0001", "dev", "tr",
+                "SES-1", 1L, 1L, "22222222-2222-4222-8222-222222222222", "dev", "tr",
                 AudioFormat.values()[0], 16_000, 1, 0L, 0L, "c", payload);
 
         dispatcher.dispatch(cmd);
