@@ -8,7 +8,12 @@ import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.ChannelOption;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import java.io.File;
 import java.time.Duration;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLParameters;
 
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanDefinition;
@@ -83,19 +88,42 @@ public class DirectSttConfig {
     /**
      * Dedicated WebClient for the live-stt {@code /transcribe} forward. Bounded connect +
      * (per-request) response timeouts and a small in-memory response decode cap — the
-     * {@code /transcribe} JSON is small. No base URL: {@code forward()} builds the absolute
-     * URI from {@code transcribe-url} + query params per request.
+     * {@code /transcribe} JSON is small. When {@code direct-stt.tls.enabled=true}, the
+     * client presents the mounted audio-gateway certificate and verifies the Caddy/live-stt
+     * server certificate with HTTPS hostname verification. No base URL: {@code forward()}
+     * builds the absolute URI from {@code transcribe-url} + query params per request.
      */
     @Bean("directSttWebClient")
-    public WebClient directSttWebClient(final AudioGatewayProperties props) {
+    public WebClient directSttWebClient(final AudioGatewayProperties props) throws SSLException {
         final AudioGatewayProperties.DirectStt cfg = props.getDirectStt();
-        final HttpClient httpClient = HttpClient.create()
+        HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) cfg.getConnectTimeoutMs())
                 .responseTimeout(Duration.ofMillis(cfg.getResponseTimeoutMs()));
+        if (cfg.getTls().isEnabled()) {
+            httpClient = applyMutualTls(httpClient, cfg.getTls());
+        }
         return WebClient.builder()
                 .clientConnector(new ReactorClientHttpConnector(httpClient))
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(cfg.getMaxResponseBytes()))
                 .build();
+    }
+
+    private HttpClient applyMutualTls(
+            final HttpClient httpClient,
+            final AudioGatewayProperties.DirectStt.Tls tls) throws SSLException {
+        final SslContext sslContext = SslContextBuilder.forClient()
+                .trustManager(new File(tls.getCaCertificatePath()))
+                .keyManager(
+                        new File(tls.getClientCertificatePath()),
+                        new File(tls.getClientPrivateKeyPath()))
+                .build();
+        return httpClient.secure(spec -> spec
+                .sslContext(sslContext)
+                .handlerConfigurator(handler -> {
+                    final SSLParameters parameters = handler.engine().getSSLParameters();
+                    parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                    handler.engine().setSSLParameters(parameters);
+                }));
     }
 
     /**

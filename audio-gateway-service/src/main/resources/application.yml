@@ -79,6 +79,11 @@ audio:
       connect-timeout-ms: 3000
       response-timeout-ms: 30000     # GPU /transcribe can take hundreds of ms to seconds
       max-response-bytes: 262144     # small JSON response decode cap
+      tls:
+        enabled: false               # real cross-server meeting audio flips true with Caddy/Vault PKI mTLS (ADR-0031/B+ I7)
+        ca-certificate-path: ""      # mounted PEM CA bundle for live-stt.denetim/Caddy server verification
+        client-certificate-path: ""  # mounted PEM client cert presented by audio-gateway
+        client-private-key-path: ""  # mounted PEM private key; never log/copy to Redis
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
       # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".
