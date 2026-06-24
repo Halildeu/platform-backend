@@ -3,6 +3,7 @@ package com.example.endpointadmin.remoteaccess.bridge.contract;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -105,5 +106,48 @@ public final class RemoteBridgeMessages {
 
     /** Agent → broker: diagnostics for a failed local dispatch; broker records metadata only, never raw output. */
     public record AgentErrorFrame(String sessionId, String code, boolean retryable, String detail) {
+    }
+
+    /**
+     * Faz 22.6 #548 Path A (DESIGN: {@code docs/faz22.6-device-key-session-attestation-design.md}; Codex 019efada).
+     * Broker → agent (CONTROL): a one-shot, TTL-bounded device-key liveness challenge. The agent answers with a
+     * {@link DeviceKeyAttestationResponse} signed over a canonical binding context derived from these fields, so a
+     * copied response cannot be replayed (fresh nonce + short TTL + transport-peer binding). ADVISORY transport
+     * frame; the broker's {@code DEVICE_KEY_ATTESTATION_REAL} verifier owns every authoritative decision.
+     */
+    public record DeviceKeyChallenge(String challengeId,
+                                     String nonceB64,
+                                     long issuedAtEpochMillis,
+                                     long expiresAtEpochMillis,
+                                     String transportPeerKey,
+                                     String protocolVersion) {
+    }
+
+    /**
+     * Faz 22.6 #548 Path A. Agent → broker (CONTROL): the fresh device-key session attestation answering a
+     * {@link DeviceKeyChallenge}. ADVISORY shape only — the broker's {@code DEVICE_KEY_ATTESTATION_REAL} verifier
+     * re-derives every fact: {@code deviceKeyPubB64} MUST equal the mTLS leaf public key; {@code deviceKeySigB64}
+     * over the canonical binding context proves live possession; {@code certify*} proves TPM residency; {@code ek*}
+     * chains to a pinned root (strong path). NEVER carries secrets (no activation secret / enrollment token /
+     * private key).
+     */
+    public record DeviceKeyAttestationResponse(String challengeId,
+                                               String schema,
+                                               String deviceKeyPubB64,
+                                               String akPubB64,
+                                               String akNameB64,
+                                               String ekPubB64,
+                                               String ekCertB64,
+                                               List<String> ekCertChainB64,
+                                               String certifyInfoB64,
+                                               String certifySigB64,
+                                               String quoteB64,
+                                               String quoteSigB64,
+                                               String bindingContextB64,
+                                               String deviceKeySigB64,
+                                               long signedAtEpochMillis) {
+        public DeviceKeyAttestationResponse {
+            ekCertChainB64 = ekCertChainB64 == null ? List.of() : List.copyOf(ekCertChainB64);
+        }
     }
 }
