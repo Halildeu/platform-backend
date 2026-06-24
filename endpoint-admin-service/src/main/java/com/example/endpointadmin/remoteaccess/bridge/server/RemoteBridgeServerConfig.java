@@ -546,11 +546,22 @@ public class RemoteBridgeServerConfig {
             RemoteBridgeBroker remoteBridgeBroker,
             ControlStreamRegistry remoteBridgeControlStreamRegistry,
             DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
-            @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis) {
+            DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
+            @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis,
+            @Value("${remote-bridge.device-trust.verifier:FAIL_CLOSED}") String deviceTrustVerifierType,
+            @Value("${remote-bridge.device-trust.device-key-session.challenge-ttl-millis:120000}")
+                    long deviceKeyChallengeTtlMillis) {
+        // Faz 22.6 #548 step-5b — derive issuance ON exactly when the canonical TPM-native (REAL) verifier is the
+        // active device-trust basis, so there is NO config gap (REAL verifier on ⇒ challenges issued) and non-REAL
+        // deployments emit no challenges agents would not answer. The TTL must cover the consent + operation
+        // window (else the evidence expires before PERMIT-time and the verifier false-denies).
+        String type = deviceTrustVerifierType == null ? "" : deviceTrustVerifierType.strip();
+        boolean deviceKeySessionEnabled = type.equalsIgnoreCase("DEVICE_KEY_ATTESTATION_REAL")
+                || type.equalsIgnoreCase("REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL");
         return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
                 remoteBridgeBroker, remoteBridgeControlStreamRegistry, remoteBridgeDurableAuditSink,
-                System::currentTimeMillis,
-                consentPromptTtlMillis);
+                System::currentTimeMillis, consentPromptTtlMillis,
+                remoteBridgeDeviceKeyChallengeStore, deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
     }
 
     @Bean

@@ -69,6 +69,11 @@ class ControlStreamRegistryTest {
                 Set.of(RemoteSessionCapability.VIEW_ONLY), 5000L);
     }
 
+    private static RemoteBridgeMessages.DeviceKeyChallenge deviceKeyChallenge(String transportPeerKey) {
+        return new RemoteBridgeMessages.DeviceKeyChallenge("00112233445566778899aabbccddeeff", "bm9uY2U=",
+                1_000L, 9_999_999L, transportPeerKey, "device-key-session-v1");
+    }
+
     @Test
     void sendsOperationPermitOnControlToTheLivePeer() {
         ControlStreamRegistry registry = new ControlStreamRegistry();
@@ -133,6 +138,35 @@ class ControlStreamRegistryTest {
         assertEquals("sess-1", env.getSessionId());
         assertTrue(env.hasConsentPrompt(), "the payload must be a consent prompt");
         assertFalse(observer.completed, "a consent prompt must NOT close the stream (awaiting consent)");
+    }
+
+    @Test
+    void sendsDeviceKeyChallengeOnControlToTheLivePeerCarryingTheSessionId() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+
+        boolean sent = registry.sendDeviceKeyChallenge("peer-1", "sess-1", deviceKeyChallenge("peer-1"), 9_000L);
+
+        assertTrue(sent);
+        Envelope env = observer.sent.get(0);
+        assertEquals(ChannelType.CONTROL, env.getChannelType());
+        assertEquals("sess-1", env.getSessionId(), "the broker session id rides the CONTROL envelope for correlation");
+        assertTrue(env.hasDeviceKeyChallenge(), "the payload must be a device-key challenge");
+        assertFalse(observer.completed, "issuing a challenge must NOT close the stream (awaiting the response)");
+    }
+
+    @Test
+    void aDeviceKeyChallengeToAnUnknownPeerOrWithABlankSessionFailsClosed() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+        assertFalse(registry.sendDeviceKeyChallenge("ghost", "sess-1", deviceKeyChallenge("ghost"), 1L),
+                "unknown peer");
+        assertFalse(registry.sendDeviceKeyChallenge("peer-1", "  ", deviceKeyChallenge("peer-1"), 1L),
+                "blank session id");
+        assertFalse(registry.sendDeviceKeyChallenge("peer-1", "sess-1", null, 1L), "null challenge");
+        assertTrue(observer.sent.isEmpty(), "nothing must be pushed for a fail-closed challenge");
     }
 
     @Test

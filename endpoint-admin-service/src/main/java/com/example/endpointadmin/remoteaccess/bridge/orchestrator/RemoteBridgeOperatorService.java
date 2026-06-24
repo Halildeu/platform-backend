@@ -10,6 +10,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeTrustEvidence;
 import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.ConsentPrompt;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.DeviceKeyChallenge;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationDispatch;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
@@ -71,11 +72,32 @@ public final class RemoteBridgeOperatorService {
     private final RemoteBridgeAuditSink auditSink;
     private final LongSupplier clock;
     private final long consentPromptTtlMillis;
+    // Faz 22.6 #548 step-5b — the canonical device-key session attestation issuance. When disabled (or the store
+    // is null) openSession emits NO challenge, so the DEVICE_KEY_ATTESTATION_REAL verifier has no evidence and
+    // denies (fail-closed). Enabled exactly when the REAL verifier is the active device-trust basis.
+    private final DeviceKeyChallengeStore deviceKeyChallengeStore;
+    private final boolean deviceKeySessionEnabled;
+    private final long deviceKeyChallengeTtlMillis;
 
+    /** Back-compat: no device-key session attestation issuance (the prior behaviour). */
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
                                        RemoteBridgeBroker broker, ControlStreamRegistry registry,
                                        RemoteBridgeAuditSink auditSink, LongSupplier clock,
                                        long consentPromptTtlMillis) {
+        this(store, assembler, broker, registry, auditSink, clock, consentPromptTtlMillis, null, false, 0L);
+    }
+
+    /**
+     * Faz 22.6 #548 step-5b — with device-key session attestation issuance. When {@code deviceKeySessionEnabled},
+     * {@link #openSession} issues a broker-nonced challenge (TTL {@code deviceKeyChallengeTtlMillis}) on the peer's
+     * CONTROL stream right after the session opens and before the consent prompt.
+     */
+    public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
+                                       RemoteBridgeBroker broker, ControlStreamRegistry registry,
+                                       RemoteBridgeAuditSink auditSink, LongSupplier clock,
+                                       long consentPromptTtlMillis,
+                                       DeviceKeyChallengeStore deviceKeyChallengeStore,
+                                       boolean deviceKeySessionEnabled, long deviceKeyChallengeTtlMillis) {
         this.store = Objects.requireNonNull(store, "store");
         this.assembler = Objects.requireNonNull(assembler, "assembler");
         this.broker = Objects.requireNonNull(broker, "broker");
@@ -86,6 +108,18 @@ public final class RemoteBridgeOperatorService {
             throw new IllegalArgumentException("consentPromptTtlMillis must be positive");
         }
         this.consentPromptTtlMillis = consentPromptTtlMillis;
+        this.deviceKeySessionEnabled = deviceKeySessionEnabled;
+        this.deviceKeyChallengeStore = deviceKeyChallengeStore;
+        if (deviceKeySessionEnabled) {
+            if (deviceKeyChallengeStore == null) {
+                throw new IllegalArgumentException(
+                        "device-key session attestation enabled requires a DeviceKeyChallengeStore");
+            }
+            if (deviceKeyChallengeTtlMillis <= 0) {
+                throw new IllegalArgumentException("deviceKeyChallengeTtlMillis must be positive when enabled");
+            }
+        }
+        this.deviceKeyChallengeTtlMillis = deviceKeyChallengeTtlMillis;
     }
 
     /** The outcome of opening an attended session: the session id, whether the consent prompt reached the agent. */
@@ -150,6 +184,21 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
+
+        // Faz 22.6 #548 step-5b — issue the canonical device-key challenge AFTER the session exists and BEFORE the
+        // consent prompt, so the agent can answer it during the consent window (the DEVICE_KEY_ATTESTATION_REAL
+        // verifier reads the resulting evidence at PERMIT time). Gated: emitted only when the REAL verifier is the
+        // active device-trust basis. Fail-closed: a send failure kills + evicts the just-opened session, exactly
+        // like an undelivered consent prompt — no orphan session waits for a response that can never arrive.
+        if (deviceKeySessionEnabled && deviceKeyChallengeStore != null) {
+            DeviceKeyChallenge challenge = deviceKeyChallengeStore.issue(
+                    session.sessionId(), peer.transportPeerKey(), deviceKeyChallengeTtlMillis, now);
+            if (!registry.sendDeviceKeyChallenge(peer.transportPeerKey(), session.sessionId(), challenge, now)) {
+                session.transition(Event.KILL);
+                store.evictIfTerminal(session.sessionId());
+                return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
+            }
+        }
 
         ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
                 request.reason(), session.requestedCapabilities(), session.promptExpiryEpochMillis());

@@ -214,6 +214,33 @@ public final class ControlStreamRegistry {
         return entry.handle().send(envelope);
     }
 
+    /**
+     * Faz 22.6 #548 step-5b — push a broker-nonced {@link RemoteBridgeMessages.DeviceKeyChallenge} to the
+     * authenticated peer's live CONTROL stream (the canonical device-key session attestation challenge-response).
+     * The envelope carries the broker {@code sessionId} so the agent echoes it on the CONTROL channel and its
+     * response correlates to THIS session. NON-terminal {@code get} — the stream stays open awaiting the response.
+     * Returns false on a null/blank-session challenge OR when the peer has no live CONTROL stream (fail-closed —
+     * no challenge lands, so the {@code DEVICE_KEY_ATTESTATION_REAL} verifier denies for lack of fresh evidence).
+     * Issuing the challenge confers NO trust; the verifier re-derives every fact from the response.
+     */
+    public boolean sendDeviceKeyChallenge(String transportPeerKey, String sessionId,
+                                          RemoteBridgeMessages.DeviceKeyChallenge challenge, long nowEpochMillis) {
+        if (challenge == null || sessionId == null || sessionId.isBlank()) {
+            return false;
+        }
+        ConnectedPeer entry = streams.get(transportPeerKey);
+        if (entry == null) {
+            return false;
+        }
+        Envelope envelope = Envelope.newBuilder()
+                .setChannelType(ChannelType.CONTROL)
+                .setSessionId(sessionId)
+                .setSentAtEpochMillis(nowEpochMillis)
+                .setDeviceKeyChallenge(RemoteBridgeProtoAdapter.encode(challenge))
+                .build();
+        return entry.handle().send(envelope);
+    }
+
     /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */
     public void completeAll() {
         streams.values().forEach(entry -> entry.handle().close());

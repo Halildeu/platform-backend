@@ -95,11 +95,13 @@ or `COMPOSITE` if enrollment AND hardware are both required) **iff ALL** hold (e
 
 ## 5. Implementation sequence (each its own PR + cross-AI)
 
-> **Status (2026-06-25):** steps 1-3 + the reconciliation guard + the AK↔EK prerequisite (step 4, PR #748) are
-> MERGED; step 5 is split — **5a (this slice): the `DEVICE_KEY_ATTESTATION_REAL` verifier + its consumer + the
-> session evidence store + the factory mode** (opt-in, default-off; inert until 5b issues a challenge); **5b
-> (next): the issuance trigger** (`ControlStreamRegistry.sendDeviceKeyChallenge` + `openSession` wiring). See §7
-> for the precise next-session P0.
+> **Status (2026-06-25):** steps 1-4 (PRs #741/#743/#744/#746/#747/#748) + **5a** (PR #750: the
+> `DEVICE_KEY_ATTESTATION_REAL` verifier + consumer + evidence store + factory mode) + **5b** (this slice: the
+> issuance trigger — `ControlStreamRegistry.sendDeviceKeyChallenge` + `RemoteBridgeOperatorService.openSession`
+> wiring, gated on the REAL verifier being the active basis) are MERGED/landing. The broker now issues a
+> broker-nonced challenge per opened session and the REAL verifier consumes the response — the canonical #548
+> backend loop is CODE-COMPLETE (opt-in, default-off). Remaining: **step 6 (the agent, cross-repo)** + step 7
+> (live run). See §7 for the precise next-session P0.
 
 1. ✅ **DONE — PR #741.** Backend (source-of-truth): proto (the 2 CONTROL payloads) + domain records
    (`DeviceKeyChallenge`, `DeviceKeyAttestationResponse`) + wire adapters (decode + re-validate, fail-closed) +
@@ -130,9 +132,13 @@ or `COMPOSITE` if enrollment AND hardware are both required) **iff ALL** hold (e
     `verifyCertify(ak, deviceKey)` + `verifyQuote` over the broker nonce → negative matrix. Only when ALL hold →
     `hardwareKeyAttested()`. Opt-in + default-off; **inert until 5b** (no challenge is issued yet → the store
     stays empty → the verifier denies `no-fresh-device-key-evidence`).
-5b. **NEXT — the issuance trigger:** `ControlStreamRegistry.sendDeviceKeyChallenge` (CONTROL, `Envelope.sessionId`
-    correlation) + issue/send a challenge in `RemoteBridgeOperatorService.openSession` AFTER `store.open`, BEFORE
-    the consent prompt (send-fail → kill/evict), gated on the device-key session attestation being enabled.
+5b. ✅ **DONE (this slice): the issuance trigger.** `ControlStreamRegistry.sendDeviceKeyChallenge(transportPeerKey,
+    sessionId, challenge, now)` (CONTROL, `Envelope.sessionId` correlation; fail-closed on null/blank-session/no-peer)
+    + `RemoteBridgeOperatorService.openSession` issues a session-bound challenge AFTER `store.open` and BEFORE the
+    consent prompt; a send failure kills + evicts the just-opened session (mirrors consent-prompt-not-delivered).
+    Gated: the server config derives `deviceKeySessionEnabled` = (verifier type ∈ {`DEVICE_KEY_ATTESTATION_REAL`,
+    `REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL`}) so the REAL verifier ON ⇒ issuance ON (no config gap), non-REAL ⇒
+    no challenges emitted. The wire `DeviceKeyChallenge` record is unchanged (sessionId rides the envelope).
 6. **Agent (Go):** regenerate vendored proto (`scripts/proto/generate.sh`; update `descriptor_guard_test.go`
    Len 11→13, range >20→>23, +2 oneof entries); produce the `DeviceKeyAttestationResponse` (fresh Certify/Quote
    + device-key sig over the canonical binding context) from `internal/tpmenroll`; sender allowlist; finish the
@@ -180,22 +186,23 @@ nonce → replayable). Reconciliation (Codex decision authority, CLAUDE.md §8):
 
 **Done (all Codex `019efada` AGREE, cross-AI):** PR #741 (wire-contract) · #743 (reconciliation guard + the
 latent false-acceptance fix) · #744 (TPM-native evidence mapper) · #746 (challenge store) · #748 (AK↔EK
-enrollment-binding persistence, V74) · **this slice 5a (the `DEVICE_KEY_ATTESTATION_REAL` verifier + consumer +
-session evidence store + factory mode + canonical binding context + `verifyDeviceKeySignature`)**. §5 steps 1-4
-+ 5a are merged/landing. Device trust is still NOT established at runtime — 5a is opt-in + default-off and INERT
-until 5b issues a challenge (the verifier denies `no-fresh-device-key-evidence` until then). Each is a fail-closed
-slice; the verifier's positive path + full negative matrix are proven by a synthetic software-TPM fixture test.
+enrollment-binding persistence, V74) · **#750 5a (the `DEVICE_KEY_ATTESTATION_REAL` verifier + consumer + session
+evidence store + factory mode + canonical binding context + `verifyDeviceKeySignature`; F1 session-bind + F2
+protocol/schema pin + DiD evidence-window absorbed)** · **this slice 5b (the issuance trigger —
+`ControlStreamRegistry.sendDeviceKeyChallenge` + `openSession` wiring, gated on the REAL verifier)**. The backend
+challenge-response loop is now CODE-COMPLETE + opt-in/default-off: when the REAL verifier is the active basis the
+broker issues a session-bound challenge per opened session, the agent answers it, the consumer stores the
+evidence, and the verifier re-derives every fact at PERMIT time. No runtime device trust until an agent (step 6)
+actually answers + the REAL verifier is enabled.
 
-**Resume at §5 step 5b — the issuance trigger, then step 6 (agent):**
-1. **§5 step 5b — issuance trigger.** `ControlStreamRegistry.sendDeviceKeyChallenge(transportPeerKey, sessionId,
-   challenge, now)` (CONTROL envelope carries the sessionId; uses `RemoteBridgeProtoAdapter.encode`) + issue +
-   send a `DeviceKeyChallenge` in `RemoteBridgeOperatorService.openSession` AFTER `store.open` and BEFORE the
-   consent prompt (a send failure kills + evicts the just-opened session, like the consent-prompt-not-delivered
-   path). Gate the issuance on the device-key session attestation being enabled so non-REAL deployments do not
-   emit challenges no agent answers. Wire the `DeviceKeyChallengeStore` (already a bean) into the operator
-   service + the evidence-store eviction on session terminal.
-2. **§5 step 6 — agent (Go)** in `platform-agent` (cross-repo): vendored-proto regen + `DeviceKeyAttestationResponse`
-   production (Certify/Quote + the device key signing `DeviceKeySessionBindingContext`) + EK-cert NV-read.
+**Resume at §5 step 6 — the agent (the only remaining backend/agent slice):**
+1. **§5 step 6 — agent (Go)** in `platform-agent` (cross-repo): vendored-proto regen (`scripts/proto/generate.sh`;
+   `descriptor_guard_test.go` Len 11→13, range >20→>23, +2 oneof) + produce `DeviceKeyAttestationResponse` from
+   `internal/tpmenroll` — schema `"faz22.6.device-key-session.v1"`; the device key signs
+   `DeviceKeySessionBindingContext` = `label‖session_id‖challenge_id‖nonce‖transport_peer_key‖expiry` (all UINT32
+   length-prefixed, big-endian); Certify(device_key) by AK + Quote with `extraData = the broker nonce`; finish
+   EK-cert NV-read (`tpmdevice_windows.go:107-113` stub). Gated, default-off.
+2. **§5 step 7 — live run + strong marker** (operator/owner-gated, real-hardware).
 
 **Why handed off here:** the prerequisite + verifier are the security-critical crux — a wrong AK↔EK binding is
 *fake* hardware attestation, exactly what #548 must never ship. Codex (decision authority) explicitly sanctioned
