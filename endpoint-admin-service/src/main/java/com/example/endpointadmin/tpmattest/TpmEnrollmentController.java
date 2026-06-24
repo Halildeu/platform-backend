@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.ByteArrayInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.cert.CertificateFactory;
@@ -21,6 +23,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 
@@ -215,7 +218,16 @@ public class TpmEnrollmentController {
             }
             String certificatePem = vault.signCsr(csrDerToPem(decode(env.csrDer())));
 
-            completionService.markConsumed(scope.enrollmentId());
+            // Faz 22.6 #548 step-4 — persist the V10-proven device binding ATOMICALLY with CONSUMED, so the
+            // canonical device-key session verifier can later bind AK↔EK against this enrollment record. All
+            // inputs are the values just verified above: akName is the L1-bound TPM Name; AK pub / EK cert /
+            // device-key SPKI are SHA-256 digests. A null scope.deviceId() → no binding row (handled downstream).
+            TpmEnrollmentCompletionService.TpmBinding binding = new TpmEnrollmentCompletionService.TpmBinding(
+                    scope.tenantId(), scope.deviceId(), consumed.akName(),
+                    sha256Hex(decode(env.akPub())),
+                    sha256Hex(decode(env.ekCert())),
+                    sha256Hex(deviceKey.toPublicKey().getEncoded()));
+            completionService.markConsumed(scope.enrollmentId(), binding);
             return ResponseEntity.ok()
                     .cacheControl(CacheControl.noStore())
                     .header(HttpHeaders.PRAGMA, "no-cache")
@@ -276,6 +288,15 @@ public class TpmEnrollmentController {
 
     private static byte[] decode(String b64) {
         return Base64.getDecoder().decode(b64);
+    }
+
+    /** Lowercase-hex SHA-256 — the stable digest the device-binding record stores for AK pub / EK cert / SPKI. */
+    private static String sha256Hex(byte[] data) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(data));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
     }
 
     private static X509Certificate parseCert(String b64Der) {
