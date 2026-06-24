@@ -355,9 +355,11 @@ public class RemoteBridgeServerConfig {
      * {@code deviceTrusted=false} → the broker stays gated (behaviour unchanged). {@code MACHINE_CERT_ENROLLMENT}
      * (non-prod only) trusts a session whose peer is the active ENROLLED machine cert for the tenant/device (via
      * {@link ConnectedDeviceResolver}) — enrollment identity, NOT hardware key attestation. {@code
-     * DEVICE_KEY_ATTESTATION} promotes fresh peer device-key evidence only for non-prod diagnostics. {@code
-     * REQUIRE_ENROLLMENT_AND_DEVICE_KEY} requires both enrollment identity and verified device-key evidence; it is
-     * still gated by parser/provisioning/live TPM acceptance before broad rollout.
+     * DEVICE_KEY_ATTESTATION} promotes the non-live, replay-prone STATIC CA device-key attestation (#732) carried
+     * in the AgentHello envelope — non-prod diagnostics only, NOT #548 closure. {@code
+     * REQUIRE_ENROLLMENT_AND_DEVICE_KEY} composes enrollment identity with that CA-static path and is non-prod
+     * only: it is REFUSED in a production-like profile until the canonical #548 TPM-native live challenge-response
+     * verifier ({@code DEVICE_KEY_ATTESTATION_REAL}, forthcoming) backs the composite's hardware leg.
      */
     @Bean
     public SessionDeviceTrustVerifier remoteBridgeSessionDeviceTrustVerifier(

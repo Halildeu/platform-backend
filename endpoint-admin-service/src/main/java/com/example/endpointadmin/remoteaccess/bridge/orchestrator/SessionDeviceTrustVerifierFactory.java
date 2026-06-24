@@ -99,9 +99,12 @@ public final class SessionDeviceTrustVerifierFactory {
             }
             case DEVICE_KEY_ATTESTATION -> {
                 if (productionLikeProfile) {
-                    throw reject("device-trust verifier DEVICE_KEY_ATTESTATION verifies hardware-key evidence "
-                            + "but does not bind that key to the requested tenant/device; use "
-                            + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY for production-shaped device trust");
+                    throw reject("device-trust verifier DEVICE_KEY_ATTESTATION promotes the STATIC CA device-key "
+                            + "attestation path (#732) carried in the AgentHello envelope — a non-live, "
+                            + "replay-prone basis that also does not bind the key to the requested tenant/device. "
+                            + "It is FORBIDDEN in a production-like profile; production-grade hardware device trust "
+                            + "requires the canonical #548 TPM-native live challenge-response "
+                            + "(DEVICE_KEY_ATTESTATION_REAL, forthcoming) backing the composite");
                 }
                 return PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE;
             }

@@ -65,6 +65,8 @@ class SessionDeviceTrustVerifierFactoryTest {
         IllegalStateException rejected = assertThrows(IllegalStateException.class, () ->
                 SessionDeviceTrustVerifierFactory.create(VerifierType.DEVICE_KEY_ATTESTATION, true, resolver()));
         assertTrue(rejected.getMessage().contains("DEVICE_KEY_ATTESTATION"), "the rejection names the type");
+        assertTrue(rejected.getMessage().contains("DEVICE_KEY_ATTESTATION_REAL"),
+                "the rejection points at the forthcoming canonical live verifier, not the CA-static composite");
     }
 
     @Test
