@@ -216,15 +216,18 @@ public final class RemoteBridgeOperatorService {
             evictDeviceKeySession(session.sessionId(), peer.transportPeerKey());
             DeviceKeyChallenge challenge = deviceKeyChallengeStore.issue(
                     session.sessionId(), peer.transportPeerKey(), deviceKeyChallengeTtlMillis, now);
+            // bind THIS incarnation to the issued challenge BEFORE sending (Codex REVISE F1-2 + AGREE note): the
+            // verifier trusts only evidence whose challengeId equals this, so a stale prior-incarnation response
+            // for a reused id cannot pass; binding pre-send also means a very-fast legitimate response is never
+            // dropped as stale-incarnation (no availability false-negative window). A send failure below kills +
+            // evicts the session, so the binding on a terminal session is moot.
+            session.bindDeviceKeyChallenge(challenge.challengeId());
             if (!registry.sendDeviceKeyChallenge(peer.transportPeerKey(), session.sessionId(), challenge, now)) {
                 evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear the undelivered challenge
                 session.transition(Event.KILL);
                 store.evictIfTerminal(session.sessionId());
                 return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
             }
-            // bind THIS incarnation to the issued challenge (Codex REVISE F1-2): the verifier trusts only evidence
-            // whose challengeId equals this, so a stale prior-incarnation response for a reused id cannot pass.
-            session.bindDeviceKeyChallenge(challenge.challengeId());
         }
 
         ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
