@@ -87,9 +87,11 @@ device-attestation roots still decide trust.
 
 Session policy consumes the parsed result only through explicit `remote-bridge.device-trust.verifier` modes:
 `FAIL_CLOSED` is the default, `MACHINE_CERT_ENROLLMENT` is enrollment-only and non-prod, `DEVICE_KEY_ATTESTATION`
-promotes fresh peer device-key evidence for non-prod diagnostics, and `REQUIRE_ENROLLMENT_AND_DEVICE_KEY` requires
-both active machine-cert enrollment and verified device-key evidence. Parser/verifier presence is therefore not a
-closure signal by itself.
+promotes the **non-live, replay-prone STATIC CA device-key attestation** (#732) carried in the AgentHello envelope
+— non-prod diagnostics only, NOT #548 closure — and `REQUIRE_ENROLLMENT_AND_DEVICE_KEY` composes machine-cert
+enrollment with that CA-static path: non-prod only, **REFUSED in a production-like profile** until the canonical
+#548 TPM-native live challenge-response verifier (`DEVICE_KEY_ATTESTATION_REAL`, forthcoming) backs the
+composite's hardware leg. Parser/verifier presence is therefore not a closure signal by itself.
 
 **#548 boundary:** this backend wire parser is necessary but not sufficient for true TPM/device-key readiness. The
 issue remains open until an agent producer presents real hardware-backed device-key evidence on this field, the

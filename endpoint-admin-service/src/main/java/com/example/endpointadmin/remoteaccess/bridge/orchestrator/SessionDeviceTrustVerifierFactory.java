@@ -15,12 +15,24 @@ import java.util.Locale;
  *       active enrolled machine cert for the tenant/device. FORBIDDEN in a production-like profile — this is
  *       enrollment identity, NOT hardware key attestation; prod device trust needs the policy/D29-EA to explicitly
  *       accept this basis.</li>
- *   <li><b>DEVICE_KEY_ATTESTATION</b> — {@link PeerDeviceKeyAttestationSessionDeviceTrustVerifier}: the fresh
- *       peer-trust ledger has verified device-key / TPM attestation evidence. FORBIDDEN in a production-like
- *       profile by itself because it is hardware binding without tenant/device enrollment binding.</li>
- *   <li><b>REQUIRE_ENROLLMENT_AND_DEVICE_KEY</b> — {@link CompositeSessionDeviceTrustVerifier}: requires both
- *       active machine-cert enrollment and verified device-key attestation.</li>
+ *   <li><b>DEVICE_KEY_ATTESTATION</b> — {@link PeerDeviceKeyAttestationSessionDeviceTrustVerifier}: promotes the
+ *       peer-trust ledger's STATIC CA device-key attestation (#732), parsed from the AgentHello-carried
+ *       attestation envelope and verified by {@code DeviceIdentityVerifier} against a device-attestation root.
+ *       This is a NON-LIVE, replay-prone basis (no broker nonce, no session liveness) — auxiliary, NOT #548
+ *       closure. FORBIDDEN in a production-like profile by itself (hardware binding without tenant/device
+ *       enrollment binding, and not a live proof).</li>
+ *   <li><b>REQUIRE_ENROLLMENT_AND_DEVICE_KEY</b> — {@link CompositeSessionDeviceTrustVerifier}: composes active
+ *       machine-cert enrollment with the STATIC CA device-key attestation above. Allowed in NON-prod only;
+ *       FORBIDDEN in a production-like profile until the canonical #548 TPM-native live challenge-response
+ *       verifier ({@code DEVICE_KEY_ATTESTATION_REAL}, forthcoming) backs the composite's hardware leg — so the
+ *       static CA path can never silently read as production-grade hardware device trust.</li>
  * </ul>
+ *
+ * <p><b>Canonical #548 (TPM-native) vs auxiliary (CA-static):</b> the strong-path #548 device-key session
+ * attestation is the broker-nonced {@code DeviceKeyChallenge}/{@code DeviceKeyAttestationResponse} live
+ * challenge-response (PR #741 wire-contract; the {@code DEVICE_KEY_ATTESTATION_REAL} verifier is forthcoming).
+ * The CA-static path above (#732) is a separate, non-live evidence family kept for future multi-platform
+ * (Android/Apple/MDM) CA attestation; it is quarantined to non-prod and is explicitly NOT #548 closure.
  */
 public final class SessionDeviceTrustVerifierFactory {
 
@@ -87,9 +99,12 @@ public final class SessionDeviceTrustVerifierFactory {
             }
             case DEVICE_KEY_ATTESTATION -> {
                 if (productionLikeProfile) {
-                    throw reject("device-trust verifier DEVICE_KEY_ATTESTATION verifies hardware-key evidence "
-                            + "but does not bind that key to the requested tenant/device; use "
-                            + "REQUIRE_ENROLLMENT_AND_DEVICE_KEY for production-shaped device trust");
+                    throw reject("device-trust verifier DEVICE_KEY_ATTESTATION promotes the STATIC CA device-key "
+                            + "attestation path (#732) carried in the AgentHello envelope — a non-live, "
+                            + "replay-prone basis that also does not bind the key to the requested tenant/device. "
+                            + "It is FORBIDDEN in a production-like profile; production-grade hardware device trust "
+                            + "requires the canonical #548 TPM-native live challenge-response "
+                            + "(DEVICE_KEY_ATTESTATION_REAL, forthcoming) backing the composite");
                 }
                 return PeerDeviceKeyAttestationSessionDeviceTrustVerifier.INSTANCE;
             }
@@ -97,6 +112,16 @@ public final class SessionDeviceTrustVerifierFactory {
                 if (resolver == null) {
                     throw reject("device-trust verifier REQUIRE_ENROLLMENT_AND_DEVICE_KEY requires a "
                             + "ConnectedDeviceResolver");
+                }
+                if (productionLikeProfile) {
+                    throw reject("device-trust verifier REQUIRE_ENROLLMENT_AND_DEVICE_KEY composes machine-cert "
+                            + "enrollment with the STATIC CA device-key attestation path (#732): its hardware leg "
+                            + "promotes PeerTrust.deviceTrusted, derived from the AgentHello-carried CA attestation "
+                            + "envelope — a non-live, replay-prone basis (no broker nonce, no session liveness), NOT "
+                            + "the canonical #548 TPM-native live challenge-response. It is FORBIDDEN in a "
+                            + "production-like profile until the live DEVICE_KEY_ATTESTATION_REAL verifier lands and "
+                            + "backs the composite's hardware leg, so the static CA path can never silently read as "
+                            + "production-grade hardware device trust");
                 }
                 return new CompositeSessionDeviceTrustVerifier(
                         new MachineCertEnrollmentDeviceTrustVerifier(resolver),
