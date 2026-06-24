@@ -64,6 +64,25 @@ class RedisStreamAuditSinkTest {
                 3_000L);
     }
 
+    private static AuditEvent.ChunkForwardedToComputePlane computePlaneForward() {
+        return new AuditEvent.ChunkForwardedToComputePlane(
+                "SES-abc",
+                42L,
+                7L,
+                "22222222-2222-4222-8222-222222222222",
+                "desktop-smoke-1",
+                "tr-TR",
+                5L,
+                "PCM16",
+                16_000,
+                1,
+                "deadbeefcafe0000sha",
+                320,
+                "corr-forward",
+                4_000L,
+                "live-stt");
+    }
+
     @SuppressWarnings("unchecked")
     @Test
     void emitMapsAllFieldsToStreamRecord() {
@@ -164,6 +183,54 @@ class RedisStreamAuditSinkTest {
         assertThat(captor.getValue().getValue())
                 .doesNotContainKeys("consentText", "rawConsentText", "authorization",
                         "bearer", "token", "authCode", "email", "audio", "bytes", "transcript");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitComputePlaneForwardMapsAllFieldsToStreamRecord() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("3-0"));
+
+        sink.emit(computePlaneForward());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        final MapRecord<String, String, String> record = captor.getValue();
+        assertThat(record.getStream()).isEqualTo("audit:events");
+        assertThat(record.getValue())
+                .containsEntry("eventType", "CHUNK_FORWARDED_TO_COMPUTE_PLANE")
+                .containsEntry("sessionId", "SES-abc")
+                .containsEntry("tenantId", "42")
+                .containsEntry("userId", "7")
+                .containsEntry("meetingId", "22222222-2222-4222-8222-222222222222")
+                .containsEntry("deviceId", "desktop-smoke-1")
+                .containsEntry("language", "tr-TR")
+                .containsEntry("chunkSeq", "5")
+                .containsEntry("audioFormat", "PCM16")
+                .containsEntry("sampleRateHz", "16000")
+                .containsEntry("channels", "1")
+                .containsEntry("sha256", "deadbeefcafe0000sha")
+                .containsEntry("byteLength", "320")
+                .containsEntry("correlationId", "corr-forward")
+                .containsEntry("forwardedAtMs", "4000")
+                .containsEntry("computePlane", "live-stt");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitComputePlaneForwardPiiBoundaryNoRawAudioNoTranscriptNoUrl() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("3-0"));
+
+        sink.emit(computePlaneForward());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        assertThat(captor.getValue().getValue())
+                .doesNotContainKeys("audio", "audioBytes", "bytes", "rawAudio",
+                        "transcript", "transcriptText", "segments", "text",
+                        "authorization", "bearer", "token", "idempotencyKey",
+                        "transcribeUrl", "url", "destinationUrl");
     }
 
     @SuppressWarnings("unchecked")

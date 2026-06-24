@@ -62,6 +62,9 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
     static final String EVENT_TYPE_CHUNK_ADMISSION_REJECTED = "CHUNK_ADMISSION_REJECTED";
     /** Canonical audit event type discriminator for recorder consent proof. */
     static final String EVENT_TYPE_RECORDING_CONSENT_GRANTED = "RECORDING_CONSENT_GRANTED";
+    /** Canonical audit event type discriminator for direct-STT compute-plane transit. */
+    static final String EVENT_TYPE_CHUNK_FORWARDED_TO_COMPUTE_PLANE =
+            "CHUNK_FORWARDED_TO_COMPUTE_PLANE";
 
     private final StringRedisTemplate redis;
     private final AudioGatewayProperties.Audit.Redis cfg;
@@ -80,6 +83,10 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         }
         if (event instanceof AuditEvent.RecordingConsentGranted consent) {
             emitRecordingConsentGranted(consent);
+            return;
+        }
+        if (event instanceof AuditEvent.ChunkForwardedToComputePlane forwarded) {
+            emitChunkForwardedToComputePlane(forwarded);
             return;
         }
         // Future AuditEvent variants (SessionLifecycle / ChunkForwarded ...) are
@@ -146,6 +153,41 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         } catch (final DataAccessException ex) {
             log.warn("ALERT consent audit XADD failed; event may be lost err={} meetingId={} captureId={}",
                     ex.getClass().getSimpleName(), e.meetingId(), e.captureId());
+            throw ex;
+        }
+    }
+
+    private void emitChunkForwardedToComputePlane(final AuditEvent.ChunkForwardedToComputePlane e) {
+        final Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("eventType", EVENT_TYPE_CHUNK_FORWARDED_TO_COMPUTE_PLANE);
+        fields.put("sessionId", nullSafe(e.sessionId()));
+        fields.put("tenantId", longOrEmpty(e.tenantId()));
+        fields.put("userId", longOrEmpty(e.userId()));
+        fields.put("meetingId", nullSafe(e.meetingId()));
+        fields.put("deviceId", nullSafe(e.deviceId()));
+        fields.put("language", nullSafe(e.language()));
+        fields.put("chunkSeq", Long.toString(e.chunkSeq()));
+        fields.put("audioFormat", nullSafe(e.audioFormat()));
+        fields.put("sampleRateHz", Integer.toString(e.sampleRateHz()));
+        fields.put("channels", Integer.toString(e.channels()));
+        fields.put("sha256", nullSafe(e.sha256()));
+        fields.put("byteLength", Integer.toString(e.byteLength()));
+        fields.put("correlationId", nullSafe(e.correlationId()));
+        fields.put("forwardedAtMs", Long.toString(e.forwardedAtMs()));
+        fields.put("computePlane", nullSafe(e.computePlane()));
+
+        try {
+            final MapRecord<String, String, String> record =
+                    StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
+            if (cfg.getMaxLen() > 0) {
+                redis.opsForStream().add(record,
+                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
+            } else {
+                redis.opsForStream().add(record);
+            }
+        } catch (final DataAccessException ex) {
+            log.warn("ALERT compute-plane audit XADD failed; raw audio forward blocked err={} sessionId={} chunkSeq={}",
+                    ex.getClass().getSimpleName(), e.sessionId(), e.chunkSeq());
             throw ex;
         }
     }
