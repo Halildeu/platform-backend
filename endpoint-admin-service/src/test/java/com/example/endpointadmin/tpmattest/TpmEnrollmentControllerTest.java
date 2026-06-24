@@ -89,6 +89,7 @@ class TpmEnrollmentControllerTest {
                 emptyProvider(), emptyProvider(),
                 new TpmEnrollmentCompletionService(
                         org.mockito.Mockito.mock(com.example.endpointadmin.repository.EndpointEnrollmentRepository.class),
+                        org.mockito.Mockito.mock(com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository.class),
                         clock));
 
         MappingJackson2HttpMessageConverter conv = new MappingJackson2HttpMessageConverter();

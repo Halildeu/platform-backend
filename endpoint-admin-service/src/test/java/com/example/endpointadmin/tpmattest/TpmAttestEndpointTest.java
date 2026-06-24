@@ -154,7 +154,7 @@ class TpmAttestEndpointTest {
         postAttest(body()).andExpect(status().isForbidden()).andExpect(content().json("{\"status\":\"denied\"}"));
         verify(completion).markInProgress(ENROLL_ID);
         verify(completion).markFailed(ENROLL_ID);
-        verify(completion, never()).markConsumed(any());
+        verify(completion, never()).markConsumed(any(), any());
     }
 
     @Test
@@ -174,7 +174,7 @@ class TpmAttestEndpointTest {
         postAttest(body()).andExpect(status().isForbidden()).andExpect(content().json("{\"status\":\"denied\"}"));
         verify(completion).markInProgress(ENROLL_ID);
         verify(completion).markFailed(ENROLL_ID);    // reached past markInProgress (V1-V4 passed)
-        verify(completion, never()).markConsumed(any());
+        verify(completion, never()).markConsumed(any(), any());
     }
 
     // ───────────────────────────── helpers ─────────────────────────────
