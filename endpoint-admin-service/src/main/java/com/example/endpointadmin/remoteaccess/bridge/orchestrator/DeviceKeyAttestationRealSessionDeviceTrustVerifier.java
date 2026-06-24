@@ -129,6 +129,13 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
         if (!RESPONSE_SCHEMA.equals(attestation.schema())) {
             return DeviceTrustDecision.deny("response-schema-mismatch");
         }
+        // defense-in-depth (Codex): the stored freshness window MUST be the challenge's own, and the challenge
+        // window itself must still be open at evaluation time — so a future StoredEvidence written with a
+        // decoupled/extended expiry can never outlive the broker nonce it proves possession of.
+        if (now >= challenge.expiresAtEpochMillis()
+                || evidence.expiresAtEpochMillis() != challenge.expiresAtEpochMillis()) {
+            return DeviceTrustDecision.deny("device-key-evidence-window-invalid");
+        }
         // the challenge MUST have been issued to THIS authenticated peer (it was, by construction — defense-in-depth)
         if (!CertThumbprint.matches(challenge.transportPeerKey(), peerKey)) {
             return DeviceTrustDecision.deny("challenge-peer-mismatch");

@@ -182,6 +182,17 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
         assertDeny(verifier.verify(session, null, NOW), "binding-context-mismatch");
     }
 
+    @Test
+    void decoupledEvidenceExpiry_denies() {
+        // defense-in-depth (Codex): a StoredEvidence whose freshness window is LONGER than the challenge's own
+        // window passes consumeFresh(now) but the verifier rejects it — evidence can never outlive the broker nonce
+        DeviceKeyChallenge challenge = new DeviceKeyChallenge(CHALLENGE_ID,
+                Base64.getEncoder().encodeToString(fx.nonce), NOW, NOW + TTL, PEER_KEY, PROTOCOL);
+        evidenceStore.store(session.sessionId(), PEER_KEY,
+                new StoredEvidence(challenge, fx.attestation(), NOW, NOW + 10 * TTL)); // decoupled (longer) expiry
+        assertDeny(verifier.verify(session, null, NOW), "device-key-evidence-window-invalid");
+    }
+
     // ───────────────────────────── transport / leaf binding ─────────────────────────────
 
     @Test
