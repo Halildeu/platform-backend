@@ -111,6 +111,25 @@ class DeviceKeyChallengeStoreTest {
     }
 
     @Test
+    void evictSessionRemovesOnlyThatSessionPeersPendingChallenge() {
+        // Codex REVISE F1: on session terminal (or a reused-id reopen) the prior session's pending challenge is
+        // cleared — scoped to (sessionId, peer) so a different session OR a different peer is untouched.
+        DeviceKeyChallengeStore store = new DeviceKeyChallengeStore();
+        DeviceKeyChallenge s1 = store.issue(SESSION, PEER, TTL, NOW);
+        DeviceKeyChallenge s2 = store.issue(OTHER_SESSION, PEER, TTL, NOW);
+        DeviceKeyChallenge s1Other = store.issue(SESSION, OTHER_PEER, TTL, NOW);
+
+        store.evictSession(SESSION, PEER);
+
+        assertTrue(store.consume(s1.challengeId(), PEER, SESSION, NOW).isEmpty(),
+                "the (session, peer) pending challenge is evicted");
+        assertFalse(store.consume(s2.challengeId(), PEER, OTHER_SESSION, NOW).isEmpty(),
+                "a different session on the same peer is untouched");
+        assertFalse(store.consume(s1Other.challengeId(), OTHER_PEER, SESSION, NOW).isEmpty(),
+                "the same session id on a different peer is untouched");
+    }
+
+    @Test
     void anExpiredChallengeIsEvictedOnAnyAccessEvenAWrongPeerProbe() {
         DeviceKeyChallengeStore store = new DeviceKeyChallengeStore();
         DeviceKeyChallenge issued = store.issue(SESSION, PEER, TTL, NOW);

@@ -10,6 +10,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeTrustEvidence;
 import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.ConsentPrompt;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.DeviceKeyChallenge;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationDispatch;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
@@ -71,11 +72,36 @@ public final class RemoteBridgeOperatorService {
     private final RemoteBridgeAuditSink auditSink;
     private final LongSupplier clock;
     private final long consentPromptTtlMillis;
+    // Faz 22.6 #548 step-5b — the canonical device-key session attestation issuance. When disabled (or the store
+    // is null) openSession emits NO challenge, so the DEVICE_KEY_ATTESTATION_REAL verifier has no evidence and
+    // denies (fail-closed). Enabled exactly when the REAL verifier is the active device-trust basis.
+    private final DeviceKeyChallengeStore deviceKeyChallengeStore;
+    private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
+    private final boolean deviceKeySessionEnabled;
+    private final long deviceKeyChallengeTtlMillis;
 
+    /** Back-compat: no device-key session attestation issuance (the prior behaviour). */
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
                                        RemoteBridgeBroker broker, ControlStreamRegistry registry,
                                        RemoteBridgeAuditSink auditSink, LongSupplier clock,
                                        long consentPromptTtlMillis) {
+        this(store, assembler, broker, registry, auditSink, clock, consentPromptTtlMillis, null, null, false, 0L);
+    }
+
+    /**
+     * Faz 22.6 #548 step-5b — with device-key session attestation issuance. When {@code deviceKeySessionEnabled},
+     * {@link #openSession} issues a broker-nonced challenge (TTL {@code deviceKeyChallengeTtlMillis}) on the peer's
+     * CONTROL stream right after the session opens and before the consent prompt. The {@code deviceKeyEvidenceStore}
+     * (nullable) lets the service clear stale device-key state on every terminal path + at a fresh open of a
+     * reused {@code sessionId} (Codex REVISE F1 — the broker session id is client-supplied + reusable).
+     */
+    public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
+                                       RemoteBridgeBroker broker, ControlStreamRegistry registry,
+                                       RemoteBridgeAuditSink auditSink, LongSupplier clock,
+                                       long consentPromptTtlMillis,
+                                       DeviceKeyChallengeStore deviceKeyChallengeStore,
+                                       TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore,
+                                       boolean deviceKeySessionEnabled, long deviceKeyChallengeTtlMillis) {
         this.store = Objects.requireNonNull(store, "store");
         this.assembler = Objects.requireNonNull(assembler, "assembler");
         this.broker = Objects.requireNonNull(broker, "broker");
@@ -86,6 +112,34 @@ public final class RemoteBridgeOperatorService {
             throw new IllegalArgumentException("consentPromptTtlMillis must be positive");
         }
         this.consentPromptTtlMillis = consentPromptTtlMillis;
+        this.deviceKeySessionEnabled = deviceKeySessionEnabled;
+        this.deviceKeyChallengeStore = deviceKeyChallengeStore;
+        this.deviceKeyEvidenceStore = deviceKeyEvidenceStore;
+        if (deviceKeySessionEnabled) {
+            if (deviceKeyChallengeStore == null) {
+                throw new IllegalArgumentException(
+                        "device-key session attestation enabled requires a DeviceKeyChallengeStore");
+            }
+            if (deviceKeyChallengeTtlMillis <= 0) {
+                throw new IllegalArgumentException("deviceKeyChallengeTtlMillis must be positive when enabled");
+            }
+        }
+        this.deviceKeyChallengeTtlMillis = deviceKeyChallengeTtlMillis;
+    }
+
+    /**
+     * Clear any pending device-key challenge + stored session evidence for {@code (sessionId, transportPeerKey)}
+     * (Codex REVISE F1). Called on every terminal path AND before a fresh issue, so a reused {@code sessionId}
+     * can never inherit a prior session's pending challenge or fresh evidence. Total + null-safe (a no-op when the
+     * stores are not wired).
+     */
+    private void evictDeviceKeySession(String sessionId, String transportPeerKey) {
+        if (deviceKeyChallengeStore != null) {
+            deviceKeyChallengeStore.evictSession(sessionId, transportPeerKey);
+        }
+        if (deviceKeyEvidenceStore != null) {
+            deviceKeyEvidenceStore.evict(sessionId, transportPeerKey);
+        }
     }
 
     /** The outcome of opening an attended session: the session id, whether the consent prompt reached the agent. */
@@ -151,11 +205,37 @@ public final class RemoteBridgeOperatorService {
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
 
+        // Faz 22.6 #548 step-5b — issue the canonical device-key challenge AFTER the session exists and BEFORE the
+        // consent prompt, so the agent can answer it during the consent window (the DEVICE_KEY_ATTESTATION_REAL
+        // verifier reads the resulting evidence at PERMIT time). Gated: emitted only when the REAL verifier is the
+        // active device-trust basis. Fail-closed: a send failure kills + evicts the just-opened session, exactly
+        // like an undelivered consent prompt — no orphan session waits for a response that can never arrive.
+        if (deviceKeySessionEnabled && deviceKeyChallengeStore != null) {
+            // Codex REVISE F1: the broker sessionId is client-supplied + reusable — clear ANY stale challenge /
+            // evidence for THIS (sessionId, peer) before issuing, so a reused id can never inherit prior state.
+            evictDeviceKeySession(session.sessionId(), peer.transportPeerKey());
+            DeviceKeyChallenge challenge = deviceKeyChallengeStore.issue(
+                    session.sessionId(), peer.transportPeerKey(), deviceKeyChallengeTtlMillis, now);
+            // bind THIS incarnation to the issued challenge BEFORE sending (Codex REVISE F1-2 + AGREE note): the
+            // verifier trusts only evidence whose challengeId equals this, so a stale prior-incarnation response
+            // for a reused id cannot pass; binding pre-send also means a very-fast legitimate response is never
+            // dropped as stale-incarnation (no availability false-negative window). A send failure below kills +
+            // evicts the session, so the binding on a terminal session is moot.
+            session.bindDeviceKeyChallenge(challenge.challengeId());
+            if (!registry.sendDeviceKeyChallenge(peer.transportPeerKey(), session.sessionId(), challenge, now)) {
+                evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear the undelivered challenge
+                session.transition(Event.KILL);
+                store.evictIfTerminal(session.sessionId());
+                return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
+            }
+        }
+
         ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
                 request.reason(), session.requestedCapabilities(), session.promptExpiryEpochMillis());
         boolean sent = registry.sendConsentPrompt(peer.transportPeerKey(), prompt, now);
         if (!sent) {
             // the peer dropped between the pre-guard and the send → don't leave an orphan CONSENT_PENDING session
+            evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear any device-key state too
             session.transition(Event.KILL);
             store.evictIfTerminal(session.sessionId());
             return SessionOpenOutcome.rejected(session.sessionId(), "consent-prompt-not-delivered");
@@ -200,6 +280,7 @@ public final class RemoteBridgeOperatorService {
             }
         }
         store.evictIfTerminal(sessionId);
+        evictDeviceKeySession(sessionId, session.transportPeerKey()); // F1: no stale state for a reused sessionId
         return SessionCloseOutcome.closed(sessionId);
     }
 
@@ -256,6 +337,7 @@ public final class RemoteBridgeOperatorService {
                 // Codex S1: a transport kill alone leaves an ACTIVE ghost — drive the state machine terminal + evict
                 session.transition(Event.KILL);
                 store.evictIfTerminal(request.sessionId());
+                evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
                 yield OperatorOutcome.handled(outcome, false);
             }
             case DENY -> {
@@ -263,6 +345,7 @@ public final class RemoteBridgeOperatorService {
                 // operator session locally so policy DENY cannot leave an ACTIVE ghost that blocks a retry.
                 session.transition(Event.CLOSE);
                 store.evictIfTerminal(request.sessionId());
+                evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
                 yield OperatorOutcome.handled(outcome, false);
             }
         };

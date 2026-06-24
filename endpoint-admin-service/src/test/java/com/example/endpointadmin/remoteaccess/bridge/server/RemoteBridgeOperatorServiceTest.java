@@ -16,6 +16,8 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMac
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DeviceKeyChallengeStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TpmDeviceKeySessionEvidenceStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
@@ -132,6 +134,112 @@ class RemoteBridgeOperatorServiceTest {
         s.grantConsent(true, NOW + 300_000L);
         s.transition(Event.ACTIVATE);
         return s;
+    }
+
+    private static StreamObserver<Envelope> throwingObserver() {
+        return new StreamObserver<>() {
+            @Override public void onNext(Envelope value) {
+                throw new RuntimeException("transport down");
+            }
+
+            @Override public void onError(Throwable t) { }
+
+            @Override public void onCompleted() { }
+        };
+    }
+
+    // --- device-key session attestation issuance (Faz 22.6 #548 step-5b) ------
+
+    @Test
+    void enabledOpenSessionIssuesADeviceKeyChallengeBeforeTheConsentPrompt() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
+                120_000L, new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
+
+        SessionOpenOutcome outcome = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "remote support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+
+        assertTrue(outcome.opened());
+        assertTrue(observer.sent.get(0).hasDeviceKeyChallenge(),
+                "the device-key challenge is pushed FIRST, before the consent prompt");
+        assertEquals("s1", observer.sent.get(0).getSessionId(), "the challenge envelope carries the session id");
+        assertTrue(observer.sent.get(1).hasConsentPrompt(), "the consent prompt follows the challenge");
+    }
+
+    @Test
+    void aDeviceKeyChallengeThatCannotBeDeliveredKillsAndEvictsTheSession() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        // a registered-but-dead stream: isConnected passes the pre-guard, but the challenge send fails →
+        // kill + evict + reject, exactly like an undelivered consent prompt (no orphan CONSENT_PENDING session)
+        registry.register(peer, new ControlStreamHandle(throwingObserver()));
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
+                120_000L, new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
+
+        SessionOpenOutcome outcome = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "remote support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+
+        assertFalse(outcome.opened());
+        assertEquals("device-key-challenge-not-delivered", outcome.rejectReason());
+        assertTrue(store.bySessionId("s1").isEmpty(), "the just-opened session is killed + evicted, not orphaned");
+    }
+
+    @Test
+    void disabledOpenSessionIssuesNoDeviceKeyChallenge() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        // the 7-arg ctor = device-key issuance DISABLED (the non-REAL default): no challenge is emitted
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
+                120_000L);
+
+        SessionOpenOutcome outcome = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "remote support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+
+        assertTrue(outcome.opened());
+        assertTrue(observer.sent.stream().noneMatch(Envelope::hasDeviceKeyChallenge),
+                "a non-REAL deployment emits NO device-key challenge");
+        assertTrue(observer.sent.stream().anyMatch(Envelope::hasConsentPrompt),
+                "the consent prompt still goes out");
+    }
+
+    @Test
+    void aReusedSessionIdDoesNotInheritThePriorSessionsPendingChallenge() {
+        // Codex REVISE F1: the broker sessionId is client-supplied + reusable after the prior session is evicted.
+        // A NEW session reusing the id must clear the prior pending challenge so a late response for it can never
+        // be redeemed into the new same-id session — openSession evicts stale (sessionId, peer) state before issue.
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
+        DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, operatorAuditSink(), () -> NOW,
+                120_000L, challengeStore, new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
+
+        // a prior "s1" left a still-valid pending challenge for (s1, peer-1) behind
+        var stale = challengeStore.issue("s1", "peer-1", 600_000L, NOW);
+
+        SessionOpenOutcome reopened = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "retry", Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                peer, TENANT, "Operator X");
+
+        assertTrue(reopened.opened());
+        assertTrue(challengeStore.consume(stale.challengeId(), "peer-1", "s1", NOW).isEmpty(),
+                "a late response for the prior session's evicted challenge cannot be redeemed into the reused id");
     }
 
     @Test

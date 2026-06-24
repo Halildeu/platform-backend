@@ -137,6 +137,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         if (!result.granted()) {
             if (session.transition(Event.CONSENT_DENIED).accepted()) {
                 store.evictIfTerminal(session.sessionId());
+                evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 terminal cleanup
                 recordBestEffort(session.sessionId(), "CONSENT_DENIED");
             } else {
                 recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
@@ -187,6 +188,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                         session.abortLeaseLocally();
                         if (session.transition(Event.LOCAL_ABORT).accepted()) {
                             store.evictIfTerminal(session.sessionId());
+                            evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 cleanup
                             recordBestEffort(session.sessionId(), "KILLED:" + cause);
                         }
                     });
@@ -243,12 +245,34 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge");
             return; // unknown / expired / already-consumed / wrong-peer / wrong-session — uniform drop, no oracle
         }
+        // INCARNATION guard (Codex REVISE F1-2): the response must answer the challenge THIS live session
+        // incarnation currently expects — so a response for a superseded/prior challenge of a reused id is dropped
+        // and never pollutes the slot. (The verifier independently re-checks this incarnation at PERMIT time.)
+        if (!response.challengeId().equals(session.deviceKeyChallengeId())) {
+            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:stale-incarnation");
+            return;
+        }
         RemoteBridgeMessages.DeviceKeyChallenge challenge = consumed.get();
         deviceKeyEvidenceStore.store(session.sessionId(), peer.transportPeerKey(),
                 new TpmDeviceKeySessionEvidenceStore.StoredEvidence(
                         challenge, mapped.get(), now, challenge.expiresAtEpochMillis()));
         recordBestEffort(session.sessionId(),
                 "DEVICE_KEY_EVIDENCE_STORED:challenge=" + safeType(challenge.challengeId()));
+    }
+
+    /**
+     * Clear any pending device-key challenge + stored session evidence for a TERMINATING session (Codex REVISE
+     * F1): the broker {@code sessionId} is client-supplied + reusable, so on terminal the prior session's
+     * device-key state MUST be dropped or a reused id could inherit it. Null-safe (a no-op when the device-key
+     * path is not wired).
+     */
+    private void evictDeviceKeySession(String sessionId, String transportPeerKey) {
+        if (deviceKeyChallengeStore != null) {
+            deviceKeyChallengeStore.evictSession(sessionId, transportPeerKey);
+        }
+        if (deviceKeyEvidenceStore != null) {
+            deviceKeyEvidenceStore.evict(sessionId, transportPeerKey);
+        }
     }
 
     /**

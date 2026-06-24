@@ -103,6 +103,8 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
         session = new RemoteBridgeSession(SESSION_ID, PEER_KEY, device.toString(),
                 "operator@example.com", tenant.toString(), "Operator", Set.of(), NOW + TTL, NOW,
                 State.CONSENT_PENDING);
+        // bind THIS session incarnation to the challenge the fixture's evidence answers (openSession does this live)
+        session.bindDeviceKeyChallenge(CHALLENGE_ID);
 
         mockLeaf = mock(X509Certificate.class);
         when(mockLeaf.getPublicKey()).thenReturn(fx.devicePub);
@@ -180,6 +182,16 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
                 "sess-some-other-session", CHALLENGE_ID, fx.nonce, PEER_KEY, NOW + TTL);
         storeFreshEvidence(fx.attestationWithBindingContext(otherSessionContext));
         assertDeny(verifier.verify(session, null, NOW), "binding-context-mismatch");
+    }
+
+    @Test
+    void evidenceForAPriorChallengeIncarnationOfAReusedSessionId_denies() {
+        // the (sessionId, peer) slot holds evidence for the fixture's CHALLENGE_ID, but THIS session incarnation
+        // now expects a DIFFERENT challenge (a reused sessionId re-issued) — a stale in-flight writer that raced
+        // past eviction cannot mint authority because its challengeId no longer matches the session's current one
+        session.bindDeviceKeyChallenge("ffffffffffffffffffffffffffffffff");
+        storeFreshEvidence(fx.attestation());
+        assertDeny(verifier.verify(session, null, NOW), "device-key-challenge-incarnation-mismatch");
     }
 
     @Test
