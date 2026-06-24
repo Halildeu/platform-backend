@@ -229,16 +229,19 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             recordBestEffort("ledger", "DEVICE_KEY_RESPONSE_DROPPED:unmappable");
             return; // unmappable shape → no challenge is consumed (no state change on garbage)
         }
-        Optional<RemoteBridgeMessages.DeviceKeyChallenge> consumed =
-                deviceKeyChallengeStore.consume(response.challengeId(), peer.transportPeerKey(), now);
-        if (consumed.isEmpty()) {
-            recordBestEffort("ledger", "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge");
-            return; // unknown / expired / already-consumed / wrong-peer — uniform drop, no oracle
-        }
+        // Resolve the peer's live session FIRST, then consume the challenge bound to THAT session (Codex F1): a
+        // challenge issued for a now-gone session can never be redeemed against a new session the same reconnected
+        // peer later opened — the session-bound consume keeps it for its own (gone) session and drops here.
         RemoteBridgeSession session = store.liveByPeer(peer.transportPeerKey()).orElse(null);
         if (session == null) {
             recordBestEffort("ledger", "DEVICE_KEY_RESPONSE_DROPPED:no-live-session");
             return; // no orphan evidence — only a live, non-terminal session's peer gets an entry
+        }
+        Optional<RemoteBridgeMessages.DeviceKeyChallenge> consumed = deviceKeyChallengeStore.consume(
+                response.challengeId(), peer.transportPeerKey(), session.sessionId(), now);
+        if (consumed.isEmpty()) {
+            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge");
+            return; // unknown / expired / already-consumed / wrong-peer / wrong-session — uniform drop, no oracle
         }
         RemoteBridgeMessages.DeviceKeyChallenge challenge = consumed.get();
         deviceKeyEvidenceStore.store(session.sessionId(), peer.transportPeerKey(),

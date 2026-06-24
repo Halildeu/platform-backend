@@ -59,6 +59,8 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
     private static final long TTL = 60_000L;
     private static final String PEER_KEY = "ab".repeat(32); // 64-hex transport peer key (cert DER sha256 shape)
     private static final String CHALLENGE_ID = "00112233445566778899aabbccddeeff";
+    private static final String SESSION_ID = "sess-" + CHALLENGE_ID;
+    private static final String PROTOCOL = DeviceKeyChallengeStore.PROTOCOL_VERSION;
 
     private static X509Certificate goldenEkCert;
     private static TpmEkChainValidator ekChainValidator;
@@ -98,7 +100,7 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
         verifier = new DeviceKeyAttestationRealSessionDeviceTrustVerifier(
                 evidenceStore, resolver, bindings, ekChainValidator);
 
-        session = new RemoteBridgeSession("sess-" + CHALLENGE_ID, PEER_KEY, device.toString(),
+        session = new RemoteBridgeSession(SESSION_ID, PEER_KEY, device.toString(),
                 "operator@example.com", tenant.toString(), "Operator", Set.of(), NOW + TTL, NOW,
                 State.CONSENT_PENDING);
 
@@ -154,6 +156,30 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
         badSig[badSig.length - 1] ^= 0x01; // corrupt the device-key signature → live-possession proof fails
         storeFreshEvidence(fx.attestationWithDeviceKeySig(badSig));
         assertDeny(verifier.verify(session, null, NOW), "device-key-attestation-error");
+    }
+
+    // ───────────────────────────── version + session binding (Codex F1/F2) ─────────────────────────────
+
+    @Test
+    void wrongChallengeProtocol_denies() {
+        storeFreshEvidence(fx.attestation(), "bogus-protocol-v9");
+        assertDeny(verifier.verify(session, null, NOW), "challenge-protocol-mismatch");
+    }
+
+    @Test
+    void wrongResponseSchema_denies() {
+        storeFreshEvidence(fx.attestationWithSchema("faz22.6.device-key-session.v999"));
+        assertDeny(verifier.verify(session, null, NOW), "response-schema-mismatch");
+    }
+
+    @Test
+    void bindingContextForADifferentSession_denies() {
+        // a context (and signature) minted for ANOTHER session must not verify for THIS session — the verifier
+        // recomputes with session.sessionId(), so a different-session context no longer matches (Codex F1)
+        byte[] otherSessionContext = DeviceKeySessionBindingContext.compute(
+                "sess-some-other-session", CHALLENGE_ID, fx.nonce, PEER_KEY, NOW + TTL);
+        storeFreshEvidence(fx.attestationWithBindingContext(otherSessionContext));
+        assertDeny(verifier.verify(session, null, NOW), "binding-context-mismatch");
     }
 
     // ───────────────────────────── transport / leaf binding ─────────────────────────────
@@ -264,8 +290,12 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
     // ───────────────────────────── helpers ─────────────────────────────
 
     private void storeFreshEvidence(TpmDeviceKeySessionAttestation attestation) {
+        storeFreshEvidence(attestation, PROTOCOL);
+    }
+
+    private void storeFreshEvidence(TpmDeviceKeySessionAttestation attestation, String protocolVersion) {
         DeviceKeyChallenge challenge = new DeviceKeyChallenge(CHALLENGE_ID,
-                Base64.getEncoder().encodeToString(fx.nonce), NOW, NOW + TTL, PEER_KEY, "device-key-session-v1");
+                Base64.getEncoder().encodeToString(fx.nonce), NOW, NOW + TTL, PEER_KEY, protocolVersion);
         evidenceStore.store(session.sessionId(), PEER_KEY,
                 new StoredEvidence(challenge, attestation, NOW, NOW + TTL));
     }
@@ -340,7 +370,8 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
             f.quote = attestQuote(f.nonce);
             f.quoteSig = rsaTpmtSignature(jcaSign(akKp.getPrivate(), f.quote));
 
-            f.bindingContext = DeviceKeySessionBindingContext.compute(CHALLENGE_ID, f.nonce, PEER_KEY, NOW + TTL);
+            f.bindingContext = DeviceKeySessionBindingContext.compute(
+                    SESSION_ID, CHALLENGE_ID, f.nonce, PEER_KEY, NOW + TTL);
             f.deviceKeySig = rsaTpmtSignature(jcaSign(deviceKp.getPrivate(), f.bindingContext));
             return f;
         }
@@ -394,10 +425,17 @@ class DeviceKeyAttestationRealSessionDeviceTrustVerifierTest {
                     quote, quoteSig, bindingContext, deviceKeySig);
         }
 
+        TpmDeviceKeySessionAttestation attestationWithSchema(String schema) {
+            return new TpmDeviceKeySessionAttestation(CHALLENGE_ID, schema, deviceTpm2b, akTpm2b, akName,
+                    new byte[0], goldenEkCertDer(), List.of(), certifyInfo, certifySig, quote, quoteSig,
+                    bindingContext, deviceKeySig, NOW);
+        }
+
         private static TpmDeviceKeySessionAttestation attestationWith(byte[] deviceKeyPub, byte[] akPub, byte[] akName,
                 byte[] ekCert, byte[] certifyInfo, byte[] certifySig, byte[] quote, byte[] quoteSig,
                 byte[] bindingContext, byte[] deviceKeySig) {
-            return new TpmDeviceKeySessionAttestation(CHALLENGE_ID, "device-key-session-v1", deviceKeyPub, akPub,
+            return new TpmDeviceKeySessionAttestation(CHALLENGE_ID,
+                    DeviceKeyAttestationRealSessionDeviceTrustVerifier.RESPONSE_SCHEMA, deviceKeyPub, akPub,
                     akName, new byte[0], ekCert, List.of(), certifyInfo, certifySig, quote, quoteSig,
                     bindingContext, deviceKeySig, NOW);
         }

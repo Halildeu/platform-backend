@@ -246,6 +246,65 @@ class BrokerControlPlaneTest {
                 instanceof RemoteBridgeSessionStore.Opened);
     }
 
+    // --- device-key session attestation consumer (Faz 22.6 #548 step-5a) ------
+
+    @Test
+    void aLateDeviceKeyResponseForAGoneSessionIsNotStoredForTheNewSessionOnTheSamePeer() {
+        // Codex F1: a challenge issued for session A must NOT store evidence for a NEW session B that the same
+        // reconnected peer later opens — the challenge is session-bound and the consumer resolves liveByPeer
+        // THEN consumes with that session id, so A's late response is dropped (never bound to B).
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
+        TpmDeviceKeySessionEvidenceStore evidenceStore = new TpmDeviceKeySessionEvidenceStore();
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(
+                ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
+                store, sink, () -> NOW + 1000, new RemoteBridgeAgentErrorLedger(0), challengeStore, evidenceStore);
+
+        RemoteBridgeSession a = opened(store, "sess-A");
+        RemoteBridgeMessages.DeviceKeyChallenge challenge =
+                challengeStore.issue("sess-A", PEER.transportPeerKey(), 60_000L, NOW);
+        assertTrue(a.transition(Event.KILL).accepted());
+        store.evictIfTerminal("sess-A");
+        opened(store, "sess-B"); // B is now the peer's live session
+
+        plane.onDeviceKeyAttestationResponse(PEER, shapedDeviceKeyResponse(challenge.challengeId()));
+
+        assertTrue(evidenceStore.consumeFresh("sess-B", PEER.transportPeerKey(), NOW + 1000).isEmpty(),
+                "a challenge bound to the gone session A must not store evidence for the new session B");
+        assertTrue(evidenceStore.consumeFresh("sess-A", PEER.transportPeerKey(), NOW + 1000).isEmpty());
+        assertTrue(sink.has("DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge"));
+    }
+
+    @Test
+    void aDeviceKeyResponseForThePeersLiveSessionIsStored() {
+        // the positive correlation: a response answering THIS live session's challenge IS stored (shape-only;
+        // the DEVICE_KEY_ATTESTATION_REAL verifier still re-derives every fact at PERMIT time).
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
+        TpmDeviceKeySessionEvidenceStore evidenceStore = new TpmDeviceKeySessionEvidenceStore();
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(
+                ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
+                store, sink, () -> NOW + 1000, new RemoteBridgeAgentErrorLedger(0), challengeStore, evidenceStore);
+
+        opened(store, "sess-1");
+        RemoteBridgeMessages.DeviceKeyChallenge challenge =
+                challengeStore.issue("sess-1", PEER.transportPeerKey(), 60_000L, NOW);
+        plane.onDeviceKeyAttestationResponse(PEER, shapedDeviceKeyResponse(challenge.challengeId()));
+
+        assertTrue(evidenceStore.consumeFresh("sess-1", PEER.transportPeerKey(), NOW + 1000).isPresent(),
+                "the peer's own live-session response is stored");
+        assertTrue(sink.has("DEVICE_KEY_EVIDENCE_STORED:challenge=" + challenge.challengeId()));
+    }
+
+    /** A well-SHAPED (mappable) device-key response — the consumer maps shape only; crypto is the verifier's job. */
+    private static RemoteBridgeMessages.DeviceKeyAttestationResponse shapedDeviceKeyResponse(String challengeId) {
+        String b = "AQ=="; // base64 of one byte → satisfies the mapper's required-non-empty fields
+        return new RemoteBridgeMessages.DeviceKeyAttestationResponse(challengeId,
+                "faz22.6.device-key-session.v1", b, b, b, "", "", List.of(), b, b, b, b, b, b, NOW);
+    }
+
     // --- consent flow ---------------------------------------------------------
 
     private BrokerControlPlane plane(RemoteBridgeSessionStore store, RecordingSinkStub sink) {

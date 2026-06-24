@@ -63,6 +63,13 @@ import java.util.UUID;
  */
 public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements SessionDeviceTrustVerifier {
 
+    /**
+     * The canonical response schema this verifier accepts (FROZEN with the #741 wire contract; mirrors
+     * {@code remote_bridge.proto} {@code DeviceKeyAttestationResponse.schema}). A version-confusion guard: a
+     * response carrying any other schema is denied before any crypto runs.
+     */
+    public static final String RESPONSE_SCHEMA = "faz22.6.device-key-session.v1";
+
     private final TpmDeviceKeySessionEvidenceStore evidenceStore;
     private final ConnectedDeviceResolver resolver;
     private final EndpointTpmDeviceBindingRepository bindings;
@@ -114,6 +121,14 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
         DeviceKeyChallenge challenge = evidence.consumedChallenge();
         TpmDeviceKeySessionAttestation attestation = evidence.attestation();
 
+        // version-confusion guard (Codex F2): pin BOTH the broker challenge protocol AND the response schema to
+        // the frozen #548 literals before any crypto — a mismatched version is denied, never silently accepted.
+        if (!DeviceKeyChallengeStore.PROTOCOL_VERSION.equals(challenge.protocolVersion())) {
+            return DeviceTrustDecision.deny("challenge-protocol-mismatch");
+        }
+        if (!RESPONSE_SCHEMA.equals(attestation.schema())) {
+            return DeviceTrustDecision.deny("response-schema-mismatch");
+        }
         // the challenge MUST have been issued to THIS authenticated peer (it was, by construction — defense-in-depth)
         if (!CertThumbprint.matches(challenge.transportPeerKey(), peerKey)) {
             return DeviceTrustDecision.deny("challenge-peer-mismatch");
@@ -123,9 +138,10 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
             return DeviceTrustDecision.deny("challenge-nonce-malformed");
         }
 
-        // (3) RE-DERIVE the canonical binding context from BROKER truth; require the agent signed exactly THAT
+        // (3) RE-DERIVE the canonical binding context from BROKER truth (incl. THIS session id, Codex F1); require
+        // the agent signed exactly THAT — so a signature is bound to this session + challenge + nonce + peer.
         byte[] expectedContext = DeviceKeySessionBindingContext.compute(
-                challenge.challengeId(), nonce, peerKey, challenge.expiresAtEpochMillis());
+                session.sessionId(), challenge.challengeId(), nonce, peerKey, challenge.expiresAtEpochMillis());
         if (!MessageDigest.isEqual(expectedContext, attestation.bindingContext())) {
             return DeviceTrustDecision.deny("binding-context-mismatch");
         }

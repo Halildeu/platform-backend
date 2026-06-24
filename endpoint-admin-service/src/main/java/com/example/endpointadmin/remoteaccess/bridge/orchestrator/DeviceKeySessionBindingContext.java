@@ -15,11 +15,12 @@ import java.nio.charset.StandardCharsets;
  * agent-supplied bytes).
  *
  * <p><b>What it binds (Codex):</b> a fresh device-key signature over this context proves the device key holder
- * actively participated in <em>this</em> session — the signature commits to the broker's one-time
- * {@code challengeId} + {@code nonce} (replay/freshness) AND the authenticated {@code transportPeerKey} (so a
- * signature captured on one mTLS session can never be replayed onto another peer's session) AND the challenge
- * {@code expiry} (window). This is the transport-binding the AK quote (bound to the nonce) and the AK certify
- * (AK&rarr;device-key) do not themselves carry.
+ * actively participated in <em>this</em> session — the signature commits to the broker {@code sessionId} (so a
+ * signature for one session can never be redeemed for a different session on the same reconnected peer) AND the
+ * broker's one-time {@code challengeId} + {@code nonce} (replay/freshness) AND the authenticated
+ * {@code transportPeerKey} (so a signature captured on one mTLS session can never be replayed onto another peer's
+ * session) AND the challenge {@code expiry} (window). This is the session/transport-binding the AK quote (bound to
+ * the nonce) and the AK certify (AK&rarr;device-key) do not themselves carry.
  *
  * <p><b>Unambiguous encoding:</b> a fixed ASCII domain-separation tag (so these bytes can never collide with any
  * other signed structure), then every variable field is LENGTH-PREFIXED ({@code UINT32} big-endian) before its
@@ -41,6 +42,8 @@ public final class DeviceKeySessionBindingContext {
     /**
      * Compute the canonical binding context.
      *
+     * @param sessionId             the broker session id (correlation; binds the signature to THIS session so it
+     *                              cannot be redeemed for another session on the same reconnected peer)
      * @param challengeId           the broker-issued one-time challenge id (lowercase hex)
      * @param nonceRaw              the RAW (decoded) broker nonce bytes
      * @param transportPeerKey      the authenticated mTLS transport peer key (the leaf cert DER SHA-256, lowercase hex)
@@ -49,8 +52,11 @@ public final class DeviceKeySessionBindingContext {
      * @throws IllegalArgumentException if any required input is null/blank/empty (fail-fast — the verifier maps
      *                                  this to a fail-closed deny, never a partial context)
      */
-    public static byte[] compute(String challengeId, byte[] nonceRaw, String transportPeerKey,
+    public static byte[] compute(String sessionId, String challengeId, byte[] nonceRaw, String transportPeerKey,
                                  long expiresAtEpochMillis) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId required for binding context");
+        }
         if (challengeId == null || challengeId.isBlank()) {
             throw new IllegalArgumentException("challengeId required for binding context");
         }
@@ -60,10 +66,11 @@ public final class DeviceKeySessionBindingContext {
         if (transportPeerKey == null || transportPeerKey.isBlank()) {
             throw new IllegalArgumentException("transportPeerKey required for binding context");
         }
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream(128);
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream(160);
         try (DataOutputStream out = new DataOutputStream(buffer)) {
             out.write(DOMAIN_TAG.getBytes(StandardCharsets.US_ASCII)); // fixed-length tag, no prefix needed
             out.writeByte(0); // NUL terminator separates the fixed tag from the first length-prefixed field
+            writeLengthPrefixed(out, sessionId.getBytes(StandardCharsets.US_ASCII));
             writeLengthPrefixed(out, challengeId.getBytes(StandardCharsets.US_ASCII));
             writeLengthPrefixed(out, nonceRaw);
             writeLengthPrefixed(out, transportPeerKey.getBytes(StandardCharsets.US_ASCII));
