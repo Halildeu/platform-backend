@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioChunkPayload;
 import com.example.audiogateway.dto.AudioFormat;
+import com.example.audiogateway.dto.TranscriptResult;
 import com.example.audiogateway.service.AudioChunkDispatcher.ChunkDispatchCommand;
 import com.example.audiogateway.service.AudioChunkDispatcher.DispatchOutcome;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
@@ -100,7 +101,18 @@ class DirectSttForwardingDispatcherTest {
             final AudioGatewayProperties props,
             final MeterRegistry meters,
             final AudioGatewayAuditSink auditSink) {
-        return new DirectSttForwardingDispatcher(delegate, auditSink, webClient, props, meters);
+        return dispatcher(delegate, webClient, props, meters, auditSink, DirectSttTranscriptResultSink.noop());
+    }
+
+    private static DirectSttForwardingDispatcher dispatcher(
+            final AudioChunkDispatcher delegate,
+            final WebClient webClient,
+            final AudioGatewayProperties props,
+            final MeterRegistry meters,
+            final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink) {
+        return new DirectSttForwardingDispatcher(
+                delegate, auditSink, transcriptResultSink, webClient, props, meters);
     }
 
     @Test
@@ -143,6 +155,7 @@ class DirectSttForwardingDispatcherTest {
 
         // (3) Success metric increments (await the async callback), no transcript text leaked.
         awaitCounter(meters, "success", 1.0);
+        awaitCounter(meters, "transcript_sink_skipped_disabled", 1.0);
         assertThat(counter(meters, "attempted")).isEqualTo(1.0);
         assertThat(counter(meters, "http_error")).isZero();
         assertThat(counter(meters, "exception")).isZero();
@@ -162,6 +175,87 @@ class DirectSttForwardingDispatcherTest {
                     assertThat(f.byteLength()).isEqualTo(5);
                     assertThat(f.computePlane()).isEqualTo("live-stt");
                 });
+    }
+
+    @Test
+    void routesTranscriptToResultSinkWhenEnabled() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"merhaba dunya\",\"language\":\"tr\","
+                        + "\"language_probability\":0.98,\"duration\":1.2,\"elapsed_ms\":345.6,"
+                        + "\"model\":\"large-v3\",\"compute_type\":\"int8\",\"device\":\"cuda\"}"));
+
+        final AudioGatewayProperties props = props(8);
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
+        final RecordingTranscriptResultSink transcriptSink = new RecordingTranscriptResultSink();
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink(), transcriptSink);
+
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30}));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
+        assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
+        awaitCounter(meters, "success", 1.0);
+        awaitCounter(meters, "transcript_sink_success", 1.0);
+        assertThat(counter(meters, "transcript_sink_error")).isZero();
+        assertThat(transcriptSink.results()).hasSize(1);
+        assertThat(transcriptSink.results().get(0).text()).isEqualTo("merhaba dunya");
+        assertThat(transcriptSink.contexts())
+                .hasSize(1)
+                .first()
+                .satisfies(ctx -> {
+                    assertThat(ctx.sessionId()).isEqualTo("SES-abc");
+                    assertThat(ctx.meetingId()).isEqualTo("22222222-2222-4222-8222-222222222222");
+                    assertThat(ctx.chunkSeq()).isZero();
+                    assertThat(ctx.chunkStartedAtMs()).isEqualTo(1_000L);
+                    assertThat(ctx.correlationId()).isEqualTo("corr-xyz");
+                    assertThat(ctx.byteLength()).isEqualTo(3);
+                });
+    }
+
+    @Test
+    void transcriptSinkFailureIsMetricOnlyAndAdmissionStaysAccepted() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"merhaba dunya\",\"language\":\"tr\"}"));
+
+        final AudioGatewayProperties props = props(8);
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
+        final DirectSttTranscriptResultSink failingSink = (result, context) -> {
+            throw new org.springframework.dao.QueryTimeoutException("result stream down");
+        };
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink(), failingSink);
+
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30}));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
+        assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
+        awaitCounter(meters, "success", 1.0);
+        awaitCounter(meters, "transcript_sink_error", 1.0);
+        assertThat(counter(meters, "transcript_sink_success")).isZero();
+    }
+
+    @Test
+    void emptyTranscriptSkipsResultSinkWhenEnabled() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"\",\"language\":\"tr\"}"));
+
+        final AudioGatewayProperties props = props(8);
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
+        final RecordingTranscriptResultSink transcriptSink = new RecordingTranscriptResultSink();
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink(), transcriptSink);
+
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30}));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
+        assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
+        awaitCounter(meters, "success", 1.0);
+        awaitCounter(meters, "transcript_sink_skipped_empty", 1.0);
+        assertThat(counter(meters, "transcript_sink_success")).isZero();
+        assertThat(transcriptSink.results()).isEmpty();
     }
 
     @Test
@@ -400,6 +494,25 @@ class DirectSttForwardingDispatcherTest {
 
         String threadName() {
             return threadName.get();
+        }
+    }
+
+    private static final class RecordingTranscriptResultSink implements DirectSttTranscriptResultSink {
+        private final List<TranscriptResult> results = new CopyOnWriteArrayList<>();
+        private final List<DirectSttTranscriptResultContext> contexts = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void emit(final TranscriptResult result, final DirectSttTranscriptResultContext context) {
+            results.add(result);
+            contexts.add(context);
+        }
+
+        List<TranscriptResult> results() {
+            return List.copyOf(results);
+        }
+
+        List<DirectSttTranscriptResultContext> contexts() {
+            return List.copyOf(contexts);
         }
     }
 }

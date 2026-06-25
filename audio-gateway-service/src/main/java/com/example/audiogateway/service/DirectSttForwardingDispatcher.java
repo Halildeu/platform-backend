@@ -92,21 +92,25 @@ public class DirectSttForwardingDispatcher
 
     private final AudioChunkDispatcher delegate;
     private final AudioGatewayAuditSink auditSink;
+    private final DirectSttTranscriptResultSink transcriptResultSink;
     private final WebClient webClient;
     private final AudioGatewayProperties.DirectStt cfg;
     private final MeterRegistry meters;
     private final Semaphore inFlight;
     private final Scheduler forwardScheduler;
+    private final Scheduler transcriptSinkScheduler;
     private final String transcribeUri;
 
     public DirectSttForwardingDispatcher(
             final AudioChunkDispatcher delegate,
             final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink,
             final WebClient webClient,
             final AudioGatewayProperties properties,
             final MeterRegistry meters) {
         this.delegate = delegate;
         this.auditSink = auditSink;
+        this.transcriptResultSink = transcriptResultSink;
         this.webClient = webClient;
         this.cfg = properties.getDirectStt();
         this.meters = meters;
@@ -119,6 +123,10 @@ public class DirectSttForwardingDispatcher
                 Math.max(1, cfg.getMaxInFlight()),
                 Integer.MAX_VALUE,
                 "direct-stt-forward");
+        this.transcriptSinkScheduler = Schedulers.newBoundedElastic(
+                Math.max(1, cfg.getMaxInFlight()),
+                Integer.MAX_VALUE,
+                "direct-stt-transcript-sink");
         // In-flight gauge from the semaphore (used permits = configured - available).
         meters.gauge(METRIC_PREFIX + "in_flight", this,
                 d -> (double) (cfg.getMaxInFlight() - d.inFlight.availablePermits()));
@@ -154,7 +162,7 @@ public class DirectSttForwardingDispatcher
         // (4) Hand off the monitor immediately; build the request inside forward().
         final ForwardTask task = new ForwardTask(
                 audio, cmd.sessionId(), cmd.tenantId(), cmd.userId(), cmd.chunkSeq(),
-                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
+                cmd.chunkStartedAtMs(), cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
                 cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
                 cmd.payload().length());
         try {
@@ -174,6 +182,7 @@ public class DirectSttForwardingDispatcher
     @Override
     public void destroy() {
         forwardScheduler.dispose();
+        transcriptSinkScheduler.dispose();
     }
 
     /**
@@ -210,6 +219,7 @@ public class DirectSttForwardingDispatcher
                     .retrieve()
                     .bodyToMono(TranscriptResult.class)
                     .timeout(Duration.ofMillis(cfg.getResponseTimeoutMs()))
+                    .publishOn(forwardScheduler)
                     .doFinally(signal -> releaseOnce(released))
                     .subscribe(
                             result -> onSuccess(result, task),
@@ -296,16 +306,53 @@ public class DirectSttForwardingDispatcher
         log.warn("Direct-STT forward failed err={} {}", error.getClass().getSimpleName(), kv(task));
     }
 
-    /**
-     * TODO(#182 follow-up): route the parsed transcript to meeting-service /
-     * transcript-service (e.g. transcript stream / per-session append) for assembly,
-     * reconciling by {@code chunkSeq}/{@code chunkStartedAtMs}. This CORE seam intentionally
-     * does NOT fake routing — it only confirms a PII-safe successful parse and leaves the
-     * wiring to the follow-up slice. {@code result.text()} / {@code result.segments()} carry
-     * transcript content and must be handed off WITHOUT logging.
-     */
     private void routeTranscript(final TranscriptResult result, final ForwardTask task) {
-        // no-op seam (see Javadoc) — success already metered + PII-safe logged in onSuccess.
+        if (!cfg.getTranscriptResultStream().isEnabled()) {
+            counter("transcript_sink_skipped_disabled").increment();
+            return;
+        }
+        if (result == null || result.text() == null || result.text().isBlank()) {
+            counter("transcript_sink_skipped_empty").increment();
+            return;
+        }
+        try {
+            transcriptSinkScheduler.schedule(() -> emitTranscriptResult(result, task));
+        } catch (final RuntimeException ex) {
+            counter("transcript_sink_error").increment();
+            log.warn("ALERT direct-STT transcript result sink scheduling failed err={} {}",
+                    ex.getClass().getSimpleName(), kv(task));
+        }
+    }
+
+    private void emitTranscriptResult(final TranscriptResult result, final ForwardTask task) {
+        try {
+            transcriptResultSink.emit(result, transcriptContext(task));
+            counter("transcript_sink_success").increment();
+            log.info("Direct-STT transcript result routed {} textLen={} sttLang={} model={}",
+                    kv(task), result.textLength(), result.language(), result.model());
+        } catch (final RuntimeException ex) {
+            counter("transcript_sink_error").increment();
+            log.warn("ALERT direct-STT transcript result sink failed err={} {}",
+                    ex.getClass().getSimpleName(), kv(task));
+        }
+    }
+
+    private static DirectSttTranscriptResultContext transcriptContext(final ForwardTask task) {
+        return new DirectSttTranscriptResultContext(
+                task.sessionId(),
+                task.tenantId(),
+                task.userId(),
+                task.chunkSeq(),
+                task.chunkStartedAtMs(),
+                task.meetingId(),
+                task.deviceId(),
+                task.language(),
+                task.audioFormat(),
+                task.sampleRateHz(),
+                task.channels(),
+                task.correlationId(),
+                task.sha256(),
+                task.length());
     }
 
     private void releaseOnce(final AtomicBoolean released) {
@@ -384,6 +431,7 @@ public class DirectSttForwardingDispatcher
             Long tenantId,
             Long userId,
             long chunkSeq,
+            long chunkStartedAtMs,
             String meetingId,
             String deviceId,
             String language,

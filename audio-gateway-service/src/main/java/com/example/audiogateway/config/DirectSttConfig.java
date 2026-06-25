@@ -3,6 +3,7 @@ package com.example.audiogateway.config;
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
+import com.example.audiogateway.service.DirectSttTranscriptResultSink;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 
@@ -19,6 +20,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -126,6 +128,12 @@ public class DirectSttConfig {
                 }));
     }
 
+    @Bean
+    @ConditionalOnMissingBean(DirectSttTranscriptResultSink.class)
+    public DirectSttTranscriptResultSink noOpDirectSttTranscriptResultSink() {
+        return DirectSttTranscriptResultSink.noop();
+    }
+
     /**
      * The {@code @Primary} decorating dispatcher. Wraps the mode-selected base dispatcher and
      * adds the bounded, fire-and-forget direct audio forward. Becomes the bean injected into
@@ -137,6 +145,7 @@ public class DirectSttConfig {
             final AudioGatewayProperties props,
             final MeterRegistry meters,
             final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink,
             @org.springframework.beans.factory.annotation.Qualifier("directSttWebClient")
             final WebClient directSttWebClient,
             final ObjectProvider<RedisStreamsAudioChunkDispatcher> redisProvider,
@@ -145,7 +154,8 @@ public class DirectSttConfig {
         final AudioChunkDispatcher delegate = resolveDelegate(
                 props.getDispatcher().getMode(), redisProvider, noOpProvider);
 
-        return new DirectSttForwardingDispatcher(delegate, auditSink, directSttWebClient, props, meters);
+        return new DirectSttForwardingDispatcher(
+                delegate, auditSink, transcriptResultSink, directSttWebClient, props, meters);
     }
 
     private AudioChunkDispatcher resolveDelegate(

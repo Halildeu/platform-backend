@@ -53,6 +53,28 @@ class AudioGatewayPropertiesTest {
         assertThatCode(props::validate).doesNotThrowAnyException();
     }
 
+    @Test
+    void directSttTranscriptResultStreamRequiresStreamKeyWhenEnabled() {
+        final AudioGatewayProperties props = directSttProps("https://live-stt.denetim:8243/transcribe");
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
+        props.getDirectStt().getTranscriptResultStream().setStreamKey(" ");
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("transcript-result-stream.stream-key must be set");
+    }
+
+    @Test
+    void directSttTranscriptResultStreamRejectsNegativeMaxLen() {
+        final AudioGatewayProperties props = directSttProps("https://live-stt.denetim:8243/transcribe");
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
+        props.getDirectStt().getTranscriptResultStream().setMaxLen(-1);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("transcript-result-stream.max-len must be >= 0");
+    }
+
     private static AudioGatewayProperties directSttProps(final String transcribeUrl) {
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getDirectStt().setEnabled(true);
