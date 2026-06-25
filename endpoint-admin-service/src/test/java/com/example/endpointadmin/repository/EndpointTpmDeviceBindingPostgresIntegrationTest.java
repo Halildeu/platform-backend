@@ -1,7 +1,6 @@
 package com.example.endpointadmin.repository;
 
 import com.example.endpointadmin.model.EndpointTpmDeviceBinding;
-import com.example.endpointadmin.tpmattest.TpmEnrollmentCompletionService;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,9 +16,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.sql.Timestamp;
-import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -113,43 +110,24 @@ class EndpointTpmDeviceBindingPostgresIntegrationTest {
     }
 
     @Test
-    void reenrollmentRevokesPriorActiveBindingAndCreatesExactlyOneNewActive() {
-        TpmEnrollmentCompletionService service =
-                new TpmEnrollmentCompletionService(enrollments, bindings, Clock.fixed(NOW, ZoneOffset.UTC));
-
-        service.markConsumed(enroll1, tpmBinding());
-        service.markConsumed(enroll2, tpmBinding()); // re-enrollment for the SAME device
+    void revokeActiveBeforeInsert_leavesExactlyOneActiveAndSoftRevokesPrior() {
+        // The recordBinding ordering at the DB level (Phase 1.5 delegates the supersede to the same revokeActive):
+        // revoke the prior active (bulk UPDATE) BEFORE inserting the replacement, so the partial unique
+        // uq_tpm_binding_active_device never momentarily sees two active rows.
+        bindings.saveAndFlush(binding(enroll1));
+        bindings.revokeActive(tenant, device, NOW.plusSeconds(10), "REENROLLMENT_SUPERSEDED");
         entityManager.flush();
         entityManager.clear();
+        bindings.saveAndFlush(binding(enroll2));
 
-        // exactly one active binding, and it is the NEW (re-enrollment) one
         Optional<EndpointTpmDeviceBinding> active =
                 bindings.findByTenantIdAndDeviceIdAndRevokedAtIsNull(tenant, device);
         assertThat(active).isPresent();
         assertThat(active.get().getEndpointEnrollmentId()).isEqualTo(enroll2);
         assertThat(bindings.count()).isEqualTo(2L); // prior is kept, soft-revoked (not deleted)
 
-        // the prior binding is soft-revoked with the supersede reason
         EndpointTpmDeviceBinding prior = bindings.findByEndpointEnrollmentId(enroll1).orElseThrow();
         assertThat(prior.getRevokedAt()).isNotNull();
         assertThat(prior.getRevokedReason()).isEqualTo("REENROLLMENT_SUPERSEDED");
-    }
-
-    private TpmEnrollmentCompletionService.TpmBinding tpmBinding() {
-        return new TpmEnrollmentCompletionService.TpmBinding(
-                tenant, device, AK_NAME, "akpub-sha", "ekcert-sha", "spki-sha");
-    }
-
-    @Test
-    void nullDeviceIdMarksConsumedWithoutPersistingABindingRow() {
-        TpmEnrollmentCompletionService service =
-                new TpmEnrollmentCompletionService(enrollments, bindings, Clock.fixed(NOW, ZoneOffset.UTC));
-
-        service.markConsumed(enroll1, new TpmEnrollmentCompletionService.TpmBinding(
-                tenant, null, AK_NAME, "akpub-sha", "ekcert-sha", "spki-sha"));
-        entityManager.flush();
-        entityManager.clear();
-
-        assertThat(bindings.count()).isZero();
     }
 }

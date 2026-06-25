@@ -2,6 +2,8 @@ package com.example.endpointadmin.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -49,8 +51,23 @@ public class EndpointMachineCert {
     @Column(name = "san_uri", nullable = false, length = 512)
     private String sanUri;
 
-    @Column(name = "object_guid", nullable = false)
+    /**
+     * AD objectGUID — the AD_CS channel identity. NULL for the VAULT_TPM channel (TPM
+     * device-completion has no AD objectGUID). The channel/object_guid coupling is
+     * DB-enforced by ck_endpoint_machine_certs_channel_object_guid (V75).
+     */
+    @Column(name = "object_guid")
     private UUID objectGuid;
+
+    /**
+     * Faz 22.6 #548 Phase 1.5 — the enrollment channel that produced this row. Permanent
+     * DB DEFAULT 'AD_CS' (rolling-deploy safe, Codex P1-5); both services set it
+     * explicitly. A VAULT_TPM row MUST set this (its object_guid is NULL, so the CHECK
+     * rejects a wrongly-defaulted AD_CS row fail-closed).
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "channel", nullable = false, length = 16)
+    private MachineCertChannel channel = MachineCertChannel.AD_CS;
 
     @Column(name = "cert_serial", nullable = false, length = 128)
     private String certSerial;
@@ -149,6 +166,14 @@ public class EndpointMachineCert {
 
     public void setObjectGuid(UUID objectGuid) {
         this.objectGuid = objectGuid;
+    }
+
+    public MachineCertChannel getChannel() {
+        return channel;
+    }
+
+    public void setChannel(MachineCertChannel channel) {
+        this.channel = channel;
     }
 
     public String getCertSerial() {

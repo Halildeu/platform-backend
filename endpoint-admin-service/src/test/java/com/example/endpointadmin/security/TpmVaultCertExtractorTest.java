@@ -120,6 +120,22 @@ class TpmVaultCertExtractorTest {
     }
 
     @Test
+    void rejectsExtraNonTpmUriSanAsUnexpected() {
+        // Faz 22.6 #548 Phase 1.5 (G1, Codex 019eff93): a TPM device cert carries EXACTLY one tpm: URI SAN.
+        // An additional non-tpm URI SAN is an unexpected/misissued identity surface → reject fail-closed.
+        X509Certificate cert = TestX509Certs.builder()
+                .customSanUri("tpm:" + EK)
+                .extraSanUri("https://evil.example/x")
+                .clientAuth(true)
+                .validForDays(30)
+                .build();
+
+        assertThatThrownBy(() -> TpmVaultCertExtractor.extract(cert, NOW))
+                .isInstanceOf(MachineCertExtractionException.class)
+                .satisfies(t -> assertThat(code(t)).isEqualTo("VCERT_SAN_UNEXPECTED_URI"));
+    }
+
+    @Test
     void rejectsExpiredCert() {
         X509Certificate cert = TestX509Certs.builder()
                 .customSanUri("tpm:" + EK)

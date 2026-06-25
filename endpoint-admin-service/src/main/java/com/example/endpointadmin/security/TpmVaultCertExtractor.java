@@ -1,8 +1,5 @@
 package com.example.endpointadmin.security;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateParsingException;
@@ -46,8 +43,6 @@ import java.util.regex.Pattern;
  * <p>Production runtime uses only the standard JDK X.509 parser — no BouncyCastle.
  */
 public final class TpmVaultCertExtractor {
-
-    private static final Logger log = LoggerFactory.getLogger(TpmVaultCertExtractor.class);
 
     /** RFC 5280 GeneralName type tag for URI. */
     private static final int SAN_TYPE_URI = 6;
@@ -182,6 +177,7 @@ public final class TpmVaultCertExtractor {
         }
         String firstMatch = null;
         int matchCount = 0;
+        int foreignUriCount = 0;
         for (List<?> entry : sans) {
             if (entry.size() < 2) {
                 continue;
@@ -200,8 +196,7 @@ public final class TpmVaultCertExtractor {
                 }
                 matchCount++;
             } else {
-                log.debug("Ignoring SAN URI not matching tpm pattern (length={})",
-                        uri.length());
+                foreignUriCount++;
             }
         }
         if (matchCount > 1) {
@@ -209,6 +204,15 @@ public final class TpmVaultCertExtractor {
                     "VCERT_SAN_URI_AMBIGUOUS",
                     "Vault cert has " + matchCount + " tpm:{ek_pub_sha256} SAN URIs; "
                             + "exactly one is required.");
+        }
+        // Faz 22.6 #548 Phase 1.5 (G1, Codex 019eff93): a VALID TPM device cert carries EXACTLY one tpm:{ek}
+        // URI SAN and NO other URI SAN. An extra (foreign) URI SAN ALONGSIDE the tpm SAN is an unexpected
+        // identity surface → reject fail-closed. (When there is NO valid tpm SAN, a foreign/malformed URI is
+        // simply "no tpm SAN" → fall through to VCERT_SAN_URI_MISSING, preserving the per-channel contract.)
+        if (matchCount == 1 && foreignUriCount > 0) {
+            throw new MachineCertExtractionException(
+                    "VCERT_SAN_UNEXPECTED_URI",
+                    "Vault cert carries an additional URI SAN beyond tpm:{ek_pub_sha256}.");
         }
         return Optional.ofNullable(firstMatch);
     }

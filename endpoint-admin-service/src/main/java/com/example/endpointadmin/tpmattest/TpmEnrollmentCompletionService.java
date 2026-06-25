@@ -5,6 +5,8 @@ import com.example.endpointadmin.model.EndpointTpmDeviceBinding;
 import com.example.endpointadmin.model.EnrollmentStatus;
 import com.example.endpointadmin.repository.EndpointEnrollmentRepository;
 import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
+import com.example.endpointadmin.security.TpmVaultCertExtractor;
+import com.example.endpointadmin.service.TpmDeviceCompletionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -32,9 +34,10 @@ import java.util.UUID;
  * <p>Faz 22.6 #548 slice-1 step-4 (Codex {@code 019efada} decision A): {@code markConsumed} ALSO persists the
  * V10-proven {@link EndpointTpmDeviceBinding} — atomically with the CONSUMED transition — so the canonical
  * device-key SESSION verifier can later bind AK&harr;EK against this enrollment record (see
- * {@link EndpointTpmDeviceBinding}). A null-device enrollment writes NO binding row (a binding with no device key
- * could never be matched at session time); a re-enrollment soft-revokes the prior active binding for the same
- * {@code (tenant, device)} before inserting the new one.
+ * {@link EndpointTpmDeviceBinding}). Phase 1.5 ({@code 019eff93}) delegates device resolution to
+ * {@link TpmDeviceCompletionService}: a device-less (system-native) enrollment now COMPLETES a canonical device
+ * (rather than CONSUMING with no binding), so a trustable binding row is ALWAYS written; a re-enrollment
+ * soft-revokes the prior active binding for the same {@code (tenant, device)} before inserting the new one.
  */
 @Service
 public class TpmEnrollmentCompletionService {
@@ -43,13 +46,16 @@ public class TpmEnrollmentCompletionService {
 
     private final EndpointEnrollmentRepository enrollments;
     private final EndpointTpmDeviceBindingRepository bindings;
+    private final TpmDeviceCompletionService deviceCompletion;
     private final Clock clock;
 
     public TpmEnrollmentCompletionService(EndpointEnrollmentRepository enrollments,
                                           EndpointTpmDeviceBindingRepository bindings,
+                                          TpmDeviceCompletionService deviceCompletion,
                                           Clock clock) {
         this.enrollments = enrollments;
         this.bindings = bindings;
+        this.deviceCompletion = deviceCompletion;
         this.clock = clock;
     }
 
@@ -70,32 +76,37 @@ public class TpmEnrollmentCompletionService {
      * binding row is the enrollment TPM record the canonical session verifier matches AK&harr;EK against.
      */
     @Transactional
-    public void markConsumed(UUID enrollmentId, TpmBinding binding) {
+    public void markConsumed(UUID enrollmentId, TpmCompletion completion) {
         EndpointEnrollment e = enrollments.findById(enrollmentId)
                 .orElseThrow(() -> deny("enrollment no longer present"));
         Instant now = clock.instant();
         e.setStatus(EnrollmentStatus.CONSUMED);
         e.setConsumedAt(now);
+        // Phase 1.5 (Codex 019eff93) — complete the device ATOMICALLY (device-less -> created/adopted;
+        // pre-bound -> asserted) + register/rotate the VAULT_TPM cert + link enrollment.device. The resolved
+        // device id is never null, so recordBinding ALWAYS writes a trustable binding row.
+        UUID deviceId = deviceCompletion.complete(
+                completion.tenantId(), completion.ekPubSha256(), completion.vaultCert(), e,
+                completion.scopeDeviceId(), now);
         enrollments.save(e);
-        recordBinding(enrollmentId, binding, now);
+        recordBinding(enrollmentId, completion, deviceId, now);
     }
 
-    private void recordBinding(UUID enrollmentId, TpmBinding binding, Instant now) {
-        if (binding == null || binding.deviceId() == null) {
-            // Edge-case 1 (Codex): a null-device enrollment still CONSUMES, but writes NO trustable binding row —
-            // the session verifier keys on (tenant, device), so a device-less row could never be matched.
-            log.info("TPM_BINDING_SKIPPED_NO_DEVICE_ID enrollment={}", enrollmentId);
+    private void recordBinding(UUID enrollmentId, TpmCompletion completion, UUID deviceId, Instant now) {
+        if (deviceId == null) {
+            // Phase 1.5 always resolves a device, so this is a defensive invariant (should be unreachable);
+            // fail safe rather than write a (tenant, device)-unkeyed binding the session verifier can't match.
+            log.warn("TPM_BINDING_SKIPPED_NO_DEVICE_ID enrollment={} (unexpected post-Phase-1.5)", enrollmentId);
             return;
         }
-        // Edge-case 2 (Codex): re-enrollment supersede. Soft-revoke the prior active binding with an IMMEDIATE
-        // bulk UPDATE (so it hits the DB before the INSERT below — avoids the Hibernate insert-before-update
-        // action-queue ordering tripping the partial unique index), then insert the new active row. The partial
-        // unique index uq_tpm_binding_active_device is the last-line defense: a concurrent double-active fails
-        // closed (DataIntegrityViolationException), never a silent overwrite.
-        bindings.revokeActive(binding.tenantId(), binding.deviceId(), now, "REENROLLMENT_SUPERSEDED");
+        // Re-enrollment supersede (Codex): soft-revoke the prior active binding with an IMMEDIATE bulk UPDATE (so
+        // it commits before the INSERT, avoiding the Hibernate insert-before-update action-queue ordering tripping
+        // the partial unique index), then insert the new active row. uq_tpm_binding_active_device is the last-line
+        // defense: a concurrent double-active fails closed (DataIntegrityViolationException), never silent overwrite.
+        bindings.revokeActive(completion.tenantId(), deviceId, now, "REENROLLMENT_SUPERSEDED");
         bindings.save(new EndpointTpmDeviceBinding(
-                binding.tenantId(), binding.deviceId(), enrollmentId, binding.akName(),
-                binding.akPubSha256(), binding.ekCertSha256(), binding.deviceKeySpkiSha256(), now, now));
+                completion.tenantId(), deviceId, enrollmentId, completion.akName(),
+                completion.akPubSha256(), completion.ekCertSha256(), completion.deviceKeySpkiSha256(), now, now));
     }
 
     /** TPM_IN_PROGRESS → TPM_FAILED (verify/issue failure). Never clobbers a CONSUMED; never returns to PENDING. */
@@ -114,11 +125,15 @@ public class TpmEnrollmentCompletionService {
     }
 
     /**
-     * The V10-proven device-key binding inputs the controller hands to {@link #markConsumed} after a successful
-     * {@code /attest}. {@code deviceId} may be null (→ no binding row). {@code akName} is the RAW TPM Name; the
-     * AK pub / EK cert / device-key SPKI are SHA-256 hex digests.
+     * The inputs the controller hands to {@link #markConsumed} after a successful {@code /attest}. The canonical
+     * device is RESOLVED by {@link TpmDeviceCompletionService} (device-less -&gt; created/adopted; pre-bound -&gt;
+     * asserted), so {@code scopeDeviceId} is the nullable PRE-BOUND target, not the final device.
+     * {@code ekPubSha256}/{@code ekCertSha256} are the L1-bound EK identity digests; {@code vaultCert} is the
+     * parsed freshly-issued Vault cert (its SAN is cross-checked against {@code ekPubSha256}); {@code akName} is
+     * the RAW TPM Name; AK pub and device-key SPKI are SHA-256 hex digests.
      */
-    public record TpmBinding(UUID tenantId, UUID deviceId, byte[] akName, String akPubSha256,
-                             String ekCertSha256, String deviceKeySpkiSha256) {
+    public record TpmCompletion(UUID tenantId, UUID scopeDeviceId, String ekPubSha256, String ekCertSha256,
+                                TpmVaultCertExtractor.ParsedVaultCert vaultCert, byte[] akName,
+                                String akPubSha256, String deviceKeySpkiSha256) {
     }
 }

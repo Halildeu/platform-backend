@@ -1,6 +1,7 @@
 package com.example.endpointadmin.tpmattest;
 
 import com.example.endpointadmin.config.ConditionalOnPrimaryEndpointPlane;
+import com.example.endpointadmin.security.TpmVaultCertExtractor;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.ObjectProvider;
@@ -147,8 +148,13 @@ public class TpmEnrollmentController {
         TpmMakeCredential.Challenge challenge =
                 makeCredential.issueChallenge(ekRsa, ekPub.nameAlg(), akName);
 
+        // P0-1 (Codex 019eff93): bind the V2-validated EK identity to the nonce, so /attest derives the device
+        // identity + binding from THIS EK (consumed.ek*), never an L2-resubmitted ekCert (borrowed-EK class).
+        String ekPubSha256 = sha256Hex(ekCert.getPublicKey().getEncoded());
+        String ekCertSha256 = sha256Hex(decode(req.ekCert()));
         Instant exp = clock.instant().plus(properties.nonceTtl());
-        nonceStore.issue(nonceId, scope.nonceScope(), nonce, challenge.secret(), akName, exp);
+        nonceStore.issue(nonceId, scope.nonceScope(), nonce, challenge.secret(), akName,
+                ekPubSha256, ekCertSha256, exp);
 
         TpmAttestChallenge body = new TpmAttestChallenge(
                 nonceId,
@@ -195,6 +201,16 @@ public class TpmEnrollmentController {
                 throw new TpmAttestException(TpmDenyCode.AK_BINDING_FAILED, "akName != L1-bound AK");
             }
             // V10 — credential activation (the EK↔AK↔one-TPM proof; recovered secret == issued).
+            // P0-1 (Codex 019eff93) — pin the RECORDED EK identity to the L1-validated EK: reject an L2 envelope
+            // that re-presents a DIFFERENT valid EK cert (borrowed-EK). V10 below proves possession of the L1 EK;
+            // device identity + binding derive from consumed.ek*, this guards the envelope-supplied field too.
+            if (env.ekCert() != null && !env.ekCert().isBlank()) {
+                X509Certificate l2Ek = parseCert(env.ekCert());
+                if (!sha256Hex(l2Ek.getPublicKey().getEncoded()).equals(consumed.ekPubSha256())
+                        || !sha256Hex(decode(env.ekCert())).equals(consumed.ekCertSha256())) {
+                    throw new TpmAttestException(TpmDenyCode.EK_UNTRUSTED, "L2 EK != L1-bound EK");
+                }
+            }
             TpmMakeCredential.verifyRecoveredSecret(consumed.serverSecret(), decode(env.activatedSecret()));
             // V5 — quote signed by the AK over the issued nonce.
             TpmAttestationVerifier.verifyQuote(ak, decode(env.quote()), decode(env.quoteSig()), consumed.nonce());
@@ -211,23 +227,31 @@ public class TpmEnrollmentController {
             // V9 — CSR key policy (RSA-3072+/EC-P256+, clientAuth-only, proof-of-possession).
             TpmCsrPolicy.verify(decode(env.csrDer()));
 
-            // Issue via Vault PKI (only when configured; absent-while-enabled → fail-closed).
+            // Issue via Vault PKI (only when configured; absent-while-enabled → fail-closed). The SAN is
+            // SERVER-SUPPLIED from the L1-bound EK identity (Codex 019eff93 P0-2) — never the CSR (V9/TpmCsrPolicy
+            // rejects a SAN extension), so the device identity cannot be caller-forged.
             VaultPkiClient vault = vaultPkiClientProvider.getIfAvailable();
             if (vault == null) {
                 throw new TpmAttestException(TpmDenyCode.FEATURE_DISABLED, "vault issuance not configured");
             }
-            String certificatePem = vault.signCsr(csrDerToPem(decode(env.csrDer())));
+            String ekPubSha256 = consumed.ekPubSha256();
+            String certificatePem = vault.signCsr(csrDerToPem(decode(env.csrDer())), "tpm:" + ekPubSha256);
 
-            // Faz 22.6 #548 step-4 — persist the V10-proven device binding ATOMICALLY with CONSUMED, so the
-            // canonical device-key session verifier can later bind AK↔EK against this enrollment record. All
-            // inputs are the values just verified above: akName is the L1-bound TPM Name; AK pub / EK cert /
-            // device-key SPKI are SHA-256 digests. A null scope.deviceId() → no binding row (handled downstream).
-            TpmEnrollmentCompletionService.TpmBinding binding = new TpmEnrollmentCompletionService.TpmBinding(
-                    scope.tenantId(), scope.deviceId(), consumed.akName(),
-                    sha256Hex(decode(env.akPub())),
-                    sha256Hex(decode(env.ekCert())),
-                    sha256Hex(deviceKey.toPublicKey().getEncoded()));
-            completionService.markConsumed(scope.enrollmentId(), binding);
+            // Parse the issued cert + exact-match its SAN to the L1-bound EK (fail-closed): the device-key SESSION
+            // verifier authenticates THIS cert by its tpm:{ek} SAN, so a cert whose SAN != the attested EK would be
+            // permanently unauthenticatable — refuse completion rather than mint a dead device.
+            TpmVaultCertExtractor.ParsedVaultCert vaultCert = extractIssuedVaultCert(certificatePem);
+
+            // Faz 22.6 #548 Phase 1.5 — complete the device ATOMICALLY with CONSUMED: device upsert (canonical
+            // tenant-scoped EK identity) + VAULT_TPM active machine-cert (revoke-before-insert) + enrollment.device
+            // link + the V10-proven binding row. Device-less (system-native) AND pre-bound enrollments run the same
+            // hardened path. Identity + binding derive from the L1-bound EK (consumed.ek*), never env.ekCert.
+            TpmEnrollmentCompletionService.TpmCompletion completion =
+                    new TpmEnrollmentCompletionService.TpmCompletion(
+                            scope.tenantId(), scope.deviceId(), ekPubSha256, consumed.ekCertSha256(), vaultCert,
+                            consumed.akName(), sha256Hex(decode(env.akPub())),
+                            sha256Hex(deviceKey.toPublicKey().getEncoded()));
+            completionService.markConsumed(scope.enrollmentId(), completion);
             return ResponseEntity.ok()
                     .cacheControl(CacheControl.noStore())
                     .header(HttpHeaders.PRAGMA, "no-cache")
@@ -314,6 +338,20 @@ public class TpmEnrollmentController {
             for (String c : chain) out.add(parseCert(c));
         }
         return out;
+    }
+
+    /** Parse the freshly-issued Vault cert (PEM) + extract its TPM identity; any failure → uniform EK_UNTRUSTED deny. */
+    private TpmVaultCertExtractor.ParsedVaultCert extractIssuedVaultCert(String pem) {
+        try {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            X509Certificate leaf = (X509Certificate) cf.generateCertificate(
+                    new ByteArrayInputStream(pem.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return TpmVaultCertExtractor.extract(leaf, clock.instant());
+        } catch (TpmAttestException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new TpmAttestException(TpmDenyCode.EK_UNTRUSTED, "issued Vault cert SAN/identity invalid");
+        }
     }
 
     private static String remoteAddress(HttpServletRequest request) {

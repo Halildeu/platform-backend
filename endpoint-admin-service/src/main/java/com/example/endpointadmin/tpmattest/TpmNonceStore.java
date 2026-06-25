@@ -22,16 +22,25 @@ import java.util.Optional;
  */
 public interface TpmNonceStore {
 
-    /** What the verifier needs back at /attest. {@code serverSecret} is the V10 activation secret. */
-    record Consumed(byte[] nonce, byte[] serverSecret, byte[] akName) {}
+    /**
+     * What the verifier needs back at /attest. {@code serverSecret} is the V10 activation secret.
+     *
+     * <p>Faz 22.6 #548 Phase 1.5 (Codex {@code 019eff93} P0-1): {@code ekPubSha256} + {@code ekCertSha256}
+     * are the L1-bound, V2-validated EK identity digests (lowercase 64-hex). The TPM device identity and the
+     * persisted binding at /attest derive from THESE — never from an L2-resubmitted {@code ekCert} — closing
+     * the borrowed-EK class (a caller passing TPM-A through L1 then a different valid EK cert at L2).
+     */
+    record Consumed(byte[] nonce, byte[] serverSecret, byte[] akName, String ekPubSha256, String ekCertSha256) {}
 
     /**
-     * Issue: bind {@code nonce}+{@code serverSecret}+{@code akName} to {@code nonceId} under
+     * Issue: bind {@code nonce}+{@code serverSecret}+{@code akName}+EK identity to {@code nonceId} under
      * {@code scope}, expiring at {@code expiresAt}. {@code akName} is the L1-validated AK TPM Name;
      * at /attest the verifier MUST check the quote/certify-signing AK's recomputed Name equals it,
      * binding the activation-proven AK to the signing AK (Codex {@code 019ec723} gate-4d MUST#1).
+     * {@code ekPubSha256}/{@code ekCertSha256} are the V2-validated EK identity (Codex {@code 019eff93} P0-1).
      */
-    void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, byte[] akName, Instant expiresAt);
+    void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, byte[] akName,
+               String ekPubSha256, String ekCertSha256, Instant expiresAt);
 
     /**
      * Consume exactly once. Returns the bound nonce+secret iff the entry exists,

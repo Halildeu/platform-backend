@@ -97,6 +97,24 @@ class VaultPkiClientTest {
     }
 
     @Test
+    void signCsr_withUriSan_sendsServerSuppliedUriSans() {
+        String ek = "a".repeat(64);
+        client(65536).signCsr("-----BEGIN CERTIFICATE REQUEST-----\nMII...\n-----END CERTIFICATE REQUEST-----",
+                "tpm:" + ek);
+        assertThat(lastSignBody.get())
+                .as("server-supplied SAN (Codex 019eff93 P0-2): the device identity comes from uri_sans, not the CSR")
+                .contains("\"csr\":")
+                .contains("\"format\":\"pem\"")
+                .contains("\"uri_sans\":\"tpm:" + ek + "\"");
+    }
+
+    @Test
+    void signCsr_withoutUriSan_omitsUriSansField() {
+        client(65536).signCsr("csr");
+        assertThat(lastSignBody.get()).doesNotContain("uri_sans");
+    }
+
+    @Test
     void token_isCachedAcrossCalls_singleLogin() {
         VaultPkiClient c = client(65536);
         c.signCsr("csr1");

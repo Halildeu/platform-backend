@@ -6,6 +6,8 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder;
 import org.junit.jupiter.api.BeforeAll;
@@ -19,6 +21,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.ByteArrayInputStream;
+import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
@@ -29,6 +32,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -36,6 +40,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import javax.security.auth.x500.X500Principal;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -61,6 +66,7 @@ class TpmAttestEndpointTest {
 
     private static JsonNode golden;
     private static byte[] goldenNonce, goldenSecret, goldenAkName;
+    private static String goldenEkPubSha256, goldenEkCertSha256;
 
     private MockMvc mvc;
     private TpmEnrollmentControllerTest.StubScopeResolver scopeResolver;
@@ -76,6 +82,13 @@ class TpmAttestEndpointTest {
         goldenNonce = HexFormat.of().parseHex(golden.get("nonceHex").asText());
         goldenSecret = Base64.getDecoder().decode(golden.get("activationExpectedB64").asText());
         goldenAkName = HexFormat.of().parseHex(golden.get("akNameHex").asText());
+        // P0-1: the L1-bound EK identity the controller stores in the nonce (digests of the golden EK).
+        byte[] ekDer = Base64.getDecoder().decode(golden.get("ekCertDer").asText());
+        goldenEkCertSha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(ekDer));
+        X509Certificate ek = (X509Certificate) CertificateFactory.getInstance("X.509")
+                .generateCertificate(new ByteArrayInputStream(ekDer));
+        goldenEkPubSha256 = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(ek.getPublicKey().getEncoded()));
     }
 
     @BeforeEach
@@ -128,7 +141,8 @@ class TpmAttestEndpointTest {
     }
 
     private void stubConsume(byte[] nonce, byte[] secret, byte[] akName) {
-        when(nonceStore.consume(any(), any())).thenReturn(Optional.of(new TpmNonceStore.Consumed(nonce, secret, akName)));
+        when(nonceStore.consume(any(), any())).thenReturn(Optional.of(
+                new TpmNonceStore.Consumed(nonce, secret, akName, goldenEkPubSha256, goldenEkCertSha256)));
     }
 
     @Test
@@ -177,6 +191,20 @@ class TpmAttestEndpointTest {
         verify(completion, never()).markConsumed(any(), any());
     }
 
+    @Test
+    void l2EkCertDiffersFromL1BoundEk_uniform403_markFailed() throws Exception {
+        // P0-1 (Codex 019eff93) — L1-bound EK = golden; the L2 envelope re-presents a DIFFERENT valid EK cert
+        // (borrowed-EK). MUST#1 passes (golden akName), then the EK-identity pin denies BEFORE V10. This test
+        // gates the borrowed-EK class: the recorded device identity is pinned to the cryptographically-proven EK.
+        stubConsume(goldenNonce, goldenSecret, goldenAkName);
+        Map<String, Object> b = body();
+        b.put("ekCert", differentEkCertB64);
+        postAttest(b).andExpect(status().isForbidden()).andExpect(content().json("{\"status\":\"denied\"}"));
+        verify(completion).markInProgress(ENROLL_ID);
+        verify(completion).markFailed(ENROLL_ID);
+        verify(completion, never()).markConsumed(any(), any());
+    }
+
     // ───────────────────────────── helpers ─────────────────────────────
 
     private static String freshCsrB64;
@@ -189,6 +217,26 @@ class TpmAttestEndpointTest {
             ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
                     .setProvider(new BouncyCastleProvider()).build(kp.getPrivate());
             freshCsrB64 = Base64.getEncoder().encodeToString(builder.build(signer).getEncoded());
+        } catch (Exception e) {
+            throw new ExceptionInInitializerError(e);
+        }
+    }
+
+    /** A valid but DIFFERENT EK cert (its public key != golden) for the borrowed-EK (P0-1) test. */
+    private static String differentEkCertB64;
+    static {
+        try {
+            KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+            kpg.initialize(2048);
+            KeyPair kp = kpg.generateKeyPair();
+            Date from = Date.from(Instant.parse("2026-06-14T00:00:00Z"));
+            Date to = Date.from(Instant.parse("2027-06-14T00:00:00Z"));
+            var builder = new JcaX509v3CertificateBuilder(new X500Principal("CN=other-ek"),
+                    BigInteger.valueOf(System.nanoTime()), from, to, new X500Principal("CN=other-ek"), kp.getPublic());
+            ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
+                    .setProvider(new BouncyCastleProvider()).build(kp.getPrivate());
+            X509Certificate cert = new JcaX509CertificateConverter().getCertificate(builder.build(signer));
+            differentEkCertB64 = Base64.getEncoder().encodeToString(cert.getEncoded());
         } catch (Exception e) {
             throw new ExceptionInInitializerError(e);
         }
