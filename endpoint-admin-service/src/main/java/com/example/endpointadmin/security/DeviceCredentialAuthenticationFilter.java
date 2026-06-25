@@ -31,9 +31,15 @@ public class DeviceCredentialAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
+        // The HMAC device-credential filter must NOT preempt the bootstrap enrollment routes that
+        // SecurityConfig marks permitAll — they authenticate by enrollment token (the device has no HMAC
+        // credential yet): /enrollments/consume AND the Faz 22.3B TPM-attest bootstrap (POST
+        // /enrollments/tpm/**, token-in-body + TPM proof). Without this skip the filter throws
+        // DEVICE_CREDENTIAL_MISSING before the TPM controller's V2 EK-chain validation can run.
         return path == null
                 || !path.startsWith("/api/v1/agent/")
-                || "/api/v1/agent/enrollments/consume".equals(path);
+                || "/api/v1/agent/enrollments/consume".equals(path)
+                || ("POST".equals(request.getMethod()) && path.startsWith("/api/v1/agent/enrollments/tpm/"));
     }
 
     @Override
