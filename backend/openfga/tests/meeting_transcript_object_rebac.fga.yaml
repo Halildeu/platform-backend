@@ -50,23 +50,27 @@ tests:
         assertions:
           owner: true
           viewer: true
+          can_record: true
       - user: user:participant
         object: meeting:m1
         assertions:
           participant: true
           viewer: true
+          can_record: true
       - user: user:direct_viewer
         object: meeting:m1
         assertions:
           owner: false
           participant: false
           viewer: true
+          can_record: false
       - user: user:nobody
         object: meeting:m1
         assertions:
           owner: false
           participant: false
           viewer: false
+          can_record: false
 
   - name: meeting_blocked_overrides_owner
     check:
@@ -76,6 +80,7 @@ tests:
           blocked: true
           owner: false
           viewer: false
+          can_record: false
 
   - name: transcript_owner_and_participant_are_viewers
     check:
