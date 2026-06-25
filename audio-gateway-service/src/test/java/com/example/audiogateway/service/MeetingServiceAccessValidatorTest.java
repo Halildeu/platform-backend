@@ -29,7 +29,7 @@ class MeetingServiceAccessValidatorTest {
         assertThat(decision).isNotNull();
         assertThat(decision.allowed()).isTrue();
         assertThat(captured.get().url().getPath())
-                .isEqualTo("/api/v1/admin/meetings/" + MEETING_ID);
+                .isEqualTo("/api/v1/meetings/" + MEETING_ID + "/recording-access");
         assertThat(captured.get().headers().getFirst(HttpHeaders.AUTHORIZATION))
                 .isEqualTo("Bearer jwt-fixture");
         assertThat(captured.get().headers().getFirst("X-Correlation-Id"))

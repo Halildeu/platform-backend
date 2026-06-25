@@ -24,13 +24,14 @@ package com.example.meeting.security;
  *       create of a {@code meeting:&lt;id&gt;} object the service writes an
  *       {@link #OWNER} tuple binding the creator. {@link #PARTICIPANT}
  *       and {@link #VIEWER_RELATION} are the other relations the OpenFGA
- *       meeting type exposes for per-meeting sharing.</li>
+ *       meeting type exposes for per-meeting sharing. {@link #CAN_RECORD}
+ *       is the recorder-consent relation used by audio capture preflight.</li>
  * </ol>
  *
  * <p>Tuple shapes:
  * <pre>
  *   module gate : user:&lt;id&gt; # can_view|can_manage @ module:MEETING
- *   object ReBAC: user:&lt;id&gt; # owner|participant|viewer @ meeting:&lt;uuid&gt;
+ *   object ReBAC: user:&lt;id&gt; # owner|participant|viewer|can_record @ meeting:&lt;uuid&gt;
  * </pre>
  *
  * <p>Per ADR-0012-EA (DD-EA-2) the canonical tuple writer for the module
@@ -66,6 +67,9 @@ public final class MeetingAuthz {
 
     /** Viewer relation on a {@code meeting:<id>} object. */
     public static final String VIEWER_RELATION = "viewer";
+
+    /** Recorder consent relation on a {@code meeting:<id>} object. */
+    public static final String CAN_RECORD = "can_record";
 
     private MeetingAuthz() {
     }

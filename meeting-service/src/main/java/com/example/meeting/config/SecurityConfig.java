@@ -62,8 +62,9 @@ public class SecurityConfig {
                         // @RequireModule(MEETING, can_view) OpenFGA gate + tenant/org visibility
                         // predicate remain the authorization. List (/meetings), sub-resources
                         // (/meetings/{id}/**), and all mutations (POST/PUT/DELETE) stay admin-gated.
-                        // Durable follow-up: dedicated non-admin /api/v1/meetings/{id}/recording-access
-                        // endpoint with object-level meeting:{id}#can_record (tracked separately).
+                        // Temporary until the dedicated non-admin
+                        // /api/v1/meetings/{id}/recording-access endpoint with object-level
+                        // meeting:{id}#can_record is deployed and proven; PR-3 re-closes this matcher.
                         .requestMatchers(HttpMethod.GET, "/api/v1/admin/meetings/*").authenticated()
                         .anyRequest().hasAnyAuthority("ROLE_ADMIN", "ROLE_MEETING_ADMIN", "SCOPE_meeting")
                 )

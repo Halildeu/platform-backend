@@ -12,15 +12,17 @@ import reactor.core.publisher.Mono;
 /**
  * meeting-service backed access check for canonical meeting UUIDs.
  *
- * <p>The gateway forwards the caller's bearer token to
- * {@code GET /api/v1/admin/meetings/{id}}. A visible meeting returns 2xx and capture may start.
- * 401/403/404 deny without an existence leak; transport/5xx failures fail closed as retryable
- * 503. The response body is intentionally ignored so transcript/audio/meeting details never
- * enter gateway logs or metrics.
+ * <p>The gateway forwards the caller's bearer token to the bodyless
+ * {@code GET /api/v1/meetings/{id}/recording-access} preflight endpoint.
+ * A 2xx response means object-level {@code meeting:{id}#can_record} passed
+ * and capture may start. 401/403/404 deny without an existence leak;
+ * transport/5xx failures fail closed as retryable 503. The response body is
+ * intentionally ignored so transcript/audio/meeting details never enter
+ * gateway logs or metrics.
  */
 public class MeetingServiceAccessValidator implements MeetingAccessValidator {
 
-    private static final String MEETING_PATH = "/api/v1/admin/meetings/{meetingId}";
+    private static final String MEETING_PATH = "/api/v1/meetings/{meetingId}/recording-access";
 
     private final AudioGatewayProperties props;
     private final WebClient webClient;
