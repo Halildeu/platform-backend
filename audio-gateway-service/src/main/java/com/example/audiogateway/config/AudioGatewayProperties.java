@@ -339,6 +339,13 @@ public class AudioGatewayProperties {
         private final Tls tls = new Tls();
 
         /**
+         * Optional transcript-result stream handoff. This is transcript content, not
+         * raw audio; it is config-gated so source can ship before a live evidence run
+         * flips the result stream path.
+         */
+        private final TranscriptResultStream transcriptResultStream = new TranscriptResultStream();
+
+        /**
          * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
          * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
          * startup error — silent fallback that hides misconfiguration is YASAK.
@@ -383,6 +390,7 @@ public class AudioGatewayProperties {
                         "audio.gateway.direct-stt.max-response-bytes must be positive, got "
                                 + maxResponseBytes);
             }
+            transcriptResultStream.validate();
         }
 
         public boolean isEnabled() {
@@ -435,6 +443,10 @@ public class AudioGatewayProperties {
 
         public Tls getTls() {
             return tls;
+        }
+
+        public TranscriptResultStream getTranscriptResultStream() {
+            return transcriptResultStream;
         }
 
         public static class Tls {
@@ -502,6 +514,56 @@ public class AudioGatewayProperties {
 
             public void setClientPrivateKeyPath(final String clientPrivateKeyPath) {
                 this.clientPrivateKeyPath = clientPrivateKeyPath;
+            }
+        }
+
+        public static class TranscriptResultStream {
+            /** DEFAULT-OFF — emits parsed transcript text to a Redis result stream when true. */
+            private boolean enabled = false;
+
+            /** Redis stream key for direct-STT transcript result handoff. */
+            private String streamKey = "transcript:direct-stt-results";
+
+            /** Producer-side approximate trim. 0 means no trim; consumer/retention owns lifecycle. */
+            private long maxLen = 0L;
+
+            void validate() {
+                if (!enabled) {
+                    return;
+                }
+                if (streamKey == null || streamKey.isBlank()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream.stream-key must be set "
+                                    + "when transcript result streaming is enabled");
+                }
+                if (maxLen < 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream.max-len must be >= 0");
+                }
+            }
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getStreamKey() {
+                return streamKey;
+            }
+
+            public void setStreamKey(final String streamKey) {
+                this.streamKey = streamKey;
+            }
+
+            public long getMaxLen() {
+                return maxLen;
+            }
+
+            public void setMaxLen(final long maxLen) {
+                this.maxLen = maxLen;
             }
         }
     }
