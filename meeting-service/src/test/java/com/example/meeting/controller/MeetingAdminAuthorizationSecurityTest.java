@@ -135,6 +135,20 @@ class MeetingAdminAuthorizationSecurityTest {
         verifyNoInteractions(meetingService);
     }
 
+    @Test
+    void nonAdminUserTokenCannotReadMeetingSubResources() throws Exception {
+        // Sub-resource routes (MeetingSubResourceController:
+        // /api/v1/admin/meetings/{id}/sessions|actions|decisions) are TWO segments under
+        // /meetings/, so the single-segment GET matcher must NOT open them. Only
+        // MeetingAdminController is loaded here on purpose: if the matcher wrongly opened
+        // this path, Spring would allow it through to handler mapping and the assertion
+        // would see 404 (no handler) instead of the expected 403 (Spring authorization).
+        mockMvc.perform(get("/api/v1/admin/meetings/{id}/sessions", MEETING_ID).with(nonAdminUserJwt(SUBJECT)))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(meetingService);
+    }
+
     // ----- Sanity: admin authority still reaches the write path -----
 
     @Test
