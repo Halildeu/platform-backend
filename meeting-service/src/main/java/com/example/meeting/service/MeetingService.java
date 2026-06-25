@@ -99,6 +99,26 @@ public class MeetingService {
         return toMeetingResponse(requireMeeting(tenant, id));
     }
 
+    @Transactional(readOnly = true)
+    public void requireRecordingAccess(AdminTenantContext tenant, UUID id) {
+        requireMeeting(tenant, id);
+        String principalRef = toUserPrincipalRef(tenant.authzPrincipal());
+
+        OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
+        if (authz == null || !authz.isEnabled()) {
+            return;
+        }
+
+        boolean allowed = authz.checkPrincipal(
+                principalRef,
+                MeetingAuthz.CAN_RECORD,
+                MeetingAuthz.OBJECT_TYPE,
+                id.toString());
+        if (!allowed) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
+        }
+    }
+
     @Transactional
     public MeetingResponse createMeeting(AdminTenantContext tenant, MeetingCreateRequest request) {
         Meeting meeting = new Meeting();
@@ -441,5 +461,12 @@ public class MeetingService {
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private static String toUserPrincipalRef(String principal) {
+        if (principal == null || principal.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
+        }
+        return principal.startsWith("user:") ? principal : "user:" + principal;
     }
 }
