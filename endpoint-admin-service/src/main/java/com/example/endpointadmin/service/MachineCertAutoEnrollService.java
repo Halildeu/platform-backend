@@ -5,6 +5,7 @@ import com.example.endpointadmin.dto.v1.agent.AutoEnrollmentResponse;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointMachineCert;
+import com.example.endpointadmin.model.MachineCertChannel;
 import com.example.endpointadmin.model.OsType;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
@@ -123,6 +124,11 @@ public class MachineCertAutoEnrollService {
                     ));
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, ex.getErrorCode());
         }
+
+        // Faz 22.6 #548 Phase 1.5 (G3) — reserve the tpm-/tpm: identity prefixes for the VAULT_TPM channel: an
+        // AD_CS enrollment with a tpm- hostname or tpm:/tpm- fingerprint could squat a TPM device's synthetic
+        // hostname/fingerprint slot or masquerade as a TPM identity. Reject fail-closed (case-insensitive).
+        rejectReservedTpmPrefix(tenantId, parsed, request);
 
         // Idempotent SAN URI lookup.
         var existing = certRepository.findActiveBySanUri(parsed.sanUri());
@@ -352,6 +358,7 @@ public class MachineCertAutoEnrollService {
         // Hibernate treat the entity as detached with null version.
         certRow.setDevice(device);
         certRow.setTenantId(tenantId);
+        certRow.setChannel(MachineCertChannel.AD_CS); // Faz 22.6 #548 Phase 1.5 — explicit channel (object_guid NOT NULL).
         certRow.setSanUri(parsed.sanUri());
         certRow.setObjectGuid(parsed.objectGuid());
         certRow.setCertSerial(parsed.serial());
@@ -501,6 +508,21 @@ public class MachineCertAutoEnrollService {
         } catch (RuntimeException ignored) {
             log.warn("Failed to record audit for failure reason={} (continuing)", reason);
         }
+    }
+
+    private void rejectReservedTpmPrefix(UUID tenantId, MachineCertExtractor.ParsedCert parsed,
+                                         AutoEnrollmentRequest request) {
+        String hostname = request == null ? null : request.hostname();
+        String fingerprint = request == null ? null : request.machineFingerprint();
+        if (startsWithCi(hostname, "tpm-") || startsWithCi(fingerprint, "tpm:") || startsWithCi(fingerprint, "tpm-")) {
+            recordFailure(tenantId, parsed, "RESERVED_TPM_PREFIX",
+                    Map.of("reason", "RESERVED_TPM_PREFIX", "hostname", safe(hostname)));
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "RESERVED_TPM_PREFIX");
+        }
+    }
+
+    private static boolean startsWithCi(String value, String prefix) {
+        return value != null && value.trim().toLowerCase(Locale.ROOT).startsWith(prefix);
     }
 
     private String safe(String s) {

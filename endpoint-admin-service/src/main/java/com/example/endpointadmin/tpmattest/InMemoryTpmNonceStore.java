@@ -20,7 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @ConditionalOnMissingBean(name = "distributedTpmNonceStore")
 public class InMemoryTpmNonceStore implements TpmNonceStore {
 
-    private record Entry(String scope, byte[] nonce, byte[] serverSecret, byte[] akName, Instant expiresAt) {}
+    private record Entry(String scope, byte[] nonce, byte[] serverSecret, byte[] akName,
+                         String ekPubSha256, String ekCertSha256, Instant expiresAt) {}
 
     private final Map<String, Entry> entries = new ConcurrentHashMap<>();
     private final Clock clock;
@@ -30,9 +31,10 @@ public class InMemoryTpmNonceStore implements TpmNonceStore {
     }
 
     @Override
-    public void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, byte[] akName, Instant expiresAt) {
+    public void issue(String nonceId, String scope, byte[] nonce, byte[] serverSecret, byte[] akName,
+                      String ekPubSha256, String ekCertSha256, Instant expiresAt) {
         entries.put(nonceId, new Entry(scope, nonce.clone(), serverSecret.clone(),
-                akName == null ? new byte[0] : akName.clone(), expiresAt));
+                akName == null ? new byte[0] : akName.clone(), ekPubSha256, ekCertSha256, expiresAt));
     }
 
     @Override
@@ -52,7 +54,8 @@ public class InMemoryTpmNonceStore implements TpmNonceStore {
             if (!constantTimeEquals(scope, e.scope())) {
                 return e;                         // scope mismatch → retain, do NOT burn
             }
-            holder.result = new Consumed(e.nonce().clone(), e.serverSecret().clone(), e.akName().clone());
+            holder.result = new Consumed(e.nonce().clone(), e.serverSecret().clone(), e.akName().clone(),
+                    e.ekPubSha256(), e.ekCertSha256());
             return null;                          // consumed → evict
         });
         return Optional.ofNullable(holder.result);

@@ -2,9 +2,11 @@ package com.example.endpointadmin.repository;
 
 import com.example.endpointadmin.model.EndpointMachineCert;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -71,4 +73,41 @@ public interface EndpointMachineCertRepository extends JpaRepository<EndpointMac
     Optional<EndpointMachineCert> findActiveByTenantIdAndDeviceId(
             @Param("tenantId") UUID tenantId,
             @Param("deviceId") UUID deviceId);
+
+    /**
+     * Faz 22.6 #548 Phase 1.5 — tenant-scoped active cert by SAN URI (the VAULT_TPM
+     * adoption/idempotency lookup). Tenant-scoped because the TPM channel's active
+     * uniqueness is {@code (tenant_id, san_uri)}: the same physical EK in two tenants is
+     * two independent devices, never a cross-tenant collision.
+     */
+    @Query("""
+            SELECT c FROM EndpointMachineCert c
+            WHERE c.tenantId = :tenantId
+              AND c.sanUri = :sanUri
+              AND c.revokedAt IS NULL
+            """)
+    Optional<EndpointMachineCert> findActiveByTenantIdAndSanUri(@Param("tenantId") UUID tenantId,
+                                                                @Param("sanUri") String sanUri);
+
+    /**
+     * Faz 22.6 #548 Phase 1.5 — revoke the device's ACTIVE cert (ANY channel) as an
+     * IMMEDIATE bulk UPDATE before the replacement INSERT, mirroring the TPM-binding
+     * supersede (Codex 019eff93 Inv-1 + P1-6). A pre-bound AD_CS device upgrading to
+     * TPM-native must free the GLOBAL per-device active slot
+     * ({@code uq_endpoint_machine_certs_device_active}) before the VAULT_TPM row inserts,
+     * else Hibernate's insert-before-update action ordering trips that partial unique.
+     * Sets {@code revoked_at}+{@code revoked_reason} together (the CHECK) + {@code updated_at}
+     * (a bulk UPDATE bypasses {@code @PreUpdate}).
+     *
+     * @return rows revoked (0 or 1, given the per-device single-active invariant)
+     */
+    @Modifying
+    @Query("""
+            UPDATE EndpointMachineCert c
+               SET c.revokedAt = :now, c.revokedReason = :reason, c.updatedAt = :now
+             WHERE c.device.id = :deviceId AND c.revokedAt IS NULL
+            """)
+    int revokeActiveCertForDevice(@Param("deviceId") UUID deviceId,
+                                  @Param("now") Instant now,
+                                  @Param("reason") String reason);
 }

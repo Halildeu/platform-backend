@@ -69,10 +69,29 @@ public final class VaultPkiClient {
 
     /** Submit a (V9-validated) PKCS#10 CSR (PEM) to Vault PKI; return the issued certificate (PEM). */
     public String signCsr(String csrPem) {
+        return signCsr(csrPem, null);
+    }
+
+    /**
+     * Faz 22.6 #548 Phase 1.5 (Codex {@code 019eff93} P0-2) — sign a (V9-validated) CSR with a
+     * SERVER-SUPPLIED {@code uri_sans} (e.g. {@code tpm:{ek_pub_sha256}}). The CSR itself carries NO
+     * SAN ({@link TpmCsrPolicy} rejects an extensionRequest), so the issued cert's device identity
+     * comes ONLY from this server-injected SAN — never caller input. The Vault role MUST permit it
+     * ({@code allowed_uri_sans=tpm:*}); the caller then exact-matches the returned cert's SAN against
+     * the L1-bound EK identity and fails closed on any mismatch.
+     *
+     * @param uriSan a single URI SAN to request, or {@code null}/blank for none (legacy 1-arg behavior)
+     */
+    public String signCsr(String csrPem, String uriSan) {
         if (csrPem == null || csrPem.isBlank()) {
             throw new VaultPkiException("CSR required");
         }
-        String body = "{\"csr\":" + jsonString(csrPem) + ",\"format\":\"pem\"}";
+        StringBuilder bodyBuilder = new StringBuilder("{\"csr\":")
+                .append(jsonString(csrPem)).append(",\"format\":\"pem\"");
+        if (uriSan != null && !uriSan.isBlank()) {
+            bodyBuilder.append(",\"uri_sans\":").append(jsonString(uriSan));
+        }
+        String body = bodyBuilder.append('}').toString();
         URI uri = uri("/v1/" + props.mount() + "/sign/" + props.role());
 
         HttpResponse<InputStream> resp = send(uri, body, currentToken());
