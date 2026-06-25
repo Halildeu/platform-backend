@@ -3,6 +3,7 @@ package com.example.transcript.service;
 import com.example.transcript.dto.CreateTranscriptSegmentRequest;
 import com.example.transcript.dto.TranscriptSegmentDto;
 import com.example.transcript.dto.UpdateTranscriptSegmentRequest;
+import com.example.transcript.directstt.DirectSttTranscriptResultEvent;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.repository.TranscriptSegmentRepository;
@@ -39,6 +40,8 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
  */
 @Service
 public class TranscriptSegmentService {
+
+    private static final String SOURCE_SYSTEM_DIRECT_STT = DirectSttTranscriptResultEvent.SOURCE_SYSTEM;
 
     private final TranscriptSegmentRepository repository;
     private final TranscriptAccessAuditService accessAuditService;
@@ -95,6 +98,59 @@ public class TranscriptSegmentService {
         segment.setTextFinal(request.textFinal());
         segment.setConfidence(request.confidence());
         segment.setStatus(request.status() != null ? request.status() : TranscriptSegmentStatus.DRAFT);
+        return TranscriptSegmentDto.from(repository.saveAndFlush(segment));
+    }
+
+    // ───────────────────── DIRECT-STT STREAM UPSERT ───────────────────
+
+    /**
+     * Upsert a draft transcript result emitted by audio-gateway direct-STT.
+     *
+     * <p>The source session id is an audio-gateway {@code SES-*} string, not a
+     * meeting-service UUID, so it is stored under {@code source_session_id}; the
+     * legacy/cross-service {@code session_id} UUID column remains null. Replay
+     * idempotency is keyed by tenant + source session + chunk sequence.
+     *
+     * <p>This is a write path, not a read/list/search/export of existing
+     * personal data, so it does not write KVKK m.12 access-audit rows.
+     */
+    @Transactional
+    public TranscriptSegmentDto upsertDirectSttDraft(DirectSttTranscriptResultEvent event) {
+        TranscriptSegment segment = repository.findDirectSttSourceChunk(
+                        event.tenantId(), event.sourceSessionId(), event.chunkSeq())
+                .orElseGet(TranscriptSegment::new);
+
+        if (segment.getId() != null && !event.meetingId().equals(segment.getMeetingId())) {
+            throw new IllegalStateException("direct-STT source chunk conflict");
+        }
+
+        UUID tenantId = event.tenantId();
+        double startSeconds = event.chunkStartedAtMs() / 1000.0d;
+        double durationSeconds = event.durationSeconds() != null ? event.durationSeconds() : 0.0d;
+
+        boolean newSegment = segment.getId() == null;
+        if (newSegment) {
+            segment.setTenantId(tenantId);
+            segment.setOrgId(tenantId);
+            segment.setMeetingId(event.meetingId());
+            segment.setSessionId(null);
+            segment.setSourceSystem(SOURCE_SYSTEM_DIRECT_STT);
+            segment.setSourceSessionId(event.sourceSessionId());
+            segment.setSourceChunkSeq(event.chunkSeq());
+        }
+
+        if (newSegment
+                || (segment.getStatus() == TranscriptSegmentStatus.DRAFT && segment.getTextFinal() == null)) {
+            segment.setStartTime(startSeconds);
+            segment.setEndTime(startSeconds + durationSeconds);
+            segment.setTextDraft(event.textDraft());
+            segment.setTextFinal(null);
+            segment.setConfidence(null);
+            segment.setStatus(TranscriptSegmentStatus.DRAFT);
+        }
+        segment.setSourceEventId(event.entryId());
+        segment.setSourceSha256(event.sha256());
+        segment.setSourceCorrelationId(event.correlationId());
         return TranscriptSegmentDto.from(repository.saveAndFlush(segment));
     }
 

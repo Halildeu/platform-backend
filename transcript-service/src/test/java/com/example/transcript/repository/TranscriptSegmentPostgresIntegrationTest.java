@@ -223,6 +223,32 @@ class TranscriptSegmentPostgresIntegrationTest {
         assertThat(row.get("result_count")).isEqualTo(42);
     }
 
+    @Test
+    void directSttSourceChunkUniqueIndex_rejectsDuplicateTenantSessionChunk() {
+        UUID org = UUID.randomUUID();
+        UUID meeting = UUID.randomUUID();
+        Timestamp now = Timestamp.from(Instant.parse("2026-06-25T10:00:00Z"));
+        jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
+                        + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
+                        + " source_system, source_session_id, source_chunk_seq, "
+                        + " created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, 0.0, 1.0, 'first', 'DRAFT', "
+                        + " 'DIRECT_STT', 'SES-abc', 5, ?, ?, 0)",
+                UUID.randomUUID(), org, org, meeting, now, now);
+
+        assertThatThrownBy(() -> jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
+                        + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
+                        + " source_system, source_session_id, source_chunk_seq, "
+                        + " created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, 1.0, 2.0, 'duplicate', 'DRAFT', "
+                        + " 'DIRECT_STT', 'SES-abc', 5, ?, ?, 0)",
+                UUID.randomUUID(), org, org, meeting, now, now))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(t -> assertThat(rootSqlState(t))
+                        .as("duplicate direct-STT source chunk must be unique_violation")
+                        .isEqualTo("23505"));
+    }
+
     private static String rootSqlState(Throwable throwable) {
         Throwable cur = throwable;
         while (cur != null) {
