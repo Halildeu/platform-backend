@@ -42,7 +42,7 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
             from TranscriptSegment s
             where (s.orgId = :orgId or (s.orgId is null and s.tenantId = :orgId))
               and s.meetingId = :meetingId
-            order by s.startTime asc, s.id asc
+            order by s.startTime asc, s.sourceChunkSeq asc, s.id asc
             """)
     Page<TranscriptSegment> findVisibleToOrgByMeeting(
             @Param("orgId") UUID orgId, @Param("meetingId") UUID meetingId, Pageable pageable);
@@ -55,7 +55,7 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
             from TranscriptSegment s
             where (s.orgId = :orgId or (s.orgId is null and s.tenantId = :orgId))
               and s.sessionId = :sessionId
-            order by s.startTime asc, s.id asc
+            order by s.startTime asc, s.sourceChunkSeq asc, s.id asc
             """)
     Page<TranscriptSegment> findVisibleToOrgBySession(
             @Param("orgId") UUID orgId, @Param("sessionId") UUID sessionId, Pageable pageable);
@@ -79,7 +79,7 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
                     lower(coalesce(s.textFinal, '')) like concat('%', :term, '%')
                  or lower(coalesce(s.textDraft, '')) like concat('%', :term, '%')
               )
-            order by s.startTime asc, s.id asc
+            order by s.startTime asc, s.sourceChunkSeq asc, s.id asc
             """)
     Page<TranscriptSegment> searchVisibleToOrg(
             @Param("orgId") UUID orgId,
@@ -96,8 +96,21 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
             from TranscriptSegment s
             where (s.orgId = :orgId or (s.orgId is null and s.tenantId = :orgId))
               and s.meetingId = :meetingId
-            order by s.startTime asc, s.id asc
+            order by s.startTime asc, s.sourceChunkSeq asc, s.id asc
             """)
     List<TranscriptSegment> findAllVisibleToOrgByMeeting(
             @Param("orgId") UUID orgId, @Param("meetingId") UUID meetingId, Pageable pageable);
+
+    @Query("""
+            select s
+            from TranscriptSegment s
+            where s.tenantId = :tenantId
+              and s.sourceSystem = 'DIRECT_STT'
+              and s.sourceSessionId = :sourceSessionId
+              and s.sourceChunkSeq = :sourceChunkSeq
+            """)
+    Optional<TranscriptSegment> findDirectSttSourceChunk(
+            @Param("tenantId") UUID tenantId,
+            @Param("sourceSessionId") String sourceSessionId,
+            @Param("sourceChunkSeq") Long sourceChunkSeq);
 }

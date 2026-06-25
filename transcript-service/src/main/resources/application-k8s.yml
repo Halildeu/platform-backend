@@ -17,6 +17,14 @@ spring:
     hikari:
       maximum-pool-size: ${DB_POOL_MAX:10}
       connection-timeout: 30000
+  data:
+    redis:
+      host: ${TRANSCRIPT_REDIS_HOST:redis-streams}
+      port: ${TRANSCRIPT_REDIS_PORT:6379}
+      username: ${TRANSCRIPT_REDIS_USERNAME:}
+      password: ${TRANSCRIPT_REDIS_PASSWORD:}
+      ssl:
+        enabled: ${TRANSCRIPT_REDIS_SSL_ENABLED:false}
   jpa:
     hibernate:
       ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:validate}
@@ -70,6 +78,25 @@ management:
     enabled: ${MANAGEMENT_TRACING_ENABLED:false}
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
+  health:
+    redis:
+      enabled: ${TRANSCRIPT_REDIS_HEALTH_ENABLED:false}
+
+transcript:
+  direct-stt-result-consumer:
+    enabled: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_ENABLED:false}
+    dlq-stream-key: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_DLQ_STREAM_KEY:transcript:direct-stt-results:dlq}
+    stream:
+      key: ${TRANSCRIPT_DIRECT_STT_RESULT_STREAM_KEY:transcript:direct-stt-results}
+    group:
+      name: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_GROUP_NAME:transcript-service-v1}
+      consumer: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_INSTANCE_NAME:${HOSTNAME:transcript-service-1}}
+    poll:
+      batch-size: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_BATCH_SIZE:32}
+      block-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_BLOCK_MILLIS:2000}
+      error-backoff-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_ERROR_BACKOFF_MILLIS:1000}
+      claim-min-idle-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_CLAIM_MIN_IDLE_MILLIS:60000}
+      claim-batch-size: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_CLAIM_BATCH_SIZE:32}
 
 logging:
   level:

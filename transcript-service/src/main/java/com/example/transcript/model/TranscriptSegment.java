@@ -44,7 +44,9 @@ import java.util.UUID;
                 @Index(name = "idx_transcript_segments_tenant_session",
                         columnList = "tenant_id,session_id"),
                 @Index(name = "idx_transcript_segments_tenant_status",
-                        columnList = "tenant_id,status")
+                        columnList = "tenant_id,status"),
+                @Index(name = "idx_transcript_segments_tenant_source_order",
+                        columnList = "tenant_id,source_system,source_session_id,source_chunk_seq")
         })
 public class TranscriptSegment {
 
@@ -98,6 +100,30 @@ public class TranscriptSegment {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private TranscriptSegmentStatus status = TranscriptSegmentStatus.DRAFT;
+
+    /** Source system for machine-generated transcript rows, e.g. DIRECT_STT. */
+    @Column(name = "source_system", length = 64)
+    private String sourceSystem;
+
+    /** Redis stream entry id / source event id; metadata only, no transcript text. */
+    @Column(name = "source_event_id", length = 128)
+    private String sourceEventId;
+
+    /** Producer session id. audio-gateway direct-STT uses SES-* strings, not UUIDs. */
+    @Column(name = "source_session_id", length = 128)
+    private String sourceSessionId;
+
+    /** Producer chunk sequence used for idempotent direct-STT replay reconciliation. */
+    @Column(name = "source_chunk_seq")
+    private Long sourceChunkSeq;
+
+    /** SHA-256 metadata for the accepted source audio chunk. No raw audio is stored here. */
+    @Column(name = "source_sha256", length = 128)
+    private String sourceSha256;
+
+    /** PII-safe correlation id from the source path. */
+    @Column(name = "source_correlation_id", length = 128)
+    private String sourceCorrelationId;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -239,6 +265,54 @@ public class TranscriptSegment {
 
     public void setStatus(TranscriptSegmentStatus status) {
         this.status = status;
+    }
+
+    public String getSourceSystem() {
+        return sourceSystem;
+    }
+
+    public void setSourceSystem(String sourceSystem) {
+        this.sourceSystem = sourceSystem;
+    }
+
+    public String getSourceEventId() {
+        return sourceEventId;
+    }
+
+    public void setSourceEventId(String sourceEventId) {
+        this.sourceEventId = sourceEventId;
+    }
+
+    public String getSourceSessionId() {
+        return sourceSessionId;
+    }
+
+    public void setSourceSessionId(String sourceSessionId) {
+        this.sourceSessionId = sourceSessionId;
+    }
+
+    public Long getSourceChunkSeq() {
+        return sourceChunkSeq;
+    }
+
+    public void setSourceChunkSeq(Long sourceChunkSeq) {
+        this.sourceChunkSeq = sourceChunkSeq;
+    }
+
+    public String getSourceSha256() {
+        return sourceSha256;
+    }
+
+    public void setSourceSha256(String sourceSha256) {
+        this.sourceSha256 = sourceSha256;
+    }
+
+    public String getSourceCorrelationId() {
+        return sourceCorrelationId;
+    }
+
+    public void setSourceCorrelationId(String sourceCorrelationId) {
+        this.sourceCorrelationId = sourceCorrelationId;
     }
 
     public Instant getCreatedAt() {
