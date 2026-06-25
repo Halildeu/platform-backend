@@ -48,6 +48,8 @@ class TpmEkChainValidatorBundleTest {
     private static X509Certificate leaf;
     private static X509Certificate unrelatedRoot;
     private static X509Certificate unrelatedCert; // leaf signed by an unrelated root (decoy path material)
+    private static X509Certificate intermediateB; // multi-hop: root → intermediate → intermediateB → leafMultiHop
+    private static X509Certificate leafMultiHop;
 
     @BeforeAll
     static void buildChain() throws Exception {
@@ -68,6 +70,13 @@ class TpmEkChainValidatorBundleTest {
         unrelatedRoot = ca("CN=Unrelated Root", otherKp.getPublic(), "CN=Unrelated Root", otherKp.getPrivate());
         KeyPair decoyKp = kpg.generateKeyPair();
         unrelatedCert = endEntity("CN=Decoy", decoyKp.getPublic(), "CN=Unrelated Root", otherKp.getPrivate());
+
+        // Multi-hop chain mirroring the real Intel On-Die structure (leaf → PTT EICA → Kernel/ROM EICA → root):
+        // root → intermediate → intermediateB → leafMultiHop. The configured bundle carries BOTH intermediates.
+        KeyPair intBKp = kpg.generateKeyPair();
+        intermediateB = ca("CN=Test CSME Kernel EICA", intBKp.getPublic(), "CN=Test CSME PTT Intermediate", intKp.getPrivate());
+        KeyPair leaf2Kp = kpg.generateKeyPair();
+        leafMultiHop = endEntity("CN=EK Leaf MultiHop", leaf2Kp.getPublic(), "CN=Test CSME Kernel EICA", intBKp.getPrivate());
     }
 
     // ───────────────────────────── the matrix ─────────────────────────────
@@ -81,6 +90,22 @@ class TpmEkChainValidatorBundleTest {
         assertThatCode(() -> v.validate(leaf, List.of()))
                 .as("leaf-only + configured intermediate bundle builds to the pinned root")
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void leafOnlySubmission_multiHopIntermediateBundle_chainsToPinnedRoot() throws Exception {
+        // Codex 019eff49 coverage: the real Intel On-Die chain is MULTI-HOP (leaf → PTT EICA → Kernel/ROM
+        // EICA → root). A leaf-only submission must build through BOTH configured intermediates to the root.
+        TpmEkChainValidator v = new TpmEkChainValidator(
+                Set.of(pin(root)), List.of(root), List.of(intermediate, intermediateB), Set.of());
+        assertThatCode(() -> v.validate(leafMultiHop, List.of()))
+                .as("leaf-only + two-hop configured intermediate bundle builds to the pinned root")
+                .doesNotThrowAnyException();
+        // ...and dropping the inner intermediate breaks the chain (fail-closed).
+        TpmEkChainValidator missingInner = new TpmEkChainValidator(
+                Set.of(pin(root)), List.of(root), List.of(intermediate), Set.of());
+        assertThatThrownBy(() -> missingInner.validate(leafMultiHop, List.of()))
+                .isInstanceOf(TpmEkChainValidator.EkChainException.class);
     }
 
     @Test
