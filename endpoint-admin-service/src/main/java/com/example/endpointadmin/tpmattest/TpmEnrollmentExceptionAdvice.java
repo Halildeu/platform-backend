@@ -73,7 +73,25 @@ public class TpmEnrollmentExceptionAdvice {
      */
     @ExceptionHandler({HttpMessageNotReadableException.class, MethodArgumentNotValidException.class})
     public ResponseEntity<Map<String, String>> onMalformed(Exception e) {
-        audit.info("tpm-enroll deny code=MALFORMED detail={}", e.getClass().getSimpleName());
+        if (e instanceof MethodArgumentNotValidException validation) {
+            // Sanitized field-level audit (Codex 019efd6b): the failing field + constraint code + the
+            // rejected value's LENGTH/SIZE only — NEVER the raw value (no token/cert/key bytes in logs).
+            // The external response stays the identical uniform 403 (the no-oracle property is preserved);
+            // this only makes the internal deny debuggable ("which field, which constraint, how big").
+            String fields = validation.getBindingResult().getFieldErrors().stream()
+                    .map(fe -> {
+                        Object rejected = fe.getRejectedValue();
+                        String size = rejected == null ? "null"
+                                : rejected instanceof CharSequence cs ? "len=" + cs.length()
+                                : rejected instanceof java.util.Collection<?> col ? "size=" + col.size()
+                                : "type=" + rejected.getClass().getSimpleName();
+                        return fe.getField() + "[" + fe.getCode() + "," + size + "]";
+                    })
+                    .collect(java.util.stream.Collectors.joining(","));
+            audit.info("tpm-enroll deny code=MALFORMED detail=MethodArgumentNotValidException fields=[{}]", fields);
+        } else {
+            audit.info("tpm-enroll deny code=MALFORMED detail={}", e.getClass().getSimpleName());
+        }
         return uniform403();
     }
 
