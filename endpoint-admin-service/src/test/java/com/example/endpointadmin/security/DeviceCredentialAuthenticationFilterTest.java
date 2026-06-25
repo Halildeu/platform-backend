@@ -82,4 +82,42 @@ class DeviceCredentialAuthenticationFilterTest {
         assertThat(response.getContentAsString()).contains("DEVICE_SIGNATURE_INVALID");
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
     }
+
+    // Faz 22.6 #548 — the HMAC device-credential filter must NOT preempt the permitAll TPM-attest bootstrap
+    // (POST /enrollments/tpm/**, token-in-body; the device has no HMAC credential yet). Regression for the live
+    // DEVICE_CREDENTIAL_MISSING that blocked /nonce before V2 EK-chain validation (Codex 019efd6b).
+    @Test
+    void tpmEnrollmentBootstrapPostSkipsHmacFilter() throws ServletException, IOException {
+        for (String p : new String[]{"/api/v1/agent/enrollments/tpm/nonce", "/api/v1/agent/enrollments/tpm/attest"}) {
+            MockHttpServletRequest request = new MockHttpServletRequest("POST", p); // no HMAC headers
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            filter.doFilter(request, response, new MockFilterChain());
+            assertThat(response.getStatus()).as("path %s must pass the filter", p).isNotEqualTo(401);
+            assertThat(response.getContentAsString()).doesNotContain("DEVICE_CREDENTIAL_MISSING");
+        }
+        verify(provider, org.mockito.Mockito.never()).authenticate(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void tpmEnrollmentNonPostIsStillFiltered() throws ServletException, IOException {
+        // method-scoped skip: a non-POST to the tpm path is NOT exempt (defense-in-depth).
+        when(provider.authenticate(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new DeviceCredentialException("DEVICE_CREDENTIAL_MISSING", "Device credential headers are required."));
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/agent/enrollments/tpm/nonce");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request, response, new MockFilterChain());
+        assertThat(response.getStatus()).isEqualTo(401);
+    }
+
+    @Test
+    void operationalRouteStillRequiresDeviceCredential() throws ServletException, IOException {
+        // negative control: the canonical HMAC-gated route stays gated after the TPM-bootstrap exemption.
+        when(provider.authenticate(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new DeviceCredentialException("DEVICE_CREDENTIAL_MISSING", "Device credential headers are required."));
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/agent/heartbeat"); // no HMAC headers
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        filter.doFilter(request, response, new MockFilterChain());
+        assertThat(response.getStatus()).isEqualTo(401);
+        assertThat(response.getContentAsString()).contains("DEVICE_CREDENTIAL_MISSING");
+    }
 }
