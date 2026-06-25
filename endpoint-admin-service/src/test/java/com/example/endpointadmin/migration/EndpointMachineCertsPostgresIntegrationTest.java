@@ -122,10 +122,15 @@ class EndpointMachineCertsPostgresIntegrationTest {
         assertThat(indexes)
                 .contains(
                         "uq_endpoint_machine_certs_device_active",
-                        "uq_endpoint_machine_certs_san_uri_active",
+                        // V75 (Faz 22.6 #548 Phase 1.5): the V11 global san_uri-active index was SPLIT per channel —
+                        // AD_CS stays global, VAULT_TPM is tenant-scoped (the same physical EK in two tenants is two
+                        // independent devices). The old single index no longer exists.
+                        "uq_endpoint_machine_certs_san_uri_active_adcs",
+                        "uq_endpoint_machine_certs_san_uri_active_tpm",
                         "idx_endpoint_machine_certs_tenant_thumbprint",
                         "idx_endpoint_machine_certs_object_guid",
-                        "idx_endpoint_machine_certs_tenant_enrolled");
+                        "idx_endpoint_machine_certs_tenant_enrolled")
+                .doesNotContain("uq_endpoint_machine_certs_san_uri_active");
     }
 
     @Test

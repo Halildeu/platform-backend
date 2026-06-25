@@ -7,8 +7,6 @@ import com.example.endpointadmin.repository.EndpointEnrollmentRepository;
 import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
 import com.example.endpointadmin.security.TpmVaultCertExtractor;
 import com.example.endpointadmin.service.TpmDeviceCompletionService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -41,8 +39,6 @@ import java.util.UUID;
  */
 @Service
 public class TpmEnrollmentCompletionService {
-
-    private static final Logger log = LoggerFactory.getLogger(TpmEnrollmentCompletionService.class);
 
     private final EndpointEnrollmentRepository enrollments;
     private final EndpointTpmDeviceBindingRepository bindings;
@@ -94,10 +90,10 @@ public class TpmEnrollmentCompletionService {
 
     private void recordBinding(UUID enrollmentId, TpmCompletion completion, UUID deviceId, Instant now) {
         if (deviceId == null) {
-            // Phase 1.5 always resolves a device, so this is a defensive invariant (should be unreachable);
-            // fail safe rather than write a (tenant, device)-unkeyed binding the session verifier can't match.
-            log.warn("TPM_BINDING_SKIPPED_NO_DEVICE_ID enrollment={} (unexpected post-Phase-1.5)", enrollmentId);
-            return;
+            // Phase 1.5 always resolves a non-null device (complete() creates/adopts or throws). This guard is a
+            // defensive invariant: fail CLOSED (Codex 019eff93 post-impl note) rather than silently skip the
+            // binding the session verifier keys on — a future refactor returning null here must not pass unaudited.
+            throw deny("device-completion returned no device for enrollment " + enrollmentId);
         }
         // Re-enrollment supersede (Codex): soft-revoke the prior active binding with an IMMEDIATE bulk UPDATE (so
         // it commits before the INSERT, avoiding the Hibernate insert-before-update action-queue ordering tripping
