@@ -1,10 +1,14 @@
 package com.example.meeting.repository;
 
 import com.example.meeting.model.MeetingDecision;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,4 +41,16 @@ public interface MeetingDecisionRepository extends JpaRepository<MeetingDecision
             @Param("id") UUID id,
             @Param("meetingId") UUID meetingId,
             @Param("orgId") UUID orgId);
+
+    @Query("""
+            select d.id
+            from MeetingDecision d
+            where d.createdAt < :cutoff
+            order by d.createdAt asc, d.id asc
+            """)
+    List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from MeetingDecision d where d.id in :ids")
+    int deleteByIdIn(@Param("ids") Collection<UUID> ids);
 }
