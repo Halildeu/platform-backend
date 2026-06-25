@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.env.Environment;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -54,6 +55,16 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Faz 24 recorder consent (B-narrow; Codex 019eff98 AGREE). The audio-gateway
+                        // recorder-access check forwards a normal meeting-owner USER token (no admin
+                        // role/scope) to GET /api/v1/admin/meetings/{id}. Open ONLY that single-segment
+                        // GET to any authenticated principal; the controller's
+                        // @RequireModule(MEETING, can_view) OpenFGA gate + tenant/org visibility
+                        // predicate remain the authorization. List (/meetings), sub-resources
+                        // (/meetings/{id}/**), and all mutations (POST/PUT/DELETE) stay admin-gated.
+                        // Durable follow-up: dedicated non-admin /api/v1/meetings/{id}/recording-access
+                        // endpoint with object-level meeting:{id}#can_record (tracked separately).
+                        .requestMatchers(HttpMethod.GET, "/api/v1/admin/meetings/*").authenticated()
                         .anyRequest().hasAnyAuthority("ROLE_ADMIN", "ROLE_MEETING_ADMIN", "SCOPE_meeting")
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
