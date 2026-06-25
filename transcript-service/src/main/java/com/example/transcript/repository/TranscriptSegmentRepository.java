@@ -1,12 +1,15 @@
 package com.example.transcript.repository;
 
 import com.example.transcript.model.TranscriptSegment;
+import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -113,4 +116,16 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
             @Param("tenantId") UUID tenantId,
             @Param("sourceSessionId") String sourceSessionId,
             @Param("sourceChunkSeq") Long sourceChunkSeq);
+
+    @Query("""
+            select s.id
+            from TranscriptSegment s
+            where s.createdAt < :cutoff
+            order by s.createdAt asc, s.id asc
+            """)
+    List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from TranscriptSegment s where s.id in :ids")
+    int deleteByIdIn(@Param("ids") Collection<UUID> ids);
 }

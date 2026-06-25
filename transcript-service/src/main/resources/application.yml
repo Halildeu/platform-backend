@@ -53,6 +53,12 @@ security:
 transcript:
   tenant:
     local-default-tenant-id: ${TRANSCRIPT_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+  retention:
+    transcript-records-days: ${TRANSCRIPT_RETENTION_RECORDS_DAYS:365}
+    access-audit-days: ${TRANSCRIPT_RETENTION_ACCESS_AUDIT_DAYS:730}
+    cleanup-cron: ${TRANSCRIPT_RETENTION_CLEANUP_CRON:0 23 2 * * *}
+    cleanup-batch-size: ${TRANSCRIPT_RETENTION_CLEANUP_BATCH_SIZE:1000}
+    cleanup-max-batches-per-run: ${TRANSCRIPT_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN:100}
   export:
     # Hard cap on rows materialized into a single CSV/Excel export (DoS + memory
     # guard). Export beyond this is rejected 400.
