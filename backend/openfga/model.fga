@@ -131,6 +131,11 @@ type meeting
     define owner: [user] but not blocked
     define participant: [user] but not blocked
     define viewer: (([user] or participant) or owner) but not blocked
+    # Faz 24 recorder consent (C, object-level least-privilege). "May this
+    # principal RECORD this meeting?" — owner or participant, not a mere viewer
+    # and not directly assignable. Consumed by meeting-service
+    # GET /api/v1/meetings/{id}/recording-access (audio-gateway recorder check).
+    define can_record: (owner or participant) but not blocked
 
 type transcript
   relations
