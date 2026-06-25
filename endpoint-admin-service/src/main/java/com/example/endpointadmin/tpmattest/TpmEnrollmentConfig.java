@@ -67,17 +67,36 @@ public class TpmEnrollmentConfig {
     @ConditionalOnProperty(prefix = "endpoint-admin.tpm-attest", name = "enabled", havingValue = "true")
     public TpmEkChainValidator tpmEkChainValidator(
             TpmAttestProperties properties,
-            @Value("${endpoint-admin.tpm-attest.manufacturer-root-pems:}") String manufacturerRootPems)
+            @Value("${endpoint-admin.tpm-attest.manufacturer-root-pems:}") String manufacturerRootPems,
+            // Faz 22.6 #548 (Codex 019eff49): manufacturer On-Die CA intermediate bundle — untrusted
+            // PKIX path-building material so a leaf-only Intel fTPM submission can still build
+            // leaf → intermediate(s) → pinned root. NEVER trust anchors. Optional sha256 manifest is a
+            // supply-chain guardrail (provenance), not a trust decision.
+            @Value("${endpoint-admin.tpm-attest.manufacturer-intermediate-pems:}") String manufacturerIntermediatePems,
+            @Value("${endpoint-admin.tpm-attest.manufacturer-intermediate-sha256:}") String manufacturerIntermediateSha256Csv)
             throws Exception {
-        List<X509Certificate> roots = new ArrayList<>();
-        if (manufacturerRootPems != null && !manufacturerRootPems.isBlank()) {
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            for (var cert : cf.generateCertificates(
-                    new ByteArrayInputStream(manufacturerRootPems.getBytes(StandardCharsets.UTF_8)))) {
-                roots.add((X509Certificate) cert);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        List<X509Certificate> roots = parsePems(cf, manufacturerRootPems);
+        List<X509Certificate> intermediates = parsePems(cf, manufacturerIntermediatePems);
+        Set<String> intermediatePins = manufacturerIntermediateSha256Csv == null
+                || manufacturerIntermediateSha256Csv.isBlank()
+                ? Set.of()
+                : Arrays.stream(manufacturerIntermediateSha256Csv.split(","))
+                        .map(String::trim).filter(s -> !s.isEmpty())
+                        .collect(Collectors.toUnmodifiableSet());
+        // Fail-fast (EkChainException) if roots are empty / a root isn't pinned / a configured intermediate
+        // is not in a non-empty pin manifest — no enable-without-trust, no silent intermediate inclusion.
+        return new TpmEkChainValidator(
+                Set.copyOf(properties.manufacturerRootSha256()), roots, intermediates, intermediatePins);
+    }
+
+    private static List<X509Certificate> parsePems(CertificateFactory cf, String pems) throws Exception {
+        List<X509Certificate> out = new ArrayList<>();
+        if (pems != null && !pems.isBlank()) {
+            for (var cert : cf.generateCertificates(new ByteArrayInputStream(pems.getBytes(StandardCharsets.UTF_8)))) {
+                out.add((X509Certificate) cert);
             }
         }
-        // Fail-fast (EkChainException) if roots are empty or a cert isn't pinned — no enable-without-trust.
-        return new TpmEkChainValidator(Set.copyOf(properties.manufacturerRootSha256()), roots);
+        return out;
     }
 }
