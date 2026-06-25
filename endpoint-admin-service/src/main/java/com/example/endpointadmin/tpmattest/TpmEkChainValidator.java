@@ -7,6 +7,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.CollectionCertStoreParameters;
 import java.security.cert.PKIXBuilderParameters;
+import java.security.cert.PKIXCertPathBuilderResult;
 import java.security.cert.TrustAnchor;
 import java.security.cert.X509CertSelector;
 import java.security.cert.X509Certificate;
@@ -145,7 +146,17 @@ public final class TpmEkChainValidator {
             params.setRevocationEnabled(false);
 
             // Throws if no path from the EK leaf to a pinned root can be built (fail-closed → EK_UNTRUSTED).
-            CertPathBuilder.getInstance("PKIX").build(params);
+            PKIXCertPathBuilderResult result =
+                    (PKIXCertPathBuilderResult) CertPathBuilder.getInstance("PKIX").build(params);
+            // The built path MUST contain at least the leaf → its CA step. An EMPTY path means the EK leaf
+            // was itself a configured trust anchor (leaf == root) → trivially "valid" via a zero-length path.
+            // An end-entity EK cert is never a manufacturer root, so fail-closed: this keeps the chain step
+            // load-bearing (not just the leaf identity) and matches the pre-CertPathBuilder semantics.
+            if (result.getCertPath().getCertificates().isEmpty()) {
+                throw new EkChainException("EK leaf resolved as its own trust anchor (no CA chain)");
+            }
+        } catch (EkChainException e) {
+            throw e;
         } catch (Exception e) {
             throw new EkChainException("EK certificate does not chain to a pinned manufacturer root", e);
         }

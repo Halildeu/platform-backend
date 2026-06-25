@@ -137,6 +137,16 @@ class TpmEkChainValidatorBundleTest {
     }
 
     @Test
+    void leafPinnedAsItsOwnRoot_failsClosed_noZeroLengthPath() throws Exception {
+        // An end-entity EK leaf pinned as its OWN trust anchor must NOT validate via a zero-length path
+        // (CertPathBuilder would otherwise treat target==anchor as trivially valid). The chain step is
+        // load-bearing: the leaf must chain THROUGH a CA to a root, never BE the root.
+        TpmEkChainValidator v = new TpmEkChainValidator(Set.of(pin(leaf)), List.of(leaf));
+        assertThatThrownBy(() -> v.validate(leaf, List.of()))
+                .isInstanceOf(TpmEkChainValidator.EkChainException.class);
+    }
+
+    @Test
     void wrongRootPinned_failsClosed() throws Exception {
         // Trust anchor is an UNRELATED root; even with the correct intermediate bundle the leaf can't reach it.
         TpmEkChainValidator v = new TpmEkChainValidator(
