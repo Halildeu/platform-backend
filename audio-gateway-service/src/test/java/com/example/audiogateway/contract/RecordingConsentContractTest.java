@@ -2,6 +2,8 @@ package com.example.audiogateway.contract;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
 
@@ -135,6 +137,7 @@ class RecordingConsentContractTest {
                 });
 
         assertThat(auditSink.events()).hasSize(1);
+        verify(meetingAccessValidator).validate(eq(MEETING_ID), any(), any());
         assertThat(auditSink.events().get(0))
                 .isInstanceOfSatisfying(AuditEvent.RecordingConsentGranted.class, event -> {
                     assertThat(event.meetingId()).isEqualTo(MEETING_ID);

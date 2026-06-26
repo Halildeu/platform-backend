@@ -24,6 +24,8 @@ import org.springframework.test.web.reactive.server.WebTestClient;
 import reactor.core.publisher.Mono;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
@@ -205,6 +207,7 @@ class StartSessionContractTest {
                             .endsWith("/chunks");
                     assertThat(resp.sessionStartMs()).isPositive();
                 });
+        verify(meetingAccessValidator).validate(eq(VALID_MEETING_ID), any(), any());
     }
 
     @Test
