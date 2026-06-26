@@ -110,7 +110,8 @@ class EndpointEnrollmentStatusConstraintPostgresIntegrationTest {
     void canonicalStatusConstraintExistsAfterV77() {
         String def = jdbc.queryForObject(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-                        + "WHERE conname = 'ck_endpoint_enrollments_status'",
+                        + "WHERE conname = 'ck_endpoint_enrollments_status' "
+                        + "AND conrelid = 'endpoint_enrollments'::regclass AND contype = 'c'",
                 String.class);
         assertThat(def)
                 .contains("TPM_IN_PROGRESS").contains("TPM_FAILED")
