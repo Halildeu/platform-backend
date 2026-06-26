@@ -75,10 +75,14 @@ class DirectSttForwardingDispatcherTest {
     }
 
     private static ChunkDispatchCommand command(final byte[] audio) {
+        return command(audio, AudioFormat.WAV);
+    }
+
+    private static ChunkDispatchCommand command(final byte[] audio, final AudioFormat audioFormat) {
         final AudioChunkPayload payload = AudioChunkPayload.of(audio, "deadbeefcafe0000sha");
         return new ChunkDispatchCommand(
                 "SES-abc", 42L, 7L, "22222222-2222-4222-8222-222222222222", "iphone-h-1", "tr",
-                AudioFormat.values()[0], 16_000, 1, 0L, 1_000L, "corr-xyz", payload);
+                audioFormat, 16_000, 1, 0L, 1_000L, "corr-xyz", payload);
     }
 
     private static double counter(final MeterRegistry meters, final String name) {
@@ -149,6 +153,9 @@ class DirectSttForwardingDispatcherTest {
         final String bodyUtf8 = req.getBody().readUtf8();
         // multipart contains the "audio" part with the raw bytes (10,20,30,40,50).
         assertThat(bodyUtf8).contains("name=\"audio\"");
+        assertThat(bodyUtf8)
+                .contains("Content-Disposition: form-data; name=\"audio\"; filename=\"chunk.wav\"")
+                .contains("Content-Type: audio/wav");
         assertThat(bodyUtf8.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1))
                 .as("multipart body must carry the raw audio bytes")
                 .contains(new byte[] {10, 20, 30, 40, 50});
@@ -175,6 +182,30 @@ class DirectSttForwardingDispatcherTest {
                     assertThat(f.byteLength()).isEqualTo(5);
                     assertThat(f.computePlane()).isEqualTo("live-stt");
                 });
+    }
+
+    @Test
+    void forwardsMultipartAudioPartUsingSessionAudioFormat() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"webm ok\",\"language\":\"tr\"}"));
+
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props(8), meters, recordingAuditSink());
+
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3}, AudioFormat.WEBM_OPUS));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
+        final RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
+        assertThat(req).as("direct-STT POST must reach /transcribe").isNotNull();
+        final String bodyUtf8 = req.getBody().readUtf8();
+        assertThat(bodyUtf8)
+                .contains("Content-Disposition: form-data; name=\"audio\"; filename=\"chunk.webm\"")
+                .contains("Content-Type: audio/webm")
+                .contains("codecs=opus")
+                .doesNotContain("application/octet-stream")
+                .doesNotContain("chunk.bin");
+        awaitCounter(meters, "success", 1.0);
     }
 
     @Test
