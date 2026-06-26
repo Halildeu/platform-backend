@@ -1,6 +1,7 @@
 package com.example.audiogateway.service;
 
 import com.example.audiogateway.config.AudioGatewayProperties;
+import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.TranscriptResult;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
 
@@ -88,7 +89,6 @@ public class DirectSttForwardingDispatcher
 
     private static final String METRIC_PREFIX = "audio_gateway_direct_stt_";
     private static final String AUDIO_PART = "audio";
-    private static final String AUDIO_FILENAME = "chunk.bin";
 
     private final AudioChunkDispatcher delegate;
     private final AudioGatewayAuditSink auditSink;
@@ -201,8 +201,9 @@ public class DirectSttForwardingDispatcher
             counter("attempted").increment();
 
             final MultipartBodyBuilder body = new MultipartBodyBuilder();
-            body.part(AUDIO_PART, new NamedByteArrayResource(task.audio(), AUDIO_FILENAME))
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM);
+            final AudioFormat audioFormat = AudioFormat.valueOf(task.audioFormat());
+            body.part(AUDIO_PART, new NamedByteArrayResource(task.audio(), audioFilename(audioFormat)))
+                    .contentType(MediaType.parseMediaType(audioFormat.mediaType()));
 
             final String uri = UriComponentsBuilder.fromUriString(transcribeUri)
                     .queryParam("meeting_id", nullSafe(task.meetingId()))
@@ -419,6 +420,18 @@ public class DirectSttForwardingDispatcher
 
     private static String nullSafe(final String value) {
         return value == null ? "" : value;
+    }
+
+    private static String audioFilename(final AudioFormat audioFormat) {
+        return switch (audioFormat) {
+            case WAV -> "chunk.wav";
+            case WEBM_OPUS -> "chunk.webm";
+            case PCM16 -> "chunk.pcm";
+            case MP3 -> "chunk.mp3";
+            case M4A -> "chunk.m4a";
+            case OGG -> "chunk.ogg";
+            case FLAC -> "chunk.flac";
+        };
     }
 
     /**
