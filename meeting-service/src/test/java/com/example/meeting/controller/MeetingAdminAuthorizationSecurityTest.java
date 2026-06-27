@@ -1,7 +1,6 @@
 package com.example.meeting.controller;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -36,17 +35,13 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 /**
  * Authorization-layer (real {@link SecurityConfig} admin chain) test for the
- * Faz 24 recorder-consent B-narrow change (Codex 019eff98 AGREE).
+ * Faz 24 recorder PR-3 admin-surface re-close.
  *
- * <p>The audio-gateway recorder-access check forwards a normal meeting-owner
- * USER token (only {@code SCOPE_openid/email/profile}, no admin role/scope) to
- * {@code GET /api/v1/admin/meetings/{id}}. Before B-narrow that token was
- * rejected at the Spring {@code hasAnyAuthority(...)} gate (403) before the
- * {@code @RequireModule} OpenFGA interceptor ever ran, so a recorder user could
- * never pass. B-narrow opens ONLY the single-segment GET-by-id to any
- * authenticated principal and lets the {@code @RequireModule(MEETING,can_view)}
- * OpenFGA gate + tenant/org predicate be the authorization; list,
- * sub-resources, and all mutations stay admin-gated.
+ * <p>Recorder access now goes through the non-admin
+ * {@code /api/v1/meetings/{id}/recording-access} endpoint with object-level
+ * {@code meeting:{id}#can_record}. The temporary B-narrow relaxation on
+ * {@code GET /api/v1/admin/meetings/{id}} is closed here: normal recorder USER
+ * tokens must not reach the admin controller or module OpenFGA interceptor.
  *
  * <p>Uses {@code @ActiveProfiles("test")} so the real {@code !local & !dev}
  * {@link SecurityConfig} + {@link MeetingWebMvcConfig} interceptor are active
@@ -80,30 +75,14 @@ class MeetingAdminAuthorizationSecurityTest {
                 .thenReturn(new AdminTenantContext(TENANT_ID, "admin@example.com", "admin@example.com"));
     }
 
-    // ----- GET /{id}: opened by B-narrow, now gated only by @RequireModule OpenFGA -----
+    // ----- GET /{id}: admin-gated again after recorder-access preflight -----
 
     @Test
-    void nonAdminUserTokenReachesGetByIdWhenOpenFgaAllows() throws Exception {
-        when(authzService.check(SUBJECT, MeetingAuthz.VIEWER, "module", MeetingAuthz.MODULE))
-                .thenReturn(true);
-        when(meetingService.getMeeting(any(AdminTenantContext.class), eq(MEETING_ID)))
-                .thenReturn(sampleResponse());
-
-        mockMvc.perform(get("/api/v1/admin/meetings/{id}", MEETING_ID).with(nonAdminUserJwt(SUBJECT)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.id").value(MEETING_ID.toString()));
-    }
-
-    @Test
-    void nonAdminUserTokenGetByIdStillDeniedByOpenFgaWhenNotPermitted() throws Exception {
-        // Spring now lets the non-admin token through; the OpenFGA module gate denies → 403.
-        when(authzService.check(SUBJECT, MeetingAuthz.VIEWER, "module", MeetingAuthz.MODULE))
-                .thenReturn(false);
-
+    void nonAdminUserTokenCannotGetMeetingById() throws Exception {
         mockMvc.perform(get("/api/v1/admin/meetings/{id}", MEETING_ID).with(nonAdminUserJwt(SUBJECT)))
                 .andExpect(status().isForbidden());
 
-        verifyNoInteractions(meetingService);
+        verifyNoInteractions(meetingService, authzService);
     }
 
     // ----- Everything else under /api/v1/admin/** stays admin-gated at Spring -----
@@ -113,7 +92,7 @@ class MeetingAdminAuthorizationSecurityTest {
         mockMvc.perform(get("/api/v1/admin/meetings").with(nonAdminUserJwt(SUBJECT)))
                 .andExpect(status().isForbidden());
 
-        verifyNoInteractions(meetingService);
+        verifyNoInteractions(meetingService, authzService);
     }
 
     @Test
@@ -124,7 +103,7 @@ class MeetingAdminAuthorizationSecurityTest {
                         .content("{\"title\":\"x\",\"scheduledStart\":\"2026-06-16T09:00:00Z\"}"))
                 .andExpect(status().isForbidden());
 
-        verifyNoInteractions(meetingService);
+        verifyNoInteractions(meetingService, authzService);
     }
 
     @Test
@@ -132,7 +111,7 @@ class MeetingAdminAuthorizationSecurityTest {
         mockMvc.perform(delete("/api/v1/admin/meetings/{id}", MEETING_ID).with(nonAdminUserJwt(SUBJECT)))
                 .andExpect(status().isForbidden());
 
-        verifyNoInteractions(meetingService);
+        verifyNoInteractions(meetingService, authzService);
     }
 
     @Test
@@ -146,7 +125,7 @@ class MeetingAdminAuthorizationSecurityTest {
         mockMvc.perform(get("/api/v1/admin/meetings/{id}/sessions", MEETING_ID).with(nonAdminUserJwt(SUBJECT)))
                 .andExpect(status().isForbidden());
 
-        verifyNoInteractions(meetingService);
+        verifyNoInteractions(meetingService, authzService);
     }
 
     // ----- Sanity: admin authority still reaches the write path -----
