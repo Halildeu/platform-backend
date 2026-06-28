@@ -25,9 +25,20 @@ public final class ViewOnlySessionLifecycle {
         this.viewers = Objects.requireNonNull(viewers, "viewers");
     }
 
-    /** Record a VIEW_ONLY stream authorization (on a delivered VIEW_ONLY permit). */
-    public void authorizeStream(ViewOnlyStreamAuthorizationRegistry.Authorization authorization) {
-        this.authorization.authorize(authorization);
+    /**
+     * Start (or restart) a VIEW_ONLY session incarnation — clears any prior terminate tombstone (+ stale authz)
+     * so a legitimately reused sessionId can authorize a stream again.
+     */
+    public void beginSession(String sessionId) {
+        authorization.beginSession(sessionId);
+    }
+
+    /**
+     * Record a VIEW_ONLY stream authorization (on a delivered VIEW_ONLY permit). Returns {@code false} if it was
+     * refused because the session has been terminated since its last {@link #beginSession} (terminate wins).
+     */
+    public boolean authorizeStream(ViewOnlyStreamAuthorizationRegistry.Authorization authorization) {
+        return this.authorization.authorize(authorization);
     }
 
     /**

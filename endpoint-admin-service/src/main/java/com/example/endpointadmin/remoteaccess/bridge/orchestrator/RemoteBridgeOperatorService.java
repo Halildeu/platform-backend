@@ -213,6 +213,9 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
+        // #1580 — a fresh VIEW_ONLY incarnation: clear any terminate tombstone (+ stale authz) for this (reused)
+        // sessionId so a legitimately reused session can authorize a screen stream again.
+        beginViewOnlySession(session.sessionId());
 
         // Faz 22.6 #548 step-5b — issue the canonical device-key challenge AFTER the session exists and BEFORE the
         // consent prompt, so the agent can answer it during the consent window (the DEVICE_KEY_ATTESTATION_REAL
@@ -338,6 +341,14 @@ public final class RemoteBridgeOperatorService {
         ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
         if (lifecycle != null) {
             lifecycle.terminate(sessionId);
+        }
+    }
+
+    private void beginViewOnlySession(String sessionId) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle != null) {
+            // fresh incarnation: clear any prior terminate tombstone (+ stale authz) for a reused sessionId
+            lifecycle.beginSession(sessionId);
         }
     }
 

@@ -98,4 +98,44 @@ class ViewOnlyStreamAuthorizationRegistryTest {
         assertFalse(registry.isAuthorized("s1", null, "peer-A", 0));
         assertFalse(registry.isAuthorized("s1", "op-1", null, 0));
     }
+
+    @Test
+    void authorize_returnsTrueWhenAccepted() {
+        ViewOnlyStreamAuthorizationRegistry registry = new ViewOnlyStreamAuthorizationRegistry();
+        assertTrue(registry.authorize(auth("s1", "op-1", "peer-A", 1_000)));
+        assertTrue(registry.isAuthorized("s1", "op-1", "peer-A", 0));
+    }
+
+    @Test
+    void authorizeAfterRevokeSession_isRefused_terminateWins() {
+        // models the operator push→authorize gap racing an agent terminate: the terminate ran first (tombstone),
+        // so a late authorize for the same incarnation is refused and records nothing (fail-closed).
+        ViewOnlyStreamAuthorizationRegistry registry = new ViewOnlyStreamAuthorizationRegistry();
+        registry.revokeSession("s1");
+
+        assertFalse(registry.authorize(auth("s1", "op-1", "peer-A", 1_000)));
+        assertFalse(registry.isAuthorized("s1", "op-1", "peer-A", 0));
+        assertTrue(registry.lookup("s1", "op-1").isEmpty());
+    }
+
+    @Test
+    void beginSession_clearsTombstoneAndStaleAuthz() {
+        ViewOnlyStreamAuthorizationRegistry registry = new ViewOnlyStreamAuthorizationRegistry();
+        registry.authorize(auth("s1", "op-old", "peer-A", 1_000)); // a prior incarnation's grant
+        registry.revokeSession("s1");                              // terminal → tombstone + cleared
+
+        registry.beginSession("s1"); // a fresh incarnation reuses the sessionId
+
+        assertTrue(registry.lookup("s1", "op-old").isEmpty());     // stale grant gone
+        assertTrue(registry.authorize(auth("s1", "op-2", "peer-A", 1_000))); // reuse can authorize again
+        assertTrue(registry.isAuthorized("s1", "op-2", "peer-A", 0));
+    }
+
+    @Test
+    void revokeSession_tombstone_doesNotBlockADifferentSession() {
+        ViewOnlyStreamAuthorizationRegistry registry = new ViewOnlyStreamAuthorizationRegistry();
+        registry.revokeSession("s1");
+        assertTrue(registry.authorize(auth("s2", "op-1", "peer-A", 1_000))); // different session unaffected
+        assertTrue(registry.isAuthorized("s2", "op-1", "peer-A", 0));
+    }
 }
