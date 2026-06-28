@@ -106,6 +106,18 @@ public final class RemoteAccessMetrics {
      */
     public static final String BRIDGE_DATA_HANDLER_ERRORS = "remote_access_bridge_data_handler_errors_total";
 
+    // ---- Faz 22.6 #1580 VIEW_ONLY screen-observation fanout (recording-off MVP; Codex 019f078a) ----
+
+    /**
+     * VIEW_ONLY screen frames by fanout {@code disposition} (BOUNDED tag set:
+     * {@code delivered} / {@code dropped-no-viewer} / {@code unauthorized} / {@code mime-rejected}). A rising
+     * {@code unauthorized} rate means an agent is pushing a screen stream the broker never authorized; a rising
+     * {@code mime-rejected} rate means a non-image frame on the VIEW_ONLY plane.
+     */
+    public static final String VIEW_ONLY_FANOUT_FRAMES = "remote_access_bridge_view_only_fanout_frames_total";
+    /** VIEW_ONLY frame payload bytes actually fanned out to a live viewer ({@code delivered} only) — view throughput. */
+    public static final String VIEW_ONLY_FANOUT_BYTES = "remote_access_bridge_view_only_fanout_bytes_total";
+
     private RemoteAccessMetrics() {
     }
 }

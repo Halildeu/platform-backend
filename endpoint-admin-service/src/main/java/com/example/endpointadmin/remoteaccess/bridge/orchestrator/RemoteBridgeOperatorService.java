@@ -19,6 +19,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Refused;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -79,6 +80,13 @@ public final class RemoteBridgeOperatorService {
     private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
     private final boolean deviceKeySessionEnabled;
     private final long deviceKeyChallengeTtlMillis;
+    // Faz 22.6 #1580 (Codex 019f078a) — the VIEW_ONLY fanout authorization registry, populated when a VIEW_ONLY
+    // SCREEN_VIEW permit lands on the agent and revoked on every session-terminal path. Optional (null = this
+    // bridge does not run the #1580 view-only data plane) so existing wiring/tests are unaffected; fail-closed (a
+    // null registry records no authorization, so the data-plane handler fans nothing out). Set post-construction
+    // by the server config — this service mints no authority of its own.
+    private volatile ViewOnlyStreamAuthorizationRegistry viewOnlyStreamAuthorization;
+    private volatile long viewOnlyStreamAuthorizationTtlMillis;
 
     /** Back-compat: no device-key session attestation issuance (the prior behaviour). */
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
@@ -281,6 +289,7 @@ public final class RemoteBridgeOperatorService {
         }
         store.evictIfTerminal(sessionId);
         evictDeviceKeySession(sessionId, session.transportPeerKey()); // F1: no stale state for a reused sessionId
+        revokeViewOnlyAuthorization(sessionId); // #1580 — no stale fanout grant after operator close
         return SessionCloseOutcome.closed(sessionId);
     }
 
@@ -291,6 +300,42 @@ public final class RemoteBridgeOperatorService {
             return HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    /**
+     * Faz 22.6 #1580 — wire the VIEW_ONLY fanout authorization registry (server config, post-construction). When
+     * set, a successfully pushed VIEW_ONLY {@code SCREEN_VIEW} permit records a stream authorization keyed by
+     * {@code (sessionId, operationId)} bound to the agent transport peer; every session-terminal path revokes it.
+     *
+     * @param registry the authorization registry (nullable to clear the wiring)
+     * @param ttlMillis optional extra cap on the authorization lifetime; {@code <= 0} = bind to permit expiry only
+     */
+    public void configureViewOnlyStreamAuthorization(ViewOnlyStreamAuthorizationRegistry registry, long ttlMillis) {
+        this.viewOnlyStreamAuthorization = registry;
+        this.viewOnlyStreamAuthorizationTtlMillis = Math.max(0L, ttlMillis);
+    }
+
+    private void authorizeViewOnlyStream(RemoteBridgeSession session, OperationPermit permit, long now) {
+        ViewOnlyStreamAuthorizationRegistry authz = this.viewOnlyStreamAuthorization;
+        if (authz == null || permit == null) {
+            return;
+        }
+        long expiry = permit.expiresAtEpochMillis();
+        long ttl = this.viewOnlyStreamAuthorizationTtlMillis;
+        if (ttl > 0) {
+            expiry = Math.min(expiry, now + ttl);
+        }
+        // streamId == permit.operationId — the agent rides the SCREEN_VIEW operation id as the screen DATA stream id
+        authz.authorize(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+                permit.sessionId(), permit.operationId(), session.transportPeerKey(),
+                permit.operatorSubject(), permit.deviceId(), expiry));
+    }
+
+    private void revokeViewOnlyAuthorization(String sessionId) {
+        ViewOnlyStreamAuthorizationRegistry authz = this.viewOnlyStreamAuthorization;
+        if (authz != null) {
+            authz.revokeSession(sessionId);
         }
     }
 
@@ -326,6 +371,12 @@ public final class RemoteBridgeOperatorService {
                     // VIEW_ONLY (and any non-command capability) carries no command — push the bare signed permit.
                     pushed = registry.sendOperationPermit(session.transportPeerKey(), permit, now);
                 }
+                if (pushed && permit.capability() == RemoteSessionCapability.VIEW_ONLY) {
+                    // #1580 — a delivered VIEW_ONLY permit authorizes the matching screen DATA stream for fanout
+                    // (streamId == operationId), bound to this agent peer and the permit's expiry. Fail-closed: a
+                    // permit that did NOT land authorizes nothing.
+                    authorizeViewOnlyStream(session, permit, now);
+                }
                 // The PERMIT branch only fires under a full policy pass, exercised at the owner-gated real-PERMIT
                 // e2e once the B1.4d / step-up trust roots land — forcing a PERMIT here would manufacture trust
                 // the system does not have (the e2e is deliberately PERMIT-agnostic).
@@ -338,6 +389,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.KILL);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
+                revokeViewOnlyAuthorization(request.sessionId()); // #1580 — no stale fanout grant after kill
                 yield OperatorOutcome.handled(outcome, false);
             }
             case DENY -> {
@@ -346,6 +398,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.CLOSE);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
+                revokeViewOnlyAuthorization(request.sessionId()); // #1580 — no stale fanout grant after deny
                 yield OperatorOutcome.handled(outcome, false);
             }
         };

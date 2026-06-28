@@ -40,6 +40,12 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceT
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory.DeviceKeyRealVerifierDependencies;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.LiveOnlyViewDataPlaneHandler;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.LoggingViewOnlyMetadataAuditSink;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyDataPlaneFactory;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyMetadataAuditSink;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerRegistry;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
 import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
@@ -59,6 +65,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 
 import java.security.PrivateKey;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -541,6 +548,8 @@ public class RemoteBridgeServerConfig {
      */
     @Bean
     public RemoteBridgeOperatorService remoteBridgeOperatorService(
+            RemoteBridgeServerProperties properties,
+            ViewOnlyStreamAuthorizationRegistry remoteBridgeViewOnlyStreamAuthorizationRegistry,
             RemoteBridgeSessionStore remoteBridgeSessionStore,
             TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler,
             RemoteBridgeBroker remoteBridgeBroker,
@@ -561,11 +570,15 @@ public class RemoteBridgeServerConfig {
         String type = deviceTrustVerifierType == null ? "" : deviceTrustVerifierType.strip();
         boolean deviceKeySessionEnabled = type.equalsIgnoreCase("DEVICE_KEY_ATTESTATION_REAL")
                 || type.equalsIgnoreCase("REQUIRE_ENROLLMENT_AND_DEVICE_KEY_REAL");
-        return new RemoteBridgeOperatorService(remoteBridgeSessionStore, remoteBridgeTrustEvidenceAssembler,
-                remoteBridgeBroker, remoteBridgeControlStreamRegistry, remoteBridgeDurableAuditSink,
-                System::currentTimeMillis, consentPromptTtlMillis,
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(remoteBridgeSessionStore,
+                remoteBridgeTrustEvidenceAssembler, remoteBridgeBroker, remoteBridgeControlStreamRegistry,
+                remoteBridgeDurableAuditSink, System::currentTimeMillis, consentPromptTtlMillis,
                 remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore,
                 deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
+        // #1580 — record a VIEW_ONLY stream authorization on permit push, revoke on every session terminal.
+        service.configureViewOnlyStreamAuthorization(remoteBridgeViewOnlyStreamAuthorizationRegistry,
+                properties.viewOnly().streamAuthorizationTtlMillis());
+        return service;
     }
 
     @Bean
@@ -594,13 +607,70 @@ public class RemoteBridgeServerConfig {
     }
 
     /**
-     * Faz 22.6 T-4 — the DATA-plane consumption seam. Accepted DATA frames are hashed and appended to the same
-     * durable WORM session chain as broker policy decisions. Raw endpoint output is not stored in the long
-     * retention metadata chain.
+     * Faz 22.6 #1580 (Codex 019f078a) — the VIEW_ONLY fanout registry: the bounded (default 1 viewer/session),
+     * latest-wins, control-free broker→operator seam. A subscribed operator viewer (slice-3 web transport)
+     * registers here; empty means a frame is simply dropped (no buffer, no persistence).
      */
     @Bean
-    public DataPlaneHandler remoteBridgeDataPlane(DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink) {
-        return new DurableRecordingDataPlaneHandler(remoteBridgeDurableAuditSink);
+    public ViewOnlyViewerRegistry remoteBridgeViewOnlyViewerRegistry(RemoteBridgeServerProperties properties) {
+        return new ViewOnlyViewerRegistry(properties.viewOnly().maxViewersPerSession());
+    }
+
+    /**
+     * Faz 22.6 #1580 — the VIEW_ONLY stream authorization gate. The operator service records an authorization
+     * here when a VIEW_ONLY SCREEN_VIEW permit is pushed; the data-plane handler reads it as the fail-closed
+     * fanout gate. Empty by default → nothing is fanned out.
+     */
+    @Bean
+    public ViewOnlyStreamAuthorizationRegistry remoteBridgeViewOnlyStreamAuthorizationRegistry() {
+        return new ViewOnlyStreamAuthorizationRegistry();
+    }
+
+    /**
+     * Faz 22.6 #1580 — the metadata-only VIEW_ONLY audit sink (always on, independent of recording mode). The
+     * default logs metadata only (ids + payload SIZE + disposition); it can NEVER carry payload (the interface
+     * has no content parameter).
+     */
+    @Bean
+    public ViewOnlyMetadataAuditSink remoteBridgeViewOnlyMetadataAuditSink() {
+        return new LoggingViewOnlyMetadataAuditSink();
+    }
+
+    /**
+     * Faz 22.6 #1580 — the recording-OFF (default) VIEW_ONLY data-plane handler: live fanout + metadata audit,
+     * ZERO durable/recording dependency (no content persistence is machine-provable). Wired both as the
+     * disabled-mode data plane AND as the fanout leg of the enabled-mode record-then-fanout handler.
+     */
+    @Bean
+    public LiveOnlyViewDataPlaneHandler remoteBridgeLiveOnlyViewDataPlaneHandler(
+            RemoteBridgeServerProperties properties,
+            ViewOnlyStreamAuthorizationRegistry remoteBridgeViewOnlyStreamAuthorizationRegistry,
+            ViewOnlyViewerRegistry remoteBridgeViewOnlyViewerRegistry,
+            ViewOnlyMetadataAuditSink remoteBridgeViewOnlyMetadataAuditSink,
+            MeterRegistry meterRegistry) {
+        return new LiveOnlyViewDataPlaneHandler(remoteBridgeViewOnlyStreamAuthorizationRegistry,
+                remoteBridgeViewOnlyViewerRegistry, remoteBridgeViewOnlyMetadataAuditSink, meterRegistry,
+                Set.copyOf(properties.viewOnly().allowedFrameContentTypes()), System::currentTimeMillis);
+    }
+
+    /**
+     * Faz 22.6 #1580 (ADR-0044 D3) — the DATA-plane consumption seam, RECORDING-MODE AWARE:
+     * <ul>
+     *   <li>{@code recording-mode=disabled} (DEFAULT) → {@link LiveOnlyViewDataPlaneHandler}: live operator
+     *       fanout + metadata audit, NO content persistence (no WORM, no content hash).</li>
+     *   <li>{@code recording-mode=enabled} → {@link RecordingThenFanoutDataPlaneHandler}: record-BEFORE-fanout to
+     *       the durable WORM metadata-hash sink (recording-down → fail-closed), THEN live fanout. The parametric
+     *       retention + owner decision reference are validated at config binding — an enabled bridge with neither
+     *       refuses to start.</li>
+     * </ul>
+     * An unknown mode cannot reach here: the enum binding fails closed at startup.
+     */
+    @Bean
+    public DataPlaneHandler remoteBridgeDataPlane(RemoteBridgeServerProperties properties,
+                                                 DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
+                                                 LiveOnlyViewDataPlaneHandler remoteBridgeLiveOnlyViewDataPlaneHandler) {
+        return ViewOnlyDataPlaneFactory.select(properties.viewOnly(), remoteBridgeDurableAuditSink,
+                remoteBridgeLiveOnlyViewDataPlaneHandler);
     }
 
     @Bean
