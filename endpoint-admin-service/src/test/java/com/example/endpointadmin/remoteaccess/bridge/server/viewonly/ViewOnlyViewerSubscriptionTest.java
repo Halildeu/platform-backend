@@ -4,6 +4,7 @@ import com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -60,5 +61,47 @@ class ViewOnlyViewerSubscriptionTest {
         assertEquals("sess", sub.sessionId());
         assertEquals("vw-9", sub.viewerId());
         assertSame("sess", sub.sessionId());
+    }
+
+    @Test
+    void offerAfterClose_neverRepopulatesTheSlot() {
+        ViewOnlyViewerSubscription sub = new ViewOnlyViewerSubscription("s1", "vw-1", null);
+        sub.close();
+        assertFalse(sub.offer(frame(7))); // offer that begins after close is rejected
+        assertTrue(sub.poll().isEmpty()); // and the slot stays empty — no payload retained past close
+    }
+
+    @Test
+    void concurrentOfferAndClose_neverRetainAFrameAfterClose() throws InterruptedException {
+        // the prior lock-free version had an offer/close interleaving that could re-store a frame after close;
+        // with offer/close mutually atomic, a closed subscription must always end with an empty slot.
+        for (int i = 0; i < 3000; i++) {
+            ViewOnlyViewerSubscription sub = new ViewOnlyViewerSubscription("s1", "vw-1", null);
+            CountDownLatch start = new CountDownLatch(1);
+            Thread offerer = new Thread(() -> {
+                awaitQuietly(start);
+                sub.offer(frame(1));
+            });
+            Thread closer = new Thread(() -> {
+                awaitQuietly(start);
+                sub.close();
+            });
+            offerer.start();
+            closer.start();
+            start.countDown();
+            offerer.join();
+            closer.join();
+
+            assertTrue(sub.isClosed());
+            assertTrue(sub.poll().isEmpty(), "a closed subscription must never retain a frame");
+        }
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

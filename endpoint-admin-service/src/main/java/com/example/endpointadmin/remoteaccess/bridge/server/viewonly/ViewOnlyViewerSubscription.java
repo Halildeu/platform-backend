@@ -2,27 +2,30 @@ package com.example.endpointadmin.remoteaccess.bridge.server.viewonly;
 
 import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Faz 22.6 #1580 (Codex 019f078a) — one operator viewer's handle on a VIEW_ONLY session's live screen frames.
+ * Faz 22.6 #1580 (Codex 019f078a; race fix 019f0e78) — one operator viewer's handle on a VIEW_ONLY session's
+ * live screen frames.
  *
  * <p><b>Latest-wins, single slot, never blocks.</b> The DATA-plane handler thread {@link #offer(ViewOnlyFrame)}s
  * the newest frame; if the viewer has not consumed the previous one it is overwritten (the OLD frame is dropped,
- * not persisted). A slow or stalled viewer therefore can never apply backpressure to the agent's DATA stream and
- * can never grow an unbounded buffer — the privacy-safe, memory-safe bound for a live screen feed.
+ * not persisted). A slow or stalled viewer can never apply backpressure to the agent's DATA stream and can never
+ * grow an unbounded buffer.
  *
- * <p>An optional {@code frameAvailable} listener (set at subscribe time) is invoked AFTER the slot is updated so
- * a transport (slice-3 web viewer) can wake its sender. The listener runs on the DATA thread and MUST NOT block;
- * any throw from it is swallowed here so a viewer fault can never break the agent's DATA stream.
+ * <p><b>offer / poll / close are mutually atomic</b> (single monitor): once {@link #close()} runs, no later
+ * {@code offer} can re-populate the slot, so a screen frame can never be retained past termination (the privacy
+ * cleanup invariant — a prior lock-free version had an offer/close interleaving that could re-store a frame after
+ * close). The optional {@code frameAvailable} wake hook is invoked OUTSIDE the lock (so a viewer-side listener
+ * can never deadlock the DATA thread) and only when the offer was accepted; any throw from it is swallowed.
  */
 public final class ViewOnlyViewerSubscription {
 
     private final String sessionId;
     private final String viewerId;
-    private final AtomicReference<ViewOnlyFrame> latest = new AtomicReference<>();
     private final Runnable frameAvailable;
-    private volatile boolean closed;
+    private final Object lock = new Object();
+    private ViewOnlyFrame latest;   // guarded by lock
+    private boolean closed;         // guarded by lock
 
     ViewOnlyViewerSubscription(String sessionId, String viewerId, Runnable frameAvailable) {
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
@@ -39,19 +42,23 @@ public final class ViewOnlyViewerSubscription {
     }
 
     public boolean isClosed() {
-        return closed;
+        synchronized (lock) {
+            return closed;
+        }
     }
 
     /**
-     * Offer the newest frame (latest-wins). A closed subscription ignores the frame.
-     *
-     * @return {@code true} if the frame was accepted into the slot (i.e. the subscription is open)
+     * Offer the newest frame (latest-wins). A closed subscription ignores the frame and never re-populates the
+     * slot. Returns {@code true} only if the frame was accepted into the slot (subscription open).
      */
     boolean offer(ViewOnlyFrame frame) {
-        if (closed) {
-            return false;
+        Objects.requireNonNull(frame, "frame");
+        synchronized (lock) {
+            if (closed) {
+                return false;
+            }
+            latest = frame;
         }
-        latest.set(Objects.requireNonNull(frame, "frame"));
         if (frameAvailable != null) {
             try {
                 frameAvailable.run();
@@ -64,12 +71,18 @@ public final class ViewOnlyViewerSubscription {
 
     /** Take the latest un-consumed frame, clearing the slot (returns empty when nothing new / closed). */
     public Optional<ViewOnlyFrame> poll() {
-        return Optional.ofNullable(latest.getAndSet(null));
+        synchronized (lock) {
+            ViewOnlyFrame frame = latest;
+            latest = null;
+            return Optional.ofNullable(frame);
+        }
     }
 
-    /** Idempotent — clears the slot so a held frame is not retained after the viewer detaches. */
+    /** Idempotent — marks closed and clears the slot; no later offer can re-store a frame. */
     public void close() {
-        closed = true;
-        latest.set(null);
+        synchronized (lock) {
+            closed = true;
+            latest = null;
+        }
     }
 }

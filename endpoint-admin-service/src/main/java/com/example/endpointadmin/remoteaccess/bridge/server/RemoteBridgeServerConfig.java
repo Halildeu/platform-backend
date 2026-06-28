@@ -44,6 +44,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.LiveOnlyVie
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.LoggingViewOnlyMetadataAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyDataPlaneFactory;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyMetadataAuditSink;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySessionLifecycle;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerRegistry;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
@@ -223,14 +224,19 @@ public class RemoteBridgeServerConfig {
                                                        RemoteBridgeAgentErrorLedger agentErrorLedger,
                                                        DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
                                                        TpmDeviceKeySessionEvidenceStore
-                                                               remoteBridgeDeviceKeySessionEvidenceStore) {
+                                                               remoteBridgeDeviceKeySessionEvidenceStore,
+                                                       ViewOnlySessionLifecycle remoteBridgeViewOnlySessionLifecycle) {
         // pin the BEST-EFFORT inbound sink explicitly: slice-3c adds a second RemoteBridgeAuditSink bean (the
         // DURABLE broker recorder) — the control plane's inbound audit must stay the best-effort log sink, so
         // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds).
         // The device-key stores wire the #548 step-5 consumer; until the step-5b issuance lands no challenge
         // exists to consume, so the path is inert (fail-closed) even though the stores are present.
-        return new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis, agentErrorLedger,
-                remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore);
+        BrokerControlPlane controlPlane = new BrokerControlPlane(ledger, store, auditSink, System::currentTimeMillis,
+                agentErrorLedger, remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore);
+        // #1580 — agent-driven terminals (consent-denied / local-abort / indicator-lost) must also terminate the
+        // VIEW_ONLY surface, so a stale authorization never keeps fanning frames out after the user pulls consent.
+        controlPlane.configureViewOnlyLifecycle(remoteBridgeViewOnlySessionLifecycle);
+        return controlPlane;
     }
 
     /**
@@ -549,7 +555,7 @@ public class RemoteBridgeServerConfig {
     @Bean
     public RemoteBridgeOperatorService remoteBridgeOperatorService(
             RemoteBridgeServerProperties properties,
-            ViewOnlyStreamAuthorizationRegistry remoteBridgeViewOnlyStreamAuthorizationRegistry,
+            ViewOnlySessionLifecycle remoteBridgeViewOnlySessionLifecycle,
             RemoteBridgeSessionStore remoteBridgeSessionStore,
             TrustEvidenceAssembler remoteBridgeTrustEvidenceAssembler,
             RemoteBridgeBroker remoteBridgeBroker,
@@ -575,8 +581,9 @@ public class RemoteBridgeServerConfig {
                 remoteBridgeDurableAuditSink, System::currentTimeMillis, consentPromptTtlMillis,
                 remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore,
                 deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
-        // #1580 — record a VIEW_ONLY stream authorization on permit push, revoke on every session terminal.
-        service.configureViewOnlyStreamAuthorization(remoteBridgeViewOnlyStreamAuthorizationRegistry,
+        // #1580 — record a VIEW_ONLY stream authorization on permit push, terminate (revoke + close viewers) on
+        // every operator-driven session terminal.
+        service.configureViewOnlyStreamAuthorization(remoteBridgeViewOnlySessionLifecycle,
                 properties.viewOnly().streamAuthorizationTtlMillis());
         return service;
     }
@@ -624,6 +631,21 @@ public class RemoteBridgeServerConfig {
     @Bean
     public ViewOnlyStreamAuthorizationRegistry remoteBridgeViewOnlyStreamAuthorizationRegistry() {
         return new ViewOnlyStreamAuthorizationRegistry();
+    }
+
+    /**
+     * Faz 22.6 #1580 (Codex 019f0e78) — the VIEW_ONLY session lifecycle seam shared by the operator service and
+     * the broker control plane: authorize a stream on a delivered VIEW_ONLY permit, and TERMINATE (revoke
+     * authorization + close viewers) on EVERY terminal — operator (kill/deny/close) AND agent (consent-denied/
+     * local-abort/indicator-lost). It wraps the SAME authorization + viewer registry instances the data-plane
+     * handler reads, so termination is atomic across both.
+     */
+    @Bean
+    public ViewOnlySessionLifecycle remoteBridgeViewOnlySessionLifecycle(
+            ViewOnlyStreamAuthorizationRegistry remoteBridgeViewOnlyStreamAuthorizationRegistry,
+            ViewOnlyViewerRegistry remoteBridgeViewOnlyViewerRegistry) {
+        return new ViewOnlySessionLifecycle(remoteBridgeViewOnlyStreamAuthorizationRegistry,
+                remoteBridgeViewOnlyViewerRegistry);
     }
 
     /**

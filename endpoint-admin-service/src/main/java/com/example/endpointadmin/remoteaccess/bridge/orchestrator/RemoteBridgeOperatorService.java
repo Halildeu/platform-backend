@@ -19,6 +19,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Refused;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySessionLifecycle;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
 
 import java.nio.charset.StandardCharsets;
@@ -80,12 +81,12 @@ public final class RemoteBridgeOperatorService {
     private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
     private final boolean deviceKeySessionEnabled;
     private final long deviceKeyChallengeTtlMillis;
-    // Faz 22.6 #1580 (Codex 019f078a) — the VIEW_ONLY fanout authorization registry, populated when a VIEW_ONLY
-    // SCREEN_VIEW permit lands on the agent and revoked on every session-terminal path. Optional (null = this
-    // bridge does not run the #1580 view-only data plane) so existing wiring/tests are unaffected; fail-closed (a
-    // null registry records no authorization, so the data-plane handler fans nothing out). Set post-construction
-    // by the server config — this service mints no authority of its own.
-    private volatile ViewOnlyStreamAuthorizationRegistry viewOnlyStreamAuthorization;
+    // Faz 22.6 #1580 (Codex 019f078a + 019f0e78) — the VIEW_ONLY session lifecycle seam: authorize a stream on a
+    // delivered VIEW_ONLY permit, and TERMINATE (revoke authorization + close viewers) on every operator-driven
+    // terminal. Optional (null = this bridge does not run the #1580 view-only data plane) so existing wiring/tests
+    // are unaffected; fail-closed (a null seam records no authorization, so the data-plane handler fans nothing
+    // out). Set post-construction by the server config — this service mints no authority of its own.
+    private volatile ViewOnlySessionLifecycle viewOnlyLifecycle;
     private volatile long viewOnlyStreamAuthorizationTtlMillis;
 
     /** Back-compat: no device-key session attestation issuance (the prior behaviour). */
@@ -289,7 +290,7 @@ public final class RemoteBridgeOperatorService {
         }
         store.evictIfTerminal(sessionId);
         evictDeviceKeySession(sessionId, session.transportPeerKey()); // F1: no stale state for a reused sessionId
-        revokeViewOnlyAuthorization(sessionId); // #1580 — no stale fanout grant after operator close
+        terminateViewOnly(sessionId); // #1580 — no stale fanout grant after operator close
         return SessionCloseOutcome.closed(sessionId);
     }
 
@@ -304,21 +305,22 @@ public final class RemoteBridgeOperatorService {
     }
 
     /**
-     * Faz 22.6 #1580 — wire the VIEW_ONLY fanout authorization registry (server config, post-construction). When
-     * set, a successfully pushed VIEW_ONLY {@code SCREEN_VIEW} permit records a stream authorization keyed by
-     * {@code (sessionId, operationId)} bound to the agent transport peer; every session-terminal path revokes it.
+     * Faz 22.6 #1580 — wire the VIEW_ONLY session lifecycle seam (server config, post-construction). When set, a
+     * successfully pushed VIEW_ONLY {@code SCREEN_VIEW} permit records a stream authorization keyed by
+     * {@code (sessionId, operationId)} bound to the agent transport peer; every session-terminal path terminates
+     * it (revoke authorization + close viewers).
      *
-     * @param registry the authorization registry (nullable to clear the wiring)
+     * @param lifecycle the VIEW_ONLY lifecycle seam (nullable to clear the wiring)
      * @param ttlMillis optional extra cap on the authorization lifetime; {@code <= 0} = bind to permit expiry only
      */
-    public void configureViewOnlyStreamAuthorization(ViewOnlyStreamAuthorizationRegistry registry, long ttlMillis) {
-        this.viewOnlyStreamAuthorization = registry;
+    public void configureViewOnlyStreamAuthorization(ViewOnlySessionLifecycle lifecycle, long ttlMillis) {
+        this.viewOnlyLifecycle = lifecycle;
         this.viewOnlyStreamAuthorizationTtlMillis = Math.max(0L, ttlMillis);
     }
 
     private void authorizeViewOnlyStream(RemoteBridgeSession session, OperationPermit permit, long now) {
-        ViewOnlyStreamAuthorizationRegistry authz = this.viewOnlyStreamAuthorization;
-        if (authz == null || permit == null) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle == null || permit == null) {
             return;
         }
         long expiry = permit.expiresAtEpochMillis();
@@ -327,15 +329,15 @@ public final class RemoteBridgeOperatorService {
             expiry = Math.min(expiry, now + ttl);
         }
         // streamId == permit.operationId — the agent rides the SCREEN_VIEW operation id as the screen DATA stream id
-        authz.authorize(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+        lifecycle.authorizeStream(new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 permit.sessionId(), permit.operationId(), session.transportPeerKey(),
                 permit.operatorSubject(), permit.deviceId(), expiry));
     }
 
-    private void revokeViewOnlyAuthorization(String sessionId) {
-        ViewOnlyStreamAuthorizationRegistry authz = this.viewOnlyStreamAuthorization;
-        if (authz != null) {
-            authz.revokeSession(sessionId);
+    private void terminateViewOnly(String sessionId) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle != null) {
+            lifecycle.terminate(sessionId);
         }
     }
 
@@ -389,7 +391,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.KILL);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
-                revokeViewOnlyAuthorization(request.sessionId()); // #1580 — no stale fanout grant after kill
+                terminateViewOnly(request.sessionId()); // #1580 — no stale fanout grant after kill
                 yield OperatorOutcome.handled(outcome, false);
             }
             case DENY -> {
@@ -398,7 +400,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.CLOSE);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
-                revokeViewOnlyAuthorization(request.sessionId()); // #1580 — no stale fanout grant after deny
+                terminateViewOnly(request.sessionId()); // #1580 — no stale fanout grant after deny
                 yield OperatorOutcome.handled(outcome, false);
             }
         };

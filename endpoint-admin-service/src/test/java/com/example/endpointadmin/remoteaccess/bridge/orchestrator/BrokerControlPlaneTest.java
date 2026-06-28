@@ -10,6 +10,10 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMac
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySessionLifecycle;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerRegistry;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerSubscription;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -462,6 +466,59 @@ class BrokerControlPlaneTest {
         assertTrue(session.lease().locallyAborted());
         assertEquals(0, store.liveCount());
         assertTrue(sink.has("KILLED:indicator-lost"));
+    }
+
+    // --- #1580: agent-driven terminals must terminate the VIEW_ONLY surface (Codex 019f0e78) ----------
+
+    @Test
+    void localAbortTerminatesViewOnlyFanoutAuthorizationAndViewers() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        opened(store, "sess-1");
+        BrokerControlPlane plane = plane(store, new RecordingSinkStub());
+
+        ViewOnlyStreamAuthorizationRegistry authz = new ViewOnlyStreamAuthorizationRegistry();
+        ViewOnlyViewerRegistry viewers = new ViewOnlyViewerRegistry(1);
+        plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
+        // drive the session to ACTIVE
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW, PROMPT_EXPIRY));
+
+        // an authorized VIEW_ONLY screen stream + a subscribed operator viewer, bound to this peer
+        authz.authorize(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+                "sess-1", "op-1", "peer-1", "operator@x", "dev-1", PROMPT_EXPIRY));
+        ViewOnlyViewerSubscription viewer = viewers.subscribe("sess-1", null).orElseThrow();
+        assertTrue(authz.isAuthorized("sess-1", "op-1", "peer-1", NOW));
+
+        // the endpoint user aborts → the broker's agent-driven terminal MUST terminate the view-only surface
+        plane.onAuditEvent(PEER, new RemoteBridgeMessages.AuditEvent("sess-1",
+                BrokerControlPlane.EVENT_LOCAL_ABORT, "", NOW + 2000));
+
+        assertFalse(authz.isAuthorized("sess-1", "op-1", "peer-1", NOW + 2000)); // grant revoked — no stale fanout
+        assertTrue(viewer.isClosed());                                            // viewer detached
+        assertEquals(0, viewers.viewerCount("sess-1"));
+    }
+
+    @Test
+    void consentDeniedTerminatesViewOnlyFanoutAuthorizationAndViewers() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        opened(store, "sess-1");
+        BrokerControlPlane plane = plane(store, new RecordingSinkStub());
+
+        ViewOnlyStreamAuthorizationRegistry authz = new ViewOnlyStreamAuthorizationRegistry();
+        ViewOnlyViewerRegistry viewers = new ViewOnlyViewerRegistry(1);
+        plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
+
+        // (a defence-in-depth grant could exist before consent resolves) — a denial must still clean it up
+        authz.authorize(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+                "sess-1", "op-1", "peer-1", "operator@x", "dev-1", PROMPT_EXPIRY));
+        ViewOnlyViewerSubscription viewer = viewers.subscribe("sess-1", null).orElseThrow();
+
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", false, "Console",
+                NOW, PROMPT_EXPIRY));
+
+        assertFalse(authz.isAuthorized("sess-1", "op-1", "peer-1", NOW));
+        assertTrue(viewer.isClosed());
+        assertEquals(0, viewers.viewerCount("sess-1"));
     }
 
     @Test
