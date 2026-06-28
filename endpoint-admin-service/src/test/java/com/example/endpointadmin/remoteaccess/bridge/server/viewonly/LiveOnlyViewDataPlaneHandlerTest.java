@@ -51,8 +51,12 @@ class LiveOnlyViewDataPlaneHandlerTest {
                 .build();
     }
 
+    private static final Object INCARNATION = new Object();
+
     private void authorize(String streamId) {
-        authz.authorize(new Authorization("s1", streamId, "peer-A", "operator@acik", "device-1", EXPIRY));
+        authz.beginSession("s1", INCARNATION);
+        authz.authorize(INCARNATION,
+                new Authorization("s1", streamId, "peer-A", "operator@acik", "device-1", EXPIRY));
     }
 
     private double frames(String disposition) {
@@ -100,7 +104,8 @@ class LiveOnlyViewDataPlaneHandlerTest {
 
     @Test
     void authorizationBoundToDifferentPeer_isUnauthorized() {
-        authz.authorize(new Authorization("s1", "op-1", "peer-OTHER", "operator@acik", "device-1", EXPIRY));
+        authz.beginSession("s1", INCARNATION);
+        authz.authorize(INCARNATION, new Authorization("s1", "op-1", "peer-OTHER", "operator@acik", "device-1", EXPIRY));
         viewers.subscribe("s1", null).orElseThrow();
 
         handler.onDataFrame(PEER, "s1", frame("op-1", "image/png")); // PEER is peer-A, grant is peer-OTHER

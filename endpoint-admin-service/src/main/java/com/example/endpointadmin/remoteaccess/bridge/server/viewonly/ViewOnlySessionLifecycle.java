@@ -26,19 +26,22 @@ public final class ViewOnlySessionLifecycle {
     }
 
     /**
-     * Start (or restart) a VIEW_ONLY session incarnation — clears any prior terminate tombstone (+ stale authz)
-     * so a legitimately reused sessionId can authorize a stream again.
+     * Start (or restart) a VIEW_ONLY session incarnation — records the incarnation token and clears any stale
+     * authorization so a legitimately reused sessionId can authorize a stream again. Only an
+     * {@link #authorizeStream} carrying this exact token will be accepted.
      */
-    public void beginSession(String sessionId) {
-        authorization.beginSession(sessionId);
+    public void beginSession(String sessionId, Object incarnation) {
+        authorization.beginSession(sessionId, incarnation);
     }
 
     /**
      * Record a VIEW_ONLY stream authorization (on a delivered VIEW_ONLY permit). Returns {@code false} if it was
-     * refused because the session has been terminated since its last {@link #beginSession} (terminate wins).
+     * refused because {@code incarnation} is not the current session incarnation (terminated since, reopened, or
+     * never begun) — terminate/reopen wins.
      */
-    public boolean authorizeStream(ViewOnlyStreamAuthorizationRegistry.Authorization authorization) {
-        return this.authorization.authorize(authorization);
+    public boolean authorizeStream(Object incarnation,
+                                   ViewOnlyStreamAuthorizationRegistry.Authorization authorization) {
+        return this.authorization.authorize(incarnation, authorization);
     }
 
     /**

@@ -14,15 +14,23 @@ import java.util.concurrent.ConcurrentMap;
  * {@code (sessionId, streamId)} where {@code streamId == permit.operationId} (the wire binding the agent uses for
  * the screen DATA stream).
  *
- * <p>{@link #isAuthorized} enforces the full fanout gate the handler needs: an authorization exists for the
- * {@code (sessionId, streamId)}, the authenticated transport peer matches the one the permit was pushed to
- * (a different agent cannot ride another device's authorization), and the authorization has not expired (it is
- * bound to the short permit expiry, with an optional extra TTL cap). Default behaviour with no authorization is
- * fail-closed: drop the frame, never fan it out.
+ * <p>{@link #isAuthorized} enforces the full fanout gate the handler needs (lock-free, the per-frame data path):
+ * an authorization exists for the {@code (sessionId, streamId)}, the authenticated transport peer matches the one
+ * the permit was pushed to, and the authorization has not expired. Default with no authorization is fail-closed.
  *
- * <p>Terminate-wins (Codex 019f0e78 re-review): {@link #revokeSession} both clears the authorizations AND
- * tombstones the session, so a late {@link #authorize} that races the terminate (operator permit-push →
- * authorize gap coinciding with an agent local-abort) is refused until the next {@link #beginSession}.
+ * <p><b>Incarnation-bound, terminate-wins (Codex 019f0e78 re-review).</b> Authorize/begin/revoke serialize on a
+ * control lock and are bound to a per-session <em>incarnation token</em> (the broker {@link Object} identity of
+ * the session the permit was minted for):
+ * <ul>
+ *   <li>{@link #beginSession} records the current incarnation token for a (re)opened session.</li>
+ *   <li>{@link #authorize} records a grant ONLY if the caller's incarnation token is the current one — so a late
+ *       authorize that races a terminate (same incarnation) or a reopen (a different incarnation reusing the id)
+ *       is refused and records nothing.</li>
+ *   <li>{@link #revokeSession} sets a TERMINATED marker, so a same-incarnation late authorize is refused until
+ *       the next {@link #beginSession}.</li>
+ * </ul>
+ * The data path stays lock-free because a stale authorize is never written — {@link #isAuthorized} needs no
+ * generation check.
  */
 public final class ViewOnlyStreamAuthorizationRegistry {
 
@@ -59,22 +67,24 @@ public final class ViewOnlyStreamAuthorizationRegistry {
         }
     }
 
-    private static final int MAX_TERMINATED_TOMBSTONES = 8192;
+    private static final int MAX_TRACKED_SESSIONS = 8192;
     // a single key separator used EVERYWHERE (key build + session-prefix sweeps) so the two can never drift. NUL
     // cannot appear in a wire id (WireContract.isValidId allowlist), so "s1" + SEP can never prefix "s10" + SEP.
     private static final String KEY_SEP = "\u0000";
+    // the marker stored for a terminated incarnation — distinct identity that no caller can ever hold.
+    private static final Object TERMINATED = new Object();
 
     private final ConcurrentMap<String, Authorization> byKey = new ConcurrentHashMap<>();
-    // control-plane lock serializing authorize / revoke / begin (low-frequency); the data path (isAuthorized)
-    // reads byKey lock-free. The tombstone closes the operator-push→authorize vs agent-terminate race: a session
-    // terminated since its last begin refuses a late authorize (terminate wins — Codex 019f0e78 re-review).
+    // control-plane lock serializing authorize / begin / revoke (low-frequency); the data path (isAuthorized)
+    // reads byKey lock-free.
     private final Object controlLock = new Object();
-    // bounded (oldest-evicted) tombstone of sessions terminated since their last begin; guarded by controlLock.
-    private final Map<String, Boolean> terminatedSessions =
+    // current incarnation token per session (or TERMINATED); bounded (oldest-evicted), guarded by controlLock.
+    // A live session's token is its broker Object identity; a stale authorize whose token != current is refused.
+    private final Map<String, Object> incarnationBySession =
             new LinkedHashMap<>(256, 0.75f, false) {
                 @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
-                    return size() > MAX_TERMINATED_TOMBSTONES;
+                protected boolean removeEldestEntry(Map.Entry<String, Object> eldest) {
+                    return size() > MAX_TRACKED_SESSIONS;
                 }
             };
 
@@ -87,36 +97,42 @@ public final class ViewOnlyStreamAuthorizationRegistry {
     }
 
     /**
-     * Record (or refresh) a VIEW_ONLY stream authorization — called on a VIEW_ONLY permit push. REFUSED (returns
-     * {@code false}, records nothing) if the session has been terminated since its last {@link #beginSession}:
-     * an agent-driven terminal (local abort / indicator loss) that lands between the operator's permit push and
-     * this call must NOT leave a fresh fanout authorization behind a dead session (terminate wins).
+     * Start (or restart) a VIEW_ONLY session incarnation: record its incarnation token and clear any stale
+     * authorization for a reused {@code sessionId} (the broker session id is client-supplied + reusable, F1).
+     * Only an {@link #authorize} carrying THIS exact token will be accepted until the next begin/revoke.
      *
-     * @return {@code true} if the authorization was recorded; {@code false} if refused (session terminated)
+     * @param sessionId   the session
+     * @param incarnation the broker incarnation token (the session object identity) — must be non-null
      */
-    public boolean authorize(Authorization authorization) {
-        Objects.requireNonNull(authorization, "authorization");
+    public void beginSession(String sessionId, Object incarnation) {
+        if (sessionId == null) {
+            return;
+        }
+        Objects.requireNonNull(incarnation, "incarnation");
         synchronized (controlLock) {
-            if (terminatedSessions.containsKey(authorization.sessionId())) {
-                return false;
-            }
-            byKey.put(key(authorization.sessionId(), authorization.streamId()), authorization);
-            return true;
+            incarnationBySession.put(sessionId, incarnation);
+            byKey.keySet().removeIf(k -> k.startsWith(sessionPrefix(sessionId)));
         }
     }
 
     /**
-     * Start (or restart) a VIEW_ONLY session incarnation — clears any terminate tombstone AND any stale
-     * authorization for a reused {@code sessionId}, so a legitimately-reused session can authorize again (the
-     * broker session id is client-supplied + reusable, F1).
+     * Record (or refresh) a VIEW_ONLY stream authorization — called on a VIEW_ONLY permit push. REFUSED (returns
+     * {@code false}, records nothing) unless the caller's {@code incarnation} is the CURRENT incarnation for the
+     * session: a session terminated since (TERMINATED marker), reopened as a different incarnation, or never
+     * begun, all refuse — so neither a same-incarnation terminate race nor a cross-incarnation stale authorize
+     * can leave a grant behind. The data path therefore needs no generation check.
+     *
+     * @return {@code true} if recorded; {@code false} if refused (not the current incarnation)
      */
-    public void beginSession(String sessionId) {
-        if (sessionId == null) {
-            return;
-        }
+    public boolean authorize(Object incarnation, Authorization authorization) {
+        Objects.requireNonNull(authorization, "authorization");
         synchronized (controlLock) {
-            terminatedSessions.remove(sessionId);
-            byKey.keySet().removeIf(k -> k.startsWith(sessionPrefix(sessionId)));
+            Object current = incarnationBySession.get(authorization.sessionId());
+            if (current == null || current == TERMINATED || current != incarnation) {
+                return false;
+            }
+            byKey.put(key(authorization.sessionId(), authorization.streamId()), authorization);
+            return true;
         }
     }
 
@@ -147,15 +163,16 @@ public final class ViewOnlyStreamAuthorizationRegistry {
     }
 
     /**
-     * Revoke every authorization for a session AND tombstone it (called on session terminal — no stale fanout
-     * grant, and a late {@link #authorize} racing the terminate is refused until the next {@link #beginSession}).
+     * Revoke every authorization for a session AND mark it TERMINATED (called on session terminal — no stale
+     * fanout grant, and a late {@link #authorize} for this incarnation is refused until the next
+     * {@link #beginSession}).
      */
     public void revokeSession(String sessionId) {
         if (sessionId == null) {
             return;
         }
         synchronized (controlLock) {
-            terminatedSessions.put(sessionId, Boolean.TRUE);
+            incarnationBySession.put(sessionId, TERMINATED);
             byKey.keySet().removeIf(k -> k.startsWith(sessionPrefix(sessionId)));
         }
     }

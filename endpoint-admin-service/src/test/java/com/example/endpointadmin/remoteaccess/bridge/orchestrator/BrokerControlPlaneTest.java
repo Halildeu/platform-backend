@@ -484,7 +484,9 @@ class BrokerControlPlaneTest {
                 NOW, PROMPT_EXPIRY));
 
         // an authorized VIEW_ONLY screen stream + a subscribed operator viewer, bound to this peer
-        authz.authorize(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+        Object incarnation = new Object();
+        authz.beginSession("sess-1", incarnation);
+        authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 "sess-1", "op-1", "peer-1", "operator@x", "dev-1", PROMPT_EXPIRY));
         ViewOnlyViewerSubscription viewer = viewers.subscribe("sess-1", null).orElseThrow();
         assertTrue(authz.isAuthorized("sess-1", "op-1", "peer-1", NOW));
@@ -509,7 +511,9 @@ class BrokerControlPlaneTest {
         plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
 
         // (a defence-in-depth grant could exist before consent resolves) — a denial must still clean it up
-        authz.authorize(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+        Object incarnation = new Object();
+        authz.beginSession("sess-1", incarnation);
+        authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 "sess-1", "op-1", "peer-1", "operator@x", "dev-1", PROMPT_EXPIRY));
         ViewOnlyViewerSubscription viewer = viewers.subscribe("sess-1", null).orElseThrow();
 

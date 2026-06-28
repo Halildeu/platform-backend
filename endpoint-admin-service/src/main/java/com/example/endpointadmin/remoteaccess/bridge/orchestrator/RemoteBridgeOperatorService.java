@@ -213,9 +213,9 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
-        // #1580 — a fresh VIEW_ONLY incarnation: clear any terminate tombstone (+ stale authz) for this (reused)
-        // sessionId so a legitimately reused session can authorize a screen stream again.
-        beginViewOnlySession(session.sessionId());
+        // #1580 — a fresh VIEW_ONLY incarnation: record this session as the incarnation token + clear stale authz
+        // for this (reused) sessionId so a legitimately reused session can authorize a screen stream again.
+        beginViewOnlySession(session);
 
         // Faz 22.6 #548 step-5b — issue the canonical device-key challenge AFTER the session exists and BEFORE the
         // consent prompt, so the agent can answer it during the consent window (the DEVICE_KEY_ATTESTATION_REAL
@@ -238,6 +238,7 @@ public final class RemoteBridgeOperatorService {
                 evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear the undelivered challenge
                 session.transition(Event.KILL);
                 store.evictIfTerminal(session.sessionId());
+                terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
                 return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
             }
         }
@@ -250,6 +251,7 @@ public final class RemoteBridgeOperatorService {
             evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear any device-key state too
             session.transition(Event.KILL);
             store.evictIfTerminal(session.sessionId());
+            terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
             return SessionOpenOutcome.rejected(session.sessionId(), "consent-prompt-not-delivered");
         }
         return SessionOpenOutcome.prompted(session.sessionId());
@@ -332,7 +334,9 @@ public final class RemoteBridgeOperatorService {
             expiry = Math.min(expiry, now + ttl);
         }
         // streamId == permit.operationId — the agent rides the SCREEN_VIEW operation id as the screen DATA stream id
-        lifecycle.authorizeStream(new ViewOnlyStreamAuthorizationRegistry.Authorization(
+        // the session object IS the incarnation token: a late authorize after this incarnation terminated or was
+        // replaced by a reopen carries a stale token and is refused by the registry (no stale fanout grant).
+        lifecycle.authorizeStream(session, new ViewOnlyStreamAuthorizationRegistry.Authorization(
                 permit.sessionId(), permit.operationId(), session.transportPeerKey(),
                 permit.operatorSubject(), permit.deviceId(), expiry));
     }
@@ -344,11 +348,12 @@ public final class RemoteBridgeOperatorService {
         }
     }
 
-    private void beginViewOnlySession(String sessionId) {
+    private void beginViewOnlySession(RemoteBridgeSession session) {
         ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
         if (lifecycle != null) {
-            // fresh incarnation: clear any prior terminate tombstone (+ stale authz) for a reused sessionId
-            lifecycle.beginSession(sessionId);
+            // fresh incarnation: record THIS session object as the incarnation token + clear any stale authz for
+            // a reused sessionId, so only an authorize for this incarnation is accepted.
+            lifecycle.beginSession(session.sessionId(), session);
         }
     }
 
