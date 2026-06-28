@@ -19,6 +19,8 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Refused;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySessionLifecycle;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -79,6 +81,13 @@ public final class RemoteBridgeOperatorService {
     private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
     private final boolean deviceKeySessionEnabled;
     private final long deviceKeyChallengeTtlMillis;
+    // Faz 22.6 #1580 (Codex 019f078a + 019f0e78) — the VIEW_ONLY session lifecycle seam: authorize a stream on a
+    // delivered VIEW_ONLY permit, and TERMINATE (revoke authorization + close viewers) on every operator-driven
+    // terminal. Optional (null = this bridge does not run the #1580 view-only data plane) so existing wiring/tests
+    // are unaffected; fail-closed (a null seam records no authorization, so the data-plane handler fans nothing
+    // out). Set post-construction by the server config — this service mints no authority of its own.
+    private volatile ViewOnlySessionLifecycle viewOnlyLifecycle;
+    private volatile long viewOnlyStreamAuthorizationTtlMillis;
 
     /** Back-compat: no device-key session attestation issuance (the prior behaviour). */
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
@@ -204,6 +213,9 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
+        // #1580 — a fresh VIEW_ONLY incarnation: record this session as the incarnation token + clear stale authz
+        // for this (reused) sessionId so a legitimately reused session can authorize a screen stream again.
+        beginViewOnlySession(session);
 
         // Faz 22.6 #548 step-5b — issue the canonical device-key challenge AFTER the session exists and BEFORE the
         // consent prompt, so the agent can answer it during the consent window (the DEVICE_KEY_ATTESTATION_REAL
@@ -226,6 +238,7 @@ public final class RemoteBridgeOperatorService {
                 evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear the undelivered challenge
                 session.transition(Event.KILL);
                 store.evictIfTerminal(session.sessionId());
+                terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
                 return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
             }
         }
@@ -238,6 +251,7 @@ public final class RemoteBridgeOperatorService {
             evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear any device-key state too
             session.transition(Event.KILL);
             store.evictIfTerminal(session.sessionId());
+            terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
             return SessionOpenOutcome.rejected(session.sessionId(), "consent-prompt-not-delivered");
         }
         return SessionOpenOutcome.prompted(session.sessionId());
@@ -281,6 +295,7 @@ public final class RemoteBridgeOperatorService {
         }
         store.evictIfTerminal(sessionId);
         evictDeviceKeySession(sessionId, session.transportPeerKey()); // F1: no stale state for a reused sessionId
+        terminateViewOnly(sessionId); // #1580 — no stale fanout grant after operator close
         return SessionCloseOutcome.closed(sessionId);
     }
 
@@ -291,6 +306,54 @@ public final class RemoteBridgeOperatorService {
             return HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    /**
+     * Faz 22.6 #1580 — wire the VIEW_ONLY session lifecycle seam (server config, post-construction). When set, a
+     * successfully pushed VIEW_ONLY {@code SCREEN_VIEW} permit records a stream authorization keyed by
+     * {@code (sessionId, operationId)} bound to the agent transport peer; every session-terminal path terminates
+     * it (revoke authorization + close viewers).
+     *
+     * @param lifecycle the VIEW_ONLY lifecycle seam (nullable to clear the wiring)
+     * @param ttlMillis optional extra cap on the authorization lifetime; {@code <= 0} = bind to permit expiry only
+     */
+    public void configureViewOnlyStreamAuthorization(ViewOnlySessionLifecycle lifecycle, long ttlMillis) {
+        this.viewOnlyLifecycle = lifecycle;
+        this.viewOnlyStreamAuthorizationTtlMillis = Math.max(0L, ttlMillis);
+    }
+
+    private void authorizeViewOnlyStream(RemoteBridgeSession session, OperationPermit permit, long now) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle == null || permit == null) {
+            return;
+        }
+        long expiry = permit.expiresAtEpochMillis();
+        long ttl = this.viewOnlyStreamAuthorizationTtlMillis;
+        if (ttl > 0) {
+            expiry = Math.min(expiry, now + ttl);
+        }
+        // streamId == permit.operationId — the agent rides the SCREEN_VIEW operation id as the screen DATA stream id
+        // the session object IS the incarnation token: a late authorize after this incarnation terminated or was
+        // replaced by a reopen carries a stale token and is refused by the registry (no stale fanout grant).
+        lifecycle.authorizeStream(session, new ViewOnlyStreamAuthorizationRegistry.Authorization(
+                permit.sessionId(), permit.operationId(), session.transportPeerKey(),
+                permit.operatorSubject(), permit.deviceId(), expiry));
+    }
+
+    private void terminateViewOnly(String sessionId) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle != null) {
+            lifecycle.terminate(sessionId);
+        }
+    }
+
+    private void beginViewOnlySession(RemoteBridgeSession session) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle != null) {
+            // fresh incarnation: record THIS session object as the incarnation token + clear any stale authz for
+            // a reused sessionId, so only an authorize for this incarnation is accepted.
+            lifecycle.beginSession(session.sessionId(), session);
         }
     }
 
@@ -326,6 +389,12 @@ public final class RemoteBridgeOperatorService {
                     // VIEW_ONLY (and any non-command capability) carries no command — push the bare signed permit.
                     pushed = registry.sendOperationPermit(session.transportPeerKey(), permit, now);
                 }
+                if (pushed && permit.capability() == RemoteSessionCapability.VIEW_ONLY) {
+                    // #1580 — a delivered VIEW_ONLY permit authorizes the matching screen DATA stream for fanout
+                    // (streamId == operationId), bound to this agent peer and the permit's expiry. Fail-closed: a
+                    // permit that did NOT land authorizes nothing.
+                    authorizeViewOnlyStream(session, permit, now);
+                }
                 // The PERMIT branch only fires under a full policy pass, exercised at the owner-gated real-PERMIT
                 // e2e once the B1.4d / step-up trust roots land — forcing a PERMIT here would manufacture trust
                 // the system does not have (the e2e is deliberately PERMIT-agnostic).
@@ -338,6 +407,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.KILL);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
+                terminateViewOnly(request.sessionId()); // #1580 — no stale fanout grant after kill
                 yield OperatorOutcome.handled(outcome, false);
             }
             case DENY -> {
@@ -346,6 +416,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.CLOSE);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
+                terminateViewOnly(request.sessionId()); // #1580 — no stale fanout grant after deny
                 yield OperatorOutcome.handled(outcome, false);
             }
         };

@@ -126,7 +126,7 @@ class RemoteBridgeMtlsTest {
 
     private static RemoteBridgeServerProperties props(int port, RemoteBridgeServerProperties.Tls tls,
                                                       String bindHost, boolean insecure) {
-        return new RemoteBridgeServerProperties(true, bindHost, port, 0, 1024, 1000, tls, insecure, null);
+        return new RemoteBridgeServerProperties(true, bindHost, port, 0, 1024, 1000, tls, insecure, null, null);
     }
 
     private RemoteBridgeGrpcServer startTlsServer(int port) {

@@ -2,6 +2,9 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.List;
+import java.util.Locale;
+
 /**
  * Faz 22.6 T-2b (Codex 019eb9fb) — remote-bridge grpc server configuration. {@code enabled} defaults to FALSE
  * and the entire server configuration class is conditional on it (ADR-0034 disabled-by-default): with the
@@ -23,6 +26,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param shutdownGraceMillis  graceful shutdown window before forced termination
  * @param tls                  mutual-TLS credential file paths (all three required together)
  * @param allowInsecurePlaintext explicit loopback-only plaintext escape (tests/local dev); default false
+ * @param viewOnly             Faz 22.6 #1580 VIEW_ONLY screen-observation slice config (recording mode +
+ *                             fanout bounds + MIME allowlist + parametric retention); recording OFF by default
  */
 @ConfigurationProperties(prefix = "remote-bridge")
 public record RemoteBridgeServerProperties(boolean enabled,
@@ -33,7 +38,8 @@ public record RemoteBridgeServerProperties(boolean enabled,
                                            long shutdownGraceMillis,
                                            Tls tls,
                                            boolean allowInsecurePlaintext,
-                                           Permit permit) {
+                                           Permit permit,
+                                           ViewOnly viewOnly) {
 
     /**
      * Mutual-TLS credential FILE PATHS ({@code -path} suffix — these are never inline PEM bodies). The
@@ -76,6 +82,100 @@ public record RemoteBridgeServerProperties(boolean enabled,
         }
     }
 
+    /**
+     * Faz 22.6 #1580 (ADR-0044 D3/D5; Codex 019f078a) — the VIEW_ONLY screen-observation slice config.
+     *
+     * <p><b>Recording is OFF by default</b> ({@link RecordingMode#DISABLED}): a disabled bridge fans screen
+     * frames out to a live operator viewer and persists NO content — no WORM chain, no content hash — only the
+     * ephemeral metadata audit + counters. {@link RecordingMode#ENABLED} is the parametric-retention opt-in
+     * (record-BEFORE-fanout WORM hash chain + recording-down → fail-closed); it MUST declare retention +
+     * an owner-decision reference, and a DISABLED bridge MUST NOT carry any of those enabled-only fields
+     * (the untested-privacy-claim guard — ADR-0044 D5, B0 negative matrix). An invalid combination fails the
+     * configuration-binding (an enabled bridge then refuses to start), never silently downgrades.
+     *
+     * @param recordingMode              DISABLED (default, no content persistence) or ENABLED (WORM + retention)
+     * @param maxViewersPerSession       fanout bound per session (default 1 — the one-to-one pilot invariant)
+     * @param streamAuthorizationTtlMillis optional extra cap on a stream's fanout authorization; {@code 0}
+     *                                   (default) = bind to the VIEW_ONLY permit's own expiry only
+     * @param allowedFrameContentTypes   image MIME allowlist for fanned-out frames (default png/jpeg/webp)
+     * @param recordingRetentionDays     ENABLED-only: content WORM retention; MUST be 0 when DISABLED
+     * @param sessionMetadataRetentionDays ENABLED-only: metadata retention; MUST be 0 when DISABLED
+     * @param recordingRetentionUnit     retention unit; pinned to {@code days} (ADR-0044, B0)
+     * @param ownerDecisionRef           ENABLED-only: the owner decision/issue reference that authorized
+     *                                   recording; MUST be blank when DISABLED
+     */
+    public record ViewOnly(RecordingMode recordingMode,
+                           int maxViewersPerSession,
+                           long streamAuthorizationTtlMillis,
+                           List<String> allowedFrameContentTypes,
+                           long recordingRetentionDays,
+                           long sessionMetadataRetentionDays,
+                           String recordingRetentionUnit,
+                           String ownerDecisionRef) {
+
+        /** Content-recording mode. DISABLED (default) = live fanout only, no content persistence. */
+        public enum RecordingMode { DISABLED, ENABLED }
+
+        private static final List<String> DEFAULT_ALLOWED_FRAME_CONTENT_TYPES =
+                List.of("image/png", "image/jpeg", "image/webp");
+
+        public ViewOnly {
+            recordingMode = recordingMode == null ? RecordingMode.DISABLED : recordingMode;
+            if (maxViewersPerSession <= 0) {
+                maxViewersPerSession = 1;
+            }
+            if (streamAuthorizationTtlMillis < 0) {
+                streamAuthorizationTtlMillis = 0;
+            }
+            allowedFrameContentTypes = normalizeContentTypes(allowedFrameContentTypes);
+            recordingRetentionUnit = recordingRetentionUnit == null || recordingRetentionUnit.isBlank()
+                    ? "days" : recordingRetentionUnit.strip().toLowerCase(Locale.ROOT);
+            ownerDecisionRef = ownerDecisionRef == null ? "" : ownerDecisionRef.strip();
+            if (recordingRetentionDays < 0 || sessionMetadataRetentionDays < 0) {
+                throw new IllegalStateException("remote-bridge.view-only retention days cannot be negative");
+            }
+            // ADR-0044 D5 / B0: a DISABLED (recording-off) bridge MUST NOT carry any enabled-only field —
+            // an untested privacy claim is fail-closed, not silently ignored.
+            if (recordingMode == RecordingMode.DISABLED) {
+                if (recordingRetentionDays != 0 || sessionMetadataRetentionDays != 0 || !ownerDecisionRef.isEmpty()) {
+                    throw new IllegalStateException("remote-bridge.view-only.recording-mode=disabled MUST NOT set "
+                            + "recording-retention-days / session-metadata-retention-days / owner-decision-ref "
+                            + "(enabled-only fields on a recording-off bridge)");
+                }
+            } else {
+                // ENABLED requires the parametric retention + the owner decision reference — fail-closed,
+                // a bridge cannot enable content recording without declaring how long + on whose authority.
+                if (recordingRetentionDays <= 0 || sessionMetadataRetentionDays <= 0) {
+                    throw new IllegalStateException("remote-bridge.view-only.recording-mode=enabled requires "
+                            + "positive recording-retention-days and session-metadata-retention-days");
+                }
+                if (!"days".equals(recordingRetentionUnit)) {
+                    throw new IllegalStateException("remote-bridge.view-only.recording-retention-unit must be 'days'");
+                }
+                if (ownerDecisionRef.isEmpty()) {
+                    throw new IllegalStateException("remote-bridge.view-only.recording-mode=enabled requires a "
+                            + "non-blank owner-decision-ref");
+                }
+            }
+        }
+
+        public boolean recordingEnabled() {
+            return recordingMode == RecordingMode.ENABLED;
+        }
+
+        private static List<String> normalizeContentTypes(List<String> raw) {
+            if (raw == null || raw.isEmpty()) {
+                return DEFAULT_ALLOWED_FRAME_CONTENT_TYPES;
+            }
+            List<String> normalized = raw.stream()
+                    .filter(t -> t != null && !t.isBlank())
+                    .map(t -> t.strip().toLowerCase(Locale.ROOT))
+                    .distinct()
+                    .toList();
+            return normalized.isEmpty() ? DEFAULT_ALLOWED_FRAME_CONTENT_TYPES : normalized;
+        }
+    }
+
     public RemoteBridgeServerProperties {
         bindHost = bindHost == null || bindHost.isBlank() ? "127.0.0.1" : bindHost;
         if (port <= 0) {
@@ -92,5 +192,8 @@ public record RemoteBridgeServerProperties(boolean enabled,
         }
         tls = tls == null ? new Tls(null, null, null) : tls;
         permit = permit == null ? new Permit(null, null) : permit;
+        viewOnly = viewOnly == null
+                ? new ViewOnly(ViewOnly.RecordingMode.DISABLED, 0, 0, null, 0, 0, null, null)
+                : viewOnly;
     }
 }

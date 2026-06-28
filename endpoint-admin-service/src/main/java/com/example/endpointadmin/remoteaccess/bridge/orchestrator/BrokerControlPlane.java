@@ -5,6 +5,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMac
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlPlaneHandler;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySessionLifecycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -56,6 +57,11 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     private final DeviceKeyChallengeStore deviceKeyChallengeStore;
     private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
     private final Map<String, RemoteBridgeMessages.AgentHello> lastHelloByPeer = new ConcurrentHashMap<>();
+    // Faz 22.6 #1580 (Codex 019f0e78) — terminate the VIEW_ONLY surface (revoke fanout authorization + close
+    // viewers) on AGENT-driven terminals (consent-denied / local-abort / active-indicator-lost), so a stale
+    // authorization can never keep fanning screen frames out after the endpoint user pulls consent. Optional
+    // (null = no #1580 view-only plane); set post-construction by the server config.
+    private volatile ViewOnlySessionLifecycle viewOnlyLifecycle;
 
     public BrokerControlPlane(PeerTrustLedger ledger,
                               RemoteBridgeSessionStore store,
@@ -138,6 +144,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
             if (session.transition(Event.CONSENT_DENIED).accepted()) {
                 store.evictIfTerminal(session.sessionId());
                 evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 terminal cleanup
+                terminateViewOnly(session.sessionId()); // #1580 — no stale fanout after consent denied
                 recordBestEffort(session.sessionId(), "CONSENT_DENIED");
             } else {
                 recordBestEffort(session.sessionId(), "CONSENT_REFUSED:not-pending");
@@ -189,6 +196,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                         if (session.transition(Event.LOCAL_ABORT).accepted()) {
                             store.evictIfTerminal(session.sessionId());
                             evictDeviceKeySession(session.sessionId(), session.transportPeerKey()); // F1 cleanup
+                            terminateViewOnly(session.sessionId()); // #1580 — no stale fanout after abort/indicator-loss
                             recordBestEffort(session.sessionId(), "KILLED:" + cause);
                         }
                     });
@@ -272,6 +280,21 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         }
         if (deviceKeyEvidenceStore != null) {
             deviceKeyEvidenceStore.evict(sessionId, transportPeerKey);
+        }
+    }
+
+    /**
+     * Faz 22.6 #1580 — wire the VIEW_ONLY lifecycle seam (server config, post-construction) so agent-driven
+     * terminals also terminate the view-only surface. Optional/nullable; existing wiring/tests unaffected.
+     */
+    public void configureViewOnlyLifecycle(ViewOnlySessionLifecycle lifecycle) {
+        this.viewOnlyLifecycle = lifecycle;
+    }
+
+    private void terminateViewOnly(String sessionId) {
+        ViewOnlySessionLifecycle lifecycle = this.viewOnlyLifecycle;
+        if (lifecycle != null) {
+            lifecycle.terminate(sessionId);
         }
     }
 
