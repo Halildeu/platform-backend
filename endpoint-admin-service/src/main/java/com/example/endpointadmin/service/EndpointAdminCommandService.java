@@ -1326,7 +1326,8 @@ public class EndpointAdminCommandService {
      * {@code includeHardware}, {@code includeDeviceHealth},
      * {@code includeOutdatedSoftware}, {@code includeHotfixPosture},
      * {@code includeDiagnostics}, {@code includeServices},
-     * {@code includeStartupExposure}, and {@code includeAppControl}.
+     * {@code includeStartupExposure}, {@code includeAppControl}, and
+     * {@code includeSecurityNetwork}.
      *
      * <p>Scope (deliberate — Codex review to validate the default): this is
      * the operator-initiated full collect, so running the heavier health +
@@ -1356,6 +1357,7 @@ public class EndpointAdminCommandService {
         payload.putIfAbsent("includeServices", true);
         payload.putIfAbsent("includeStartupExposure", true);
         payload.putIfAbsent("includeAppControl", true);
+        payload.putIfAbsent("includeSecurityNetwork", true);
     }
 
     private void assertUpdateAgentHeartbeatFreshAndCapable(EndpointDevice device,

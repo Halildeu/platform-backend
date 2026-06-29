@@ -82,6 +82,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         // AG-041-be — Application Control (WDAC + AppLocker) ingest service + policy (Faz 22.5).
         com.example.endpointadmin.security.AppControlPayloadPolicy.class,
         EndpointAppControlService.class,
+        // #527 — structured security/network result block validator, feeding
+        // EDR_NETWORK FDQ advisory ingest through an AFTER_COMMIT listener in
+        // the full runtime.
+        com.example.endpointadmin.security.SecurityNetworkPayloadPolicy.class,
         // Faz 22.8A (#117) — backup dry-run manifest mirror validator wired into
         // the COLLECT_BACKUP_DRYRUN submitResult branch (contract §5).
         com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy.class,

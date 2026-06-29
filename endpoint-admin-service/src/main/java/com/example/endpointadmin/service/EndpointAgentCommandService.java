@@ -18,6 +18,7 @@ import com.example.endpointadmin.security.HardwareInventoryPayloadPolicy;
 import com.example.endpointadmin.security.HotfixPosturePayloadPolicy;
 import com.example.endpointadmin.security.InstallEvidencePayloadPolicy;
 import com.example.endpointadmin.security.OutdatedSoftwarePayloadPolicy;
+import com.example.endpointadmin.security.SecurityNetworkPayloadPolicy;
 import com.example.endpointadmin.security.SoftwareInventoryPayloadPolicy;
 import com.example.endpointadmin.security.UninstallEvidencePayloadPolicy;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,6 +60,7 @@ public class EndpointAgentCommandService {
     private final com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy;
     private final com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy;
     private final com.example.endpointadmin.security.AppControlPayloadPolicy appControlPayloadPolicy;
+    private final SecurityNetworkPayloadPolicy securityNetworkPayloadPolicy;
     private final com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy backupDryRunManifestPayloadPolicy;
     private final EndpointSoftwareInventoryService softwareInventoryService;
     private final EndpointHardwareInventoryService hardwareInventoryService;
@@ -106,6 +108,7 @@ public class EndpointAgentCommandService {
                                        com.example.endpointadmin.security.ServicesPayloadPolicy servicesPayloadPolicy,
                                        com.example.endpointadmin.security.StartupExposurePayloadPolicy startupExposurePayloadPolicy,
                                        com.example.endpointadmin.security.AppControlPayloadPolicy appControlPayloadPolicy,
+                                       SecurityNetworkPayloadPolicy securityNetworkPayloadPolicy,
                                        com.example.endpointadmin.security.BackupDryRunManifestPayloadPolicy backupDryRunManifestPayloadPolicy,
                                        EndpointSoftwareInventoryService softwareInventoryService,
                                        EndpointHardwareInventoryService hardwareInventoryService,
@@ -136,6 +139,7 @@ public class EndpointAgentCommandService {
         this.servicesPayloadPolicy = servicesPayloadPolicy;
         this.startupExposurePayloadPolicy = startupExposurePayloadPolicy;
         this.appControlPayloadPolicy = appControlPayloadPolicy;
+        this.securityNetworkPayloadPolicy = securityNetworkPayloadPolicy;
         this.backupDryRunManifestPayloadPolicy = backupDryRunManifestPayloadPolicy;
         this.softwareInventoryService = softwareInventoryService;
         this.hardwareInventoryService = hardwareInventoryService;
@@ -333,6 +337,14 @@ public class EndpointAgentCommandService {
                 //    Wire enums superset for AppIDSvc + null-preserving
                 //    canonical hash + probeComplete implication.
                 effectiveDetails = appControlPayloadPolicy.sanitize(effectiveDetails);
+                // 4f. Structured security/network block validator (#527
+                // EDR_NETWORK residual). This block is the ONLY backend-
+                // accepted automatic source for EDR_NETWORK queue evidence:
+                // strict allowlist, redacted destination/process/rule markers,
+                // no raw IP/host/process path/token, and no generic timeout
+                // inference. A present-but-invalid block fails the result
+                // submit before endpoint_command_results can persist it.
+                effectiveDetails = securityNetworkPayloadPolicy.sanitize(effectiveDetails);
                 // 5. Software validator (validate-only) on the sanitized form.
                 inventoryPayloadPolicy.validate(effectiveDetails);
             } catch (IllegalArgumentException ex) {
@@ -574,6 +586,11 @@ public class EndpointAgentCommandService {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                             ex.getMessage());
                 }
+            }
+            if (SecurityNetworkPayloadPolicy.hasSecurityNetworkBlock(effectiveDetails)) {
+                eventPublisher.publishEvent(
+                        new com.example.endpointadmin.service.rolloutfailure.SecurityNetworkBlockSubmittedEvent(
+                                command.getTenantId(), command.getDevice().getId(), result.getId()));
             }
         }
 
