@@ -273,6 +273,8 @@ Binary frame protocol — chunk-by-chunk. Frame header:
 
 **Body**: raw binary audio bytes (≤ 256 KB).
 
+> **PCM16 byte layout (direct-STT forward).** When `X-Audio-Format=PCM16` the body is **headerless signed little-endian 16-bit PCM**, interleaved when multi-channel, length a multiple of `channels * 2`. live-stt's `/transcribe` cannot decode headerless PCM (raw PCM → HTTP 400 regardless of `application/octet-stream`/`audio/L16`/`audio/wav` content-type), so the gateway wraps each PCM16 chunk into a canonical WAV container and forwards it as `audio/wav` (see `WavEncoder` / `DirectSttForwardingDispatcher`, Faz 24 #182). `WAV` / `WEBM_OPUS` chunks are forwarded as-is with their own media type.
+
 **Validation pipeline** (Codex iter-2 absorb):
 1. `Idempotency-Key` format guard → 400 `AUDIO_GATEWAY_IDEMPOTENCY_MISSING/INVALID`
 2. JWT + tenant/user claims → 401/403
