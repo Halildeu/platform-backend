@@ -2,12 +2,14 @@
 
 > **Status:** v1 RUNTIME CONTRACT. The backend queue, append-only ledger, manual
 > seed path, command-result auto-ingest/classifier, heartbeat-stale ingest,
-> CERT_IDENTITY ingest from enrollment/cert state, orchestrator-snapshot
+> CERT_IDENTITY ingest from enrollment/cert state, DNS_EDGE_MTLS ingest from
+> strict-allowlisted AG-038 diagnostics DNS/TLS state, orchestrator-snapshot
 > threshold evaluator, GitHub escalation projection/publish source, and
 > canonical `waveFailureReport` export are implemented. Deployment
 > gating/enforcement and live GitHub integration configuration are separate
 > controls and remain explicitly non-active unless configured externally.
-> Claiming rollout enforcement before a rollout-gating control lands is a
+> Claiming rollout enforcement, EDR/firewall root-cause classification, or
+> mTLS peer-certificate proof before the matching structured source lands is a
 > contract violation.
 >
 > **Issue:** platform-backend#520 · **Track:** backend · **Priority:** P0 (gate)
@@ -163,16 +165,20 @@ create `new`, but must NOT auto-waive or auto-resolve.
 **Auto-classifiable signals implemented in v1 runtime:** command result error
 codes and payload metadata for `INSTALLER_MSI`, `SERVICE_HMAC_MODE`, and
 `BACKEND_RESULT_SUBMIT`; heartbeat staleness with truthful `SERVICE_HMAC_MODE`
-evidence; and backend-owned certificate/enrollment state for `CERT_IDENTITY`
-(expired active certs and device-bound TPM_FAILED enrollments). All paths are
-validated through the same evidence allowlist used by manual seed.
+evidence; backend-owned certificate/enrollment state for `CERT_IDENTITY`
+(expired active certs and device-bound TPM_FAILED enrollments); and
+strict-allowlisted AG-038 diagnostics DNS/TLS state for `DNS_EDGE_MTLS`. The
+diagnostics path uses only a one-way config hash, backend DNS reachability,
+backend TLS validity, and bounded error codes; it does not fabricate mTLS peer
+certificate fingerprint evidence. All paths are validated through the same
+evidence allowlist used by manual seed.
 
 **Future signal-specific ingesters:** command lifecycle (queued-too-long,
 delivered-no-result, repeated transient), richer heartbeat offline/version/mode
-mismatch, edge/mTLS logs, EDR/network telemetry, and richer agent diagnostics.
-These signals may still be represented today through manual seed or confirmed
-operator evidence, but they are not claimed as autonomous live ingesters until a
-structured source exists.
+mismatch, richer edge/mTLS peer-certificate telemetry, EDR/network telemetry,
+and richer agent diagnostics. These signals may still be represented today
+through manual seed or confirmed operator evidence, but they are not claimed as
+autonomous live ingesters until a structured source exists.
 
 **Manual / manual-confirmed in v1–v2:** EDR/network exact root cause (unless a
 structured diagnostic exists), installer logs beyond the MSI exit code, ambiguous
@@ -204,15 +210,16 @@ Implemented backend components:
 3. Command-result auto-ingest/classifier for `INSTALLER_MSI`, `SERVICE_HMAC_MODE`, and `BACKEND_RESULT_SUBMIT`.
 4. Heartbeat-stale autonomous ingest for `SERVICE_HMAC_MODE` when the latest heartbeat carries bounded `agentMode`.
 5. CERT_IDENTITY autonomous ingest from active expired machine certs and device-bound TPM_FAILED enrollments.
-6. Orchestrator metrics snapshot + advisory stop-line threshold evaluator.
-7. GitHub escalation issue generator + disabled-by-default publish endpoint.
-8. Canonical `waveFailureReport` export; emits only when denominator evidence exists.
+6. DNS_EDGE_MTLS autonomous ingest from strict-allowlisted AG-038 diagnostics DNS/TLS state; peer certificate fingerprint remains `null` unless a future structured source observes it.
+7. Orchestrator metrics snapshot + advisory stop-line threshold evaluator.
+8. GitHub escalation issue generator + disabled-by-default publish endpoint.
+9. Canonical `waveFailureReport` export; emits only when denominator evidence exists.
 
 Residual boundaries:
 
 1. `deployment_enforcement_active` remains false until a separate rollout-gating control actually blocks expansion.
 2. Live GitHub issue POST requires an operator-configured GitHub integration/token; the backend generator is the redacted source projection and the POST endpoint remains disabled without config.
-3. DNS_EDGE_MTLS and EDR_NETWORK autonomous ingesters are future signal-specific work until structured edge/EDR telemetry exists; use manual-confirmed evidence until they land.
+3. EDR_NETWORK autonomous ingest remains future work until structured EDR/firewall telemetry exists; richer edge/mTLS peer-certificate evidence remains future work beyond diagnostics DNS/TLS.
 4. UI/reporting surface is platform-web if required by rollout operations.
 
 ## 10. Honesty guards (contract self-check)

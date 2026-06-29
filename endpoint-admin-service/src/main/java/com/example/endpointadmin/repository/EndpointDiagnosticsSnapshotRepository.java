@@ -1,5 +1,6 @@
 package com.example.endpointadmin.repository;
 
+import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointDiagnosticsSnapshot;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -94,4 +95,33 @@ public interface EndpointDiagnosticsSnapshotRepository
             """)
     List<EndpointDiagnosticsSnapshot> findLatestPerDeviceForTenant(
             @Param("tenantId") UUID tenantId, Pageable pageable);
+
+    /**
+     * Latest per-device diagnostics rows that prove the backend edge was not
+     * DNS-reachable or TLS-valid. The latest-row guard is important: an older
+     * failed probe must not create a queue item after a newer healthy probe.
+     */
+    @Query("""
+            select s
+            from EndpointDiagnosticsSnapshot s, EndpointDevice d
+            where d.id = s.deviceId
+              and d.tenantId = s.tenantId
+              and d.status <> :excludedStatus
+              and (s.backendDnsReachable = false or s.backendTlsValid = false)
+              and not exists (
+                select newer.id
+                from EndpointDiagnosticsSnapshot newer
+                where newer.tenantId = s.tenantId
+                  and newer.deviceId = s.deviceId
+                  and (
+                    newer.collectedAt > s.collectedAt
+                    or (newer.collectedAt = s.collectedAt and newer.createdAt > s.createdAt)
+                    or (newer.collectedAt = s.collectedAt and newer.createdAt = s.createdAt
+                        and newer.id > s.id)
+                  )
+              )
+            order by s.collectedAt desc, s.createdAt desc, s.id desc
+            """)
+    List<EndpointDiagnosticsSnapshot> findLatestDnsTlsFailuresExcludingDeviceStatus(
+            @Param("excludedStatus") DeviceStatus excludedStatus, Pageable pageable);
 }
