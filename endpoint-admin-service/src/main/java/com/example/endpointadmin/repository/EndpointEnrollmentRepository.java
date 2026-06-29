@@ -1,7 +1,9 @@
 package com.example.endpointadmin.repository;
 
+import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointEnrollment;
 import com.example.endpointadmin.model.EnrollmentStatus;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -24,6 +26,24 @@ public interface EndpointEnrollmentRepository extends JpaRepository<EndpointEnro
     List<EndpointEnrollment> findByTenantIdOrderByCreatedAtDesc(UUID tenantId);
 
     List<EndpointEnrollment> findByStatusAndExpiresAtBefore(EnrollmentStatus status, Instant expiresAt);
+
+    /**
+     * #527 CERT_IDENTITY autonomous ingest — only device-bound failures can be
+     * represented honestly in the failed-device queue because the contract
+     * requires a device_id. Device-less enrollment failures are skipped by
+     * design rather than assigned to a fabricated device.
+     */
+    @Query("""
+            SELECT e FROM EndpointEnrollment e
+            JOIN FETCH e.device d
+            WHERE e.status = :status
+              AND d.status <> :excludedStatus
+            ORDER BY e.updatedAt DESC
+            """)
+    List<EndpointEnrollment> findDeviceBoundByStatusExcludingDeviceStatus(
+            @Param("status") EnrollmentStatus status,
+            @Param("excludedStatus") DeviceStatus excludedStatus,
+            Pageable pageable);
 
     @Modifying
     @Query("""

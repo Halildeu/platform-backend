@@ -1,6 +1,8 @@
 package com.example.endpointadmin.repository;
 
+import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointMachineCert;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -73,6 +75,24 @@ public interface EndpointMachineCertRepository extends JpaRepository<EndpointMac
     Optional<EndpointMachineCert> findActiveByTenantIdAndDeviceId(
             @Param("tenantId") UUID tenantId,
             @Param("deviceId") UUID deviceId);
+
+    /**
+     * #527 CERT_IDENTITY autonomous ingest — active certs whose validity window
+     * has closed. Device is fetched eagerly so the scanner can build a truthful
+     * queue item without touching lazy state outside the read transaction.
+     */
+    @Query("""
+            SELECT c FROM EndpointMachineCert c
+            JOIN FETCH c.device d
+            WHERE c.revokedAt IS NULL
+              AND c.certNotAfter <= :now
+              AND d.status <> :excludedStatus
+            ORDER BY c.certNotAfter ASC
+            """)
+    List<EndpointMachineCert> findExpiredActiveCerts(
+            @Param("now") Instant now,
+            @Param("excludedStatus") DeviceStatus excludedStatus,
+            Pageable pageable);
 
     /**
      * Faz 22.6 #548 Phase 1.5 — tenant-scoped active cert by SAN URI (the VAULT_TPM
