@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://platform.local/contracts/faz-22-failed-device-queue.schema.json",
   "title": "Failed-Device Queue Contract (Faz 22.5, #520)",
-  "description": "Machine-enforced contract for the 50->800 rollout failed-device queue. v1 GATE: schema only; live ingest/enforcement deferred (contract §9). Cross-AI design+review: Codex 019eaac8. The root validates a documentation BUNDLE (one of each artifact); runtime artifacts validate against the named $defs (queueItem / event / waveFailureReport via $anchor).",
+  "description": "Machine-enforced contract for the 50->800 rollout failed-device queue. v1 runtime supports live queue ingest, advisory threshold evaluation, read-only escalation generation, and a fail-closed canonical waveFailureReport export. Deployment enforcement remains explicitly false unless a separate rollout-gating control lands. Cross-AI design+review: Codex 019eaac8. The root validates a documentation BUNDLE (one of each artifact); runtime artifacts validate against the named $defs (queueItem / event / waveFailureReport via $anchor).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "queueItem", "event", "waveFailureReport"],
@@ -206,7 +206,7 @@
       "$anchor": "waveFailureReport",
       "type": "object",
       "additionalProperties": false,
-      "description": "Wave artifact export — the canonical runtime artifact. Validate an export with: validate against $defs/waveFailureReport (see validate.py). stop_line_status is backend-COMPUTED (evaluator deferred, contract §9.3).",
+      "description": "Wave artifact export — the canonical runtime artifact. Validate an export with: validate against $defs/waveFailureReport (see validate.py). stop_line_status is backend-COMPUTED from the latest orchestrator metrics snapshot; export MUST fail closed rather than invent denominator fields when the snapshot is absent.",
       "required": ["schemaVersion", "rollout_id", "wave_id", "generated_at", "active_wave_size", "fleet_size", "wave_failed_count", "wave_failed_percent", "stale_24h_count", "stale_24h_percent", "stop_line_status", "per_class_counts", "enforcement"],
       "properties": {
         "schemaVersion": { "const": "failed-device-queue/v1" },
@@ -237,12 +237,13 @@
         "enforcement": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Honesty flags — v1 GATE has NO live enforcement. const-false until the deferred follow-ups (contract §9) land.",
-          "required": ["live_ingest", "threshold_evaluator", "github_escalation_generator"],
+          "description": "Honesty flags. The first three booleans state whether the runtime component is present and the export was produced through it. deployment_enforcement_active is a separate hard claim and MUST stay false until a rollout-gating control actually blocks expansion.",
+          "required": ["live_ingest", "threshold_evaluator", "github_escalation_generator", "deployment_enforcement_active"],
           "properties": {
-            "live_ingest": { "const": false },
-            "threshold_evaluator": { "const": false },
-            "github_escalation_generator": { "const": false }
+            "live_ingest": { "type": "boolean" },
+            "threshold_evaluator": { "type": "boolean" },
+            "github_escalation_generator": { "type": "boolean" },
+            "deployment_enforcement_active": { "const": false }
           }
         }
       }

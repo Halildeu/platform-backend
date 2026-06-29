@@ -3,7 +3,9 @@ package com.example.endpointadmin.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.endpointadmin.dto.v1.admin.WaveFailureExportResponse;
 import com.example.endpointadmin.dto.v1.admin.WaveFailureQueueReportResponse;
+import com.example.endpointadmin.model.EndpointRolloutWaveMetricsSnapshot;
 import com.example.endpointadmin.model.EndpointRolloutFailure;
 import com.example.endpointadmin.model.EndpointRolloutFailureEvent;
 import com.example.endpointadmin.model.RolloutClassificationConfidence;
@@ -14,6 +16,7 @@ import com.example.endpointadmin.model.RolloutFailureState;
 import com.example.endpointadmin.service.FailedDeviceQueueSchemaValidator;
 import com.example.endpointadmin.service.RolloutFailureQueueReadService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import jakarta.persistence.EntityManager;
 import java.time.Instant;
 import java.util.HashMap;
@@ -28,6 +31,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.server.ResponseStatusException;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -70,7 +74,9 @@ class RolloutFailureQueuePostgresIntegrationTest {
     }
 
     private static final FailedDeviceQueueSchemaValidator VALIDATOR =
-            new FailedDeviceQueueSchemaValidator(new ObjectMapper());
+            new FailedDeviceQueueSchemaValidator(new ObjectMapper()
+                    .findAndRegisterModules()
+                    .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS));
 
     @Autowired private EndpointRolloutFailureRepository failureRepository;
     @Autowired private EndpointRolloutFailureEventRepository eventRepository;
@@ -170,6 +176,59 @@ class RolloutFailureQueuePostgresIntegrationTest {
     }
 
     @Test
+    void waveExportIsContractShapedWhenMetricsSnapshotExists() {
+        UUID tenant = UUID.randomUUID();
+        EndpointRolloutFailure first = seedActive(tenant, "rollout-h", "wave-1", UUID.randomUUID(),
+                RolloutFailureState.NEW);
+        first.setEscalationIssueUrl("https://github.com/Halildeu/platform-backend/issues/9999");
+        failureRepository.saveAndFlush(first);
+        seedActive(tenant, "rollout-h", "wave-1", UUID.randomUUID(), RolloutFailureState.RETRYING);
+        seedSnapshot(tenant, "rollout-h", "wave-1", 10, 800, 17);
+        em.flush();
+        em.clear();
+
+        RolloutFailureQueueReadService read = new RolloutFailureQueueReadService(failureRepository, eventRepository,
+                new com.example.endpointadmin.service.rolloutfailure.WaveStopLineEvaluator(snapshotRepository));
+        WaveFailureExportResponse export = read.waveExport(tenant, "rollout-h", "wave-1",
+                Instant.parse("2026-06-29T05:30:00Z"));
+
+        assertThat(export.activeWaveSize()).isEqualTo(10);
+        assertThat(export.fleetSize()).isEqualTo(800);
+        assertThat(export.waveFailedCount()).isEqualTo(2L);
+        assertThat(export.stopLineStatus()).isEqualTo("stop_expansion");
+        assertThat(export.perClassCounts())
+                .containsEntry("SERVICE_HMAC_MODE", 2L)
+                .containsEntry("DNS_EDGE_MTLS", 0L)
+                .containsEntry("CERT_IDENTITY", 0L)
+                .containsEntry("INSTALLER_MSI", 0L)
+                .containsEntry("BACKEND_RESULT_SUBMIT", 0L)
+                .containsEntry("EDR_NETWORK", 0L);
+        assertThat(export.sampleItems()).hasSize(2)
+                .allSatisfy(item -> assertThat(item.orgId()).isEqualTo(tenant));
+        assertThat(export.escalationIssueRefs())
+                .containsExactly("https://github.com/Halildeu/platform-backend/issues/9999");
+        assertThat(export.enforcement().liveIngest()).isTrue();
+        assertThat(export.enforcement().thresholdEvaluator()).isTrue();
+        assertThat(export.enforcement().githubEscalationGenerator()).isTrue();
+        assertThat(export.enforcement().deploymentEnforcementActive()).isFalse();
+        VALIDATOR.validateWaveFailureReport(export);
+    }
+
+    @Test
+    void waveExportFailsClosedWithoutMetricsSnapshot() {
+        UUID tenant = UUID.randomUUID();
+        seedActive(tenant, "rollout-i", "wave-1", UUID.randomUUID(), RolloutFailureState.NEW);
+        em.flush();
+        em.clear();
+
+        RolloutFailureQueueReadService read = new RolloutFailureQueueReadService(failureRepository, eventRepository,
+                new com.example.endpointadmin.service.rolloutfailure.WaveStopLineEvaluator(snapshotRepository));
+        assertThatThrownBy(() -> read.waveExport(tenant, "rollout-i", "wave-1", Instant.now()))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("metrics_snapshot_missing");
+    }
+
+    @Test
     void eventCannotAttachToAParentAggregateInAnotherOrg() {
         UUID tenantA = UUID.randomUUID();
         EndpointRolloutFailure agg = seedActive(tenantA, "rollout-g", "wave-1", UUID.randomUUID(),
@@ -232,6 +291,21 @@ class RolloutFailureQueuePostgresIntegrationTest {
         ev.setClassificationConfidence(RolloutClassificationConfidence.HIGH);
         eventRepository.saveAndFlush(ev);
         return saved;
+    }
+
+    private void seedSnapshot(UUID tenant, String rolloutId, String waveId, int activeWaveSize,
+                              int fleetSize, int stale24hCount) {
+        EndpointRolloutWaveMetricsSnapshot snapshot = new EndpointRolloutWaveMetricsSnapshot();
+        snapshot.setId(UUID.randomUUID());
+        snapshot.setTenantId(tenant);
+        snapshot.setRolloutId(rolloutId);
+        snapshot.setWaveId(waveId);
+        snapshot.setActiveWaveSize(activeWaveSize);
+        snapshot.setFleetSize(fleetSize);
+        snapshot.setStale24hCount(stale24hCount);
+        snapshot.setCapturedAt(Instant.parse("2026-06-29T05:29:00Z"));
+        snapshot.setSourceSnapshotId("it-fdq-export-1");
+        snapshotRepository.saveAndFlush(snapshot);
     }
 
     private static Map<String, Object> hmacEvidence(UUID device) {

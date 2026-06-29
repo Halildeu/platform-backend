@@ -1,10 +1,12 @@
 # Failed-Device Queue Contract — Faz 22.5 (50→800 rollout)
 
-> **Status:** v1 CONTRACT GATE (spec only). **This document defines the
-> contract; it does NOT operate a live queue.** Live ingestion, threshold
-> enforcement, and generated GitHub issues are **deferred to follow-up
-> implementation issues** (see §9). Claiming any of those is "enforced" before
-> the corresponding backend component lands is a contract violation.
+> **Status:** v1 RUNTIME CONTRACT. The backend queue, append-only ledger, manual
+> seed path, command-result auto-ingest/classifier, orchestrator-snapshot
+> threshold evaluator, read-only GitHub escalation generator, and canonical
+> `waveFailureReport` export are implemented. Deployment gating/enforcement and
+> live GitHub issue POST are separate controls and remain explicitly non-active.
+> Claiming rollout enforcement before a rollout-gating control lands is a
+> contract violation.
 >
 > **Issue:** platform-backend#520 · **Track:** backend · **Priority:** P0 (gate)
 > **Source:** `docs/faz-22-software-deployment-plan.md` §0.5.5 + §0.5.9
@@ -52,8 +54,9 @@ source_signal, redacted_evidence_json, actor_type,
 actor_subject_hash, classification_confidence, created_at
 ```
 
-(Optional later) **`endpoint_rollout_wave_snapshot`** — immutable computed
-threshold snapshot for export reproducibility.
+**`endpoint_rollout_wave_metrics_snapshot`** — append-only orchestrator metrics
+snapshot carrying `active_wave_size`, `fleet_size`, and `stale_24h_count` so the
+backend can compute stop-line status without inventing rollout membership.
 
 ### Keying (Codex §A)
 
@@ -124,7 +127,7 @@ in v1. Do not cite an error-code catalog as existing.
 | `BACKEND_RESULT_SUBMIT` | 3 (idempotency-keyed) | 4xx policy/auth NOT blindly retryable |
 | `EDR_NETWORK` | 0–1 | backend cannot remediate policy blocks → normally `escalated` |
 
-## 6. Stop-line thresholds (backend-COMPUTED; enforcement deferred)
+## 6. Stop-line thresholds (backend-COMPUTED; deployment enforcement deferred)
 
 Status is `stop_line_status ∈ {clear, stop_expansion, required_review}`.
 **STOP expansion ≠ rollback** — it pauses adding new waves/devices, it does not
@@ -144,8 +147,10 @@ stale_24h_percent  = stale_24h_count / fleet_size * 100
 => stop_expansion if stale_24h_percent > 2
 ```
 
-> **Deferred:** the threshold EVALUATOR is a follow-up. This contract only
-> DEFINES the formulas; it must not be cited as "enforced" until §9.3 lands.
+The backend evaluator is advisory and fail-closed: if the latest orchestrator
+metrics snapshot is absent, the canonical export is not emitted. A computed
+`stop_expansion` result means "do not add new waves/devices until reviewed"; it
+does not by itself roll back, pause, or mutate a deployment controller.
 
 ## 7. Classification & redaction
 
@@ -153,13 +158,16 @@ stale_24h_percent  = stale_24h_count / fleet_size * 100
 `auto_classified` vs `manual_classified`. Low-confidence auto-classification MAY
 create `new`, but must NOT auto-waive or auto-resolve.
 
-**Auto-classifiable signals (v2 ingest):** command result error codes
-(INSTALLER_MSI / SERVICE_HMAC_MODE / BACKEND_RESULT_SUBMIT), command lifecycle
-(queued-too-long, delivered-no-result, repeated transient), heartbeat
-(stale/offline, version/mode mismatch), cert/enrollment audit (issued/rejected/
-expired/SAN-mismatch/duplicate-identity), result-submit HTTP telemetry, edge/mTLS
-logs (TLS alert, peer-cert reject, DNS class), agent diagnostics (service state,
-MSI code, EDR hints).
+**Auto-classifiable signals implemented in v1 runtime:** command result error
+codes and payload metadata for `INSTALLER_MSI`, `SERVICE_HMAC_MODE`, and
+`BACKEND_RESULT_SUBMIT`, validated through the same evidence allowlist used by
+manual seed.
+
+**Future signal-specific ingesters:** command lifecycle (queued-too-long,
+delivered-no-result, repeated transient), heartbeat stale/offline/version/mode
+mismatch, cert/enrollment audit, edge/mTLS logs, and richer agent diagnostics.
+These signals may still be represented today through manual seed or confirmed
+operator evidence, but they are not claimed as autonomous live ingesters.
 
 **Manual / manual-confirmed in v1–v2:** EDR/network exact root cause (unless a
 structured diagnostic exists), installer logs beyond the MSI exit code, ambiguous
@@ -182,16 +190,23 @@ or user identifiers.
   requested first action; states explicitly that **the canonical state is the
   backend queue item**, not the issue.
 
-## 9. Deferred implementation (follow-up issues — NOT in this contract gate)
+## 9. Runtime implementation status and residuals
 
-This contract is the GATE. The following are explicitly **not yet built** and
-must be cited as deferred wherever the contract is referenced:
+Implemented backend components:
 
-1. Backend Flyway tables (`endpoint_rollout_failure` + `_event`) + read/export REST.
-2. Ingest/classifier from command/heartbeat/enrollment signals.
-3. Stop-line threshold evaluator + `stop_line_status` computation.
-4. GitHub escalation issue generator.
-5. UI/reporting surface (if needed).
+1. Backend Flyway tables (`endpoint_rollout_failure` + `_event`) + read/report REST.
+2. Manual queue seed with typed evidence-redaction validation.
+3. Command-result auto-ingest/classifier for `INSTALLER_MSI`, `SERVICE_HMAC_MODE`, and `BACKEND_RESULT_SUBMIT`.
+4. Orchestrator metrics snapshot + advisory stop-line threshold evaluator.
+5. Read-only GitHub escalation issue generator.
+6. Canonical `waveFailureReport` export; emits only when denominator evidence exists.
+
+Residual boundaries:
+
+1. `deployment_enforcement_active` remains false until a separate rollout-gating control actually blocks expansion.
+2. Live GitHub issue POST requires an operator-configured GitHub integration/token; the backend generator is the redacted source projection.
+3. Heartbeat, cert/enrollment, edge/mTLS, and EDR/network autonomous ingesters are future signal-specific work; use manual-confirmed evidence until they land.
+4. UI/reporting surface is platform-web if required by rollout operations.
 
 ## 10. Honesty guards (contract self-check)
 
@@ -200,12 +215,13 @@ must be cited as deferred wherever the contract is referenced:
 of NEGATIVE cases are REJECTED — class-binding (`current_class` ≠ `evidence.class`),
 the §4 transition matrix (e.g. `waived→resolved`, `resolved→new` without
 `reopened`), missing required evidence, a raw `last_error` injection, a
-non-redaction-marker `log_excerpt`, and an `enforcement` flag flipped true.
-Run `python3 validate.py` (13/13 must pass). The schema thus carries the
+non-redaction-marker `log_excerpt`, and a false claim that deployment
+enforcement is active.
+Run `python3 validate.py` (all checks must pass). The schema thus carries the
 contract's claims; the table below is the residual prose-level review checklist.
 
 A reference to this contract is **dishonest/unenforceable** if it:
-- says "STOP expansion enforced" before §9.3 lands (correct: "defined; enforcement deferred");
+- says a computed `stop_expansion` result is a deployment-enforced block before `deployment_enforcement_active=true` is backed by a rollout-gating control;
 - treats GitHub labels as canonical queue state;
 - keeps only raw `last_error` strings (fails redaction/classification/audit/retry);
 - omits the append-only event ledger (state changes unauditable);

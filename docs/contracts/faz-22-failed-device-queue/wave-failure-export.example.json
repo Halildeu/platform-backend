@@ -94,8 +94,9 @@
     "https://github.com/Halildeu/platform-k8s-gitops/issues/9001"
   ],
   "enforcement": {
-    "live_ingest": false,
-    "threshold_evaluator": false,
-    "github_escalation_generator": false
+    "live_ingest": true,
+    "threshold_evaluator": true,
+    "github_escalation_generator": true,
+    "deployment_enforcement_active": false
   }
 }
