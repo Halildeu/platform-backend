@@ -209,6 +209,45 @@ class DirectSttForwardingDispatcherTest {
     }
 
     @Test
+    void wrapsPcm16IntoWavContainerForLiveStt() throws Exception {
+        // The recorder uploads raw headerless PCM16; live-stt rejects it (HTTP 400) unless it
+        // is wrapped into a WAV container (proven live: raw PCM + audio/L16 → 400). The gateway
+        // must synthesize a WAV header and send audio/wav — NEVER raw PCM / audio/L16 / chunk.pcm.
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"merhaba\",\"language\":\"tr\"}"));
+
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props(8), meters, recordingAuditSink());
+
+        final byte[] rawPcm = {10, 20, 30, 40, 50, 60};
+        final DispatchOutcome out = dispatcher.dispatch(command(rawPcm, AudioFormat.PCM16));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
+        final RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
+        assertThat(req).as("PCM16 chunk must still be forwarded").isNotNull();
+        final byte[] bodyBytes = req.getBody().readByteArray();
+        final String bodyLatin1 = new String(bodyBytes, java.nio.charset.StandardCharsets.ISO_8859_1);
+
+        // The audio part is advertised as a WAV file — never raw PCM / audio/L16 / chunk.pcm.
+        assertThat(bodyLatin1)
+                .contains("Content-Disposition: form-data; name=\"audio\"; filename=\"chunk.wav\"")
+                .contains("Content-Type: audio/wav")
+                .doesNotContain("audio/L16")
+                .doesNotContain("chunk.pcm");
+        // The audio part carries a real RIFF/WAVE container, not the bare PCM bytes.
+        assertThat(bodyLatin1).contains("RIFF").contains("WAVE").contains("data");
+        // The original PCM samples are preserved inside the container.
+        assertThat(bodyBytes)
+                .as("WAV-wrapped body must still carry the original PCM samples")
+                .contains(rawPcm);
+
+        awaitCounter(meters, "success", 1.0);
+        assertThat(counter(meters, "attempted")).isEqualTo(1.0);
+        assertThat(counter(meters, "http_error")).isZero();
+    }
+
+    @Test
     void routesTranscriptToResultSinkWhenEnabled() throws Exception {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "application/json")

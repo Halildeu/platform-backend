@@ -202,8 +202,25 @@ public class DirectSttForwardingDispatcher
 
             final MultipartBodyBuilder body = new MultipartBodyBuilder();
             final AudioFormat audioFormat = AudioFormat.valueOf(task.audioFormat());
-            body.part(AUDIO_PART, new NamedByteArrayResource(task.audio(), audioFilename(audioFormat)))
-                    .contentType(MediaType.parseMediaType(audioFormat.mediaType()));
+            final byte[] partBytes;
+            final String partFilename;
+            final MediaType partContentType;
+            if (audioFormat == AudioFormat.PCM16) {
+                // live-stt cannot decode headerless raw PCM — proven live: raw PCM is rejected
+                // with HTTP 400 whether labelled application/octet-stream, audio/L16, or
+                // audio/wav; only a real WAV container (audio/wav) returns 200. The recorder
+                // uploads raw PCM16 (X-Audio-Format: PCM16), so wrap it into a self-describing
+                // WAV container using the session's PCM params and forward as audio/wav.
+                partBytes = WavEncoder.pcm16ToWav(task.audio(), task.sampleRateHz(), task.channels());
+                partFilename = audioFilename(AudioFormat.WAV);
+                partContentType = MediaType.parseMediaType(AudioFormat.WAV.mediaType());
+            } else {
+                partBytes = task.audio();
+                partFilename = audioFilename(audioFormat);
+                partContentType = MediaType.parseMediaType(audioFormat.mediaType());
+            }
+            body.part(AUDIO_PART, new NamedByteArrayResource(partBytes, partFilename))
+                    .contentType(partContentType);
 
             final String uri = UriComponentsBuilder.fromUriString(transcribeUri)
                     .queryParam("meeting_id", nullSafe(task.meetingId()))
