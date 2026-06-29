@@ -64,6 +64,19 @@ endpoint-admin:
   commands:
     claim-ttl-seconds: ${ENDPOINT_ADMIN_COMMAND_CLAIM_TTL_SECONDS:300}
   rollout-failure:
+    github-escalation:
+      # #527 §9.4 live issue POST. Disabled by default: the GET preview remains
+      # available, but POST returns 503 until an operator supplies the GitHub
+      # token/config through secrets/env. The token must never be logged.
+      enabled: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_ESCALATION_ENABLED:false}
+      api-base-url: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_API_BASE_URL:https://api.github.com}
+      owner: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_OWNER:}
+      repo: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_REPO:}
+      token: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_TOKEN:}
+      user-agent: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_USER_AGENT:platform-endpoint-admin-fdq/1.0}
+      connect-timeout: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_CONNECT_TIMEOUT:PT5S}
+      read-timeout: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_READ_TIMEOUT:PT10S}
+      max-response-bytes: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_GITHUB_MAX_RESPONSE_BYTES:65536}
     heartbeat-stale:
       # #527 slice-2b — autonomous heartbeat-staleness queue ingest.
       # Reads latest endpoint_heartbeats rows, not endpoint_devices.last_seen_at,

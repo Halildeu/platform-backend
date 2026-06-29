@@ -15,8 +15,14 @@ import com.example.endpointadmin.model.RolloutFailureEventType;
 import com.example.endpointadmin.model.RolloutFailureState;
 import com.example.endpointadmin.service.FailedDeviceQueueSchemaValidator;
 import com.example.endpointadmin.service.RolloutFailureQueueReadService;
+import com.example.endpointadmin.service.rolloutfailure.RolloutFailureEscalationGenerator;
+import com.example.endpointadmin.service.rolloutfailure.RolloutFailureEscalationPublishService;
+import com.example.endpointadmin.service.rolloutfailure.RolloutFailureGithubEscalationProperties;
+import com.example.endpointadmin.service.rolloutfailure.RolloutFailureIssuePublisher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import java.time.Clock;
+import java.time.Duration;
 import jakarta.persistence.EntityManager;
 import java.time.Instant;
 import java.util.HashMap;
@@ -226,6 +232,46 @@ class RolloutFailureQueuePostgresIntegrationTest {
         assertThatThrownBy(() -> read.waveExport(tenant, "rollout-i", "wave-1", Instant.now()))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("metrics_snapshot_missing");
+    }
+
+    @Test
+    void githubEscalationPublishPersistsUrlStateTransitionAndLedgerEvent() {
+        UUID tenant = UUID.randomUUID();
+        EndpointRolloutFailure failure = seedActive(tenant, "rollout-j", "wave-1", UUID.randomUUID(),
+                RolloutFailureState.NEW);
+        em.flush();
+        em.clear();
+
+        RolloutFailureEscalationPublishService service = new RolloutFailureEscalationPublishService(
+                failureRepository,
+                eventRepository,
+                new RolloutFailureEscalationGenerator(new ObjectMapper()),
+                issue -> new RolloutFailureIssuePublisher.PublishedIssue(
+                        "https://github.com/Halildeu/platform-backend/issues/9100", 9100),
+                new RolloutFailureGithubEscalationProperties(true,
+                        "https://api.github.test", "Halildeu", "platform-backend", "token",
+                        "test-agent", Duration.ofSeconds(1), Duration.ofSeconds(1), 4096),
+                Clock.fixed(Instant.parse("2026-06-29T05:30:00Z"), java.time.ZoneOffset.UTC));
+
+        var published = service.publish(tenant, "op@acik", failure.getId());
+        em.flush();
+        em.clear();
+
+        assertThat(published.issueUrl()).isEqualTo("https://github.com/Halildeu/platform-backend/issues/9100");
+        EndpointRolloutFailure stored = failureRepository.findByTenantIdAndId(tenant, failure.getId()).orElseThrow();
+        assertThat(stored.getCurrentState()).isEqualTo(RolloutFailureState.ESCALATED);
+        assertThat(stored.getEscalationIssueUrl())
+                .isEqualTo("https://github.com/Halildeu/platform-backend/issues/9100");
+
+        var events = eventRepository.findByTenantIdAndFailureIdOrderByCreatedAtAsc(tenant, failure.getId());
+        assertThat(events).extracting(EndpointRolloutFailureEvent::getEventType)
+                .containsExactly(RolloutFailureEventType.DETECTED, RolloutFailureEventType.ESCALATED);
+        EndpointRolloutFailureEvent escalation = events.get(1);
+        assertThat(escalation.getFromState()).isEqualTo(RolloutFailureState.NEW);
+        assertThat(escalation.getToState()).isEqualTo(RolloutFailureState.ESCALATED);
+        assertThat(escalation.getSourceSignal()).isEqualTo("github_issue:9100");
+        assertThat(escalation.getActorType()).isEqualTo(RolloutFailureActorType.OPERATOR);
+        assertThat(escalation.getActorSubjectHash()).matches("^[0-9a-f]{64}$");
     }
 
     @Test

@@ -146,7 +146,7 @@ public class RolloutFailureQueueReadService {
         return counts;
     }
 
-    private static RolloutFailureItemResponse toItem(EndpointRolloutFailure f) {
+    public static RolloutFailureItemResponse toItem(EndpointRolloutFailure f) {
         return new RolloutFailureItemResponse(
                 f.getId(), f.getRolloutId(), f.getWaveId(), f.getDeviceId(),
                 f.getCurrentClass().name(), f.getCurrentState().wire(),

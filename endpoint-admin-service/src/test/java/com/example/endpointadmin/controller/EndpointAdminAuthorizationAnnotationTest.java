@@ -29,6 +29,8 @@ class EndpointAdminAuthorizationAnnotationTest {
         // §9.3 metrics-snapshot write = MANAGER; §9.4 escalation preview = VIEWER.
         assertClassRequires(AdminRolloutWaveMetricsController.class, EndpointAdminAuthz.MANAGER);
         assertClassRequires(AdminRolloutFailureEscalationController.class, EndpointAdminAuthz.VIEWER);
+        assertMethodRequires(AdminRolloutFailureEscalationController.class,
+                "publishEscalationIssue", EndpointAdminAuthz.MANAGER);
     }
 
     @Test
