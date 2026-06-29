@@ -120,6 +120,19 @@ class RemoteBridgeViewerControllerTest {
     }
 
     @Test
+    void blankStreamIdIs404NotAParamError() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+        authorizedStream(); // would otherwise pass — proves the blank-streamId guard short-circuits to 404
+        assertThatThrownBy(() -> controller.view(SESSION, "  ", request))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting("statusCode").hasToString("404 NOT_FOUND");
+        verify(streamAuth, never()).isAuthorized(any(), any(), any(), anyLong());
+        verify(registry, never()).subscribe(any(), any());
+    }
+
+    @Test
     void oneToOneViewerBoundIs409() {
         authedAs(TENANT, SUBJECT);
         RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);

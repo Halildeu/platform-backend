@@ -131,16 +131,17 @@ public class RemoteBridgeViewerController {
      */
     @GetMapping(path = "/sessions/{sessionId}/view", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter view(@PathVariable("sessionId") String sessionId,
-                           @RequestParam("streamId") String streamId,
+                           @RequestParam(value = "streamId", required = false) String streamId,
                            HttpServletRequest request) {
         OperatorIdentity identity = authenticator.authenticate(OperatorCredentialExtractor.extract(request));
         if (identity == null || !identity.authenticated()) {
             viewerRejected.increment();
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED);
         }
-        // Single opaque 404 for not-found, not-owned, not-active, and no/expired authorized stream — no oracle.
+        // Single opaque 404 for a missing streamId, not-found, not-owned, not-active, and no/expired authorized
+        // stream — no oracle (streamId is required=false so a missing param collapses here, not to a 400).
         Optional<RemoteBridgeSession> owned = ownedSession(sessionId, identity);
-        if (owned.isEmpty() || !owned.get().state().isActive()
+        if (streamId == null || streamId.isBlank() || owned.isEmpty() || !owned.get().state().isActive()
                 || !streamAuthorization.isAuthorized(sessionId, streamId, owned.get().transportPeerKey(),
                         System.currentTimeMillis())) {
             viewerRejected.increment();
