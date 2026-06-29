@@ -37,6 +37,7 @@ public class JwtTenantContextResolver implements TenantContextResolver {
             "companyUuid"
     );
     private static final List<String> COMPANY_ID_CLAIMS = List.of("companyId", "company_id");
+    private static final String COMPANY_TENANT_PREFIX = "company:";
 
     private final UUID localDefaultTenantId;
     private final Environment environment;
@@ -90,15 +91,20 @@ public class JwtTenantContextResolver implements TenantContextResolver {
 
     private UUID resolveTenantId(Jwt jwt) {
         for (String claimName : TENANT_UUID_CLAIMS) {
-            UUID parsed = parseUuid(claimToString(jwt.getClaim(claimName)));
+            String claimValue = claimToString(jwt.getClaim(claimName));
+            UUID parsed = parseUuid(claimValue);
             if (parsed != null) {
                 return parsed;
+            }
+            UUID numericTenant = parseNumericTenantId(claimValue);
+            if (numericTenant != null) {
+                return numericTenant;
             }
         }
         for (String claimName : COMPANY_ID_CLAIMS) {
             String companyId = claimToString(jwt.getClaim(claimName));
             if (companyId != null && !companyId.isBlank()) {
-                return UUID.nameUUIDFromBytes(("company:" + companyId.trim()).getBytes(StandardCharsets.UTF_8));
+                return tenantIdFromCompanyScope(companyId);
             }
         }
         return null;
@@ -136,6 +142,21 @@ public class JwtTenantContextResolver implements TenantContextResolver {
         } catch (IllegalArgumentException ignored) {
             return null;
         }
+    }
+
+    private static UUID parseNumericTenantId(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (!trimmed.chars().allMatch(ch -> ch >= '0' && ch <= '9')) {
+            return null;
+        }
+        return tenantIdFromCompanyScope(trimmed);
+    }
+
+    private static UUID tenantIdFromCompanyScope(String companyId) {
+        return UUID.nameUUIDFromBytes((COMPANY_TENANT_PREFIX + companyId.trim()).getBytes(StandardCharsets.UTF_8));
     }
 
     private static String firstNonBlank(String... values) {
