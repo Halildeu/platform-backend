@@ -3,6 +3,7 @@ package com.example.endpointadmin.service;
 import com.example.endpointadmin.dto.v1.admin.RolloutFailureDetailResponse;
 import com.example.endpointadmin.dto.v1.admin.RolloutFailureEventResponse;
 import com.example.endpointadmin.dto.v1.admin.RolloutFailureItemResponse;
+import com.example.endpointadmin.dto.v1.admin.WaveFailureExportResponse;
 import com.example.endpointadmin.dto.v1.admin.WaveFailureQueueReportResponse;
 import com.example.endpointadmin.dto.v1.admin.WaveThresholdEvaluation;
 import com.example.endpointadmin.model.EndpointRolloutFailure;
@@ -11,10 +12,13 @@ import com.example.endpointadmin.model.RolloutFailureClass;
 import com.example.endpointadmin.model.RolloutFailureState;
 import com.example.endpointadmin.repository.EndpointRolloutFailureEventRepository;
 import com.example.endpointadmin.repository.EndpointRolloutFailureRepository;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -72,7 +76,7 @@ public class RolloutFailureQueueReadService {
         });
     }
 
-    /** Wave failure-queue projection report. Active counts only — no evaluator. */
+    /** Wave failure-queue projection report. Active counts plus advisory evaluator. */
     @Transactional(readOnly = true)
     public WaveFailureQueueReportResponse waveReport(UUID tenantId, String rolloutId, String waveId, Instant generatedAt) {
         List<EndpointRolloutFailure> active = failureRepository
@@ -94,6 +98,54 @@ public class RolloutFailureQueueReadService {
                 stopLineEvaluator.evaluate(tenantId, rolloutId, waveId, active.size()));
     }
 
+    /**
+     * Contract-shaped export artifact. Unlike {@link #waveReport}, this is
+     * fail-closed: without an orchestrator metrics snapshot the required
+     * denominator fields cannot be emitted truthfully.
+     */
+    @Transactional(readOnly = true)
+    public WaveFailureExportResponse waveExport(UUID tenantId, String rolloutId, String waveId, Instant generatedAt) {
+        List<EndpointRolloutFailure> active = failureRepository
+                .findByTenantIdAndRolloutIdAndWaveIdOrderByLastTransitionAtDesc(tenantId, rolloutId, waveId)
+                .stream()
+                .filter(f -> f.getCurrentState().isActive())
+                .toList();
+        WaveThresholdEvaluation evaluation =
+                stopLineEvaluator.evaluate(tenantId, rolloutId, waveId, active.size());
+        if (!evaluation.available()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, evaluation.reason());
+        }
+
+        Map<String, Long> perClassCounts = zeroClassCounts();
+        active.forEach(f -> perClassCounts.merge(f.getCurrentClass().name(), 1L, Long::sum));
+
+        List<WaveFailureExportResponse.Item> sampleItems = active.stream()
+                .map(RolloutFailureQueueReadService::toExportItem)
+                .toList();
+        List<String> escalationRefs = active.stream()
+                .map(EndpointRolloutFailure::getEscalationIssueUrl)
+                .filter(url -> url != null && !url.isBlank())
+                .distinct()
+                .toList();
+
+        return new WaveFailureExportResponse(
+                SCHEMA_VERSION, rolloutId, waveId, generatedAt,
+                evaluation.activeWaveSize(), evaluation.fleetSize(),
+                evaluation.waveFailedCount(), evaluation.waveFailedPercent(),
+                evaluation.stale24hCount(), evaluation.stale24hPercent(),
+                evaluation.stopLineStatus(), perClassCounts, sampleItems, escalationRefs,
+                new WaveFailureExportResponse.Enforcement(
+                        true, true, true, false));
+    }
+
+    private static Map<String, Long> zeroClassCounts() {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (RolloutFailureClass failureClass : RolloutFailureClass.values()) {
+            counts.put(failureClass.name(), 0L);
+        }
+        return counts;
+    }
+
     private static RolloutFailureItemResponse toItem(EndpointRolloutFailure f) {
         return new RolloutFailureItemResponse(
                 f.getId(), f.getRolloutId(), f.getWaveId(), f.getDeviceId(),
@@ -104,6 +156,28 @@ public class RolloutFailureQueueReadService {
                 f.getEscalationIssueUrl(), f.getWaiverReason(), f.getWaivedBy(), f.getWaivedUntil(),
                 f.getResolvedAt(), f.getResolutionSummary(),
                 f.getClassificationConfidence().wire(), f.getClassifierVersion(), f.getVersion());
+    }
+
+    private static WaveFailureExportResponse.Item toExportItem(EndpointRolloutFailure f) {
+        return new WaveFailureExportResponse.Item(
+                f.getId(), f.getOrgId() == null ? f.getTenantId() : f.getOrgId(),
+                f.getRolloutId(), f.getWaveId(), f.getDeviceId(),
+                f.getCurrentClass().name(), f.getCurrentState().wire(),
+                f.getRetryCount(), f.getMaxRetries(),
+                f.getFirstDetectedAt(), f.getLastObservedAt(), f.getLastTransitionAt(),
+                f.getEvidenceRedacted(), f.getOwnerRole(), f.getStopLineContribution(),
+                f.getEscalationIssueUrl(), f.getWaiverReason(), f.getWaivedBy(), f.getWaivedUntil(),
+                f.getResolvedAt(), exportResolutionSummary(f.getResolutionSummary()),
+                f.getClassificationConfidence().wire(), f.getClassifierVersion(), f.getVersion());
+    }
+
+    private static String exportResolutionSummary(String summary) {
+        if (summary == null || summary.isBlank()) {
+            return null;
+        }
+        return summary.startsWith("[redacted") || summary.startsWith("redacted:")
+                ? summary
+                : "redacted:resolution_summary_present";
     }
 
     private static RolloutFailureEventResponse toEvent(EndpointRolloutFailureEvent e) {

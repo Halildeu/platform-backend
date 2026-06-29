@@ -42,16 +42,14 @@ public class FailedDeviceQueueSchemaValidator {
 
     private final ObjectMapper mapper;
     private final JsonSchema evidenceSchema;
+    private final JsonSchema waveFailureReportSchema;
 
     public FailedDeviceQueueSchemaValidator(ObjectMapper mapper) {
         this.mapper = mapper;
         JsonNode full = readContractSchema(mapper);
-        ObjectNode selfContained = mapper.createObjectNode();
-        selfContained.put("$schema", "https://json-schema.org/draft/2020-12/schema");
-        selfContained.set("$defs", full.get("$defs"));
-        selfContained.put("$ref", "#/$defs/evidence");
         JsonSchemaFactory factory = JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V202012);
-        this.evidenceSchema = factory.getSchema(selfContained);
+        this.evidenceSchema = factory.getSchema(schemaFor(mapper, full, "#/$defs/evidence"));
+        this.waveFailureReportSchema = factory.getSchema(schemaFor(mapper, full, "#/$defs/waveFailureReport"));
     }
 
     /**
@@ -85,6 +83,19 @@ public class FailedDeviceQueueSchemaValidator {
         }
     }
 
+    /** Fail-closed validation of the canonical waveFailureReport export artifact. */
+    public void validateWaveFailureReport(Object report) {
+        if (report == null) {
+            throw new IllegalArgumentException("failed-device-queue waveFailureReport is required");
+        }
+        JsonNode node = mapper.valueToTree(report);
+        Set<ValidationMessage> errors = waveFailureReportSchema.validate(node);
+        if (!errors.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "failed-device-queue waveFailureReport violates the contract schema: " + summarize(errors));
+        }
+    }
+
     private static JsonNode readContractSchema(ObjectMapper mapper) {
         try (InputStream in = FailedDeviceQueueSchemaValidator.class.getResourceAsStream(SCHEMA_RESOURCE)) {
             if (in == null) {
@@ -94,6 +105,14 @@ public class FailedDeviceQueueSchemaValidator {
         } catch (IOException e) {
             throw new UncheckedIOException("failed to read contract schema " + SCHEMA_RESOURCE, e);
         }
+    }
+
+    private static ObjectNode schemaFor(ObjectMapper mapper, JsonNode full, String ref) {
+        ObjectNode selfContained = mapper.createObjectNode();
+        selfContained.put("$schema", "https://json-schema.org/draft/2020-12/schema");
+        selfContained.set("$defs", full.get("$defs"));
+        selfContained.put("$ref", ref);
+        return selfContained;
     }
 
     private static String summarize(Set<ValidationMessage> errors) {

@@ -3,6 +3,7 @@ package com.example.endpointadmin.controller;
 import com.example.commonauth.openfga.RequireModule;
 import com.example.endpointadmin.dto.v1.admin.RolloutFailureDetailResponse;
 import com.example.endpointadmin.dto.v1.admin.RolloutFailureItemResponse;
+import com.example.endpointadmin.dto.v1.admin.WaveFailureExportResponse;
 import com.example.endpointadmin.dto.v1.admin.WaveFailureQueueReportResponse;
 import com.example.endpointadmin.model.RolloutFailureClass;
 import com.example.endpointadmin.security.EndpointAdminAuthz;
@@ -25,9 +26,10 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 /**
  * #527 slice-1 — READ surface over the failed-device rollout queue. GET-only;
  * there is NO write/mutation endpoint in slice-1 (ingest is slice-2; waive/
- * resolve/retry are later). The wave report carries
- * {@code thresholdEvaluation.available=false} — slice-1 never claims an enforced
- * stop-line. Org-scoped via {@link TenantContextResolver}; read authz only.
+ * resolve/retry are separate mutation paths). The report endpoint is the UI
+ * read-model; the export endpoint is the contract-shaped artifact and fails
+ * closed when denominator evidence is missing. Org-scoped via
+ * {@link TenantContextResolver}; read authz only.
  */
 @RestController
 @RequestMapping("/api/v1/admin")
@@ -64,13 +66,22 @@ public class AdminRolloutFailureController {
                 .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "rollout failure not found: " + failureId));
     }
 
-    /** Wave failure-queue projection report (active counts; evaluator deferred). */
+    /** Wave failure-queue projection report (active counts plus advisory evaluator). */
     @GetMapping("/endpoint-rollouts/{rolloutId}/waves/{waveId}/failure-queue-report")
     public ResponseEntity<WaveFailureQueueReportResponse> waveReport(
             @PathVariable("rolloutId") String rolloutId,
             @PathVariable("waveId") String waveId) {
         UUID tenantId = tenantContextResolver.resolveRequired().tenantId();
         return ResponseEntity.ok(readService.waveReport(tenantId, rolloutId, waveId, Instant.now()));
+    }
+
+    /** Contract-shaped waveFailureReport export; 409 if metrics-snapshot evidence is missing. */
+    @GetMapping("/endpoint-rollouts/{rolloutId}/waves/{waveId}/failure-queue-export")
+    public ResponseEntity<WaveFailureExportResponse> waveExport(
+            @PathVariable("rolloutId") String rolloutId,
+            @PathVariable("waveId") String waveId) {
+        UUID tenantId = tenantContextResolver.resolveRequired().tenantId();
+        return ResponseEntity.ok(readService.waveExport(tenantId, rolloutId, waveId, Instant.now()));
     }
 
     private static RolloutFailureClass parseClass(String value) {

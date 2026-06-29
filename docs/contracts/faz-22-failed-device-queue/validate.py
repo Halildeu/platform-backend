@@ -106,8 +106,14 @@ raw_log = {"class": "INSTALLER_MSI", "device_id": "d0efb00a-681a-4e32-b7de-a27ef
            "log_excerpt_redacted": "C:\\Users\\halil\\secret.log line 5 token=abc", "gpo_assignment_id": None}
 results.append(ok("REJECT: log_excerpt not a redaction marker (token grammar)", not valid("evidence", raw_log)))
 
-bad_enforce = json.loads(json.dumps(EXAMPLE)); bad_enforce["enforcement"]["threshold_evaluator"] = True
-results.append(ok("REJECT: enforcement flag flipped true in v1 gate", not valid("waveFailureReport", bad_enforce)))
+bad_enforce = json.loads(json.dumps(EXAMPLE)); bad_enforce["enforcement"]["deployment_enforcement_active"] = True
+results.append(ok("REJECT: deployment enforcement claim without rollout-gating control",
+                  not valid("waveFailureReport", bad_enforce)))
+
+missing_deployment_guard = json.loads(json.dumps(EXAMPLE))
+del missing_deployment_guard["enforcement"]["deployment_enforcement_active"]
+results.append(ok("REJECT: enforcement block missing deployment enforcement guard",
+                  not valid("waveFailureReport", missing_deployment_guard)))
 
 print("\n%d/%d checks passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)
