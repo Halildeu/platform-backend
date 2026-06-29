@@ -211,16 +211,18 @@ Implemented backend components:
 4. Heartbeat-stale autonomous ingest for `SERVICE_HMAC_MODE` when the latest heartbeat carries bounded `agentMode`.
 5. CERT_IDENTITY autonomous ingest from active expired machine certs and device-bound TPM_FAILED enrollments.
 6. DNS_EDGE_MTLS autonomous ingest from strict-allowlisted AG-038 diagnostics DNS/TLS state; peer certificate fingerprint remains `null` unless a future structured source observes it.
-7. Orchestrator metrics snapshot + advisory stop-line threshold evaluator.
-8. GitHub escalation issue generator + disabled-by-default publish endpoint.
-9. Canonical `waveFailureReport` export; emits only when denominator evidence exists.
+7. EDR_NETWORK autonomous ingest from a strict `COLLECT_INVENTORY` `securityNetwork` block; the backend accepts only pre-redacted EDR/firewall block events and rejects raw IP/host/process path/URL/token evidence before persistence.
+8. Orchestrator metrics snapshot + advisory stop-line threshold evaluator.
+9. GitHub escalation issue generator + disabled-by-default publish endpoint.
+10. Canonical `waveFailureReport` export; emits only when denominator evidence exists.
 
 Residual boundaries:
 
 1. `deployment_enforcement_active` remains false until a separate rollout-gating control actually blocks expansion.
 2. Live GitHub issue POST requires an operator-configured GitHub integration/token; the backend generator is the redacted source projection and the POST endpoint remains disabled without config.
-3. EDR_NETWORK autonomous ingest remains future work until structured EDR/firewall telemetry exists; richer edge/mTLS peer-certificate evidence remains future work beyond diagnostics DNS/TLS.
-4. UI/reporting surface is platform-web if required by rollout operations.
+3. Live EDR_NETWORK coverage still requires platform-agent or an external EDR/firewall producer to emit the structured `securityNetwork` block; the backend must not infer EDR blocks from generic timeout strings or unstructured diagnostics.
+4. Richer edge/mTLS peer-certificate evidence remains future work beyond diagnostics DNS/TLS.
+5. UI/reporting surface is platform-web if required by rollout operations.
 
 ## 10. Honesty guards (contract self-check)
 

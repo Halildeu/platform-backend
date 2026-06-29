@@ -196,7 +196,8 @@ class EndpointAdminCommandServiceTest {
                 .containsEntry("includeHotfixPosture", true)
                 .containsEntry("includeDiagnostics", true)
                 .containsEntry("includeStartupExposure", true)
-                .containsEntry("includeAppControl", true);
+                .containsEntry("includeAppControl", true)
+                .containsEntry("includeSecurityNetwork", true);
     }
 
     private static void assertFullCollectOptIns(Map<String, Object> payload) {
@@ -210,7 +211,8 @@ class EndpointAdminCommandServiceTest {
                 .containsEntry("includeDiagnostics", true)
                 .containsEntry("includeServices", true)
                 .containsEntry("includeStartupExposure", true)
-                .containsEntry("includeAppControl", true);
+                .containsEntry("includeAppControl", true)
+                .containsEntry("includeSecurityNetwork", true);
         for (String key : java.util.List.of(
                 "includeSoftware",
                 "includeWinGetEgress",
@@ -221,7 +223,8 @@ class EndpointAdminCommandServiceTest {
                 "includeDiagnostics",
                 "includeServices",
                 "includeStartupExposure",
-                "includeAppControl")) {
+                "includeAppControl",
+                "includeSecurityNetwork")) {
             assertThat(payload.get(key)).isInstanceOf(Boolean.class);
         }
     }
