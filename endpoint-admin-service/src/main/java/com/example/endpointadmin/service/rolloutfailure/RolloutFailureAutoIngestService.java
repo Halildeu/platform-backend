@@ -101,7 +101,24 @@ public class RolloutFailureAutoIngestService {
             return false; // no evidence-satisfiable class → skip (contract §7: do not force)
         }
         RolloutFailureClassifier.Classified c = maybe.get();
+        UUID tenantId = ev.tenantId();
+        String rolloutId = "cmd-result-auto:" + ev.commandType().name(); // stable virtual context
+        String waveId = c.failureClass().name();                          // NOT a time bucket
+        String sourceSignal = "command_result:" + ev.commandResultId();
+        return ingestClassified(tenantId, ev.deviceId(), rolloutId, waveId,
+                c, CLASSIFIER_VERSION, sourceSignal, Instant.now());
+    }
 
+    /**
+     * Shared fail-closed auto-writer for autonomous queue signals. Signal-specific
+     * classifiers own truthful evidence construction; this method owns the common
+     * queue policy: schema validation, active-row idempotency, active partial
+     * unique race handling, and append-only detected/retry ledger rows.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean ingestClassified(UUID tenantId, UUID deviceId, String rolloutId, String waveId,
+                                    RolloutFailureClassifier.Classified c, String classifierVersion,
+                                    String sourceSignal, Instant now) {
         final Map<String, Object> evidence;
         try {
             evidence = validator.validateToMap(c.failureClass(), c.evidence());
@@ -109,23 +126,18 @@ public class RolloutFailureAutoIngestService {
             return false; // classifier produced non-validatable evidence → fail-closed skip
         }
 
-        UUID tenantId = ev.tenantId();
-        String rolloutId = "cmd-result-auto:" + ev.commandType().name(); // stable virtual context
-        String waveId = c.failureClass().name();                          // NOT a time bucket
-        String sourceSignal = "command_result:" + ev.commandResultId();
-        Instant now = Instant.now();
-
         Optional<EndpointRolloutFailure> active =
-                findActive(tenantId, rolloutId, waveId, ev.deviceId());
+                findActive(tenantId, rolloutId, waveId, deviceId);
         if (active.isPresent()) {
             return coalesce(active.get(), c, evidence, sourceSignal, now);
         }
-        return createNew(tenantId, ev.deviceId(), rolloutId, waveId, c, evidence, sourceSignal, now);
+        return createNew(tenantId, deviceId, rolloutId, waveId, c, classifierVersion,
+                evidence, sourceSignal, now);
     }
 
     private boolean createNew(UUID tenantId, UUID deviceId, String rolloutId, String waveId,
-                              RolloutFailureClassifier.Classified c, Map<String, Object> evidence,
-                              String sourceSignal, Instant now) {
+                              RolloutFailureClassifier.Classified c, String classifierVersion,
+                              Map<String, Object> evidence, String sourceSignal, Instant now) {
         EndpointRolloutFailure f = new EndpointRolloutFailure();
         f.setId(UUID.randomUUID());
         f.setTenantId(tenantId);
@@ -142,7 +154,7 @@ public class RolloutFailureAutoIngestService {
         f.setEvidenceRedacted(evidence);
         f.setOwnerRole(ownerRoleFor(c.failureClass()));
         f.setClassificationConfidence(c.confidence());
-        f.setClassifierVersion(CLASSIFIER_VERSION);
+        f.setClassifierVersion(classifierVersion);
         try {
             failureRepository.saveAndFlush(f);
         } catch (DataIntegrityViolationException ex) {

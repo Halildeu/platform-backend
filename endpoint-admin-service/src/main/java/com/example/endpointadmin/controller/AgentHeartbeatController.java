@@ -26,7 +26,8 @@ public class AgentHeartbeatController {
     public AgentHeartbeatResponse heartbeat(@AuthenticationPrincipal DeviceCredentialResult principal,
                                             @Valid @RequestBody AgentHeartbeatRequest request,
                                             HttpServletRequest servletRequest) {
-        return heartbeatService.recordHeartbeat(principal, request, resolveRemoteAddress(servletRequest));
+        return heartbeatService.recordHeartbeat(principal, request,
+                resolveRemoteAddress(servletRequest), "hmac");
     }
 
     private String resolveRemoteAddress(HttpServletRequest request) {
