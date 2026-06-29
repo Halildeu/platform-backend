@@ -68,7 +68,8 @@ public class AgentMachineCertHeartbeatController {
         X509Certificate cert = resolveClientCert(servletRequest);
         UUID tenantId = resolveTenantId(servletRequest);
         DeviceCredentialResult principal = certService.authenticateLifecycle(cert, tenantId);
-        return heartbeatService.recordHeartbeat(principal, request, resolveRemoteAddress(servletRequest));
+        return heartbeatService.recordHeartbeat(principal, request,
+                resolveRemoteAddress(servletRequest), "mtls-machine-cert");
     }
 
     private X509Certificate resolveClientCert(HttpServletRequest request) {

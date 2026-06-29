@@ -98,7 +98,7 @@ class AgentMachineCertHeartbeatControllerTest {
         );
 
         when(certService.authenticateLifecycle(any(), eq(FIXED_TENANT))).thenReturn(principal);
-        when(heartbeatService.recordHeartbeat(eq(principal), any(), eq("127.0.0.1")))
+        when(heartbeatService.recordHeartbeat(eq(principal), any(), eq("127.0.0.1"), eq("mtls-machine-cert")))
                 .thenReturn(new AgentHeartbeatResponse(
                         true,
                         deviceId,
@@ -120,7 +120,7 @@ class AgentMachineCertHeartbeatControllerTest {
         verify(certService).authenticateLifecycle(any(), tenant.capture());
         assertThat(tenant.getValue()).isEqualTo(FIXED_TENANT);
         assertThat(tenant.getValue()).isNotEqualTo(FORGED_TENANT);
-        verify(heartbeatService).recordHeartbeat(eq(principal), any(), eq("127.0.0.1"));
+        verify(heartbeatService).recordHeartbeat(eq(principal), any(), eq("127.0.0.1"), eq("mtls-machine-cert"));
     }
 
     @Test

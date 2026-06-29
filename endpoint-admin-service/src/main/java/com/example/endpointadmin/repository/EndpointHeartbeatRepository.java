@@ -1,8 +1,13 @@
 package com.example.endpointadmin.repository;
 
+import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointHeartbeat;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,4 +31,29 @@ public interface EndpointHeartbeatRepository extends JpaRepository<EndpointHeart
      */
     Optional<EndpointHeartbeat>
         findFirstByDevice_IdOrderByReceivedAtDesc(UUID deviceId);
+
+    /**
+     * #527 slice-2b — heartbeat-stale auto-ingest source query. Returns only the
+     * latest heartbeat row per device, and only when that latest row is older
+     * than the stale cutoff. This deliberately does not use
+     * {@code EndpointDevice.lastSeenAt}, which is also updated by non-heartbeat
+     * lifecycle paths and is therefore too broad for heartbeat-staleness evidence.
+     */
+    @Query("""
+            select h
+            from EndpointHeartbeat h
+            join fetch h.device d
+            where d.status <> :excludedStatus
+              and h.receivedAt = (
+                select max(h2.receivedAt)
+                from EndpointHeartbeat h2
+                where h2.device.id = d.id
+              )
+              and h.receivedAt < :cutoff
+            order by h.receivedAt asc
+            """)
+    List<EndpointHeartbeat> findLatestStaleHeartbeats(
+            @Param("cutoff") Instant cutoff,
+            @Param("excludedStatus") DeviceStatus excludedStatus,
+            Pageable pageable);
 }

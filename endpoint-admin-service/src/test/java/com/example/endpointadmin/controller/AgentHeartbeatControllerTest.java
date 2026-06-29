@@ -46,7 +46,7 @@ class AgentHeartbeatControllerTest {
                 "credential-1",
                 Instant.parse("2026-04-28T10:00:00Z")
         );
-        when(heartbeatService.recordHeartbeat(any(), any(), eq("127.0.0.1")))
+        when(heartbeatService.recordHeartbeat(any(), any(), eq("127.0.0.1"), eq("hmac")))
                 .thenReturn(new AgentHeartbeatResponse(
                         true,
                         deviceId,
@@ -79,7 +79,7 @@ class AgentHeartbeatControllerTest {
                 .andExpect(jsonPath("$.status").value("ONLINE"))
                 .andExpect(jsonPath("$.serverTime").value("2026-04-28T10:01:00Z"));
 
-        verify(heartbeatService).recordHeartbeat(eq(principal), any(), eq("127.0.0.1"));
+        verify(heartbeatService).recordHeartbeat(eq(principal), any(), eq("127.0.0.1"), eq("hmac"));
     }
 
     @Test
@@ -101,7 +101,7 @@ class AgentHeartbeatControllerTest {
                 "credential-1",
                 Instant.parse("2026-04-28T10:00:00Z")
         );
-        when(heartbeatService.recordHeartbeat(any(), any(), eq("127.0.0.1")))
+        when(heartbeatService.recordHeartbeat(any(), any(), eq("127.0.0.1"), eq("hmac")))
                 .thenThrow(new DeviceCredentialException(
                         "DEVICE_RE_ENROLL_REQUIRED",
                         "Device credential is stale; re-enrollment is required."));

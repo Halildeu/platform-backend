@@ -61,7 +61,8 @@ class EndpointHeartbeatServiceTest {
         AgentHeartbeatResponse response = heartbeatService.recordHeartbeat(
                 new DeviceCredentialResult(device.getId().toString(), UUID.randomUUID().toString(), Instant.now()),
                 request,
-                "10.10.10.50"
+                "10.10.10.50",
+                "hmac"
         );
 
         assertThat(response.accepted()).isTrue();
@@ -84,6 +85,7 @@ class EndpointHeartbeatServiceTest {
                 .containsEntry("installId", "install-1")
                 .containsEntry("hostname", "PC-001")
                 .containsEntry("state", "ONLINE")
+                .containsEntry("agentMode", "hmac")
                 .containsEntry("architecture", "amd64")
                 .containsKey("inventory")
                 .containsKey("localUsers")
@@ -96,7 +98,7 @@ class EndpointHeartbeatServiceTest {
     void recordHeartbeatRequiresAuthenticatedDevice() {
         AgentHeartbeatRequest request = heartbeatRequest();
 
-        assertThatThrownBy(() -> heartbeatService.recordHeartbeat(null, request, "127.0.0.1"))
+        assertThatThrownBy(() -> heartbeatService.recordHeartbeat(null, request, "127.0.0.1", "hmac"))
                 .isInstanceOf(DeviceCredentialException.class)
                 .extracting("errorCode")
                 .isEqualTo("DEVICE_AUTH_REQUIRED");
@@ -109,7 +111,8 @@ class EndpointHeartbeatServiceTest {
         assertThatThrownBy(() -> heartbeatService.recordHeartbeat(
                 new DeviceCredentialResult(UUID.randomUUID().toString(), UUID.randomUUID().toString(), Instant.now()),
                 request,
-                "127.0.0.1"
+                "127.0.0.1",
+                "hmac"
         ))
                 .isInstanceOf(DeviceCredentialException.class)
                 .extracting("errorCode")
@@ -123,7 +126,8 @@ class EndpointHeartbeatServiceTest {
         assertThatThrownBy(() -> heartbeatService.recordHeartbeat(
                 new DeviceCredentialResult(device.getId().toString(), UUID.randomUUID().toString(), Instant.now()),
                 heartbeatRequest(),
-                "127.0.0.1"
+                "127.0.0.1",
+                "hmac"
         ))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("Endpoint device is decommissioned.");

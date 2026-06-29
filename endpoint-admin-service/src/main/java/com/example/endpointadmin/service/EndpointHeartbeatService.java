@@ -41,7 +41,8 @@ public class EndpointHeartbeatService {
     @Transactional
     public AgentHeartbeatResponse recordHeartbeat(DeviceCredentialResult principal,
                                                   AgentHeartbeatRequest request,
-                                                  String remoteAddress) {
+                                                  String remoteAddress,
+                                                  String agentMode) {
         UUID deviceId = resolveDeviceId(principal);
         Instant now = Instant.now(clock);
         EndpointDevice device = deviceRepository.findById(deviceId)
@@ -80,7 +81,7 @@ public class EndpointHeartbeatService {
         heartbeat.setAgentVersion(agentVersion);
         heartbeat.setOsVersion(osVersion);
         heartbeat.setIpAddress(truncate(trimToNull(remoteAddress), 64));
-        heartbeat.setPayload(payload(request));
+        heartbeat.setPayload(payload(request, agentMode));
 
         deviceRepository.saveAndFlush(device);
         heartbeatRepository.saveAndFlush(heartbeat);
@@ -99,13 +100,14 @@ public class EndpointHeartbeatService {
         }
     }
 
-    private Map<String, Object> payload(AgentHeartbeatRequest request) {
+    private Map<String, Object> payload(AgentHeartbeatRequest request, String agentMode) {
         Map<String, Object> payload = new LinkedHashMap<>();
         putIfPresent(payload, "installId", request.installId());
         putIfPresent(payload, "hostname", request.hostname());
         putIfPresent(payload, "osType", request.resolvedOsType() == null ? null : request.resolvedOsType().name());
         putIfPresent(payload, "architecture", request.architecture());
         putIfPresent(payload, "state", request.state());
+        putIfPresent(payload, "agentMode", agentMode);
         putIfPresent(payload, "timestamp", request.timestamp());
         payload.put("capabilities", normalizeCapabilities(request.capabilities()));
         if (request.inventory() != null) {

@@ -63,6 +63,17 @@ endpoint-admin:
     nonce-cleanup-initial-delay-ms: ${ENDPOINT_ADMIN_AGENT_AUTH_NONCE_CLEANUP_INITIAL_DELAY_MS:600000}
   commands:
     claim-ttl-seconds: ${ENDPOINT_ADMIN_COMMAND_CLAIM_TTL_SECONDS:300}
+  rollout-failure:
+    heartbeat-stale:
+      # #527 slice-2b — autonomous heartbeat-staleness queue ingest.
+      # Reads latest endpoint_heartbeats rows, not endpoint_devices.last_seen_at,
+      # and creates advisory SERVICE_HMAC_MODE queue items only when schema-valid
+      # heartbeat evidence is present. This does not enable rollout-gating.
+      enabled: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_ENABLED:true}
+      stale-after: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_AFTER:PT24H}
+      batch-size: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_BATCH_SIZE:100}
+      scan-interval-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_SCAN_INTERVAL_MS:900000}
+      initial-delay-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_INITIAL_DELAY_MS:300000}
   uninstall:
     # AG-028 Phase 1b (Faz 22.5.6) — feature flag for the managed uninstall
     # surface. Default FALSE so the routes return 503 in dark mode and ship
