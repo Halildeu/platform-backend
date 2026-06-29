@@ -82,6 +82,7 @@ public class RemoteBridgeViewerController {
     private final RemoteBridgeSessionStore sessionStore;
     private final ViewOnlyViewerRegistry viewerRegistry;
     private final ViewOnlyStreamAuthorizationRegistry streamAuthorization;
+    private final RemoteBridgeViewerAuditService viewerAudit;
     private final Counter viewerStarted;
     private final Counter viewerRejected;
     private final Counter viewerEnded;
@@ -91,11 +92,13 @@ public class RemoteBridgeViewerController {
                                         RemoteBridgeSessionStore sessionStore,
                                         ViewOnlyViewerRegistry viewerRegistry,
                                         ViewOnlyStreamAuthorizationRegistry streamAuthorization,
+                                        RemoteBridgeViewerAuditService viewerAudit,
                                         MeterRegistry meterRegistry) {
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
         this.sessionStore = Objects.requireNonNull(sessionStore, "sessionStore");
         this.viewerRegistry = Objects.requireNonNull(viewerRegistry, "viewerRegistry");
         this.streamAuthorization = Objects.requireNonNull(streamAuthorization, "streamAuthorization");
+        this.viewerAudit = Objects.requireNonNull(viewerAudit, "viewerAudit");
         this.viewerStarted = Counter.builder("remote_access_bridge_viewer_started_total")
                 .description("VIEW_ONLY operator viewer streams started").register(meterRegistry);
         this.viewerRejected = Counter.builder("remote_access_bridge_viewer_rejected_total")
@@ -148,6 +151,8 @@ public class RemoteBridgeViewerController {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND);
         }
         String deviceId = owned.get().deviceId();
+        UUID operatorTenant = parseUuidOrNull(owned.get().operatorTenantId());
+        String operatorSubject = identity.operatorSubject();
 
         // latest-wins single-slot subscription; empty Optional => the 1:1 viewer bound is already taken.
         Semaphore wake = new Semaphore(0);
@@ -158,6 +163,20 @@ public class RemoteBridgeViewerController {
         }
         ViewOnlyViewerSubscription subscription = maybeSub.get();
 
+        // FAIL-CLOSED hash-chain audit START (the pilot-enable HARD GATE): we hold the 1:1 slot but have NOT
+        // emitted a single frame yet. The START audit commits (its own short, advisory-locked transaction)
+        // BEFORE the emit loop is scheduled, so no screen byte is ever observed without a tamper-evident
+        // REMOTE_SUPPORT_SCREEN_OBSERVATION:VIEW_START record. A throw => no observation (release the slot, 503).
+        try {
+            viewerAudit.recordViewStart(operatorTenant, operatorSubject, sessionId, deviceId, streamId);
+        } catch (RuntimeException auditFailure) {
+            viewerRegistry.unsubscribe(subscription);
+            viewerRejected.increment();
+            log.warn("viewer START audit failed — fail-closed, no observation session={} stream={}",
+                    sessionId, streamId, auditFailure);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
         SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MILLIS);
         AtomicLong delivered = new AtomicLong();
         AtomicBoolean ended = new AtomicBoolean(false);
@@ -165,6 +184,14 @@ public class RemoteBridgeViewerController {
             if (ended.compareAndSet(false, true)) {
                 viewerRegistry.unsubscribe(subscription);
                 viewerEnded.increment();
+                // STOP audit is best-effort: the stream is already ending, so a failure is logged, not thrown
+                // (the chain still has the authoritative VIEW_START; an absent STOP is detectable downstream).
+                try {
+                    viewerAudit.recordViewStop(operatorTenant, operatorSubject, sessionId, deviceId, streamId,
+                            delivered.get());
+                } catch (RuntimeException stopFailure) {
+                    log.error("viewer STOP audit failed session={} stream={}", sessionId, streamId, stopFailure);
+                }
                 log.info("viewer stream END session={} stream={} framesDelivered={}",
                         sessionId, streamId, delivered.get());
             }
@@ -173,17 +200,16 @@ public class RemoteBridgeViewerController {
         emitter.onTimeout(end);
         emitter.onError(e -> end.run());
 
+        viewerStarted.increment();
         try {
             emitPool.execute(() -> runEmitLoop(emitter, subscription, wake, sessionId, streamId, deviceId, delivered));
         } catch (RejectedExecutionException at) {
-            viewerRegistry.unsubscribe(subscription);
+            end.run(); // unsubscribe + STOP audit + END metric (started==ended), then refuse
             viewerRejected.increment();
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE); // emit pool at capacity
         }
-        viewerStarted.increment();
-        // metadata-only (NO screen bytes); the operator subject is a fingerprint, not raw PII.
-        // TODO(#1580 pilot-enable HARD GATE): route start/stop through the fail-closed hash-chain
-        // EndpointAuditService (purpose REMOTE_SUPPORT_SCREEN_OBSERVATION) before remote-bridge.viewer.enabled.
+        // metadata-only app log (NO screen bytes); the operator subject is a fingerprint, not raw PII — the full
+        // subject lives only in the fail-closed hash-chain audit recorded above.
         log.info("viewer stream START session={} stream={} device={} operatorTenant={} operatorFp={} recording=false attended=true VIEW_ONLY",
                 sessionId, streamId, deviceId, identity.tenantId(), fingerprint(identity.operatorSubject()));
         return emitter;
