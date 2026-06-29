@@ -97,6 +97,15 @@ endpoint-admin:
       batch-size: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_BATCH_SIZE:100}
       scan-interval-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_SCAN_INTERVAL_MS:900000}
       initial-delay-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_INITIAL_DELAY_MS:360000}
+    dns-edge-mtls:
+      # #527 DNS_EDGE_MTLS autonomous ingest from AG-038 diagnostics.
+      # Uses only strict-allowlisted backendDNSReachable/backendTLSValid +
+      # one-way configHash evidence. Does not fabricate mTLS peer-cert data and
+      # does not infer EDR/firewall root cause from generic timeouts.
+      enabled: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_DNS_EDGE_MTLS_ENABLED:true}
+      batch-size: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_DNS_EDGE_MTLS_BATCH_SIZE:100}
+      scan-interval-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_DNS_EDGE_MTLS_SCAN_INTERVAL_MS:900000}
+      initial-delay-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_DNS_EDGE_MTLS_INITIAL_DELAY_MS:420000}
   uninstall:
     # AG-028 Phase 1b (Faz 22.5.6) — feature flag for the managed uninstall
     # surface. Default FALSE so the routes return 503 in dark mode and ship
