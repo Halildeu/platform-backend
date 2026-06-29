@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -43,8 +44,9 @@ class RemoteBridgeViewerControllerTest {
     private final RemoteBridgeSessionStore sessionStore = mock(RemoteBridgeSessionStore.class);
     private final ViewOnlyViewerRegistry registry = mock(ViewOnlyViewerRegistry.class);
     private final ViewOnlyStreamAuthorizationRegistry streamAuth = mock(ViewOnlyStreamAuthorizationRegistry.class);
-    private final RemoteBridgeViewerController controller =
-            new RemoteBridgeViewerController(authenticator, sessionStore, registry, streamAuth, new SimpleMeterRegistry());
+    private final RemoteBridgeViewerAuditService viewerAudit = mock(RemoteBridgeViewerAuditService.class);
+    private final RemoteBridgeViewerController controller = new RemoteBridgeViewerController(
+            authenticator, sessionStore, registry, streamAuth, viewerAudit, new SimpleMeterRegistry());
     private final HttpServletRequest request = mock(HttpServletRequest.class);
 
     private void authedAs(String tenant, String subject) {
@@ -156,5 +158,40 @@ class RemoteBridgeViewerControllerTest {
         SseEmitter emitter = controller.view(SESSION, STREAM, request);
         assertThat(emitter).isNotNull();
         verify(registry).subscribe(eq(SESSION), any());
+    }
+
+    @Test
+    void viewStartRecordsHashChainAuditForTheAdmittedOperator() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+        authorizedStream();
+        ViewOnlyViewerSubscription sub = mock(ViewOnlyViewerSubscription.class);
+        when(sub.isClosed()).thenReturn(true);
+        when(registry.subscribe(eq(SESSION), any())).thenReturn(Optional.of(sub));
+        SseEmitter emitter = controller.view(SESSION, STREAM, request);
+        assertThat(emitter).isNotNull();
+        // The fail-closed VIEW_START audit is recorded (parsed UUID tenant + subject + session/device/stream)
+        // synchronously, before the emit loop is scheduled.
+        verify(viewerAudit).recordViewStart(
+                eq(UUID.fromString(TENANT)), eq(SUBJECT), eq(SESSION), eq("device-1"), eq(STREAM));
+    }
+
+    @Test
+    void startAuditFailureIsFailClosed503AndReleasesTheSlot() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+        authorizedStream();
+        ViewOnlyViewerSubscription sub = mock(ViewOnlyViewerSubscription.class);
+        when(registry.subscribe(eq(SESSION), any())).thenReturn(Optional.of(sub));
+        // The pilot-enable HARD GATE: a hash-chain audit-write failure MUST prevent any observation.
+        doThrow(new RuntimeException("audit chain unavailable"))
+                .when(viewerAudit).recordViewStart(any(), any(), any(), any(), any());
+        assertThatThrownBy(() -> controller.view(SESSION, STREAM, request))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting("statusCode").hasToString("503 SERVICE_UNAVAILABLE");
+        verify(registry).unsubscribe(sub); // the 1:1 slot is released — no stream
+        verify(viewerAudit, never()).recordViewStop(any(), any(), any(), any(), any(), anyLong());
     }
 }
