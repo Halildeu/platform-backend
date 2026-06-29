@@ -87,6 +87,16 @@ endpoint-admin:
       batch-size: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_BATCH_SIZE:100}
       scan-interval-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_SCAN_INTERVAL_MS:900000}
       initial-delay-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_HEARTBEAT_STALE_INITIAL_DELAY_MS:300000}
+    cert-identity:
+      # #527 CERT_IDENTITY autonomous ingest.
+      # Reads backend-owned endpoint_machine_certs and endpoint_enrollments state
+      # only; skips tenant-mismatched/device-less rows fail-closed and emits
+      # advisory queue items through the same redacted evidence allowlist. This
+      # does not enable rollout-gating.
+      enabled: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_ENABLED:true}
+      batch-size: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_BATCH_SIZE:100}
+      scan-interval-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_SCAN_INTERVAL_MS:900000}
+      initial-delay-ms: ${ENDPOINT_ADMIN_ROLLOUT_FAILURE_CERT_IDENTITY_INITIAL_DELAY_MS:360000}
   uninstall:
     # AG-028 Phase 1b (Faz 22.5.6) — feature flag for the managed uninstall
     # surface. Default FALSE so the routes return 503 in dark mode and ship

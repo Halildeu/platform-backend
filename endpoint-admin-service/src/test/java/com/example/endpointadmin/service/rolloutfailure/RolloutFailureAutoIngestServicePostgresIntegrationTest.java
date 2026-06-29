@@ -3,6 +3,7 @@ package com.example.endpointadmin.service.rolloutfailure;
 import com.example.endpointadmin.model.CommandResultStatus;
 import com.example.endpointadmin.model.CommandType;
 import com.example.endpointadmin.model.EndpointCommandResult;
+import com.example.endpointadmin.model.RolloutClassificationConfidence;
 import com.example.endpointadmin.model.RolloutFailureActorType;
 import com.example.endpointadmin.model.RolloutFailureClass;
 import com.example.endpointadmin.model.RolloutFailureEventType;
@@ -145,6 +146,41 @@ class RolloutFailureAutoIngestServicePostgresIntegrationTest {
     }
 
     @Test
+    void replayOfSameClassifiedSourceSignalIsNoOp() {
+        UUID device = insertDevice();
+        UUID certId = UUID.randomUUID();
+        String sourceSignal = "cert_identity:active_cert_expired:" + certId;
+        Instant observedAt = Instant.parse("2026-06-29T08:00:00Z");
+        RolloutFailureAutoIngestService s = service();
+        RolloutFailureClassifier.Classified classified = certIdentityClassified(device, certId);
+
+        assertThat(s.ingestClassified(
+                tenant,
+                device,
+                "cert-identity-auto:active-cert-expired",
+                RolloutFailureClass.CERT_IDENTITY.name(),
+                classified,
+                "auto:cert-identity:v1",
+                sourceSignal,
+                observedAt)).isTrue();
+        assertThat(s.ingestClassified(
+                tenant,
+                device,
+                "cert-identity-auto:active-cert-expired",
+                RolloutFailureClass.CERT_IDENTITY.name(),
+                classified,
+                "auto:cert-identity:v1",
+                sourceSignal,
+                observedAt.plusSeconds(900))).isFalse();
+
+        var rows = failureRepository.findByTenantIdAndRolloutIdAndWaveIdOrderByLastTransitionAtDesc(
+                tenant, "cert-identity-auto:active-cert-expired", RolloutFailureClass.CERT_IDENTITY.name());
+        assertThat(rows).hasSize(1);
+        assertThat(eventRepository.findByTenantIdAndFailureIdOrderByCreatedAtAsc(tenant, rows.get(0).getId()))
+                .hasSize(1);
+    }
+
+    @Test
     void distinctResultOnNewItemCoalescesWithoutInvalidEvent() {
         UUID device = insertDevice();
         RolloutFailureAutoIngestService s = service();
@@ -184,5 +220,22 @@ class RolloutFailureAutoIngestServicePostgresIntegrationTest {
                 tenant, device, resultId, CommandType.COLLECT_INVENTORY))).isFalse();
         assertThat(failureRepository.findByTenantIdAndRolloutIdAndWaveIdOrderByLastTransitionAtDesc(
                 tenant, "cmd-result-auto:COLLECT_INVENTORY", "INSTALLER_MSI")).isEmpty();
+    }
+
+    private RolloutFailureClassifier.Classified certIdentityClassified(UUID device, UUID certId) {
+        var evidence = MAPPER.createObjectNode();
+        evidence.put("class", RolloutFailureClass.CERT_IDENTITY.name());
+        evidence.put("device_id", device.toString());
+        evidence.put("cert_fingerprint_prefix", "0123456789abcdef");
+        evidence.put("issuer_id", "issuer-sha256-0123456789abcdef");
+        evidence.put("subject_san_hash", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        evidence.put("enrollment_status", "CERT_EXPIRED");
+        evidence.put("cert_not_before", "2026-05-29T08:00:00Z");
+        evidence.put("cert_not_after", "2026-06-28T08:00:00Z");
+        evidence.put("audit_event_id", "machine-cert:" + certId);
+        return new RolloutFailureClassifier.Classified(
+                RolloutFailureClass.CERT_IDENTITY,
+                RolloutClassificationConfidence.HIGH,
+                evidence);
     }
 }
