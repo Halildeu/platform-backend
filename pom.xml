@@ -31,5 +31,7 @@
         <module>transcript-service</module>
         <module>audit-event-consumer-service</module>
         <module>audit-retention-worker</module>
+        <!-- Faz 26 (ADR-0033) Governed Process & Work Platform — isolated product, separate store/board -->
+        <module>gp-core-service</module>
     </modules>
 </project>

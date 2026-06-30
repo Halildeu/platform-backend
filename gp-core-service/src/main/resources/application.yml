@@ -1,0 +1,35 @@
+# gp-core-service (Faz 26 — Governed Process & Work Platform, Epic 26A)
+# Wave 1: enforcement kernel. Isolation (ADR-0033): SEPARATE OpenFGA store
+# under `gp.openfga` (NOT `erp.openfga`), separate v2 model. Defaults are
+# fail-closed: OpenFGA disabled + dev-bypass off => the kernel denies, never
+# allow-by-default.
+spring:
+  application:
+    name: gp-core-service
+
+server:
+  port: 8090
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+gp:
+  # Separate OpenFGA store (set store-id/model-id + enabled=true per environment).
+  openfga:
+    enabled: false
+    api-url: http://localhost:8083
+    store-id: ""
+    model-id: ""
+  authz:
+    # Escape hatch ONLY for local dev — accepted solely under a dev/local/test profile;
+    # startup FAILS FAST if true under any non-dev profile (see DevBypassGuard).
+    dev-bypass: false
+    decision-cache:
+      ttl-seconds: 5
+      max-size: 50000
+    # Edge types permitted to carry a null edge_scope (org-visible structural edges).
+    # Empty = every edge must carry a scope (most fail-closed).
+    global-edge-allowlist: ""

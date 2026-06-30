@@ -733,6 +733,113 @@ public class OpenFgaAuthzService {
     public record BatchCheckRequest(String relation, String objectType, String objectId) {}
 
     /**
+     * Cache-BYPASSING single check (Faz 26 gp-core — Codex thread 019f1913).
+     *
+     * <p>Identical to {@link #check(String, String, String, String)} (circuit
+     * breaker, fail-closed, allow/deny counters) but it NEVER reads or writes the
+     * private positive {@link #checkCache}. gp-core's authorization correctness
+     * lives in its own version-aware decision cache (keyed by
+     * {@code policy_version + tuple_revision + subject_policy_version}); relying
+     * on this service's version-UNAWARE positive cache would let a revoked tuple
+     * keep returning a stale {@code allow} for the cache TTL — a stale-positive
+     * leak. gp-core therefore uses ONLY this method, never {@link #check}.
+     *
+     * <p>Purely additive: existing callers are unaffected (they keep using the
+     * cached {@link #check}).
+     */
+    public boolean checkNoCache(String userId, String relation, String objectType, String objectId) {
+        if (!enabled) {
+            return true;
+        }
+        if (!circuitBreaker.allowRequest()) {
+            if (denyCounter != null) denyCounter.increment();
+            log.warn("OpenFGA circuit OPEN — denying access (no-cache): user:{} {} {}:{}",
+                    userId, relation, objectType, objectId);
+            return false;
+        }
+        try {
+            var request = new ClientCheckRequest()
+                    .user("user:" + userId)
+                    .relation(relation)
+                    ._object(objectType + ":" + objectId);
+            var response = client.check(request).get();
+            boolean allowed = Boolean.TRUE.equals(response.getAllowed());
+            circuitBreaker.recordSuccess();
+            if (allowed && allowCounter != null) allowCounter.increment();
+            if (!allowed && denyCounter != null) denyCounter.increment();
+            log.debug("OpenFGA checkNoCache: user:{} {} {}:{} -> {}",
+                    userId, relation, objectType, objectId, allowed);
+            return allowed;
+        } catch (Exception e) {
+            circuitBreaker.recordFailure();
+            if (denyCounter != null) denyCounter.increment();
+            log.error("OpenFGA checkNoCache failed, denying access: user:{} {} {}:{}",
+                    userId, relation, objectType, objectId, e);
+            return false;
+        }
+    }
+
+    /**
+     * Cache-BYPASSING batch check (Faz 26 gp-core — Codex thread 019f1913).
+     *
+     * <p>Like {@link #batchCheck} it uses the OpenFGA native BatchCheck endpoint,
+     * but it never touches {@link #checkCache} AND its fallback path uses
+     * {@link #checkNoCache} per item (not the cached {@link #checkWithReason}), so
+     * the no-cache guarantee holds on the batch path too. A short / malformed
+     * native response simply yields fewer results; callers MUST treat any missing
+     * positional result as a fail-closed deny.
+     */
+    public List<CheckResult> batchCheckNoCache(String userId, List<BatchCheckRequest> requests) {
+        if (!enabled) {
+            return requests.stream()
+                    .map(r -> new CheckResult(true, "granted"))
+                    .toList();
+        }
+        // Fail-closed when the circuit is open — mirror checkNoCache, do NOT attempt
+        // the native batch call (else a healthy batch endpoint could return allow
+        // while single checks are tripping the breaker).
+        if (!circuitBreaker.allowRequest()) {
+            if (denyCounter != null) {
+                for (int i = 0; i < requests.size(); i++) denyCounter.increment();
+            }
+            log.warn("OpenFGA circuit OPEN — denying batch (no-cache): {} checks", requests.size());
+            return requests.stream()
+                    .map(r -> new CheckResult(false, "circuit_open"))
+                    .toList();
+        }
+        try {
+            List<ClientBatchCheckItem> items = requests.stream()
+                    .map(r -> new ClientBatchCheckItem()
+                            .user("user:" + userId)
+                            .relation(r.relation())
+                            ._object(r.objectType() + ":" + r.objectId()))
+                    .toList();
+            var batchRequest = ClientBatchCheckRequest.ofChecks(items);
+            var response = client.batchCheck(batchRequest).get();
+            var results = new java.util.ArrayList<CheckResult>();
+            var singleResults = response.getResult();
+            for (var single : singleResults) {
+                boolean allowed = single.isAllowed();
+                if (allowed) {
+                    if (allowCounter != null) allowCounter.increment();
+                } else {
+                    if (denyCounter != null) denyCounter.increment();
+                }
+                results.add(new CheckResult(allowed, allowed ? "granted" : "no_relation"));
+            }
+            return results;
+        } catch (Exception e) {
+            log.warn("BatchCheckNoCache failed, falling back to per-item no-cache checks: {}", e.getMessage());
+            return requests.stream()
+                    .map(r -> {
+                        boolean allowed = checkNoCache(userId, r.relation(), r.objectType(), r.objectId());
+                        return new CheckResult(allowed, allowed ? "granted" : "no_relation");
+                    })
+                    .toList();
+        }
+    }
+
+    /**
      * Evict cached check results for a specific user.
      * Called after tuple write/delete to ensure immediate permission propagation.
      */
