@@ -12,6 +12,8 @@ import com.example.audiogateway.dto.RecordingConsentResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
+import com.example.audiogateway.dto.TranscriptEventResponse;
+import com.example.audiogateway.dto.TranscriptEventsResponse;
 import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
@@ -21,24 +23,29 @@ import com.example.audiogateway.service.AudioSessionRegistry.ChunkRecordCommand;
 import com.example.audiogateway.service.AudioSessionRegistry.CreateOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.FinishOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.SessionCreateCommand;
+import com.example.audiogateway.service.DirectSttTranscriptEventReader;
 import com.example.audiogateway.service.MeetingAccessValidator;
 import com.example.audiogateway.service.MeetingAccessValidator.Decision;
 import com.example.audiogateway.service.SessionRecord;
 import com.example.audiogateway.service.SessionState;
 
 import jakarta.validation.Valid;
+import java.time.Duration;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -46,10 +53,13 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Audio Gateway Contract 1.0 — session lifecycle + chunk admission endpoints.
@@ -74,6 +84,7 @@ public class AudioSessionController {
 
     private static final Pattern IDEMPOTENCY_KEY_PATTERN =
             Pattern.compile("^[A-Za-z0-9._:\\-]{16,128}$");
+    private static final Pattern REDIS_STREAM_ID_PATTERN = Pattern.compile("^[0-9]+-[0-9]+$");
 
     private static final String HDR_CHUNK_SEQ = "X-Audio-Chunk-Seq";
     private static final String HDR_CHUNK_STARTED_AT_MS = "X-Audio-Chunk-Started-At-Ms";
@@ -88,17 +99,20 @@ public class AudioSessionController {
     private final AudioChunkDispatcher dispatcher;
     private final AudioGatewayAuditSink auditSink;
     private final MeetingAccessValidator meetingAccessValidator;
+    private final DirectSttTranscriptEventReader transcriptEventReader;
 
     public AudioSessionController(final AudioGatewayProperties props,
                                   final AudioSessionRegistry registry,
                                   final AudioChunkDispatcher dispatcher,
                                   final AudioGatewayAuditSink auditSink,
-                                  final MeetingAccessValidator meetingAccessValidator) {
+                                  final MeetingAccessValidator meetingAccessValidator,
+                                  final DirectSttTranscriptEventReader transcriptEventReader) {
         this.props = props;
         this.registry = registry;
         this.dispatcher = dispatcher;
         this.auditSink = auditSink;
         this.meetingAccessValidator = meetingAccessValidator;
+        this.transcriptEventReader = transcriptEventReader;
     }
 
     // ----- POST /sessions ---------------------------------------------------
@@ -575,6 +589,90 @@ public class AudioSessionController {
                                 corrId, false))));
     }
 
+    // ----- GET /sessions/{sessionId}/transcript-events ----------------------
+
+    @GetMapping("/sessions/{sessionId}/transcript-events")
+    public Mono<ResponseEntity<?>> transcriptEvents(
+            @PathVariable final String sessionId,
+            @RequestParam(value = "after", required = false) final String after,
+            @RequestParam(value = "limit", required = false) final Integer limit,
+            @AuthenticationPrincipal final Jwt jwt,
+            final ServerWebExchange exchange) {
+
+        final String corrId = correlationId(exchange);
+        final ResponseEntity<?> cursorErr = validateStreamCursor(after, "after", corrId);
+        if (cursorErr != null) return Mono.just(cursorErr);
+
+        final Integer effectiveLimit = effectiveTranscriptLimit(limit);
+        if (effectiveLimit == null) {
+            return Mono.just(ResponseEntity.badRequest().body(ErrorResponse.of(
+                    ErrorResponse.CODE_VALIDATION,
+                    "limit must be a positive integer",
+                    corrId,
+                    false)));
+        }
+
+        final SessionAccessResult access = resolveOwnedSession(sessionId, jwt, corrId);
+        if (access.error() != null) return Mono.just(access.error());
+
+        safeAudit(transcriptAccessEvent(access.session(), "REST", normalizeCursor(after), effectiveLimit, corrId));
+
+        return Mono.fromCallable(() -> transcriptEventReader.read(
+                        access.session(), normalizeCursor(after), effectiveLimit, corrId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .onErrorResume(DataAccessException.class, ex -> Mono.just(transcriptStoreUnavailable(corrId)));
+    }
+
+    @GetMapping("/sessions/{sessionId}/transcript-events/stream")
+    public Mono<ResponseEntity<?>> streamTranscriptEvents(
+            @PathVariable final String sessionId,
+            @RequestParam(value = "after", required = false) final String after,
+            @RequestHeader(value = "Last-Event-ID", required = false) final String lastEventId,
+            @AuthenticationPrincipal final Jwt jwt,
+            final ServerWebExchange exchange) {
+
+        final String corrId = correlationId(exchange);
+        final String effectiveAfter = normalizeCursor(lastEventId) != null ? lastEventId : after;
+        final ResponseEntity<?> cursorErr = validateStreamCursor(effectiveAfter, "after", corrId);
+        if (cursorErr != null) return Mono.just(cursorErr);
+
+        final SessionAccessResult access = resolveOwnedSession(sessionId, jwt, corrId);
+        if (access.error() != null) return Mono.just(access.error());
+
+        final var streamCfg = props.getDirectStt().getTranscriptResultStream();
+        safeAudit(transcriptAccessEvent(
+                access.session(), "SSE", normalizeCursor(effectiveAfter), streamCfg.getReadBatchSize(), corrId));
+        final AtomicReference<String> cursor = new AtomicReference<>(normalizeCursor(effectiveAfter));
+        final Flux<ServerSentEvent<TranscriptEventResponse>> chunks = Flux
+                .interval(Duration.ZERO, Duration.ofMillis(streamCfg.getPollIntervalMs()))
+                .takeWhile(tick -> transcriptStreamOpen(access.session()))
+                .concatMap(tick -> Mono.fromCallable(() -> transcriptEventReader.read(
+                                access.session(), cursor.get(), streamCfg.getReadBatchSize(), corrId))
+                        .subscribeOn(Schedulers.boundedElastic()))
+                .doOnError(DataAccessException.class, ex -> log.warn(
+                        "Transcript SSE event store unavailable err={} sessionId={} correlationId={}",
+                        ex.getClass().getSimpleName(), sessionId, corrId))
+                .doOnNext(page -> cursor.set(page.nextCursor()))
+                .flatMapIterable(TranscriptEventsResponse::events)
+                .map(event -> ServerSentEvent.builder(event)
+                        .id(event.eventId())
+                        .event("transcript-chunk")
+                        .build())
+                .onBackpressureDrop();
+        final Flux<ServerSentEvent<TranscriptEventResponse>> heartbeat = Flux
+                .interval(Duration.ZERO, Duration.ofMillis(streamCfg.getHeartbeatIntervalMs()))
+                .takeWhile(tick -> transcriptStreamOpen(access.session()))
+                .map(tick -> ServerSentEvent.<TranscriptEventResponse>builder()
+                        .comment("heartbeat")
+                        .build())
+                .onBackpressureDrop();
+
+        return Mono.just(ResponseEntity.ok()
+                .contentType(MediaType.TEXT_EVENT_STREAM)
+                .body(Flux.merge(chunks, heartbeat)));
+    }
+
     // ----- POST /sessions/{sessionId}/finish -------------------------------
 
     @PostMapping("/sessions/{sessionId}/finish")
@@ -627,6 +725,89 @@ public class AudioSessionController {
     }
 
     // ----- helpers ---------------------------------------------------------
+
+    private record SessionAccessResult(SessionRecord session, ResponseEntity<?> error) {
+    }
+
+    private SessionAccessResult resolveOwnedSession(final String sessionId, final Jwt jwt, final String corrId) {
+        final ResponseEntity<?> authErr = validateAuth(jwt, corrId);
+        if (authErr != null) return new SessionAccessResult(null, authErr);
+
+        final Long tenantId = claimAsLong(jwt, props.getJwt().getTenantClaim());
+        final Long userId = claimAsLong(jwt, props.getJwt().getUserClaim());
+        if (tenantId == null) return new SessionAccessResult(null, forbidden(props.getJwt().getTenantClaim(), corrId));
+        if (userId == null) return new SessionAccessResult(null, forbidden(props.getJwt().getUserClaim(), corrId));
+
+        return registry.get(sessionId)
+                .filter(r -> tenantId.equals(r.tenantId()) && userId.equals(r.userId()))
+                .map(r -> new SessionAccessResult(r, null))
+                .orElseGet(() -> new SessionAccessResult(null, ResponseEntity
+                        .status(HttpStatus.NOT_FOUND)
+                        .body(ErrorResponse.of(
+                                ErrorResponse.CODE_SESSION_NOT_FOUND,
+                                "Session not found: " + sessionId,
+                                corrId,
+                                false))));
+    }
+
+    private ResponseEntity<?> validateStreamCursor(final String value, final String fieldName, final String corrId) {
+        final String cursor = normalizeCursor(value);
+        if (cursor != null && !REDIS_STREAM_ID_PATTERN.matcher(cursor).matches()) {
+            return ResponseEntity.badRequest().body(ErrorResponse.of(
+                    ErrorResponse.CODE_VALIDATION,
+                    fieldName + " must be a Redis stream id (<milliseconds>-<sequence>)",
+                    corrId,
+                    false));
+        }
+        return null;
+    }
+
+    private static String normalizeCursor(final String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private Integer effectiveTranscriptLimit(final Integer limit) {
+        final int max = props.getDirectStt().getTranscriptResultStream().getReadBatchSize();
+        if (limit == null) {
+            return max;
+        }
+        return limit <= 0 ? null : Math.min(limit, max);
+    }
+
+    private boolean transcriptStreamOpen(final SessionRecord original) {
+        return registry.get(original.sessionId())
+                .filter(r -> original.tenantId().equals(r.tenantId()) && original.userId().equals(r.userId()))
+                .map(r -> r.state() != SessionState.FINISHED)
+                .orElse(false);
+    }
+
+    private static AuditEvent.TranscriptEventsAccessed transcriptAccessEvent(
+            final SessionRecord session,
+            final String deliveryMode,
+            final String afterCursor,
+            final int requestedLimit,
+            final String corrId) {
+        return new AuditEvent.TranscriptEventsAccessed(
+                session.sessionId(),
+                session.tenantId(),
+                session.userId(),
+                session.meetingId(),
+                deliveryMode,
+                afterCursor,
+                requestedLimit,
+                corrId,
+                Instant.now().toEpochMilli());
+    }
+
+    private ResponseEntity<?> transcriptStoreUnavailable(final String corrId) {
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ErrorResponse.of(
+                        ErrorResponse.CODE_STT_UNAVAILABLE,
+                        "Transcript event store unavailable",
+                        corrId,
+                        true));
+    }
 
     private static String correlationId(final ServerWebExchange exchange) {
         return (String) exchange.getAttributes().get(CorrelationIdWebFilter.ATTR_KEY);

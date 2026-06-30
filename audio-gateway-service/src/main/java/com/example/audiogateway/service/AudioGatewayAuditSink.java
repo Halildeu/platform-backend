@@ -8,7 +8,9 @@ package com.example.audiogateway.service;
  * {@link AuditEvent.RecordingConsentGranted} as the server-time legal proof
  * before audio capture begins. Faz 24 #188 adds
  * {@link AuditEvent.ChunkForwardedToComputePlane} as the lawful-basis proof
- * before direct-STT sends raw audio to the compute plane.
+ * before direct-STT sends raw audio to the compute plane. Faz 24 live transcript
+ * delivery adds {@link AuditEvent.TranscriptEventsAccessed} as the PII access
+ * trail for transcript polling/streaming.
  *
  * <p><b>Emission contract:</b> response yazılmadan ÖNCE sync emit. Chunk
  * rejection uses controller {@code safeEmit(...)} because audit loss must not
@@ -105,6 +107,27 @@ public interface AudioGatewayAuditSink {
                 String correlationId,
                 long forwardedAtMs,
                 String computePlane
+        ) implements AuditEvent {
+        }
+
+        /**
+         * Transcript access proof — emitted when an authenticated owner starts
+         * reading live transcript events over REST polling or SSE.
+         *
+         * <p><b>PII boundary:</b> carries only access metadata. No transcript text,
+         * segment payload, raw audio bytes, bearer token, idempotency key, or
+         * destination URL.
+         */
+        record TranscriptEventsAccessed(
+                String sessionId,
+                Long tenantId,
+                Long userId,
+                String meetingId,
+                String deliveryMode,
+                String afterCursor,
+                int requestedLimit,
+                String correlationId,
+                long accessedAtMs
         ) implements AuditEvent {
         }
     }
