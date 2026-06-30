@@ -51,7 +51,7 @@ one request per chunk. The gateway holds a bounded, session-scoped, memory-only 
 forwards one canonical WAV per configured window. A first successful session finish flushes
 the remaining short tail exactly once.
 
-- Default window: 10 seconds; validated range: 5–30 seconds.
+- Default window: 5 seconds; validated range: 5–30 seconds.
 - Default buffered-session bound: 64.
 - Raw PCM is never written to Redis or disk and is cleared after window/finish/shutdown.
 - A shutdown does not start new STT HTTP work. Any unfinished tail is discarded with
@@ -109,7 +109,7 @@ the remaining short tail exactly once.
 | `AUDIO_GATEWAY_BOUNDS_ADMISSION_QUEUE_CAPACITY` | `1000` |
 | `AUDIO_GATEWAY_BOUNDS_MAX_ACTIVE_SESSIONS` | `1000` |
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED` | `true` when Direct-STT is enabled |
-| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS` | `10` (validated `5..30`) |
+| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS` | `5` (validated `5..30`) |
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_MAX_BUFFERED_SESSIONS` | `64` |
 | `AUDIO_GATEWAY_JWT_TENANT_CLAIM` | `companyId` |
 | `AUDIO_GATEWAY_JWT_USER_CLAIM` | `userId` |

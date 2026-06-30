@@ -66,7 +66,7 @@ audio:
     direct-stt:
       aggregation:
         enabled: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED:true}
-        window-seconds: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS:10}
+        window-seconds: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS:5}
         max-buffered-sessions: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_MAX_BUFFERED_SESSIONS:64}
       transcript-result-stream:
         enabled: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_ENABLED:false}

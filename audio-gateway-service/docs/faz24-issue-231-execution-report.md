@@ -13,7 +13,7 @@ and Redis metadata contracts unchanged.
 
 | Issue acceptance | Implementation | Status |
 |---|---|---|
-| Aggregate into VAD/utterance or 5-30 second WAV windows | Fixed 10 second PCM16 windows; configurable and validated in the 5-30 second range | Implemented and unit-tested |
+| Aggregate into VAD/utterance or 5-30 second WAV windows | Fixed 5 second PCM16 windows; configurable and validated in the 5-30 second range | Implemented and unit-tested |
 | One `/transcribe` request per window | Full windows forward immediately; the first successful session finish flushes one short tail | Implemented and unit-tested |
 | Materially lower `dropped_saturation` in a realistic multi-minute recording | Metrics and request shape are ready | Live GPU evidence pending |
 | Report elapsed/audio-duration ratio | `audio_gateway_direct_stt_real_time_factor` summary | Implemented; live value pending |
@@ -22,7 +22,8 @@ and Redis metadata contracts unchanged.
 
 ## Design
 
-- Desktop continues sending its existing 100ms PCM16 chunks.
+- Desktop/client chunk size remains client-configurable; the gateway aggregation
+  window is the authoritative Direct-STT request shape.
 - Accepted chunks retain their current admission, idempotency, audit, and Redis
   metadata flow.
 - Direct-STT keeps raw PCM only in a bounded in-process session buffer.
@@ -43,7 +44,7 @@ and Redis metadata contracts unchanged.
 
 Default memory bound for 16 kHz mono PCM16:
 
-`64 sessions * 10 seconds * 32,000 bytes/second = 20,480,000 bytes`
+`64 sessions * 5 seconds * 32,000 bytes/second = 10,240,000 bytes`
 
 The bound scales with sample rate and channel count. Production telemetry must
 therefore include `aggregation_buffered_bytes`.
@@ -53,7 +54,7 @@ therefore include `aggregation_buffered_bytes`.
 | Environment variable | Default |
 |---|---|
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED` | `true` |
-| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS` | `10` |
+| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS` | `5` |
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_MAX_BUFFERED_SESSIONS` | `64` |
 
 Direct-STT itself remains default-off. These settings take effect only where
@@ -100,7 +101,7 @@ Date: 2026-06-30
 This report does not claim issue #231 is complete until the following evidence
 is collected from the deployed test environment.
 
-1. Deploy the reviewed backend image with a 10 second window and keep the
+1. Deploy the reviewed backend image with a 5 second window and keep the
    current benchmark `maxInFlight` value unchanged.
    Drain/finish active sessions before rollout and assert the two shutdown
    discard counters do not increase.

@@ -463,7 +463,7 @@ public class AudioGatewayProperties {
 
         public static class Aggregation {
             private boolean enabled = true;
-            private int windowSeconds = 10;
+            private int windowSeconds = 5;
             private int maxBufferedSessions = 64;
 
             void validate() {
