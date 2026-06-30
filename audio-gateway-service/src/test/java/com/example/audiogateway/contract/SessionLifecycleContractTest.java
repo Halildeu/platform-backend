@@ -8,6 +8,8 @@ import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
 import com.example.audiogateway.service.AudioChunkDispatcher;
 
+import io.micrometer.core.instrument.MeterRegistry;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
@@ -17,7 +19,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
@@ -43,6 +47,9 @@ class SessionLifecycleContractTest {
 
     @MockitoBean
     private AudioChunkDispatcher dispatcher;
+
+    @Autowired
+    private MeterRegistry meters;
 
     private static StartSessionRequest validRequest() {
         return new StartSessionRequest(
@@ -188,6 +195,30 @@ class SessionLifecycleContractTest {
                 sid.equals(command.sessionId())
                         && Long.valueOf(1L).equals(command.tenantId())
                         && Long.valueOf(42L).equals(command.userId())));
+    }
+
+    @Test
+    void finishNotificationFailureIsObservableAndDoesNotCorruptFinishedState() {
+        final String sid = startFresh(1L, 42L, "finish-notify-error-fixture-1");
+        final String metricName = "audio_gateway_session_finish_notification_error";
+        final double before = meters.find(metricName).counter() == null
+                ? 0.0 : meters.find(metricName).counter().count();
+        doThrow(new IllegalStateException("dispatcher unavailable"))
+                .when(dispatcher).finishSession(any());
+
+        asUser(1L, 42L)
+                .post().uri(SESSIONS_PATH + "/" + sid + "/finish")
+                .header(IDEMP_HEADER, "finish-notify-error-idemp-1")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(FinishResponse.class)
+                .value(resp -> {
+                    assertThat(resp.finalState()).isEqualTo("FINISHED");
+                    assertThat(resp.alreadyFinished()).isFalse();
+                });
+
+        assertThat(meters.find(metricName).counter()).isNotNull();
+        assertThat(meters.find(metricName).counter().count()).isEqualTo(before + 1.0);
     }
 
     @Test

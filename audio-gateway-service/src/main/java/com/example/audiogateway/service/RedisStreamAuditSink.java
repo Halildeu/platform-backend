@@ -167,6 +167,13 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         fields.put("deviceId", nullSafe(e.deviceId()));
         fields.put("language", nullSafe(e.language()));
         fields.put("chunkSeq", Long.toString(e.chunkSeq()));
+        fields.put("windowSeq", Long.toString(e.windowSeq()));
+        fields.put("firstChunkSeq", Long.toString(e.firstChunkSeq()));
+        fields.put("lastChunkSeq", Long.toString(e.lastChunkSeq()));
+        fields.put("windowStartedAtMs", Long.toString(e.windowStartedAtMs()));
+        fields.put("windowEndedAtMs", Long.toString(e.windowEndedAtMs()));
+        fields.put("audioDurationMs", Integer.toString(e.audioDurationMs()));
+        fields.put("flushReason", nullSafe(e.flushReason()));
         fields.put("audioFormat", nullSafe(e.audioFormat()));
         fields.put("sampleRateHz", Integer.toString(e.sampleRateHz()));
         fields.put("channels", Integer.toString(e.channels()));

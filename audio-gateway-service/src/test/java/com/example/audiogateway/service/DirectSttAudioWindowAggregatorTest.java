@@ -66,6 +66,35 @@ class DirectSttAudioWindowAggregatorTest {
                 .isPresent();
     }
 
+    @Test
+    void splitInsideOneChunkOffsetsTheNextWindowStartTimestamp() {
+        final DirectSttAudioWindowAggregator aggregator =
+                new DirectSttAudioWindowAggregator(5, 2);
+
+        final var result =
+                aggregator.append(command("SES-1", 0L, pcm16Seconds(6)), pcm16Seconds(6));
+        assertThat(result.windows()).singleElement().satisfies(window ->
+                assertThat(window.startedAtMs()).isEqualTo(1_000L));
+
+        assertThat(aggregator.finish(new SessionFinishCommand("SES-1", 1L, 2L, "finish")))
+                .hasValueSatisfying(tail -> {
+                    assertThat(tail.startedAtMs()).isEqualTo(6_000L);
+                    assertThat(tail.durationMs()).isEqualTo(1_000);
+                });
+    }
+
+    @Test
+    void discardAllReportsAndClearsBufferedRawPcm() {
+        final DirectSttAudioWindowAggregator aggregator =
+                new DirectSttAudioWindowAggregator(10, 2);
+        aggregator.append(command("SES-1", 0L, pcm16Seconds(1)), pcm16Seconds(1));
+
+        assertThat(aggregator.discardAll())
+                .isEqualTo(new DirectSttAudioWindowAggregator.DiscardSummary(1, 32_000L));
+        assertThat(aggregator.activeSessions()).isZero();
+        assertThat(aggregator.bufferedBytes()).isZero();
+    }
+
     private static ChunkDispatchCommand command(
             final String sessionId,
             final long chunkSeq,

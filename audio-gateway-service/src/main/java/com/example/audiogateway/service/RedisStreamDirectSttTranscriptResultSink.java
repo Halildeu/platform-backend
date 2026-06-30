@@ -48,6 +48,13 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
         fields.put("deviceId", nullSafe(context.deviceId()));
         fields.put("chunkSeq", Long.toString(context.chunkSeq()));
         fields.put("chunkStartedAtMs", Long.toString(context.chunkStartedAtMs()));
+        fields.put("windowSeq", Long.toString(context.windowSeq()));
+        fields.put("firstChunkSeq", Long.toString(context.firstChunkSeq()));
+        fields.put("lastChunkSeq", Long.toString(context.lastChunkSeq()));
+        fields.put("windowStartedAtMs", Long.toString(context.windowStartedAtMs()));
+        fields.put("windowEndedAtMs", Long.toString(context.windowEndedAtMs()));
+        fields.put("audioDurationMs", Integer.toString(context.audioDurationMs()));
+        fields.put("flushReason", nullSafe(context.flushReason()));
         fields.put("correlationId", nullSafe(context.correlationId()));
         fields.put("sha256", nullSafe(context.sha256()));
         fields.put("byteLength", Integer.toString(context.byteLength()));

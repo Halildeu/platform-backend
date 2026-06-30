@@ -29,9 +29,17 @@ and Redis metadata contracts unchanged.
 - A complete window is converted to canonical WAV and sent to live-stt.
 - The first successful finish flushes the remaining tail exactly once.
 - Replayed finish requests do not flush again.
+- Finish notification failures remain best-effort but increment
+  `audio_gateway_session_finish_notification_error` and preserve a WARN with
+  session/correlation metadata.
 - Encoded formats keep the pre-existing per-chunk path.
 - Raw audio is never written to Redis or disk by the aggregator.
 - Internal buffers and completed forwarding payloads are zeroed after use.
+- Aggregate audit/transcript events carry window sequence, first/last chunk,
+  start/end time, duration, and flush reason. The legacy `chunkSeq` field remains
+  an alias for `lastChunkSeq`.
+- Shutdown intentionally does not initiate new HTTP work. Unfinished tails are
+  zeroed and counted. Operators must drain active sessions before rollout.
 
 Default memory bound for 16 kHz mono PCM16:
 
@@ -58,11 +66,14 @@ Direct-STT is enabled.
 - `audio_gateway_direct_stt_aggregation_chunks_buffered_total`
 - `audio_gateway_direct_stt_aggregation_dropped_capacity_total`
 - `audio_gateway_direct_stt_aggregation_error_total`
+- `audio_gateway_direct_stt_aggregation_shutdown_discarded_sessions_total`
+- `audio_gateway_direct_stt_aggregation_shutdown_discarded_bytes_total`
 - `audio_gateway_direct_stt_aggregation_windows_flushed_total{reason=...}`
 - `audio_gateway_direct_stt_aggregation_window_bytes`
 - `audio_gateway_direct_stt_aggregation_window_duration_ms`
 - `audio_gateway_direct_stt_real_time_factor`
 - Existing `audio_gateway_direct_stt_dropped_saturation_total`
+- `audio_gateway_session_finish_notification_error_total`
 
 ## Local Verification
 
@@ -71,14 +82,18 @@ Date: 2026-06-30
 | Check | Result |
 |---|---|
 | Targeted aggregation, dispatcher, configuration, wiring, and lifecycle tests | PASS |
-| Complete `audio-gateway-service` test suite | 139 tests, 0 failures, 0 errors |
+| Complete `audio-gateway-service` test suite | 144 tests, 0 failures, 0 errors |
 | Java compilation/package | PASS |
 | `git diff --check` | PASS |
 | 2s + 3s PCM16 input | One 5s WAV request |
 | 12 recorder-style 100ms chunks | No per-chunk request; one finish-tail request |
 | Repeated finish | Tail forwarded exactly once |
+| Finish notification exception | FINISHED response preserved and failure metric increments |
 | Session buffer capacity | Additional sessions rejected from Direct-STT aggregation without breaking admission |
+| Capacity-rejected chunk metric | Not counted as buffered |
 | Wrong tenant/user finish | Cannot flush another session's audio |
+| Chunk split across a window boundary | Next window timestamp includes consumed-byte offset |
+| Shutdown with unfinished tail | Session/byte loss is explicitly metered and buffer is cleared |
 
 ## Required Live Acceptance Run
 
@@ -87,6 +102,8 @@ is collected from the deployed test environment.
 
 1. Deploy the reviewed backend image with a 10 second window and keep the
    current benchmark `maxInFlight` value unchanged.
+   Drain/finish active sessions before rollout and assert the two shutdown
+   discard counters do not increase.
 2. Record at least three minutes of realistic Turkish speech through the real
    desktop consent/session/chunk/finish path.
 3. Capture before/after values for:
@@ -115,5 +132,5 @@ is collected from the deployed test environment.
 - It does not change desktop capture behavior.
 - It does not persist raw audio.
 - It does not claim production readiness or legal approval.
-- Provider-independent review and the live GPU acceptance run remain required
-  before upstream merge/issue closure.
+- Cross-AI review findings are absorbed in the branch. The live GPU acceptance
+  run remains required before upstream merge/issue closure.

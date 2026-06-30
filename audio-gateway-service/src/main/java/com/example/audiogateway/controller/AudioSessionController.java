@@ -27,6 +27,7 @@ import com.example.audiogateway.service.MeetingAccessValidator.Decision;
 import com.example.audiogateway.service.SessionRecord;
 import com.example.audiogateway.service.SessionState;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Valid;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -89,17 +90,21 @@ public class AudioSessionController {
     private final AudioChunkDispatcher dispatcher;
     private final AudioGatewayAuditSink auditSink;
     private final MeetingAccessValidator meetingAccessValidator;
+    private final MeterRegistry meters;
 
     public AudioSessionController(final AudioGatewayProperties props,
                                   final AudioSessionRegistry registry,
                                   final AudioChunkDispatcher dispatcher,
                                   final AudioGatewayAuditSink auditSink,
-                                  final MeetingAccessValidator meetingAccessValidator) {
+                                  final MeetingAccessValidator meetingAccessValidator,
+                                  final MeterRegistry meters) {
         this.props = props;
         this.registry = registry;
         this.dispatcher = dispatcher;
         this.auditSink = auditSink;
         this.meetingAccessValidator = meetingAccessValidator;
+        this.meters = meters;
+        meters.counter("audio_gateway_session_finish_notification_error");
     }
 
     // ----- POST /sessions ---------------------------------------------------
@@ -635,6 +640,7 @@ public class AudioSessionController {
         try {
             dispatcher.finishSession(command);
         } catch (final RuntimeException ex) {
+            meters.counter("audio_gateway_session_finish_notification_error").increment();
             log.warn("Session finish downstream notification failed sessionId={} correlationId={} error={}",
                     command.sessionId(), command.correlationId(), ex.getClass().getSimpleName());
         }

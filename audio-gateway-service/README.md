@@ -54,6 +54,12 @@ the remaining short tail exactly once.
 - Default window: 10 seconds; validated range: 5–30 seconds.
 - Default buffered-session bound: 64.
 - Raw PCM is never written to Redis or disk and is cleared after window/finish/shutdown.
+- A shutdown does not start new STT HTTP work. Any unfinished tail is discarded with
+  `aggregation_shutdown_discarded_sessions` / `aggregation_shutdown_discarded_bytes`
+  metrics and a WARN log. Rollouts must drain/finish active sessions first.
+- Aggregate audit/transcript metadata carries `windowSeq`, first/last chunk sequence,
+  window time range, duration, and flush reason; legacy `chunkSeq` remains the last
+  chunk sequence for compatibility.
 - WAV/WEBM/MP3/M4A/OGG/FLAC retain the existing per-chunk path.
 - `max-in-flight` remains a safety bound, not a substitute for aggregation.
 - Production acceptance still requires the #231 multi-minute GPU saturation/RTF run.

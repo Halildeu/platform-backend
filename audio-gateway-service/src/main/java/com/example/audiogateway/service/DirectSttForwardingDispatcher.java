@@ -138,6 +138,8 @@ public class DirectSttForwardingDispatcher
                 DirectSttAudioWindowAggregator::activeSessions);
         meters.gauge(METRIC_PREFIX + "aggregation_buffered_bytes", aggregator,
                 DirectSttAudioWindowAggregator::bufferedBytes);
+        counter("aggregation_shutdown_discarded_sessions");
+        counter("aggregation_shutdown_discarded_bytes");
     }
 
     @Override
@@ -180,7 +182,14 @@ public class DirectSttForwardingDispatcher
     /** Dispose the dedicated scheduler on context shutdown (graceful resource hygiene). */
     @Override
     public void destroy() {
-        aggregator.discardAll();
+        final DirectSttAudioWindowAggregator.DiscardSummary discarded = aggregator.discardAll();
+        if (discarded.sessions() > 0) {
+            counter("aggregation_shutdown_discarded_sessions").increment(discarded.sessions());
+            counter("aggregation_shutdown_discarded_bytes").increment(discarded.bytes());
+            log.warn("Direct-STT shutdown discarded buffered PCM tails sessions={} bytes={}; "
+                            + "clients must finish sessions before rollout",
+                    discarded.sessions(), discarded.bytes());
+        }
         forwardScheduler.dispose();
         transcriptSinkScheduler.dispose();
     }
@@ -189,13 +198,13 @@ public class DirectSttForwardingDispatcher
         try {
             final DirectSttAudioWindowAggregator.AppendResult result =
                     aggregator.append(cmd, audio);
-            counter("aggregation_chunks_buffered").increment();
             if (result.capacityExceeded()) {
                 counter("aggregation_dropped_capacity").increment();
                 log.warn("Direct-STT aggregation capacity exceeded (maxBufferedSessions={}) {}",
                         cfg.getAggregation().getMaxBufferedSessions(), kv(cmd));
                 return;
             }
+            counter("aggregation_chunks_buffered").increment();
             result.windows().forEach(window -> {
                 counter("aggregation_windows_flushed", "reason", "window_full").increment();
                 recordWindowMetrics(window);
@@ -347,6 +356,13 @@ public class DirectSttForwardingDispatcher
                     task.deviceId(),
                     task.language(),
                     task.lastChunkSeq(),
+                    task.windowSeq(),
+                    task.firstChunkSeq(),
+                    task.lastChunkSeq(),
+                    task.chunkStartedAtMs(),
+                    task.chunkStartedAtMs() + task.audioDurationMs(),
+                    task.audioDurationMs(),
+                    task.flushReason(),
                     task.audioFormat(),
                     task.sampleRateHz(),
                     task.channels(),
@@ -452,6 +468,13 @@ public class DirectSttForwardingDispatcher
                 task.userId(),
                 task.lastChunkSeq(),
                 task.chunkStartedAtMs(),
+                task.windowSeq(),
+                task.firstChunkSeq(),
+                task.lastChunkSeq(),
+                task.chunkStartedAtMs(),
+                task.chunkStartedAtMs() + task.audioDurationMs(),
+                task.audioDurationMs(),
+                task.flushReason(),
                 task.meetingId(),
                 task.deviceId(),
                 task.language(),

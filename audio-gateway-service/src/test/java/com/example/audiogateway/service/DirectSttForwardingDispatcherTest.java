@@ -89,9 +89,18 @@ class DirectSttForwardingDispatcherTest {
             final AudioFormat audioFormat,
             final long chunkSeq,
             final long chunkStartedAtMs) {
+        return command("SES-abc", audio, audioFormat, chunkSeq, chunkStartedAtMs);
+    }
+
+    private static ChunkDispatchCommand command(
+            final String sessionId,
+            final byte[] audio,
+            final AudioFormat audioFormat,
+            final long chunkSeq,
+            final long chunkStartedAtMs) {
         final AudioChunkPayload payload = AudioChunkPayload.of(audio, "deadbeefcafe0000sha");
         return new ChunkDispatchCommand(
-                "SES-abc", 42L, 7L, "22222222-2222-4222-8222-222222222222", "iphone-h-1", "tr",
+                sessionId, 42L, 7L, "22222222-2222-4222-8222-222222222222", "iphone-h-1", "tr",
                 audioFormat, 16_000, 1, chunkSeq, chunkStartedAtMs, "corr-xyz", payload);
     }
 
@@ -196,6 +205,11 @@ class DirectSttForwardingDispatcherTest {
                     assertThat(f.userId()).isEqualTo(7L);
                     assertThat(f.meetingId()).isEqualTo("22222222-2222-4222-8222-222222222222");
                     assertThat(f.chunkSeq()).isZero();
+                    assertThat(f.windowSeq()).isZero();
+                    assertThat(f.firstChunkSeq()).isZero();
+                    assertThat(f.lastChunkSeq()).isZero();
+                    assertThat(f.windowStartedAtMs()).isEqualTo(1_000L);
+                    assertThat(f.flushReason()).isEqualTo("chunk");
                     assertThat(f.sha256()).isEqualTo("deadbeefcafe0000sha");
                     assertThat(f.byteLength()).isEqualTo(5);
                     assertThat(f.computePlane()).isEqualTo("live-stt");
@@ -378,6 +392,43 @@ class DirectSttForwardingDispatcherTest {
     }
 
     @Test
+    void capacityRejectedChunkIsNotCountedAsBuffered() {
+        final AudioGatewayProperties props = props(1);
+        props.getDirectStt().getAggregation().setEnabled(true);
+        props.getDirectStt().getAggregation().setWindowSeconds(10);
+        props.getDirectStt().getAggregation().setMaxBufferedSessions(1);
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink());
+
+        dispatcher.dispatch(command(
+                "SES-1", pcm16Millis(100), AudioFormat.PCM16, 0L, 1_000L));
+        dispatcher.dispatch(command(
+                "SES-2", pcm16Millis(100), AudioFormat.PCM16, 0L, 1_000L));
+
+        assertThat(counter(meters, "aggregation_chunks_buffered")).isEqualTo(1.0);
+        assertThat(counter(meters, "aggregation_dropped_capacity")).isEqualTo(1.0);
+        dispatcher.destroy();
+    }
+
+    @Test
+    void shutdownDiscardIsExplicitlyMetered() {
+        final AudioGatewayProperties props = props(1);
+        props.getDirectStt().getAggregation().setEnabled(true);
+        props.getDirectStt().getAggregation().setWindowSeconds(10);
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink());
+
+        dispatcher.dispatch(command(
+                pcm16Seconds(1), AudioFormat.PCM16, 0L, 1_000L));
+        dispatcher.destroy();
+
+        assertThat(counter(meters, "aggregation_shutdown_discarded_sessions"))
+                .isEqualTo(1.0);
+        assertThat(counter(meters, "aggregation_shutdown_discarded_bytes"))
+                .isEqualTo(32_000.0);
+    }
+
+    @Test
     void routesTranscriptToResultSinkWhenEnabled() throws Exception {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "application/json")
@@ -408,6 +459,11 @@ class DirectSttForwardingDispatcherTest {
                     assertThat(ctx.meetingId()).isEqualTo("22222222-2222-4222-8222-222222222222");
                     assertThat(ctx.chunkSeq()).isZero();
                     assertThat(ctx.chunkStartedAtMs()).isEqualTo(1_000L);
+                    assertThat(ctx.windowSeq()).isZero();
+                    assertThat(ctx.firstChunkSeq()).isZero();
+                    assertThat(ctx.lastChunkSeq()).isZero();
+                    assertThat(ctx.windowStartedAtMs()).isEqualTo(1_000L);
+                    assertThat(ctx.flushReason()).isEqualTo("chunk");
                     assertThat(ctx.correlationId()).isEqualTo("corr-xyz");
                     assertThat(ctx.byteLength()).isEqualTo(3);
                 });

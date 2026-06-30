@@ -73,6 +73,13 @@ class RedisStreamAuditSinkTest {
                 "desktop-smoke-1",
                 "tr-TR",
                 5L,
+                2L,
+                3L,
+                5L,
+                1_000L,
+                2_000L,
+                1_000,
+                "window_full",
                 "PCM16",
                 16_000,
                 1,
@@ -206,6 +213,13 @@ class RedisStreamAuditSinkTest {
                 .containsEntry("deviceId", "desktop-smoke-1")
                 .containsEntry("language", "tr-TR")
                 .containsEntry("chunkSeq", "5")
+                .containsEntry("windowSeq", "2")
+                .containsEntry("firstChunkSeq", "3")
+                .containsEntry("lastChunkSeq", "5")
+                .containsEntry("windowStartedAtMs", "1000")
+                .containsEntry("windowEndedAtMs", "2000")
+                .containsEntry("audioDurationMs", "1000")
+                .containsEntry("flushReason", "window_full")
                 .containsEntry("audioFormat", "PCM16")
                 .containsEntry("sampleRateHz", "16000")
                 .containsEntry("channels", "1")

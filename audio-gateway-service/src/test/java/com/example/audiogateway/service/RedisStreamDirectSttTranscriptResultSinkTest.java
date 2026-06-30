@@ -48,6 +48,13 @@ class RedisStreamDirectSttTranscriptResultSinkTest {
                 7L,
                 5L,
                 1_000L,
+                2L,
+                3L,
+                5L,
+                1_000L,
+                2_000L,
+                1_000,
+                "window_full",
                 "22222222-2222-4222-8222-222222222222",
                 "desktop-smoke-1",
                 "tr",
@@ -94,6 +101,13 @@ class RedisStreamDirectSttTranscriptResultSinkTest {
                 .containsEntry("deviceId", "desktop-smoke-1")
                 .containsEntry("chunkSeq", "5")
                 .containsEntry("chunkStartedAtMs", "1000")
+                .containsEntry("windowSeq", "2")
+                .containsEntry("firstChunkSeq", "3")
+                .containsEntry("lastChunkSeq", "5")
+                .containsEntry("windowStartedAtMs", "1000")
+                .containsEntry("windowEndedAtMs", "2000")
+                .containsEntry("audioDurationMs", "1000")
+                .containsEntry("flushReason", "window_full")
                 .containsEntry("correlationId", "corr-direct-stt")
                 .containsEntry("sha256", "deadbeefcafe0000sha")
                 .containsEntry("byteLength", "512")

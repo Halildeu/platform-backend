@@ -67,9 +67,11 @@ final class DirectSttAudioWindowAggregator {
         return sessions.values().stream().mapToLong(SessionBuffer::size).sum();
     }
 
-    synchronized void discardAll() {
+    synchronized DiscardSummary discardAll() {
+        final DiscardSummary summary = new DiscardSummary(sessions.size(), bufferedBytes());
         sessions.values().forEach(SessionBuffer::discard);
         sessions.clear();
+        return summary;
     }
 
     private int targetBytes(final ChunkDispatchCommand cmd) {
@@ -87,6 +89,9 @@ final class DirectSttAudioWindowAggregator {
         AppendResult {
             windows = List.copyOf(windows);
         }
+    }
+
+    record DiscardSummary(int sessions, long bytes) {
     }
 
     record AudioWindow(
@@ -146,7 +151,8 @@ final class DirectSttAudioWindowAggregator {
             while (sourceOffset < pcm16.length) {
                 if (size == 0) {
                     firstChunkSeq = cmd.chunkSeq();
-                    startedAtMs = cmd.chunkStartedAtMs();
+                    startedAtMs = cmd.chunkStartedAtMs()
+                            + offsetDurationMs(sourceOffset, sampleRateHz, channels);
                 }
                 lastChunkSeq = cmd.chunkSeq();
                 correlationId = cmd.correlationId();
@@ -239,6 +245,12 @@ final class DirectSttAudioWindowAggregator {
     private static int durationMs(final int byteLength, final int sampleRateHz, final int channels) {
         final long bytesPerSecond = (long) sampleRateHz * channels * PCM16_BYTES_PER_SAMPLE;
         return (int) Math.max(1L, (byteLength * 1000L) / bytesPerSecond);
+    }
+
+    private static long offsetDurationMs(
+            final int byteOffset, final int sampleRateHz, final int channels) {
+        final long bytesPerSecond = (long) sampleRateHz * channels * PCM16_BYTES_PER_SAMPLE;
+        return (byteOffset * 1000L) / bytesPerSecond;
     }
 
     private static String sha256(final byte[] value) {
