@@ -21,6 +21,12 @@ import java.util.Optional;
  * <p>Structural methods ({@link #findEdges}, {@link #searchCandidates}) return
  * refs/edges (structure needed to make a visibility decision) but NOT node
  * content; node content ({@link #findNode}) is loaded only after an allow.
+ *
+ * <p><b>Candidate-bounding contract:</b> implementations MUST return a BOUNDED
+ * candidate set (paging / top-K / over-fetch) — the gateway scans the full list
+ * returned. Bounding work is the port's responsibility precisely so that hidden
+ * candidate density never has to be capped at the gateway (which would leak as a
+ * side-channel into the visible result — Codex 019f1913 post-impl #2).
  */
 public interface GraphReadPort {
 

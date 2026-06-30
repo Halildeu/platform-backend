@@ -100,10 +100,9 @@ public class GpCoreAuthzConfig {
                                    GraphReadPort graphReadPort,
                                    EvidenceReadPort evidenceReadPort,
                                    RagChunkPort ragChunkPort,
-                                   AuditBundlePort auditBundlePort,
-                                   @Value("${gp.authz.internal-scan-cap:10000}") int internalScanCap) {
+                                   AuditBundlePort auditBundlePort) {
         return new ReadGatewayImpl(authorizationDecisionService, graphReadPort,
-                evidenceReadPort, ragChunkPort, auditBundlePort, internalScanCap);
+                evidenceReadPort, ragChunkPort, auditBundlePort);
     }
 
     private static String nullToEmpty(String s) {

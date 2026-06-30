@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -111,5 +112,19 @@ class OpenFgaAuthzServiceNoCacheTest {
         var out = service.batchCheckNoCache("u4", req);
         assertEquals(1, out.size());
         assertTrue(out.get(0).allowed());
+    }
+
+    @Test
+    void batchCheckNoCache_circuitOpen_failsClosed_withoutCallingClient() throws Exception {
+        // Trip the breaker open (5 consecutive failures).
+        for (int i = 0; i < 5; i++) {
+            service.getCircuitBreaker().recordFailure();
+        }
+        var req = List.of(new OpenFgaAuthzService.BatchCheckRequest("viewer", "control_instance", "1"));
+        var out = service.batchCheckNoCache("u5", req);
+
+        assertEquals(1, out.size());
+        assertFalse(out.get(0).allowed(), "circuit-open batch must DENY (fail-closed)");
+        verify(client, never()).batchCheck(any(ClientBatchCheckRequest.class));
     }
 }

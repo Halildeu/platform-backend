@@ -46,21 +46,16 @@ public class ReadGatewayImpl implements ReadGateway {
     private final RagChunkPort ragPort;
     private final AuditBundlePort auditPort;
 
-    /** Internal cap on candidates examined per call — bounds work; never reflected in any response. */
-    private final int maxInternalScan;
-
     public ReadGatewayImpl(AuthorizationDecisionService decisions,
                            GraphReadPort graphPort,
                            EvidenceReadPort evidencePort,
                            RagChunkPort ragPort,
-                           AuditBundlePort auditPort,
-                           int maxInternalScan) {
+                           AuditBundlePort auditPort) {
         this.decisions = decisions;
         this.graphPort = graphPort;
         this.evidencePort = evidencePort;
         this.ragPort = ragPort;
         this.auditPort = auditPort;
-        this.maxInternalScan = Math.max(1, maxInternalScan);
     }
 
     @Override
@@ -88,11 +83,10 @@ public class ReadGatewayImpl implements ReadGateway {
         Map<NodeRef, NodeView> nodes = new LinkedHashMap<>();
         addVisibleNode(principal, entry, nodes);
         LinkedHashSet<EdgeView> edges = new LinkedHashSet<>();
-        int scanned = 0;
+        // Scan ALL candidates the port returned — the candidate set is bounded by the
+        // port contract (paged/over-fetch), so the visible result never depends on the
+        // number of hidden candidates (no scan-cap side-channel — Codex 019f1913 post-impl #2).
         for (Edge edge : candidates) {
-            if (scanned++ >= maxInternalScan) {
-                break;
-            }
             if (!q.matchesEdgeType(edge.edgeType())) {
                 continue;
             }
@@ -118,17 +112,16 @@ public class ReadGatewayImpl implements ReadGateway {
 
         addVisibleNode(principal, request.entry(), nodes);
         queue.add(new Frontier(request.entry(), 0));
-        int scanned = 0;
 
-        while (!queue.isEmpty() && nodes.size() < request.budget() && scanned < maxInternalScan) {
+        // Bounds: depth (hops) + budget (VISIBLE nodes). Hidden edges are pruned and do
+        // NOT consume the visible budget; work is bounded by depth/budget + the port's
+        // per-node edge fan-out — never by hidden-candidate density.
+        while (!queue.isEmpty() && nodes.size() < request.budget()) {
             Frontier cur = queue.poll();
             if (cur.depth() >= request.depth()) {
                 continue; // depth bound — do not expand further
             }
             for (Edge edge : safeFindEdges(cur.ref(), q)) {
-                if (scanned++ >= maxInternalScan) {
-                    break;
-                }
                 if (!q.matchesEdgeType(edge.edgeType())) {
                     continue;
                 }
@@ -153,9 +146,12 @@ public class ReadGatewayImpl implements ReadGateway {
     public SearchResult search(Principal principal, SearchQuery query) {
         List<NodeRef> candidates = safeSearchCandidates(query);
         List<NodeView> visible = new ArrayList<>();
-        int scanned = 0;
+        // Stop only when `limit` VISIBLE results are collected (or candidates exhausted).
+        // Hidden candidates are skipped without consuming the limit, so their presence
+        // never shortens/reorders the visible result (no side-channel — Codex post-impl #2).
+        // The candidate set size is bounded by the port (paged/over-fetch) contract.
         for (NodeRef ref : candidates) {
-            if (scanned++ >= maxInternalScan || visible.size() >= query.limit()) {
+            if (visible.size() >= query.limit()) {
                 break;
             }
             if (!query.matchesNodeType(ref.type())) {
@@ -238,11 +234,7 @@ public class ReadGatewayImpl implements ReadGateway {
 
     private void warmEndpoints(Principal principal, List<Edge> candidates, EdgeQuery q) {
         LinkedHashSet<NodeRef> distinct = new LinkedHashSet<>();
-        int scanned = 0;
         for (Edge edge : candidates) {
-            if (scanned++ >= maxInternalScan) {
-                break;
-            }
             if (!q.matchesEdgeType(edge.edgeType())) {
                 continue;
             }

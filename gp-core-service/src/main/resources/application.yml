@@ -24,13 +24,12 @@ gp:
     store-id: ""
     model-id: ""
   authz:
-    # Explicit, profile-guarded escape hatch ONLY for local dev. Never true in prod.
+    # Escape hatch ONLY for local dev — accepted solely under a dev/local/test profile;
+    # startup FAILS FAST if true under any non-dev profile (see DevBypassGuard).
     dev-bypass: false
     decision-cache:
       ttl-seconds: 5
       max-size: 50000
-    # Bounds candidates examined per traversal/search; never reflected in responses.
-    internal-scan-cap: 10000
     # Edge types permitted to carry a null edge_scope (org-visible structural edges).
     # Empty = every edge must carry a scope (most fail-closed).
     global-edge-allowlist: ""

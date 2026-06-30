@@ -61,7 +61,7 @@ class ReadGatewayEnforcementTest {
         ReadGateway build() {
             var decisions = Authz.service(checker, policy, subject, new FakePolicyVersionProvider(),
                     Authz.enabledCache(), allowlist);
-            return new ReadGatewayImpl(decisions, graph, evidence, rag, audit, 10_000);
+            return new ReadGatewayImpl(decisions, graph, evidence, rag, audit);
         }
     }
 
@@ -308,6 +308,31 @@ class ReadGatewayEnforcementTest {
         assertEquals(2, result.results().size(), "only visible matches");
         assertTrue(result.results().stream().noneMatch(n -> n.ref().equals(h1)));
         // SearchResult exposes only results() — no total/hasMore field for a hidden match to leak through.
+    }
+
+    @Test
+    void search_hiddenCandidateDensity_doesNotAffectVisibleResult() {
+        // Codex post-impl #2: hidden candidates interspersed BEFORE the visible one must
+        // not shorten/hide the visible result (no scan-cap side-channel). With limit=1 the
+        // visible candidate is returned whether or not hidden candidates precede it.
+        NodeRef hidden1 = NodeRef.of("task", "91");
+        NodeRef hidden2 = NodeRef.of("task", "92");
+        NodeRef visible = NodeRef.of("task", "93");
+
+        var baseline = new Gw();
+        baseline.graph.node(visible).candidate(visible);
+        baseline.checker.grant("alice", VIEWER, visible);
+        SearchResult baseResult = baseline.build().search(alice, new SearchQuery("q", Set.of(), 1));
+
+        var withHidden = new Gw();
+        withHidden.graph.node(hidden1).node(hidden2).node(visible)
+                .candidate(hidden1).candidate(hidden2).candidate(visible); // hidden FIRST
+        withHidden.checker.grant("alice", VIEWER, visible); // hidden1/2 not viewable
+        SearchResult hiddenResult = withHidden.build().search(alice, new SearchQuery("q", Set.of(), 1));
+
+        assertEquals(baseResult.results().size(), hiddenResult.results().size());
+        assertEquals(1, hiddenResult.results().size(), "visible result reached despite leading hidden candidates");
+        assertEquals(visible, hiddenResult.results().get(0).ref());
     }
 
     @Test

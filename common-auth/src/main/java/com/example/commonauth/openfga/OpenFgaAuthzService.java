@@ -795,6 +795,18 @@ public class OpenFgaAuthzService {
                     .map(r -> new CheckResult(true, "granted"))
                     .toList();
         }
+        // Fail-closed when the circuit is open — mirror checkNoCache, do NOT attempt
+        // the native batch call (else a healthy batch endpoint could return allow
+        // while single checks are tripping the breaker).
+        if (!circuitBreaker.allowRequest()) {
+            if (denyCounter != null) {
+                for (int i = 0; i < requests.size(); i++) denyCounter.increment();
+            }
+            log.warn("OpenFGA circuit OPEN — denying batch (no-cache): {} checks", requests.size());
+            return requests.stream()
+                    .map(r -> new CheckResult(false, "circuit_open"))
+                    .toList();
+        }
         try {
             List<ClientBatchCheckItem> items = requests.stream()
                     .map(r -> new ClientBatchCheckItem()
