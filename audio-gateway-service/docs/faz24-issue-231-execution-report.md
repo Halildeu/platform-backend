@@ -82,7 +82,7 @@ Date: 2026-06-30
 | Check | Result |
 |---|---|
 | Targeted aggregation, dispatcher, configuration, wiring, and lifecycle tests | PASS |
-| Complete `audio-gateway-service` test suite | 144 tests, 0 failures, 0 errors |
+| Complete `audio-gateway-service` test suite | 153 tests, 0 failures, 0 errors after merging upstream transcript delivery |
 | Java compilation/package | PASS |
 | `git diff --check` | PASS |
 | 2s + 3s PCM16 input | One 5s WAV request |

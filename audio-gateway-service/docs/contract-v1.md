@@ -206,6 +206,111 @@ tenant, user, and server time from JWT/server state; clients MUST NOT send
 | 403 | `AUDIO_GATEWAY_MEETING_FORBIDDEN` | Tenant/user claim eksik |
 | 404 | `AUDIO_GATEWAY_SESSION_NOT_FOUND` | Session yok veya farklı tenant/user |
 
+### 1.2A GET `/api/v1/audio-gateway/sessions/{sessionId}/transcript-events` — Cursor-Paged Direct-STT Events
+
+**Status**: implemented contract slice for Faz 24 desktop product surface; live
+after the audio-gateway rollout reaches the target environment. This is a
+client-facing transcript delivery bridge over the direct-STT result stream; it
+is not an audio upload endpoint and it does not expose Redis to desktop clients.
+
+**Authentication**: `Authorization: Bearer <jwt>` required. The session must
+belong to the caller's `tenantId + userId`; a missing or foreign session returns
+`404 AUDIO_GATEWAY_SESSION_NOT_FOUND` to avoid meeting/session existence leaks.
+
+**Query**:
+
+| Param | Required | Rule |
+|---|---:|---|
+| `after` | no | Redis stream cursor `<milliseconds>-<sequence>`. When absent, the Gateway starts from `sessionStartMs - 5s` so it does not scan the full stream. |
+| `limit` | no | Positive integer; Gateway clamps to configured `read-batch-size`. |
+
+**Response** (`200 OK`):
+
+```json
+{
+  "sessionId": "SES-...",
+  "correlationId": "c0ffee...",
+  "events": [
+    {
+      "eventId": "1782820000123-0",
+      "sessionId": "SES-...",
+      "meetingId": "22222222-2222-4222-8222-222222222222",
+      "chunkSeq": 42,
+      "chunkStartedAtMs": 1782820000000,
+      "text": "merhaba dunya",
+      "textLength": 13,
+      "status": "DRAFT",
+      "receivedAtMs": 1782820000450,
+      "sttLanguage": "tr",
+      "durationSeconds": 1.2,
+      "correlationId": "direct-stt-corr"
+    }
+  ],
+  "nextCursor": "1782820000123-0",
+  "hasMore": false
+}
+```
+
+**Cursor semantics**:
+
+- `nextCursor` may advance even when `events=[]`; this means the Gateway skipped
+  unrelated stream entries belonging to other sessions.
+- Clients should persist `nextCursor` and pass it as `after` on the next poll.
+- The event id namespace is the same one used by the SSE endpoint below.
+
+**PII/raw payload guard**:
+
+- Response can carry transcript text because it is returned only to the
+  authenticated session owner.
+- Response never carries raw audio bytes, bearer token, idempotency key,
+  destination URL, private key, or segment JSON.
+- Every REST/SSE access emits a PII-safe audit event with session/tenant/user,
+  cursor, limit, delivery mode, and correlation metadata; transcript text and
+  raw audio are not written to audit.
+
+**Errors**:
+
+| Status | Code | Anlam |
+|---|---|---|
+| 400 | `AUDIO_GATEWAY_VALIDATION` | Invalid cursor or limit |
+| 401 | `AUDIO_GATEWAY_AUTH_INVALID` | JWT missing |
+| 403 | `AUDIO_GATEWAY_MEETING_FORBIDDEN` | Tenant/user claim eksik |
+| 404 | `AUDIO_GATEWAY_SESSION_NOT_FOUND` | Session yok veya farklı tenant/user |
+| 503 | `AUDIO_GATEWAY_STT_UNAVAILABLE` | Transcript event store unavailable; retryable |
+
+### 1.2B GET `/api/v1/audio-gateway/sessions/{sessionId}/transcript-events/stream` — SSE Direct-STT Events
+
+**Status**: implemented server-push companion for 1.2A; live after the
+audio-gateway rollout reaches the target environment.
+
+**Authentication**: same owner check as 1.2A.
+
+**Headers / query**:
+
+| Field | Required | Rule |
+|---|---:|---|
+| `Last-Event-ID` | no | Redis stream cursor from the last received SSE event. Takes precedence over `after`. |
+| `after` query | no | Same cursor rule as 1.2A. |
+
+**Response**: `text/event-stream`.
+
+```
+id: 1782820000123-0
+event: transcript-chunk
+data: {"eventId":"1782820000123-0","sessionId":"SES-...","meetingId":"22222222-2222-4222-8222-222222222222","chunkSeq":42,"chunkStartedAtMs":1782820000000,"text":"merhaba dunya","textLength":13,"status":"DRAFT","receivedAtMs":1782820000450,"sttLanguage":"tr","durationSeconds":1.2,"correlationId":"direct-stt-corr"}
+
+: heartbeat
+```
+
+**Reconnect semantics**:
+
+- Clients reconnect with `Last-Event-ID` so missed events can be replayed by the
+  cursor bridge.
+- Desktop/Electron clients should open this stream from the main process, where
+  the bearer token is available, then forward events to the renderer over IPC.
+  Browser-native `EventSource` is not the canonical desktop path because it
+  cannot attach an Authorization header.
+
 ### 1.3 POST `/api/v1/audio-gateway/sessions/{sessionId}/finish` — Terminal Lifecycle (PR-gw-01A LIVE)
 
 **Codex `019e8c26` iter-2**: "Terminal lifecycle event + dispatcher flush contract" — bu slice transcript üretimi vadetmez; sadece state transition + idempotent finish. Gerçek dispatcher flush PR-gw-01C Redis Streams producer'la gelir.

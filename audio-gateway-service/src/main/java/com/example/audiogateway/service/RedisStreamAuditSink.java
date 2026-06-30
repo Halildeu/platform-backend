@@ -65,6 +65,8 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
     /** Canonical audit event type discriminator for direct-STT compute-plane transit. */
     static final String EVENT_TYPE_CHUNK_FORWARDED_TO_COMPUTE_PLANE =
             "CHUNK_FORWARDED_TO_COMPUTE_PLANE";
+    /** Canonical audit event type discriminator for transcript access. */
+    static final String EVENT_TYPE_TRANSCRIPT_EVENTS_ACCESSED = "TRANSCRIPT_EVENTS_ACCESSED";
 
     private final StringRedisTemplate redis;
     private final AudioGatewayProperties.Audit.Redis cfg;
@@ -87,6 +89,10 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         }
         if (event instanceof AuditEvent.ChunkForwardedToComputePlane forwarded) {
             emitChunkForwardedToComputePlane(forwarded);
+            return;
+        }
+        if (event instanceof AuditEvent.TranscriptEventsAccessed accessed) {
+            emitTranscriptEventsAccessed(accessed);
             return;
         }
         // Future AuditEvent variants (SessionLifecycle / ChunkForwarded ...) are
@@ -195,6 +201,35 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         } catch (final DataAccessException ex) {
             log.warn("ALERT compute-plane audit XADD failed; raw audio forward blocked err={} sessionId={} chunkSeq={}",
                     ex.getClass().getSimpleName(), e.sessionId(), e.chunkSeq());
+            throw ex;
+        }
+    }
+
+    private void emitTranscriptEventsAccessed(final AuditEvent.TranscriptEventsAccessed e) {
+        final Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("eventType", EVENT_TYPE_TRANSCRIPT_EVENTS_ACCESSED);
+        fields.put("sessionId", nullSafe(e.sessionId()));
+        fields.put("tenantId", longOrEmpty(e.tenantId()));
+        fields.put("userId", longOrEmpty(e.userId()));
+        fields.put("meetingId", nullSafe(e.meetingId()));
+        fields.put("deliveryMode", nullSafe(e.deliveryMode()));
+        fields.put("afterCursor", nullSafe(e.afterCursor()));
+        fields.put("requestedLimit", Integer.toString(e.requestedLimit()));
+        fields.put("correlationId", nullSafe(e.correlationId()));
+        fields.put("accessedAtMs", Long.toString(e.accessedAtMs()));
+
+        try {
+            final MapRecord<String, String, String> record =
+                    StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
+            if (cfg.getMaxLen() > 0) {
+                redis.opsForStream().add(record,
+                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
+            } else {
+                redis.opsForStream().add(record);
+            }
+        } catch (final DataAccessException ex) {
+            log.warn("ALERT transcript access audit XADD failed; event may be lost err={} sessionId={} mode={}",
+                    ex.getClass().getSimpleName(), e.sessionId(), e.deliveryMode());
             throw ex;
         }
     }

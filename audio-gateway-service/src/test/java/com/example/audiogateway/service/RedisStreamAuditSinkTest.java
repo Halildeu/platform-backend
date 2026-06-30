@@ -90,6 +90,19 @@ class RedisStreamAuditSinkTest {
                 "live-stt");
     }
 
+    private static AuditEvent.TranscriptEventsAccessed transcriptAccess() {
+        return new AuditEvent.TranscriptEventsAccessed(
+                "SES-abc",
+                42L,
+                7L,
+                "22222222-2222-4222-8222-222222222222",
+                "REST",
+                "1680000000000-0",
+                50,
+                "corr-transcript",
+                5_000L);
+    }
+
     @SuppressWarnings("unchecked")
     @Test
     void emitMapsAllFieldsToStreamRecord() {
@@ -245,6 +258,47 @@ class RedisStreamAuditSinkTest {
                         "transcript", "transcriptText", "segments", "text",
                         "authorization", "bearer", "token", "idempotencyKey",
                         "transcribeUrl", "url", "destinationUrl");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitTranscriptAccessMapsAllFieldsToStreamRecord() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("4-0"));
+
+        sink.emit(transcriptAccess());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        final MapRecord<String, String, String> record = captor.getValue();
+        assertThat(record.getStream()).isEqualTo("audit:events");
+        assertThat(record.getValue())
+                .containsEntry("eventType", "TRANSCRIPT_EVENTS_ACCESSED")
+                .containsEntry("sessionId", "SES-abc")
+                .containsEntry("tenantId", "42")
+                .containsEntry("userId", "7")
+                .containsEntry("meetingId", "22222222-2222-4222-8222-222222222222")
+                .containsEntry("deliveryMode", "REST")
+                .containsEntry("afterCursor", "1680000000000-0")
+                .containsEntry("requestedLimit", "50")
+                .containsEntry("correlationId", "corr-transcript")
+                .containsEntry("accessedAtMs", "5000");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitTranscriptAccessPiiBoundaryNoTextNoAudioNoToken() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("4-0"));
+
+        sink.emit(transcriptAccess());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        assertThat(captor.getValue().getValue())
+                .doesNotContainKeys("transcript", "transcriptText", "text", "segments",
+                        "audio", "audioBytes", "bytes", "rawAudio",
+                        "authorization", "bearer", "token", "idempotencyKey");
     }
 
     @SuppressWarnings("unchecked")

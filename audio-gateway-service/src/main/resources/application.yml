@@ -92,6 +92,10 @@ audio:
         enabled: false               # opt-in; writes transcript text to result stream after live-stt returns
         stream-key: transcript:direct-stt-results
         max-len: 0                   # 0 = no producer trim; consumer/retention owns lifecycle
+        read-batch-size: 50          # max events emitted to one client per poll/SSE tick
+        read-max-scan: 500           # max Redis entries scanned to skip unrelated sessions
+        poll-interval-ms: 1000       # SSE bridge poll cadence
+        heartbeat-interval-ms: 15000 # SSE keepalive cadence
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
       # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".

@@ -585,6 +585,18 @@ public class AudioGatewayProperties {
             /** Producer-side approximate trim. 0 means no trim; consumer/retention owns lifecycle. */
             private long maxLen = 0L;
 
+            /** Max transcript events returned to a client per REST poll/SSE tick. */
+            private int readBatchSize = 50;
+
+            /** Max Redis stream entries scanned per client read window before advancing the cursor. */
+            private int readMaxScan = 500;
+
+            /** SSE poll cadence for bridging Redis result stream events to authenticated clients. */
+            private long pollIntervalMs = 1_000L;
+
+            /** SSE keepalive cadence; must stay below edge/proxy read timeout. */
+            private long heartbeatIntervalMs = 15_000L;
+
             void validate() {
                 if (!enabled) {
                     return;
@@ -597,6 +609,18 @@ public class AudioGatewayProperties {
                 if (maxLen < 0) {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.transcript-result-stream.max-len must be >= 0");
+                }
+                if (readBatchSize <= 0 || readMaxScan <= 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream read bounds must be positive");
+                }
+                if (readMaxScan < readBatchSize) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream.read-max-scan must be >= read-batch-size");
+                }
+                if (pollIntervalMs <= 0 || heartbeatIntervalMs <= 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream SSE intervals must be positive");
                 }
             }
 
@@ -622,6 +646,38 @@ public class AudioGatewayProperties {
 
             public void setMaxLen(final long maxLen) {
                 this.maxLen = maxLen;
+            }
+
+            public int getReadBatchSize() {
+                return readBatchSize;
+            }
+
+            public void setReadBatchSize(final int readBatchSize) {
+                this.readBatchSize = readBatchSize;
+            }
+
+            public int getReadMaxScan() {
+                return readMaxScan;
+            }
+
+            public void setReadMaxScan(final int readMaxScan) {
+                this.readMaxScan = readMaxScan;
+            }
+
+            public long getPollIntervalMs() {
+                return pollIntervalMs;
+            }
+
+            public void setPollIntervalMs(final long pollIntervalMs) {
+                this.pollIntervalMs = pollIntervalMs;
+            }
+
+            public long getHeartbeatIntervalMs() {
+                return heartbeatIntervalMs;
+            }
+
+            public void setHeartbeatIntervalMs(final long heartbeatIntervalMs) {
+                this.heartbeatIntervalMs = heartbeatIntervalMs;
             }
         }
     }
