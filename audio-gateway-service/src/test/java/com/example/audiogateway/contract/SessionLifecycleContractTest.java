@@ -6,15 +6,20 @@ import com.example.audiogateway.dto.FinishResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
+import com.example.audiogateway.service.AudioChunkDispatcher;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
 
 /**
@@ -35,6 +40,9 @@ class SessionLifecycleContractTest {
 
     @Autowired
     private WebTestClient client;
+
+    @MockitoBean
+    private AudioChunkDispatcher dispatcher;
 
     private static StartSessionRequest validRequest() {
         return new StartSessionRequest(
@@ -175,6 +183,11 @@ class SessionLifecycleContractTest {
                     assertThat(resp.alreadyFinished()).isTrue();
                     assertThat(resp.finalState()).isEqualTo("FINISHED");
                 });
+
+        verify(dispatcher, times(1)).finishSession(argThat(command ->
+                sid.equals(command.sessionId())
+                        && Long.valueOf(1L).equals(command.tenantId())
+                        && Long.valueOf(42L).equals(command.userId())));
     }
 
     @Test

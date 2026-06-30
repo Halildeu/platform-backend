@@ -13,6 +13,7 @@ import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
 import com.example.audiogateway.service.AudioChunkDispatcher;
+import com.example.audiogateway.service.AudioChunkDispatcher.SessionFinishCommand;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
 import com.example.audiogateway.service.AudioSessionRegistry;
@@ -599,9 +600,13 @@ public class AudioSessionController {
 
         final FinishOutcome outcome = registry.finish(sessionId, idempotencyKey, tenantId, userId);
         return Mono.just(switch (outcome) {
-            case FinishOutcome.Finished f -> ResponseEntity.ok(new FinishResponse(
-                    f.record().sessionId(), corrId,
-                    f.record().state().name(), f.record().finishedAtMs(), false));
+            case FinishOutcome.Finished f -> {
+                notifyDispatcherFinished(new SessionFinishCommand(
+                        f.record().sessionId(), tenantId, userId, corrId));
+                yield ResponseEntity.ok(new FinishResponse(
+                        f.record().sessionId(), corrId,
+                        f.record().state().name(), f.record().finishedAtMs(), false));
+            }
             case FinishOutcome.AlreadyFinished af -> ResponseEntity.ok(new FinishResponse(
                     af.record().sessionId(), corrId,
                     af.record().state().name(), af.record().finishedAtMs(), true));
@@ -624,6 +629,15 @@ public class AudioSessionController {
                             "Idempotency-Key reused for already-finished session with different key",
                             corrId, false));
         });
+    }
+
+    private void notifyDispatcherFinished(final SessionFinishCommand command) {
+        try {
+            dispatcher.finishSession(command);
+        } catch (final RuntimeException ex) {
+            log.warn("Session finish downstream notification failed sessionId={} correlationId={} error={}",
+                    command.sessionId(), command.correlationId(), ex.getClass().getSimpleName());
+        }
     }
 
     // ----- helpers ---------------------------------------------------------

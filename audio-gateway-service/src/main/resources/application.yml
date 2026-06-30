@@ -79,6 +79,10 @@ audio:
       connect-timeout-ms: 3000
       response-timeout-ms: 30000     # GPU /transcribe can take hundreds of ms to seconds
       max-response-bytes: 262144     # small JSON response decode cap
+      aggregation:
+        enabled: true                # #231: aggregate PCM16 before Whisper; memory-only, no persistence
+        window-seconds: 10           # configurable fixed window; accepted range 5..30 seconds
+        max-buffered-sessions: 64    # bounds raw PCM held in gateway memory
       tls:
         enabled: false               # real cross-server meeting audio flips true with Caddy/Vault PKI mTLS (ADR-0031/B+ I7)
         ca-certificate-path: ""      # mounted PEM CA bundle for live-stt.denetim/Caddy server verification
