@@ -7,8 +7,12 @@ import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import com.example.endpointadmin.remoteaccess.bridge.DurableRemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
+import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
+import io.grpc.stub.StreamObserver;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.prometheusmetrics.PrometheusConfig;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.env.MockEnvironment;
 
@@ -19,7 +23,10 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
+import java.util.List;
+import java.util.Optional;
 
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_CONTROL_STREAMS_CONNECTED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -44,7 +51,7 @@ class RemoteBridgeServerLifecycleTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withBean(JdbcTemplate.class, () -> mock(JdbcTemplate.class))
             .withBean(EndpointMachineCertRepository.class, () -> mock(EndpointMachineCertRepository.class))
-            .withBean(MeterRegistry.class, SimpleMeterRegistry::new) // bridge data-plane metrics (T-2b/#1588)
+            .withBean(MeterRegistry.class, () -> new PrometheusMeterRegistry(PrometheusConfig.DEFAULT))
             .withUserConfiguration(RemoteBridgeServerConfig.class);
 
     /** A valid PKCS#8 EC P-256 key written to {@code name} (signing + anchor keys share the format). */
@@ -78,6 +85,20 @@ class RemoteBridgeServerLifecycleTest {
         return new DurableRemoteBridgeAuditSink(sessionId -> {
             throw new AssertionError("unused recorder factory");
         });
+    }
+
+    private static final class NoopObserver implements StreamObserver<Envelope> {
+        @Override
+        public void onNext(Envelope value) {
+        }
+
+        @Override
+        public void onError(Throwable t) {
+        }
+
+        @Override
+        public void onCompleted() {
+        }
     }
 
     @Test
@@ -315,6 +336,21 @@ class RemoteBridgeServerLifecycleTest {
                     assertTrue(context.containsBean("remoteBridgeOperatorStepUpHandler"));
                     // slice-4c-2a: the operator authenticator is wired (consumed by the slice-4c REST transport)
                     assertTrue(context.containsBean("remoteBridgeOperatorAuthenticator"));
+                    MeterRegistry meters = context.getBean(MeterRegistry.class);
+                    ControlStreamRegistry registry = context.getBean(ControlStreamRegistry.class);
+                    Gauge connectedStreams = meters.find(BRIDGE_CONTROL_STREAMS_CONNECTED).gauge();
+                    assertNotNull(connectedStreams,
+                            "live control-stream gauge must be registered when bridge is enabled");
+                    assertEquals(0.0, connectedStreams.value());
+                    PeerIdentity peer = new PeerIdentity("metric-peer", Optional.empty(), List.of());
+                    ControlStreamHandle handle = new ControlStreamHandle(new NoopObserver());
+                    registry.register(peer, handle);
+                    assertEquals(1.0, connectedStreams.value());
+                    assertTrue(((PrometheusMeterRegistry) meters).scrape()
+                                    .contains(BRIDGE_CONTROL_STREAMS_CONNECTED + " 1.0"),
+                            "scrape must expose the exact gauge name and current connected-stream value");
+                    registry.unregister(peer, handle);
+                    assertEquals(0.0, connectedStreams.value());
                     server.stop();
                     assertFalse(server.isRunning());
                 });

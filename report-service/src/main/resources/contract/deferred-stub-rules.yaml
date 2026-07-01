@@ -14,16 +14,16 @@
 deferred_stub_rules:
   - rule_id: RC-009
     file: RC009ActionScopeValid.java
-    reason: "actions field henüz ReportDefinition record'una parse edilmedi; Faz 2 Program 1c migration ile actions[] field eklenir + bu rule wire edilir."
+    reason: "2026-07-01 renewal: actions field hâlâ ReportDefinition record'una parse edilmiyor; kalıcı fix actions[] schema/record/fixture migration + RC-009 enforcement gerektirir. Kısa deferral; stub suistimal kapısı değildir."
     owner: platform-team
-    deferral_until: "2026-06-30"
-    tracking_pr: 193
+    deferral_until: "2026-07-08"
+    tracking_pr: 785
     adr: ADR-0017
 
   - rule_id: RC-010
     file: RC010DestructiveActionRequiresPermissionAndConfirm.java
-    reason: "actions[] field henüz ReportDefinition record'una parse edilmedi; RC-009 ile aynı 1c migration ile wire edilecek. destructive=true + permission + confirmation enforcement."
+    reason: "2026-07-01 renewal: actions[] field hâlâ ReportDefinition record'una parse edilmiyor; kalıcı fix RC-009 ile aynı action model migration sonrası destructive=true için permission + confirmation enforcement gerektirir."
     owner: platform-team
-    deferral_until: "2026-06-30"
-    tracking_pr: 193
+    deferral_until: "2026-07-08"
+    tracking_pr: 785
     adr: ADR-0017

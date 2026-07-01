@@ -94,6 +94,12 @@ public final class RemoteAccessMetrics {
     /** Accepted DATA-frame payload bytes — stream throughput. */
     public static final String BRIDGE_DATA_BYTES = "remote_access_bridge_data_bytes_total";
     /**
+     * Live authenticated CONTROL streams registered by the broker. This is the server-side evidence surface for
+     * outbound-only agents connected through the remote bridge; it is a gauge, so disconnect/kill/shutdown must
+     * drive it back to zero.
+     */
+    public static final String BRIDGE_CONTROL_STREAMS_CONNECTED = "remote_access_bridge_control_streams_connected";
+    /**
      * DATA frames rejected by the transport guard, tagged {@code reason} with a COARSE fixed category
      * (seq / too-large / channel / payload / stream-id / envelope / other) — bounded cardinality, never the
      * raw defect string. A rising {@code seq} rate means a lossy/misordered producer.
