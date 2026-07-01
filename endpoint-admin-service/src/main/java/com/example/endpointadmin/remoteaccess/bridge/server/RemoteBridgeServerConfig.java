@@ -50,6 +50,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyVie
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
 import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -69,6 +70,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+
+import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_CONTROL_STREAMS_CONNECTED;
 
 /**
  * Faz 22.6 T-2b (Codex 019eb9fb) — remote-bridge server wiring, conditional on
@@ -702,6 +705,9 @@ public class RemoteBridgeServerConfig {
                                                                  BrokerControlPlane controlPlane,
                                                                  DataPlaneHandler remoteBridgeDataPlane,
                                                                  MeterRegistry meterRegistry) {
+        Gauge.builder(BRIDGE_CONTROL_STREAMS_CONNECTED, registry, ControlStreamRegistry::connectedCount)
+                .description("Live authenticated remote-bridge CONTROL streams registered by the broker.")
+                .register(meterRegistry);
         return new RemoteBridgeConnectService(registry, controlPlane, remoteBridgeDataPlane, meterRegistry,
                 heartbeatScheduler, properties.heartbeatIntervalMillis(), properties.maxDataFrameBytes(),
                 System::currentTimeMillis, "rb-v1");
