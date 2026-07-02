@@ -15,6 +15,7 @@ import com.example.audiogateway.dto.StatusResponse;
 import com.example.audiogateway.dto.TranscriptEventResponse;
 import com.example.audiogateway.dto.TranscriptEventsResponse;
 import com.example.audiogateway.service.AudioChunkDispatcher;
+import com.example.audiogateway.service.AudioChunkDispatcher.SessionFinishCommand;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
 import com.example.audiogateway.service.AudioSessionRegistry;
@@ -29,6 +30,7 @@ import com.example.audiogateway.service.MeetingAccessValidator.Decision;
 import com.example.audiogateway.service.SessionRecord;
 import com.example.audiogateway.service.SessionState;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.Valid;
 import java.time.Duration;
 import java.security.MessageDigest;
@@ -99,6 +101,7 @@ public class AudioSessionController {
     private final AudioChunkDispatcher dispatcher;
     private final AudioGatewayAuditSink auditSink;
     private final MeetingAccessValidator meetingAccessValidator;
+    private final MeterRegistry meters;
     private final DirectSttTranscriptEventReader transcriptEventReader;
 
     public AudioSessionController(final AudioGatewayProperties props,
@@ -106,12 +109,15 @@ public class AudioSessionController {
                                   final AudioChunkDispatcher dispatcher,
                                   final AudioGatewayAuditSink auditSink,
                                   final MeetingAccessValidator meetingAccessValidator,
+                                  final MeterRegistry meters,
                                   final DirectSttTranscriptEventReader transcriptEventReader) {
         this.props = props;
         this.registry = registry;
         this.dispatcher = dispatcher;
         this.auditSink = auditSink;
         this.meetingAccessValidator = meetingAccessValidator;
+        this.meters = meters;
+        meters.counter("audio_gateway_session_finish_notification_error");
         this.transcriptEventReader = transcriptEventReader;
     }
 
@@ -697,9 +703,13 @@ public class AudioSessionController {
 
         final FinishOutcome outcome = registry.finish(sessionId, idempotencyKey, tenantId, userId);
         return Mono.just(switch (outcome) {
-            case FinishOutcome.Finished f -> ResponseEntity.ok(new FinishResponse(
-                    f.record().sessionId(), corrId,
-                    f.record().state().name(), f.record().finishedAtMs(), false));
+            case FinishOutcome.Finished f -> {
+                notifyDispatcherFinished(new SessionFinishCommand(
+                        f.record().sessionId(), tenantId, userId, corrId));
+                yield ResponseEntity.ok(new FinishResponse(
+                        f.record().sessionId(), corrId,
+                        f.record().state().name(), f.record().finishedAtMs(), false));
+            }
             case FinishOutcome.AlreadyFinished af -> ResponseEntity.ok(new FinishResponse(
                     af.record().sessionId(), corrId,
                     af.record().state().name(), af.record().finishedAtMs(), true));
@@ -722,6 +732,16 @@ public class AudioSessionController {
                             "Idempotency-Key reused for already-finished session with different key",
                             corrId, false));
         });
+    }
+
+    private void notifyDispatcherFinished(final SessionFinishCommand command) {
+        try {
+            dispatcher.finishSession(command);
+        } catch (final RuntimeException ex) {
+            meters.counter("audio_gateway_session_finish_notification_error").increment();
+            log.warn("Session finish downstream notification failed sessionId={} correlationId={} error={}",
+                    command.sessionId(), command.correlationId(), ex.getClass().getSimpleName());
+        }
     }
 
     // ----- helpers ---------------------------------------------------------

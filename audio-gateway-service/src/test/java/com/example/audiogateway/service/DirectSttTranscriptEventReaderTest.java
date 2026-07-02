@@ -58,6 +58,13 @@ class DirectSttTranscriptEventReaderTest {
         assertThat(response.events().get(0).eventId()).isEqualTo("1001-0");
         assertThat(response.events().get(0).text()).isEqualTo("merhaba dunya");
         assertThat(response.events().get(0).chunkSeq()).isEqualTo(5L);
+        assertThat(response.events().get(0).windowSeq()).isEqualTo(2L);
+        assertThat(response.events().get(0).firstChunkSeq()).isEqualTo(3L);
+        assertThat(response.events().get(0).lastChunkSeq()).isEqualTo(5L);
+        assertThat(response.events().get(0).windowStartedAtMs()).isEqualTo(1_250L);
+        assertThat(response.events().get(0).windowEndedAtMs()).isEqualTo(2_250L);
+        assertThat(response.events().get(0).audioDurationMs()).isEqualTo(1_000);
+        assertThat(response.events().get(0).flushReason()).isEqualTo("window_full");
         assertThat(response.events().get(0).meetingId()).isEqualTo("22222222-2222-4222-8222-222222222222");
     }
 
@@ -116,6 +123,13 @@ class DirectSttTranscriptEventReaderTest {
         fields.put("meetingId", "22222222-2222-4222-8222-222222222222");
         fields.put("chunkSeq", chunkSeq);
         fields.put("chunkStartedAtMs", "1250");
+        fields.put("windowSeq", "2");
+        fields.put("firstChunkSeq", "3");
+        fields.put("lastChunkSeq", chunkSeq);
+        fields.put("windowStartedAtMs", "1250");
+        fields.put("windowEndedAtMs", "2250");
+        fields.put("audioDurationMs", "1000");
+        fields.put("flushReason", "window_full");
         fields.put("textDraft", text);
         fields.put("textLength", Integer.toString(text.length()));
         fields.put("status", "DRAFT");

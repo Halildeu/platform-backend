@@ -102,12 +102,28 @@ public class DirectSttTranscriptEventReader {
         }
 
         final Integer declaredTextLength = parseInt(fields.get("textLength"));
+        final long windowSeq = defaultLong(parseLong(fields.get("windowSeq")), chunkSeq);
+        final long firstChunkSeq = defaultLong(parseLong(fields.get("firstChunkSeq")), chunkSeq);
+        final long lastChunkSeq = defaultLong(parseLong(fields.get("lastChunkSeq")), chunkSeq);
+        final long windowStartedAtMs =
+                defaultLong(parseLong(fields.get("windowStartedAtMs")), chunkStartedAtMs);
+        final int audioDurationMs = defaultInt(parseInt(fields.get("audioDurationMs")), 0);
+        final long windowEndedAtMs = defaultLong(
+                parseLong(fields.get("windowEndedAtMs")),
+                windowStartedAtMs + audioDurationMs);
         return new TranscriptEventResponse(
                 recordId,
                 session.sessionId(),
                 fields.getOrDefault("meetingId", session.meetingId()),
                 chunkSeq,
                 chunkStartedAtMs,
+                windowSeq,
+                firstChunkSeq,
+                lastChunkSeq,
+                windowStartedAtMs,
+                windowEndedAtMs,
+                audioDurationMs,
+                defaultIfBlank(fields.get("flushReason"), "chunk"),
                 text,
                 declaredTextLength == null ? text.length() : declaredTextLength,
                 defaultIfBlank(fields.get("status"), "DRAFT"),
@@ -115,6 +131,14 @@ public class DirectSttTranscriptEventReader {
                 blankToNull(fields.get("sttLanguage")),
                 parseDouble(fields.get("durationSeconds")),
                 blankToNull(fields.get("correlationId")));
+    }
+
+    private static long defaultLong(final Long value, final long fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static int defaultInt(final Integer value, final int fallback) {
+        return value == null ? fallback : value;
     }
 
     private static Map<String, String> toStringFields(final MapRecord<String, Object, Object> record) {
