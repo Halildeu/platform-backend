@@ -10,6 +10,7 @@ import com.example.endpointadmin.exception.EnrollmentExpiredException;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointEnrollment;
 import com.example.endpointadmin.model.EnrollmentStatus;
+import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointEnrollmentRepository;
 import com.example.endpointadmin.security.AdminTenantContext;
 import com.example.endpointadmin.security.EnrollmentAttemptLimiter;
@@ -23,6 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -32,6 +34,7 @@ import java.util.UUID;
 public class EndpointEnrollmentService {
 
     private final EndpointEnrollmentRepository repository;
+    private final EndpointDeviceRepository deviceRepository;
     private final EndpointDeviceService deviceService;
     private final DeviceCredentialService credentialService;
     private final EndpointAuditService auditService;
@@ -43,6 +46,7 @@ public class EndpointEnrollmentService {
     private final int maxTtlMinutes;
 
     public EndpointEnrollmentService(EndpointEnrollmentRepository repository,
+                                     EndpointDeviceRepository deviceRepository,
                                      EndpointDeviceService deviceService,
                                      DeviceCredentialService credentialService,
                                      EndpointAuditService auditService,
@@ -53,6 +57,7 @@ public class EndpointEnrollmentService {
                                      @Value("${endpoint-admin.enrollment.default-token-ttl-minutes:1440}") int defaultTtlMinutes,
                                      @Value("${endpoint-admin.enrollment.max-token-ttl-minutes:10080}") int maxTtlMinutes) {
         this.repository = repository;
+        this.deviceRepository = deviceRepository;
         this.deviceService = deviceService;
         this.credentialService = credentialService;
         this.auditService = auditService;
@@ -70,25 +75,39 @@ public class EndpointEnrollmentService {
         Instant now = Instant.now(clock);
         int ttlMinutes = resolveTtl(request == null ? null : request.expiresInMinutes());
         String token = tokenGenerator.generate();
+        EndpointDevice device = resolveRequestedDevice(context, request == null ? null : request.deviceId());
 
         EndpointEnrollment enrollment = new EndpointEnrollment();
         enrollment.setTenantId(context.tenantId());
         enrollment.setEnrollmentTokenHash(tokenHasher.hash(token));
         enrollment.setRequestedBySubject(context.subject());
         enrollment.setNote(request == null ? null : request.note());
+        enrollment.setDevice(device);
         enrollment.setExpiresAt(now.plusSeconds(ttlMinutes * 60L));
         EndpointEnrollment saved = repository.saveAndFlush(enrollment);
 
-        auditService.record(context.tenantId(), null, null,
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("enrollmentId", saved.getId().toString());
+        metadata.put("ttlMinutes", ttlMinutes);
+        if (device != null) {
+            metadata.put("deviceId", device.getId().toString());
+        }
+
+        auditService.record(context.tenantId(), device, null,
                 "ENDPOINT_ENROLLMENT_CREATED",
                 "CREATE_ENROLLMENT",
                 context.subject(),
                 null,
-                Map.of("enrollmentId", saved.getId().toString(), "ttlMinutes", ttlMinutes),
+                metadata,
                 null,
                 null);
 
-        return new CreateEndpointEnrollmentResponse(saved.getId(), token, saved.getExpiresAt());
+        return new CreateEndpointEnrollmentResponse(
+                saved.getId(),
+                token,
+                saved.getExpiresAt(),
+                device == null ? null : device.getId()
+        );
     }
 
     @Transactional(readOnly = true)
@@ -153,6 +172,14 @@ public class EndpointEnrollmentService {
                     "Enrollment token TTL must be between 1 and " + maxTtlMinutes + " minutes.");
         }
         return ttl;
+    }
+
+    private EndpointDevice resolveRequestedDevice(AdminTenantContext context, UUID deviceId) {
+        if (deviceId == null) {
+            return null;
+        }
+        return deviceRepository.findVisibleToOrgAndId(context.tenantId(), deviceId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Endpoint device not found."));
     }
 
     private EndpointEnrollmentDto toDto(EndpointEnrollment enrollment) {

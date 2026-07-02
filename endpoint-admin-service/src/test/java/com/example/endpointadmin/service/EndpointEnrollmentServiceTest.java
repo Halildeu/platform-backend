@@ -114,6 +114,46 @@ class EndpointEnrollmentServiceTest {
     }
 
     @Test
+    void createEnrollmentCanBindExistingDeviceForTpmReEnrollment() {
+        CreateEndpointEnrollmentResponse initial = enrollmentService.createEnrollment(
+                adminContext(),
+                new CreateEndpointEnrollmentRequest(60, "initial")
+        );
+        ConsumeEnrollmentResponse consumed = enrollmentService.consumeEnrollment(
+                consumeRequest(initial.getToken(), "PC-TPM-001", "fp-tpm-001"),
+                "127.0.0.1"
+        );
+        entityManager.flush();
+        entityManager.clear();
+
+        CreateEndpointEnrollmentResponse tpm = enrollmentService.createEnrollment(
+                adminContext(),
+                new CreateEndpointEnrollmentRequest(60, "tpm re-enroll", consumed.getDeviceId())
+        );
+        entityManager.flush();
+        entityManager.clear();
+
+        var enrollment = enrollmentRepository.findById(tpm.getEnrollmentId()).orElseThrow();
+
+        assertThat(tpm.getDeviceId()).isEqualTo(consumed.getDeviceId());
+        assertThat(enrollment.getStatus()).isEqualTo(EnrollmentStatus.PENDING);
+        assertThat(enrollment.getDevice().getId()).isEqualTo(consumed.getDeviceId());
+        assertThat(enrollment.getNote()).isEqualTo("tpm re-enroll");
+    }
+
+    @Test
+    void createEnrollmentRejectsDeviceOutsideTenantScope() {
+        UUID missingDeviceId = UUID.fromString("99999999-9999-9999-9999-999999999999");
+
+        assertThatThrownBy(() -> enrollmentService.createEnrollment(
+                adminContext(),
+                new CreateEndpointEnrollmentRequest(60, "wrong device", missingDeviceId)
+        ))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("404 NOT_FOUND");
+    }
+
+    @Test
     void consumeEnrollmentExpiresPendingToken() {
         CreateEndpointEnrollmentResponse created = enrollmentService.createEnrollment(
                 adminContext(),
