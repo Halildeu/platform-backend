@@ -120,6 +120,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                     return upstreamClient.execute(upstreamUri, upstream ->
                                     bridge(clientSession, upstream, record, correlationId))
                             .doOnError(error -> {
+                                if (error instanceof ClientFrameException) {
+                                    return;
+                                }
                                 upstreamFailures.increment();
                                 log.warn(
                                         "Live STT WebSocket bridge failed err={} sessionId={} correlationId={}",
@@ -127,6 +130,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                                         sessionId,
                                         correlationId);
                             })
+                            .onErrorResume(
+                                    ClientFrameException.class,
+                                    error -> clientSession.close(CloseStatus.BAD_DATA))
                             .onErrorResume(error -> clientSession.close(CloseStatus.SERVER_ERROR))
                             .doFinally(signal -> activeSessions.remove(sessionId));
                 });
@@ -145,21 +151,29 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                     if (message.getType() != WebSocketMessage.Type.BINARY) {
                         rejectedFrames.increment();
                         DataBufferUtils.release(message.getPayload());
-                        sink.error(new IllegalArgumentException("live audio stream accepts binary frames only"));
+                        sink.error(new ClientFrameException(
+                                "live audio stream accepts binary frames only"));
                         return;
                     }
                     final int readable = message.getPayload().readableByteCount();
                     if (readable > maxFrameBytes + LiveAudioStreamFrame.HEADER_BYTES) {
                         rejectedFrames.increment();
                         DataBufferUtils.release(message.getPayload());
-                        sink.error(new IllegalArgumentException("live audio frame exceeds configured bound"));
+                        sink.error(new ClientFrameException(
+                                "live audio frame exceeds configured bound"));
                         return;
                     }
                     final byte[] encoded = new byte[readable];
                     message.getPayload().read(encoded);
                     DataBufferUtils.release(message.getPayload());
-                    final LiveAudioStreamFrame frame =
-                            LiveAudioStreamFrame.decode(encoded, maxFrameBytes);
+                    final LiveAudioStreamFrame frame;
+                    try {
+                        frame = LiveAudioStreamFrame.decode(encoded, maxFrameBytes);
+                    } catch (IllegalArgumentException error) {
+                        rejectedFrames.increment();
+                        sink.error(new ClientFrameException(error.getMessage()));
+                        return;
+                    }
                     final LiveStreamSequenceTracker.Outcome outcome = sequences.accept(
                             record.sessionId(), record.lastAcceptedChunkSeq(), frame.chunkSeq());
                     if (outcome == LiveStreamSequenceTracker.Outcome.DUPLICATE) {
@@ -168,7 +182,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                     }
                     if (outcome != LiveStreamSequenceTracker.Outcome.ACCEPTED) {
                         rejectedFrames.increment();
-                        sink.error(new IllegalArgumentException(
+                        sink.error(new ClientFrameException(
                                 "live audio sequence is non-contiguous or tracker capacity is exhausted"));
                         return;
                     }
@@ -288,6 +302,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                     MessageDigest.getInstance("SHA-256").digest(payload));
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private static final class ClientFrameException extends RuntimeException {
+        private ClientFrameException(final String message) {
+            super(message);
         }
     }
 }
