@@ -352,6 +352,9 @@ public class AudioGatewayProperties {
          */
         private final TranscriptResultStream transcriptResultStream = new TranscriptResultStream();
 
+        /** Default-off gateway-to-live-stt WebSocket bridge for Faz 24 #184. */
+        private final Streaming streaming = new Streaming();
+
         /**
          * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
          * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
@@ -359,6 +362,10 @@ public class AudioGatewayProperties {
          */
         public void validate() {
             if (!enabled) {
+                if (streaming.isEnabled()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.enabled must be true when streaming is enabled");
+                }
                 return;
             }
             if (transcribeUrl == null || transcribeUrl.isBlank()) {
@@ -399,6 +406,7 @@ public class AudioGatewayProperties {
             }
             aggregation.validate();
             transcriptResultStream.validate();
+            streaming.validate(tls.isEnabled());
         }
 
         public boolean isEnabled() {
@@ -459,6 +467,84 @@ public class AudioGatewayProperties {
 
         public TranscriptResultStream getTranscriptResultStream() {
             return transcriptResultStream;
+        }
+
+        public Streaming getStreaming() {
+            return streaming;
+        }
+
+        public static class Streaming {
+            private boolean enabled = false;
+            private String streamUrl = "";
+            private int maxFrameBytes = 65_535;
+            private int maxTrackedSessions = 1_000;
+
+            void validate(final boolean tlsEnabled) {
+                if (!enabled) {
+                    return;
+                }
+                if (streamUrl == null || streamUrl.isBlank()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.stream-url must be set when streaming is enabled");
+                }
+                final java.net.URI uri;
+                try {
+                    uri = java.net.URI.create(streamUrl.trim());
+                } catch (IllegalArgumentException error) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.stream-url is not a valid URI",
+                            error);
+                }
+                final String scheme = uri.getScheme();
+                if (!"ws".equalsIgnoreCase(scheme) && !"wss".equalsIgnoreCase(scheme)) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.stream-url must use ws or wss");
+                }
+                if (tlsEnabled && !"wss".equalsIgnoreCase(scheme)) {
+                    throw new IllegalStateException(
+                            "direct-stt TLS requires a wss streaming URL");
+                }
+                if (maxFrameBytes <= 0 || maxFrameBytes > 65_535) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.max-frame-bytes must be in [1,65535]");
+                }
+                if (maxTrackedSessions <= 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.max-tracked-sessions must be positive");
+                }
+            }
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getStreamUrl() {
+                return streamUrl;
+            }
+
+            public void setStreamUrl(final String streamUrl) {
+                this.streamUrl = streamUrl;
+            }
+
+            public int getMaxFrameBytes() {
+                return maxFrameBytes;
+            }
+
+            public void setMaxFrameBytes(final int maxFrameBytes) {
+                this.maxFrameBytes = maxFrameBytes;
+            }
+
+            public int getMaxTrackedSessions() {
+                return maxTrackedSessions;
+            }
+
+            public void setMaxTrackedSessions(final int maxTrackedSessions) {
+                this.maxTrackedSessions = maxTrackedSessions;
+            }
         }
 
         public static class Aggregation {

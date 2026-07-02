@@ -96,6 +96,11 @@ audio:
         read-max-scan: 500           # max Redis entries scanned to skip unrelated sessions
         poll-interval-ms: 1000       # SSE bridge poll cadence
         heartbeat-interval-ms: 15000 # SSE keepalive cadence
+      streaming:
+        enabled: false               # #184 default-off authenticated gateway WebSocket bridge
+        stream-url: ""               # ws(s)://live-stt.../ws/stream; required when enabled
+        max-frame-bytes: 65535        # uint16 frame length bound; PCM16 only
+        max-tracked-sessions: 1000    # memory-only reconnect/idempotency tracker bound
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
       # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".
