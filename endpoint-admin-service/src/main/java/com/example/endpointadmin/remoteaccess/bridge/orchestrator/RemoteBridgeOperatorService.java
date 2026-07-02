@@ -234,13 +234,19 @@ public final class RemoteBridgeOperatorService {
             // dropped as stale-incarnation (no availability false-negative window). A send failure below kills +
             // evicts the session, so the binding on a terminal session is moot.
             session.bindDeviceKeyChallenge(challenge.challengeId());
+            recordDeviceKeyChallengeBestEffort(session.sessionId(), "DEVICE_KEY_CHALLENGE_ISSUED",
+                    challenge.challengeId(), now);
             if (!registry.sendDeviceKeyChallenge(peer.transportPeerKey(), session.sessionId(), challenge, now)) {
+                recordDeviceKeyChallengeBestEffort(session.sessionId(), "DEVICE_KEY_CHALLENGE_NOT_DELIVERED",
+                        challenge.challengeId(), now);
                 evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear the undelivered challenge
                 session.transition(Event.KILL);
                 store.evictIfTerminal(session.sessionId());
                 terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
                 return SessionOpenOutcome.rejected(session.sessionId(), "device-key-challenge-not-delivered");
             }
+            recordDeviceKeyChallengeBestEffort(session.sessionId(), "DEVICE_KEY_CHALLENGE_SENT",
+                    challenge.challengeId(), now);
         }
 
         ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
@@ -304,6 +310,28 @@ public final class RemoteBridgeOperatorService {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(operatorSubject.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    private void recordDeviceKeyChallengeBestEffort(String sessionId, String eventType, String challengeId, long now) {
+        try {
+            auditSink.record(new AuditEvent(sessionId,
+                    eventType + ":challenge_hash=" + shortAuditHash(challengeId), "", now));
+        } catch (RuntimeException ignored) {
+            // Diagnostic evidence must not alter the consent/session fail-closed path.
+        }
+    }
+
+    private static String shortAuditHash(String value) {
+        if (value == null || value.isBlank()) {
+            return "blank";
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest).substring(0, 16);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is not available", e);
         }

@@ -13,10 +13,13 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOu
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgePermitSigner;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.AuditEvent;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.BrokerControlPlane;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.DeviceKeyChallengeStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeAgentErrorLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TpmDeviceKeySessionEvidenceStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OwnerTokenGate;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParser;
@@ -29,6 +32,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSe
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
+import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
@@ -120,6 +124,19 @@ class RemoteBridgeOperatorServiceTest {
         }
     }
 
+    private static final class RecordingAuditSink implements RemoteBridgeAuditSink {
+        final List<String> eventTypes = new ArrayList<>();
+
+        @Override
+        public void record(AuditEvent event) {
+            eventTypes.add(event.eventType());
+        }
+
+        boolean hasExact(String eventType) {
+            return eventTypes.contains(eventType);
+        }
+    }
+
     /** Open a session and drive its state machine to ACTIVE with an active consent lease. */
     private static RemoteBridgeSession activeSession(RemoteBridgeSessionStore store, String sessionId,
                                                      String peerKey, Set<RemoteSessionCapability> caps) {
@@ -170,6 +187,39 @@ class RemoteBridgeOperatorServiceTest {
                 "the device-key challenge is pushed FIRST, before the consent prompt");
         assertEquals("s1", observer.sent.get(0).getSessionId(), "the challenge envelope carries the session id");
         assertTrue(observer.sent.get(1).hasConsentPrompt(), "the consent prompt follows the challenge");
+    }
+
+    @Test
+    void enabledOpenSessionChallengeCanBeConsumedByTheControlPlaneForTheSameLiveSession() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        RecordingAuditSink audit = new RecordingAuditSink();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
+        TpmDeviceKeySessionEvidenceStore evidenceStore = new TpmDeviceKeySessionEvidenceStore();
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, audit, () -> NOW,
+                120_000L, challengeStore, evidenceStore, true, 120_000L);
+        BrokerControlPlane controlPlane = new BrokerControlPlane(emptyLedger(), store, audit, () -> NOW + 1_000L,
+                new RemoteBridgeAgentErrorLedger(0), challengeStore, evidenceStore);
+
+        SessionOpenOutcome outcome = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "remote support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+        RemoteBridgeMessages.DeviceKeyChallenge challenge =
+                RemoteBridgeProtoAdapter.decode(observer.sent.get(0).getDeviceKeyChallenge()).orElseThrow();
+
+        controlPlane.onDeviceKeyAttestationResponse(peer, shapedDeviceKeyResponse(challenge.challengeId()));
+
+        String challengeHash = shortAuditHash(challenge.challengeId());
+        assertTrue(outcome.opened());
+        assertTrue(evidenceStore.consumeFresh("s1", peer.transportPeerKey(), NOW + 1_000L).isPresent(),
+                "the challenge issued during openSession must be consumable by the same control plane store");
+        assertTrue(audit.hasExact("DEVICE_KEY_CHALLENGE_ISSUED:challenge_hash=" + challengeHash));
+        assertTrue(audit.hasExact("DEVICE_KEY_CHALLENGE_SENT:challenge_hash=" + challengeHash));
+        assertTrue(audit.hasExact("DEVICE_KEY_EVIDENCE_STORED:challenge_hash=" + challengeHash));
     }
 
     @Test
@@ -240,6 +290,23 @@ class RemoteBridgeOperatorServiceTest {
         assertTrue(reopened.opened());
         assertTrue(challengeStore.consume(stale.challengeId(), "peer-1", "s1", NOW).isEmpty(),
                 "a late response for the prior session's evicted challenge cannot be redeemed into the reused id");
+    }
+
+    /** A well-SHAPED (mappable) device-key response — crypto remains verifier-owned. */
+    private static RemoteBridgeMessages.DeviceKeyAttestationResponse shapedDeviceKeyResponse(String challengeId) {
+        String b = "AQ=="; // base64 of one byte → satisfies required-non-empty fields
+        return new RemoteBridgeMessages.DeviceKeyAttestationResponse(challengeId,
+                "faz22.6.device-key-session.v1", b, b, b, "", "", List.of(), b, b, b, b, b, b, NOW);
+    }
+
+    private static String shortAuditHash(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest).substring(0, 16);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     @Test
