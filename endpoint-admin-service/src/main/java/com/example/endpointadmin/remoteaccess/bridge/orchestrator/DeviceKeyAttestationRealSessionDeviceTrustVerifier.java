@@ -10,12 +10,16 @@ import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
 import com.example.endpointadmin.tpmattest.TpmAttestationVerifier;
 import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
 import com.example.endpointadmin.tpmattest.TpmPublicArea;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.security.NoSuchAlgorithmException;
 import java.security.MessageDigest;
 import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -62,6 +66,9 @@ import java.util.UUID;
  * ({@link PeerIdentity#chain()} {@code .get(0).getPublicKey()}), never by comparing to {@code transportPeerKey}.
  */
 public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements SessionDeviceTrustVerifier {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(DeviceKeyAttestationRealSessionDeviceTrustVerifier.class);
 
     /**
      * The canonical response schema this verifier accepts (FROZEN with the #741 wire contract; mirrors
@@ -231,10 +238,12 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
     }
 
     private boolean ekChainValidatesToPinnedRoot(byte[] ekCertDer, List<byte[]> ekChainDer) {
+        X509Certificate ekCert = null;
+        List<byte[]> agentChain = ekChainDer == null ? List.of() : ekChainDer;
+        List<X509Certificate> intermediates = new ArrayList<>(agentChain.size());
         try {
-            X509Certificate ekCert = TpmEkChainValidator.parseCert(ekCertDer);
-            List<X509Certificate> intermediates = new ArrayList<>(ekChainDer.size());
-            for (byte[] der : ekChainDer) {
+            ekCert = TpmEkChainValidator.parseCert(ekCertDer);
+            for (byte[] der : agentChain) {
                 if (der != null && der.length > 0) {
                     intermediates.add(TpmEkChainValidator.parseCert(der));
                 }
@@ -242,8 +251,73 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
             ekChainValidator.validate(ekCert, intermediates);
             return true;
         } catch (Exception untrusted) {
+            log.warn("device-key EK chain validation failed: ek_cert_sha256_prefix={} ek_subject={} "
+                            + "ek_issuer={} agent_chain_count={} agent_chain_sha256_prefixes={} failure={}",
+                    sha256Prefix(ekCertDer), certSubject(ekCert), certIssuer(ekCert),
+                    countNonEmpty(agentChain), certSha256Prefixes(agentChain), exceptionSummary(untrusted));
             return false; // malformed cert OR does not chain to a pinned root — fail-closed
         }
+    }
+
+    private static String certSubject(X509Certificate cert) {
+        return cert == null ? "unparseable" : sanitizeLogValue(cert.getSubjectX500Principal().getName());
+    }
+
+    private static String certIssuer(X509Certificate cert) {
+        return cert == null ? "unparseable" : sanitizeLogValue(cert.getIssuerX500Principal().getName());
+    }
+
+    private static int countNonEmpty(List<byte[]> values) {
+        int count = 0;
+        for (byte[] value : values) {
+            if (value != null && value.length > 0) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static String certSha256Prefixes(List<byte[]> certs) {
+        if (certs == null || certs.isEmpty()) {
+            return "none";
+        }
+        List<String> prefixes = new ArrayList<>(certs.size());
+        for (byte[] cert : certs) {
+            if (cert != null && cert.length > 0) {
+                prefixes.add(sha256Prefix(cert));
+            }
+        }
+        return prefixes.isEmpty() ? "none" : String.join(".", prefixes);
+    }
+
+    private static String sha256Prefix(byte[] value) {
+        if (value == null || value.length == 0) {
+            return "empty";
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value);
+            return HexFormat.of().formatHex(digest).substring(0, 16);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
+    }
+
+    private static String exceptionSummary(Exception e) {
+        if (e == null) {
+            return "unknown";
+        }
+        Throwable root = e;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        return sanitizeLogValue(e.getClass().getSimpleName() + ":" + root.getClass().getSimpleName());
+    }
+
+    private static String sanitizeLogValue(String value) {
+        if (value == null || value.isBlank()) {
+            return "blank";
+        }
+        return value.replaceAll("[\\r\\n\\t]", "_");
     }
 
     private static byte[] decodeBase64OrNull(String b64) {
