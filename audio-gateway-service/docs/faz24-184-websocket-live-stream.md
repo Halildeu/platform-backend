@@ -38,7 +38,7 @@ Executed on Windows with Java 21 and Maven 3.9:
 
 ```text
 mvn -Dtest=LiveSttWebSocketConfigTest,LiveSttWebSocketProxyHandlerTest,LiveAudioStreamFrameTest,LiveStreamSequenceTrackerTest,AudioGatewayPropertiesTest test
-23 tests, 0 failures, 0 errors
+24 tests, 0 failures, 0 errors
 
 mvn test
 170 tests, 0 failures, 0 errors
@@ -47,8 +47,8 @@ git diff --check
 PASS
 ```
 
-The full-service run was completed before the final frame-limit builder cleanup;
-the targeted 23-test run covers that final cleanup and recompiles all main/test
+The full-service run was completed before the final frame-limit and bad-data
+close cleanup; the targeted 24-test run covers that final cleanup and recompiles all main/test
 sources.
 
 ## Dependencies

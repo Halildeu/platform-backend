@@ -13,8 +13,10 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.URI;
 import java.time.Instant;
 import java.util.Optional;
+import org.reactivestreams.Publisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
@@ -23,6 +25,7 @@ import org.springframework.web.reactive.socket.HandshakeInfo;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 class LiveSttWebSocketProxyHandlerTest {
@@ -104,6 +107,37 @@ class LiveSttWebSocketProxyHandlerTest {
                 .isEmpty();
     }
 
+    @Test
+    void closesBadDataForClientTextFrameWithoutCountingUpstreamFailure() {
+        final SimpleMeterRegistry meters = new SimpleMeterRegistry();
+        handler = new LiveSttWebSocketProxyHandler(
+                sessions,
+                configuredProperties(),
+                auditSink,
+                upstreamClient,
+                meters);
+        final WebSocketSession client = clientSession(jwt(true, true));
+        final WebSocketSession upstream = mock(WebSocketSession.class);
+        when(sessions.get("session-1")).thenReturn(Optional.of(session(1L, 4L, SessionState.STARTED)));
+        when(client.receive()).thenReturn(Flux.just(textMessage("invalid")));
+        when(client.send(any(Publisher.class))).thenReturn(Mono.never());
+        when(upstream.receive()).thenReturn(Flux.never());
+        when(upstream.send(any(Publisher.class))).thenAnswer(invocation ->
+                Flux.from(invocation.<Publisher<org.springframework.web.reactive.socket.WebSocketMessage>>
+                                getArgument(0))
+                        .then());
+        when(upstreamClient.execute(any(URI.class), any(WebSocketHandler.class)))
+                .thenAnswer(invocation ->
+                        invocation.<WebSocketHandler>getArgument(1).handle(upstream));
+
+        handler.handle(client).block();
+
+        verify(client).close(CloseStatus.BAD_DATA);
+        org.assertj.core.api.Assertions.assertThat(
+                        meters.counter("audio_gateway_live_stream_upstream_failures_total").count())
+                .isZero();
+    }
+
     private WebSocketSession clientSession(final JwtAuthenticationToken authentication) {
         final WebSocketSession session = mock(WebSocketSession.class);
         when(session.getHandshakeInfo()).thenReturn(handshake(
@@ -134,6 +168,20 @@ class LiveSttWebSocketProxyHandlerTest {
             builder.claim("userId", 4L);
         }
         return new JwtAuthenticationToken(builder.build());
+    }
+
+    private static org.springframework.web.reactive.socket.WebSocketMessage textMessage(
+            final String value) {
+        return new org.springframework.web.reactive.socket.WebSocketMessage(
+                org.springframework.web.reactive.socket.WebSocketMessage.Type.TEXT,
+                DefaultDataBufferFactory.sharedInstance.wrap(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    private static AudioGatewayProperties configuredProperties() {
+        final AudioGatewayProperties properties = new AudioGatewayProperties();
+        properties.getDirectStt().getStreaming().setEnabled(true);
+        properties.getDirectStt().getStreaming().setStreamUrl("ws://live-stt:8200/ws/stream");
+        return properties;
     }
 
     private static SessionRecord session(
