@@ -60,6 +60,12 @@ erp:
 meeting:
   tenant:
     local-default-tenant-id: ${MEETING_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+  ai:
+    enabled: ${MEETING_AI_ENABLED:true}
+    base-url: ${MEETING_AI_BASE_URL:http://meeting-ai-service:8080}
+    analyze-path: ${MEETING_AI_ANALYZE_PATH:/analyze}
+    request-timeout: ${MEETING_AI_REQUEST_TIMEOUT:30s}
+    max-transcript-chars: ${MEETING_AI_MAX_TRANSCRIPT_CHARS:200000}
 
 server:
   port: ${SERVER_PORT:8097}

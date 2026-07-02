@@ -45,6 +45,12 @@ security:
 meeting:
   tenant:
     local-default-tenant-id: ${MEETING_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+  ai:
+    enabled: ${MEETING_AI_ENABLED:false}
+    base-url: ${MEETING_AI_BASE_URL:http://localhost:18080}
+    analyze-path: ${MEETING_AI_ANALYZE_PATH:/analyze}
+    request-timeout: ${MEETING_AI_REQUEST_TIMEOUT:30s}
+    max-transcript-chars: ${MEETING_AI_MAX_TRANSCRIPT_CHARS:200000}
   retention:
     meeting-intelligence-days: ${MEETING_RETENTION_INTELLIGENCE_DAYS:730}
     cleanup-cron: ${MEETING_RETENTION_CLEANUP_CRON:0 31 2 * * *}
