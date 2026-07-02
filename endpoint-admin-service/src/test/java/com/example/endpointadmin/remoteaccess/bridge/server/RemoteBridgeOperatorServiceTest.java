@@ -276,15 +276,26 @@ class RemoteBridgeOperatorServiceTest {
         registry.register(new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()),
                 new ControlStreamHandle(observer));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        List<AuditEvent> deviceTrustAudits = new ArrayList<>();
 
         // the UNWIRED duress source (AMBIGUOUS) → the broker kills regardless of capability
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry, operatorAuditSink(),
+                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry, deviceTrustAudits::add,
                 () -> NOW, 120_000L);
 
         OperatorOutcome outcome = service.handleOperationRequest(
                 new OperationRequest("s1", "op-1", RemoteOperation.SCREEN_VIEW, null));
 
+        Optional<AuditEvent> deviceDecisionAudit = deviceTrustAudits.stream()
+                .filter(event -> event.eventType().startsWith("DEVICE_TRUST_DECISION:"))
+                .findFirst();
+        assertTrue(deviceDecisionAudit.isPresent(),
+                "the device-trust verifier decision must be auditable even when duress later kills");
+        assertEquals("s1", deviceDecisionAudit.orElseThrow().sessionId());
+        assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("trusted=false"));
+        assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("basis=NONE"));
+        assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("effective_trusted=false"));
+        assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("reason=device-trust-not-configured"));
         assertEquals(Kind.KILL, outcome.brokerOutcome().kind());
         assertFalse(outcome.transportPushed());
         assertTrue(observer.sent.stream().anyMatch(Envelope::hasKill), "a KILL must be pushed on CONTROL");

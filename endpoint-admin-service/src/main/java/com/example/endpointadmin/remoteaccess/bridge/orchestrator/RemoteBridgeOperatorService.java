@@ -310,6 +310,34 @@ public final class RemoteBridgeOperatorService {
     }
 
     /**
+     * Faz 22.6 #548 evidence seam — record the verifier's raw device-trust verdict before the policy engine can
+     * legitimately fail closed on duress, step-up, or another earlier gate. This does not mint authority and does not
+     * change the broker decision; it only makes the hardware-key verifier outcome auditable for acceptance review.
+     */
+    private void recordDeviceTrustDecisionBestEffort(RemoteBridgeSession session, RemoteBridgeTrustEvidence evidence,
+                                                     long now) {
+        String eventType = "DEVICE_TRUST_DECISION:trusted=" + evidence.deviceTrustDecisionTrusted()
+                + ",basis=" + safeAuditToken(evidence.deviceTrustDecisionBasis().name(), "NONE")
+                + ",effective_trusted=" + evidence.deviceTrusted()
+                + ",effective_basis=" + safeAuditToken(evidence.deviceTrustBasis().name(), "NONE")
+                + ",identity=" + evidence.deviceTrustIdentitiesConsistent()
+                + ",reason=" + safeAuditToken(evidence.deviceTrustDecisionReason(), "device-untrusted");
+        try {
+            auditSink.record(new AuditEvent(session.sessionId(), eventType, "", now));
+        } catch (RuntimeException ignored) {
+            // Diagnostic evidence must not weaken or alter the fail-closed broker verdict.
+        }
+    }
+
+    private static String safeAuditToken(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        String canonical = value.trim();
+        return canonical.matches("^[A-Za-z0-9_.:-]{1,96}$") ? canonical : fallback;
+    }
+
+    /**
      * Faz 22.6 #1580 — wire the VIEW_ONLY session lifecycle seam (server config, post-construction). When set, a
      * successfully pushed VIEW_ONLY {@code SCREEN_VIEW} permit records a stream authorization keyed by
      * {@code (sessionId, operationId)} bound to the agent transport peer; every session-terminal path terminates
@@ -368,6 +396,7 @@ public final class RemoteBridgeOperatorService {
         }
 
         RemoteBridgeTrustEvidence evidence = assembler.assemble(session, now);
+        recordDeviceTrustDecisionBestEffort(session, evidence, now);
         // nextSeq() consumed ONLY here, at the broker boundary, after the session is found (Codex S2)
         BrokerOutcome outcome = broker.handle(request, evidence, session.state(), session.nextSeq(), now);
 
