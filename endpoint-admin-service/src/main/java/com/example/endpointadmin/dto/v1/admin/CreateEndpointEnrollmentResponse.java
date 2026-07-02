@@ -8,11 +8,17 @@ public class CreateEndpointEnrollmentResponse {
     private final UUID enrollmentId;
     private final String token;
     private final Instant expiresAt;
+    private final UUID deviceId;
 
     public CreateEndpointEnrollmentResponse(UUID enrollmentId, String token, Instant expiresAt) {
+        this(enrollmentId, token, expiresAt, null);
+    }
+
+    public CreateEndpointEnrollmentResponse(UUID enrollmentId, String token, Instant expiresAt, UUID deviceId) {
         this.enrollmentId = enrollmentId;
         this.token = token;
         this.expiresAt = expiresAt;
+        this.deviceId = deviceId;
     }
 
     public UUID getEnrollmentId() {
@@ -27,12 +33,17 @@ public class CreateEndpointEnrollmentResponse {
         return expiresAt;
     }
 
+    public UUID getDeviceId() {
+        return deviceId;
+    }
+
     @Override
     public String toString() {
         return "CreateEndpointEnrollmentResponse{"
                 + "enrollmentId=" + enrollmentId
                 + ", token='[REDACTED]'"
                 + ", expiresAt=" + expiresAt
+                + ", deviceId=" + deviceId
                 + '}';
     }
 }
