@@ -9,6 +9,10 @@ import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySes
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -250,14 +254,18 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         Optional<RemoteBridgeMessages.DeviceKeyChallenge> consumed = deviceKeyChallengeStore.consume(
                 response.challengeId(), peer.transportPeerKey(), session.sessionId(), now);
         if (consumed.isEmpty()) {
-            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge");
+            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:no-live-challenge"
+                    + ",response_hash=" + shortAuditHash(response.challengeId())
+                    + ",session_challenge_hash=" + shortAuditHash(session.deviceKeyChallengeId()));
             return; // unknown / expired / already-consumed / wrong-peer / wrong-session — uniform drop, no oracle
         }
         // INCARNATION guard (Codex REVISE F1-2): the response must answer the challenge THIS live session
         // incarnation currently expects — so a response for a superseded/prior challenge of a reused id is dropped
         // and never pollutes the slot. (The verifier independently re-checks this incarnation at PERMIT time.)
         if (!response.challengeId().equals(session.deviceKeyChallengeId())) {
-            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:stale-incarnation");
+            recordBestEffort(session.sessionId(), "DEVICE_KEY_RESPONSE_DROPPED:stale-incarnation"
+                    + ",response_hash=" + shortAuditHash(response.challengeId())
+                    + ",session_challenge_hash=" + shortAuditHash(session.deviceKeyChallengeId()));
             return;
         }
         RemoteBridgeMessages.DeviceKeyChallenge challenge = consumed.get();
@@ -265,7 +273,7 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
                 new TpmDeviceKeySessionEvidenceStore.StoredEvidence(
                         challenge, mapped.get(), now, challenge.expiresAtEpochMillis()));
         recordBestEffort(session.sessionId(),
-                "DEVICE_KEY_EVIDENCE_STORED:challenge=" + safeType(challenge.challengeId()));
+                "DEVICE_KEY_EVIDENCE_STORED:challenge_hash=" + shortAuditHash(challenge.challengeId()));
     }
 
     /**
@@ -317,6 +325,19 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         }
         String cleaned = type.replaceAll("[^A-Za-z0-9_:-]", "_");
         return cleaned.length() > 64 ? cleaned.substring(0, 64) : cleaned;
+    }
+
+    private static String shortAuditHash(String value) {
+        if (value == null || value.isBlank()) {
+            return "blank";
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest).substring(0, 16);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
     }
 
     private void refreshTrustFromLastHello(PeerIdentity peer, String sessionId, long now) {

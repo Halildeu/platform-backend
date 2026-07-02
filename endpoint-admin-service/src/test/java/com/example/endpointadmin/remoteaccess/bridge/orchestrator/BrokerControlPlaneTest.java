@@ -16,6 +16,9 @@ import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyVie
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerSubscription;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -84,6 +87,10 @@ class BrokerControlPlaneTest {
 
         boolean has(String type) {
             return events.stream().anyMatch(r -> r.eventType().startsWith(type));
+        }
+
+        boolean hasExact(String type) {
+            return events.stream().anyMatch(r -> r.eventType().equals(type));
         }
     }
 
@@ -300,7 +307,8 @@ class BrokerControlPlaneTest {
 
         assertTrue(evidenceStore.consumeFresh("sess-1", PEER.transportPeerKey(), NOW + 1000).isPresent(),
                 "the peer's own live-session response is stored");
-        assertTrue(sink.has("DEVICE_KEY_EVIDENCE_STORED:challenge=" + challenge.challengeId()));
+        assertTrue(sink.hasExact("DEVICE_KEY_EVIDENCE_STORED:challenge_hash="
+                + shortAuditHash(challenge.challengeId())));
     }
 
     /** A well-SHAPED (mappable) device-key response — the consumer maps shape only; crypto is the verifier's job. */
@@ -308,6 +316,16 @@ class BrokerControlPlaneTest {
         String b = "AQ=="; // base64 of one byte → satisfies the mapper's required-non-empty fields
         return new RemoteBridgeMessages.DeviceKeyAttestationResponse(challengeId,
                 "faz22.6.device-key-session.v1", b, b, b, "", "", List.of(), b, b, b, b, b, b, NOW);
+    }
+
+    private static String shortAuditHash(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest).substring(0, 16);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     // --- consent flow ---------------------------------------------------------
