@@ -81,6 +81,13 @@ spring:
           uri: ${NOTIFY_URL:http://notification-orchestrator:8089}
           predicates:
             - Path=/api/v1/notify/**
+        # Faz 24 meeting intelligence admin surface. meeting-service owns
+        # /api/v1/admin/meetings/** including source-backed Meeting AI submit;
+        # keep the path verbatim so controller contracts stay canonical.
+        - id: meeting-service-admin
+          uri: ${MEETING_SERVICE_URL:http://meeting-service:8097}
+          predicates:
+            - Path=/api/v1/admin/meetings/**
         # Faz 22.1.1 H2 endpoint-admin gateway routes (Codex 019e4c3f AGREE):
         # Path-segment rewrite so the gateway-public URL surface stays
         # `/api/v1/endpoint-{agent,admin,status}/**` while the downstream
