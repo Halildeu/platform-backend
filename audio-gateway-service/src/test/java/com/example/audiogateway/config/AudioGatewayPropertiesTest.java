@@ -95,6 +95,51 @@ class AudioGatewayPropertiesTest {
                 .hasMessageContaining("aggregation.max-buffered-sessions must be positive");
     }
 
+    @Test
+    void liveStreamingAcceptsWsUrlAndDefaultBounds() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+
+        assertThatCode(props::validate).doesNotThrowAnyException();
+    }
+
+    @Test
+    void liveStreamingRequiresDirectSttToBeEnabled() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("direct-stt.enabled must be true when streaming is enabled");
+    }
+
+    @Test
+    void liveStreamingRequiresWssWhenDirectSttTlsIsEnabled() throws IOException {
+        final AudioGatewayProperties props =
+                directSttProps("https://live-stt.denetim:8243/transcribe");
+        enableTlsWithReadableFiles(props);
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://live-stt.denetim:8243/ws/stream");
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("direct-stt TLS requires a wss streaming URL");
+    }
+
+    @Test
+    void liveStreamingRejectsFrameSizeOutsideUnsignedShortRange() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+        props.getDirectStt().getStreaming().setMaxFrameBytes(65_536);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("streaming.max-frame-bytes must be in [1,65535]");
+    }
+
     private static AudioGatewayProperties directSttProps(final String transcribeUrl) {
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getDirectStt().setEnabled(true);
