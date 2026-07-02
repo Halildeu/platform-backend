@@ -71,6 +71,18 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- OpenAPI spec (#424) — WebFlux variant (this service is reactive, not MVC).
+             2.8.13 pinned to match notification-orchestrator (#304 CI fix): older
+             2.6.x is incompatible with Spring 6.2.11 / Boot 3.5.6 ControllerAdviceBean
+             ctor. /v3/api-docs stays behind the existing fail-closed JWT filter chain
+             (SecurityConfig) — no new permitAll, spec is authenticated like every
+             other non-actuator endpoint. -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webflux-ui</artifactId>
+            <version>2.8.13</version>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
