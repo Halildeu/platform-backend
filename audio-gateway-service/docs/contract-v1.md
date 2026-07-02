@@ -347,15 +347,56 @@ data: {"eventId":"1782820000123-0","sessionId":"SES-...","meetingId":"22222222-2
 | 404 | `AUDIO_GATEWAY_SESSION_NOT_FOUND` | Session yok |
 | 409 | `AUDIO_GATEWAY_IDEMPOTENCY_CONFLICT` | Same session + different finish key on already-FINISHED |
 
-### 1.4 WS `/api/v1/audio-gateway/sessions/{sessionId}/stream` — Audio Stream (**PR-gw-01D planned**)
+### 1.4 WS `/api/v1/audio-gateway/sessions/{sessionId}/stream` - Live Audio Stream (#184)
 
-Binary frame protocol — chunk-by-chunk. Frame header:
+**Status**: implemented and default-off. The endpoint is enabled with
+`AUDIO_GATEWAY_DIRECT_STT_STREAMING_ENABLED=true`.
+
+**Authentication and ownership**:
+
+- Bearer JWT is required.
+- Configured tenant/user claims must match the active session.
+- Unknown, foreign, or finished sessions close with WebSocket policy violation.
+- The session must be PCM16, 16000 Hz, mono.
+- Only one active WebSocket connection is allowed per session.
+
+**Client binary frame, network byte order header**:
 
 ```
-[1 byte version][8 byte chunkSeq monotonic][8 byte capturedAtMs][2 byte length][N byte audio]
+[1 byte version=1]
+[8 byte signed non-negative chunkSeq]
+[8 byte signed non-negative capturedAtMs]
+[2 byte unsigned PCM16 payload length]
+[N byte signed little-endian PCM16]
 ```
 
-**Bu slice'da implementation YOK** — surface URL'i `StartSessionResponse`'ta döndürülür ama endpoint deterministik 404 / not-yet-implemented (PR-gw-01D). REST chunk admission (`POST /chunks`) PR-gw-01B-core LIVE — Section 1.5'e bakın.
+Payload length must be positive, even, match the declared length, and be at most
+`AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_FRAME_BYTES` (default 65535).
+Text frames from the client are rejected.
+
+**Sequence and reconnect semantics**:
+
+- The first live frame is `session.lastAcceptedChunkSeq + 1`.
+- Frames must remain contiguous.
+- A replayed sequence is suppressed without another compute-plane forward.
+- A gap closes the bridge as invalid data.
+- Sequence state is bounded, in-memory, and retained across reconnects for the
+  process lifetime. A process restart falls back to the session registry baseline.
+- Accepted means the frame passed ownership, bounds, sequence, and mandatory
+  compute-plane audit and entered the upstream WebSocket send path. Upstream
+  disconnect remains an at-most-once transport boundary and requires a new
+  connection.
+
+**Gateway to live-stt**:
+
+- PCM16 is converted to little-endian float32 in memory.
+- The configured `ws://` or `wss://` live-stt `/ws/stream` endpoint receives
+  the audio.
+- When Direct-STT TLS is enabled the stream URL must be `wss://` and the same
+  CA/client certificate material is used.
+- live-stt text events are relayed unchanged to the authenticated client.
+- Raw audio and transcript text are not written to disk/Redis or included in logs
+  by this bridge.
 
 ### 1.5 POST `/api/v1/audio-gateway/sessions/{sessionId}/chunks` — Chunk Admission (**PR-gw-01B-core LIVE**)
 
@@ -378,7 +419,7 @@ Binary frame protocol — chunk-by-chunk. Frame header:
 
 **Body**: raw binary audio bytes (≤ 256 KB).
 
-> **PCM16 byte layout (direct-STT forward).** When `X-Audio-Format=PCM16` the body is **headerless signed little-endian 16-bit PCM**, interleaved when multi-channel, length a multiple of `channels * 2`. live-stt's `/transcribe` cannot decode headerless PCM (raw PCM → HTTP 400 regardless of `application/octet-stream`/`audio/L16`/`audio/wav` content-type), so the gateway wraps each PCM16 chunk into a canonical WAV container and forwards it as `audio/wav` (see `WavEncoder` / `DirectSttForwardingDispatcher`, Faz 24 #182). `WAV` / `WEBM_OPUS` chunks are forwarded as-is with their own media type.
+> **PCM16 byte layout and Direct-STT aggregation.** When `X-Audio-Format=PCM16` the body is **headerless signed little-endian 16-bit PCM**, interleaved when multi-channel, length a multiple of `channels * 2`. live-stt's `/transcribe` cannot decode headerless PCM. With Direct-STT aggregation enabled (Faz 24 #231), the gateway preserves per-chunk admission/idempotency/audit semantics but holds accepted PCM16 transiently in a bounded, session-scoped memory window. A full configured 5–30 second window, or the first successful session finish for a shorter tail, is wrapped into one canonical WAV and forwarded as `audio/wav`. Raw PCM is not persisted to Redis or disk. Aggregate compute-plane audit and transcript-result events add `windowSeq`, `firstChunkSeq`, `lastChunkSeq`, `windowStartedAtMs`, `windowEndedAtMs`, `audioDurationMs`, and `flushReason`; legacy `chunkSeq` equals `lastChunkSeq`. On process shutdown unfinished tails are zeroed, counted by explicit shutdown-discard metrics, and not forwarded; rollouts must drain active sessions. `WAV` / `WEBM_OPUS` and other accepted encoded formats retain their existing per-chunk forwarding path.
 
 **Validation pipeline** (Codex iter-2 absorb):
 1. `Idempotency-Key` format guard → 400 `AUDIO_GATEWAY_IDEMPOTENCY_MISSING/INVALID`
@@ -449,16 +490,6 @@ Binary frame protocol — chunk-by-chunk. Frame header:
 - Redis Streams producer (bucketed 32-partition + consumer group `live-stt-v1`)
 - Cross-server transit (WireGuard/mTLS PKI + audit event `audio_chunk_forwarded_to_platform_ai`)
 - Audit persistence (KVKK Madde 12 7yr immutable retention)
-
-### 1.6 WS `/api/v1/audio-gateway/sessions/{sessionId}/stream` — Audio Stream (**PR-gw-01D planned**)
-
-Binary frame protocol — chunk-by-chunk. Frame header:
-
-```
-[1 byte version][8 byte chunkSeq monotonic][8 byte capturedAtMs][2 byte length][N byte audio]
-```
-
-**Bu slice'da implementation YOK** — surface URL'i `StartSessionResponse`'ta döndürülür ama endpoint deterministik 404 / not-yet-implemented (PR-gw-01D).
 
 ---
 
@@ -619,7 +650,7 @@ Client-facing breaking change YASAK v1 lifetime'da.
 | **PR-gw-01B-core (B1+B2)** | REST chunk admission (`POST /chunks`, binary body + X-Audio-* headers, max 256 KB, format/sample/channels session match, declared/actual byte length check, bounded body aggregation, SHA-256 payload hash, atomic `admitChunk` via registry domain method, strict contiguous chunkSeq, idempotent replay, status real chunkCount/lastChunkSeq, SessionState.STREAMING) | ✅ **MERGED** (PR #403) |
 | **PR-gw-01B3** | `AudioChunkDispatcher` canonical port + `NoOpAudioChunkDispatcher` + atomic admission gate (dispatcher reject → no registry mutation) + 429 `QueueFull` + 503 `STT_UNAVAILABLE` + `Retry-After` header (config + outcome) + `AudioGatewayAuditSink` + `audio_chunk.admission_rejected` safeEmit + eski `SttDispatchService`/`NoOpSttDispatch` retire | 🟡 **bu PR** |
 | PR-gw-01C | Redis Streams producer (bucketed 32-partition `audio:chunks:p00..p31` + consumer group `live-stt-v1` + XADD fields + bounds + idempotency `(sessionId, chunkSeq)`) | ⏳ planned |
-| PR-gw-01D | WebSocket stream (binary + JSON metadata frames + unauthorized handshake + unknown session close + Redis Stream trim) | ⏳ planned |
+| PR-gw-01D / #184 | Authenticated WebSocket proxy, bounded binary framing, reconnect duplicate suppression, live-stt partial/final relay, mTLS reuse, no raw-audio persistence | Implemented, default-off; live acceptance pending |
 | PR-gw-01E | Contract hardening (client X-* strip code assert + PII guard error payload + detailed transition matrix + duplicate/out-of-order edge cases) | ⏳ planned |
 
 ---

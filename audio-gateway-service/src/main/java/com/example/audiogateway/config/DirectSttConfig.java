@@ -110,7 +110,7 @@ public class DirectSttConfig {
                 .build();
     }
 
-    private HttpClient applyMutualTls(
+    static HttpClient applyMutualTls(
             final HttpClient httpClient,
             final AudioGatewayProperties.DirectStt.Tls tls) throws SSLException {
         final SslContext sslContext = SslContextBuilder.forClient()

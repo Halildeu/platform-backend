@@ -97,6 +97,7 @@ public class DirectSttForwardingDispatcher
     private final AudioGatewayProperties.DirectStt cfg;
     private final MeterRegistry meters;
     private final Semaphore inFlight;
+    private final DirectSttAudioWindowAggregator aggregator;
     private final Scheduler forwardScheduler;
     private final Scheduler transcriptSinkScheduler;
     private final String transcribeUri;
@@ -115,6 +116,9 @@ public class DirectSttForwardingDispatcher
         this.cfg = properties.getDirectStt();
         this.meters = meters;
         this.inFlight = new Semaphore(cfg.getMaxInFlight());
+        this.aggregator = new DirectSttAudioWindowAggregator(
+                cfg.getAggregation().getWindowSeconds(),
+                cfg.getAggregation().getMaxBufferedSessions());
         this.transcribeUri = cfg.getTranscribeUrl().trim();
         // Dedicated bounded scheduler — the "leave the admission monitor now" boundary.
         // Bounded so a slow/down live-stt cannot spawn unbounded threads; the Semaphore is
@@ -130,59 +134,145 @@ public class DirectSttForwardingDispatcher
         // In-flight gauge from the semaphore (used permits = configured - available).
         meters.gauge(METRIC_PREFIX + "in_flight", this,
                 d -> (double) (cfg.getMaxInFlight() - d.inFlight.availablePermits()));
+        meters.gauge(METRIC_PREFIX + "aggregation_active_sessions", aggregator,
+                DirectSttAudioWindowAggregator::activeSessions);
+        meters.gauge(METRIC_PREFIX + "aggregation_buffered_bytes", aggregator,
+                DirectSttAudioWindowAggregator::bufferedBytes);
+        counter("aggregation_shutdown_discarded_sessions");
+        counter("aggregation_shutdown_discarded_bytes");
     }
 
     @Override
     public DispatchOutcome dispatch(final ChunkDispatchCommand cmd) {
-        // (1) Base dispatcher first — preserve its backpressure + atomicity gate.
         final DispatchOutcome base = delegate.dispatch(cmd);
         if (!(base instanceof DispatchOutcome.Accepted)) {
             return base;
         }
 
-        // (2) Bounded in-flight — non-blocking acquire on the admission monitor.
-        if (!inFlight.tryAcquire()) {
-            counter("dropped_saturation").increment();
-            log.warn("Direct-STT forward dropped (in-flight saturated, maxInFlight={}) {}",
-                    cfg.getMaxInFlight(), kv(cmd));
-            return base; // best-effort: admission unaffected
-        }
-
-        // (3) Copy raw audio off the request-scoped read-only buffer BEFORE the async hop.
         final byte[] audio;
         try {
             audio = copyBytes(cmd.payload().bytes(), cmd.payload().length());
         } catch (final RuntimeException ex) {
-            inFlight.release();
             counter("exception").increment();
             log.warn("Direct-STT byte copy failed err={} {}", ex.getClass().getSimpleName(), kv(cmd));
-            return base; // never break admission
+            return base;
         }
 
-        // (4) Hand off the monitor immediately; build the request inside forward().
-        final ForwardTask task = new ForwardTask(
-                audio, cmd.sessionId(), cmd.tenantId(), cmd.userId(), cmd.chunkSeq(),
-                cmd.chunkStartedAtMs(), cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
-                cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
-                cmd.payload().length());
-        try {
-            forwardScheduler.schedule(() -> forward(task));
-        } catch (final RuntimeException ex) {
-            // Scheduler rejected (e.g. shutting down) — release permit, do not break admission.
-            inFlight.release();
-            counter("exception").increment();
-            log.warn("Direct-STT schedule rejected err={} {}", ex.getClass().getSimpleName(), kv(cmd));
+        if (cfg.getAggregation().isEnabled() && cmd.audioFormat() == AudioFormat.PCM16) {
+            appendAggregated(cmd, audio);
+        } else {
+            scheduleForward(chunkTask(cmd, audio));
         }
 
-        // (5) Return immediately — never await the HTTP response.
         return base;
+    }
+
+    @Override
+    public void finishSession(final SessionFinishCommand cmd) {
+        if (!cfg.getAggregation().isEnabled()) {
+            return;
+        }
+        aggregator.finish(cmd).ifPresent(window -> {
+            counter("aggregation_windows_flushed", "reason", "finish").increment();
+            recordWindowMetrics(window);
+            scheduleForward(windowTask(window, "finish"));
+        });
     }
 
     /** Dispose the dedicated scheduler on context shutdown (graceful resource hygiene). */
     @Override
     public void destroy() {
+        final DirectSttAudioWindowAggregator.DiscardSummary discarded = aggregator.discardAll();
+        if (discarded.sessions() > 0) {
+            counter("aggregation_shutdown_discarded_sessions").increment(discarded.sessions());
+            counter("aggregation_shutdown_discarded_bytes").increment(discarded.bytes());
+            log.warn("Direct-STT shutdown discarded buffered PCM tails sessions={} bytes={}; "
+                            + "clients must finish sessions before rollout",
+                    discarded.sessions(), discarded.bytes());
+        }
         forwardScheduler.dispose();
         transcriptSinkScheduler.dispose();
+    }
+
+    private void appendAggregated(final ChunkDispatchCommand cmd, final byte[] audio) {
+        try {
+            final DirectSttAudioWindowAggregator.AppendResult result =
+                    aggregator.append(cmd, audio);
+            if (result.capacityExceeded()) {
+                counter("aggregation_dropped_capacity").increment();
+                log.warn("Direct-STT aggregation capacity exceeded (maxBufferedSessions={}) {}",
+                        cfg.getAggregation().getMaxBufferedSessions(), kv(cmd));
+                return;
+            }
+            counter("aggregation_chunks_buffered").increment();
+            result.windows().forEach(window -> {
+                counter("aggregation_windows_flushed", "reason", "window_full").increment();
+                recordWindowMetrics(window);
+                scheduleForward(windowTask(window, "window_full"));
+            });
+        } catch (final RuntimeException ex) {
+            counter("aggregation_error").increment();
+            log.warn("Direct-STT aggregation failed err={} {}",
+                    ex.getClass().getSimpleName(), kv(cmd));
+        } finally {
+            java.util.Arrays.fill(audio, (byte) 0);
+        }
+    }
+
+    private void scheduleForward(final ForwardTask task) {
+        if (!inFlight.tryAcquire()) {
+            counter("dropped_saturation").increment();
+            log.warn("Direct-STT forward dropped (in-flight saturated, maxInFlight={}) {}",
+                    cfg.getMaxInFlight(), kv(task));
+            clearAudio(task);
+            return;
+        }
+        try {
+            forwardScheduler.schedule(() -> forward(task));
+        } catch (final RuntimeException ex) {
+            inFlight.release();
+            clearAudio(task);
+            counter("exception").increment();
+            log.warn("Direct-STT schedule rejected err={} {}",
+                    ex.getClass().getSimpleName(), kv(task));
+        }
+    }
+
+    private ForwardTask chunkTask(final ChunkDispatchCommand cmd, final byte[] audio) {
+        final int durationMs = cmd.audioFormat() == AudioFormat.PCM16
+                ? pcmDurationMs(audio.length, cmd.sampleRateHz(), cmd.channels())
+                : 0;
+        return new ForwardTask(
+                audio, cmd.sessionId(), cmd.tenantId(), cmd.userId(),
+                cmd.chunkSeq(), cmd.chunkSeq(), cmd.chunkSeq(),
+                cmd.chunkStartedAtMs(), durationMs, "chunk",
+                cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
+                cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
+                cmd.payload().length());
+    }
+
+    private static ForwardTask windowTask(
+            final DirectSttAudioWindowAggregator.AudioWindow window,
+            final String flushReason) {
+        return new ForwardTask(
+                window.audio(), window.sessionId(), window.tenantId(), window.userId(),
+                window.windowSeq(), window.firstChunkSeq(), window.lastChunkSeq(),
+                window.startedAtMs(), window.durationMs(), flushReason,
+                window.meetingId(), window.deviceId(), window.language(), AudioFormat.PCM16.name(),
+                window.sampleRateHz(), window.channels(), window.correlationId(), window.sha256(),
+                window.audio().length);
+    }
+
+    private void recordWindowMetrics(final DirectSttAudioWindowAggregator.AudioWindow window) {
+        meters.summary(METRIC_PREFIX + "aggregation_window_bytes").record(window.audio().length);
+        meters.summary(METRIC_PREFIX + "aggregation_window_duration_ms")
+                .record(window.durationMs());
+    }
+
+    private static int pcmDurationMs(
+            final int byteLength, final int sampleRateHz, final int channels) {
+        final long bytesPerSecond = (long) sampleRateHz * channels * 2L;
+        return bytesPerSecond <= 0 ? 0 : (int) ((byteLength * 1000L) / bytesPerSecond);
     }
 
     /**
@@ -195,6 +285,7 @@ public class DirectSttForwardingDispatcher
 
         try {
             if (!emitComputePlaneAudit(task)) {
+                clearAudio(task);
                 releaseOnce(released);
                 return;
             }
@@ -238,12 +329,16 @@ public class DirectSttForwardingDispatcher
                     .bodyToMono(TranscriptResult.class)
                     .timeout(Duration.ofMillis(cfg.getResponseTimeoutMs()))
                     .publishOn(forwardScheduler)
-                    .doFinally(signal -> releaseOnce(released))
+                    .doFinally(signal -> {
+                        clearAudio(task);
+                        releaseOnce(released);
+                    })
                     .subscribe(
                             result -> onSuccess(result, task),
                             error -> onError(error, task));
         } catch (final RuntimeException ex) {
             // Synchronous build/subscribe failure — release here (doFinally never ran).
+            clearAudio(task);
             releaseOnce(released);
             counter("exception").increment();
             log.warn("Direct-STT forward setup failed err={} {}",
@@ -260,7 +355,14 @@ public class DirectSttForwardingDispatcher
                     task.meetingId(),
                     task.deviceId(),
                     task.language(),
-                    task.chunkSeq(),
+                    task.lastChunkSeq(),
+                    task.windowSeq(),
+                    task.firstChunkSeq(),
+                    task.lastChunkSeq(),
+                    task.chunkStartedAtMs(),
+                    task.chunkStartedAtMs() + task.audioDurationMs(),
+                    task.audioDurationMs(),
+                    task.flushReason(),
                     task.audioFormat(),
                     task.sampleRateHz(),
                     task.channels(),
@@ -280,6 +382,10 @@ public class DirectSttForwardingDispatcher
 
     private void onSuccess(final TranscriptResult result, final ForwardTask task) {
         counter("success").increment();
+        if (result != null && result.elapsedMs() != null && task.audioDurationMs() > 0) {
+            meters.summary(METRIC_PREFIX + "real_time_factor")
+                    .record(result.elapsedMs() / task.audioDurationMs());
+        }
         // PII-safe: metadata + sizes ONLY — never transcript text or segments.
         log.info("Direct-STT transcript received {} textLen={} sttLang={} elapsedMs={} model={}",
                 kv(task),
@@ -360,8 +466,15 @@ public class DirectSttForwardingDispatcher
                 task.sessionId(),
                 task.tenantId(),
                 task.userId(),
-                task.chunkSeq(),
+                task.lastChunkSeq(),
                 task.chunkStartedAtMs(),
+                task.windowSeq(),
+                task.firstChunkSeq(),
+                task.lastChunkSeq(),
+                task.chunkStartedAtMs(),
+                task.chunkStartedAtMs() + task.audioDurationMs(),
+                task.audioDurationMs(),
+                task.flushReason(),
                 task.meetingId(),
                 task.deviceId(),
                 task.language(),
@@ -377,6 +490,10 @@ public class DirectSttForwardingDispatcher
         if (released.compareAndSet(false, true)) {
             inFlight.release();
         }
+    }
+
+    private static void clearAudio(final ForwardTask task) {
+        java.util.Arrays.fill(task.audio(), (byte) 0);
     }
 
     /** Absolute-read copy — leaves the source buffer's position/limit untouched. */
@@ -421,7 +538,10 @@ public class DirectSttForwardingDispatcher
 
     private static String kv(final ForwardTask task) {
         return "sessionId=" + task.sessionId()
-                + " chunkSeq=" + task.chunkSeq()
+                + " windowSeq=" + task.windowSeq()
+                + " chunkRange=" + task.firstChunkSeq() + "-" + task.lastChunkSeq()
+                + " durationMs=" + task.audioDurationMs()
+                + " flushReason=" + task.flushReason()
                 + " correlationId=" + nullSafe(task.correlationId())
                 + " sha256=" + shaPrefix(task.sha256())
                 + " length=" + task.length();
@@ -460,8 +580,12 @@ public class DirectSttForwardingDispatcher
             String sessionId,
             Long tenantId,
             Long userId,
-            long chunkSeq,
+            long windowSeq,
+            long firstChunkSeq,
+            long lastChunkSeq,
             long chunkStartedAtMs,
+            int audioDurationMs,
+            String flushReason,
             String meetingId,
             String deviceId,
             String language,

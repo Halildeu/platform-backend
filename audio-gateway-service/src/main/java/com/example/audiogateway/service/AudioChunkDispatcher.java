@@ -34,6 +34,17 @@ public interface AudioChunkDispatcher {
     DispatchOutcome dispatch(ChunkDispatchCommand cmd);
 
     /**
+     * Notify the downstream path that a session reached its terminal state.
+     *
+     * <p>The default is intentionally a no-op so metadata-only dispatchers keep their
+     * existing behaviour. Direct-STT uses this lifecycle signal to flush a final bounded
+     * in-memory audio window without delaying the finish response.
+     */
+    default void finishSession(final SessionFinishCommand cmd) {
+        // No buffered audio in the base dispatcher implementations.
+    }
+
+    /**
      * Gateway-built command — fields derived from session record + JWT (NOT client headers).
      * Codex {@code 019e8df2} iter-2 absorb: meetingId/deviceId/language/audioFormat/
      * sampleRateHz/channels SessionRecord'tan; correlationId controller'dan.
@@ -52,6 +63,15 @@ public interface AudioChunkDispatcher {
             long chunkStartedAtMs,
             String correlationId,
             AudioChunkPayload payload
+    ) {
+    }
+
+    /** Gateway-derived terminal-session metadata; never contains raw audio or credentials. */
+    record SessionFinishCommand(
+            String sessionId,
+            Long tenantId,
+            Long userId,
+            String correlationId
     ) {
     }
 

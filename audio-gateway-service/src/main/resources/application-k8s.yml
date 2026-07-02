@@ -64,6 +64,10 @@ audio:
       response-timeout-ms: ${AUDIO_GATEWAY_MEETING_SERVICE_RESPONSE_TIMEOUT_MS:3000}
       max-response-bytes: ${AUDIO_GATEWAY_MEETING_SERVICE_MAX_RESPONSE_BYTES:32768}
     direct-stt:
+      aggregation:
+        enabled: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED:true}
+        window-seconds: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS:5}
+        max-buffered-sessions: ${AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_MAX_BUFFERED_SESSIONS:64}
       transcript-result-stream:
         enabled: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_ENABLED:false}
         stream-key: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_KEY:transcript:direct-stt-results}
@@ -72,6 +76,11 @@ audio:
         read-max-scan: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_READ_MAX_SCAN:500}
         poll-interval-ms: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_POLL_INTERVAL_MS:1000}
         heartbeat-interval-ms: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_HEARTBEAT_INTERVAL_MS:15000}
+      streaming:
+        enabled: ${AUDIO_GATEWAY_DIRECT_STT_STREAMING_ENABLED:false}
+        stream-url: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_URL:}
+        max-frame-bytes: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_FRAME_BYTES:65535}
+        max-tracked-sessions: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TRACKED_SESSIONS:1000}
 
 # Faz 24 KVKK audit pipeline (gitops#1249). DEFAULT-OFF; overlay configmap flips
 # AUDIO_GATEWAY_AUDIT_REDIS_ENABLED=true once audit-event-consumer-service is up.

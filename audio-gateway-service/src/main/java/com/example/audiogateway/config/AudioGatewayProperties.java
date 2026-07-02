@@ -332,6 +332,13 @@ public class AudioGatewayProperties {
         private int maxResponseBytes = 262_144;
 
         /**
+         * Memory-only PCM16 window aggregation before the live-stt hop (Faz 24 #231).
+         * Direct-STT itself is default-off; once enabled, aggregation is the safe default
+         * because forwarding every recorder chunk cannot keep pace with Whisper inference.
+         */
+        private final Aggregation aggregation = new Aggregation();
+
+        /**
          * App-layer TLS / mTLS settings for the direct-STT hop. DEFAULT-OFF so existing
          * local/test HTTP MockWebServer paths stay unchanged; real cross-server meeting
          * audio enables this per ADR-0031 + B+ I7.
@@ -345,6 +352,9 @@ public class AudioGatewayProperties {
          */
         private final TranscriptResultStream transcriptResultStream = new TranscriptResultStream();
 
+        /** Default-off gateway-to-live-stt WebSocket bridge for Faz 24 #184. */
+        private final Streaming streaming = new Streaming();
+
         /**
          * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
          * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
@@ -352,6 +362,10 @@ public class AudioGatewayProperties {
          */
         public void validate() {
             if (!enabled) {
+                if (streaming.isEnabled()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.enabled must be true when streaming is enabled");
+                }
                 return;
             }
             if (transcribeUrl == null || transcribeUrl.isBlank()) {
@@ -390,7 +404,9 @@ public class AudioGatewayProperties {
                         "audio.gateway.direct-stt.max-response-bytes must be positive, got "
                                 + maxResponseBytes);
             }
+            aggregation.validate();
             transcriptResultStream.validate();
+            streaming.validate(tls.isEnabled());
         }
 
         public boolean isEnabled() {
@@ -441,12 +457,140 @@ public class AudioGatewayProperties {
             this.maxResponseBytes = maxResponseBytes;
         }
 
+        public Aggregation getAggregation() {
+            return aggregation;
+        }
+
         public Tls getTls() {
             return tls;
         }
 
         public TranscriptResultStream getTranscriptResultStream() {
             return transcriptResultStream;
+        }
+
+        public Streaming getStreaming() {
+            return streaming;
+        }
+
+        public static class Streaming {
+            private boolean enabled = false;
+            private String streamUrl = "";
+            private int maxFrameBytes = 65_535;
+            private int maxTrackedSessions = 1_000;
+
+            void validate(final boolean tlsEnabled) {
+                if (!enabled) {
+                    return;
+                }
+                if (streamUrl == null || streamUrl.isBlank()) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.stream-url must be set when streaming is enabled");
+                }
+                final java.net.URI uri;
+                try {
+                    uri = java.net.URI.create(streamUrl.trim());
+                } catch (IllegalArgumentException error) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.stream-url is not a valid URI",
+                            error);
+                }
+                final String scheme = uri.getScheme();
+                if (!"ws".equalsIgnoreCase(scheme) && !"wss".equalsIgnoreCase(scheme)) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.stream-url must use ws or wss");
+                }
+                if (tlsEnabled && !"wss".equalsIgnoreCase(scheme)) {
+                    throw new IllegalStateException(
+                            "direct-stt TLS requires a wss streaming URL");
+                }
+                if (maxFrameBytes <= 0 || maxFrameBytes > 65_535) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.max-frame-bytes must be in [1,65535]");
+                }
+                if (maxTrackedSessions <= 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.max-tracked-sessions must be positive");
+                }
+            }
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getStreamUrl() {
+                return streamUrl;
+            }
+
+            public void setStreamUrl(final String streamUrl) {
+                this.streamUrl = streamUrl;
+            }
+
+            public int getMaxFrameBytes() {
+                return maxFrameBytes;
+            }
+
+            public void setMaxFrameBytes(final int maxFrameBytes) {
+                this.maxFrameBytes = maxFrameBytes;
+            }
+
+            public int getMaxTrackedSessions() {
+                return maxTrackedSessions;
+            }
+
+            public void setMaxTrackedSessions(final int maxTrackedSessions) {
+                this.maxTrackedSessions = maxTrackedSessions;
+            }
+        }
+
+        public static class Aggregation {
+            private boolean enabled = true;
+            private int windowSeconds = 5;
+            private int maxBufferedSessions = 64;
+
+            void validate() {
+                if (!enabled) {
+                    return;
+                }
+                if (windowSeconds < 5 || windowSeconds > 30) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.aggregation.window-seconds must be in [5,30], got "
+                                    + windowSeconds);
+                }
+                if (maxBufferedSessions <= 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.aggregation.max-buffered-sessions must be positive, got "
+                                    + maxBufferedSessions);
+                }
+            }
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public int getWindowSeconds() {
+                return windowSeconds;
+            }
+
+            public void setWindowSeconds(final int windowSeconds) {
+                this.windowSeconds = windowSeconds;
+            }
+
+            public int getMaxBufferedSessions() {
+                return maxBufferedSessions;
+            }
+
+            public void setMaxBufferedSessions(final int maxBufferedSessions) {
+                this.maxBufferedSessions = maxBufferedSessions;
+            }
         }
 
         public static class Tls {
