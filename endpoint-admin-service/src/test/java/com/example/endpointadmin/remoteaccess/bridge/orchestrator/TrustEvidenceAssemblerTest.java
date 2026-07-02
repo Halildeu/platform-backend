@@ -142,6 +142,10 @@ class TrustEvidenceAssemblerTest {
 
         assertTrue(ev.deviceTrusted());
         assertEquals(SessionDeviceTrustVerifier.Basis.HARDWARE_KEY_ATTESTATION, ev.deviceTrustBasis());
+        assertTrue(ev.deviceTrustDecisionTrusted());
+        assertEquals(SessionDeviceTrustVerifier.Basis.HARDWARE_KEY_ATTESTATION, ev.deviceTrustDecisionBasis());
+        assertEquals("hardware-key-attestation-verified", ev.deviceTrustDecisionReason());
+        assertTrue(ev.deviceTrustIdentitiesConsistent());
     }
 
     @Test
@@ -176,6 +180,10 @@ class TrustEvidenceAssemblerTest {
 
         assertFalse(ev.deviceTrusted(), "a denying device-trust verifier → deviceTrusted false");
         assertEquals(SessionDeviceTrustVerifier.Basis.NONE, ev.deviceTrustBasis());
+        assertFalse(ev.deviceTrustDecisionTrusted());
+        assertEquals(SessionDeviceTrustVerifier.Basis.NONE, ev.deviceTrustDecisionBasis());
+        assertEquals("not-enrolled", ev.deviceTrustDecisionReason());
+        assertTrue(ev.deviceTrustIdentitiesConsistent());
         assertEquals("not-enrolled", ev.cryptoIdentityDetail());
     }
 
@@ -193,6 +201,10 @@ class TrustEvidenceAssemblerTest {
 
         assertFalse(ev.deviceTrusted());
         assertEquals(SessionDeviceTrustVerifier.Basis.NONE, ev.deviceTrustBasis());
+        assertTrue(ev.deviceTrustDecisionTrusted());
+        assertEquals(SessionDeviceTrustVerifier.Basis.MACHINE_CERT_ENROLLMENT, ev.deviceTrustDecisionBasis());
+        assertEquals("enrolled-active-machine-cert", ev.deviceTrustDecisionReason());
+        assertFalse(ev.deviceTrustIdentitiesConsistent());
         assertEquals("device-identity-mismatch", ev.cryptoIdentityDetail());
     }
 

@@ -93,7 +93,12 @@ public final class TrustEvidenceAssembler {
         SessionDeviceTrustVerifier.DeviceTrustDecision deviceDecision =
                 deviceTrustVerifier.verify(session, trust, nowEpochMillis);
         boolean identitiesConsistent = deviceIdentitiesConsistent(trust, session.deviceId());
-        boolean deviceTrusted = deviceDecision.trusted() && identitiesConsistent;
+        boolean deviceDecisionTrusted = deviceDecision != null && deviceDecision.trusted();
+        SessionDeviceTrustVerifier.Basis deviceDecisionBasis = deviceDecision == null || deviceDecision.basis() == null
+                ? SessionDeviceTrustVerifier.Basis.NONE : deviceDecision.basis();
+        String deviceDecisionReason = safeDetail(deviceDecision == null ? null : deviceDecision.reason(),
+                deviceDecisionTrusted ? "device-trust-verified" : "device-untrusted");
+        boolean deviceTrusted = deviceDecisionTrusted && identitiesConsistent;
         SessionDeviceTrustVerifier.Basis deviceTrustBasis = deviceTrusted
                 ? deviceDecision.basis() : SessionDeviceTrustVerifier.Basis.NONE;
         String cryptoIdentityDetail = cryptoIdentityDetail(certTrusted, attestationVerified, deviceDecision,
@@ -113,6 +118,7 @@ public final class TrustEvidenceAssembler {
                 session.sessionStartEpochMillis(), session.stepUpStrength());
 
         return new RemoteBridgeTrustEvidence(certTrusted, attestationVerified, deviceTrusted, deviceTrustBasis,
+                deviceDecisionTrusted, deviceDecisionBasis, deviceDecisionReason, identitiesConsistent,
                 cryptoIdentityDetail, stepUp, duress, granted, session.lease(), session.deviceId(),
                 session.operatorSubject());
     }

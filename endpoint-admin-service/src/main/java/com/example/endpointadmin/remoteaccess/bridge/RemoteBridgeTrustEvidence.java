@@ -25,6 +25,10 @@ public record RemoteBridgeTrustEvidence(boolean certTrusted,
                                         boolean attestationVerified,
                                         boolean deviceTrusted,
                                         Basis deviceTrustBasis,
+                                        boolean deviceTrustDecisionTrusted,
+                                        Basis deviceTrustDecisionBasis,
+                                        String deviceTrustDecisionReason,
+                                        boolean deviceTrustIdentitiesConsistent,
                                         String cryptoIdentityDetail,
                                         OperatorStepUpPolicy.StepUpState stepUpState,
                                         DuressResponsePolicy.DuressSignal duressSignal,
@@ -36,6 +40,7 @@ public record RemoteBridgeTrustEvidence(boolean certTrusted,
     public RemoteBridgeTrustEvidence {
         grantedCapabilities = grantedCapabilities == null ? Set.of() : Set.copyOf(grantedCapabilities);
         deviceTrustBasis = deviceTrustBasis == null ? Basis.NONE : deviceTrustBasis;
+        deviceTrustDecisionBasis = deviceTrustDecisionBasis == null ? Basis.NONE : deviceTrustDecisionBasis;
     }
 
     public RemoteBridgeTrustEvidence(boolean certTrusted,
@@ -63,5 +68,34 @@ public record RemoteBridgeTrustEvidence(boolean certTrusted,
                                      String operatorSubject) {
         this(certTrusted, attestationVerified, deviceTrusted, Basis.NONE, cryptoIdentityDetail, stepUpState,
                 duressSignal, grantedCapabilities, consentLease, deviceId, operatorSubject);
+    }
+
+    public RemoteBridgeTrustEvidence(boolean certTrusted,
+                                     boolean attestationVerified,
+                                     boolean deviceTrusted,
+                                     Basis deviceTrustBasis,
+                                     String cryptoIdentityDetail,
+                                     OperatorStepUpPolicy.StepUpState stepUpState,
+                                     DuressResponsePolicy.DuressSignal duressSignal,
+                                     Set<RemoteSessionCapability> grantedCapabilities,
+                                     ConsentLease consentLease,
+                                     String deviceId,
+                                     String operatorSubject) {
+        this(certTrusted, attestationVerified, deviceTrusted, deviceTrustBasis, deviceTrusted,
+                deviceTrustBasis, defaultDeviceTrustDecisionReason(deviceTrusted, deviceTrustBasis,
+                        cryptoIdentityDetail), deviceTrusted, cryptoIdentityDetail, stepUpState, duressSignal,
+                grantedCapabilities, consentLease, deviceId, operatorSubject);
+    }
+
+    private static String defaultDeviceTrustDecisionReason(boolean trusted, Basis basis, String detail) {
+        if (!trusted) {
+            return detail == null || detail.isBlank() ? "device-untrusted" : detail;
+        }
+        return switch (basis == null ? Basis.NONE : basis) {
+            case MACHINE_CERT_ENROLLMENT -> "enrolled-active-machine-cert";
+            case HARDWARE_KEY_ATTESTATION -> "hardware-key-attestation-verified";
+            case COMPOSITE -> "enrollment-and-hardware-key-attested";
+            case NONE -> "device-trust-verified";
+        };
     }
 }
