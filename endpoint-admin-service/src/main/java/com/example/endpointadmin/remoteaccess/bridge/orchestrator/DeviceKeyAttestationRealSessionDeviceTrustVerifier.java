@@ -252,9 +252,11 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
             return true;
         } catch (Exception untrusted) {
             log.warn("device-key EK chain validation failed: ek_cert_sha256_prefix={} ek_subject={} "
-                            + "ek_issuer={} agent_chain_count={} agent_chain_sha256_prefixes={} failure={}",
+                            + "ek_issuer={} agent_chain_count={} agent_chain_sha256_prefixes={} "
+                            + "agent_chain_summaries={} failure={}",
                     sha256Prefix(ekCertDer), certSubject(ekCert), certIssuer(ekCert),
-                    countNonEmpty(agentChain), certSha256Prefixes(agentChain), exceptionSummary(untrusted));
+                    countNonEmpty(agentChain), certSha256Prefixes(agentChain), certSummaries(agentChain),
+                    exceptionSummary(untrusted));
             return false; // malformed cert OR does not chain to a pinned root — fail-closed
         }
     }
@@ -288,6 +290,25 @@ public final class DeviceKeyAttestationRealSessionDeviceTrustVerifier implements
             }
         }
         return prefixes.isEmpty() ? "none" : String.join(".", prefixes);
+    }
+
+    private static String certSummaries(List<byte[]> certs) {
+        if (certs == null || certs.isEmpty()) {
+            return "none";
+        }
+        List<String> summaries = new ArrayList<>(certs.size());
+        for (byte[] der : certs) {
+            if (der == null || der.length == 0) {
+                continue;
+            }
+            try {
+                X509Certificate cert = TpmEkChainValidator.parseCert(der);
+                summaries.add(sha256Prefix(der) + ":" + certSubject(cert) + "<-" + certIssuer(cert));
+            } catch (Exception unparseable) {
+                summaries.add(sha256Prefix(der) + ":unparseable");
+            }
+        }
+        return summaries.isEmpty() ? "none" : String.join(";", summaries);
     }
 
     private static String sha256Prefix(byte[] value) {
