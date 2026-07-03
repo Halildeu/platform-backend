@@ -2,6 +2,7 @@ package com.example.endpointadmin.repository;
 
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointMachineCert;
+import com.example.endpointadmin.model.MachineCertChannel;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -15,7 +16,8 @@ import java.util.UUID;
 
 /**
  * Faz 22.3 — EndpointMachineCert query API. Active = revoked_at IS NULL
- * (partial unique indexes on (device_id) and (san_uri) enforce single-active).
+ * (partial unique indexes enforce one active cert per device/channel and the
+ * channel-specific SAN uniqueness contracts).
  */
 public interface EndpointMachineCertRepository extends JpaRepository<EndpointMachineCert, UUID> {
 
@@ -53,11 +55,13 @@ public interface EndpointMachineCertRepository extends JpaRepository<EndpointMac
             @Param("thumbprint") String thumbprint);
 
     /**
-     * Faz 22.6 slice-4c-2b-2a (Codex 019ebe06) — the single ACTIVE cert for a device WITHIN a tenant, with the
+     * Faz 22.6 slice-4c-2b-2a (Codex 019ebe06) — ACTIVE certs for a device WITHIN a tenant, with the
      * device eagerly fetched. Tenant-scoped (the boundary lives in the data-access contract, not a post-filter:
-     * a cross-tenant device row is never materialized) + {@code revoked_at IS NULL} (the partial unique index
-     * keeps it single-active). {@code JOIN FETCH c.device} so the operator-side resolver can read the device
-     * status outside an open transaction without a lazy-init failure.
+     * a cross-tenant device row is never materialized) + {@code revoked_at IS NULL}. A device may legitimately
+     * have one active cert per channel (for example AD_CS for product remote-bridge/lifecycle and VAULT_TPM for
+     * TPM-native attestation), so callers must evaluate the returned candidates fail-closed instead of assuming
+     * one global active row. {@code JOIN FETCH c.device} lets the operator-side resolver read the device status
+     * outside an open transaction without a lazy-init failure.
      *
      * <p>BOTH the cert row's tenant AND the joined device row's tenant are pinned to {@code :tenantId} (Codex
      * REVISE): {@code device_id} is a single-column FK, so a corrupt/raced/hand-edited row could pair a
@@ -71,8 +75,9 @@ public interface EndpointMachineCertRepository extends JpaRepository<EndpointMac
               AND d.id = :deviceId
               AND d.tenantId = :tenantId
               AND c.revokedAt IS NULL
+            ORDER BY c.certNotAfter DESC, c.enrolledAt DESC, c.id DESC
             """)
-    Optional<EndpointMachineCert> findActiveByTenantIdAndDeviceId(
+    List<EndpointMachineCert> findActiveByTenantIdAndDeviceId(
             @Param("tenantId") UUID tenantId,
             @Param("deviceId") UUID deviceId);
 
@@ -110,24 +115,26 @@ public interface EndpointMachineCertRepository extends JpaRepository<EndpointMac
                                                                 @Param("sanUri") String sanUri);
 
     /**
-     * Faz 22.6 #548 Phase 1.5 — revoke the device's ACTIVE cert (ANY channel) as an
-     * IMMEDIATE bulk UPDATE before the replacement INSERT, mirroring the TPM-binding
-     * supersede (Codex 019eff93 Inv-1 + P1-6). A pre-bound AD_CS device upgrading to
-     * TPM-native must free the GLOBAL per-device active slot
-     * ({@code uq_endpoint_machine_certs_device_active}) before the VAULT_TPM row inserts,
-     * else Hibernate's insert-before-update action ordering trips that partial unique.
-     * Sets {@code revoked_at}+{@code revoked_reason} together (the CHECK) + {@code updated_at}
+     * Faz 22.6 #548 Phase 1.5 — revoke the device's ACTIVE cert for one enrollment channel as an
+     * IMMEDIATE bulk UPDATE before the replacement INSERT, mirroring the TPM-binding supersede
+     * (Codex 019eff93 Inv-1 + P1-6). Channel-scoped active slots let AD_CS product remote-bridge/lifecycle
+     * coexist with VAULT_TPM device-key attestation; TPM rotation must therefore supersede only the prior
+     * active VAULT_TPM row, never the device's AD_CS product-channel credential. Sets
+     * {@code revoked_at}+{@code revoked_reason} together (the CHECK) + {@code updated_at}
      * (a bulk UPDATE bypasses {@code @PreUpdate}).
      *
-     * @return rows revoked (0 or 1, given the per-device single-active invariant)
+     * @return rows revoked (0 or 1, given the per-device/per-channel active invariant)
      */
     @Modifying
     @Query("""
             UPDATE EndpointMachineCert c
                SET c.revokedAt = :now, c.revokedReason = :reason, c.updatedAt = :now
-             WHERE c.device.id = :deviceId AND c.revokedAt IS NULL
+             WHERE c.device.id = :deviceId
+               AND c.channel = :channel
+               AND c.revokedAt IS NULL
             """)
-    int revokeActiveCertForDevice(@Param("deviceId") UUID deviceId,
-                                  @Param("now") Instant now,
-                                  @Param("reason") String reason);
+    int revokeActiveCertForDeviceAndChannel(@Param("deviceId") UUID deviceId,
+                                             @Param("channel") MachineCertChannel channel,
+                                             @Param("now") Instant now,
+                                             @Param("reason") String reason);
 }

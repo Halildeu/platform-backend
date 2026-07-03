@@ -8,6 +8,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -18,18 +19,18 @@ import java.util.regex.Pattern;
 /**
  * Faz 22.6 slice-4c-2b-2a (Codex 019ebe06) — resolves an operator-supplied {@code (tenantId, deviceId)} to the
  * connected agent {@link PeerIdentity}, the verified device→peer mapping {@code openSession} needs. Lazy, not a
- * connect-time index: the primary resolve path is the device's single ACTIVE cert thumbprint equaling the
- * agent's {@code transportPeerKey} (both are the lowercase SHA-256 hex of the leaf DER):
- * {@code (tenant, deviceId) → active cert → thumbprint → connectedPeer}. If an AD CS machine cert renewed while
- * the active-cert row still references the previous thumbprint, a bounded fallback may resolve by the same
- * cert row's AD computer objectGUID and the live mTLS cert's {@code adcomputer:{objectGUID}} SAN. Both paths are
- * fresh on every call, so a revoked/expired cert or a dropped peer is caught at open time, not cached.
+ * connect-time index: the primary resolve path is one of the device's ACTIVE channel cert thumbprints equaling
+ * the agent's {@code transportPeerKey} (both are the lowercase SHA-256 hex of the leaf DER):
+ * {@code (tenant, deviceId) -> active cert candidates -> thumbprint -> connectedPeer}. If an AD CS machine cert
+ * renewed while the active-cert row still references the previous thumbprint, a bounded fallback may resolve by
+ * the same cert row's AD computer objectGUID and the live mTLS cert's {@code adcomputer:{objectGUID}} SAN. Both
+ * paths are fresh on every call, so a revoked/expired cert or a dropped peer is caught at open time, not cached.
  *
  * <p><b>Fail-closed, every gate (Codex REVISE):</b>
  * <ul>
  *   <li>null tenant/device/now ⇒ empty.</li>
- *   <li>The cert query is tenant-scoped + {@code revoked_at IS NULL} + single-active (partial unique index), so
- *       a cross-tenant device, a revoked cert, or an unknown device yields no row ⇒ empty.</li>
+ *   <li>The cert query is tenant-scoped + {@code revoked_at IS NULL} + channel-active (partial unique index), so
+ *       a cross-tenant device, a revoked cert, or an unknown device yields no candidate ⇒ empty.</li>
  *   <li>The cert validity window is enforced null-safe: {@code notBefore <= now < notAfter} ⇒ otherwise empty.</li>
  *   <li>The device must be eligible — a null device/status, {@code PENDING_ENROLLMENT}, or
  *       {@code DECOMMISSIONED} ⇒ empty (a not-yet-enrolled or retired device is never a remote-session target).</li>
@@ -59,13 +60,23 @@ public final class ConnectedDeviceResolver {
 
     /**
      * The connected agent peer for the operator's own tenant + the requested device, or empty if there is no
-     * eligible, in-window, active cert whose live stream is currently registered.
+     * eligible, in-window, active channel cert whose live stream is currently registered.
      */
     public Optional<PeerIdentity> resolveConnectedPeer(UUID tenantId, UUID deviceId, Instant now) {
         if (tenantId == null || deviceId == null || now == null) {
             return Optional.empty();
         }
-        EndpointMachineCert cert = certs.findActiveByTenantIdAndDeviceId(tenantId, deviceId).orElse(null);
+        List<EndpointMachineCert> certCandidates = certs.findActiveByTenantIdAndDeviceId(tenantId, deviceId);
+        for (EndpointMachineCert cert : certCandidates) {
+            Optional<PeerIdentity> resolved = resolveFromCertCandidate(cert, tenantId, now);
+            if (resolved.isPresent()) {
+                return resolved;
+            }
+        }
+        return Optional.empty(); // no active, eligible, in-window cert candidate has a live peer
+    }
+
+    private Optional<PeerIdentity> resolveFromCertCandidate(EndpointMachineCert cert, UUID tenantId, Instant now) {
         if (cert == null) {
             return Optional.empty(); // no active cert for this device in this tenant (or cross-tenant) — fail-closed
         }

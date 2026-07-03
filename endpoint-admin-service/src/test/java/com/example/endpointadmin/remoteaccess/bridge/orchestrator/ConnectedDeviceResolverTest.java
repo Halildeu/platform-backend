@@ -65,7 +65,12 @@ class ConnectedDeviceResolverTest {
     }
 
     private void activeCertIs(EndpointMachineCert cert) {
-        when(certs.findActiveByTenantIdAndDeviceId(TENANT, DEVICE)).thenReturn(Optional.ofNullable(cert));
+        when(certs.findActiveByTenantIdAndDeviceId(TENANT, DEVICE))
+                .thenReturn(cert == null ? List.of() : List.of(cert));
+    }
+
+    private void activeCertsAre(EndpointMachineCert first, EndpointMachineCert second) {
+        when(certs.findActiveByTenantIdAndDeviceId(TENANT, DEVICE)).thenReturn(List.of(first, second));
     }
 
     @Test
@@ -128,6 +133,27 @@ class ConnectedDeviceResolverTest {
 
         verify(registry).connectedPeer(THUMBPRINT);
         verify(registry, never()).connectedPeerByAdComputerId(anyString());
+    }
+
+    @Test
+    void anExpiredVaultTpmCandidateDoesNotBlockAValidLiveAdCsCandidate() {
+        String expiredTpmThumbprint = "b".repeat(64);
+        String adcsThumbprint = "c".repeat(64);
+        EndpointMachineCert expiredTpm = cert(
+                expiredTpmThumbprint, NOW.minusSeconds(7200), NOW.minusSeconds(60), DeviceStatus.ONLINE);
+        when(expiredTpm.getObjectGuid()).thenReturn(null);
+        EndpointMachineCert validAdcs = cert(
+                adcsThumbprint, NOW.minusSeconds(3600), NOW.plusSeconds(3600), DeviceStatus.ONLINE);
+        PeerIdentity peer = new PeerIdentity(adcsThumbprint, Optional.empty(), List.of());
+        activeCertsAre(expiredTpm, validAdcs);
+        when(registry.connectedPeer(adcsThumbprint)).thenReturn(Optional.of(peer));
+
+        Optional<PeerIdentity> resolved = resolver.resolveConnectedPeer(TENANT, DEVICE, NOW);
+
+        assertEquals(Optional.of(peer), resolved);
+        verify(registry, never()).connectedPeer(expiredTpmThumbprint);
+        verify(registry).connectedPeer(adcsThumbprint);
+        verify(registry, never()).connectedPeerByAdComputerId(OBJECT_GUID.toString());
     }
 
     // ---- fail-closed gates: each is empty AND never reaches the registry ----
