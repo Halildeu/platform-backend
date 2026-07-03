@@ -18,6 +18,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUp
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionCloseOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionDuressSignalOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -119,6 +120,14 @@ class RemoteBridgeOperatorControllerTest {
     }
 
     @Test
+    void anUnauthenticatedDuressSignalIs401() throws Exception {
+        mvc.perform(post(BASE + "s-owned/duress/signal").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"signal\":\"NONE\"}"))
+                .andExpect(status().isUnauthorized());
+        verify(operatorService, never()).recordDuressSignal(any(), any(), any());
+    }
+
+    @Test
     void anUnauthenticatedCloseIs401AndTouchesNoService() throws Exception {
         mvc.perform(post(BASE + "s-owned/close")).andExpect(status().isUnauthorized());
         verify(operatorService, never()).closeSession(any(), any());
@@ -184,11 +193,16 @@ class RemoteBridgeOperatorControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"operationId\":\"op-1\",\"operation\":\"SCREEN_VIEW\"}"))
                 .andExpect(status().isNotFound());
+        mvc.perform(post(BASE + "s-cross-tenant/duress/signal").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"signal\":\"NONE\"}"))
+                .andExpect(status().isNotFound());
         mvc.perform(post(BASE + "s-cross-tenant/close").header("Authorization", AUTH))
                 .andExpect(status().isNotFound());
         verify(stepUpHandler, never()).issueChallenge(any(), anyLong());
         verify(stepUpHandler, never()).verifyAndRecord(any(), any(), anyLong());
         verify(operatorService, never()).handleOperationRequest(any());
+        verify(operatorService, never()).recordDuressSignal(any(), any(), any());
         verify(operatorService, never()).closeSession(any(), any());
     }
 
@@ -239,6 +253,66 @@ class RemoteBridgeOperatorControllerTest {
                 .andExpect(jsonPath("$.verified").value(false))
                 .andExpect(jsonPath("$.achievedStrength").value("NONE"))
                 .andExpect(jsonPath("$.verdict").doesNotExist());
+    }
+
+    // ---- duress signal ----
+
+    @Test
+    void aDuressNoneSignalForTheOwnSessionIsRecorded() throws Exception {
+        when(operatorService.recordDuressSignal("s-owned", OWNER,
+                com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal.NONE))
+                .thenReturn(new SessionDuressSignalOutcome("s-owned", true, false, null));
+
+        mvc.perform(post(BASE + "s-owned/duress/signal").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"signal\":\"NONE\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.signal").value("NONE"))
+                .andExpect(jsonPath("$.terminal").value(false));
+    }
+
+    @Test
+    void aPositiveDuressSignalCanTerminalizeTheSession() throws Exception {
+        when(operatorService.recordDuressSignal("s-owned", OWNER,
+                com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal.PANIC_SIGNAL))
+                .thenReturn(new SessionDuressSignalOutcome("s-owned", true, true, null));
+
+        mvc.perform(post(BASE + "s-owned/duress/signal").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"signal\":\"PANIC_SIGNAL\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.signal").value("PANIC_SIGNAL"))
+                .andExpect(jsonPath("$.terminal").value(true));
+    }
+
+    @Test
+    void malformedOrAmbiguousDuressSignalIs400() throws Exception {
+        String[] badBodies = {
+                "{}",
+                "{\"signal\":\"\"}",
+                "{\"signal\":\"NOT_REAL\"}",
+                "{\"signal\":\"AMBIGUOUS\"}"
+        };
+        for (String body : badBodies) {
+            mvc.perform(post(BASE + "s-owned/duress/signal").header("Authorization", AUTH)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(body))
+                    .andExpect(status().isBadRequest());
+        }
+        verify(operatorService, never()).recordDuressSignal(any(), any(), any());
+    }
+
+    @Test
+    void aServiceRejectedDuressSignalIs409WithoutInternalReason() throws Exception {
+        when(operatorService.recordDuressSignal("s-owned", OWNER,
+                com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal.NONE))
+                .thenReturn(new SessionDuressSignalOutcome("s-owned", false, false, "recording-failed"));
+
+        mvc.perform(post(BASE + "s-owned/duress/signal").header("Authorization", AUTH)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"signal\":\"NONE\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.reason").value("duress-signal-refused"));
     }
 
     @Test

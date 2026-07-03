@@ -26,10 +26,12 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidencePa
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionDuressSignalOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionCloseOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSession;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDuressSignalStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
@@ -368,6 +370,57 @@ class RemoteBridgeOperatorServiceTest {
         assertTrue(observer.sent.stream().anyMatch(Envelope::hasKill), "a KILL must be pushed on CONTROL");
         assertTrue(observer.completed, "the transport stream must be closed by the kill");
         assertTrue(store.bySessionId("s1").isEmpty(), "the killed session must be evicted (no ACTIVE ghost)");
+    }
+
+    @Test
+    void aSessionBackedCleanDuressSignalLetsTheBrokerReachNormalPolicy() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        SessionDuressSignalStore duressStore = new SessionDuressSignalStore(120_000L);
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                new TrustEvidenceAssembler(emptyLedger(), OwnerTokenGate.DENY_ALL, duressStore),
+                broker(), registry, operatorAuditSink(), () -> NOW, 120_000L, duressStore,
+                null, null, false, 0L);
+
+        SessionDuressSignalOutcome signal = service.recordDuressSignal("s1", "operator@x", DuressSignal.NONE);
+        OperatorOutcome outcome = service.handleOperationRequest(
+                new OperationRequest("s1", "op-1", RemoteOperation.SCREEN_VIEW, null));
+
+        assertTrue(signal.accepted());
+        assertFalse(signal.terminal());
+        assertEquals(Kind.DENY, outcome.brokerOutcome().kind(),
+                "fresh NONE should avoid KILL; DENY_ALL then denies on the normal capability gate");
+        assertFalse(observer.completed, "a normal policy DENY must not kill the control stream");
+    }
+
+    @Test
+    void aPositiveSessionBackedDuressSignalKillsImmediatelyAndEvicts() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        SessionDuressSignalStore duressStore = new SessionDuressSignalStore(120_000L);
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                new TrustEvidenceAssembler(emptyLedger(), OwnerTokenGate.DENY_ALL, duressStore),
+                broker(), registry, operatorAuditSink(), () -> NOW, 120_000L, duressStore,
+                null, null, false, 0L);
+
+        SessionDuressSignalOutcome signal =
+                service.recordDuressSignal("s1", "operator@x", DuressSignal.PANIC_SIGNAL);
+
+        assertTrue(signal.accepted());
+        assertTrue(signal.terminal());
+        assertTrue(observer.sent.stream().anyMatch(Envelope::hasKill));
+        assertTrue(observer.completed);
+        assertTrue(store.bySessionId("s1").isEmpty());
+        assertEquals(DuressSignal.AMBIGUOUS, duressStore.classify("s1", NOW),
+                "terminal cleanup must not leave a reusable session id with stale duress state");
     }
 
     @Test

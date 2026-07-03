@@ -38,6 +38,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOp
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDuressSignalStore;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifierFactory.DeviceKeyRealVerifierDependencies;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.LiveOnlyViewDataPlaneHandler;
@@ -386,8 +387,15 @@ public class RemoteBridgeServerConfig {
      * named-roster / attended-only / IT-owned pilot.
      */
     @Bean
+    public SessionDuressSignalStore remoteBridgeSessionDuressSignalStore(
+            @Value("${remote-bridge.duress.signal-ttl-millis:120000}") long signalTtlMillis) {
+        return new SessionDuressSignalStore(signalTtlMillis);
+    }
+
+    @Bean
     public TrustEvidenceAssembler.DuressSignalSource remoteBridgeDuressSignalSource(
             Environment environment,
+            SessionDuressSignalStore remoteBridgeSessionDuressSignalStore,
             @Value("${remote-bridge.duress.source-type:AMBIGUOUS_UNTIL_WIRED}") String duressSourceType,
             @Value("${remote-bridge.duress.pilot-risk-accepted:false}") boolean duressPilotRiskAccepted) {
         // disabling the human-protection kill is forbidden in a prod-like profile (Codex REVISE) — even with
@@ -395,7 +403,7 @@ public class RemoteBridgeServerConfig {
         boolean productionLike = isProductionLike(environment);
         return DuressSignalSourceFactory.create(
                 DuressSignalSourceFactory.SourceType.valueOf(duressSourceType), duressPilotRiskAccepted,
-                productionLike);
+                productionLike, remoteBridgeSessionDuressSignalStore);
     }
 
     /**
@@ -564,6 +572,7 @@ public class RemoteBridgeServerConfig {
             RemoteBridgeBroker remoteBridgeBroker,
             ControlStreamRegistry remoteBridgeControlStreamRegistry,
             DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
+            SessionDuressSignalStore remoteBridgeSessionDuressSignalStore,
             DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
             TpmDeviceKeySessionEvidenceStore remoteBridgeDeviceKeySessionEvidenceStore,
             @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis,
@@ -582,6 +591,7 @@ public class RemoteBridgeServerConfig {
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(remoteBridgeSessionStore,
                 remoteBridgeTrustEvidenceAssembler, remoteBridgeBroker, remoteBridgeControlStreamRegistry,
                 remoteBridgeDurableAuditSink, System::currentTimeMillis, consentPromptTtlMillis,
+                remoteBridgeSessionDuressSignalStore,
                 remoteBridgeDeviceKeyChallengeStore, remoteBridgeDeviceKeySessionEvidenceStore,
                 deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
         // #1580 — record a VIEW_ONLY stream authorization on permit push, terminate (revoke + close viewers) on

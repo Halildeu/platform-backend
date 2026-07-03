@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Faz 22.6 D10 slice-3 (Codex 019ebe06) — the duress source factory matrix: AMBIGUOUS_UNTIL_WIRED is the
@@ -36,6 +37,24 @@ class DuressSignalSourceFactoryTest {
     void aNullTypeDefaultsToAmbiguousEvenInProd() {
         assertSame(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED,
                 DuressSignalSourceFactory.create(null, true, true));
+    }
+
+    @Test
+    void sessionSignalSourceUsesTheSessionStoreAndIsAllowedInProd() {
+        SessionDuressSignalStore store = new SessionDuressSignalStore(1_000L);
+        TrustEvidenceAssembler.DuressSignalSource source =
+                DuressSignalSourceFactory.create(SourceType.SESSION_SIGNAL, false, true, store);
+
+        assertSame(store, source);
+        assertEquals(DuressSignal.AMBIGUOUS, source.classify("s", 1L));
+        assertTrue(store.record("s", "operator@x", DuressSignal.NONE, 1L).isPresent());
+        assertEquals(DuressSignal.NONE, source.classify("s", 2L));
+    }
+
+    @Test
+    void sessionSignalSourceRequiresAStore() {
+        assertThrows(IllegalStateException.class,
+                () -> DuressSignalSourceFactory.create(SourceType.SESSION_SIGNAL, false, false, null));
     }
 
     @Test
