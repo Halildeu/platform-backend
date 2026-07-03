@@ -27,7 +27,8 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
  *
  * <p>{@code /v3/api-docs} is NOT added to the {@code SecurityConfig} permitAll list:
  * this service is fail-closed by default, so the endpoint is reachable only with a
- * valid JWT like every other non-actuator route (no new public surface).
+ * valid JWT like every other non-actuator route. Swagger UI is intentionally not
+ * bundled; #424 requires a machine-readable spec, not a new browser UI surface.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureWebTestClient
@@ -55,6 +56,11 @@ class OpenApiContractTest {
     @Test
     void noAuth_returns401() {
         client.get().uri("/v3/api-docs").exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void swaggerUiIsNotBundled() {
+        withClaims().get().uri("/swagger-ui.html").exchange().expectStatus().isNotFound();
     }
 
     @Test
