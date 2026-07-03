@@ -393,7 +393,7 @@ public class AudioSessionController {
         final long admissionCheckNowMs = Instant.now().toEpochMilli();
         final long sessionAgeMs = admissionCheckNowMs - existing.sessionStartMs();
         final long maxSessionMs = props.getBounds().getMaxSessionMinutes() * 60_000L;
-        if (sessionAgeMs > maxSessionMs) {
+        if (sessionAgeMs >= maxSessionMs) {
             safeAudit(new AuditEvent.ChunkAdmissionRejected(
                     sessionId, tenantId, userId, chunkSeq, 409,
                     ErrorResponse.CODE_SESSION_EXPIRED, null, corrId, admissionCheckNowMs));

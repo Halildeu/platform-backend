@@ -55,8 +55,8 @@ class SessionExpiryContractTest {
                 .expectBody(StartSessionResponse.class)
                 .returnResult().getResponseBody().sessionId();
 
-        // max-session-minutes=0 -> any elapsed time (even the few ms since create)
-        // already exceeds the bound; no clock injection needed.
+        // max-session-minutes=0 -> the session is expired at creation time; no
+        // elapsed-time race or clock injection is needed.
         asUser(1L, 1L)
                 .post().uri(SESSIONS_PATH + "/" + sessionId + "/chunks")
                 .header(IDEMP_HEADER, "fixture-428-session-expiry-1-chunk0")
