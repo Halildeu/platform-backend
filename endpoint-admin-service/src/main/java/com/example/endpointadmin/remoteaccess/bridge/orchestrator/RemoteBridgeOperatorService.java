@@ -416,9 +416,9 @@ public final class RemoteBridgeOperatorService {
     }
 
     private void recordDeviceKeyChallengeBestEffort(String sessionId, String eventType, String challengeId, long now) {
+        String auditType = eventType + ":challenge_hash=" + shortAuditHash(challengeId);
         try {
-            auditSink.record(new AuditEvent(sessionId,
-                    eventType + ":challenge_hash=" + shortAuditHash(challengeId), "", now));
+            auditSink.record(new AuditEvent(sessionId, auditType, auditContentHash(auditType), now));
         } catch (RuntimeException ignored) {
             // Diagnostic evidence must not alter the consent/session fail-closed path.
         }
@@ -451,9 +451,20 @@ public final class RemoteBridgeOperatorService {
                 + ",identity=" + evidence.deviceTrustIdentitiesConsistent()
                 + ",reason=" + safeAuditToken(evidence.deviceTrustDecisionReason(), "device-untrusted");
         try {
-            auditSink.record(new AuditEvent(session.sessionId(), eventType, "", now));
+            auditSink.record(new AuditEvent(session.sessionId(), eventType, auditContentHash(eventType), now));
         } catch (RuntimeException ignored) {
             // Diagnostic evidence must not weaken or alter the fail-closed broker verdict.
+        }
+    }
+
+    private static String auditContentHash(String eventType) {
+        try {
+            String payload = eventType == null ? "null" : eventType;
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(payload.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
         }
     }
 
