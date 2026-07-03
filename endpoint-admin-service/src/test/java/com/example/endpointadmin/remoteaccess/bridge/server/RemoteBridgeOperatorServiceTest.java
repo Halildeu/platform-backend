@@ -139,6 +139,31 @@ class RemoteBridgeOperatorServiceTest {
         }
     }
 
+    private static final class LatchingNonBlankAuditSink implements RemoteBridgeAuditSink {
+        final List<AuditEvent> events = new ArrayList<>();
+        boolean broken;
+
+        @Override
+        public void record(AuditEvent event) {
+            if (broken) {
+                throw new IllegalStateException("recording sink is latched broken");
+            }
+            if (event == null || event.contentHash() == null || event.contentHash().isBlank()) {
+                broken = true;
+                throw new IllegalStateException("blank durable audit content hash");
+            }
+            events.add(event);
+        }
+
+        boolean hasEventPrefix(String prefix) {
+            return events.stream().anyMatch(event -> event.eventType().startsWith(prefix));
+        }
+
+        boolean allContentHashesLookSha256() {
+            return events.stream().allMatch(event -> event.contentHash().matches("[0-9a-f]{64}"));
+        }
+    }
+
     /** Open a session and drive its state machine to ACTIVE with an active consent lease. */
     private static RemoteBridgeSession activeSession(RemoteBridgeSessionStore store, String sessionId,
                                                      String peerKey, Set<RemoteSessionCapability> caps) {
@@ -222,6 +247,42 @@ class RemoteBridgeOperatorServiceTest {
         assertTrue(audit.hasExact("DEVICE_KEY_CHALLENGE_ISSUED:challenge_hash=" + challengeHash));
         assertTrue(audit.hasExact("DEVICE_KEY_CHALLENGE_SENT:challenge_hash=" + challengeHash));
         assertTrue(audit.hasExact("DEVICE_KEY_EVIDENCE_STORED:challenge_hash=" + challengeHash));
+    }
+
+    @Test
+    void deviceKeyChallengeDiagnosticsDoNotPoisonCleanDuressRecording() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        SessionDuressSignalStore duressStore = new SessionDuressSignalStore(120_000L);
+        LatchingNonBlankAuditSink audit = new LatchingNonBlankAuditSink();
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                new TrustEvidenceAssembler(emptyLedger(), OwnerTokenGate.DENY_ALL, duressStore),
+                broker(), registry, audit, () -> NOW, 120_000L, duressStore,
+                new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore(), true, 120_000L);
+
+        SessionOpenOutcome open = service.openSession(
+                new SessionRequest("s1", "dev-1", "operator@x", "remote support",
+                        Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+        RemoteBridgeSession session = store.bySessionId("s1").orElseThrow();
+        session.transition(Event.CONSENT_GRANTED);
+        session.grantConsent(true, NOW + 300_000L);
+        session.transition(Event.ACTIVATE);
+
+        SessionDuressSignalOutcome signal =
+                service.recordDuressSignal("s1", "operator@x", DuressSignal.NONE);
+
+        assertTrue(open.opened());
+        assertTrue(signal.accepted(),
+                "device-key diagnostic audit must not latch the durable recorder before duress NONE is recorded");
+        assertFalse(signal.terminal());
+        assertTrue(audit.hasEventPrefix("DEVICE_KEY_CHALLENGE_ISSUED:"));
+        assertTrue(audit.hasEventPrefix("DEVICE_KEY_CHALLENGE_SENT:"));
+        assertTrue(audit.hasEventPrefix("OPERATOR_DURESS_SIGNAL:NONE"));
+        assertTrue(audit.allContentHashesLookSha256());
+        assertFalse(audit.broken);
     }
 
     @Test
@@ -345,17 +406,18 @@ class RemoteBridgeOperatorServiceTest {
         registry.register(new PeerIdentity("peer-1", Optional.of("dev-1"), List.of()),
                 new ControlStreamHandle(observer));
         activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
-        List<AuditEvent> deviceTrustAudits = new ArrayList<>();
+        LatchingNonBlankAuditSink deviceTrustAudits = new LatchingNonBlankAuditSink();
 
         // the UNWIRED duress source (AMBIGUOUS) → the broker kills regardless of capability
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
-                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry, deviceTrustAudits::add,
+                assembler(TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED), broker(), registry,
+                deviceTrustAudits,
                 () -> NOW, 120_000L);
 
         OperatorOutcome outcome = service.handleOperationRequest(
                 new OperationRequest("s1", "op-1", RemoteOperation.SCREEN_VIEW, null));
 
-        Optional<AuditEvent> deviceDecisionAudit = deviceTrustAudits.stream()
+        Optional<AuditEvent> deviceDecisionAudit = deviceTrustAudits.events.stream()
                 .filter(event -> event.eventType().startsWith("DEVICE_TRUST_DECISION:"))
                 .findFirst();
         assertTrue(deviceDecisionAudit.isPresent(),
@@ -365,6 +427,8 @@ class RemoteBridgeOperatorServiceTest {
         assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("basis=NONE"));
         assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("effective_trusted=false"));
         assertTrue(deviceDecisionAudit.orElseThrow().eventType().contains("reason=device-trust-not-configured"));
+        assertTrue(deviceTrustAudits.allContentHashesLookSha256());
+        assertFalse(deviceTrustAudits.broken);
         assertEquals(Kind.KILL, outcome.brokerOutcome().kind());
         assertFalse(outcome.transportPushed());
         assertTrue(observer.sent.stream().anyMatch(Envelope::hasKill), "a KILL must be pushed on CONTROL");
