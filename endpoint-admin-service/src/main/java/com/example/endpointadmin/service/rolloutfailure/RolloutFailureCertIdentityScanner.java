@@ -139,6 +139,8 @@ public class RolloutFailureCertIdentityScanner {
         }
 
         EndpointMachineCert activeCert = certRepository.findActiveByTenantIdAndDeviceId(tenantId, device.getId())
+                .stream()
+                .findFirst()
                 .orElse(null);
         RolloutFailureClassifier.Classified classified = classifiedFrom(
                 device.getId(), activeCert, EnrollmentStatus.TPM_FAILED.name(), "enrollment:" + enrollment.getId());

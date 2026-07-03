@@ -36,8 +36,9 @@ import static org.mockito.Mockito.mock;
  * Faz 22.6 #548 Phase 1.5 (Codex {@code 019eff93}) — PG-level proof of {@link TpmDeviceCompletionService}: the
  * canonical TPM device-completion. Drives {@code complete(...)} against a real PG 16 (Flyway V75/V76) with a mocked
  * audit sink (the chain is proven elsewhere). Asserts the merge-blocking invariants: tenant-scoped EK identity as
- * the sole adoption authority, VAULT_TPM cert register/rotate (revoke-before-insert across channels), the channel
- * CHECK, cross-tenant independence, decommission no-revive, and the issued-cert SAN cross-check.
+     * the sole adoption authority, VAULT_TPM cert register/rotate (channel-scoped revoke-before-insert), AD_CS and
+     * VAULT_TPM coexistence, the channel CHECK, cross-tenant independence, decommission no-revive, and the issued-cert
+     * SAN cross-check.
  */
 @Testcontainers
 @DataJpaTest
@@ -184,7 +185,7 @@ class TpmDeviceCompletionServicePostgresIntegrationTest {
     }
 
     @Test
-    void preBoundDevice_registersVaultTpmCertAndCreatesIdentity_revokingPriorAdcsCert() {
+    void preBoundDevice_registersVaultTpmCertAndCreatesIdentity_preservingPriorAdcsCert() {
         // Seed an AD_CS device + its active AD_CS machine-cert (the pre-bound target upgrading to TPM-native).
         EndpointDevice adcs = new EndpointDevice();
         adcs.setTenantId(tenantA);
@@ -205,10 +206,17 @@ class TpmDeviceCompletionServicePostgresIntegrationTest {
         // identity now maps the EK to the pre-bound device
         assertThat(identities.findByTenantIdAndEkPubSha256(tenantA, EK_A).orElseThrow().getDeviceId())
                 .isEqualTo(target.getId());
-        // exactly one ACTIVE cert and it is the VAULT_TPM one (the prior AD_CS cert was revoked — Inv-1)
+        // AD_CS product-channel cert remains active, while the VAULT_TPM attestation cert gets its own active slot.
         List<EndpointMachineCert> active = activeCerts(target.getId());
-        assertThat(active).hasSize(1);
-        assertThat(active.get(0).getChannel()).isEqualTo(MachineCertChannel.VAULT_TPM);
+        assertThat(active).hasSize(2);
+        assertThat(active)
+                .extracting(EndpointMachineCert::getChannel)
+                .containsExactlyInAnyOrder(MachineCertChannel.AD_CS, MachineCertChannel.VAULT_TPM);
+        assertThat(active.stream()
+                .filter(c -> c.getChannel() == MachineCertChannel.VAULT_TPM)
+                .findFirst()
+                .orElseThrow()
+                .getSanUri()).isEqualTo("tpm:" + EK_A);
     }
 
     @Test

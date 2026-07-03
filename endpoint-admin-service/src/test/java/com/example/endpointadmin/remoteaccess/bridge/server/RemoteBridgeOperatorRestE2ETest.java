@@ -113,7 +113,7 @@ class RemoteBridgeOperatorRestE2ETest {
         when(cert.getTenantId()).thenReturn(TENANT);
         when(cert.getDevice()).thenReturn(device);
         EndpointMachineCertRepository repo = mock(EndpointMachineCertRepository.class);
-        when(repo.findActiveByTenantIdAndDeviceId(TENANT, DEVICE)).thenReturn(Optional.of(cert));
+        when(repo.findActiveByTenantIdAndDeviceId(TENANT, DEVICE)).thenReturn(List.of(cert));
         return new ConnectedDeviceResolver(repo, registry);
     }
 

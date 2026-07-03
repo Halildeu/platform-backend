@@ -169,11 +169,11 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
         //    the live-connection lookup are mocked DATA SOURCES — the resolver still runs every fail-closed gate.
         // build the fixture row BEFORE stubbing the repo (its own when(...) calls must complete first — Mockito
         // forbids nested stubbing)
-        Optional<EndpointMachineCert> enrolledRow =
-                enrolledDevicePresent ? Optional.of(enrolledFixtureCert()) : Optional.empty();
+        List<EndpointMachineCert> enrolledRows =
+                enrolledDevicePresent ? List.of(enrolledFixtureCert()) : List.of();
         EndpointMachineCertRepository certRepo = mock(EndpointMachineCertRepository.class);
         when(certRepo.findActiveByTenantIdAndDeviceId(UUID.fromString(TENANT), UUID.fromString(DEVICE)))
-                .thenReturn(enrolledRow);
+                .thenReturn(enrolledRows);
         ControlStreamRegistry registry = mock(ControlStreamRegistry.class);
         // narrow: the registry lookup is keyed by the enrolled cert's thumbprint (= the transport leaf) — so the
         // DB-machine-cert → live-peer binding is preserved in the composition, not waved through with any()

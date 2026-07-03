@@ -42,8 +42,8 @@ import java.util.UUID;
  *       {@code machine_fingerprint}. Pre-bound: assert the target device's tenant + non-decommissioned, and
  *       refuse if the EK is already bound to a DIFFERENT device (anti-hijack). Device-less: reuse the mapped
  *       device or create a new one (synthetic {@code tpm-{ek}} hostname) + identity row.</li>
- *   <li><b>Cert register/rotate (Inv-1/P1-6):</b> revoke the device's current ACTIVE cert (ANY channel, so an
- *       AD_CS→TPM upgrade frees the global per-device active slot) BEFORE inserting the new VAULT_TPM row.</li>
+ *   <li><b>Cert register/rotate (Inv-1/P1-6):</b> revoke the device's current ACTIVE VAULT_TPM cert only,
+ *       preserving any active AD_CS product-channel credential, BEFORE inserting the new VAULT_TPM row.</li>
  *   <li>Link {@code enrollment.device} to the resolved device; the caller then writes the binding row.</li>
  * </ol>
  *
@@ -174,10 +174,10 @@ public class TpmDeviceCompletionService {
 
     private void registerVaultTpmCert(EndpointDevice device, UUID tenantId, String sanUri, String ekPubSha256,
                                       TpmVaultCertExtractor.ParsedVaultCert vaultCert, Instant now) {
-        // Inv-1 + P1-6: revoke the device's current ACTIVE cert (ANY channel) BEFORE inserting — frees the
-        // global per-device active slot (and the old AD_CS san_uri slot on an upgrade) so the new VAULT_TPM
-        // row does not trip uq_endpoint_machine_certs_device_active under Hibernate insert-before-update.
-        certRepository.revokeActiveCertForDevice(device.getId(), now, "TPM_NATIVE_SUPERSEDED");
+        // Inv-1 + P1-6: TPM rotation supersedes only the VAULT_TPM slot. AD_CS stays active for product
+        // remote-bridge/lifecycle until its own AD_CS renewal/revocation path changes it.
+        certRepository.revokeActiveCertForDeviceAndChannel(
+                device.getId(), MachineCertChannel.VAULT_TPM, now, "TPM_NATIVE_SUPERSEDED");
 
         EndpointMachineCert certRow = new EndpointMachineCert();
         certRow.setDevice(device);

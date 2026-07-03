@@ -3,6 +3,7 @@ package com.example.endpointadmin.migration;
 import com.example.endpointadmin.model.DeviceStatus;
 import com.example.endpointadmin.model.EndpointDevice;
 import com.example.endpointadmin.model.EndpointMachineCert;
+import com.example.endpointadmin.model.MachineCertChannel;
 import com.example.endpointadmin.model.OsType;
 import com.example.endpointadmin.repository.EndpointDeviceRepository;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
@@ -33,9 +34,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <ul>
  *   <li>Flyway V11 applies cleanly on a real Postgres engine;</li>
  *   <li>Hibernate {@code validate} is happy with the resulting table;</li>
- *   <li>Partial unique indexes on {@code device_id WHERE revoked_at IS NULL}
- *       and {@code san_uri WHERE revoked_at IS NULL} are actually enforced
- *       (H2 partial-index support is unreliable);</li>
+     *   <li>Partial unique indexes on {@code (device_id, channel) WHERE revoked_at IS NULL}
+     *       and {@code san_uri WHERE revoked_at IS NULL} are actually enforced
+     *       (H2 partial-index support is unreliable);</li>
  *   <li>Revoking a cert frees the partial unique slot — a new active cert
  *       with the same SAN URI / same device_id can then be inserted.</li>
  * </ul>
@@ -108,6 +109,24 @@ class EndpointMachineCertsPostgresIntegrationTest {
         return c;
     }
 
+    private EndpointMachineCert buildVaultTpm(EndpointDevice device, String ek, String thumb) {
+        EndpointMachineCert c = new EndpointMachineCert();
+        c.setDevice(device);
+        c.setTenantId(device.getTenantId());
+        c.setChannel(MachineCertChannel.VAULT_TPM);
+        c.setSanUri("tpm:" + ek);
+        c.setObjectGuid(null);
+        c.setCertSerial("vt-01");
+        c.setCertThumbprint(thumb);
+        c.setCertIssuer("CN=Vault TPM CA");
+        c.setCertSubject("CN=" + device.getHostname());
+        c.setCertNotBefore(Instant.now().minusSeconds(60));
+        c.setCertNotAfter(Instant.now().plusSeconds(365L * 24L * 60L * 60L));
+        c.setMachineFingerprint("tpm:" + ek);
+        c.setEnrolledAt(Instant.now());
+        return c;
+    }
+
     @Test
     void flywayLiftsSchemaAndHibernateValidates() {
         assertThat(certRepository).isNotNull();
@@ -121,7 +140,7 @@ class EndpointMachineCertsPostgresIntegrationTest {
                 String.class);
         assertThat(indexes)
                 .contains(
-                        "uq_endpoint_machine_certs_device_active",
+                        "uq_endpoint_machine_certs_device_channel_active",
                         // V75 (Faz 22.6 #548 Phase 1.5): the V11 global san_uri-active index was SPLIT per channel —
                         // AD_CS stays global, VAULT_TPM is tenant-scoped (the same physical EK in two tenants is two
                         // independent devices). The old single index no longer exists.
@@ -130,7 +149,9 @@ class EndpointMachineCertsPostgresIntegrationTest {
                         "idx_endpoint_machine_certs_tenant_thumbprint",
                         "idx_endpoint_machine_certs_object_guid",
                         "idx_endpoint_machine_certs_tenant_enrolled")
-                .doesNotContain("uq_endpoint_machine_certs_san_uri_active");
+                .doesNotContain(
+                        "uq_endpoint_machine_certs_device_active",
+                        "uq_endpoint_machine_certs_san_uri_active");
     }
 
     @Test
@@ -150,7 +171,7 @@ class EndpointMachineCertsPostgresIntegrationTest {
     }
 
     @Test
-    void partialUniqueIndexRejectsTwoActiveCertsForSameDevice() {
+    void partialUniqueIndexRejectsTwoActiveCertsForSameDeviceAndChannel() {
         UUID tenantA = UUID.randomUUID();
         EndpointDevice device = createDevice(tenantA, "PC-1", "fp-1");
 
@@ -163,6 +184,22 @@ class EndpointMachineCertsPostgresIntegrationTest {
                 certRepository.saveAndFlush(build(device,
                         "adcomputer:" + guid2.toString().toLowerCase(), "thumb-2")))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void channelScopedDeviceActiveIndexAllowsAdcsAndVaultTpmForSameDevice() {
+        UUID tenantA = UUID.randomUUID();
+        EndpointDevice device = createDevice(tenantA, "PC-1", "fp-1");
+
+        UUID guid = UUID.randomUUID();
+        certRepository.saveAndFlush(build(device,
+                "adcomputer:" + guid.toString().toLowerCase(), "thumb-adcs"));
+        EndpointMachineCert vaultTpm = certRepository.saveAndFlush(buildVaultTpm(device, "a1".repeat(32), "thumb-tpm"));
+
+        assertThat(vaultTpm.getId()).isNotNull();
+        assertThat(certRepository.findActiveByTenantIdAndDeviceId(tenantA, device.getId()))
+                .extracting(EndpointMachineCert::getChannel)
+                .containsExactlyInAnyOrder(MachineCertChannel.AD_CS, MachineCertChannel.VAULT_TPM);
     }
 
     @Test

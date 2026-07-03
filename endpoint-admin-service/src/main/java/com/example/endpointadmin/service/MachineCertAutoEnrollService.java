@@ -71,9 +71,9 @@ import java.util.UUID;
  * <p>The PostgreSQL transaction enters an aborted state after a constraint
  * violation, so an in-tx re-read after {@code DataIntegrityViolationException}
  * is unsafe. Both the device upsert (which can hit
- * {@code uq_endpoint_devices_tenant_fingerprint}) and the cert insert (which
- * can hit {@code uq_endpoint_machine_certs_san_uri_active} or
- * {@code uq_endpoint_machine_certs_device_active}) catch
+     * {@code uq_endpoint_devices_tenant_fingerprint}) and the cert insert (which
+     * can hit a channel-scoped SAN active index or
+     * {@code uq_endpoint_machine_certs_device_channel_active}) catch
  * {@code DataIntegrityViolationException} and surface
  * {@code 409 ENROLLMENT_RACE} / {@code 409 DEVICE_RACE} respectively. The
  * caller retries — the second attempt reads the persisted winner via the

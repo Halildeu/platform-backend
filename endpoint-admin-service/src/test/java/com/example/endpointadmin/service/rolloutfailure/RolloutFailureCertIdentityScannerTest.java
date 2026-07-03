@@ -18,7 +18,6 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -101,7 +100,7 @@ class RolloutFailureCertIdentityScannerTest {
         when(enrollmentRepository.findDeviceBoundByStatusExcludingDeviceStatus(
                 EnrollmentStatus.TPM_FAILED, DeviceStatus.DECOMMISSIONED, PageRequest.of(0, 10)))
                 .thenReturn(List.of(enrollment));
-        when(certRepository.findActiveByTenantIdAndDeviceId(tenant, deviceId)).thenReturn(Optional.empty());
+        when(certRepository.findActiveByTenantIdAndDeviceId(tenant, deviceId)).thenReturn(List.of());
         when(autoIngestService.ingestClassified(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(true);
 
