@@ -9,19 +9,22 @@ import org.slf4j.LoggerFactory;
  * <ul>
  *   <li><b>AMBIGUOUS_UNTIL_WIRED</b> — the fail-closed default: no real duress producer wired ⇒ AMBIGUOUS ⇒ the
  *       broker KILLS. Preserved for every non-pilot configuration.</li>
+ *   <li><b>SESSION_SIGNAL</b> — reads a fresh, session-scoped signal recorded through the authenticated operator
+ *       channel. Missing or stale records classify as AMBIGUOUS, so the broker still kills until the real source
+ *       has explicitly produced NONE or a duress signal for that session.</li>
  *   <li><b>PILOT_RISK_ACCEPTED_DISABLED</b> — the {@link PilotRiskAcceptedDuressSignalSource} (asserts NONE so
  *       the broker does not kill). It DISABLES the human-protection kill, so it is built ONLY with an explicit
  *       owner risk-acceptance flag (else fail-fast) and logs a loud warning; valid only for the narrow
  *       named-roster / attended-only / IT-owned pilot.</li>
  * </ul>
- * The real transport duress source is a future (owner-gated) slice — it is not selectable here yet, so a
- * half-wired "real" source can never be silently built.
+ * A half-wired real source can never be silently built: SESSION_SIGNAL requires a live store, and its missing
+ * record semantics are AMBIGUOUS rather than "clean".
  */
 public final class DuressSignalSourceFactory {
 
     private static final Logger log = LoggerFactory.getLogger(DuressSignalSourceFactory.class);
 
-    public enum SourceType { AMBIGUOUS_UNTIL_WIRED, PILOT_RISK_ACCEPTED_DISABLED }
+    public enum SourceType { AMBIGUOUS_UNTIL_WIRED, SESSION_SIGNAL, PILOT_RISK_ACCEPTED_DISABLED }
 
     private DuressSignalSourceFactory() {
     }
@@ -42,10 +45,25 @@ public final class DuressSignalSourceFactory {
      */
     public static TrustEvidenceAssembler.DuressSignalSource create(SourceType type, boolean pilotRiskAccepted,
                                                                    boolean productionLikeProfile) {
+        return create(type, pilotRiskAccepted, productionLikeProfile, null);
+    }
+
+    public static TrustEvidenceAssembler.DuressSignalSource create(SourceType type, boolean pilotRiskAccepted,
+                                                                   boolean productionLikeProfile,
+                                                                   SessionDuressSignalStore sessionSignalStore) {
         SourceType t = type == null ? SourceType.AMBIGUOUS_UNTIL_WIRED : type; // fail-closed default
         switch (t) {
             case AMBIGUOUS_UNTIL_WIRED -> {
                 return TrustEvidenceAssembler.DuressSignalSource.AMBIGUOUS_UNTIL_WIRED;
+            }
+            case SESSION_SIGNAL -> {
+                if (sessionSignalStore == null) {
+                    throw reject("duress source SESSION_SIGNAL requires the session duress signal store — refusing "
+                            + "to silently fall back to clean/no-duress");
+                }
+                log.info("DURESS DETECTION WIRED (SESSION_SIGNAL) — missing or stale session signals classify as "
+                        + "AMBIGUOUS and still kill; only a fresh authenticated session signal can return NONE.");
+                return sessionSignalStore;
             }
             case PILOT_RISK_ACCEPTED_DISABLED -> {
                 if (productionLikeProfile) {

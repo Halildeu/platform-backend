@@ -6,6 +6,7 @@ import com.example.endpointadmin.remoteaccess.OperatorStepUpVerifier.StepUpVerif
 import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog;
 import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog.PreparedScript;
 import com.example.endpointadmin.remoteaccess.ApprovedRemoteScriptCatalog.ResolutionStatus;
+import com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal;
 import com.example.endpointadmin.remoteaccess.RemoteOperation;
 import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog;
 import com.example.endpointadmin.remoteaccess.RemoteOperationCatalog.Entry;
@@ -21,6 +22,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.OperatorStepUp
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.OperatorOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionCloseOutcome;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionDuressSignalOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService.SessionOpenOutcome;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSession;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
@@ -277,6 +279,30 @@ public class RemoteBridgeOperatorController {
                 verification.isVerified(), verification.achievedStrength().name()));
     }
 
+    /** Record the operator-channel duress classification for this owned active session. */
+    @PostMapping("/sessions/{sessionId}/duress/signal")
+    public ResponseEntity<?> recordDuressSignal(@PathVariable String sessionId,
+                                                @RequestBody(required = false) DuressSignalRequest body,
+                                                HttpServletRequest request) {
+        OperatorIdentity identity = authenticate(request);
+        if (!identity.isAuthenticated()) {
+            return unauthenticated();
+        }
+        if (ownedSession(sessionId, identity).isEmpty()) {
+            return notFound();
+        }
+        DuressSignal signal = parseDuressSignal(body == null ? null : body.signal());
+        if (signal == null) {
+            return ResponseEntity.badRequest().build();
+        }
+        SessionDuressSignalOutcome outcome =
+                operatorService.recordDuressSignal(sessionId, identity.operatorSubject(), signal);
+        if (!outcome.accepted()) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(new RejectedResponse("duress-signal-refused"));
+        }
+        return ResponseEntity.ok(new DuressSignalResponse(signal.name(), outcome.terminal()));
+    }
+
     /** Submit an operation on the operator's own session; the broker is the sole authority on the verdict. */
     @PostMapping("/sessions/{sessionId}/operations")
     public ResponseEntity<?> submitOperation(@PathVariable String sessionId,
@@ -451,6 +477,18 @@ public class RemoteBridgeOperatorController {
         return capabilities;
     }
 
+    private static DuressSignal parseDuressSignal(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            DuressSignal signal = DuressSignal.valueOf(raw.trim());
+            return signal == DuressSignal.AMBIGUOUS ? null : signal;
+        } catch (IllegalArgumentException unknownSignal) {
+            return null;
+        }
+    }
+
     // ---- wire DTOs (server-shaped; the operator subject is NEVER taken from a request body) ----
 
     public record OpenSessionRequestBody(String sessionId, String deviceId, String reason, List<String> capabilities) {
@@ -466,6 +504,12 @@ public class RemoteBridgeOperatorController {
     }
 
     public record VerifyResponse(boolean verified, String achievedStrength) {
+    }
+
+    public record DuressSignalRequest(String signal) {
+    }
+
+    public record DuressSignalResponse(String signal, boolean terminal) {
     }
 
     public record OperationRequestBody(String operationId, String operation, String commandLine,

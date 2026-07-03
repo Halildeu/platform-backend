@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
+import com.example.endpointadmin.remoteaccess.DuressResponsePolicy.DuressSignal;
 import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker;
@@ -81,6 +82,7 @@ public final class RemoteBridgeOperatorService {
     private final TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore;
     private final boolean deviceKeySessionEnabled;
     private final long deviceKeyChallengeTtlMillis;
+    private final SessionDuressSignalStore duressSignalStore;
     // Faz 22.6 #1580 (Codex 019f078a + 019f0e78) — the VIEW_ONLY session lifecycle seam: authorize a stream on a
     // delivered VIEW_ONLY permit, and TERMINATE (revoke authorization + close viewers) on every operator-driven
     // terminal. Optional (null = this bridge does not run the #1580 view-only data plane) so existing wiring/tests
@@ -111,6 +113,18 @@ public final class RemoteBridgeOperatorService {
                                        DeviceKeyChallengeStore deviceKeyChallengeStore,
                                        TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore,
                                        boolean deviceKeySessionEnabled, long deviceKeyChallengeTtlMillis) {
+        this(store, assembler, broker, registry, auditSink, clock, consentPromptTtlMillis, null,
+                deviceKeyChallengeStore, deviceKeyEvidenceStore, deviceKeySessionEnabled, deviceKeyChallengeTtlMillis);
+    }
+
+    public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
+                                       RemoteBridgeBroker broker, ControlStreamRegistry registry,
+                                       RemoteBridgeAuditSink auditSink, LongSupplier clock,
+                                       long consentPromptTtlMillis,
+                                       SessionDuressSignalStore duressSignalStore,
+                                       DeviceKeyChallengeStore deviceKeyChallengeStore,
+                                       TpmDeviceKeySessionEvidenceStore deviceKeyEvidenceStore,
+                                       boolean deviceKeySessionEnabled, long deviceKeyChallengeTtlMillis) {
         this.store = Objects.requireNonNull(store, "store");
         this.assembler = Objects.requireNonNull(assembler, "assembler");
         this.broker = Objects.requireNonNull(broker, "broker");
@@ -124,6 +138,7 @@ public final class RemoteBridgeOperatorService {
         this.deviceKeySessionEnabled = deviceKeySessionEnabled;
         this.deviceKeyChallengeStore = deviceKeyChallengeStore;
         this.deviceKeyEvidenceStore = deviceKeyEvidenceStore;
+        this.duressSignalStore = duressSignalStore;
         if (deviceKeySessionEnabled) {
             if (deviceKeyChallengeStore == null) {
                 throw new IllegalArgumentException(
@@ -148,6 +163,12 @@ public final class RemoteBridgeOperatorService {
         }
         if (deviceKeyEvidenceStore != null) {
             deviceKeyEvidenceStore.evict(sessionId, transportPeerKey);
+        }
+    }
+
+    private void evictDuressSignal(String sessionId) {
+        if (duressSignalStore != null) {
+            duressSignalStore.evict(sessionId);
         }
     }
 
@@ -178,6 +199,24 @@ public final class RemoteBridgeOperatorService {
 
         static SessionCloseOutcome rejected(String sessionId, String reason) {
             return new SessionCloseOutcome(sessionId, false, reason);
+        }
+    }
+
+    /** The outcome of recording a real session-scoped duress classification. */
+    public record SessionDuressSignalOutcome(String sessionId,
+                                             boolean recorded,
+                                             boolean terminal,
+                                             String rejectReason) {
+        public boolean accepted() {
+            return recorded && rejectReason == null;
+        }
+
+        static SessionDuressSignalOutcome recorded(String sessionId, boolean terminal) {
+            return new SessionDuressSignalOutcome(sessionId, true, terminal, null);
+        }
+
+        static SessionDuressSignalOutcome rejected(String sessionId, String reason) {
+            return new SessionDuressSignalOutcome(sessionId, false, false, reason);
         }
     }
 
@@ -213,6 +252,7 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(request.sessionId(), refused.reason());
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
+        evictDuressSignal(session.sessionId()); // reused session ids must not inherit stale clean/duress signals
         // #1580 — a fresh VIEW_ONLY incarnation: record this session as the incarnation token + clear stale authz
         // for this (reused) sessionId so a legitimately reused session can authorize a screen stream again.
         beginViewOnlySession(session);
@@ -240,6 +280,7 @@ public final class RemoteBridgeOperatorService {
                 recordDeviceKeyChallengeBestEffort(session.sessionId(), "DEVICE_KEY_CHALLENGE_NOT_DELIVERED",
                         challenge.challengeId(), now);
                 evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear the undelivered challenge
+                evictDuressSignal(session.sessionId());
                 session.transition(Event.KILL);
                 store.evictIfTerminal(session.sessionId());
                 terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
@@ -255,6 +296,7 @@ public final class RemoteBridgeOperatorService {
         if (!sent) {
             // the peer dropped between the pre-guard and the send → don't leave an orphan CONSENT_PENDING session
             evictDeviceKeySession(session.sessionId(), peer.transportPeerKey()); // clear any device-key state too
+            evictDuressSignal(session.sessionId());
             session.transition(Event.KILL);
             store.evictIfTerminal(session.sessionId());
             terminateViewOnly(session.sessionId()); // #1580 — re-fail-close (beginViewOnlySession ran above)
@@ -301,8 +343,66 @@ public final class RemoteBridgeOperatorService {
         }
         store.evictIfTerminal(sessionId);
         evictDeviceKeySession(sessionId, session.transportPeerKey()); // F1: no stale state for a reused sessionId
+        evictDuressSignal(sessionId);
         terminateViewOnly(sessionId); // #1580 — no stale fanout grant after operator close
         return SessionCloseOutcome.closed(sessionId);
+    }
+
+    /**
+     * Record an authenticated, owned-session duress classification. Missing or stale classifications remain
+     * AMBIGUOUS in {@link SessionDuressSignalStore}; this method only writes explicit NONE / duress signals and
+     * never silently disables the human-safety kill.
+     */
+    public SessionDuressSignalOutcome recordDuressSignal(String sessionId, String operatorSubject,
+                                                          DuressSignal signal) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "malformed-request");
+        }
+        if (operatorSubject == null || operatorSubject.isBlank()) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "malformed-operator");
+        }
+        if (signal == null || signal == DuressSignal.AMBIGUOUS) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "malformed-signal");
+        }
+        if (duressSignalStore == null) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "duress-source-not-configured");
+        }
+        long now = clock.getAsLong();
+        RemoteBridgeSession session = store.bySessionId(sessionId).orElse(null);
+        if (session == null) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "unknown-session");
+        }
+        if (!Objects.equals(session.operatorSubject(), operatorSubject)) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "not-owned");
+        }
+        if (!session.state().isActive()) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "session-not-active");
+        }
+
+        boolean terminal = signal != DuressSignal.NONE;
+        String auditType = "OPERATOR_DURESS_SIGNAL:" + signal.name();
+        try {
+            auditSink.record(new AuditEvent(session.sessionId(), auditType,
+                    operatorSubjectAuditHash(operatorSubject), now));
+        } catch (RuntimeException recordingFailure) {
+            if (!terminal) {
+                return SessionDuressSignalOutcome.rejected(sessionId, "recording-failed");
+            }
+            // A positive duress signal still kills even if diagnostic recording is unavailable.
+        }
+
+        if (duressSignalStore.record(session.sessionId(), operatorSubject, signal, now).isEmpty()) {
+            return SessionDuressSignalOutcome.rejected(sessionId, "malformed-signal");
+        }
+        if (terminal) {
+            registry.killPeer(session.transportPeerKey(), session.sessionId(), "DURESS", now);
+            session.transition(Event.KILL);
+            store.evictIfTerminal(session.sessionId());
+            evictDeviceKeySession(session.sessionId(), session.transportPeerKey());
+            evictDuressSignal(session.sessionId());
+            terminateViewOnly(session.sessionId());
+        }
+        return SessionDuressSignalOutcome.recorded(sessionId, terminal);
     }
 
     private static String operatorSubjectAuditHash(String operatorSubject) {
@@ -464,6 +564,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.KILL);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
+                evictDuressSignal(request.sessionId());
                 terminateViewOnly(request.sessionId()); // #1580 — no stale fanout grant after kill
                 yield OperatorOutcome.handled(outcome, false);
             }
@@ -473,6 +574,7 @@ public final class RemoteBridgeOperatorService {
                 session.transition(Event.CLOSE);
                 store.evictIfTerminal(request.sessionId());
                 evictDeviceKeySession(request.sessionId(), session.transportPeerKey()); // F1 cleanup
+                evictDuressSignal(request.sessionId());
                 terminateViewOnly(request.sessionId()); // #1580 — no stale fanout grant after deny
                 yield OperatorOutcome.handled(outcome, false);
             }
