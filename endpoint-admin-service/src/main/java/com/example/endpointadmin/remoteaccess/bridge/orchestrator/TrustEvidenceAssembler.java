@@ -147,14 +147,18 @@ public final class TrustEvidenceAssembler {
         if (!certTrusted) {
             return "cert-untrusted";
         }
-        if (!attestationVerified) {
-            return "attestation-unverified";
-        }
+        // Keep the reported detail aligned with RemoteSessionPolicyEngine's gate order:
+        // cert -> device -> attestation. Otherwise a missing hardware/device binding is
+        // hidden behind the peer-ledger attestation boolean and live diagnostics cannot
+        // distinguish "no fresh device-key evidence" from a generic attestation miss.
         if (deviceDecision == null || !deviceDecision.trusted()) {
             return safeDetail(deviceDecision == null ? null : deviceDecision.reason(), "device-untrusted");
         }
         if (!identitiesConsistent) {
             return "device-identity-mismatch";
+        }
+        if (!attestationVerified) {
+            return "attestation-unverified";
         }
         return null;
     }

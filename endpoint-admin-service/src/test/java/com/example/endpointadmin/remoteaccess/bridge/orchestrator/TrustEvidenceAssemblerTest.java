@@ -188,6 +188,23 @@ class TrustEvidenceAssemblerTest {
     }
 
     @Test
+    void cryptoIdentityDetailKeepsDeviceVerifierReasonWhenAttestationIsAlsoMissing() {
+        PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.MISSING);
+        ledger.record(peer("peer-1"), hello(), NOW); // fresh, consistent cert trust; provenance not verified
+        SessionDeviceTrustVerifier denying =
+                (s, t, now) -> SessionDeviceTrustVerifier.DeviceTrustDecision.deny("no-fresh-device-key-evidence");
+        TrustEvidenceAssembler assembler =
+                new TrustEvidenceAssembler(ledger, OwnerTokenGate.DENY_ALL, denying, null);
+
+        RemoteBridgeTrustEvidence ev = assembler.assemble(
+                session("s1", "peer-1", "dev-1", Set.of(RemoteSessionCapability.VIEW_ONLY)), NOW);
+
+        assertFalse(ev.attestationVerified());
+        assertFalse(ev.deviceTrusted());
+        assertEquals("no-fresh-device-key-evidence", ev.cryptoIdentityDetail());
+    }
+
+    @Test
     void aDeviceIdentityMismatchIsExposedAsBoundedCryptoIdentityDetail() {
         PeerTrustLedger ledger = ledgerWith(true, AttestationVerifier.AttestationDecision.VERIFIED);
         ledger.record(peer("peer-1"), hello(), NOW); // cert-bound device id = dev-1
