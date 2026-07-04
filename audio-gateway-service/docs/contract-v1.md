@@ -572,7 +572,7 @@ Gateway emit eder her session lifecycle event:
   "timestamp": "...",
   "actor": { "user_id": "kc-sub-...", "user_email_hash": "...", "role": "meeting_owner" },
   "action": "audio_session.start",
-  "resource": { "meeting_id": "22222222-2222-4222-8222-222222222222", "session_id": "SES-...", "tenant_id": "workcube-main" },
+  "resource": { "meeting_id": "22222222-2222-4222-8222-222222222222", "session_id": "SES-...", "tenant_id": "tenant-main" },
   "result": "ok",
   "client_ip_hash": "...",
   "user_agent_class": "mobile_react_native"
