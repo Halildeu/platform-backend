@@ -134,7 +134,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                                     ClientFrameException.class,
                                     error -> clientSession.close(CloseStatus.BAD_DATA))
                             .onErrorResume(error -> clientSession.close(CloseStatus.SERVER_ERROR))
-                            .doFinally(signal -> activeSessions.remove(sessionId));
+                            .doFinally(signal -> {
+                                activeSessions.remove(sessionId);
+                                sequences.release(sessionId);
+                            });
                 });
     }
 

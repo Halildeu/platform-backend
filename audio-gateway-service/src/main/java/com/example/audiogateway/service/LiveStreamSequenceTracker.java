@@ -62,6 +62,24 @@ public class LiveStreamSequenceTracker {
         }
     }
 
+    /**
+     * Release the in-memory tracked state for a session whose WebSocket
+     * connection has ended (normal close, error, or client disconnect).
+     *
+     * <p>Safe to call on every terminal signal: the persisted session record's
+     * own {@code lastAcceptedChunkSeq} (passed as {@code baseline} to {@link
+     * #accept}) reseeds a fresh entry if the client reconnects with the same
+     * sessionId, so this loses no durable idempotency guarantee — only the
+     * transient in-memory shortcut for the connection that just ended. Without
+     * this release, a long-lived gateway pod accumulates one entry per
+     * distinct session forever and eventually rejects ALL new live STT
+     * streams with {@link Outcome#CAPACITY_EXCEEDED} even with zero active
+     * connections (self-inflicted denial of service).
+     */
+    public void release(final String sessionId) {
+        lastAcceptedBySession.remove(sessionId);
+    }
+
     int trackedSessions() {
         return lastAcceptedBySession.size();
     }
