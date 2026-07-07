@@ -38,6 +38,8 @@ public record ErrorResponse(
     // PR-gw-01B-core (Codex `019e8d78` iter-2 AGREE) — chunk admission state + ordering.
     public static final String CODE_INVALID_TRANSITION = "AUDIO_GATEWAY_INVALID_TRANSITION";
     public static final String CODE_CHUNK_OUT_OF_ORDER = "AUDIO_GATEWAY_CHUNK_OUT_OF_ORDER";
+    // #428: Bounds.maxSessionMinutes enforcement.
+    public static final String CODE_SESSION_EXPIRED = "AUDIO_GATEWAY_SESSION_EXPIRED";
 
     public static ErrorResponse of(final String code, final String message, final String correlationId,
                                    final boolean retryable) {

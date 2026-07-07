@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWebTestClient;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -80,6 +81,24 @@ class StartSessionContractTest {
     void noAuth_returns401() {
         client.post()
                 .uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, VALID_IDEMP)
+                .bodyValue(validRequest())
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void malformedBearerToken_returns401() {
+        // #431 (Codex reopen): distinct from noAuth_returns401 (no header at all) and
+        // jwtMissingCompanyIdClaim_returns403 (a validly-signed mock JWT missing a
+        // claim). This sends a real Authorization header through the actual
+        // NimbusReactiveJwtDecoder — mockJwt() bypasses decoding entirely, so it
+        // cannot exercise this path. An opaque, non-JWT-shaped bearer value fails
+        // JOSE compact-serialization parsing before any issuer/signature check, so
+        // it stays fully offline (no network call to the fake issuer-uri).
+        client.post()
+                .uri(SESSIONS_PATH)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer not-a-real-jwt-token")
                 .header(IDEMP_HEADER, VALID_IDEMP)
                 .bodyValue(validRequest())
                 .exchange()

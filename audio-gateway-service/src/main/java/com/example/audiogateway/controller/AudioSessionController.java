@@ -383,6 +383,34 @@ public class AudioSessionController {
                             corrId, false)));
         }
 
+        // #428 (Codex reopen): Bounds.maxSessionMinutes was config-only — never
+        // enforced. sessionStartMs is server-assigned (Instant.now() at session
+        // create, not client input), so comparing it to server "now" is safe.
+        //
+        // maxBufferedSeconds is intentionally NOT enforced here — see PR
+        // description. chunkStartedAtMs is a client-supplied header; the existing
+        // ChunkAdmissionContractTest/ChunkDispatchContractTest fixtures send it as
+        // an arbitrary ordering value (literal "0", or a fixed constant far in the
+        // past), not a real wall-clock capture time. Enforcing "now - chunkStartedAtMs
+        // <= maxBufferedSeconds" against that convention would reject those existing,
+        // currently-valid contract tests. This needs a design decision (a
+        // real-clock contract for the header, or a different staleness signal)
+        // before it can be safely enforced — left as an explicit open item.
+        final long admissionCheckNowMs = Instant.now().toEpochMilli();
+        final long sessionAgeMs = admissionCheckNowMs - existing.sessionStartMs();
+        final long maxSessionMs = props.getBounds().getMaxSessionMinutes() * 60_000L;
+        if (sessionAgeMs >= maxSessionMs) {
+            safeAudit(new AuditEvent.ChunkAdmissionRejected(
+                    sessionId, tenantId, userId, chunkSeq, 409,
+                    ErrorResponse.CODE_SESSION_EXPIRED, null, corrId, admissionCheckNowMs));
+            return Mono.just(ResponseEntity
+                    .status(HttpStatus.CONFLICT)
+                    .body(ErrorResponse.of(
+                            ErrorResponse.CODE_SESSION_EXPIRED,
+                            "Session exceeds max-session-minutes=" + props.getBounds().getMaxSessionMinutes(),
+                            corrId, false)));
+        }
+
         final long maxAllowed = maxChunkBytes;
         final long capturedChunkSeq = chunkSeq;
         final long capturedChunkStartedAtMs = chunkStartedAtMs;
