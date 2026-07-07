@@ -332,6 +332,13 @@ public class AudioGatewayProperties {
         private int maxResponseBytes = 262_144;
 
         /**
+         * Memory-only PCM16 window aggregation before the live-stt hop (Faz 24 #231).
+         * Direct-STT itself is default-off; once enabled, aggregation is the safe default
+         * because forwarding every recorder chunk cannot keep pace with Whisper inference.
+         */
+        private final Aggregation aggregation = new Aggregation();
+
+        /**
          * App-layer TLS / mTLS settings for the direct-STT hop. DEFAULT-OFF so existing
          * local/test HTTP MockWebServer paths stay unchanged; real cross-server meeting
          * audio enables this per ADR-0031 + B+ I7.
@@ -390,6 +397,7 @@ public class AudioGatewayProperties {
                         "audio.gateway.direct-stt.max-response-bytes must be positive, got "
                                 + maxResponseBytes);
             }
+            aggregation.validate();
             transcriptResultStream.validate();
         }
 
@@ -441,12 +449,62 @@ public class AudioGatewayProperties {
             this.maxResponseBytes = maxResponseBytes;
         }
 
+        public Aggregation getAggregation() {
+            return aggregation;
+        }
+
         public Tls getTls() {
             return tls;
         }
 
         public TranscriptResultStream getTranscriptResultStream() {
             return transcriptResultStream;
+        }
+
+        public static class Aggregation {
+            private boolean enabled = true;
+            private int windowSeconds = 5;
+            private int maxBufferedSessions = 64;
+
+            void validate() {
+                if (!enabled) {
+                    return;
+                }
+                if (windowSeconds < 5 || windowSeconds > 30) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.aggregation.window-seconds must be in [5,30], got "
+                                    + windowSeconds);
+                }
+                if (maxBufferedSessions <= 0) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.aggregation.max-buffered-sessions must be positive, got "
+                                    + maxBufferedSessions);
+                }
+            }
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(final boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public int getWindowSeconds() {
+                return windowSeconds;
+            }
+
+            public void setWindowSeconds(final int windowSeconds) {
+                this.windowSeconds = windowSeconds;
+            }
+
+            public int getMaxBufferedSessions() {
+                return maxBufferedSessions;
+            }
+
+            public void setMaxBufferedSessions(final int maxBufferedSessions) {
+                this.maxBufferedSessions = maxBufferedSessions;
+            }
         }
 
         public static class Tls {

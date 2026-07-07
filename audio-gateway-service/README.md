@@ -42,6 +42,27 @@ Mobile/Web hiçbir zaman platform-ai'a doğrudan bağlanmaz (Codex/Mavis RED).
 | **PR-gw-01B** | REST chunk admission (`POST /chunks`, 256 KB whitelist, 413/429/503, dispatcher mock) |
 | **PR-gw-01C** | Redis Streams producer (bucketed 32-partition + consumer group `live-stt-v1`) |
 | **PR-gw-01D** | WebSocket stream (binary + JSON metadata + close handshake) |
+
+## Direct-STT PCM16 aggregation (#231)
+
+When Direct-STT is enabled, accepted PCM16 recorder chunks keep the existing admission,
+idempotency, Redis metadata, and audit contracts, but are no longer forwarded to Whisper
+one request per chunk. The gateway holds a bounded, session-scoped, memory-only window and
+forwards one canonical WAV per configured window. A first successful session finish flushes
+the remaining short tail exactly once.
+
+- Default window: 5 seconds; validated range: 5–30 seconds.
+- Default buffered-session bound: 64.
+- Raw PCM is never written to Redis or disk and is cleared after window/finish/shutdown.
+- A shutdown does not start new STT HTTP work. Any unfinished tail is discarded with
+  `aggregation_shutdown_discarded_sessions` / `aggregation_shutdown_discarded_bytes`
+  metrics and a WARN log. Rollouts must drain/finish active sessions first.
+- Aggregate audit/transcript metadata carries `windowSeq`, first/last chunk sequence,
+  window time range, duration, and flush reason; legacy `chunkSeq` remains the last
+  chunk sequence for compatibility.
+- WAV/WEBM/MP3/M4A/OGG/FLAC retain the existing per-chunk path.
+- `max-in-flight` remains a safety bound, not a substitute for aggregation.
+- Production acceptance still requires the #231 multi-minute GPU saturation/RTF run.
 | **PR-gw-01E** | Contract hardening (client X-* strip code assert + PII guard + invalid transition matrix) |
 
 ## Non-goals (this slice)
@@ -87,6 +108,9 @@ Mobile/Web hiçbir zaman platform-ai'a doğrudan bağlanmaz (Codex/Mavis RED).
 | `AUDIO_GATEWAY_BOUNDS_MAX_SESSION_MINUTES` | `60` — **ADR-0031 update** |
 | `AUDIO_GATEWAY_BOUNDS_ADMISSION_QUEUE_CAPACITY` | `1000` |
 | `AUDIO_GATEWAY_BOUNDS_MAX_ACTIVE_SESSIONS` | `1000` |
+| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED` | `true` when Direct-STT is enabled |
+| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS` | `5` (validated `5..30`) |
+| `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_MAX_BUFFERED_SESSIONS` | `64` |
 | `AUDIO_GATEWAY_JWT_TENANT_CLAIM` | `companyId` |
 | `AUDIO_GATEWAY_JWT_USER_CLAIM` | `userId` |
 | `AUDIO_GATEWAY_IDEMPOTENCY_HEADER_NAME` | `Idempotency-Key` |

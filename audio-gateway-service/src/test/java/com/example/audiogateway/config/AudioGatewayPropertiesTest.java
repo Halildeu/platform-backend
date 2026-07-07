@@ -75,6 +75,26 @@ class AudioGatewayPropertiesTest {
                 .hasMessageContaining("transcript-result-stream.max-len must be >= 0");
     }
 
+    @Test
+    void directSttAggregationRejectsWindowOutsideFiveToThirtySeconds() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getAggregation().setWindowSeconds(4);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("aggregation.window-seconds must be in [5,30]");
+    }
+
+    @Test
+    void directSttAggregationRequiresPositiveSessionBound() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getAggregation().setMaxBufferedSessions(0);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("aggregation.max-buffered-sessions must be positive");
+    }
+
     private static AudioGatewayProperties directSttProps(final String transcribeUrl) {
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getDirectStt().setEnabled(true);
