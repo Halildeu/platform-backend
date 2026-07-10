@@ -41,7 +41,7 @@ Mobile/Web hiçbir zaman platform-ai'a doğrudan bağlanmaz (Codex/Mavis RED).
 |---|---|
 | **PR-gw-01B** | REST chunk admission (`POST /chunks`, 256 KB whitelist, 413/429/503, dispatcher mock) |
 | **PR-gw-01C** | Redis Streams producer (bucketed 32-partition + consumer group `live-stt-v1`) |
-| **PR-gw-01D** | WebSocket stream (binary + JSON metadata + close handshake) |
+| **PR-gw-01D / #184** | Authenticated WebSocket audio proxy + live-stt partial/final event relay |
 
 ## Direct-STT PCM16 aggregation (#231)
 
@@ -65,11 +65,30 @@ the remaining short tail exactly once.
 - Production acceptance still requires the #231 multi-minute GPU saturation/RTF run.
 | **PR-gw-01E** | Contract hardening (client X-* strip code assert + PII guard + invalid transition matrix) |
 
+## Live WebSocket streaming (#184)
+
+The default-off WebSocket endpoint
+`/api/v1/audio-gateway/sessions/{sessionId}/stream` proxies a caller-owned PCM16
+session to live-stt `/ws/stream`. Desktop clients do not connect directly to
+platform-ai.
+
+- JWT `companyId` and `userId` must own the active session.
+- Session audio must be PCM16, 16 kHz, mono.
+- Each binary frame carries protocol version, contiguous `chunkSeq`, capture
+  timestamp, unsigned 16-bit payload length, and little-endian PCM16.
+- Replayed sequence numbers are suppressed; gaps are rejected. Sequence state is
+  bounded and retained in memory across WebSocket reconnects for the process lifetime.
+- Gateway converts PCM16 to live-stt float32 in memory and relays upstream text
+  events, including partial/final events, unchanged.
+- Cross-host `wss` reuses the Direct-STT client certificate configuration.
+- Raw audio and transcript text are not persisted or logged by this bridge.
+- The feature remains disabled until the reviewed live-stt and desktop #184
+  companion slices are deployed and live acceptance is recorded.
+
 ## Non-goals (this slice)
 
 - ❌ REST chunk admission `POST /chunks` (PR-gw-01B)
 - ❌ Redis Streams full producer/consumer (PR-gw-01C + PR-queue-01)
-- ❌ WS chunk streaming binary protocol (PR-gw-01D)
 - ❌ Header spoof strip code assert + PII guard runtime assert (PR-gw-01E)
 - ❌ Real STT inference (PR-stt-02 + PR-stt-03 — cross-server platform-ai dedicated host)
 - ❌ Session durability across restart (in-memory only — Redis Streams PR-gw-01C)
@@ -93,7 +112,7 @@ the remaining short tail exactly once.
 | GET | `/api/v1/audio-gateway/sessions/{id}/status` | ✅ **PR-gw-01A/B-core LIVE** (real chunkCount + lastChunkSeq) |
 | POST | `/api/v1/audio-gateway/sessions/{id}/finish` | ✅ **PR-gw-01A LIVE** (idempotent) |
 | POST | `/api/v1/audio-gateway/sessions/{id}/chunks` | ✅ **PR-gw-01B-core LIVE** (binary body + X-Audio-* + STREAMING state) |
-| WS | `/api/v1/audio-gateway/sessions/{id}/stream` | ⏳ planned (PR-gw-01D) |
+| WS | `/api/v1/audio-gateway/sessions/{id}/stream` | Implemented, default-off (#184) |
 
 ## Config (env override)
 
@@ -111,6 +130,10 @@ the remaining short tail exactly once.
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_ENABLED` | `true` when Direct-STT is enabled |
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_WINDOW_SECONDS` | `5` (validated `5..30`) |
 | `AUDIO_GATEWAY_DIRECT_STT_AGGREGATION_MAX_BUFFERED_SESSIONS` | `64` |
+| `AUDIO_GATEWAY_DIRECT_STT_STREAMING_ENABLED` | `false` |
+| `AUDIO_GATEWAY_DIRECT_STT_STREAM_URL` | empty; required when enabled |
+| `AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_FRAME_BYTES` | `65535` |
+| `AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TRACKED_SESSIONS` | `1000` |
 | `AUDIO_GATEWAY_JWT_TENANT_CLAIM` | `companyId` |
 | `AUDIO_GATEWAY_JWT_USER_CLAIM` | `userId` |
 | `AUDIO_GATEWAY_IDEMPOTENCY_HEADER_NAME` | `Idempotency-Key` |
