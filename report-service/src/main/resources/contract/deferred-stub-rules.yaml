@@ -14,16 +14,16 @@
 deferred_stub_rules:
   - rule_id: RC-009
     file: RC009ActionScopeValid.java
-    reason: "2026-07-01 renewal: actions field hâlâ ReportDefinition record'una parse edilmiyor; kalıcı fix actions[] schema/record/fixture migration + RC-009 enforcement gerektirir. Kısa deferral; stub suistimal kapısı değildir."
+    reason: "2026-07-10 2. ve SON yenileme (Codex vekil-karar verdict B): actions field hâlâ ReportDefinition record'una parse edilmiyor; kalıcı fix actions[] schema/record/fixture migration + RC-009 enforcement (acceptance criteria issue #799'da). deferral_until=2026-08-15 kesin son tarih — üçüncü yenileme YASAK, tarih dolarsa implement zorunlu."
     owner: platform-team
-    deferral_until: "2026-07-08"
-    tracking_pr: 785
+    deferral_until: "2026-08-15"
+    tracking_pr: "Halildeu/platform-backend#799 (tracking issue; önceki 785 referansı bayattı — alakasız Faz 22.6 PR'ı)"
     adr: ADR-0017
 
   - rule_id: RC-010
     file: RC010DestructiveActionRequiresPermissionAndConfirm.java
-    reason: "2026-07-01 renewal: actions[] field hâlâ ReportDefinition record'una parse edilmiyor; kalıcı fix RC-009 ile aynı action model migration sonrası destructive=true için permission + confirmation enforcement gerektirir."
+    reason: "2026-07-10 2. ve SON yenileme (Codex vekil-karar verdict B): actions[] field hâlâ ReportDefinition record'una parse edilmiyor; RC-009 ile aynı action model migration (issue #799) sonrası destructive=true için permission + confirmation enforcement. deferral_until=2026-08-15 kesin son tarih — üçüncü yenileme YASAK, tarih dolarsa implement zorunlu."
     owner: platform-team
-    deferral_until: "2026-07-08"
-    tracking_pr: 785
+    deferral_until: "2026-08-15"
+    tracking_pr: "Halildeu/platform-backend#799 (tracking issue; önceki 785 referansı bayattı — alakasız Faz 22.6 PR'ı)"
     adr: ADR-0017
