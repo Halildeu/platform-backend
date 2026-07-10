@@ -2,16 +2,22 @@ package com.example.audiogateway.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.audiogateway.service.LiveAudioStreamFrame;
 import com.example.audiogateway.service.LiveSttWebSocketProxyHandler;
+import java.util.List;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.reactive.HandlerMapping;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
+import org.springframework.web.reactive.socket.server.support.HandshakeWebSocketService;
+import org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter;
+import org.springframework.web.reactive.socket.server.upgrade.ReactorNettyRequestUpgradeStrategy;
 
 /**
  * Boots the real application context with the Faz 24 issue #184 live WebSocket bridge
@@ -56,20 +62,61 @@ class LiveSttWebSocketWiringTest {
         private WebSocketClient qualifiedUpstreamClient;
 
         @Test
-        void contextStartsAndWebSocketClientResolutionStaysUnambiguous() {
-            // The regression itself: an unqualified by-type injection point (which is what
-            // GatewayAutoConfiguration.websocketRoutingFilter has) must find exactly one
-            // candidate. getIfUnique() returns null when the resolution is ambiguous.
-            assertThat(ctx.getBeanProvider(WebSocketClient.class).getIfUnique())
-                    .as("unqualified WebSocketClient injection must resolve to a single candidate")
-                    .isNotNull();
+        void contextStartsAndTheGatewayKeepsItsOwnWebSocketClient() {
+            final WebSocketClient gatewayClient =
+                    ctx.getBean("reactorNettyWebSocketClient", WebSocketClient.class);
+            final WebSocketClient bridgeClient =
+                    ctx.getBean("directSttWebSocketClient", WebSocketClient.class);
 
-            // Our bridge still gets its own mTLS-capable client through the qualifier,
-            // even though it is excluded from default candidate resolution.
-            assertThat(qualifiedUpstreamClient).isNotNull();
+            // The regression itself: an unqualified by-type injection point (which is what
+            // GatewayAutoConfiguration.websocketRoutingFilter has) must resolve, and it must
+            // resolve to the GATEWAY's client. Asserting only isNotNull() would stay green if
+            // the bridge bean were ever marked @Primary — the gateway would then silently
+            // route through our mTLS client.
+            assertThat(ctx.getBeanProvider(WebSocketClient.class).getIfUnique())
+                    .as("unqualified WebSocketClient injection must resolve to the gateway client")
+                    .isSameAs(gatewayClient);
+
+            // Our bridge still gets its own mTLS-capable client through the qualifier, and the
+            // two uses never collapse onto the same instance.
+            assertThat(qualifiedUpstreamClient)
+                    .isSameAs(bridgeClient)
+                    .isNotSameAs(gatewayClient);
+
             assertThat(ctx.getBean(LiveSttWebSocketProxyHandler.class)).isNotNull();
             assertThat(ctx.getBean("liveSttWebSocketHandlerMapping", HandlerMapping.class))
                     .isNotNull();
+        }
+
+        @Test
+        void bridgeHandlerAdapterOutranksTheFrameworkOneSoFrameBoundsActuallyApply() {
+            // No startup ambiguity here (DispatcherHandler collects ALL HandlerAdapter beans
+            // and picks the first that supports the handler), but the selection is order-driven
+            // and therefore silent: if the framework adapter ever outranked ours, the context
+            // would still start while our configured server-side maxFramePayloadLength
+            // quietly stopped applying. Pin the ordering invariant, not just startup health.
+            final WebSocketHandlerAdapter bridgeAdapter =
+                    ctx.getBean("webSocketHandlerAdapter", WebSocketHandlerAdapter.class);
+
+            final List<WebSocketHandlerAdapter> supporting =
+                    ctx.getBeansOfType(WebSocketHandlerAdapter.class).values().stream()
+                            .sorted(AnnotationAwareOrderComparator.INSTANCE)
+                            .toList();
+
+            assertThat(supporting)
+                    .as("bridge WebSocketHandlerAdapter must be selected before any framework one")
+                    .isNotEmpty()
+                    .first()
+                    .isSameAs(bridgeAdapter);
+
+            final HandshakeWebSocketService service =
+                    (HandshakeWebSocketService) bridgeAdapter.getWebSocketService();
+            final ReactorNettyRequestUpgradeStrategy strategy =
+                    (ReactorNettyRequestUpgradeStrategy) service.getUpgradeStrategy();
+            final int configuredMaxFrameBytes = ctx.getBean(AudioGatewayProperties.class)
+                    .getDirectStt().getStreaming().getMaxFrameBytes();
+            assertThat(strategy.getWebsocketServerSpec().maxFramePayloadLength())
+                    .isEqualTo(configuredMaxFrameBytes + LiveAudioStreamFrame.HEADER_BYTES);
         }
     }
 
