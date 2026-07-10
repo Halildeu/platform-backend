@@ -50,6 +50,10 @@ public class MeetingDecision {
     @Column(name = "decided_by_subject", length = 255)
     private String decidedBySubject;
 
+    /** Non-null only for a row inserted by #244 BE-1 analysis ingestion. */
+    @Column(name = "analysis_run_id")
+    private UUID analysisRunId;
+
     @Column(name = "decided_at")
     private Instant decidedAt;
 
@@ -147,6 +151,14 @@ public class MeetingDecision {
 
     public void setDecidedAt(Instant decidedAt) {
         this.decidedAt = decidedAt;
+    }
+
+    public UUID getAnalysisRunId() {
+        return analysisRunId;
+    }
+
+    public void setAnalysisRunId(UUID analysisRunId) {
+        this.analysisRunId = analysisRunId;
     }
 
     public String getCreatedBySubject() {

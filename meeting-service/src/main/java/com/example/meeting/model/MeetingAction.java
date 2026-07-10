@@ -50,6 +50,10 @@ public class MeetingAction {
     @Column(name = "assignee_subject", length = 255)
     private String assigneeSubject;
 
+    /** Non-null only for a row inserted by #244 BE-1 analysis ingestion. */
+    @Column(name = "analysis_run_id")
+    private UUID analysisRunId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private MeetingActionStatus status = MeetingActionStatus.OPEN;
@@ -135,6 +139,14 @@ public class MeetingAction {
 
     public void setAssigneeSubject(String assigneeSubject) {
         this.assigneeSubject = assigneeSubject;
+    }
+
+    public UUID getAnalysisRunId() {
+        return analysisRunId;
+    }
+
+    public void setAnalysisRunId(UUID analysisRunId) {
+        this.analysisRunId = analysisRunId;
     }
 
     public MeetingActionStatus getStatus() {

@@ -44,6 +44,32 @@ public class SecurityConfig {
         this.environment = environment;
     }
 
+    /**
+     * #244 BE-1: meeting-ai-service's aggregate-ingestion call. Evaluated
+     * before the admin/catch-all chains (lowest Order) since its matcher is
+     * disjoint from {@code /api/v1/admin/**} — a caller here must present a
+     * service token with the narrow {@code meeting:analysis-result:write}
+     * scope (acceptance condition 4); ROLE_ADMIN/ROLE_MEETING_ADMIN do NOT
+     * satisfy this route, so a human admin JWT cannot call it.
+     */
+    @Bean
+    @Order(0)
+    public SecurityFilterChain internalSecurityFilterChain(HttpSecurity http,
+                                                            JwtDecoder jwtDecoder,
+                                                            JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
+        http
+                .securityMatcher("/internal/v1/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .anyRequest().hasAuthority("SCOPE_meeting:analysis-result:write")
+                )
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                        .decoder(jwtDecoder)
+                        .jwtAuthenticationConverter(jwtAuthenticationConverter)));
+        return http.build();
+    }
+
     @Bean
     @Order(1)
     public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http,
