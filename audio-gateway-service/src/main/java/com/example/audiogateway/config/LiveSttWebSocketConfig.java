@@ -34,7 +34,24 @@ import reactor.netty.http.server.WebsocketServerSpec;
         havingValue = "true")
 public class LiveSttWebSocketConfig {
 
-    @Bean("directSttWebSocketClient")
+    /**
+     * Upstream client for the gateway-to-live-stt bridge.
+     *
+     * <p>{@code defaultCandidate = false} is load-bearing: this service also has
+     * Spring Cloud Gateway on the classpath, whose
+     * {@code GatewayAutoConfiguration.websocketRoutingFilter} injects a
+     * {@link WebSocketClient} <em>by type, without a qualifier</em>. Registering a second
+     * unqualified candidate made that injection point ambiguous and the application
+     * failed to start ("required a single bean, but 2 were found") the moment
+     * {@code streaming.enabled=true} — invisible while the bridge was default-off.
+     * Excluding this bean from default (type-only) candidate resolution leaves the
+     * gateway's own client as the unique candidate, while our own
+     * {@code @Qualifier("directSttWebSocketClient")} injection still resolves it.
+     *
+     * <p>Machine-enforced by {@code LiveSttWebSocketWiringTest}, which boots the real
+     * context with streaming enabled.
+     */
+    @Bean(name = "directSttWebSocketClient", defaultCandidate = false)
     public WebSocketClient directSttWebSocketClient(
             final AudioGatewayProperties properties) throws SSLException {
         final AudioGatewayProperties.DirectStt direct = properties.getDirectStt();
