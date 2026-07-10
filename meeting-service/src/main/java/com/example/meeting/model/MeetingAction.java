@@ -69,6 +69,26 @@ public class MeetingAction {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * Provenance (Faz 24 #244). An {@link MeetingItemSource#AI_ANALYSIS} row carries
+     * BOTH {@code analysisRunId} and {@code ordinal}; a MANUAL row carries neither.
+     * A DB CHECK ({@code meeting_actions_provenance_coherent}) makes the half-set state impossible.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source", nullable = false, length = 32)
+    private MeetingItemSource source = MeetingItemSource.MANUAL;
+
+    @Column(name = "analysis_run_id")
+    private UUID analysisRunId;
+
+    /**
+     * Position within the analysis run. {@code (tenant_id, analysis_run_id, ordinal)}
+     * is the child idempotency key — a retried ingestion collides here instead of
+     * duplicating. Content is NOT the key: the same text may legitimately repeat.
+     */
+    @Column(name = "ordinal")
+    private Integer ordinal;
+
     @Version
     @Column(name = "version", nullable = false)
     private Long version;
@@ -195,5 +215,29 @@ public class MeetingAction {
     @Override
     public int hashCode() {
         return id == null ? 0 : id.hashCode();
+    }
+
+    public MeetingItemSource getSource() {
+        return source;
+    }
+
+    public void setSource(final MeetingItemSource source) {
+        this.source = source;
+    }
+
+    public UUID getAnalysisRunId() {
+        return analysisRunId;
+    }
+
+    public void setAnalysisRunId(final UUID analysisRunId) {
+        this.analysisRunId = analysisRunId;
+    }
+
+    public Integer getOrdinal() {
+        return ordinal;
+    }
+
+    public void setOrdinal(final Integer ordinal) {
+        this.ordinal = ordinal;
     }
 }
