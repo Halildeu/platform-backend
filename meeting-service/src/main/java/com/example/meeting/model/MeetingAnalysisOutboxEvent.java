@@ -6,7 +6,6 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
-import jakarta.persistence.Lob;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 
@@ -56,8 +55,10 @@ public class MeetingAnalysisOutboxEvent {
     @Column(name = "event_type", nullable = false, length = 64)
     private String eventType;
 
-    @Lob
-    @Column(name = "payload", nullable = false)
+    // Deliberately NOT @Lob: Hibernate maps @Lob String to Postgres OID
+    // (large object) by default, which doesn't match the plain TEXT column
+    // the V3 migration creates. A plain string mapping is correct for TEXT.
+    @Column(name = "payload", nullable = false, columnDefinition = "TEXT")
     private String payload;
 
     @Column(name = "created_at", nullable = false, updatable = false)
