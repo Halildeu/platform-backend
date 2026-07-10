@@ -29,7 +29,7 @@ import java.util.UUID;
  * narrow write scope IS the authorization for this route.
  */
 @RestController
-@RequestMapping("/internal/v1/meetings/{meetingId}/analysis-results")
+@RequestMapping("/api/v1/internal/meetings/{meetingId}/analysis-results")
 public class MeetingAnalysisIngestionController {
 
     private final MeetingAnalysisIngestionService meetingAnalysisIngestionService;

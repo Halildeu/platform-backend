@@ -12,8 +12,5 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
 
     Optional<MeetingAnalysisRun> findByAnalysisRunId(String analysisRunId);
 
-    Optional<MeetingAnalysisRun> findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-            UUID meetingId, String transcriptRevision, String analyzerContractVersion);
-
     Optional<MeetingAnalysisRun> findByMeetingIdAndStatus(UUID meetingId, MeetingAnalysisRunStatus status);
 }

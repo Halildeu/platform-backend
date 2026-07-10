@@ -58,7 +58,7 @@ public class SecurityConfig {
                                                             JwtDecoder jwtDecoder,
                                                             JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
         http
-                .securityMatcher("/internal/v1/**")
+                .securityMatcher("/api/v1/internal/**")
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth

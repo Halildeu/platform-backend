@@ -47,14 +47,17 @@ CREATE TABLE meeting_analysis_runs (
     CONSTRAINT pk_meeting_analysis_runs PRIMARY KEY (id),
     CONSTRAINT meeting_analysis_runs_org_id_match CHECK (org_id IS NULL OR org_id = tenant_id),
     CONSTRAINT meeting_analysis_runs_status_check CHECK (status IN ('CANONICAL', 'SUPERSEDED')),
-    -- Idempotency key #1: the operator-supplied analysisRunId (Idempotency-Key
-    -- header) is globally unique.
+    -- Idempotency key: the operator-supplied analysisRunId (Idempotency-Key
+    -- header) is globally unique. This is the ONLY idempotency key — a prior
+    -- design also unique-constrained (meeting_id, transcript_revision,
+    -- analyzer_contract_version) to catch a regenerated-key retry of "the
+    -- same logical analysis", but that composite silently blocked legitimate
+    -- re-analysis: a prompt/model/backend change on the SAME transcript
+    -- revision would collide with it and be misread as an idempotent replay
+    -- instead of a new run needing supersession (Codex plan-time iter-2,
+    -- 019f4c1e). Re-analysis is now always a fresh analysisRunId that
+    -- supersedes the prior canonical row explicitly (supersedes_analysis_run_id).
     CONSTRAINT uq_meeting_analysis_runs_run_id UNIQUE (analysis_run_id),
-    -- Idempotency key #2: a retry that regenerates a new analysisRunId for the
-    -- exact same (meeting, transcript revision, contract version) is still
-    -- recognized as the same logical analysis.
-    CONSTRAINT uq_meeting_analysis_runs_identity
-        UNIQUE (meeting_id, transcript_revision, analyzer_contract_version),
     CONSTRAINT fk_meeting_analysis_runs_meeting
         FOREIGN KEY (meeting_id, tenant_id) REFERENCES meetings(id, tenant_id) ON DELETE CASCADE
 );
@@ -195,6 +198,16 @@ ALTER TABLE meeting_decisions ADD COLUMN analysis_run_id UUID;
 ALTER TABLE meeting_decisions ADD CONSTRAINT fk_meeting_decisions_analysis_run
     FOREIGN KEY (analysis_run_id) REFERENCES meeting_analysis_runs(id) ON DELETE CASCADE;
 CREATE INDEX idx_meeting_decisions_analysis_run_id ON meeting_decisions(analysis_run_id);
+
+-- meeting-ai's decisions[] is a plain String list, not the structured
+-- title/detail/decided_by/decided_at shape meeting_decisions was designed
+-- for (Codex plan-time iter-2, 019f4c1e). No breaking contract change:
+-- title = first 512 chars, detail = full text, decided_by stays NULL
+-- (AI-inferred, not a human decision-maker), decided_at = the run's
+-- generated_at. ordinal + source make the AI-authored provenance explicit
+-- and orderable without relying on row-insertion order.
+ALTER TABLE meeting_decisions ADD COLUMN ordinal INTEGER;
+ALTER TABLE meeting_decisions ADD COLUMN source VARCHAR(32);
 
 ALTER TABLE meeting_actions ADD COLUMN analysis_run_id UUID;
 ALTER TABLE meeting_actions ADD CONSTRAINT fk_meeting_actions_analysis_run

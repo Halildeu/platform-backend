@@ -43,7 +43,7 @@ class MeetingAnalysisIngestionControllerTest {
 
     @Test
     void ingest_missingIdempotencyKeyHeader_returns400WithoutCallingService() throws Exception {
-        mockMvc.perform(post("/internal/v1/meetings/{meetingId}/analysis-results", MEETING_ID)
+        mockMvc.perform(post("/api/v1/internal/meetings/{meetingId}/analysis-results", MEETING_ID)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body("run-1"))))
                 .andExpect(status().isBadRequest());
@@ -53,7 +53,7 @@ class MeetingAnalysisIngestionControllerTest {
 
     @Test
     void ingest_idempotencyKeyMismatchWithBody_returns400WithoutCallingService() throws Exception {
-        mockMvc.perform(post("/internal/v1/meetings/{meetingId}/analysis-results", MEETING_ID)
+        mockMvc.perform(post("/api/v1/internal/meetings/{meetingId}/analysis-results", MEETING_ID)
                         .header("Idempotency-Key", "run-DIFFERENT")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body("run-1"))))
@@ -67,7 +67,7 @@ class MeetingAnalysisIngestionControllerTest {
         when(meetingAnalysisIngestionService.ingest(eq(MEETING_ID), any()))
                 .thenReturn(new MeetingAnalysisResultIngestionResponse("run-1", MEETING_ID, false));
 
-        mockMvc.perform(post("/internal/v1/meetings/{meetingId}/analysis-results", MEETING_ID)
+        mockMvc.perform(post("/api/v1/internal/meetings/{meetingId}/analysis-results", MEETING_ID)
                         .header("Idempotency-Key", "run-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(body("run-1"))))

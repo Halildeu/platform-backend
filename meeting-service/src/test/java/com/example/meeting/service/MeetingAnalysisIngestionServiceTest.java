@@ -47,8 +47,13 @@ import org.springframework.web.server.ResponseStatusException;
 /**
  * #244 BE-1 acceptance conditions, verified at the unit level (mocked
  * repositories — no DB): idempotency (exact-key replay + conflicting-payload
- * rejection), staleness protection, single-canonical-per-meeting supersession,
- * and the action.assigned attribution guard.
+ * rejection), single-canonical-per-meeting supersession, and the
+ * action.assigned attribution guard.
+ *
+ * <p>Idempotency is keyed ONLY on {@code analysisRunId} (Codex plan-time
+ * iter-2, 019f4c1e) — there is no separate "logical identity" replay path
+ * and no STALE_TRANSCRIPT_ANALYSIS rejection; every distinct analysisRunId
+ * is accepted and supersedes the current canonical run, if any.
  */
 @ExtendWith(MockitoExtension.class)
 class MeetingAnalysisIngestionServiceTest {
@@ -122,8 +127,6 @@ class MeetingAnalysisIngestionServiceTest {
     void ingest_freshRun_persistsSummaryDecisionsActionsAndEmitsBothOutboxEvents() {
         when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.of(meeting()));
         when(analysisRunRepository.findByAnalysisRunId("run-1")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-1", "1.0")).thenReturn(Optional.empty());
         when(analysisRunRepository.findByMeetingIdAndStatus(MEETING_ID, MeetingAnalysisRunStatus.CANONICAL))
                 .thenReturn(Optional.empty());
 
@@ -132,8 +135,17 @@ class MeetingAnalysisIngestionServiceTest {
         assertThat(response.replayed()).isFalse();
         assertThat(response.analysisRunId()).isEqualTo("run-1");
         verify(summaryRepository).save(any());
-        verify(decisionRepository).save(any(MeetingDecision.class));
         verify(actionRepository).save(any(MeetingAction.class));
+
+        ArgumentCaptor<MeetingDecision> decisionCaptor = ArgumentCaptor.forClass(MeetingDecision.class);
+        verify(decisionRepository).save(decisionCaptor.capture());
+        MeetingDecision savedDecision = decisionCaptor.getValue();
+        assertThat(savedDecision.getTitle()).isEqualTo("Karar 1");
+        assertThat(savedDecision.getDetail()).isEqualTo("Karar 1");
+        assertThat(savedDecision.getDecidedBySubject()).isNull();
+        assertThat(savedDecision.getDecidedAt()).isEqualTo(Instant.parse("2026-07-10T10:00:00Z"));
+        assertThat(savedDecision.getOrdinal()).isZero();
+        assertThat(savedDecision.getSource()).isEqualTo("AI_ANALYSIS");
 
         ArgumentCaptor<MeetingAnalysisOutboxEvent> outboxCaptor =
                 ArgumentCaptor.forClass(MeetingAnalysisOutboxEvent.class);
@@ -148,8 +160,6 @@ class MeetingAnalysisIngestionServiceTest {
     void ingest_actionWithoutOwner_persistsButDoesNotEmitActionAssigned() {
         when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.of(meeting()));
         when(analysisRunRepository.findByAnalysisRunId("run-1")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-1", "1.0")).thenReturn(Optional.empty());
         when(analysisRunRepository.findByMeetingIdAndStatus(MEETING_ID, MeetingAnalysisRunStatus.CANONICAL))
                 .thenReturn(Optional.empty());
 
@@ -199,51 +209,66 @@ class MeetingAnalysisIngestionServiceTest {
     }
 
     @Test
-    void ingest_sameLogicalIdentityDifferentRunId_replaysUnderOriginalRunId() {
-        MeetingAnalysisResultIngestionRequest incoming = request("run-2", "rev-1");
-        MeetingAnalysisRun existing = existingRun("run-1", service_hashFor(request("run-1", "rev-1")));
-
-        when(analysisRunRepository.findByAnalysisRunId("run-2")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-1", "1.0")).thenReturn(Optional.of(existing));
-
-        MeetingAnalysisResultIngestionResponse response = service.ingest(MEETING_ID, incoming);
-
-        assertThat(response.replayed()).isTrue();
-        assertThat(response.analysisRunId()).isEqualTo("run-1");
-    }
-
-    @Test
-    void ingest_olderTranscriptRevisionThanCanonical_isRejectedAsStale() {
+    void ingest_reAnalysisWithSameTranscriptRevisionDifferentModel_isAcceptedNotBlocked() {
+        // Codex plan-time iter-2 (019f4c1e): a prior design also treated
+        // (meetingId, transcriptRevision, analyzerContractVersion) as an
+        // idempotency identity, which would have silently blocked THIS exact
+        // scenario — same transcript revision + contract version, but a new
+        // analysisRunId from a re-analysis with a different model. It must
+        // be accepted as a new run, not replayed under the old one.
         when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.of(meeting()));
         when(analysisRunRepository.findByAnalysisRunId("run-2")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-2", "1.0")).thenReturn(Optional.empty());
 
         MeetingAnalysisRun currentCanonical = existingRun("run-1", "hash-1");
-        currentCanonical.setGeneratedAt(Instant.parse("2026-07-10T12:00:00Z"));
+        currentCanonical.setGeneratedAt(Instant.parse("2026-07-10T09:00:00Z"));
+        currentCanonical.setStatus(MeetingAnalysisRunStatus.CANONICAL);
         when(analysisRunRepository.findByMeetingIdAndStatus(MEETING_ID, MeetingAnalysisRunStatus.CANONICAL))
                 .thenReturn(Optional.of(currentCanonical));
 
-        MeetingAnalysisResultIngestionRequest staleRequest = new MeetingAnalysisResultIngestionRequest(
+        MeetingAnalysisResultIngestionRequest reAnalysis = new MeetingAnalysisResultIngestionRequest(
+                MEETING_ID, "run-2", "transcript-1", "rev-1", "1.0", "gpt-mock-v2", "prompt-v1",
+                "Yeni model ile analiz.", List.of(), List.of(), List.of(), List.of(),
+                Instant.parse("2026-07-10T09:00:00Z")); // same generatedAt as before — no longer relevant
+
+        MeetingAnalysisResultIngestionResponse response = service.ingest(MEETING_ID, reAnalysis);
+
+        assertThat(response.replayed()).isFalse();
+        assertThat(response.analysisRunId()).isEqualTo("run-2");
+        assertThat(currentCanonical.getStatus()).isEqualTo(MeetingAnalysisRunStatus.SUPERSEDED);
+        verify(summaryRepository).save(any());
+    }
+
+    @Test
+    void ingest_olderGeneratedAtThanCanonical_isAcceptedNotRejectedAsStale() {
+        // Codex plan-time iter-2 (019f4c1e): transcriptRevision has no
+        // reliable ordering signal in this service's scope, so a
+        // STALE_TRANSCRIPT_ANALYSIS rejection would be an overclaim. An
+        // older generatedAt is accepted like any other new analysisRunId.
+        when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.of(meeting()));
+        when(analysisRunRepository.findByAnalysisRunId("run-2")).thenReturn(Optional.empty());
+
+        MeetingAnalysisRun currentCanonical = existingRun("run-1", "hash-1");
+        currentCanonical.setGeneratedAt(Instant.parse("2026-07-10T12:00:00Z"));
+        currentCanonical.setStatus(MeetingAnalysisRunStatus.CANONICAL);
+        when(analysisRunRepository.findByMeetingIdAndStatus(MEETING_ID, MeetingAnalysisRunStatus.CANONICAL))
+                .thenReturn(Optional.of(currentCanonical));
+
+        MeetingAnalysisResultIngestionRequest olderRequest = new MeetingAnalysisResultIngestionRequest(
                 MEETING_ID, "run-2", "transcript-1", "rev-2", "1.0", null, null,
                 "Eski analiz.", List.of(), List.of(), List.of(), List.of(),
                 Instant.parse("2026-07-10T09:00:00Z")); // older than canonical's generatedAt
 
-        assertThatThrownBy(() -> service.ingest(MEETING_ID, staleRequest))
-                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
-                    assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-                    assertThat(ex.getReason()).isEqualTo("STALE_TRANSCRIPT_ANALYSIS");
-                });
-        verify(summaryRepository, never()).save(any());
+        MeetingAnalysisResultIngestionResponse response = service.ingest(MEETING_ID, olderRequest);
+
+        assertThat(response.replayed()).isFalse();
+        assertThat(currentCanonical.getStatus()).isEqualTo(MeetingAnalysisRunStatus.SUPERSEDED);
+        verify(summaryRepository).save(any());
     }
 
     @Test
-    void ingest_newerTranscriptRevisionThanCanonical_supersedesPreviousRun() {
+    void ingest_newRun_supersedesPreviousCanonical() {
         when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.of(meeting()));
         when(analysisRunRepository.findByAnalysisRunId("run-2")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-2", "1.0")).thenReturn(Optional.empty());
 
         MeetingAnalysisRun currentCanonical = existingRun("run-1", "hash-1");
         currentCanonical.setGeneratedAt(Instant.parse("2026-07-10T09:00:00Z"));
@@ -276,8 +301,6 @@ class MeetingAnalysisIngestionServiceTest {
     void ingest_persistsCitationsAndRejectedClaims() {
         when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.of(meeting()));
         when(analysisRunRepository.findByAnalysisRunId("run-1")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-1", "1.0")).thenReturn(Optional.empty());
         when(analysisRunRepository.findByMeetingIdAndStatus(MEETING_ID, MeetingAnalysisRunStatus.CANONICAL))
                 .thenReturn(Optional.empty());
 
@@ -323,8 +346,6 @@ class MeetingAnalysisIngestionServiceTest {
     void ingest_unknownMeeting_returns404() {
         when(meetingRepository.findById(MEETING_ID)).thenReturn(Optional.empty());
         when(analysisRunRepository.findByAnalysisRunId("run-1")).thenReturn(Optional.empty());
-        when(analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                MEETING_ID, "rev-1", "1.0")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.ingest(MEETING_ID, request("run-1", "rev-1")))
                 .isInstanceOfSatisfying(ResponseStatusException.class,

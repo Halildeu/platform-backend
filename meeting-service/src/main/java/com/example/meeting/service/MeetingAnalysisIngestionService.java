@@ -51,7 +51,9 @@ import org.springframework.web.server.ResponseStatusException;
 public class MeetingAnalysisIngestionService {
 
     private static final String SERVICE_SUBJECT = "meeting-ai-service";
+    private static final String AI_ANALYSIS_SOURCE = "AI_ANALYSIS";
     private static final int TITLE_MAX_LEN = 512;
+    private static final int DETAIL_MAX_LEN = 4000;
     private static final int DESCRIPTION_MAX_LEN = 2000;
 
     private final MeetingRepository meetingRepository;
@@ -94,21 +96,20 @@ public class MeetingAnalysisIngestionService {
 
         String payloadHash = hashPayload(request);
 
-        // Idempotency checks come BEFORE the meeting lookup: a replay of an
-        // already-accepted analysisRunId (or logical identity tuple) needs
-        // no fresh meeting-existence check and no extra DB round trip — the
-        // meeting necessarily existed when the run was first accepted.
+        // Idempotency check comes BEFORE the meeting lookup: a replay of an
+        // already-accepted analysisRunId needs no fresh meeting-existence
+        // check and no extra DB round trip — the meeting necessarily existed
+        // when the run was first accepted. analysisRunId is the ONLY
+        // idempotency key (Codex plan-time iter-2, 019f4c1e) — a prior design
+        // also treated (meetingId, transcriptRevision, analyzerContractVersion)
+        // as an idempotency identity, but that silently blocked legitimate
+        // re-analysis (a prompt/model/backend-only change on the same
+        // transcript revision would collide with it). Any distinct
+        // analysisRunId is always a new, accepted run.
         Optional<MeetingAnalysisRun> byRunId =
                 analysisRunRepository.findByAnalysisRunId(request.analysisRunId());
         if (byRunId.isPresent()) {
             return replayOrConflict(byRunId.get(), meetingId, payloadHash);
-        }
-
-        Optional<MeetingAnalysisRun> byIdentity =
-                analysisRunRepository.findByMeetingIdAndTranscriptRevisionAndAnalyzerContractVersion(
-                        meetingId, request.transcriptRevision(), request.analyzerContractVersion());
-        if (byIdentity.isPresent()) {
-            return replayOrConflict(byIdentity.get(), meetingId, payloadHash);
         }
 
         // Acceptance condition 4: org/tenant scope comes ONLY from the
@@ -118,14 +119,15 @@ public class MeetingAnalysisIngestionService {
         Meeting meeting = meetingRepository.findById(meetingId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting not found."));
 
+        // No STALE_TRANSCRIPT_ANALYSIS rejection here (Codex plan-time
+        // iter-2, 019f4c1e): transcriptRevision is an opaque hash with no
+        // reliable ordering signal available in this service's scope, so
+        // claiming "this transcript is older" would be an overclaim. Every
+        // new analysisRunId is accepted and supersedes the current canonical
+        // run, if any — the TOCTOU/ordering boundary this implies is a
+        // disclosed limitation, not silently asserted correctness.
         Optional<MeetingAnalysisRun> currentCanonical =
                 analysisRunRepository.findByMeetingIdAndStatus(meetingId, MeetingAnalysisRunStatus.CANONICAL);
-        if (currentCanonical.isPresent()
-                && !request.generatedAt().isAfter(currentCanonical.get().getGeneratedAt())) {
-            // A newer-or-equal canonical analysis already exists for this
-            // meeting; an older transcript revision must never overwrite it.
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "STALE_TRANSCRIPT_ANALYSIS");
-        }
 
         UUID tenantId = meeting.getTenantId();
         UUID orgId = meeting.getEffectiveOrgId();
@@ -189,25 +191,41 @@ public class MeetingAnalysisIngestionService {
         summaryRepository.save(summary);
     }
 
+    /**
+     * meeting-ai's {@code decisions[]} is a plain String list, not the
+     * structured title/detail/decided_by/decided_at shape meeting_decisions
+     * was designed for (Codex plan-time iter-2, 019f4c1e) — no breaking
+     * contract change: title = first 512 chars, detail = full text,
+     * decided_by stays null (AI-inferred, not a human decision-maker),
+     * decided_at = the run's generated_at. ordinal + source make the
+     * AI-authored provenance explicit.
+     */
     private void persistDecisions(
             MeetingAnalysisRun run,
             UUID meetingId,
             UUID tenantId,
             UUID orgId,
             MeetingAnalysisResultIngestionRequest request) {
+        int ordinal = 0;
         for (String decisionText : request.decisions()) {
             if (decisionText == null || decisionText.isBlank()) {
                 continue;
             }
+            String trimmed = decisionText.trim();
             MeetingDecision decision = new MeetingDecision();
             decision.setMeetingId(meetingId);
             decision.setTenantId(tenantId);
             decision.setOrgId(orgId);
             decision.setAnalysisRunId(run.getId());
-            decision.setTitle(truncate(decisionText.trim(), TITLE_MAX_LEN));
+            decision.setTitle(truncate(trimmed, TITLE_MAX_LEN));
+            decision.setDetail(truncate(trimmed, DETAIL_MAX_LEN));
+            decision.setDecidedAt(run.getGeneratedAt());
+            decision.setOrdinal(ordinal);
+            decision.setSource(AI_ANALYSIS_SOURCE);
             decision.setCreatedBySubject(SERVICE_SUBJECT);
             decision.setLastUpdatedBySubject(SERVICE_SUBJECT);
             decisionRepository.save(decision);
+            ordinal++;
         }
     }
 

@@ -57,6 +57,14 @@ public class MeetingDecision {
     @Column(name = "decided_at")
     private Instant decidedAt;
 
+    /** Position within the analysis run's decisions[] — AI-ingested rows only. */
+    @Column(name = "ordinal")
+    private Integer ordinal;
+
+    /** e.g. {@code "AI_ANALYSIS"} — null for manually-entered decisions. */
+    @Column(name = "source", length = 32)
+    private String source;
+
     @Column(name = "created_by_subject", nullable = false, length = 255)
     private String createdBySubject;
 
@@ -159,6 +167,22 @@ public class MeetingDecision {
 
     public void setAnalysisRunId(UUID analysisRunId) {
         this.analysisRunId = analysisRunId;
+    }
+
+    public Integer getOrdinal() {
+        return ordinal;
+    }
+
+    public void setOrdinal(Integer ordinal) {
+        this.ordinal = ordinal;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
     }
 
     public String getCreatedBySubject() {
