@@ -8,9 +8,11 @@ import static org.mockito.Mockito.when;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingSessionRepository;
+import com.example.meeting.repository.MeetingSummaryRepository;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import java.util.Optional;
@@ -41,6 +43,10 @@ class MeetingServiceRecordingAccessTest {
     @Mock
     private MeetingDecisionRepository decisionRepository;
     @Mock
+    private MeetingAnalysisRunRepository analysisRunRepository;
+    @Mock
+    private MeetingSummaryRepository summaryRepository;
+    @Mock
     private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock
     private OpenFgaAuthzService authzService;
@@ -54,6 +60,8 @@ class MeetingServiceRecordingAccessTest {
                 sessionRepository,
                 actionRepository,
                 decisionRepository,
+                analysisRunRepository,
+                summaryRepository,
                 authzProvider);
     }
 

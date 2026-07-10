@@ -4,6 +4,7 @@ import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
+import com.example.meeting.dto.v1.admin.MeetingAnalysisResultResponse;
 import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionResponse;
@@ -16,14 +17,19 @@ import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
+import com.example.meeting.model.MeetingAnalysisRun;
+import com.example.meeting.model.MeetingAnalysisRunStatus;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingSession;
 import com.example.meeting.model.MeetingStatus;
+import com.example.meeting.model.MeetingSummary;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingSessionRepository;
+import com.example.meeting.repository.MeetingSummaryRepository;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import org.springframework.beans.factory.ObjectProvider;
@@ -69,6 +75,8 @@ public class MeetingService {
     private final MeetingSessionRepository sessionRepository;
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
+    private final MeetingAnalysisRunRepository analysisRunRepository;
+    private final MeetingSummaryRepository summaryRepository;
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
 
     public MeetingService(
@@ -76,11 +84,15 @@ public class MeetingService {
             MeetingSessionRepository sessionRepository,
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
+            MeetingAnalysisRunRepository analysisRunRepository,
+            MeetingSummaryRepository summaryRepository,
             ObjectProvider<OpenFgaAuthzService> authzServiceProvider) {
         this.meetingRepository = meetingRepository;
         this.sessionRepository = sessionRepository;
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
+        this.analysisRunRepository = analysisRunRepository;
+        this.summaryRepository = summaryRepository;
         this.authzServiceProvider = authzServiceProvider;
     }
 
@@ -328,6 +340,43 @@ public class MeetingService {
     public void deleteDecision(AdminTenantContext tenant, UUID meetingId, UUID decisionId) {
         requireMeeting(tenant, meetingId);
         decisionRepository.delete(requireDecision(tenant, meetingId, decisionId));
+    }
+
+    // ──────────────────────── Analysis result (read-only, #244 BE-1b) ────────────────────────
+    //
+    // The write side (BE-1, MeetingAnalysisIngestionService) is internal
+    // service-token-only; this read side is the normal admin/desktop JWT
+    // path (AdminTenantContext, org-scoped via requireMeeting), same as
+    // sessions/actions/decisions above. Decisions/actions for this run are
+    // NOT duplicated here — callers already have listActions/listDecisions
+    // and can filter by analysisRunId if they want only the automated rows.
+
+    @Transactional(readOnly = true)
+    public MeetingAnalysisResultResponse getAnalysisResult(AdminTenantContext tenant, UUID meetingId) {
+        requireMeeting(tenant, meetingId);
+        MeetingAnalysisRun run = analysisRunRepository
+                .findByMeetingIdAndStatus(meetingId, MeetingAnalysisRunStatus.CANONICAL)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "No analysis result for this meeting yet."));
+        MeetingSummary summary = summaryRepository.findByAnalysisRunId(run.getId())
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        "Canonical analysis run has no summary row (data integrity)."));
+        return toAnalysisResultResponse(run, summary);
+    }
+
+    private MeetingAnalysisResultResponse toAnalysisResultResponse(
+            MeetingAnalysisRun run, MeetingSummary summary) {
+        return new MeetingAnalysisResultResponse(
+                run.getMeetingId(),
+                run.getId(),
+                run.getStatus().name(),
+                summary.getSummaryText(),
+                summary.getGroundingStatus(),
+                run.getAnalyzerContractVersion(),
+                run.getModelVersion(),
+                run.getPromptVersion(),
+                run.getGeneratedAt());
     }
 
     // ──────────────────────── Resolve-or-404 helpers ────────────────────────

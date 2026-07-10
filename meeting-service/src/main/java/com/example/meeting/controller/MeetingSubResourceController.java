@@ -4,6 +4,7 @@ import com.example.commonauth.openfga.RequireModule;
 import com.example.meeting.dto.v1.admin.MeetingActionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingActionResponse;
 import com.example.meeting.dto.v1.admin.MeetingActionUpdateRequest;
+import com.example.meeting.dto.v1.admin.MeetingAnalysisResultResponse;
 import com.example.meeting.dto.v1.admin.MeetingDecisionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionResponse;
 import com.example.meeting.dto.v1.admin.MeetingDecisionUpdateRequest;
@@ -41,6 +42,7 @@ import java.util.UUID;
  * .../{meetingId}/actions/{id}  GET PUT DELETE
  * .../{meetingId}/decisions     GET(list) POST(create)
  * .../{meetingId}/decisions/{id} GET PUT DELETE
+ * .../{meetingId}/summary       GET (#244 BE-1b — canonical analysis run's summary)
  * </pre>
  *
  * <p>A sub-resource is reachable only through a meeting the caller can see
@@ -197,5 +199,14 @@ public class MeetingSubResourceController {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
         meetingService.deleteDecision(tenant, meetingId, decisionId);
         return ResponseEntity.noContent().build();
+    }
+
+    // ───────────────────────────── Analysis result (#244 BE-1b) ─────────────────────────────
+
+    @GetMapping("/summary")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
+    public MeetingAnalysisResultResponse getAnalysisResult(@PathVariable UUID meetingId) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.getAnalysisResult(tenant, meetingId);
     }
 }
