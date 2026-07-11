@@ -4,10 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
+import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
+import com.example.meeting.model.MeetingItemSource;
 import com.example.meeting.model.MeetingSession;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.testsupport.IsolatedH2DataJpaTest;
+import jakarta.persistence.EntityManager;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -16,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * H2 repository tests for the effective-org read predicates — Faz 24
@@ -36,6 +41,12 @@ class MeetingRepositoryH2Test {
     private MeetingActionRepository actionRepository;
     @Autowired
     private MeetingDecisionRepository decisionRepository;
+    @Autowired
+    private MeetingAnalysisRunRepository analysisRunRepository;
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+    @Autowired
+    private EntityManager entityManager;
 
     @Test
     void canonicalMeeting_isReturnedByEffectiveOrgFilter() {
@@ -115,6 +126,67 @@ class MeetingRepositoryH2Test {
                 .isEmpty();
     }
 
+    @Test
+    void intelligenceRead_selectsLatestRunAndOnlyItsOrdinalOrderedChildren() {
+        UUID org = UUID.randomUUID();
+        Meeting meeting = meetingRepository.save(newMeeting(org, "AI sync", MeetingStatus.COMPLETED));
+        MeetingAnalysisRun older = analysisRun(
+                meeting.getId(), org, Instant.parse("2026-07-11T09:00:00Z"));
+        MeetingAnalysisRun latest = analysisRun(
+                meeting.getId(), org, Instant.parse("2026-07-11T10:00:00Z"));
+        analysisRunRepository.saveAllAndFlush(List.of(older, latest));
+
+        actionRepository.save(newAction(meeting.getId(), org));
+        actionRepository.save(aiAction(meeting.getId(), org, older.getAnalysisRunId(), 0, "old"));
+        actionRepository.save(aiAction(meeting.getId(), org, latest.getAnalysisRunId(), 1, "second"));
+        actionRepository.save(aiAction(meeting.getId(), org, latest.getAnalysisRunId(), 0, "first"));
+        decisionRepository.save(aiDecision(meeting.getId(), org, older.getAnalysisRunId(), 0, "old"));
+        decisionRepository.save(aiDecision(meeting.getId(), org, latest.getAnalysisRunId(), 0, "current"));
+
+        assertThat(analysisRunRepository.findLatestByMeetingIdVisibleToOrg(meeting.getId(), org))
+                .get()
+                .extracting(MeetingAnalysisRun::getAnalysisRunId)
+                .isEqualTo(latest.getAnalysisRunId());
+        assertThat(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                latest.getAnalysisRunId(), meeting.getId(), org))
+                .extracting(MeetingAction::getDescription)
+                .containsExactly("first", "second");
+        assertThat(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                latest.getAnalysisRunId(), meeting.getId(), org))
+                .extracting(MeetingDecision::getDetail)
+                .containsExactly("current");
+
+        UUID otherOrg = UUID.randomUUID();
+        assertThat(analysisRunRepository.findLatestByMeetingIdVisibleToOrg(
+                meeting.getId(), otherOrg)).isEmpty();
+        assertThat(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                latest.getAnalysisRunId(), meeting.getId(), otherOrg)).isEmpty();
+    }
+
+    @Test
+    void intelligenceRead_breaksExactTimestampTiesByRunId() {
+        UUID org = UUID.randomUUID();
+        Meeting meeting = meetingRepository.save(newMeeting(org, "Tie break", MeetingStatus.COMPLETED));
+        Instant generatedAt = Instant.parse("2026-07-11T10:00:00Z");
+        UUID lowerRunId = UUID.fromString("33333333-3333-4333-8333-333333333333");
+        UUID higherRunId = UUID.fromString("44444444-4444-4444-8444-444444444444");
+        analysisRunRepository.saveAllAndFlush(List.of(
+                analysisRun(lowerRunId, meeting.getId(), org, generatedAt),
+                analysisRun(higherRunId, meeting.getId(), org, generatedAt)));
+
+        jdbcTemplate.update(
+                "update meeting_analysis_runs set created_at = ? where analysis_run_id in (?, ?)",
+                Timestamp.from(Instant.parse("2026-07-11T10:00:01Z")),
+                lowerRunId,
+                higherRunId);
+        entityManager.clear();
+
+        assertThat(analysisRunRepository.findLatestByMeetingIdVisibleToOrg(meeting.getId(), org))
+                .get()
+                .extracting(MeetingAnalysisRun::getAnalysisRunId)
+                .isEqualTo(higherRunId);
+    }
+
     // ───────────────────────────── Builders ─────────────────────────────
 
     private static Meeting newMeeting(UUID org, String title, MeetingStatus status) {
@@ -152,6 +224,42 @@ class MeetingRepositoryH2Test {
         return a;
     }
 
+    private static MeetingAnalysisRun analysisRun(UUID meetingId, UUID org, Instant generatedAt) {
+        return analysisRun(UUID.randomUUID(), meetingId, org, generatedAt);
+    }
+
+    private static MeetingAnalysisRun analysisRun(
+            UUID runId,
+            UUID meetingId,
+            UUID org,
+            Instant generatedAt) {
+        MeetingAnalysisRun run = new MeetingAnalysisRun();
+        run.setAnalysisRunId(runId);
+        run.setMeetingId(meetingId);
+        run.setTenantId(org);
+        run.setOrgId(org);
+        run.setTranscriptSessionId("SES-1");
+        run.setTranscriptSha256("a".repeat(64));
+        run.setAnalyzerContractVersion("5-adr0043");
+        run.setPayloadHash(UUID.randomUUID().toString().replace("-", "") + "0".repeat(32));
+        run.setGeneratedAt(generatedAt);
+        return run;
+    }
+
+    private static MeetingAction aiAction(
+            UUID meetingId,
+            UUID org,
+            UUID runId,
+            int ordinal,
+            String description) {
+        MeetingAction action = newAction(meetingId, org);
+        action.setDescription(description);
+        action.setSource(MeetingItemSource.AI_ANALYSIS);
+        action.setAnalysisRunId(runId);
+        action.setOrdinal(ordinal);
+        return action;
+    }
+
     private static MeetingDecision newDecision(UUID meetingId, UUID org) {
         MeetingDecision d = new MeetingDecision();
         d.setMeetingId(meetingId);
@@ -161,5 +269,19 @@ class MeetingRepositoryH2Test {
         d.setCreatedBySubject("creator@example.com");
         d.setLastUpdatedBySubject("creator@example.com");
         return d;
+    }
+
+    private static MeetingDecision aiDecision(
+            UUID meetingId,
+            UUID org,
+            UUID runId,
+            int ordinal,
+            String detail) {
+        MeetingDecision decision = newDecision(meetingId, org);
+        decision.setDetail(detail);
+        decision.setSource(MeetingItemSource.AI_ANALYSIS);
+        decision.setAnalysisRunId(runId);
+        decision.setOrdinal(ordinal);
+        return decision;
     }
 }

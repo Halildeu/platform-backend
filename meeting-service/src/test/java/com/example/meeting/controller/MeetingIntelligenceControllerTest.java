@@ -4,16 +4,21 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.meeting.config.SecurityConfigLocal;
 import com.example.meeting.dto.v1.admin.MeetingIntelligenceActionItem;
 import com.example.meeting.dto.v1.admin.MeetingIntelligenceAnalyzeResponse;
+import com.example.meeting.dto.v1.admin.MeetingIntelligenceResultResponse;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingIntelligenceService;
+import com.example.meeting.service.MeetingIntelligenceResultService;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -38,6 +43,9 @@ class MeetingIntelligenceControllerTest {
 
     @MockitoBean
     private MeetingIntelligenceService meetingIntelligenceService;
+
+    @MockitoBean
+    private MeetingIntelligenceResultService meetingIntelligenceResultService;
 
     @MockitoBean
     private TenantContextResolver tenantContextResolver;
@@ -99,6 +107,34 @@ class MeetingIntelligenceControllerTest {
                                 """))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void getResult_returnsCanonicalPersistedSnapshot() throws Exception {
+        AdminTenantContext tenant = tenant();
+        UUID runId = UUID.fromString("33333333-3333-4333-8333-333333333333");
+        when(meetingIntelligenceResultService.getLatest(tenant, MEETING_ID))
+                .thenReturn(new MeetingIntelligenceResultResponse(
+                        runId, MEETING_ID, "SES-1", "5-adr0043", "qwen", "ollama",
+                        "ollama-v1", "Ozet", "verified", List.of(), List.of("Karar"),
+                        List.of(new MeetingIntelligenceActionItem("Aksiyon", "user-42", null)),
+                        List.of(), List.of(), 0, true, 1,
+                        Instant.parse("2026-07-11T20:00:00Z"), null, true, "canonical"));
+
+        mockMvc.perform(get("/api/v1/admin/meetings/{meetingId}/intelligence/result", MEETING_ID))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.analysisRunId").value(runId.toString()))
+                .andExpect(jsonPath("$.schema_version").value("5-adr0043"))
+                .andExpect(jsonPath("$.action_items[0].text").value("Aksiyon"))
+                .andExpect(jsonPath("$.persisted").value(true))
+                .andExpect(jsonPath("$.storageMode").value("canonical"))
+                .andExpect(jsonPath("$.transcriptSha256").doesNotExist())
+                .andExpect(jsonPath("$.payloadHash").doesNotExist())
+                .andExpect(jsonPath("$.tenantId").doesNotExist())
+                .andExpect(jsonPath("$.orgId").doesNotExist());
+
+        verify(meetingIntelligenceResultService).getLatest(tenant, MEETING_ID);
     }
 
     private AdminTenantContext tenant() {

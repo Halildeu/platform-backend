@@ -33,6 +33,19 @@ public interface MeetingActionRepository extends JpaRepository<MeetingAction, UU
     @Query("""
             select a
             from MeetingAction a
+            where a.analysisRunId = :analysisRunId
+              and a.meetingId = :meetingId
+              and (a.orgId = :orgId or (a.orgId is null and a.tenantId = :orgId))
+            order by a.ordinal asc, a.id asc
+            """)
+    List<MeetingAction> findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+            @Param("analysisRunId") UUID analysisRunId,
+            @Param("meetingId") UUID meetingId,
+            @Param("orgId") UUID orgId);
+
+    @Query("""
+            select a
+            from MeetingAction a
             where a.id = :id
               and a.meetingId = :meetingId
               and (a.orgId = :orgId or (a.orgId is null and a.tenantId = :orgId))
