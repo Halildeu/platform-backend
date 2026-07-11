@@ -87,9 +87,11 @@ public class ServiceTokenController {
                 // global allowlist is necessary but not sufficient. This keeps sensitive
                 // write scopes (meeting:analysis-result:write) attributable to their single
                 // authorized producer so no other authenticated client can forge them.
+                // Fail-closed: a present binding key with an empty client list denies EVERY
+                // client (it must not fall back to the global behaviour). Only a permission
+                // that is absent from the map (boundClients == null) stays global.
                 Set<String> boundClients = mintPolicy.getPermissionClientBindings().get(p);
-                if (boundClients != null && !boundClients.isEmpty()
-                        && !boundClients.contains(creds.clientId())) {
+                if (boundClients != null && !boundClients.contains(creds.clientId())) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_permission");
                 }
             }
