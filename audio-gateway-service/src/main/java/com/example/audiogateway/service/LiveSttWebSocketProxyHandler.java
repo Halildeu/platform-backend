@@ -17,7 +17,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
@@ -151,9 +150,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
         final Flux<WebSocketMessage> audioToUpstream = client.receive()
                 .limitRate(1)
                 .handle((message, sink) -> {
+                    // Do NOT release the payload: reactor-netty owns the inbound frame and
+                    // releases it after this handler returns (FluxReceive.drainReceiver ->
+                    // DefaultByteBufHolder.release). Releasing the DataBuffer here drops the
+                    // shared ByteBuf's refCnt to 0, and the framework's own release then
+                    // throws IllegalReferenceCountException. Copy synchronously instead —
+                    // the bytes below outlive the frame, the buffer does not.
                     if (message.getType() != WebSocketMessage.Type.BINARY) {
                         rejectedFrames.increment();
-                        DataBufferUtils.release(message.getPayload());
                         sink.error(new ClientFrameException(
                                 "live audio stream accepts binary frames only"));
                         return;
@@ -161,14 +165,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                     final int readable = message.getPayload().readableByteCount();
                     if (readable > maxFrameBytes + LiveAudioStreamFrame.HEADER_BYTES) {
                         rejectedFrames.increment();
-                        DataBufferUtils.release(message.getPayload());
                         sink.error(new ClientFrameException(
                                 "live audio frame exceeds configured bound"));
                         return;
                     }
                     final byte[] encoded = new byte[readable];
                     message.getPayload().read(encoded);
-                    DataBufferUtils.release(message.getPayload());
                     final LiveAudioStreamFrame frame;
                     try {
                         frame = LiveAudioStreamFrame.decode(encoded, maxFrameBytes);
@@ -204,25 +206,23 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
         final Flux<WebSocketMessage> eventsToClient = upstream.receive()
                 .limitRate(1)
                 .handle((message, sink) -> {
+                    // Same ownership rule as above: the upstream session's inbound frames are
+                    // released by reactor-netty. This relay copies the payload into a NEW
+                    // message for the client, so nothing here outlives the frame.
                     if (message.getType() == WebSocketMessage.Type.TEXT) {
                         final int readable = message.getPayload().readableByteCount();
                         if (readable > properties.getDirectStt().getMaxResponseBytes()) {
-                            DataBufferUtils.release(message.getPayload());
                             sink.error(new IllegalArgumentException(
                                     "live STT event exceeds configured response bound"));
                             return;
                         }
-                        final String payload = message.getPayloadAsText();
-                        DataBufferUtils.release(message.getPayload());
-                        sink.next(client.textMessage(payload));
+                        sink.next(client.textMessage(message.getPayloadAsText()));
                     } else if (message.getType() == WebSocketMessage.Type.PING) {
                         final byte[] payload = new byte[message.getPayload().readableByteCount()];
                         message.getPayload().read(payload);
-                        DataBufferUtils.release(message.getPayload());
                         sink.next(client.pingMessage(factory -> factory.wrap(payload)));
-                    } else {
-                        DataBufferUtils.release(message.getPayload());
                     }
+                    // Other frame types are dropped; reactor-netty releases them.
                 });
 
         final Mono<Void> upload = upstream.send(audioToUpstream);
