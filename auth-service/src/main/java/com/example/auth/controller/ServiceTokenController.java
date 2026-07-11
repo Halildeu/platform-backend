@@ -9,6 +9,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import jakarta.annotation.PostConstruct;
 import org.springframework.core.env.Environment;
 import org.springframework.http.HttpStatus;
@@ -81,6 +82,16 @@ public class ServiceTokenController {
                 if (!mintPolicy.getAllowedPermissions().contains(p)) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_permission");
                 }
+                // ai#244 AI-1: per-permission client binding. A permission listed in
+                // permission-client-bindings may be minted ONLY by the bound clients; the
+                // global allowlist is necessary but not sufficient. This keeps sensitive
+                // write scopes (meeting:analysis-result:write) attributable to their single
+                // authorized producer so no other authenticated client can forge them.
+                Set<String> boundClients = mintPolicy.getPermissionClientBindings().get(p);
+                if (boundClients != null && !boundClients.isEmpty()
+                        && !boundClients.contains(creds.clientId())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_permission");
+                }
             }
         }
 
@@ -99,9 +110,14 @@ public class ServiceTokenController {
     }
 
     private boolean isAllowed(String clientId, String clientSecret) {
-        if (clientId == null || clientSecret == null) return false;
+        // ai#244 AI-1: a blank presented secret, or a blank *configured* secret, must never
+        // authenticate. Clients default to an empty secret until ESO syncs the real value
+        // from Vault (e.g. `meeting-ai: ${SERVICE_CLIENT_MEETING_AI_SECRET:}`); without the
+        // isBlank guards, `"".equals("")` would let anyone mint as that client before it is
+        // provisioned. The blank-expected guard keeps unprovisioned clients fully disabled.
+        if (clientId == null || clientSecret == null || clientSecret.isBlank()) return false;
         String expected = clientsProperties.getClients().get(clientId);
-        return expected != null && expected.equals(clientSecret);
+        return expected != null && !expected.isBlank() && expected.equals(clientSecret);
     }
 
     private Credentials resolveClientCredentials(Map<String, String> headers, MultiValueMap<String, String> form) {
