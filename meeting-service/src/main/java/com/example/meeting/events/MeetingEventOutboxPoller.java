@@ -153,6 +153,13 @@ public class MeetingEventOutboxPoller {
      */
     @Transactional
     public void markPublished(final UUID id, final UUID claimToken) {
+        if (claimToken == null) {
+            // Defensive: a claimed row always carries a token; a null here means a caller
+            // bug. The fenced query would match 0 rows anyway (claim_token = NULL is never
+            // true), but fail loudly rather than silently no-op.
+            log.warn("markPublished skipped — null claim token id={}", id);
+            return;
+        }
         int fenced = repository.markPublishedFenced(id, claimToken, Instant.now());
         if (fenced == 0) {
             log.warn("meeting-event publish outcome discarded — lease lost id={} (row re-claimed)",
@@ -163,6 +170,10 @@ public class MeetingEventOutboxPoller {
     /** Failure: attempts++, PENDING (retry) or DEAD, token-fenced (same rationale). */
     @Transactional
     public void markFailed(final UUID id, final UUID claimToken, final String errorClass) {
+        if (claimToken == null) {
+            log.warn("markFailed skipped — null claim token id={}", id);
+            return;
+        }
         int fenced = repository.markFailedFenced(id, claimToken, errorClass, maxAttempts, Instant.now());
         if (fenced == 0) {
             log.warn("meeting-event failure outcome discarded — lease lost id={} (row re-claimed)",

@@ -17,7 +17,7 @@
 --   convention: an uncommitted outbox row is invisible to the poller's snapshot.
 --
 --   * Atomicity: run + children + outbox row all commit, or all roll back.
---   * Exactly-once effect: event_key is UNIQUE (deterministic per run+type+ordinal),
+--   * WRITE-side exactly-once: event_key is UNIQUE (deterministic per run+type+ordinal),
 --     so a retried ingestion (or a raced insert) can never create a duplicate row,
 --     and a consumer that de-dups on event_key applies each side-effect once.
 --   * Attribution guard: an action.assigned row is written ONLY for an action whose
@@ -133,7 +133,7 @@ CREATE TRIGGER meeting_event_outbox_org_id_compat
     FOR EACH ROW EXECUTE FUNCTION meeting_org_id_compat_fill();
 
 COMMENT ON TABLE meeting_event_outbox IS
-    'Faz 24 platform-ai#244 BE-1d. Transactional outbox for meeting analysis domain events (#412 meeting.summary.ready + meeting.action.assigned). Written in the SAME transaction as the analysis run + children (atomic); a separate poller publishes only committed rows (commit-after-emit). event_key UNIQUE = exactly-once.';
+    'Faz 24 platform-ai#244 BE-1d. Transactional outbox for meeting analysis domain events (#412 meeting.summary.ready + meeting.action.assigned). Written in the SAME transaction as the analysis run + children (atomic); a separate poller publishes only committed rows (commit-after-emit). event_key UNIQUE = WRITE-side exactly-once (no producer duplicate). Delivery is at-least-once (the publish<->PUBLISHED write is a dual-write window: a crash after publish redelivers), so exactly-once EFFECT is the downstream consumer responsibility — event_key is the dedup key it uses.';
 COMMENT ON COLUMN meeting_event_outbox.event_key IS
     'Deterministic idempotency key: <run>|meeting.summary.ready or <run>|meeting.action.assigned|<ordinal>. UNIQUE — a retried/raced ingestion cannot duplicate an event.';
 COMMENT ON COLUMN meeting_event_outbox.status IS

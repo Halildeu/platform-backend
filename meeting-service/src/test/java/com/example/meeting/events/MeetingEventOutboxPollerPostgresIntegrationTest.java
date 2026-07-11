@@ -1,6 +1,7 @@
 package com.example.meeting.events;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.example.meeting.model.Meeting;
@@ -379,6 +380,37 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
         MeetingEventOutbox row = outboxRepo.findById(id).orElseThrow();
         assertThat(row.getStatus()).isEqualTo(MeetingEventOutboxStatus.DEAD);
         assertThat(row.getAttempts()).isEqualTo(8);
+    }
+
+    @Test
+    void markPublished_withNullToken_isANoOp() {
+        Seed seed = seed();
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox SET status='CLAIMED', claim_token=?"
+                        + " WHERE id=?", UUID.randomUUID(), id);
+
+        poller.markPublished(id, null); // defensive guard: no token -> no-op
+
+        assertThat(outboxRepo.findById(id).orElseThrow().getStatus())
+                .as("a null claim token must not touch the row")
+                .isEqualTo(MeetingEventOutboxStatus.CLAIMED);
+    }
+
+    @Test
+    void eventKey_hasAUniqueIndex_soAProducerCannotDuplicate() {
+        // The write-side exactly-once guarantee rests on this index existing; pin it.
+        Integer count = jdbc.queryForObject(
+                "SELECT count(*) FROM pg_indexes WHERE schemaname=? AND tablename='meeting_event_outbox'"
+                        + " AND indexname='uq_meeting_event_outbox_event_key' AND indexdef ILIKE '%UNIQUE%'",
+                Integer.class, SCHEMA);
+        assertThat(count).as("event_key must carry a UNIQUE index").isEqualTo(1);
+
+        // And it actually rejects a duplicate event_key.
+        Seed seed = seed();
+        String key = seed.runId + "|meeting.summary.ready";
+        seedPending(seed, "meeting.summary.ready", key);
+        assertThatThrownBy(() -> seedPending(seed, "meeting.summary.ready", key))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     // ────────────────────────── seeding + helpers ──────────────────────────
