@@ -156,7 +156,7 @@ public class MeetingEventOutboxPoller {
         if (claimToken == null) {
             // Defensive: a claimed row always carries a token; a null here means a caller
             // bug. The fenced query would match 0 rows anyway (claim_token = NULL is never
-            // true), but fail loudly rather than silently no-op.
+            // true); log visibly (WARN + no-op) rather than pass silently.
             log.warn("markPublished skipped — null claim token id={}", id);
             return;
         }
