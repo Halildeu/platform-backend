@@ -33,6 +33,19 @@ public interface MeetingDecisionRepository extends JpaRepository<MeetingDecision
     @Query("""
             select d
             from MeetingDecision d
+            where d.analysisRunId = :analysisRunId
+              and d.meetingId = :meetingId
+              and (d.orgId = :orgId or (d.orgId is null and d.tenantId = :orgId))
+            order by d.ordinal asc, d.id asc
+            """)
+    List<MeetingDecision> findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+            @Param("analysisRunId") UUID analysisRunId,
+            @Param("meetingId") UUID meetingId,
+            @Param("orgId") UUID orgId);
+
+    @Query("""
+            select d
+            from MeetingDecision d
             where d.id = :id
               and d.meetingId = :meetingId
               and (d.orgId = :orgId or (d.orgId is null and d.tenantId = :orgId))
