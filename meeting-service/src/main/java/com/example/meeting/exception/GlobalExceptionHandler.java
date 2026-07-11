@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -100,6 +101,17 @@ public class GlobalExceptionHandler {
         String message = "Missing required parameter '" + paramName
                 + "' (" + paramType + ").";
         return build(HttpStatus.BAD_REQUEST, "MISSING_PARAMETER", message);
+    }
+
+    /**
+     * Missing required {@code @RequestHeader} (e.g. the analysis-result ingestion
+     * {@code Idempotency-Key}) → 400, not 500.
+     */
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<ErrorResponse> handleMissingRequestHeader(
+            MissingRequestHeaderException ex) {
+        String message = "Missing required header '" + ex.getHeaderName() + "'.";
+        return build(HttpStatus.BAD_REQUEST, "MISSING_HEADER", message);
     }
 
     /**
