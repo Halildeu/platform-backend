@@ -121,12 +121,16 @@ security:
     key-id: ${SERVICE_JWT_KEY_ID:service-jwt-key-k8s}
   service-clients:
     user-service: ${SERVICE_CLIENT_USER_SERVICE_SECRET:}
+    # ai#244 AI-1: meeting-ai-service mints a service token to push analysis
+    # results to meeting-service's internal ingestion endpoint. Secret is
+    # ESO-synced from Vault; empty default keeps the client disabled until then.
+    meeting-ai: ${SERVICE_CLIENT_MEETING_AI_SECRET:}
   service-mint:
     # #734: notification-orchestrator + notify:intents:system added to the
     # defaults so the user-service admin-email mint works even before the gitops
     # env override; gitops sets the canonical list explicitly.
-    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator}
-    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system}
+    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system,meeting:analysis-result:write}
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
   admin-fallback:
     enabled: ${SECURITY_ADMIN_FALLBACK_ENABLED:false}
