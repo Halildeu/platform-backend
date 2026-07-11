@@ -2,20 +2,24 @@ package com.example.meeting.service;
 
 import com.example.meeting.dto.v1.internal.MeetingAnalysisActionIngest;
 import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestRequest;
+import com.example.meeting.events.MeetingEventOutboxFactory;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
+import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.MeetingItemSource;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
+import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,10 +32,11 @@ import java.util.UUID;
  * the post-failure winner lookup runs in a genuinely fresh transaction after
  * a failed write has fully unwound.
  *
- * <p>{@link #insertNewRun} is the ONE atomic write: the run row plus every AI
- * child (decisions + actions) commit or roll back together. A mid-write child
- * constraint violation aborts the whole unit, so a run row never lands without
- * its children.
+ * <p>{@link #insertNewRun} is the ONE atomic write: the run row, every AI child
+ * (decisions + actions) AND the BE-1d transactional-outbox rows commit or roll
+ * back together. A mid-write child constraint violation aborts the whole unit, so
+ * a run row never lands without its children — and no outbox event is ever emitted
+ * for a run that did not commit.
  */
 @Component
 public class MeetingAnalysisResultWriter {
@@ -50,17 +55,23 @@ public class MeetingAnalysisResultWriter {
     private final MeetingAnalysisRunRepository runRepository;
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
+    private final MeetingEventOutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
+    private final MeetingEventOutboxFactory eventFactory;
 
     public MeetingAnalysisResultWriter(
             MeetingAnalysisRunRepository runRepository,
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
+            MeetingEventOutboxRepository outboxRepository,
             ObjectMapper objectMapper) {
         this.runRepository = runRepository;
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
+        this.outboxRepository = outboxRepository;
         this.objectMapper = objectMapper;
+        // Plain collaborator (not a Spring bean) — shares the same ObjectMapper.
+        this.eventFactory = new MeetingEventOutboxFactory(objectMapper);
     }
 
     /**
@@ -70,9 +81,10 @@ public class MeetingAnalysisResultWriter {
      *
      * <p>The run is {@code saveAndFlush}ed first so a concurrent same-key insert
      * surfaces its primary-key collision here (inside this transaction); the
-     * children are then saved and an explicit final {@code flush} forces any child
-     * constraint violation to abort THIS transaction rather than surfacing only at
-     * commit — either way the whole unit rolls back.
+     * children AND the BE-1d outbox rows are then saved and an explicit final
+     * {@code flush} forces any constraint violation to abort THIS transaction
+     * rather than surfacing only at commit — either way the whole unit (run +
+     * children + outbox) rolls back.
      *
      * @return the persisted run (managed within this transaction)
      */
@@ -111,6 +123,7 @@ public class MeetingAnalysisResultWriter {
         run.setGeneratedAt(request.generatedAt());
         runRepository.saveAndFlush(run);
 
+        List<MeetingDecision> savedDecisions = new ArrayList<>();
         int ordinal = 0;
         for (String decisionText : request.decisions()) {
             MeetingDecision decision = new MeetingDecision();
@@ -130,8 +143,10 @@ public class MeetingAnalysisResultWriter {
             decision.setCreatedBySubject(AI_SUBJECT);
             decision.setLastUpdatedBySubject(AI_SUBJECT);
             decisionRepository.save(decision);
+            savedDecisions.add(decision);
         }
 
+        List<MeetingAction> savedActions = new ArrayList<>();
         int actionOrdinal = 0;
         for (MeetingAnalysisActionIngest actionIn : request.actions()) {
             MeetingAction action = new MeetingAction();
@@ -148,10 +163,20 @@ public class MeetingAnalysisResultWriter {
             action.setCreatedBySubject(AI_SUBJECT);
             action.setLastUpdatedBySubject(AI_SUBJECT);
             actionRepository.save(action);
+            savedActions.add(action);
         }
 
-        // Force the children to flush now: a child constraint violation must abort
-        // THIS transaction (atomicity), not surface only at commit-time translation.
+        // BE-1d transactional outbox: the #412 domain events (meeting.summary.ready +
+        // one meeting.action.assigned per non-null-assignee action) are written in
+        // THIS same transaction. They therefore commit atomically with the run +
+        // children — publication is deferred to a poller that reads only committed
+        // rows (commit-after-emit). A NULL-assignee action yields no event.
+        for (MeetingEventOutbox event : eventFactory.build(run, savedDecisions, savedActions)) {
+            outboxRepository.save(event);
+        }
+
+        // Force the children + outbox rows to flush now: any constraint violation must
+        // abort THIS transaction (atomicity), not surface only at commit-time translation.
         runRepository.flush();
         return run;
     }
