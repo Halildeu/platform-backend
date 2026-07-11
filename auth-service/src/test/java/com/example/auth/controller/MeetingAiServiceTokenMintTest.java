@@ -156,6 +156,22 @@ class MeetingAiServiceTokenMintTest {
     }
 
     /**
+     * Codex REVISE (fail-closed): a present binding key with an empty client list must deny
+     * EVERY client — even the normally-bound producer — rather than silently falling back to
+     * the global allow-list. Only a permission absent from the map stays global.
+     */
+    @Test
+    void boundPermissionWithEmptyClientList_deniesEveryone_failClosed() throws Exception {
+        mintPolicy.setPermissionClientBindings(Map.of("meeting:analysis-result:write", Set.of()));
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-ai", "test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=meeting-service"
+                                + "&permissions=meeting:analysis-result:write"))
+                .andExpect(status().isBadRequest());
+    }
+
+    /**
      * Codex #3: an empty presented secret must never authenticate. Before this fix
      * {@code "".equals("")} against a blank-default client secret let anyone mint as that
      * client.
