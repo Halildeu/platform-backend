@@ -106,11 +106,9 @@ CREATE TABLE meeting_analysis_runs (
 
     -- Composite tenant-FK to the parent meeting (V1 cross-tenant child drift guard).
     CONSTRAINT fk_meeting_analysis_runs_meeting
-        FOREIGN KEY (meeting_id, tenant_id) REFERENCES meetings(id, tenant_id) ON DELETE CASCADE,
-
-    CONSTRAINT fk_meeting_analysis_runs_supersedes
-        FOREIGN KEY (supersedes_analysis_run_id) REFERENCES meeting_analysis_runs(analysis_run_id)
-        ON DELETE SET NULL
+        FOREIGN KEY (meeting_id, tenant_id) REFERENCES meetings(id, tenant_id) ON DELETE CASCADE
+    -- The self-referencing supersession FK is added AFTER the target unique index
+    -- exists (an inline FK cannot reference an index the same CREATE has not built yet).
 );
 
 -- Target for the child composite FKs: keeps a child row bound to a run in the
@@ -118,11 +116,29 @@ CREATE TABLE meeting_analysis_runs (
 CREATE UNIQUE INDEX uq_analysis_runs_run_tenant
     ON meeting_analysis_runs(analysis_run_id, tenant_id);
 
+-- Target for the supersession composite FK: pins the (run, tenant, meeting) triple
+-- so a supersedes-link cannot cross a tenant OR a meeting boundary.
+CREATE UNIQUE INDEX uq_analysis_runs_run_tenant_meeting
+    ON meeting_analysis_runs(analysis_run_id, tenant_id, meeting_id);
+
 CREATE INDEX idx_meeting_analysis_runs_meeting_id ON meeting_analysis_runs(meeting_id);
 CREATE INDEX idx_meeting_analysis_runs_org_id ON meeting_analysis_runs(org_id);
 -- "Latest analysis for this meeting" read path.
 CREATE INDEX idx_meeting_analysis_runs_meeting_generated
     ON meeting_analysis_runs(tenant_id, meeting_id, generated_at DESC);
+
+-- Supersession must stay inside the SAME tenant AND meeting: a run in tenant B (or a
+-- different meeting of the same tenant) must not be able to claim it supersedes tenant
+-- A's canonical result. A single-column FK would have allowed exactly that, because
+-- analysis_run_id is globally unique. This composite FK targets the (run, tenant,
+-- meeting) unique index above. ON DELETE SET NULL names ONLY supersedes_analysis_run_id
+-- (Postgres 15+): tenant_id/meeting_id are NOT NULL and are the row's own scope, so a
+-- purge of the superseded run nulls the link, never the scope.
+ALTER TABLE meeting_analysis_runs
+    ADD CONSTRAINT fk_meeting_analysis_runs_supersedes
+        FOREIGN KEY (supersedes_analysis_run_id, tenant_id, meeting_id)
+        REFERENCES meeting_analysis_runs(analysis_run_id, tenant_id, meeting_id)
+        ON DELETE SET NULL (supersedes_analysis_run_id);
 
 DROP TRIGGER IF EXISTS meeting_analysis_runs_org_id_compat ON meeting_analysis_runs;
 CREATE TRIGGER meeting_analysis_runs_org_id_compat

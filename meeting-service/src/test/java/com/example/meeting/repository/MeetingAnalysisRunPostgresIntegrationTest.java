@@ -111,6 +111,38 @@ class MeetingAnalysisRunPostgresIntegrationTest {
     }
 
     @Test
+    void aRunCannotSupersedeARunInAnotherTenant() {
+        UUID orgA = UUID.randomUUID();
+        UUID orgB = UUID.randomUUID();
+        UUID meetingA = insertMeeting(orgA);
+        UUID meetingB = insertMeeting(orgB);
+        UUID runInA = UUID.randomUUID();
+        insertRun(runInA, meetingA, orgA, SHA_A, HASH_1);
+
+        // A run in tenant B must not be able to claim it supersedes tenant A's result,
+        // even though analysis_run_id is globally unique. Composite FK is the guard.
+        assertThatThrownBy(() ->
+                insertRun(UUID.randomUUID(), meetingB, orgB, SHA_B, HASH_2, runInA))
+                .as("supersession must not cross a tenant boundary")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void aRunCannotSupersedeARunInAnotherMeetingOfTheSameTenant() {
+        UUID org = UUID.randomUUID();
+        UUID meeting1 = insertMeeting(org);
+        UUID meeting2 = insertMeeting(org);
+        UUID runInMeeting1 = UUID.randomUUID();
+        insertRun(runInMeeting1, meeting1, org, SHA_A, HASH_1);
+
+        // Same tenant, different meeting: supersession is a within-meeting relationship.
+        assertThatThrownBy(() ->
+                insertRun(UUID.randomUUID(), meeting2, org, SHA_B, HASH_2, runInMeeting1))
+                .as("supersession must not cross a meeting boundary")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void sameTranscriptSnapshotMayBeAnalysedAgain_noUniqueKeyBlocksIt() {
         UUID org = UUID.randomUUID();
         UUID meetingId = insertMeeting(org);
@@ -317,6 +349,82 @@ class MeetingAnalysisRunPostgresIntegrationTest {
                 .isNull();
     }
 
+    // ----------------------------------------------------------------
+    // Decision child — the migration touches BOTH child tables, so meeting_decisions
+    // gets the same invariant coverage meeting_actions does (Codex review point 2).
+    // ----------------------------------------------------------------
+
+    @Test
+    void aDecisionAiRowWithoutAnOrdinal_isRejected() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        insertRun(runId, meetingId, org, SHA_A, HASH_1);
+
+        assertThatThrownBy(() -> insertDecision(meetingId, org, "AI_ANALYSIS", runId, null))
+                .as("decision provenance CHECK makes the half-set state impossible")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void aManualDecisionCarryingAnAnalysisRun_isRejected() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        insertRun(runId, meetingId, org, SHA_A, HASH_1);
+
+        assertThatThrownBy(() -> insertDecision(meetingId, org, "MANUAL", runId, 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void sameRunAndOrdinal_cannotBeInsertedTwiceForDecisions() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        insertRun(runId, meetingId, org, SHA_A, HASH_1);
+        insertAiDecision(meetingId, org, runId, 0);
+
+        assertThatThrownBy(() -> insertAiDecision(meetingId, org, runId, 0))
+                .as("(tenant, run, ordinal) is the decision idempotency key too")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void anAiDecisionCannotBindToARunInAnotherTenant() {
+        UUID orgA = UUID.randomUUID();
+        UUID orgB = UUID.randomUUID();
+        UUID meetingInA = insertMeeting(orgA);
+        UUID meetingInB = insertMeeting(orgB);
+        UUID runInA = UUID.randomUUID();
+        insertRun(runInA, meetingInA, orgA, SHA_A, HASH_1);
+
+        assertThatThrownBy(() -> insertAiDecision(meetingInB, orgB, runInA, 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void deletingARun_cascadesToItsAiDecisionsButLeavesManualOnes() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        insertRun(runId, meetingId, org, SHA_A, HASH_1);
+        insertAiDecision(meetingId, org, runId, 0);
+        insertManualDecision(meetingId, org);
+        assertThat(decisionCount(meetingId)).isEqualTo(2);
+
+        jdbc.update("DELETE FROM " + SCHEMA
+                + ".meeting_analysis_runs WHERE analysis_run_id = ?", runId);
+
+        assertThat(decisionCount(meetingId))
+                .as("the AI decision cascades with its run; the human's decision survives")
+                .isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                "SELECT source FROM " + SCHEMA + ".meeting_decisions WHERE meeting_id = ?",
+                String.class, meetingId))
+                .isEqualTo("MANUAL");
+    }
+
     @Test
     void deletingTheMeeting_cascadesToItsRuns() {
         UUID org = UUID.randomUUID();
@@ -429,6 +537,33 @@ class MeetingAnalysisRunPostgresIntegrationTest {
                 """.formatted(SCHEMA),
                 UUID.randomUUID(), meetingId, org, org, text, source, runId, ordinal,
                 now(), now());
+    }
+
+    private void insertAiDecision(UUID meetingId, UUID org, UUID runId, int ordinal) {
+        insertDecision(meetingId, org, "AI_ANALYSIS", runId, ordinal);
+    }
+
+    private void insertManualDecision(UUID meetingId, UUID org) {
+        insertDecision(meetingId, org, "MANUAL", null, null);
+    }
+
+    private void insertDecision(UUID meetingId, UUID org, String source,
+                                UUID runId, Integer ordinal) {
+        jdbc.update("""
+                INSERT INTO %s.meeting_decisions
+                  (id, meeting_id, tenant_id, org_id, title, detail, source,
+                   analysis_run_id, ordinal, created_by_subject, last_updated_by_subject,
+                   created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'decision', 'full detail', ?, ?, ?, 'creator', 'updater', ?, ?)
+                """.formatted(SCHEMA),
+                UUID.randomUUID(), meetingId, org, org, source, runId, ordinal, now(), now());
+    }
+
+    private int decisionCount(UUID meetingId) {
+        Integer count = jdbc.queryForObject(
+                "SELECT count(*) FROM " + SCHEMA
+                        + ".meeting_decisions WHERE meeting_id = ?", Integer.class, meetingId);
+        return count == null ? 0 : count;
     }
 
     private int runCount(UUID meetingId) {
