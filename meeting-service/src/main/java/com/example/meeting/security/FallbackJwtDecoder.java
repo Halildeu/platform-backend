@@ -17,9 +17,13 @@ import org.springframework.security.oauth2.jwt.JwtException;
  *
  * <h3>Config/infra errors are NOT masked (Codex acceptance condition)</h3>
  *
- * <p>Only a {@link BadJwtException} — the per-token validation-failure family
- * (bad signature, failed issuer/audience/expiry validators, malformed token) —
- * triggers fallback to the next delegate. A
+ * <p>Only a {@link BadJwtException} — the per-token validation-failure family —
+ * triggers fallback to the next delegate. This deliberately includes
+ * {@link org.springframework.security.oauth2.jwt.JwtValidationException} (a failed
+ * issuer/audience/expiry validator), which <em>extends</em> {@code BadJwtException}
+ * in Spring Security, so a service token rejected by the Keycloak decoder's issuer
+ * validator falls through to the service decoder — the very reason this class exists.
+ * It also covers a bad signature and a malformed token. A
  * {@link org.springframework.security.oauth2.jwt.JwtDecoderInitializationException}
  * (e.g. the JWK-set endpoint is unreachable) is a {@code RuntimeException}, NOT a
  * {@code BadJwtException}, so it is never caught here: it propagates immediately

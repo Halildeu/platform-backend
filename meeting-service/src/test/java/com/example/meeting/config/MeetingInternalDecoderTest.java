@@ -194,6 +194,37 @@ class MeetingInternalDecoderTest {
                 "a config/infra fault must short-circuit — the second decoder must NOT be tried");
     }
 
+    @Test
+    void firstDecoderRejectsOnClaimValidation_fallsBackToSecond() {
+        // The core reason FallbackJwtDecoder exists: a service token fails the Keycloak
+        // decoder's issuer/audience validator (a JwtValidationException, NOT a signature
+        // error), and the chain must then try the service decoder. JwtValidationException
+        // extends BadJwtException (Spring 6.5.5), so `catch (BadJwtException)` already
+        // covers it — this test pins that behaviour so a future narrowing of the catch
+        // clause (e.g. to a sibling type) would break loudly instead of silently killing
+        // every service token.
+        AtomicBoolean secondCalled = new AtomicBoolean(false);
+        Jwt decoded = Jwt.withTokenValue("svc").header("alg", "RS256")
+                .claim("iss", SVC_ISSUER).build();
+
+        JwtDecoder keycloakRejectsIssuer = t -> {
+            throw new org.springframework.security.oauth2.jwt.JwtValidationException(
+                    "iss claim is not equal to the Keycloak issuer",
+                    List.of(new org.springframework.security.oauth2.core.OAuth2Error("invalid_token")));
+        };
+        JwtDecoder serviceDecoder = t -> {
+            secondCalled.set(true);
+            return decoded;
+        };
+
+        FallbackJwtDecoder decoder = new FallbackJwtDecoder(
+                List.of(keycloakRejectsIssuer, serviceDecoder));
+
+        assertSame(decoded, decoder.decode("svc"),
+                "a JwtValidationException from the first decoder must fall through to the second");
+        assertTrue(secondCalled.get(), "the service decoder must be tried after a claim-validation reject");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static Set<String> authorities(Jwt jwt) {
