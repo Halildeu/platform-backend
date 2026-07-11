@@ -131,6 +131,15 @@ security:
     # env override; gitops sets the canonical list explicitly.
     allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service}
     allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system,meeting:analysis-result:write}
+    # ai#244 AI-1: bind the sensitive meeting-service write scope to the meeting-ai
+    # client only. The allow-list above makes the permission mintable at all; this
+    # binding makes it mintable ONLY by meeting-ai, so no other authenticated
+    # service-client can forge analysis results. Permissions not listed here keep the
+    # legacy global behaviour. The YAML "[...]" key syntax is required because the
+    # permission string itself contains ':' separators.
+    permission-client-bindings:
+      "[meeting:analysis-result:write]":
+        - meeting-ai
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
   admin-fallback:
     enabled: ${SECURITY_ADMIN_FALLBACK_ENABLED:false}
