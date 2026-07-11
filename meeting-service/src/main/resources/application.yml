@@ -56,6 +56,17 @@ meeting:
     cleanup-cron: ${MEETING_RETENTION_CLEANUP_CRON:0 31 2 * * *}
     cleanup-batch-size: ${MEETING_RETENTION_CLEANUP_BATCH_SIZE:1000}
     cleanup-max-batches-per-run: ${MEETING_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN:100}
+  internal:
+    # ai#244 BE-1b — auth-service SERVICE-token trust for the internal
+    # analysis-result ingestion path (/api/v1/internal/meetings/**). A BLANK
+    # jwk-set-uri ⇒ FAIL-CLOSED: the secondary (service) JWT decoder is not
+    # built, no service-issuer token can decode, and the SVC_ authority the
+    # internal chain requires is never minted. The ingestion caller
+    # (meeting-ai-service) is wired in BE-1c, which populates the JWK-set URI.
+    service-jwt:
+      jwk-set-uri: ${MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI:}
+      issuer: ${MEETING_INTERNAL_SERVICE_JWT_ISSUER:auth-service}
+      audience: ${MEETING_INTERNAL_SERVICE_JWT_AUDIENCE:meeting-service}
 
 management:
   endpoints:
