@@ -222,6 +222,21 @@ class MeetingAnalysisRunPostgresIntegrationTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    @Test
+    void anAiActionCannotBindToARunInAnotherMeetingOfTheSameTenant() {
+        UUID org = UUID.randomUUID();
+        UUID meeting1 = insertMeeting(org);
+        UUID meeting2 = insertMeeting(org);
+        UUID runInMeeting1 = UUID.randomUUID();
+        insertRun(runInMeeting1, meeting1, org, SHA_A, HASH_1);
+
+        // Same tenant, different meeting: the composite FK includes meeting_id, so an
+        // action for meeting2 cannot bind to meeting1's run.
+        assertThatThrownBy(() -> insertAiAction(meeting2, org, runInMeeting1, 0))
+                .as("child FK must include meeting_id, not just (run, tenant)")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
     // ----------------------------------------------------------------
     // Child idempotency & provenance
     // ----------------------------------------------------------------
@@ -328,6 +343,43 @@ class MeetingAnalysisRunPostgresIntegrationTest {
     }
 
     @Test
+    void aSupersedesLinkCannotBeAddedAfterInsert() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        insertRun(first, meetingId, org, SHA_A, HASH_1);
+        insertRun(second, meetingId, org, SHA_B, HASH_2);  // supersedes NULL at insert
+
+        // NULL -> X after insert is forbidden: a row inserted at T can only reference a run
+        // that existed at T, so allowing a later link would let a cycle form (A->B->A).
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + SCHEMA
+                        + ".meeting_analysis_runs SET supersedes_analysis_run_id = ? WHERE analysis_run_id = ?",
+                first, second))
+                .as("supersedes is append-only (NULL -> X rejected)")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void aSupersedesLinkCannotBeRepointed() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+        UUID c = UUID.randomUUID();
+        insertRun(a, meetingId, org, SHA_A, HASH_1);
+        insertRun(b, meetingId, org, SHA_B, HASH_2, a);   // b supersedes a
+        insertRun(c, meetingId, org, "c".repeat(64), "3".repeat(64));
+
+        // X -> Y re-point is forbidden — this is the edge that would close a cycle.
+        assertThatThrownBy(() -> jdbc.update("UPDATE " + SCHEMA
+                        + ".meeting_analysis_runs SET supersedes_analysis_run_id = ? WHERE analysis_run_id = ?",
+                c, b))
+                .as("supersedes is append-only (X -> Y rejected)")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void deletingTheSupersededRun_leavesTheNewerOneAliveWithANullLink() {
         UUID org = UUID.randomUUID();
         UUID meetingId = insertMeeting(org);
@@ -400,6 +452,19 @@ class MeetingAnalysisRunPostgresIntegrationTest {
         insertRun(runInA, meetingInA, orgA, SHA_A, HASH_1);
 
         assertThatThrownBy(() -> insertAiDecision(meetingInB, orgB, runInA, 0))
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void anAiDecisionCannotBindToARunInAnotherMeetingOfTheSameTenant() {
+        UUID org = UUID.randomUUID();
+        UUID meeting1 = insertMeeting(org);
+        UUID meeting2 = insertMeeting(org);
+        UUID runInMeeting1 = UUID.randomUUID();
+        insertRun(runInMeeting1, meeting1, org, SHA_A, HASH_1);
+
+        assertThatThrownBy(() -> insertAiDecision(meeting2, org, runInMeeting1, 0))
+                .as("decision child FK must include meeting_id too")
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 

@@ -106,7 +106,8 @@ public class MeetingAnalysisRun {
     @Column(name = "redaction_count", nullable = false)
     private int redactionCount;
 
-    @Column(name = "supersedes_analysis_run_id")
+    /** Append-only: set at insert, cleared only by ON DELETE SET NULL. DB trigger enforces. */
+    @Column(name = "supersedes_analysis_run_id", updatable = false)
     private UUID supersedesAnalysisRunId;
 
     @Column(name = "generated_at", nullable = false)

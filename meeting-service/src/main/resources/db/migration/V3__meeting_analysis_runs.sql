@@ -145,6 +145,29 @@ CREATE TRIGGER meeting_analysis_runs_org_id_compat
     BEFORE INSERT OR UPDATE ON meeting_analysis_runs
     FOR EACH ROW EXECUTE FUNCTION meeting_org_id_compat_fill();
 
+-- Supersession is append-only: the link may be SET at insert and CLEARED by the
+-- ON DELETE SET NULL above, but never re-pointed. A row inserted at time T can only
+-- reference a run that already existed at T, so an immutable link makes the
+-- supersession graph a time-ordered DAG — multi-node cycles (A->B->A) are structurally
+-- impossible, not merely the single-node self-loop the CHECK already blocks.
+-- The condition allows X->NULL (the purge cascade) but rejects NULL->X and X->Y.
+CREATE OR REPLACE FUNCTION meeting_analysis_run_supersedes_append_only()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.supersedes_analysis_run_id IS DISTINCT FROM OLD.supersedes_analysis_run_id
+       AND NEW.supersedes_analysis_run_id IS NOT NULL THEN
+        RAISE EXCEPTION 'supersedes_analysis_run_id is append-only: set at insert or cleared on purge, never re-pointed (guards against supersession cycles)'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS meeting_analysis_runs_supersedes_append_only ON meeting_analysis_runs;
+CREATE TRIGGER meeting_analysis_runs_supersedes_append_only
+    BEFORE UPDATE ON meeting_analysis_runs
+    FOR EACH ROW EXECUTE FUNCTION meeting_analysis_run_supersedes_append_only();
+
 COMMENT ON TABLE meeting_analysis_runs IS
     'Faz 24 platform-ai#244 BE-1a. Canonical meeting-ai analysis result. PK is the caller Idempotency-Key (analysis_run_id) — identity equals idempotency. Re-analysis is a new run linked via supersedes_analysis_run_id, never an overwrite.';
 COMMENT ON COLUMN meeting_analysis_runs.payload_hash IS
@@ -194,15 +217,18 @@ ALTER TABLE meeting_decisions
         );
 
 -- Composite tenant-FK: an AI row can only bind to a run in its own tenant.
+-- (analysis_run_id, tenant_id, meeting_id), NOT just (run, tenant): the meeting_id must
+-- match too, or an AI row for meeting B could bind to a run belonging to meeting A within
+-- the same tenant. Targets uq_analysis_runs_run_tenant_meeting.
 ALTER TABLE meeting_actions
     ADD CONSTRAINT fk_meeting_actions_analysis_run
-        FOREIGN KEY (analysis_run_id, tenant_id)
-        REFERENCES meeting_analysis_runs(analysis_run_id, tenant_id) ON DELETE CASCADE;
+        FOREIGN KEY (analysis_run_id, tenant_id, meeting_id)
+        REFERENCES meeting_analysis_runs(analysis_run_id, tenant_id, meeting_id) ON DELETE CASCADE;
 
 ALTER TABLE meeting_decisions
     ADD CONSTRAINT fk_meeting_decisions_analysis_run
-        FOREIGN KEY (analysis_run_id, tenant_id)
-        REFERENCES meeting_analysis_runs(analysis_run_id, tenant_id) ON DELETE CASCADE;
+        FOREIGN KEY (analysis_run_id, tenant_id, meeting_id)
+        REFERENCES meeting_analysis_runs(analysis_run_id, tenant_id, meeting_id) ON DELETE CASCADE;
 
 -- Child idempotency. Partial: manual rows (analysis_run_id IS NULL) are untouched.
 CREATE UNIQUE INDEX uq_meeting_actions_run_ordinal
