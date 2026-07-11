@@ -5,9 +5,11 @@ import com.example.endpointadmin.model.EndpointDevice;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -135,4 +137,33 @@ public interface EndpointDeviceRepository extends JpaRepository<EndpointDevice, 
             """)
     List<EndpointDevice> findVisibleToOrgAndStatusIn(
             @Param("orgId") UUID orgId, @Param("statuses") Collection<DeviceStatus> statuses);
+
+    /**
+     * Faz 22.6 #2290 — device-staleness reconciler bulk transition. System-scoped
+     * (cross-tenant; the reconciler is a background job, not an org-scoped read):
+     * a device whose heartbeat lane silently breaks — or that is genuinely offline —
+     * otherwise stays {@code ONLINE} forever (only {@code last_seen_at} freezes), so
+     * the fleet dashboard shows a false-ONLINE. This demotes rows whose
+     * {@code lastSeenAt} is older than {@code threshold} from {@code fromStatus} to
+     * {@code toStatus}. The reconciler calls it twice — {@code STALE -> OFFLINE}
+     * (longer TTL) then {@code ONLINE -> STALE} (freshness TTL) — so a freshly-stale
+     * device dwells in {@code STALE} for at least one cycle before {@code OFFLINE}.
+     *
+     * <p>Terminal / pre-lifecycle states ({@code DECOMMISSIONED},
+     * {@code PENDING_ENROLLMENT}) are never matched: the {@code fromStatus} filter
+     * only ever passes {@code ONLINE} or {@code STALE}. A returning heartbeat sets
+     * the device back to {@code ONLINE} ({@code EndpointHeartbeatService}), so this is
+     * a one-way demotion that self-heals on the next heartbeat.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("""
+            update EndpointDevice d
+               set d.status = :toStatus
+             where d.status = :fromStatus
+               and d.lastSeenAt is not null
+               and d.lastSeenAt < :threshold
+            """)
+    int demoteStaleDevices(@Param("fromStatus") DeviceStatus fromStatus,
+                           @Param("toStatus") DeviceStatus toStatus,
+                           @Param("threshold") Instant threshold);
 }
