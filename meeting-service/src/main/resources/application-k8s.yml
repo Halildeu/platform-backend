@@ -66,6 +66,18 @@ meeting:
     analyze-path: ${MEETING_AI_ANALYZE_PATH:/analyze}
     request-timeout: ${MEETING_AI_REQUEST_TIMEOUT:30s}
     max-transcript-chars: ${MEETING_AI_MAX_TRANSCRIPT_CHARS:200000}
+  internal:
+    # ai#244 BE-1b — auth-service SERVICE-token trust for the internal
+    # analysis-result ingestion path (/api/v1/internal/meetings/**). A BLANK
+    # jwk-set-uri ⇒ FAIL-CLOSED: the secondary (service) JWT decoder is not
+    # built, no service-issuer token can decode, and the SVC_ authority the
+    # internal chain requires is never minted. BE-1c wires the ingestion caller
+    # (meeting-ai-service) and populates MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI
+    # (auth-service JWKS) to activate the service decoder.
+    service-jwt:
+      jwk-set-uri: ${MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI:}
+      issuer: ${MEETING_INTERNAL_SERVICE_JWT_ISSUER:auth-service}
+      audience: ${MEETING_INTERNAL_SERVICE_JWT_AUDIENCE:meeting-service}
 
 server:
   port: ${SERVER_PORT:8097}

@@ -1,9 +1,13 @@
 package com.example.meeting.config;
 
 import com.example.meeting.security.AudienceValidator;
+import com.example.meeting.security.FallbackJwtDecoder;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -13,6 +17,7 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
@@ -22,21 +27,40 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.util.StringUtils;
 
 /**
- * Resource-server security for the admin REST surface. Adapted from
- * endpoint-admin-service {@code SecurityConfig} — meeting-service has NO
- * agent device-credential path, so only the admin JWT chain + a default
- * chain (actuator permitAll, everything else authenticated) exist.
+ * Resource-server security for meeting-service. Three ordered filter chains:
  *
- * <p>The {@code @RequireModule} OpenFGA check on the controllers is the
- * fine-grained gate; this chain enforces only that an admin route caller
- * carries one of the coarse admin authorities.
+ * <ol>
+ *   <li>{@code @Order(1)} internal service-to-service chain — ai#244 BE-1b.
+ *       {@code /api/v1/internal/meetings/**} gated on the
+ *       {@code SVC_meeting:analysis-result:write} authority (auth-service
+ *       SERVICE token only).</li>
+ *   <li>{@code @Order(2)} admin chain — {@code /api/v1/admin/**} gated on the
+ *       coarse admin authorities; {@code @RequireModule} OpenFGA is the
+ *       fine-grained gate at the controllers.</li>
+ *   <li>{@code @Order(3)} default chain — actuator {@code permitAll}, everything
+ *       else authenticated.</li>
+ * </ol>
+ *
+ * <p>Adapted from endpoint-admin-service {@code SecurityConfig}; the BE-1b
+ * internal chain + {@link FallbackJwtDecoder} + service-token converter mapping
+ * are ported from notification-orchestrator {@code #734}.
  */
 @Configuration
 @EnableMethodSecurity
 @org.springframework.context.annotation.Profile("!local & !dev")
 public class SecurityConfig {
+
+    /**
+     * Authority that the internal analysis-result ingestion path requires.
+     * auth-service mints the raw {@code perm} {@code meeting:analysis-result:write};
+     * {@link #jwtAuthenticationConverter()} maps it to this {@code SVC_}-prefixed
+     * authority ONLY for tokens whose {@code iss} is the configured service
+     * issuer, so a Keycloak USER token can never obtain it.
+     */
+    static final String SVC_ANALYSIS_RESULT_WRITE = "SVC_meeting:analysis-result:write";
 
     private final Environment environment;
 
@@ -44,8 +68,40 @@ public class SecurityConfig {
         this.environment = environment;
     }
 
+    /**
+     * ai#244 BE-1b — internal service-to-service chain (highest priority).
+     * meeting-ai-service (the ingestion caller, arriving in BE-1c) reaches
+     * {@code /api/v1/internal/meetings/**} with an auth-service-minted SERVICE
+     * token. A Keycloak USER token can never satisfy this gate: the
+     * {@code SVC_} authority is granted by the converter ONLY when the token
+     * issuer is the service issuer, and the env-gated service decoder is the
+     * ONLY decoder that will validate a service-issuer token.
+     *
+     * <p>BE-1b mounts NO production controller under this path — the ingestion
+     * endpoint arrives in BE-1c. The chain is wired ahead of the surface so the
+     * security boundary exists before the endpoint does (chain-only production;
+     * the exercising controller is test-scoped).
+     */
     @Bean
     @Order(1)
+    public SecurityFilterChain internalServiceSecurityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
+        http
+                .securityMatcher("/api/v1/internal/meetings/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .anyRequest().hasAuthority(SVC_ANALYSIS_RESULT_WRITE))
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                        .decoder(jwtDecoder)
+                        .jwtAuthenticationConverter(jwtAuthenticationConverter)));
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http,
                                                         JwtDecoder jwtDecoder,
                                                         JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
@@ -63,7 +119,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Order(2)
+    @Order(3)
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    JwtDecoder jwtDecoder,
                                                    JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
@@ -93,22 +149,84 @@ public class SecurityConfig {
                 "http://localhost:8081/realms/serban"
         );
 
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
-        OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
-                JwtValidators.createDefaultWithIssuer(issuer),
-                new AudienceValidator(resolveAudiences(), resolveAllowedClientIds())
+        JwtDecoder keycloakDecoder = buildDecoder(jwkSetUri, issuer, resolveAudiences(), resolveAllowedClientIds());
+
+        // ai#244 BE-1b: optional SECONDARY decoder for auth-service SERVICE
+        // tokens used by the internal ingestion path (/api/v1/internal/meetings/**).
+        // Env-gated — active ONLY when the service JWK-set URI is configured.
+        // Absent/blank ⇒ FAIL-CLOSED: only the Keycloak decoder exists, so no
+        // service-issuer token can ever decode and the converter therefore never
+        // mints the SVC_ authority the internal chain requires. Ported
+        // FallbackJwtDecoder pattern from notification-orchestrator #734: try
+        // Keycloak first, then the service issuer.
+        String serviceJwkSetUri = firstNonBlank(
+                environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI"),
+                environment.getProperty("meeting.internal.service-jwt.jwk-set-uri")
         );
-        decoder.setJwtValidator(validator);
+        if (!StringUtils.hasText(serviceJwkSetUri)) {
+            return keycloakDecoder;
+        }
+        String serviceIssuer = resolveServiceIssuer();
+        List<String> serviceAudiences = csvToList(firstNonBlank(
+                environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_AUDIENCE"),
+                environment.getProperty("meeting.internal.service-jwt.audience"),
+                "meeting-service"
+        ));
+        // Service tokens carry no Keycloak azp/client_id ⇒ no client-id allow-list.
+        JwtDecoder serviceDecoder = buildDecoder(serviceJwkSetUri, serviceIssuer, serviceAudiences, List.of());
+        return new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
+    }
+
+    /**
+     * Build a NimbusJwtDecoder over a JWK-set URI with the issuer + audience
+     * validators. Package-visible + static so security tests can reuse the exact
+     * production validator wiring (see {@link #buildServiceValidator}).
+     */
+    static JwtDecoder buildDecoder(String jwkSetUri,
+                                   String issuer,
+                                   Collection<String> audiences,
+                                   Collection<String> allowedClientIds) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(buildServiceValidator(issuer, audiences, allowedClientIds));
         return decoder;
+    }
+
+    /**
+     * Issuer-claim assertion + audience/authorized-party allow-list. Extracted
+     * (mirrors notification-orchestrator #734) so the same validator logic backs
+     * both the Keycloak and the service decoder and can be exercised directly in
+     * tests against real, signed tokens.
+     */
+    static OAuth2TokenValidator<Jwt> buildServiceValidator(String issuer,
+                                                           Collection<String> audiences,
+                                                           Collection<String> allowedClientIds) {
+        List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
+        if (StringUtils.hasText(issuer)) {
+            validators.add(JwtValidators.createDefaultWithIssuer(issuer));
+        } else {
+            validators.add(JwtValidators.createDefault());
+        }
+        if ((audiences != null && !audiences.isEmpty())
+                || (allowedClientIds != null && !allowedClientIds.isEmpty())) {
+            validators.add(new AudienceValidator(audiences, allowedClientIds));
+        }
+        return new DelegatingOAuth2TokenValidator<>(
+                validators.toArray(new OAuth2TokenValidator[0]));
     }
 
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        // ai#244 BE-1b: the service issuer the converter trusts for perm→SVC_
+        // mapping. Read once at bean construction; default "auth-service"
+        // (auth-service ServiceTokenProvider stamps iss=auth-service).
+        final String serviceIssuer = resolveServiceIssuer();
+
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setPrincipalClaimName("sub");
         converter.setJwtGrantedAuthoritiesConverter(jwt -> {
-            LinkedHashSet<org.springframework.security.core.GrantedAuthority> authorities = new LinkedHashSet<>();
+            LinkedHashSet<GrantedAuthority> authorities = new LinkedHashSet<>();
 
+            // Keycloak realm_access.roles → ROLE_* (existing behaviour preserved).
             @SuppressWarnings("unchecked")
             java.util.Map<String, Object> realmAccess = jwt.getClaim("realm_access");
             if (realmAccess != null) {
@@ -117,12 +235,18 @@ public class SecurityConfig {
                 if (roles != null) {
                     roles.stream()
                             .filter(role -> role != null && !role.isBlank())
-                            .map(role -> "ROLE_" + role.trim().toUpperCase())
+                            // Locale.ROOT: without it, a Turkish-locale JVM
+                            // (tr_TR) maps "admin" → "ADMİN" (dotted capital I),
+                            // so ROLE_ADMIN never matches and admin access breaks
+                            // — a latent bug this BE-1b work surfaced. ROOT keeps
+                            // the mapping deterministic across every deployment.
+                            .map(role -> "ROLE_" + role.trim().toUpperCase(Locale.ROOT))
                             .map(SimpleGrantedAuthority::new)
                             .forEach(authorities::add);
                 }
             }
 
+            // scope → SCOPE_* (existing behaviour preserved).
             String scope = jwt.getClaimAsString("scope");
             if (scope != null) {
                 Arrays.stream(scope.split(" "))
@@ -133,9 +257,34 @@ public class SecurityConfig {
                         .forEach(authorities::add);
             }
 
+            // ai#244 BE-1b: auth-service SERVICE-token `perm` claim → SVC_*
+            // authority, gated STRICTLY on iss == serviceIssuer. A Keycloak USER
+            // token always carries a different iss (enforced by the Keycloak
+            // decoder's issuer validator), so it can NEVER gain a SVC_ authority
+            // even if it somehow presented a `perm` claim. This iss guard is the
+            // linchpin that keeps the internal chain unreachable by user tokens.
+            if (serviceIssuer.equals(jwt.getClaimAsString("iss"))) {
+                List<String> servicePerms = jwt.getClaimAsStringList("perm");
+                if (servicePerms != null) {
+                    servicePerms.stream()
+                            .filter(p -> p != null && !p.isBlank())
+                            .map(p -> "SVC_" + p.trim())
+                            .map(SimpleGrantedAuthority::new)
+                            .forEach(authorities::add);
+                }
+            }
+
             return authorities;
         });
         return converter;
+    }
+
+    private String resolveServiceIssuer() {
+        return firstNonBlank(
+                environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_ISSUER"),
+                environment.getProperty("meeting.internal.service-jwt.issuer"),
+                "auth-service"
+        );
     }
 
     private List<String> resolveAudiences() {
