@@ -45,6 +45,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
+import org.springframework.transaction.annotation.Transactional;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
@@ -307,6 +308,77 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
         // side-effect EXACTLY ONCE (event_key de-dup).
         assertThat(publisher.delivered).hasSize(2);
         assertThat(publisher.effectCount()).isEqualTo(1);
+    }
+
+    // ────────────────────────── token fencing (Codex review — multi-pod safety) ──────────────────────────
+
+    @Test
+    @Transactional
+    void markPublishedFenced_staleWorkerWithWrongToken_touchesNoRow_leavesNewOwnersRowIntact() {
+        // The race Codex flagged: a slow publish overruns its lease, the row is recovered
+        // and RE-CLAIMED by another worker, then the stale worker reports success. Without
+        // fencing it would overwrite the new owner's outcome. With the token fence its
+        // update matches 0 rows and it walks away.
+        Seed seed = seed();
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        UUID staleToken = UUID.randomUUID();
+        UUID currentOwnerToken = UUID.randomUUID();
+        // The row is currently CLAIMED by the NEW owner (post-recovery re-claim).
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox"
+                        + " SET status='CLAIMED', claim_token=?, lease_expires_at=? WHERE id=?",
+                currentOwnerToken, Timestamp.from(Instant.now().plusSeconds(60)), id);
+
+        int stale = outboxRepo.markPublishedFenced(id, staleToken, Instant.now());
+        assertThat(stale).as("a stale worker's terminal update must match 0 rows").isZero();
+
+        MeetingEventOutbox afterStale = outboxRepo.findById(id).orElseThrow();
+        assertThat(afterStale.getStatus())
+                .as("the new owner's CLAIMED row must not be overwritten")
+                .isEqualTo(MeetingEventOutboxStatus.CLAIMED);
+        assertThat(afterStale.getClaimToken()).isEqualTo(currentOwnerToken);
+
+        int held = outboxRepo.markPublishedFenced(id, currentOwnerToken, Instant.now());
+        assertThat(held).as("the current owner's fence holds").isEqualTo(1);
+        assertThat(outboxRepo.findById(id).orElseThrow().getStatus())
+                .isEqualTo(MeetingEventOutboxStatus.PUBLISHED);
+    }
+
+    @Test
+    @Transactional
+    void markFailedFenced_staleWorkerWithWrongToken_touchesNoRow() {
+        Seed seed = seed();
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        UUID staleToken = UUID.randomUUID();
+        UUID currentOwnerToken = UUID.randomUUID();
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox"
+                        + " SET status='CLAIMED', claim_token=?, lease_expires_at=? WHERE id=?",
+                currentOwnerToken, Timestamp.from(Instant.now().plusSeconds(60)), id);
+
+        int stale = outboxRepo.markFailedFenced(id, staleToken, "SomeException", 8, Instant.now());
+        assertThat(stale).as("a stale worker must not reset a row it no longer owns").isZero();
+
+        MeetingEventOutbox row = outboxRepo.findById(id).orElseThrow();
+        assertThat(row.getStatus()).isEqualTo(MeetingEventOutboxStatus.CLAIMED);
+        assertThat(row.getAttempts()).as("attempts untouched by the stale worker").isZero();
+        assertThat(row.getClaimToken()).isEqualTo(currentOwnerToken);
+    }
+
+    @Test
+    @Transactional
+    void markFailedFenced_atMaxAttempts_deadLetters_whileFenceHolds() {
+        Seed seed = seed();
+        UUID id = seedPending(seed, "meeting.summary.ready", seed.runId + "|meeting.summary.ready");
+        UUID token = UUID.randomUUID();
+        // attempts already at 7; a fenced fail at max=8 must go DEAD, computed atomically.
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_event_outbox"
+                        + " SET status='CLAIMED', claim_token=?, attempts=7, lease_expires_at=? WHERE id=?",
+                token, Timestamp.from(Instant.now().plusSeconds(60)), id);
+
+        int held = outboxRepo.markFailedFenced(id, token, "Boom", 8, Instant.now());
+        assertThat(held).isEqualTo(1);
+        MeetingEventOutbox row = outboxRepo.findById(id).orElseThrow();
+        assertThat(row.getStatus()).isEqualTo(MeetingEventOutboxStatus.DEAD);
+        assertThat(row.getAttempts()).isEqualTo(8);
     }
 
     // ────────────────────────── seeding + helpers ──────────────────────────

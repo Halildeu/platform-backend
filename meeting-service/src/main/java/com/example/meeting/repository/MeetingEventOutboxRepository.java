@@ -86,6 +86,63 @@ public interface MeetingEventOutboxRepository extends JpaRepository<MeetingEvent
         """, nativeQuery = true)
     int recoverStaleLeases(@Param("now") Instant now);
 
+    /**
+     * Token-fenced terminal success: CLAIMED → PUBLISHED, only if THIS worker still
+     * owns the row ({@code status='CLAIMED' AND claim_token=?}). If a slow publish
+     * overran its lease and the row was recovered + re-claimed by another worker, the
+     * predicate no longer matches and 0 rows update — the stale worker must NOT own the
+     * outcome. The caller checks the affected count.
+     *
+     * @return rows updated (1 = fence held, 0 = lease lost to another worker)
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+        UPDATE {h-schema}meeting_event_outbox
+        SET status = 'PUBLISHED',
+            published_at = :now,
+            claim_token = NULL,
+            processing_owner = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            updated_at = :now
+        WHERE id = :id
+          AND status = 'CLAIMED'
+          AND claim_token = :claimToken
+        """, nativeQuery = true)
+    int markPublishedFenced(@Param("id") UUID id,
+                            @Param("claimToken") UUID claimToken,
+                            @Param("now") Instant now);
+
+    /**
+     * Token-fenced failure: attempts++ → PENDING (retry) or DEAD (budget spent), only
+     * while this worker still owns the row. Same fencing rationale as
+     * {@link #markPublishedFenced}: a stale worker whose lease was recovered must not
+     * reset a row another worker now owns. The DEAD/PENDING decision is computed against
+     * the incremented attempts in a single atomic statement.
+     *
+     * @return rows updated (1 = fence held, 0 = lease lost)
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+        UPDATE {h-schema}meeting_event_outbox
+        SET attempts = attempts + 1,
+            last_error = :errorClass,
+            status = CASE WHEN attempts + 1 >= :maxAttempts THEN 'DEAD' ELSE 'PENDING' END,
+            claim_token = NULL,
+            processing_owner = NULL,
+            claimed_at = NULL,
+            lease_expires_at = NULL,
+            updated_at = :now
+        WHERE id = :id
+          AND status = 'CLAIMED'
+          AND claim_token = :claimToken
+        """, nativeQuery = true)
+    int markFailedFenced(@Param("id") UUID id,
+                         @Param("claimToken") UUID claimToken,
+                         @Param("errorClass") String errorClass,
+                         @Param("maxAttempts") int maxAttempts,
+                         @Param("now") Instant now);
+
     /** Test/ops helper: the outbox rows for one analysis run, in a stable order. */
     List<MeetingEventOutbox> findByAggregateIdOrderByEventKeyAsc(UUID aggregateId);
 

@@ -135,51 +135,41 @@ public class MeetingEventOutboxPoller {
     private void publishOne(final MeetingEventOutbox row) {
         try {
             publisher.publish(MeetingEventMessage.from(row));
-            self.markPublished(row.getId());
+            self.markPublished(row.getId(), row.getClaimToken());
         } catch (RuntimeException e) {
             // Safe telemetry only — the exception class, never the payload.
             log.warn("meeting-event publish failed eventKey={} cause={}",
                     row.getEventKey(), e.getClass().getSimpleName());
-            self.markFailed(row.getId(), e.getClass().getSimpleName());
+            self.markFailed(row.getId(), row.getClaimToken(), e.getClass().getSimpleName());
         }
     }
 
-    /** Terminal success: CLAIMED → PUBLISHED, lease cleared. */
+    /**
+     * Terminal success: CLAIMED → PUBLISHED, but ONLY while this worker still owns the
+     * row (token fence). If a slow publish overran its lease and the row was recovered
+     * and re-claimed elsewhere, the fenced update touches 0 rows and this worker walks
+     * away instead of overwriting the new owner's outcome (Codex review — multi-pod
+     * safety).
+     */
     @Transactional
-    public void markPublished(final UUID id) {
-        MeetingEventOutbox row = repository.findById(id).orElse(null);
-        if (row == null) {
-            return;
+    public void markPublished(final UUID id, final UUID claimToken) {
+        int fenced = repository.markPublishedFenced(id, claimToken, Instant.now());
+        if (fenced == 0) {
+            log.warn("meeting-event publish outcome discarded — lease lost id={} (row re-claimed)",
+                    id);
         }
-        row.setStatus(MeetingEventOutboxStatus.PUBLISHED);
-        row.setPublishedAt(Instant.now());
-        clearLease(row);
-        repository.save(row);
     }
 
-    /** Failure: attempts++, back to PENDING for retry, or DEAD once the budget is spent. */
+    /** Failure: attempts++, PENDING (retry) or DEAD, token-fenced (same rationale). */
     @Transactional
-    public void markFailed(final UUID id, final String errorClass) {
-        MeetingEventOutbox row = repository.findById(id).orElse(null);
-        if (row == null) {
-            return;
+    public void markFailed(final UUID id, final UUID claimToken, final String errorClass) {
+        int fenced = repository.markFailedFenced(id, claimToken, errorClass, maxAttempts, Instant.now());
+        if (fenced == 0) {
+            log.warn("meeting-event failure outcome discarded — lease lost id={} (row re-claimed)",
+                    id);
         }
-        int attempts = row.getAttempts() + 1;
-        row.setAttempts(attempts);
-        row.setLastError(errorClass);
-        clearLease(row);
-        row.setStatus(attempts >= maxAttempts
-                ? MeetingEventOutboxStatus.DEAD
-                : MeetingEventOutboxStatus.PENDING);
-        repository.save(row);
     }
 
-    private static void clearLease(final MeetingEventOutbox row) {
-        row.setClaimToken(null);
-        row.setProcessingOwner(null);
-        row.setClaimedAt(null);
-        row.setLeaseExpiresAt(null);
-    }
 
     public String getOwner() {
         return owner;
