@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 import com.example.meeting.dto.v1.admin.MeetingIntelligenceResultResponse;
@@ -44,6 +45,8 @@ class MeetingIntelligenceResultServiceTest {
     private MeetingDecisionRepository decisionRepository;
     @Mock
     private MeetingActionRepository actionRepository;
+    @Mock
+    private MeetingIntelligenceResultAccessAuditService accessAuditService;
 
     private MeetingIntelligenceResultService service;
     private final AdminTenantContext tenant =
@@ -56,6 +59,7 @@ class MeetingIntelligenceResultServiceTest {
                 runRepository,
                 decisionRepository,
                 actionRepository,
+                accessAuditService,
                 new ObjectMapper());
     }
 
@@ -99,6 +103,7 @@ class MeetingIntelligenceResultServiceTest {
                 RUN_ID, MEETING_ID, ORG_ID);
         verify(actionRepository).findByAnalysisRunIdAndMeetingIdVisibleToOrg(
                 RUN_ID, MEETING_ID, ORG_ID);
+        verify(accessAuditService).recordCanonicalRead(tenant, MEETING_ID, RUN_ID);
     }
 
     @Test
@@ -112,7 +117,7 @@ class MeetingIntelligenceResultServiceTest {
                     assertThat(exception.getReason()).isEqualTo("MEETING_NOT_FOUND");
                 });
 
-        verifyNoInteractions(runRepository, decisionRepository, actionRepository);
+        verifyNoInteractions(runRepository, decisionRepository, actionRepository, accessAuditService);
     }
 
     @Test
@@ -129,6 +134,26 @@ class MeetingIntelligenceResultServiceTest {
                 });
 
         verifyNoInteractions(decisionRepository, actionRepository);
+        verifyNoInteractions(accessAuditService);
+    }
+
+    @Test
+    void getLatest_auditWriteFailure_preventsDisclosure() {
+        MeetingAnalysisRun run = analysisRun();
+        when(meetingRepository.findVisibleToOrgAndId(ORG_ID, MEETING_ID))
+                .thenReturn(Optional.of(new Meeting()));
+        when(runRepository.findLatestByMeetingIdVisibleToOrg(MEETING_ID, ORG_ID))
+                .thenReturn(Optional.of(run));
+        when(decisionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        when(actionRepository.findByAnalysisRunIdAndMeetingIdVisibleToOrg(
+                RUN_ID, MEETING_ID, ORG_ID)).thenReturn(List.of());
+        doThrow(new IllegalStateException("audit unavailable"))
+                .when(accessAuditService).recordCanonicalRead(tenant, MEETING_ID, RUN_ID);
+
+        assertThatThrownBy(() -> service.getLatest(tenant, MEETING_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("audit unavailable");
     }
 
     @Test
@@ -152,6 +177,8 @@ class MeetingIntelligenceResultServiceTest {
                     assertThat(exception.getCause()).isNull();
                 })
                 .hasMessageNotContaining("not-json");
+
+        verifyNoInteractions(accessAuditService);
     }
 
     @Test
@@ -178,6 +205,8 @@ class MeetingIntelligenceResultServiceTest {
                             .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
                     assertThat(exception.getReason()).isEqualTo("ANALYSIS_RESULT_INVALID");
                 });
+
+        verifyNoInteractions(accessAuditService);
     }
 
     @Test
@@ -205,6 +234,8 @@ class MeetingIntelligenceResultServiceTest {
                             .isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
                     assertThat(exception.getReason()).isEqualTo("ANALYSIS_RESULT_INVALID");
                 });
+
+        verifyNoInteractions(accessAuditService);
     }
 
     private static MeetingAnalysisRun analysisRun() {

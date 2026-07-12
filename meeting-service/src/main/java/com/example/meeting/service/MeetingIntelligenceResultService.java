@@ -41,6 +41,7 @@ public class MeetingIntelligenceResultService {
     private final MeetingAnalysisRunRepository runRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingActionRepository actionRepository;
+    private final MeetingIntelligenceResultAccessAuditService accessAuditService;
     private final ObjectMapper objectMapper;
 
     public MeetingIntelligenceResultService(
@@ -48,15 +49,17 @@ public class MeetingIntelligenceResultService {
             MeetingAnalysisRunRepository runRepository,
             MeetingDecisionRepository decisionRepository,
             MeetingActionRepository actionRepository,
+            MeetingIntelligenceResultAccessAuditService accessAuditService,
             ObjectMapper objectMapper) {
         this.meetingRepository = meetingRepository;
         this.runRepository = runRepository;
         this.decisionRepository = decisionRepository;
         this.actionRepository = actionRepository;
+        this.accessAuditService = accessAuditService;
         this.objectMapper = objectMapper;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public MeetingIntelligenceResultResponse getLatest(
             AdminTenantContext tenant,
             UUID meetingId) {
@@ -76,7 +79,7 @@ public class MeetingIntelligenceResultService {
                 .findByAnalysisRunIdAndMeetingIdVisibleToOrg(
                         run.getAnalysisRunId(), meetingId, tenant.tenantId());
 
-        return new MeetingIntelligenceResultResponse(
+        MeetingIntelligenceResultResponse response = new MeetingIntelligenceResultResponse(
                 run.getAnalysisRunId(),
                 meetingId,
                 run.getTranscriptSessionId(),
@@ -107,6 +110,10 @@ public class MeetingIntelligenceResultService {
                 run.getSupersedesAnalysisRunId(),
                 true,
                 STORAGE_MODE);
+        // Audit only after the full canonical payload has passed semantic validation.
+        // saveAndFlush failures propagate, roll back this transaction, and prevent disclosure.
+        accessAuditService.recordCanonicalRead(tenant, meetingId, run.getAnalysisRunId());
+        return response;
     }
 
     private static String decisionText(MeetingDecision decision) {
