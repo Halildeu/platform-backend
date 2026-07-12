@@ -171,6 +171,24 @@ class JwtTenantContextResolverTest {
                 .hasMessageContaining("401 UNAUTHORIZED");
     }
 
+    @Test
+    void rejectsMutableIdentityFallbackWhenOidcSubjectIsMissing() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .claim("org_id", UUID_TENANT.toString())
+                .claim("email", "mutable@example.test")
+                .claim("preferred_username", "mutable-user")
+                .claim("userId", "user-1")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
+
+        assertThatThrownBy(() -> new JwtTenantContextResolver("", true, new MockEnvironment()).resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
+    }
+
     private static UUID companyTenant(String companyId) {
         return UUID.nameUUIDFromBytes(("company:" + companyId).getBytes(StandardCharsets.UTF_8));
     }

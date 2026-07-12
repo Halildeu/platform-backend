@@ -71,6 +71,9 @@ public final class MeetingAuthz {
     /** Recorder consent relation on a {@code meeting:<id>} object. */
     public static final String CAN_RECORD = "can_record";
 
+    /** Explicit deny relation; subtracts from every per-meeting allow path. */
+    public static final String BLOCKED = "blocked";
+
     private MeetingAuthz() {
     }
 }

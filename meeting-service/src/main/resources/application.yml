@@ -45,6 +45,12 @@ security:
 meeting:
   tenant:
     local-default-tenant-id: ${MEETING_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+  authz:
+    object-principal:
+      # Migration-only switches. Production defaults remain fail-closed on the
+      # stable OIDC subject; GitOps may enable these for a bounded rollback window.
+      legacy-user-id-fallback-enabled: ${MEETING_AUTHZ_LEGACY_USER_ID_FALLBACK_ENABLED:false}
+      legacy-user-id-dual-write-enabled: ${MEETING_AUTHZ_LEGACY_USER_ID_DUAL_WRITE_ENABLED:false}
   ai:
     enabled: ${MEETING_AI_ENABLED:false}
     base-url: ${MEETING_AI_BASE_URL:http://localhost:18080}

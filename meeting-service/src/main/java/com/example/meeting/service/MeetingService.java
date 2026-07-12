@@ -27,6 +27,7 @@ import com.example.meeting.repository.MeetingSessionRepository;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -55,7 +56,8 @@ import java.util.UUID;
  * then the child via {@code findByIdAndMeetingIdVisibleToOrg}.
  *
  * <p>On meeting create the service writes a Zanzibar
- * {@code owner @ meeting:&lt;id&gt;} tuple binding the creator (ADR-0012-EA:
+ * {@code owner @ meeting:&lt;id&gt;} tuple binding the creator's stable OIDC
+ * subject (ADR-0012-EA:
  * the service owns the object it just created). The OpenFGA client is
  * optional — under local/dev/test/integration no
  * {@link OpenFgaAuthzService} bean exists, so the tuple write is skipped
@@ -70,18 +72,26 @@ public class MeetingService {
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
+    private final boolean legacyUserIdFallbackEnabled;
+    private final boolean legacyUserIdDualWriteEnabled;
 
     public MeetingService(
             MeetingRepository meetingRepository,
             MeetingSessionRepository sessionRepository,
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
-            ObjectProvider<OpenFgaAuthzService> authzServiceProvider) {
+            ObjectProvider<OpenFgaAuthzService> authzServiceProvider,
+            @Value("${meeting.authz.object-principal.legacy-user-id-fallback-enabled:false}")
+            boolean legacyUserIdFallbackEnabled,
+            @Value("${meeting.authz.object-principal.legacy-user-id-dual-write-enabled:false}")
+            boolean legacyUserIdDualWriteEnabled) {
         this.meetingRepository = meetingRepository;
         this.sessionRepository = sessionRepository;
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
         this.authzServiceProvider = authzServiceProvider;
+        this.legacyUserIdFallbackEnabled = legacyUserIdFallbackEnabled;
+        this.legacyUserIdDualWriteEnabled = legacyUserIdDualWriteEnabled;
     }
 
     // ───────────────────────────── Meeting CRUD ─────────────────────────────
@@ -101,8 +111,8 @@ public class MeetingService {
 
     @Transactional(readOnly = true)
     public void requireRecordingAccess(AdminTenantContext tenant, UUID id) {
-        requireMeeting(tenant, id);
-        String principalRef = toUserPrincipalRef(tenant.authzPrincipal());
+        Meeting meeting = requireMeeting(tenant, id);
+        String stablePrincipalRef = toUserPrincipalRef(tenant.subject());
 
         OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
         if (authz == null || !authz.isEnabled()) {
@@ -110,13 +120,35 @@ public class MeetingService {
         }
 
         boolean allowed = authz.checkPrincipal(
-                principalRef,
+                stablePrincipalRef,
                 MeetingAuthz.CAN_RECORD,
                 MeetingAuthz.OBJECT_TYPE,
                 id.toString());
-        if (!allowed) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
+        if (allowed) {
+            return;
         }
+
+        if (legacyUserIdFallbackEnabled
+                && tenant.subject().equals(meeting.getCreatedBySubject())) {
+            // The legacy userId is accepted only as an issuer-signed compatibility
+            // claim for the same stable OIDC subject that created this meeting.
+            String legacyPrincipalRef = toUserPrincipalRef(tenant.authzPrincipal());
+            if (!legacyPrincipalRef.equals(stablePrincipalRef)) {
+                boolean stablePrincipalBlocked = authz.checkPrincipal(
+                        stablePrincipalRef,
+                        MeetingAuthz.BLOCKED,
+                        MeetingAuthz.OBJECT_TYPE,
+                        id.toString());
+                if (!stablePrincipalBlocked && authz.checkPrincipal(
+                        legacyPrincipalRef,
+                        MeetingAuthz.CAN_RECORD,
+                        MeetingAuthz.OBJECT_TYPE,
+                        id.toString())) {
+                    return;
+                }
+            }
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
     }
 
     @Transactional
@@ -135,9 +167,22 @@ public class MeetingService {
         meeting.setLastUpdatedBySubject(tenant.subject());
 
         Meeting saved = meetingRepository.save(meeting);
-        // Owner tuple uses the SAME principal the module gate authorizes with
-        // (userId-claim-or-sub), not the audit subject — see AdminTenantContext.
-        writeOwnerTuple(tenant.authzPrincipal(), saved.getId());
+        // Object ownership uses the immutable OIDC subject. Numeric userId is
+        // a module-authorization compatibility alias, not durable object identity.
+        writeOwnerTuple(tenant.subject(), saved.getId());
+        if (legacyUserIdDualWriteEnabled
+                && !toUserPrincipalRef(tenant.subject()).equals(toUserPrincipalRef(tenant.authzPrincipal()))) {
+            try {
+                writeOwnerTuple(tenant.authzPrincipal(), saved.getId());
+            } catch (RuntimeException legacyWriteFailure) {
+                try {
+                    deleteOwnerTuple(tenant.subject(), saved.getId());
+                } catch (RuntimeException compensationFailure) {
+                    legacyWriteFailure.addSuppressed(compensationFailure);
+                }
+                throw legacyWriteFailure;
+            }
+        }
         return toMeetingResponse(saved);
     }
 
@@ -377,10 +422,12 @@ public class MeetingService {
      * also a no-op inside the SDK ({@code !enabled → return}). When OpenFGA is
      * enabled and the write genuinely fails the {@link OpenFgaAuthzService}
      * throws a {@link RuntimeException}, which is allowed to propagate so the
-     * surrounding {@code @Transactional createMeeting} ROLLS BACK — the meeting
-     * row and its owner tuple are committed atomically (no orphan meeting with
-     * a missing owner grant). An idempotent re-write of an already-existing
-     * tuple does NOT throw (SDK swallows it), so it never spuriously rolls back.
+     * surrounding {@code @Transactional createMeeting} rolls back the meeting
+     * row. OpenFGA is an external store, so the dual-write path attempts a
+     * compensating delete if its second write fails. A failed compensation is
+     * attached as a suppressed exception and must be reconciled by the bounded
+     * migration runbook. An idempotent re-write of an already-existing tuple
+     * does not throw.
      */
     private void writeOwnerTuple(String subject, UUID meetingId) {
         OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
@@ -388,7 +435,17 @@ public class MeetingService {
             return;
         }
         // Let a genuine write failure (RuntimeException) propagate → rollback.
-        authz.writeTuple(subject, MeetingAuthz.OWNER, MeetingAuthz.OBJECT_TYPE, meetingId.toString());
+        authz.writeTuple(toOpenFgaUserId(subject), MeetingAuthz.OWNER,
+                MeetingAuthz.OBJECT_TYPE, meetingId.toString());
+    }
+
+    private void deleteOwnerTuple(String subject, UUID meetingId) {
+        OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
+        if (authz == null || !authz.isEnabled()) {
+            return;
+        }
+        authz.deleteTuple(toOpenFgaUserId(subject), MeetingAuthz.OWNER,
+                MeetingAuthz.OBJECT_TYPE, meetingId.toString());
     }
 
     // ─────────────────────────── Response mappers ───────────────────────────
@@ -468,5 +525,10 @@ public class MeetingService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
         }
         return principal.startsWith("user:") ? principal : "user:" + principal;
+    }
+
+    private static String toOpenFgaUserId(String principal) {
+        String principalRef = toUserPrincipalRef(principal);
+        return principalRef.substring("user:".length());
     }
 }

@@ -65,9 +65,7 @@ public class JwtTenantContextResolver implements TenantContextResolver {
         }
         if (authentication.getPrincipal() instanceof Jwt jwt) {
             UUID tenantId = resolveTenantId(jwt);
-            String subject = firstNonBlank(jwt.getSubject(),
-                    jwt.getClaimAsString("email"),
-                    jwt.getClaimAsString("preferred_username"));
+            String subject = jwt.getSubject();
             if (tenantId != null && subject != null && !subject.isBlank()) {
                 return new AdminTenantContext(tenantId, subject, resolveAuthzPrincipal(jwt));
             }
@@ -76,12 +74,10 @@ public class JwtTenantContextResolver implements TenantContextResolver {
     }
 
     /**
-     * The OpenFGA authz principal — MUST mirror
+     * The module-authorization compatibility principal — mirrors
      * {@code MeetingRequireModuleInterceptor#extractUserId}: the {@code userId}
-     * claim when present, otherwise {@code sub}. Keeps the owner-tuple write
-     * and the module gate on the same principal. Falls back to {@code subject}
-     * only if {@code sub} is somehow blank (caller already guaranteed a
-     * non-blank subject above).
+     * claim when present, otherwise {@code sub}. Meeting object ownership uses
+     * the stable {@code subject}/{@code sub} separately.
      */
     private static String resolveAuthzPrincipal(Jwt jwt) {
         Object userIdClaim = jwt.getClaim("userId");
@@ -203,15 +199,4 @@ public class JwtTenantContextResolver implements TenantContextResolver {
         return UUID.nameUUIDFromBytes((COMPANY_TENANT_PREFIX + companyId.trim()).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String firstNonBlank(String... values) {
-        if (values == null) {
-            return null;
-        }
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                return value;
-            }
-        }
-        return null;
-    }
 }

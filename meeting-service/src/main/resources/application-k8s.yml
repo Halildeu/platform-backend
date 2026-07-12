@@ -60,6 +60,12 @@ erp:
 meeting:
   tenant:
     local-default-tenant-id: ${MEETING_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
+  authz:
+    object-principal:
+      # Explicit, time-bounded migration controls. Keep false outside the
+      # stable-sub rollout/backfill window.
+      legacy-user-id-fallback-enabled: ${MEETING_AUTHZ_LEGACY_USER_ID_FALLBACK_ENABLED:false}
+      legacy-user-id-dual-write-enabled: ${MEETING_AUTHZ_LEGACY_USER_ID_DUAL_WRITE_ENABLED:false}
   ai:
     enabled: ${MEETING_AI_ENABLED:true}
     base-url: ${MEETING_AI_BASE_URL:http://meeting-ai-service:8080}
