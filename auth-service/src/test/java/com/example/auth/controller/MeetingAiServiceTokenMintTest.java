@@ -1,59 +1,61 @@
 package com.example.auth.controller;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.example.auth.serviceauth.ServiceClientsProperties;
-import com.example.auth.serviceauth.ServiceMintPolicyProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 /**
  * ai#244 AI-1: proves auth-service can mint the service token meeting-ai needs to push
  * analysis results — {@code audience=meeting-service} carrying
  * {@code meeting:analysis-result:write} — AND that this authority is bound to meeting-ai
- * alone, not handed to every authenticated service-client.
+ * alone, not handed to every authenticated service client.
  *
- * <p>The mint allow-list makes the audience/permission mintable <em>at all</em>; the
- * per-permission client binding makes {@code meeting:analysis-result:write} mintable
- * <strong>only</strong> by meeting-ai. Without that binding any valid client could mint a
- * meeting-service write token and forge analysis results, breaking meeting-service's
- * single-writer authority (Verdict A). These tests pin both the positive path and the
- * three denials Codex flagged: cross-client, blank-presented-secret, blank-configured
- * secret (unprovisioned client).
+ * <p>The global mint allow-list is an upper ceiling. Each authenticated client also has
+ * explicit audience and permission ceilings, so authority cannot leak between registered
+ * clients. These tests pin the positive path, cross-client denial, client-bound token
+ * identity/cache behavior, and both blank-secret denial paths.
  *
  * <p>Deliberately its own context (not folded into {@link ServiceTokenControllerTest}) so
- * it neither depends on nor is broken by that suite's pre-existing rate-limit=1 /
- * impersonation-placeholder fragility (tracked separately). The mint policy + client map
- * are supplied as {@code @Primary} test beans so the binding is deterministic rather than
- * reconstructed from property strings.
+ * it neither depends on nor is broken by that suite's independent rate-limit window.
+ * Real Spring property binding
+ * supplies the same nested client-registration structure used by production YAML.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
+        "security.service-clients.clients.meeting-ai.secret=test-secret",
+        "security.service-clients.clients.meeting-ai.allowed-audiences[0]=meeting-service",
+        "security.service-clients.clients.meeting-ai.allowed-permissions[0]=meeting:analysis-result:write",
+        "security.service-clients.clients.meeting-ai.require-explicit-permissions=true",
+        "security.service-clients.clients.other-service.secret=test-secret-2",
+        "security.service-clients.clients.other-service.allowed-audiences[0]=meeting-service",
+        "security.service-clients.clients.other-service.allowed-permissions[0]=permissions:read",
+        "security.service-clients.clients.other-service.require-explicit-permissions=true",
+        "security.service-clients.clients.meeting-ai-canary.secret=canary-secret",
+        "security.service-clients.clients.meeting-ai-canary.allowed-audiences[0]=meeting-service",
+        "security.service-clients.clients.meeting-ai-canary.allowed-permissions[0]=meeting:analysis-result:write",
+        "security.service-clients.clients.meeting-ai-canary.require-explicit-permissions=true",
+        "security.service-clients.clients.unprovisioned-ai.secret=",
+        "security.service-clients.clients.unprovisioned-ai.allowed-audiences[0]=meeting-service",
+        "security.service-clients.clients.unprovisioned-ai.allowed-permissions[0]=meeting:analysis-result:write",
         "security.service-mint.allowed-audiences=meeting-service",
-        "security.service-mint.allowed-permissions=meeting:analysis-result:write",
-        // NOTE: the permission-client binding is injected via @BeforeEach below rather
-        // than an inline property. Spring's relaxed binding cannot parse a
-        // Map<String,Set<String>> whose key contains ':' from a flat property string
-        // (both "[key]=v" and "[key][0]=v" silently no-op). The production YAML form
-        // (application-k8s.yml, "[meeting:analysis-result:write]:" + list) binds fine and
-        // is covered separately; here we set the same value on the shared singleton.
+        "security.service-mint.allowed-permissions=meeting:analysis-result:write,permissions:read",
         "security.service-mint.rate-limit-per-minute=100",
         "auth.impersonation.keycloak-token-url=http://localhost:9999/token",
         "auth.impersonation.keycloak-broker-url=http://localhost:9999/broker",
@@ -74,50 +76,31 @@ class MeetingAiServiceTokenMintTest {
     private MockMvc mockMvc;
 
     @Autowired
-    private ServiceMintPolicyProperties mintPolicy;
-
-    @BeforeEach
-    void bindMeetingWriteScopeToMeetingAi() {
-        // The controller reads this same singleton per request, so setting it here is
-        // sufficient. Binds meeting:analysis-result:write to meeting-ai only.
-        mintPolicy.setPermissionClientBindings(
-                Map.of("meeting:analysis-result:write", Set.of("meeting-ai")));
-    }
+    private ObjectMapper objectMapper;
 
     private static String basic(String clientId, String secret) {
         String raw = clientId + ":" + secret;
         return "Basic " + Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
 
-    @TestConfiguration
-    static class MintTestConfig {
-        @Bean
-        @Primary
-        ServiceClientsProperties testClients() {
-            ServiceClientsProperties p = new ServiceClientsProperties();
-            Map<String, String> m = new HashMap<>();
-            m.put("meeting-ai", "test-secret");
-            // A *valid, authenticated* client that is deliberately NOT bound to the
-            // meeting write scope — used to prove cross-client denial.
-            m.put("other-service", "test-secret-2");
-            // A client whose secret has not been provisioned yet (ESO/Vault pending):
-            // its configured secret is blank, so it must stay fully disabled.
-            m.put("unprovisioned-ai", "");
-            p.setClients(m);
-            return p;
-        }
-    }
-
     @Test
     void meetingAi_mints_meetingService_analysisResultWrite() throws Exception {
-        mockMvc.perform(post("/oauth2/token")
+        MvcResult result = mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("meeting-ai", "test-secret"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=meeting-service"
                                 + "&permissions=meeting:analysis-result:write"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.access_token").isNotEmpty())
-                .andExpect(jsonPath("$.token_type").value("Bearer"));
+                .andExpect(jsonPath("$.token_type").value("Bearer"))
+                .andReturn();
+
+        JWTClaimsSet claims = claims(result);
+        assertEquals("meeting-ai", claims.getSubject());
+        assertEquals("meeting-ai", claims.getStringClaim("client_id"));
+        assertEquals("meeting-ai", claims.getStringClaim("svc"));
+        assertEquals(java.util.List.of("meeting-service"), claims.getAudience());
+        assertEquals(java.util.List.of("meeting:analysis-result:write"), claims.getStringListClaim("perm"));
     }
 
     @Test
@@ -140,11 +123,6 @@ class MeetingAiServiceTokenMintTest {
                 .andExpect(status().isBadRequest());
     }
 
-    /**
-     * Codex #2: a different, fully authenticated client may pass the global audience +
-     * permission allow-list, yet must still be refused the bound write scope. This is the
-     * escalation the binding closes: audience+permission alone are not sufficient.
-     */
     @Test
     void crossClient_validButUnbound_cannotMintMeetingWriteScope() throws Exception {
         mockMvc.perform(post("/oauth2/token")
@@ -155,27 +133,27 @@ class MeetingAiServiceTokenMintTest {
                 .andExpect(status().isBadRequest());
     }
 
-    /**
-     * Codex REVISE (fail-closed): a present binding key with an empty client list must deny
-     * EVERY client — even the normally-bound producer — rather than silently falling back to
-     * the global allow-list. Only a permission absent from the map stays global.
-     */
     @Test
-    void boundPermissionWithEmptyClientList_deniesEveryone_failClosed() throws Exception {
-        mintPolicy.setPermissionClientBindings(Map.of("meeting:analysis-result:write", Set.of()));
+    void meetingAi_missingExplicitPermission_isRejected() throws Exception {
         mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("meeting-ai", "test-secret"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                        .content("grant_type=client_credentials&audience=meeting-service"
-                                + "&permissions=meeting:analysis-result:write"))
+                        .content("grant_type=client_credentials&audience=meeting-service"))
                 .andExpect(status().isBadRequest());
     }
 
-    /**
-     * Codex #3: an empty presented secret must never authenticate. Before this fix
-     * {@code "".equals("")} against a blank-default client secret let anyone mint as that
-     * client.
-     */
+    @Test
+    void sameAudienceAndPermission_tokensAreSeparatedByClientIdentity() throws Exception {
+        MvcResult primary = mint("meeting-ai", "test-secret");
+        MvcResult canary = mint("meeting-ai-canary", "canary-secret");
+
+        String primaryToken = token(primary);
+        String canaryToken = token(canary);
+        assertNotEquals(primaryToken, canaryToken);
+        assertEquals("meeting-ai", SignedJWT.parse(primaryToken).getJWTClaimsSet().getSubject());
+        assertEquals("meeting-ai-canary", SignedJWT.parse(canaryToken).getJWTClaimsSet().getSubject());
+    }
+
     @Test
     void blankPresentedSecret_isRejected() throws Exception {
         mockMvc.perform(post("/oauth2/token")
@@ -186,11 +164,6 @@ class MeetingAiServiceTokenMintTest {
                 .andExpect(status().isUnauthorized());
     }
 
-    /**
-     * Codex #3 (config side): a client whose *configured* secret is still blank (Vault seed
-     * pending) stays disabled even when a non-blank secret is presented — the blank default
-     * genuinely deactivates the client rather than accidentally accepting a blank match.
-     */
     @Test
     void unprovisionedClient_blankConfiguredSecret_isDisabled() throws Exception {
         mockMvc.perform(post("/oauth2/token")
@@ -199,5 +172,25 @@ class MeetingAiServiceTokenMintTest {
                         .content("grant_type=client_credentials&audience=meeting-service"
                                 + "&permissions=meeting:analysis-result:write"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    private MvcResult mint(String clientId, String secret) throws Exception {
+        return mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic(clientId, secret))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=meeting-service"
+                                + "&permissions=meeting:analysis-result:write"))
+                .andExpect(status().isOk())
+                .andReturn();
+    }
+
+    private JWTClaimsSet claims(MvcResult result) throws Exception {
+        return SignedJWT.parse(token(result)).getJWTClaimsSet();
+    }
+
+    private String token(MvcResult result) throws Exception {
+        return objectMapper.readTree(result.getResponse().getContentAsString())
+                .path("access_token")
+                .asText();
     }
 }

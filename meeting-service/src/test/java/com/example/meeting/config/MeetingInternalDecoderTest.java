@@ -59,6 +59,7 @@ class MeetingInternalDecoderTest {
     private static final String KC_ISSUER = "http://localhost:8081/realms/serban";
     private static final String SVC_ISSUER = "auth-service";
     private static final String AUDIENCE = "meeting-service";
+    private static final String CLIENT_ID = "meeting-ai";
     private static final String PERM = "meeting:analysis-result:write";
     private static final String SVC_WRITE = "SVC_" + PERM;
 
@@ -84,8 +85,8 @@ class MeetingInternalDecoderTest {
 
         NimbusJwtDecoder serviceDecoder =
                 NimbusJwtDecoder.withPublicKey((RSAPublicKey) svcKeys.getPublic()).build();
-        serviceDecoder.setJwtValidator(SecurityConfig.buildServiceValidator(
-                SVC_ISSUER, List.of(AUDIENCE), List.of()));
+        serviceDecoder.setJwtValidator(SecurityConfig.buildInternalServiceValidator(
+                SVC_ISSUER, List.of(AUDIENCE), List.of(CLIENT_ID)));
 
         fallbackDecoder = new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
     }
@@ -95,10 +96,11 @@ class MeetingInternalDecoderTest {
     @Test
     void serviceToken_correctIssuerAudiencePerm_decodesViaFallback_andConverterGrantsSvc() throws Exception {
         String token = sign(svcKeys, new JWTClaimsSet.Builder()
-                .subject("meeting-ai-service")
+                .subject(CLIENT_ID)
                 .issuer(SVC_ISSUER)
                 .audience(AUDIENCE)
-                .claim("svc", "meeting-ai-service")
+                .claim("client_id", CLIENT_ID)
+                .claim("svc", CLIENT_ID)
                 .claim("perm", List.of(PERM))
                 .issueTime(new Date())
                 .expirationTime(new Date(System.currentTimeMillis() + 300_000)));
@@ -114,9 +116,10 @@ class MeetingInternalDecoderTest {
     @Test
     void serviceToken_wrongAudience_rejectedByDecoder() throws Exception {
         String token = sign(svcKeys, new JWTClaimsSet.Builder()
-                .subject("meeting-ai-service")
+                .subject(CLIENT_ID)
                 .issuer(SVC_ISSUER)
                 .audience("some-other-service") // ← wrong aud
+                .claim("client_id", CLIENT_ID)
                 .claim("perm", List.of(PERM))
                 .issueTime(new Date())
                 .expirationTime(new Date(System.currentTimeMillis() + 300_000)));
@@ -124,6 +127,21 @@ class MeetingInternalDecoderTest {
         // Keycloak decoder rejects on issuer; service decoder rejects on audience.
         assertThrows(JwtException.class, () -> fallbackDecoder.decode(token),
                 "a service token with the wrong audience must be rejected by the decoder");
+    }
+
+    @Test
+    void serviceToken_wrongClientIdentity_rejectedByDecoder() throws Exception {
+        String token = sign(svcKeys, new JWTClaimsSet.Builder()
+                .subject("other-service")
+                .issuer(SVC_ISSUER)
+                .audience(AUDIENCE)
+                .claim("client_id", "other-service")
+                .claim("perm", List.of(PERM))
+                .issueTime(new Date())
+                .expirationTime(new Date(System.currentTimeMillis() + 300_000)));
+
+        assertThrows(JwtException.class, () -> fallbackDecoder.decode(token),
+                "a service token from an unexpected client must be rejected");
     }
 
     // ── Keycloak user token w/ perm → decodes but NO SVC_ (end-to-end iss-guard)
@@ -157,6 +175,7 @@ class MeetingInternalDecoderTest {
                 .subject("attacker")
                 .issuer(SVC_ISSUER)
                 .audience(AUDIENCE)
+                .claim("client_id", "attacker")
                 .claim("perm", List.of(PERM))
                 .issueTime(new Date())
                 .expirationTime(new Date(System.currentTimeMillis() + 300_000)));

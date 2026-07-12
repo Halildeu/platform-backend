@@ -18,10 +18,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         // Allow a known client and mint policy for tests
-        "security.service-clients.user-service=test-secret",
+        "security.service-clients.clients.user-service.secret=test-secret",
+        "security.service-clients.clients.user-service.allowed-audiences[0]=permission-service",
+        "security.service-clients.clients.user-service.allowed-audiences[1]=notification-orchestrator",
+        "security.service-clients.clients.user-service.allowed-permissions[0]=permissions:read",
+        "security.service-clients.clients.user-service.allowed-permissions[1]=notify:intents:system",
+        "security.service-clients.clients.user-service.require-explicit-permissions=false",
+        "security.service-clients.clients.rate-client.secret=test-secret2",
+        "security.service-clients.clients.rate-client.allowed-audiences[0]=permission-service",
+        "security.service-clients.clients.rate-client.require-explicit-permissions=false",
         "security.service-mint.allowed-audiences=permission-service,user-service,notification-orchestrator",
         "security.service-mint.allowed-permissions=permissions:read,permissions:write,notify:intents:system",
-        "security.service-mint.rate-limit-per-minute=1",
+        "security.service-mint.rate-limit-per-minute=2",
+        "security.service-mint.failed-auth-rate-limit-per-minute=100",
+        "auth.impersonation.keycloak-token-url=http://localhost:9999/token",
+        "auth.impersonation.keycloak-broker-url=http://localhost:9999/broker",
         // H2 ile test, discovery kapalı
         "spring.datasource.url=jdbc:h2:mem:testdb;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
         "spring.datasource.username=sa",
@@ -44,20 +55,6 @@ class ServiceTokenControllerTest {
     private String basic(String clientId, String secret) {
         String raw = clientId + ":" + secret;
         return "Basic " + Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
-    }
-
-    @org.springframework.boot.test.context.TestConfiguration
-    static class ClientsTestConfig {
-        @org.springframework.context.annotation.Bean
-        @org.springframework.context.annotation.Primary
-        public com.example.auth.serviceauth.ServiceClientsProperties testClients() {
-            com.example.auth.serviceauth.ServiceClientsProperties p = new com.example.auth.serviceauth.ServiceClientsProperties();
-            java.util.Map<String, String> m = new java.util.HashMap<>();
-            m.put("user-service", "test-secret");
-            m.put("rate-client", "test-secret2");
-            p.setClients(m);
-            return p;
-        }
     }
 
     @Test
@@ -94,6 +91,15 @@ class ServiceTokenControllerTest {
     }
 
     @Test
+    void malformedBasicHeader_isRejectedAsInvalidClient() throws Exception {
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", "Basic not-base64%%%")
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=permission-service"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void mint_invalid_audience_400() throws Exception {
         mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("user-service", "test-secret"))
@@ -113,13 +119,19 @@ class ServiceTokenControllerTest {
 
     @Test
     void mint_rate_limited_429() throws Exception {
-        // First OK with a fresh client (isolated from previous tests)
+        // Two requests fit the configured per-client window.
         mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("rate-client", "test-secret2"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=permission-service"))
                 .andExpect(status().isOk());
-        // Second should hit rate limit
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("rate-client", "test-secret2"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=permission-service"))
+                .andExpect(status().isOk());
+
+        // The third request in the same window must be rejected.
         mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("rate-client", "test-secret2"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)

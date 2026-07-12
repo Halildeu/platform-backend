@@ -1,6 +1,7 @@
 package com.example.meeting.config;
 
 import com.example.meeting.security.AudienceValidator;
+import com.example.meeting.security.ExpectedServiceClientValidator;
 import com.example.meeting.security.FallbackJwtDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -172,9 +173,27 @@ public class SecurityConfig {
                 environment.getProperty("meeting.internal.service-jwt.audience"),
                 "meeting-service"
         ));
-        // Service tokens carry no Keycloak azp/client_id ⇒ no client-id allow-list.
-        JwtDecoder serviceDecoder = buildDecoder(serviceJwkSetUri, serviceIssuer, serviceAudiences, List.of());
+        List<String> serviceClientIds = csvToList(firstNonBlank(
+                environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_ID"),
+                environment.getProperty("meeting.internal.service-jwt.client-id")
+        ));
+        if (serviceClientIds.isEmpty()) {
+            throw new IllegalStateException(
+                    "internal service JWT client id is required when the service JWKS is enabled");
+        }
+        JwtDecoder serviceDecoder = buildInternalServiceDecoder(
+                serviceJwkSetUri, serviceIssuer, serviceAudiences, serviceClientIds);
         return new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
+    }
+
+    static JwtDecoder buildInternalServiceDecoder(String jwkSetUri,
+                                                   String issuer,
+                                                   Collection<String> audiences,
+                                                   Collection<String> expectedClientIds) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(buildInternalServiceValidator(
+                issuer, audiences, expectedClientIds));
+        return decoder;
     }
 
     /**
@@ -210,6 +229,27 @@ public class SecurityConfig {
                 || (allowedClientIds != null && !allowedClientIds.isEmpty())) {
             validators.add(new AudienceValidator(audiences, allowedClientIds));
         }
+        return new DelegatingOAuth2TokenValidator<>(
+                validators.toArray(new OAuth2TokenValidator[0]));
+    }
+
+    /**
+     * Internal SERVICE tokens must satisfy issuer AND audience AND expected-client identity.
+     * The general {@link AudienceValidator} intentionally supports audience OR authorized
+     * party for Keycloak user tokens, so it cannot be reused for this stronger boundary.
+     */
+    static OAuth2TokenValidator<Jwt> buildInternalServiceValidator(
+            String issuer,
+            Collection<String> audiences,
+            Collection<String> expectedClientIds) {
+        List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
+        if (StringUtils.hasText(issuer)) {
+            validators.add(JwtValidators.createDefaultWithIssuer(issuer));
+        } else {
+            validators.add(JwtValidators.createDefault());
+        }
+        validators.add(new AudienceValidator(audiences));
+        validators.add(new ExpectedServiceClientValidator(expectedClientIds));
         return new DelegatingOAuth2TokenValidator<>(
                 validators.toArray(new OAuth2TokenValidator[0]));
     }
