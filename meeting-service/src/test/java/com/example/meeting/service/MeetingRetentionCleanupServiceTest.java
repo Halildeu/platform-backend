@@ -4,9 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingDecision;
+import com.example.meeting.model.MeetingIntelligenceResultAccessAudit;
+import com.example.meeting.model.MeetingIntelligenceResultAccessType;
 import com.example.meeting.model.MeetingRetentionDestructionAudit;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
+import com.example.meeting.repository.MeetingIntelligenceResultAccessAuditRepository;
 import com.example.meeting.repository.MeetingRetentionDestructionAuditRepository;
 import com.example.meeting.testsupport.IsolatedH2DataJpaTest;
 import jakarta.persistence.EntityManager;
@@ -39,6 +42,8 @@ class MeetingRetentionCleanupServiceTest {
     @Autowired
     private MeetingDecisionRepository decisionRepository;
     @Autowired
+    private MeetingIntelligenceResultAccessAuditRepository resultAccessAuditRepository;
+    @Autowired
     private MeetingRetentionDestructionAuditRepository auditRepository;
     @Autowired
     private EntityManager entityManager;
@@ -49,16 +54,20 @@ class MeetingRetentionCleanupServiceTest {
         MeetingAction freshAction = action(FRESH, "fresh action remains");
         MeetingDecision expiredDecision = decision(EXPIRED, "raw decision title");
         MeetingDecision freshDecision = decision(FRESH, "fresh decision remains");
+        MeetingIntelligenceResultAccessAudit expiredAccessAudit = accessAudit(EXPIRED);
+        MeetingIntelligenceResultAccessAudit freshAccessAudit = accessAudit(FRESH);
 
         MeetingRetentionCleanupService.CleanupResult result = service.cleanup(NOW);
         entityManager.flush();
         entityManager.clear();
 
-        assertThat(result.deletedCount()).isEqualTo(2);
+        assertThat(result.deletedCount()).isEqualTo(3);
         assertThat(actionRepository.findById(expiredAction.getId())).isEmpty();
         assertThat(decisionRepository.findById(expiredDecision.getId())).isEmpty();
         assertThat(actionRepository.findById(freshAction.getId())).isPresent();
         assertThat(decisionRepository.findById(freshDecision.getId())).isPresent();
+        assertThat(resultAccessAuditRepository.findById(expiredAccessAudit.getId())).isEmpty();
+        assertThat(resultAccessAuditRepository.findById(freshAccessAudit.getId())).isPresent();
 
         List<MeetingRetentionDestructionAudit> audits = auditRepository
                 .findByLayerIdOrderByExecutedAtDesc(MeetingRetentionCleanupService.LAYER_MEETING_INTELLIGENCE);
@@ -67,9 +76,22 @@ class MeetingRetentionCleanupServiceTest {
         assertThat(audit.getDeletedCount()).isEqualTo(2);
         assertThat(audit.getActionDeletedCount()).isEqualTo(1);
         assertThat(audit.getDecisionDeletedCount()).isEqualTo(1);
+        assertThat(audit.getResultAccessAuditDeletedCount()).isZero();
         assertThat(audit.getAuditPayload()).isEqualTo("metadata-only");
         assertThat(audit.getJobId()).isEqualTo(MeetingRetentionCleanupService.JOB_ID);
         assertThat(audit.getLayerId()).isEqualTo("db.meeting-intelligence");
+
+        List<MeetingRetentionDestructionAudit> accessAudits = auditRepository
+                .findByLayerIdOrderByExecutedAtDesc(
+                        MeetingRetentionCleanupService.LAYER_RESULT_ACCESS_AUDIT);
+        assertThat(accessAudits).hasSize(1);
+        MeetingRetentionDestructionAudit accessAudit = accessAudits.get(0);
+        assertThat(accessAudit.getDeletedCount()).isEqualTo(1);
+        assertThat(accessAudit.getActionDeletedCount()).isZero();
+        assertThat(accessAudit.getDecisionDeletedCount()).isZero();
+        assertThat(accessAudit.getResultAccessAuditDeletedCount()).isEqualTo(1);
+        assertThat(accessAudit.getJobId())
+                .isEqualTo(MeetingRetentionCleanupService.RESULT_ACCESS_AUDIT_JOB_ID);
     }
 
     @Test
@@ -92,6 +114,21 @@ class MeetingRetentionCleanupServiceTest {
         assertThat(audits.get(0).getDeletedCount()).isEqualTo(1);
         assertThat(audits.get(0).getActionDeletedCount()).isEqualTo(1);
         assertThat(audits.get(0).getDecisionDeletedCount()).isZero();
+        assertThat(audits.get(0).getResultAccessAuditDeletedCount()).isZero();
+    }
+
+    private MeetingIntelligenceResultAccessAudit accessAudit(Instant accessedAt) {
+        UUID org = UUID.randomUUID();
+        MeetingIntelligenceResultAccessAudit audit = new MeetingIntelligenceResultAccessAudit();
+        audit.setTenantId(org);
+        audit.setOrgId(org);
+        audit.setAccessorSubject("reader");
+        audit.setMeetingId(UUID.randomUUID());
+        audit.setAnalysisRunId(UUID.randomUUID());
+        audit.setAccessType(MeetingIntelligenceResultAccessType.CANONICAL_RESULT_READ);
+        audit.setResultCount(1);
+        audit.setAccessedAt(accessedAt);
+        return resultAccessAuditRepository.saveAndFlush(audit);
     }
 
     private MeetingAction action(Instant createdAt, String description) {
