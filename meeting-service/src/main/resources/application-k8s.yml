@@ -78,6 +78,7 @@ meeting:
       jwk-set-uri: ${MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI:}
       issuer: ${MEETING_INTERNAL_SERVICE_JWT_ISSUER:auth-service}
       audience: ${MEETING_INTERNAL_SERVICE_JWT_AUDIENCE:meeting-service}
+      client-id: ${MEETING_INTERNAL_SERVICE_JWT_CLIENT_ID:}
 
 server:
   port: ${SERVER_PORT:8097}

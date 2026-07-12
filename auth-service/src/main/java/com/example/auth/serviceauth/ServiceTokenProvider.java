@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,8 +47,30 @@ public class ServiceTokenProvider {
     }
 
     public String getToken(String audience, List<String> permissions) {
-        List<String> normalizedPermissions = permissions == null ? List.of() : List.copyOf(permissions);
-        TokenKey key = new TokenKey(audience, normalizedPermissions);
+        return getToken(serviceId, false, audience, permissions);
+    }
+
+    /**
+     * Mint a client-credentials access token bound to the authenticated OAuth client.
+     *
+     * <p>RFC 9068 uses {@code client_id} for the client identifier and client-credentials
+     * tokens identify the client as the subject when there is no resource owner. The
+     * existing {@code svc} claim remains for downstream service-token compatibility.
+     */
+    public String getTokenForClient(String clientId, String audience, List<String> permissions) {
+        if (clientId == null || clientId.isBlank()) {
+            throw new IllegalArgumentException("clientId must not be blank");
+        }
+        return getToken(clientId, true, audience, permissions);
+    }
+
+    private String getToken(String principalId,
+                            boolean clientCredentials,
+                            String audience,
+                            List<String> permissions) {
+        List<String> normalizedPermissions = normalizePermissions(permissions);
+        TokenKey key = new TokenKey(
+                principalId, clientCredentials, audience, normalizedPermissions);
         Instant now = Instant.now();
 
         TokenCache cached = cache.get(key);
@@ -71,13 +94,17 @@ public class ServiceTokenProvider {
         log.debug("Servis token üretiliyor -> audience={}, permissions={}, expiresAt={}", key.audience(), key.permissions(), expiresAt);
 
         JwtClaimsSet.Builder claimsBuilder = JwtClaimsSet.builder()
-                .subject(serviceId)
+                .subject(key.principalId())
                 .issuer(jwtProperties.getIssuer())
                 .issuedAt(now)
                 .expiresAt(expiresAt)
-                .claim("svc", serviceId)
+                .claim("svc", key.principalId())
                 .claim("env", serviceTokenProperties.getEnvironment())
                 .audience(List.of(key.audience()));
+
+        if (key.clientCredentials()) {
+            claimsBuilder.claim("client_id", key.principalId());
+        }
 
         if (!key.permissions().isEmpty()) {
             claimsBuilder.claim("perm", key.permissions());
@@ -92,9 +119,25 @@ public class ServiceTokenProvider {
         return new TokenCache(token, refreshAfter, expiresAt);
     }
 
+    private List<String> normalizePermissions(List<String> permissions) {
+        if (permissions == null || permissions.isEmpty()) {
+            return List.of();
+        }
+        TreeSet<String> normalized = new TreeSet<>();
+        permissions.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(permission -> !permission.isBlank())
+                .forEach(normalized::add);
+        return List.copyOf(normalized);
+    }
+
     private record TokenCache(String value, Instant refreshAfter, Instant expiresAt) {
     }
 
-    private record TokenKey(String audience, List<String> permissions) {
+    private record TokenKey(String principalId,
+                            boolean clientCredentials,
+                            String audience,
+                            List<String> permissions) {
     }
 }
