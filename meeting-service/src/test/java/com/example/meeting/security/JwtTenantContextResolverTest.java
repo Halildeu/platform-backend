@@ -1,6 +1,7 @@
 package com.example.meeting.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -34,7 +35,7 @@ class JwtTenantContextResolverTest {
                 jwt,
                 List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
 
-        AdminTenantContext context = new JwtTenantContextResolver("", new MockEnvironment()).resolveRequired();
+        AdminTenantContext context = new JwtTenantContextResolver("", true, new MockEnvironment()).resolveRequired();
 
         assertThat(context.tenantId()).isEqualTo(companyTenant("1"));
         assertThat(context.subject()).isEqualTo("subject-1");
@@ -42,11 +43,13 @@ class JwtTenantContextResolverTest {
     }
 
     @Test
-    void preservesUuidTenantClaimPrecedence() {
+    void acceptsMatchingCanonicalAndCompatibilityClaims() {
+        UUID companyTenant = companyTenant("42");
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
                 .subject("subject-1")
-                .claim("tenantId", UUID_TENANT.toString())
+                .claim("org_id", companyTenant.toString())
+                .claim("tenantId", "42")
                 .claim("companyId", "42")
                 .claim("userId", "user-1")
                 .build();
@@ -54,31 +57,31 @@ class JwtTenantContextResolverTest {
                 jwt,
                 List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
 
-        AdminTenantContext context = new JwtTenantContextResolver("", new MockEnvironment()).resolveRequired();
+        AdminTenantContext context = new JwtTenantContextResolver("", true, new MockEnvironment()).resolveRequired();
 
-        assertThat(context.tenantId()).isEqualTo(UUID_TENANT);
+        assertThat(context.tenantId()).isEqualTo(companyTenant);
     }
 
     @Test
-    void numericTenantIdPrecedesCompanyIdFallback() {
+    void rejectsConflictingCanonicalAndCompatibilityClaims() {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
                 .subject("subject-1")
+                .claim("org_id", UUID_TENANT.toString())
                 .claim("tenantId", "1")
-                .claim("companyId", "42")
                 .claim("userId", "user-1")
                 .build();
         SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
                 jwt,
                 List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
 
-        AdminTenantContext context = new JwtTenantContextResolver("", new MockEnvironment()).resolveRequired();
-
-        assertThat(context.tenantId()).isEqualTo(companyTenant("1"));
+        assertThatThrownBy(() -> new JwtTenantContextResolver("", true, new MockEnvironment()).resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
     }
 
     @Test
-    void nonNumericTenantClaimFallsBackToCompanyId() {
+    void rejectsInvalidPresentTenantClaimEvenWhenCompanyIdIsValid() {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
                 .subject("subject-1")
@@ -90,9 +93,82 @@ class JwtTenantContextResolverTest {
                 jwt,
                 List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
 
-        AdminTenantContext context = new JwtTenantContextResolver("", new MockEnvironment()).resolveRequired();
+        assertThatThrownBy(() -> new JwtTenantContextResolver("", true, new MockEnvironment()).resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
+    }
 
-        assertThat(context.tenantId()).isEqualTo(companyTenant("42"));
+    @Test
+    void rejectsConflictingLegacyAliases() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("subject-1")
+                .claim("tenantId", "1")
+                .claim("companyId", "42")
+                .claim("userId", "user-1")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
+
+        assertThatThrownBy(() -> new JwtTenantContextResolver("", true, new MockEnvironment()).resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
+    }
+
+    @Test
+    void compatibilityModeKeepsCanonicalOrgWhileMigrationIsExplicitlyOpen() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("subject-1")
+                .claim("org_id", UUID_TENANT.toString())
+                .claim("tenantId", "1")
+                .claim("companyId", "1")
+                .claim("userId", "user-1")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
+
+        AdminTenantContext context = new JwtTenantContextResolver("", false, new MockEnvironment()).resolveRequired();
+
+        assertThat(context.tenantId()).isEqualTo(UUID_TENANT);
+    }
+
+    @Test
+    void compatibilityModeStillRejectsLegacyConflictsWithoutCanonicalOrg() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("subject-1")
+                .claim("tenantId", "1")
+                .claim("companyId", "42")
+                .claim("userId", "user-1")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
+
+        assertThatThrownBy(() -> new JwtTenantContextResolver("", false, new MockEnvironment()).resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
+    }
+
+    @Test
+    void compatibilityModeStillRejectsConflictingCanonicalAliases() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("subject-1")
+                .claim("org_id", UUID_TENANT.toString())
+                .claim("orgId", UUID.randomUUID().toString())
+                .claim("userId", "user-1")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt,
+                List.of(new SimpleGrantedAuthority("SCOPE_meeting"))));
+
+        assertThatThrownBy(() -> new JwtTenantContextResolver("", false, new MockEnvironment()).resolveRequired())
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("401 UNAUTHORIZED");
     }
 
     private static UUID companyTenant(String companyId) {

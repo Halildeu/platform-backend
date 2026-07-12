@@ -31,13 +31,15 @@ import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 @Component
 public class JwtTenantContextResolver implements TenantContextResolver {
 
-    private static final List<String> TENANT_UUID_CLAIMS = List.of(
-            "tenant_id",
-            "tenantId",
-            "organization_id",
-            "organizationId",
+    private static final List<String> CANONICAL_ORG_CLAIMS = List.of(
             "org_id",
             "orgId",
+            "organization_id",
+            "organizationId"
+    );
+    private static final List<String> COMPAT_TENANT_CLAIMS = List.of(
+            "tenant_id",
+            "tenantId",
             "company_uuid",
             "companyUuid"
     );
@@ -45,13 +47,16 @@ public class JwtTenantContextResolver implements TenantContextResolver {
     private static final String COMPANY_TENANT_PREFIX = "company:";
 
     private final UUID localDefaultTenantId;
+    private final boolean enforceClaimConsistency;
     private final Environment environment;
 
     public JwtTenantContextResolver(
             @Value("${transcript.tenant.local-default-tenant-id:}") String localDefaultTenantId,
+            @Value("${transcript.tenant.enforce-claim-consistency:true}") boolean enforceClaimConsistency,
             Environment environment
     ) {
         this.localDefaultTenantId = parseUuid(localDefaultTenantId);
+        this.enforceClaimConsistency = enforceClaimConsistency;
         this.environment = environment;
     }
 
@@ -89,24 +94,63 @@ public class JwtTenantContextResolver implements TenantContextResolver {
     }
 
     private UUID resolveTenantId(Jwt jwt) {
-        for (String claimName : TENANT_UUID_CLAIMS) {
-            String claimValue = claimToString(jwt.getClaim(claimName));
-            UUID parsed = parseUuid(claimValue);
-            if (parsed != null) {
-                return parsed;
-            }
-            UUID numericTenant = parseNumericTenantId(claimValue);
-            if (numericTenant != null) {
-                return numericTenant;
-            }
+        UUID canonicalOrg = resolveUuidAliases(jwt, CANONICAL_ORG_CLAIMS, true);
+        boolean canonicalTransition = canonicalOrg != null && !enforceClaimConsistency;
+        UUID compatibilityTenant = resolveUuidAliases(jwt, COMPAT_TENANT_CLAIMS, !canonicalTransition);
+        UUID companyTenant = resolveCompanyAliases(jwt, !canonicalTransition);
+
+        if (canonicalOrg != null) {
+            mergeTenantClaims(canonicalOrg, compatibilityTenant, enforceClaimConsistency);
+            mergeTenantClaims(canonicalOrg, companyTenant, enforceClaimConsistency);
+            return canonicalOrg;
         }
+        return mergeTenantClaims(compatibilityTenant, companyTenant, true);
+    }
+
+    private UUID resolveUuidAliases(Jwt jwt, List<String> claimNames, boolean rejectConflicts) {
+        UUID resolved = null;
+        for (String claimName : claimNames) {
+            Object rawClaim = jwt.getClaim(claimName);
+            if (rawClaim == null) {
+                continue;
+            }
+            String claimValue = claimToString(rawClaim);
+            UUID candidate = parseUuid(claimValue);
+            if (candidate == null) {
+                candidate = parseNumericTenantId(claimValue);
+            }
+            if (candidate == null) {
+                throw new ResponseStatusException(UNAUTHORIZED, "Tenant claim is invalid.");
+            }
+            resolved = mergeTenantClaims(resolved, candidate, rejectConflicts);
+        }
+        return resolved;
+    }
+
+    private UUID resolveCompanyAliases(Jwt jwt, boolean rejectConflicts) {
+        UUID resolved = null;
         for (String claimName : COMPANY_ID_CLAIMS) {
-            String companyId = claimToString(jwt.getClaim(claimName));
-            if (companyId != null && !companyId.isBlank()) {
-                return tenantIdFromCompanyScope(companyId);
+            Object rawClaim = jwt.getClaim(claimName);
+            if (rawClaim == null) {
+                continue;
             }
+            String companyId = claimToString(rawClaim);
+            if (companyId == null || companyId.isBlank()) {
+                throw new ResponseStatusException(UNAUTHORIZED, "Tenant claim is invalid.");
+            }
+            resolved = mergeTenantClaims(resolved, tenantIdFromCompanyScope(companyId), rejectConflicts);
         }
-        return null;
+        return resolved;
+    }
+
+    private static UUID mergeTenantClaims(UUID current, UUID candidate, boolean rejectConflicts) {
+        if (candidate == null) {
+            return current;
+        }
+        if (current != null && !current.equals(candidate) && rejectConflicts) {
+            throw new ResponseStatusException(UNAUTHORIZED, "Conflicting tenant claims.");
+        }
+        return current != null ? current : candidate;
     }
 
     private AdminTenantContext localContextOrReject() {
