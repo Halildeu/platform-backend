@@ -350,6 +350,15 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         // the peer's cached AgentHello evidence so legacy agents without HEARTBEAT frames do not lose trust
         // solely because the operator took longer than the ledger freshness TTL to approve and run an operation.
         PeerTrustLedger.PeerTrust trust = ledger.record(peer, hello, now);
+        // Session-scoped hello re-verification signal (Faz 22.6 #1580). onAgentHello() records the peer-level
+        // HELLO_VERIFIED to the "ledger" sink before any session exists, so a session-filtered audit stream never
+        // observes it. This consent-time refresh re-runs the same fail-closed verifier over the peer's cached
+        // AgentHello while bound to the same authenticated mTLS peer as the session, and duplicate/replayed consent
+        // is refused before this call — so a session-scoped HELLO_VERIFIED here is a real, per-session
+        // re-verification result, not a retroactive copy of the peer-level ledger event (which is retained for
+        // peer-level diagnostics). Trust values mirror CONSENT_TRUST_REFRESHED so a session stream is self-consistent.
+        recordBestEffort(sessionId, "HELLO_VERIFIED:source=consent-refresh,cert=" + trust.certTrusted()
+                + ",attestation=" + trust.attestationVerified() + ",device=" + trust.deviceTrusted());
         recordBestEffort(sessionId, "CONSENT_TRUST_REFRESHED:cert=" + trust.certTrusted()
                 + ",attestation=" + trust.attestationVerified() + ",device=" + trust.deviceTrusted());
     }

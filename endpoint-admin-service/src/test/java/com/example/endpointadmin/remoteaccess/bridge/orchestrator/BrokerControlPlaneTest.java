@@ -216,6 +216,43 @@ class BrokerControlPlaneTest {
         assertTrue(ledger.fresh("peer-1", NOW + 60_999).isPresent());
         assertTrue(ledger.fresh("peer-1", NOW + 61_001).isEmpty());
         assertTrue(sink.has("CONSENT_TRUST_REFRESHED:cert=true,attestation=true,device=false"));
+        // Faz 22.6 #1580: consent-time re-verification also emits a session-scoped HELLO_VERIFIED so a
+        // session-filtered audit stream observes the hello verification (onAgentHello only records the
+        // peer-level HELLO_VERIFIED to the "ledger" sink, before any session exists).
+        assertTrue(sink.events.stream().anyMatch(r -> r.sessionId().equals("sess-1")
+                && r.eventType().startsWith("HELLO_VERIFIED:source=consent-refresh,cert=true,attestation=true,device=false")));
+        // The original peer-level hello stays on the "ledger" sink for peer diagnostics — not relabeled as the
+        // session-scoped consent-refresh record.
+        assertTrue(sink.events.stream().anyMatch(r -> r.sessionId().equals("ledger")
+                && r.eventType().startsWith("HELLO_VERIFIED:")
+                && !r.eventType().contains("source=consent-refresh")));
+    }
+
+    @Test
+    void consentTimeHelloReverificationIsSessionScopedAndUniquePerAcceptedConsent() {
+        AtomicLong now = new AtomicLong(NOW);
+        PeerTrustLedger ledger = ledger(presentingParser(), true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        BrokerControlPlane plane = new BrokerControlPlane(ledger, store, sink, now::get);
+
+        plane.onAgentHello(PEER, hello());
+        now.set(NOW + 31_000);
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW + 31_000, PROMPT_EXPIRY));
+        // A replayed/duplicate consent is refused by the state machine (CONSENT_GRANTED only from
+        // CONSENT_PENDING), so the session-scoped re-verification does not fire a second time.
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW + 31_000, PROMPT_EXPIRY));
+
+        long sessionScoped = sink.events.stream()
+                .filter(r -> r.sessionId().equals("sess-1"))
+                .filter(r -> r.eventType().startsWith("HELLO_VERIFIED:source=consent-refresh"))
+                .count();
+        assertEquals(1L, sessionScoped, "exactly one session-scoped HELLO_VERIFIED per accepted consent");
+        assertTrue(sink.has("CONSENT_REFUSED:not-pending"));
     }
 
     // --- RemoteBridgeSessionStore -------------------------------------------
