@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.UUID;
 
 /**
  * Faz 22.6 #1580 (Codex 019f078a) — the broker→operator VIEW_ONLY fanout seam. It is the ONLY thing that turns
@@ -48,7 +49,9 @@ public final class ViewOnlyViewerRegistry {
      * @param frameAvailable optional, non-blocking wake hook invoked after each newly offered frame (nullable)
      * @return the subscription, or empty if the per-session viewer bound is already reached
      */
-    public Optional<ViewOnlyViewerSubscription> subscribe(String sessionId, Runnable frameAvailable) {
+    public Optional<ViewOnlyViewerSubscription> subscribe(String sessionId, String streamId,
+                                                           String operatorTenantId, String operatorSubject,
+                                                           Runnable frameAvailable) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId is required");
         }
@@ -61,10 +64,35 @@ public final class ViewOnlyViewerRegistry {
                 return Optional.empty();
             }
             ViewOnlyViewerSubscription subscription = new ViewOnlyViewerSubscription(
-                    sessionId, "vw-" + viewerSeq.incrementAndGet(), frameAvailable);
+                    sessionId, streamId, operatorTenantId, operatorSubject,
+                    "vw-" + viewerSeq.incrementAndGet() + "-" + UUID.randomUUID(),
+                    frameAvailable);
             subs.add(subscription);
             return Optional.of(subscription);
         }
+    }
+
+    /**
+     * Bind a browser render acknowledgement to the exact live session/stream/viewer subscription. The opaque
+     * viewer id is generated server-side and the subscription itself enforces sent-frame and replay checks.
+     */
+    public Optional<ViewOnlyViewerSubscription.RenderAcknowledgement> acknowledgeRendered(
+            String sessionId, String streamId, String operatorTenantId, String operatorSubject,
+            String viewerId, long frameSeq, long acknowledgedAtEpochMillis) {
+        if (sessionId == null || sessionId.isBlank() || streamId == null || streamId.isBlank()
+                || viewerId == null || viewerId.isBlank()) {
+            return Optional.empty();
+        }
+        List<ViewOnlyViewerSubscription> subs = bySession.get(sessionId);
+        if (subs == null) {
+            return Optional.empty();
+        }
+        return subs.stream()
+                .filter(sub -> !sub.isClosed())
+                .filter(sub -> viewerId.equals(sub.viewerId()) && streamId.equals(sub.streamId()))
+                .filter(sub -> sub.isOwnedBy(operatorTenantId, operatorSubject))
+                .findFirst()
+                .flatMap(sub -> sub.acknowledgeRendered(frameSeq, acknowledgedAtEpochMillis));
     }
 
     /**
@@ -80,7 +108,10 @@ public final class ViewOnlyViewerRegistry {
         }
         int delivered = 0;
         for (ViewOnlyViewerSubscription sub : subs) {
-            if (sub.offer(frame)) {
+            // A session may have more than one independently-authorized VIEW_ONLY operation over its lifetime.
+            // Never offer one stream's frame to a viewer bound to another stream; this prevents cross-stream
+            // observation and avoids terminating the legitimate viewer when markSent applies its final guard.
+            if (sub.streamId().equals(frame.streamId()) && sub.offer(frame)) {
                 delivered++;
             }
         }

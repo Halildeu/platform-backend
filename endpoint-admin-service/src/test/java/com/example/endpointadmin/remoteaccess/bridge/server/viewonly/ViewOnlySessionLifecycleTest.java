@@ -26,7 +26,8 @@ class ViewOnlySessionLifecycleTest {
         lifecycle.beginSession("s1", inc);
         assertTrue(lifecycle.authorizeStream(inc,
                 new Authorization("s1", "op-1", "peer-A", "operator@x", "dev-1", 10_000)));
-        ViewOnlyViewerSubscription viewer = viewers.subscribe("s1", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = viewers.subscribe(
+                "s1", "op-1", "tenant-1", "operator@x", null).orElseThrow();
         assertEquals(1, viewers.publish(frame())); // fanout works while live
         assertTrue(authz.isAuthorized("s1", "op-1", "peer-A", 0));
 
@@ -61,7 +62,8 @@ class ViewOnlySessionLifecycleTest {
         lifecycle.beginSession("sB", incB);
         lifecycle.authorizeStream(incA, new Authorization("sA", "op-1", "peer-A", "operator@x", "dev-1", 10_000));
         lifecycle.authorizeStream(incB, new Authorization("sB", "op-2", "peer-B", "operator@x", "dev-2", 10_000));
-        ViewOnlyViewerSubscription bViewer = viewers.subscribe("sB", null).orElseThrow();
+        ViewOnlyViewerSubscription bViewer = viewers.subscribe(
+                "sB", "op-2", "tenant-1", "operator@x", null).orElseThrow();
 
         lifecycle.terminate("sA");
 

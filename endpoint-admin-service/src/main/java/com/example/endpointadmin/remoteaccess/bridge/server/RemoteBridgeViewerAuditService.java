@@ -54,13 +54,19 @@ public class RemoteBridgeViewerAuditService {
 
     /**
      * Record the end of an operator screen-observation (best-effort at the caller: the stream is already ending,
-     * so a STOP-audit failure is logged, not propagated). Includes the delivered-frame count as observation scope.
+     * so a STOP-audit failure is logged, not propagated). Includes sent and browser-rendered frame counts as
+     * observation scope. These are metadata counters only; screen content is never recorded here.
      */
     @Transactional
     public void recordViewStop(UUID tenantId, String operatorSubject, String sessionId, String deviceId,
-                               String streamId, long framesDelivered) {
+                               String streamId, long framesDelivered, long framesRenderAcknowledged) {
+        if (framesDelivered < 0 || framesRenderAcknowledged < 0
+                || framesRenderAcknowledged > framesDelivered) {
+            throw new IllegalArgumentException("viewer STOP counters are inconsistent");
+        }
         Map<String, Object> metadata = baseMetadata(sessionId, deviceId, streamId);
         metadata.put("framesDelivered", framesDelivered);
+        metadata.put("framesRenderAcknowledged", framesRenderAcknowledged);
         auditService.record(tenantId, null, null, EVENT_TYPE, ACTION_VIEW_STOP, operatorSubject, sessionId,
                 metadata, null, null);
     }

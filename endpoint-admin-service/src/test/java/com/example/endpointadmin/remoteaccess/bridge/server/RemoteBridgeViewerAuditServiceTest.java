@@ -1,6 +1,7 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
@@ -51,7 +52,7 @@ class RemoteBridgeViewerAuditServiceTest {
 
     @Test
     void recordViewStopIncludesFrameCountAndStopAction() {
-        viewerAudit.recordViewStop(TENANT, SUBJECT, SESSION, DEVICE, STREAM, 42L);
+        viewerAudit.recordViewStop(TENANT, SUBJECT, SESSION, DEVICE, STREAM, 42L, 39L);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> meta = ArgumentCaptor.forClass(Map.class);
@@ -61,7 +62,16 @@ class RemoteBridgeViewerAuditServiceTest {
                 eq(SUBJECT), eq(SESSION), meta.capture(), isNull(), isNull());
         assertThat(meta.getValue())
                 .containsEntry("framesDelivered", 42L)
+                .containsEntry("framesRenderAcknowledged", 39L)
                 .containsEntry("capability", "VIEW_ONLY")
                 .doesNotContainKeys("payload", "dataB64", "frameHash");
+    }
+
+    @Test
+    void recordViewStopRejectsImpossibleAcknowledgementCount() {
+        assertThatThrownBy(() -> viewerAudit.recordViewStop(
+                TENANT, SUBJECT, SESSION, DEVICE, STREAM, 2L, 3L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("inconsistent");
     }
 }
