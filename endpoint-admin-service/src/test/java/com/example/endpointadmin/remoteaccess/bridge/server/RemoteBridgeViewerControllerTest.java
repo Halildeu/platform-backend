@@ -19,6 +19,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.OperatorAuthenticato
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStreamAuthorizationRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerSubscription;
+import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerSubscription.RenderAcknowledgement;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Optional;
@@ -74,7 +75,7 @@ class RemoteBridgeViewerControllerTest {
         assertThatThrownBy(() -> controller.view(SESSION, STREAM, request))
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("401 UNAUTHORIZED");
-        verify(registry, never()).subscribe(any(), any());
+        verify(registry, never()).subscribe(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -85,7 +86,7 @@ class RemoteBridgeViewerControllerTest {
         assertThatThrownBy(() -> controller.view(SESSION, STREAM, request))
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("404 NOT_FOUND");
-        verify(registry, never()).subscribe(any(), any());
+        verify(registry, never()).subscribe(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -105,7 +106,7 @@ class RemoteBridgeViewerControllerTest {
         assertThatThrownBy(() -> controller.view(SESSION, STREAM, request))
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("404 NOT_FOUND");
-        verify(registry, never()).subscribe(any(), any());
+        verify(registry, never()).subscribe(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -118,7 +119,7 @@ class RemoteBridgeViewerControllerTest {
         assertThatThrownBy(() -> controller.view(SESSION, STREAM, request))
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("404 NOT_FOUND");
-        verify(registry, never()).subscribe(any(), any());
+        verify(registry, never()).subscribe(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -131,7 +132,22 @@ class RemoteBridgeViewerControllerTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("404 NOT_FOUND");
         verify(streamAuth, never()).isAuthorized(any(), any(), any(), anyLong());
-        verify(registry, never()).subscribe(any(), any());
+        verify(registry, never()).subscribe(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void unsafeOrOversizedStreamIdIsOpaque404BeforeAuditOrRegistry() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+
+        for (String invalid : new String[] {"stream/with/slash", "x".repeat(129), "stream\npoison"}) {
+            assertThatThrownBy(() -> controller.view(SESSION, invalid, request))
+                    .isInstanceOf(ResponseStatusException.class)
+                    .extracting("statusCode").hasToString("404 NOT_FOUND");
+        }
+        verify(registry, never()).subscribe(any(), any(), any(), any(), any());
+        verify(viewerAudit, never()).recordViewStart(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -140,7 +156,8 @@ class RemoteBridgeViewerControllerTest {
         RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
         when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
         authorizedStream();
-        when(registry.subscribe(eq(SESSION), any())).thenReturn(Optional.empty()); // bound already taken
+        when(registry.subscribe(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT), any()))
+                .thenReturn(Optional.empty());
         assertThatThrownBy(() -> controller.view(SESSION, STREAM, request))
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("409 CONFLICT");
@@ -154,10 +171,11 @@ class RemoteBridgeViewerControllerTest {
         authorizedStream();
         ViewOnlyViewerSubscription sub = mock(ViewOnlyViewerSubscription.class);
         when(sub.isClosed()).thenReturn(true); // emit loop exits immediately (no real SSE connection in a unit)
-        when(registry.subscribe(eq(SESSION), any())).thenReturn(Optional.of(sub));
+        when(registry.subscribe(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT), any()))
+                .thenReturn(Optional.of(sub));
         SseEmitter emitter = controller.view(SESSION, STREAM, request);
         assertThat(emitter).isNotNull();
-        verify(registry).subscribe(eq(SESSION), any());
+        verify(registry).subscribe(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT), any());
     }
 
     @Test
@@ -168,7 +186,8 @@ class RemoteBridgeViewerControllerTest {
         authorizedStream();
         ViewOnlyViewerSubscription sub = mock(ViewOnlyViewerSubscription.class);
         when(sub.isClosed()).thenReturn(true);
-        when(registry.subscribe(eq(SESSION), any())).thenReturn(Optional.of(sub));
+        when(registry.subscribe(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT), any()))
+                .thenReturn(Optional.of(sub));
         SseEmitter emitter = controller.view(SESSION, STREAM, request);
         assertThat(emitter).isNotNull();
         // The fail-closed VIEW_START audit is recorded (parsed UUID tenant + subject + session/device/stream)
@@ -184,7 +203,8 @@ class RemoteBridgeViewerControllerTest {
         when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
         authorizedStream();
         ViewOnlyViewerSubscription sub = mock(ViewOnlyViewerSubscription.class);
-        when(registry.subscribe(eq(SESSION), any())).thenReturn(Optional.of(sub));
+        when(registry.subscribe(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT), any()))
+                .thenReturn(Optional.of(sub));
         // The pilot-enable HARD GATE: a hash-chain audit-write failure MUST prevent any observation.
         doThrow(new RuntimeException("audit chain unavailable"))
                 .when(viewerAudit).recordViewStart(any(), any(), any(), any(), any());
@@ -192,6 +212,52 @@ class RemoteBridgeViewerControllerTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting("statusCode").hasToString("503 SERVICE_UNAVAILABLE");
         verify(registry).unsubscribe(sub); // the 1:1 slot is released — no stream
-        verify(viewerAudit, never()).recordViewStop(any(), any(), any(), any(), any(), anyLong());
+        verify(viewerAudit, never()).recordViewStop(any(), any(), any(), any(), any(), anyLong(), anyLong());
+    }
+
+    @Test
+    void browserRenderAcknowledgementIsBoundToOwnedLiveViewer() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+        authorizedStream();
+        when(registry.acknowledgeRendered(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT),
+                eq("vw-random"), eq(7L), anyLong()))
+                .thenReturn(Optional.of(new RenderAcknowledgement(7L, 100L, 120L, 180L, 80L, true)));
+
+        controller.acknowledgeRendered(SESSION, STREAM,
+                new RemoteBridgeViewerController.RenderAckRequest("vw-random", 7L), request);
+
+        verify(registry).acknowledgeRendered(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT),
+                eq("vw-random"), eq(7L), anyLong());
+    }
+
+    @Test
+    void unknownOrReplayedRenderAcknowledgementIsOpaque404() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.ACTIVE);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+        authorizedStream();
+        when(registry.acknowledgeRendered(eq(SESSION), eq(STREAM), eq(TENANT), eq(SUBJECT),
+                eq("vw-stale"), eq(7L), anyLong()))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> controller.acknowledgeRendered(SESSION, STREAM,
+                new RemoteBridgeViewerController.RenderAckRequest("vw-stale", 7L), request))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting("statusCode").hasToString("404 NOT_FOUND");
+    }
+
+    @Test
+    void renderAcknowledgementAfterSessionTerminationIs404BeforeRegistry() {
+        authedAs(TENANT, SUBJECT);
+        RemoteBridgeSession s = session(TENANT, SUBJECT, State.CLOSED);
+        when(sessionStore.bySessionId(SESSION)).thenReturn(Optional.of(s));
+
+        assertThatThrownBy(() -> controller.acknowledgeRendered(SESSION, STREAM,
+                new RemoteBridgeViewerController.RenderAckRequest("vw-random", 7L), request))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting("statusCode").hasToString("404 NOT_FOUND");
+        verify(registry, never()).acknowledgeRendered(any(), any(), any(), any(), any(), anyLong(), anyLong());
     }
 }

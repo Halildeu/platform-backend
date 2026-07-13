@@ -63,10 +63,14 @@ class LiveOnlyViewDataPlaneHandlerTest {
         return meters.counter(RemoteAccessMetrics.VIEW_ONLY_FANOUT_FRAMES, "disposition", disposition).count();
     }
 
+    private ViewOnlyViewerSubscription subscribe(String streamId) {
+        return viewers.subscribe("s1", streamId, "tenant-1", "operator@acik", null).orElseThrow();
+    }
+
     @Test
     void authorizedAllowedFrame_withViewer_isDelivered() {
         authorize("op-1");
-        ViewOnlyViewerSubscription viewer = viewers.subscribe("s1", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = subscribe("op-1");
 
         handler.onDataFrame(PEER, "s1", frame("op-1", "image/png"));
 
@@ -92,7 +96,7 @@ class LiveOnlyViewDataPlaneHandlerTest {
 
     @Test
     void unauthorizedStream_isDroppedFailClosed() {
-        ViewOnlyViewerSubscription viewer = viewers.subscribe("s1", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = subscribe("op-1");
         // no authorization recorded for op-1
 
         handler.onDataFrame(PEER, "s1", frame("op-1", "image/png"));
@@ -106,7 +110,7 @@ class LiveOnlyViewDataPlaneHandlerTest {
     void authorizationBoundToDifferentPeer_isUnauthorized() {
         authz.beginSession("s1", INCARNATION);
         authz.authorize(INCARNATION, new Authorization("s1", "op-1", "peer-OTHER", "operator@acik", "device-1", EXPIRY));
-        viewers.subscribe("s1", null).orElseThrow();
+        subscribe("op-1");
 
         handler.onDataFrame(PEER, "s1", frame("op-1", "image/png")); // PEER is peer-A, grant is peer-OTHER
 
@@ -117,7 +121,7 @@ class LiveOnlyViewDataPlaneHandlerTest {
     @Test
     void disallowedContentType_isMimeRejected() {
         authorize("op-1");
-        ViewOnlyViewerSubscription viewer = viewers.subscribe("s1", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = subscribe("op-1");
 
         handler.onDataFrame(PEER, "s1", frame("op-1", "text/plain"));
 
@@ -129,7 +133,7 @@ class LiveOnlyViewDataPlaneHandlerTest {
     @Test
     void contentTypeMatch_isCaseInsensitive() {
         authorize("op-1");
-        ViewOnlyViewerSubscription viewer = viewers.subscribe("s1", null).orElseThrow();
+        ViewOnlyViewerSubscription viewer = subscribe("op-1");
 
         handler.onDataFrame(PEER, "s1", frame("op-1", "IMAGE/PNG"));
 
@@ -147,7 +151,7 @@ class LiveOnlyViewDataPlaneHandlerTest {
 
     @Test
     void blankStreamId_isUnauthorized() {
-        viewers.subscribe("s1", null).orElseThrow();
+        subscribe("");
         handler.onDataFrame(PEER, "s1", frame("", "image/png"));
         assertEquals(ViewOnlyMetadataAuditSink.Disposition.UNAUTHORIZED, audit.lastDisposition.get());
     }
