@@ -544,6 +544,7 @@ class RemoteBridgeOperatorServiceTest {
         SessionCloseOutcome close = service.closeSession("s1", "operator@x");
 
         assertTrue(close.accepted());
+        assertTrue(close.controlKillDelivered(), "the connected endpoint must acknowledge CONTROL KILL delivery");
         assertTrue(store.bySessionId("s1").isEmpty(), "the closed session must be evicted");
         assertEquals(1, closeAudits.size(), "close must be durably audited before evicting");
         assertEquals("s1", closeAudits.get(0).sessionId());
@@ -553,6 +554,16 @@ class RemoteBridgeOperatorServiceTest {
                 "close audit contentHash must remain wire-compatible SHA-256 hex");
         assertFalse(closeAudits.get(0).contentHash().contains("operator@x"),
                 "the operator subject must not be written raw into the close audit event");
+        assertTrue(observer.sent.stream().anyMatch(envelope -> envelope.hasKill()
+                        && "s1".equals(envelope.getKill().getSessionId())
+                        && "OPERATOR_CLOSE".equals(envelope.getKill().getKillReason())),
+                "an accepted close must push a session-scoped KILL to stop endpoint capture");
+        assertFalse(registry.isConnected("peer-1"),
+                "killPeer must remove the old control stream before a replacement session can start");
+
+        // A killed CONTROL stream reconnects before the next attended session. Model that real transport lifecycle
+        // explicitly rather than reusing the terminated observer as if it were still connected.
+        registry.register(peer, new ControlStreamHandle(new CapturingObserver()));
 
         SessionOpenOutcome reopened = service.openSession(
                 new SessionRequest("s2", "dev-1", "operator@x", "retry support",
@@ -584,6 +595,8 @@ class RemoteBridgeOperatorServiceTest {
         assertTrue(store.bySessionId("s1").isPresent(), "a failed close audit must not evict the live session");
         assertFalse(store.bySessionId("s1").orElseThrow().isTerminal(),
                 "a failed close audit must leave the session non-terminal");
+        assertTrue(registry.isConnected("peer-1"),
+                "a failed durable close must not send KILL or tear down the live control stream");
 
         SessionOpenOutcome blocked = service.openSession(
                 new SessionRequest("s2", "dev-1", "operator@x", "retry support",
@@ -591,6 +604,27 @@ class RemoteBridgeOperatorServiceTest {
                 peer, TENANT, "Operator X");
         assertFalse(blocked.opened(), "a failed close audit must preserve the one-live-session guard");
         assertEquals("peer-already-has-live-session", blocked.rejectReason());
+    }
+
+    @Test
+    void explicitCloseWithoutALiveControlStreamIsClosedButAuditsUndeliveredKill() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        List<AuditEvent> audits = new ArrayList<>();
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, audits::add,
+                () -> NOW, 120_000L);
+
+        SessionCloseOutcome close = service.closeSession("s1", "operator@x");
+
+        assertTrue(close.accepted(), "the broker must terminalize a session whose endpoint is already unreachable");
+        assertFalse(close.controlKillDelivered(), "the outcome must not claim a CONTROL delivery without a stream");
+        assertTrue(store.bySessionId("s1").isEmpty());
+        assertEquals(List.of("SESSION_CLOSE:OPERATOR", "SESSION_CLOSE:CONTROL_KILL_NOT_DELIVERED"),
+                audits.stream().map(AuditEvent::eventType).toList());
+        assertEquals(64, audits.get(1).contentHash().length(),
+                "the undelivered-kill diagnostic must use a wire-compatible SHA-256 content hash");
     }
 
     @Test

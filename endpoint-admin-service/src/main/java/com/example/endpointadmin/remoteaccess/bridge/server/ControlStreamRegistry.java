@@ -134,8 +134,7 @@ public final class ControlStreamRegistry {
                         .setKillReason(killReason == null || killReason.isBlank() ? "killed" : killReason)
                         .setIssuedAtEpochMillis(nowEpochMillis))
                 .build();
-        entry.handle().sendAndClose(kill);
-        return true;
+        return entry.handle().sendAndClose(kill);
     }
 
     /**

@@ -260,4 +260,20 @@ class ControlStreamRegistryTest {
         assertTrue(registry.killPeer("peer-1", "sess-1", "duress", 1L));
         assertTrue(registry.connectedPeer("peer-1").isEmpty());
     }
+
+    @Test
+    void killPeerReportsDeliveryFailureButStillClosesAndUnregistersDeadStream() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        StreamObserver<Envelope> deadObserver = new StreamObserver<>() {
+            @Override public void onNext(Envelope value) { throw new IllegalStateException("dead stream"); }
+            @Override public void onError(Throwable t) { }
+            @Override public void onCompleted() { }
+        };
+        registry.register(p, new ControlStreamHandle(deadObserver));
+
+        assertFalse(registry.killPeer("peer-1", "sess-1", "operator-close", 1L));
+        assertTrue(registry.connectedPeer("peer-1").isEmpty(),
+                "a failed send must still remove the dead control stream");
+    }
 }

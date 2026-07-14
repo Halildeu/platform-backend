@@ -68,16 +68,19 @@ final class ControlStreamHandle {
     }
 
     /** Send (best-effort) then terminate — the KILL path and the error path share this. */
-    synchronized void sendAndClose(Envelope envelope) {
+    synchronized boolean sendAndClose(Envelope envelope) {
         if (closed) {
-            return;
+            return false;
         }
+        boolean delivered = false;
         try {
             outbound.onNext(envelope);
+            delivered = true;
         } catch (RuntimeException ignored) {
             // the stream is already dead — closing is the outcome that matters
         }
         closeLocked();
+        return delivered;
     }
 
     /** Terminate the stream: cancel the heartbeat, complete the observer. Idempotent. */
