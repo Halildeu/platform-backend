@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.server;
 
+import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.proto.AgentHello;
 import com.example.endpointadmin.remoteaccess.bridge.proto.AuditEvent;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -699,6 +701,54 @@ class RemoteBridgeConnectServiceTest {
             assertEquals(ChannelType.CONTROL, heartbeat.getChannelType());
             assertEquals(50, heartbeat.getHeartbeat().getHeartbeatIntervalMillis());
             assertEquals(0, heartbeat.getHeartbeat().getLeaseExpiresAtEpochMillis()); // broker lease = T-4
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void boundedSuppressionStopsOnlyScheduledHeartbeatsAndThenAutoResumes() throws Exception {
+        java.util.concurrent.ScheduledExecutorService scheduler =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        try {
+            String name = InProcessServerBuilder.generateName();
+            RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                    dataPlane, meters, scheduler, 20, 1024, System::currentTimeMillis, "rb-v1");
+            server = InProcessServerBuilder.forName(name).directExecutor()
+                    .intercept(new InjectIdentity(PEER)).addService(service).build().start();
+            channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+
+            ClientSink sink = new ClientSink();
+            RemoteBridgeGrpc.newStub(channel).connect(sink);
+            long firstDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < firstDeadline && sink.received.stream()
+                    .noneMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT)) {
+                Thread.sleep(5L);
+            }
+            long now = System.currentTimeMillis();
+            registry.suppressHeartbeats(PEER.transportPeerKey(), "probe-1", now, now + 200L).orElseThrow();
+            long countAfterArm = sink.received.stream()
+                    .filter(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT).count();
+
+            assertTrue(registry.sendConsentPrompt(PEER.transportPeerKey(),
+                    new RemoteBridgeMessages.ConsentPrompt("sess-1", "Operator", "support",
+                            Set.of(RemoteSessionCapability.VIEW_ONLY), now + 5_000L), now + 1L));
+            Thread.sleep(100L);
+            assertEquals(countAfterArm, sink.received.stream()
+                    .filter(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT).count(),
+                    "no scheduled heartbeat may pass during the suppression window");
+            assertTrue(sink.received.stream()
+                    .anyMatch(e -> e.getPayloadCase() == Envelope.PayloadCase.CONSENT_PROMPT),
+                    "non-heartbeat CONTROL traffic must remain deliverable");
+
+            long resumeDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (System.nanoTime() < resumeDeadline && sink.received.stream()
+                    .filter(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT).count() == countAfterArm) {
+                Thread.sleep(10L);
+            }
+            assertTrue(sink.received.stream()
+                    .filter(e -> e.getPayloadCase() == Envelope.PayloadCase.HEARTBEAT).count() > countAfterArm,
+                    "the broker-owned deadline must restore heartbeats without an operator action");
         } finally {
             scheduler.shutdownNow();
         }

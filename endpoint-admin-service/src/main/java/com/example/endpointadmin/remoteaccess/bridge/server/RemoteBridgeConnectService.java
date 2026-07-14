@@ -236,7 +236,8 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         if (heartbeatScheduler == null || heartbeatIntervalMillis <= 0) {
             return null;
         }
-        return heartbeatScheduler.scheduleWithFixedDelay(() -> handle.send(heartbeatEnvelope()),
+        return heartbeatScheduler.scheduleWithFixedDelay(
+                () -> handle.sendHeartbeat(heartbeatEnvelope(), clock.getAsLong()),
                 heartbeatIntervalMillis, heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
     }
 

@@ -3,6 +3,7 @@ package com.example.endpointadmin.remoteaccess.bridge.server;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Heartbeat;
+import com.example.endpointadmin.remoteaccess.bridge.proto.Kill;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
@@ -217,5 +218,73 @@ class ControlStreamHandleTest {
         assertTrue(first.isClosed());
         assertTrue(registry.isConnected("peer-fp-x"));
         assertEquals(1, registry.connectedCount());
+    }
+
+    @Test
+    void heartbeatSuppressionDoesNotBlockGeneralControlAndAutomaticallyExpires() {
+        AtomicInteger writes = new AtomicInteger();
+        StreamObserver<Envelope> observer = new StreamObserver<>() {
+            @Override public void onNext(Envelope envelope) { writes.incrementAndGet(); }
+            @Override public void onError(Throwable t) { }
+            @Override public void onCompleted() { }
+        };
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+
+        ControlStreamHandle.HeartbeatSuppression armed =
+                handle.suppressHeartbeats("probe-1", 1_000L, 2_000L);
+
+        assertTrue(armed.newlyArmed());
+        assertFalse(handle.sendHeartbeat(HEARTBEAT, 1_500L), "heartbeat is suppressed inside the window");
+        assertTrue(handle.send(HEARTBEAT), "general CONTROL writes remain deliverable");
+        assertTrue(handle.sendHeartbeat(HEARTBEAT, 2_000L), "deadline automatically restores heartbeats");
+        assertEquals(2, writes.get());
+    }
+
+    @Test
+    void repeatedActiveSuppressionIsIdempotentAndCannotExtendTheDeadline() {
+        ControlStreamHandle handle = new ControlStreamHandle(quietObserver());
+
+        ControlStreamHandle.HeartbeatSuppression first =
+                handle.suppressHeartbeats("probe-1", 1_000L, 2_000L);
+        ControlStreamHandle.HeartbeatSuppression repeated =
+                handle.suppressHeartbeats("probe-2", 1_500L, 9_000L);
+
+        assertTrue(first.newlyArmed());
+        assertFalse(repeated.newlyArmed());
+        assertEquals("probe-1", repeated.probeId());
+        assertEquals(2_000L, repeated.untilEpochMillis());
+    }
+
+    @Test
+    void killDeliveryAndTerminalCloseRemainAvailableDuringHeartbeatSuppression() {
+        AtomicInteger kills = new AtomicInteger();
+        AtomicInteger completions = new AtomicInteger();
+        StreamObserver<Envelope> observer = new StreamObserver<>() {
+            @Override public void onNext(Envelope envelope) {
+                if (envelope.getPayloadCase() == Envelope.PayloadCase.KILL) {
+                    kills.incrementAndGet();
+                }
+            }
+            @Override public void onError(Throwable t) { }
+            @Override public void onCompleted() { completions.incrementAndGet(); }
+        };
+        ControlStreamHandle handle = new ControlStreamHandle(observer);
+        handle.suppressHeartbeats("probe-1", 1_000L, 2_000L);
+        Envelope kill = Envelope.newBuilder().setChannelType(ChannelType.CONTROL).setSessionId("sess-1")
+                .setKill(Kill.newBuilder().setSessionId("sess-1").setKillReason("operator-close")
+                        .setIssuedAtEpochMillis(1_500L))
+                .build();
+
+        assertTrue(handle.sendAndClose(kill));
+        assertEquals(1, kills.get());
+        assertEquals(1, completions.get());
+        assertTrue(handle.isClosed());
+    }
+
+    @Test
+    void scheduledHeartbeatPathRejectsAnyOtherControlPayload() {
+        ControlStreamHandle handle = new ControlStreamHandle(quietObserver());
+        assertThrows(IllegalArgumentException.class,
+                () -> handle.sendHeartbeat(Envelope.getDefaultInstance(), 1_000L));
     }
 }
