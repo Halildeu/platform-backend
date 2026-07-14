@@ -20,11 +20,17 @@ import java.util.concurrent.ScheduledFuture;
  */
 final class ControlStreamHandle {
 
+    record HeartbeatSuppression(String probeId, long untilEpochMillis, boolean newlyArmed) {
+    }
+
     private final StreamObserver<Envelope> outbound;
     private ScheduledFuture<?> heartbeat;
     private Runnable onClose;
     private Runnable pendingCloseAction;
     private boolean closeActionAttached;
+    private String heartbeatSuppressionProbeId;
+    private long heartbeatSuppressedUntilEpochMillis;
+    private boolean heartbeatFaultTerminalClaimed;
     private volatile boolean closed;
 
     ControlStreamHandle(StreamObserver<Envelope> outbound) {
@@ -83,6 +89,71 @@ final class ControlStreamHandle {
         }
         drainCloseAction();
         return delivered;
+    }
+
+    /**
+     * Heartbeat-only write path used by the scheduler. A bounded acceptance probe may suppress these frames
+     * without suppressing KILL, permits, consent prompts, or any other CONTROL payload sent through
+     * {@link #send(Envelope)}. Suppression automatically expires at the broker-owned deadline.
+     */
+    boolean sendHeartbeat(Envelope envelope, long nowEpochMillis) {
+        if (envelope == null || envelope.getPayloadCase() != Envelope.PayloadCase.HEARTBEAT) {
+            throw new IllegalArgumentException("scheduled heartbeat path requires a heartbeat envelope");
+        }
+        boolean delivered;
+        synchronized (this) {
+            if (closed || nowEpochMillis < heartbeatSuppressedUntilEpochMillis) {
+                return false;
+            }
+            try {
+                outbound.onNext(envelope);
+                delivered = true;
+            } catch (RuntimeException e) {
+                closeLocked();
+                delivered = false;
+            }
+        }
+        drainCloseAction();
+        return delivered;
+    }
+
+    /** Arm one bounded heartbeat-loss probe; a repeated call while active is idempotent and never extends it. */
+    synchronized HeartbeatSuppression suppressHeartbeats(String probeId,
+                                                          long nowEpochMillis,
+                                                          long untilEpochMillis) {
+        if (closed || probeId == null || probeId.isBlank() || untilEpochMillis <= nowEpochMillis) {
+            return null;
+        }
+        if (nowEpochMillis < heartbeatSuppressedUntilEpochMillis
+                && heartbeatSuppressionProbeId != null) {
+            return new HeartbeatSuppression(heartbeatSuppressionProbeId,
+                    heartbeatSuppressedUntilEpochMillis, false);
+        }
+        heartbeatSuppressionProbeId = probeId;
+        heartbeatSuppressedUntilEpochMillis = untilEpochMillis;
+        heartbeatFaultTerminalClaimed = false;
+        return new HeartbeatSuppression(probeId, untilEpochMillis, true);
+    }
+
+    synchronized String heartbeatSuppressionProbeId() {
+        return heartbeatSuppressionProbeId;
+    }
+
+    synchronized String cancelHeartbeatSuppression() {
+        String probeId = heartbeatSuppressionProbeId;
+        heartbeatSuppressionProbeId = null;
+        heartbeatSuppressedUntilEpochMillis = 0L;
+        heartbeatFaultTerminalClaimed = false;
+        return probeId;
+    }
+
+    /** Exactly one stale-reconnect callback may claim terminal cleanup for an armed heartbeat probe. */
+    synchronized boolean claimHeartbeatFaultTerminalCleanup() {
+        if (heartbeatSuppressionProbeId == null || heartbeatFaultTerminalClaimed) {
+            return false;
+        }
+        heartbeatFaultTerminalClaimed = true;
+        return true;
     }
 
     /** Send (best-effort) then terminate — the KILL path and the error path share this. */

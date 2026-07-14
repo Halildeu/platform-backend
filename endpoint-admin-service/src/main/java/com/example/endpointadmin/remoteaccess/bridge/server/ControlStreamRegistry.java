@@ -33,12 +33,42 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ControlStreamRegistry {
 
     private static final int PEER_LOCK_STRIPES = 256;
+    private static final int MAX_HEARTBEAT_FAULT_OBSERVATIONS = 1_024;
+    private static final long FAULT_OBSERVATION_RETENTION_MILLIS = 180_000L;
 
     /** One live CONTROL stream: the authenticated peer + its serialized write handle, kept atomically together. */
     private record ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle) {
     }
 
+    /** Public, redacted correlation ticket for one bounded heartbeat-loss acceptance probe. */
+    public record HeartbeatSuppressionTicket(String probeId, long suppressedUntilEpochMillis,
+                                             boolean newlyArmed) {
+    }
+
+    public enum HeartbeatFaultStatus {
+        ARMED,
+        CONTROL_STREAM_CLOSED,
+        CANCELLED
+    }
+
+    private static final class HeartbeatFaultObservation {
+        private final String transportPeerKey;
+        private final ControlStreamHandle handle;
+        private final long suppressedUntilEpochMillis;
+        private volatile HeartbeatFaultStatus status = HeartbeatFaultStatus.ARMED;
+
+        private HeartbeatFaultObservation(String transportPeerKey,
+                                          ControlStreamHandle handle,
+                                          long suppressedUntilEpochMillis) {
+            this.transportPeerKey = transportPeerKey;
+            this.handle = handle;
+            this.suppressedUntilEpochMillis = suppressedUntilEpochMillis;
+        }
+    }
+
     private final Map<String, ConnectedPeer> streams = new ConcurrentHashMap<>();
+    private final Map<String, HeartbeatFaultObservation> heartbeatFaults = new ConcurrentHashMap<>();
+    private final Object heartbeatFaultObservationLock = new Object();
     private final Object[] peerLocks = createPeerLocks();
 
     /** Register the peer's CONTROL handle; an existing handle for the SAME peer is closed and replaced. */
@@ -66,8 +96,16 @@ public final class ControlStreamRegistry {
         String peerKey = peer.transportPeerKey();
         synchronized (peerLock(peerKey)) {
             ConnectedPeer entry = streams.get(peerKey);
-            // handle-identity conditional remove: a replaced stream cannot remove or report loss for its successor
+            boolean heartbeatFaultClosed = markHeartbeatFaultClosed(peerKey, handle);
+            // A normal replaced stream cannot remove or report loss for its successor. A heartbeat-fault-armed
+            // stream is different: the agent watchdog may reconnect before the old inbound callback arrives.
+            // Its exact armed handle is still real loss evidence, so run terminal cleanup once while preserving
+            // the successor transport for a future session.
             if (entry == null || entry.handle() != handle) {
+                if (heartbeatFaultClosed && onRemoved != null
+                        && handle.claimHeartbeatFaultTerminalCleanup()) {
+                    onRemoved.run();
+                }
                 return false;
             }
             streams.remove(peerKey, entry);
@@ -78,6 +116,57 @@ public final class ControlStreamRegistry {
             }
             return true;
         }
+    }
+
+    /**
+     * Suppress only broker→agent heartbeat frames for one authenticated peer. General CONTROL traffic remains
+     * live. Repeating the call while already armed is idempotent and does not extend the original deadline.
+     */
+    public Optional<HeartbeatSuppressionTicket> suppressHeartbeats(String transportPeerKey,
+                                                                   String requestedProbeId,
+                                                                   long nowEpochMillis,
+                                                                   long untilEpochMillis) {
+        if (transportPeerKey == null || transportPeerKey.isBlank()
+                || requestedProbeId == null || requestedProbeId.isBlank()
+                || nowEpochMillis < 0L
+                || untilEpochMillis <= nowEpochMillis) {
+            return Optional.empty();
+        }
+        synchronized (peerLock(transportPeerKey)) {
+            cleanupExpiredHeartbeatFaults(nowEpochMillis);
+            ConnectedPeer entry = streams.get(transportPeerKey);
+            if (entry == null) {
+                return Optional.empty();
+            }
+            ControlStreamHandle.HeartbeatSuppression armed = entry.handle().suppressHeartbeats(
+                    requestedProbeId, nowEpochMillis, untilEpochMillis);
+            if (armed == null) {
+                return Optional.empty();
+            }
+            synchronized (heartbeatFaultObservationLock) {
+                if (armed.newlyArmed() && heartbeatFaults.size() >= MAX_HEARTBEAT_FAULT_OBSERVATIONS) {
+                    entry.handle().cancelHeartbeatSuppression();
+                    return Optional.empty();
+                }
+                heartbeatFaults.computeIfAbsent(armed.probeId(), ignored -> new HeartbeatFaultObservation(
+                        transportPeerKey, entry.handle(), armed.untilEpochMillis()));
+            }
+            return Optional.of(new HeartbeatSuppressionTicket(
+                    armed.probeId(), armed.untilEpochMillis(), armed.newlyArmed()));
+        }
+    }
+
+    /** True only when the exact fault-armed CONTROL handle actually closed. */
+    public boolean heartbeatFaultControlStreamClosed(String probeId) {
+        return heartbeatFaultStatus(probeId).orElse(null) == HeartbeatFaultStatus.CONTROL_STREAM_CLOSED;
+    }
+
+    public Optional<HeartbeatFaultStatus> heartbeatFaultStatus(String probeId) {
+        if (probeId == null) {
+            return Optional.empty();
+        }
+        HeartbeatFaultObservation observation = heartbeatFaults.get(probeId);
+        return observation == null ? Optional.empty() : Optional.of(observation.status);
     }
 
     public boolean isConnected(String transportPeerKey) {
@@ -151,6 +240,9 @@ public final class ControlStreamRegistry {
         ConnectedPeer entry;
         synchronized (peerLock(transportPeerKey)) {
             entry = streams.remove(transportPeerKey);
+            if (entry != null) {
+                cancelHeartbeatFault(entry.handle());
+            }
         }
         if (entry == null) {
             return false;
@@ -273,8 +365,53 @@ public final class ControlStreamRegistry {
 
     /** Close every live stream (server shutdown) — each handle cancels its own heartbeat task. */
     public void completeAll() {
-        streams.values().forEach(entry -> entry.handle().close());
+        streams.values().forEach(entry -> {
+            cancelHeartbeatFault(entry.handle());
+            entry.handle().close();
+        });
         streams.clear();
+        synchronized (heartbeatFaultObservationLock) {
+            heartbeatFaults.clear();
+        }
+    }
+
+    private boolean markHeartbeatFaultClosed(String transportPeerKey, ControlStreamHandle handle) {
+        String probeId = handle.heartbeatSuppressionProbeId();
+        if (probeId == null) {
+            return false;
+        }
+        synchronized (heartbeatFaultObservationLock) {
+            HeartbeatFaultObservation observation = heartbeatFaults.get(probeId);
+            if (observation == null || observation.handle != handle
+                    || !observation.transportPeerKey.equals(transportPeerKey)
+                    || observation.status != HeartbeatFaultStatus.ARMED) {
+                return false;
+            }
+            observation.status = HeartbeatFaultStatus.CONTROL_STREAM_CLOSED;
+            return true;
+        }
+    }
+
+    private void cancelHeartbeatFault(ControlStreamHandle handle) {
+        String probeId = handle.cancelHeartbeatSuppression();
+        if (probeId != null) {
+            synchronized (heartbeatFaultObservationLock) {
+                HeartbeatFaultObservation observation = heartbeatFaults.get(probeId);
+                if (observation != null && observation.handle == handle
+                        && observation.status == HeartbeatFaultStatus.ARMED) {
+                    observation.status = HeartbeatFaultStatus.CANCELLED;
+                }
+            }
+        }
+    }
+
+    /** Opportunistic bounded cleanup; the hard 1024-entry cap still refuses new unique probes fail-closed. */
+    private void cleanupExpiredHeartbeatFaults(long nowEpochMillis) {
+        synchronized (heartbeatFaultObservationLock) {
+            heartbeatFaults.entrySet().removeIf(entry -> nowEpochMillis > entry.getValue().suppressedUntilEpochMillis
+                    && nowEpochMillis - entry.getValue().suppressedUntilEpochMillis
+                    > FAULT_OBSERVATION_RETENTION_MILLIS);
+        }
     }
 
     private Object peerLock(String transportPeerKey) {

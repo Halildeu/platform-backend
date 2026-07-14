@@ -33,6 +33,7 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidencePa
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerEvidenceParserFactory;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.PeerTrustLedger;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeAgentErrorLedger;
+import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeHeartbeatLossProbeService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeNegativeProbeService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeOperatorService;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore;
@@ -56,6 +57,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -610,6 +612,26 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.negative-probes.observation-timeout-millis:3000}") long observationTimeoutMillis) {
         return new RemoteBridgeNegativeProbeService(remoteBridgeControlStreamRegistry, remoteBridgePermitSigner,
                 remoteBridgeAgentErrorLedger, System::currentTimeMillis, permitTtlMillis, observationTimeoutMillis);
+    }
+
+    @Bean
+    @ConditionalOnExpression("'${remote-bridge.operator-rest.enabled:false}' == 'true' "
+            + "&& '${remote-bridge.heartbeat-loss-probes.enabled:false}' == 'true'")
+    public RemoteBridgeHeartbeatLossProbeService remoteBridgeHeartbeatLossProbeService(
+            ControlStreamRegistry remoteBridgeControlStreamRegistry,
+            RemoteBridgeSessionStore remoteBridgeSessionStore,
+            MeterRegistry meterRegistry,
+            Environment environment,
+            @Value("${remote-bridge.heartbeat-loss-probes.suppression-millis:45000}") long suppressionMillis,
+            @Value("${remote-bridge.heartbeat-loss-probes.observation-timeout-millis:50000}")
+                    long observationTimeoutMillis) {
+        if (isProductionLike(environment)) {
+            throw new IllegalStateException(
+                    "remote-bridge heartbeat-loss probes are forbidden in a production-like profile");
+        }
+        return new RemoteBridgeHeartbeatLossProbeService(remoteBridgeControlStreamRegistry,
+                remoteBridgeSessionStore, meterRegistry, System::currentTimeMillis,
+                suppressionMillis, observationTimeoutMillis);
     }
 
     /**

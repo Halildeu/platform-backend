@@ -111,6 +111,14 @@ public final class RemoteAccessMetrics {
      * real (owner-gated) consumer is wired — it is NEVER a session kill from the transport.
      */
     public static final String BRIDGE_DATA_HANDLER_ERRORS = "remote_access_bridge_data_handler_errors_total";
+    /**
+     * Non-prod heartbeat-loss acceptance probes, tagged only with the bounded outcome set
+     * (refused-session / refused-incarnation / refused-peer-or-capacity / refused-clock /
+     * cancelled-explicit-terminal / terminal-observed / terminal-timeout). No peer, session, operator, or probe
+     * id is a metric tag.
+     */
+    public static final String BRIDGE_HEARTBEAT_LOSS_PROBE_TOTAL =
+            "remote_access_bridge_heartbeat_loss_probe_total";
 
     // ---- Faz 22.6 #1580 VIEW_ONLY screen-observation fanout (recording-off MVP; Codex 019f078a) ----
 

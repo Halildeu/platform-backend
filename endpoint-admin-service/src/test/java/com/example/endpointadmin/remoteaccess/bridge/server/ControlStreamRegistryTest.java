@@ -7,6 +7,7 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.proto.ChannelType;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
+import com.example.endpointadmin.remoteaccess.bridge.proto.Heartbeat;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
@@ -17,7 +18,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -334,5 +337,127 @@ class ControlStreamRegistryTest {
         assertFalse(registry.killPeer("peer-1", "sess-1", "operator-close", 1L));
         assertTrue(registry.connectedPeer("peer-1").isEmpty(),
                 "a failed send must still remove the dead control stream");
+    }
+
+    @Test
+    void heartbeatSuppressionIsPeerScopedAndGeneralControlStillFlows() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver first = new CapturingObserver();
+        CapturingObserver second = new CapturingObserver();
+        ControlStreamHandle firstHandle = new ControlStreamHandle(first);
+        ControlStreamHandle secondHandle = new ControlStreamHandle(second);
+        registry.register(peer("peer-1"), firstHandle);
+        registry.register(peer("peer-2"), secondHandle);
+
+        ControlStreamRegistry.HeartbeatSuppressionTicket ticket = registry.suppressHeartbeats(
+                "peer-1", "probe-1", 1_000L, 2_000L).orElseThrow();
+
+        Envelope heartbeat = Envelope.newBuilder().setChannelType(ChannelType.CONTROL)
+                .setHeartbeat(Heartbeat.newBuilder().setHeartbeatIntervalMillis(1_000L)).build();
+        assertFalse(firstHandle.sendHeartbeat(heartbeat, 1_500L));
+        assertTrue(firstHandle.send(Envelope.getDefaultInstance()), "KILL/permit/general CONTROL stays live");
+        assertTrue(secondHandle.sendHeartbeat(heartbeat, 1_500L),
+                "another peer is never suppressed");
+        assertEquals("probe-1", ticket.probeId());
+        assertEquals(1, first.sent.size());
+        assertEquals(1, second.sent.size());
+    }
+
+    @Test
+    void faultArmedReconnectReportsTheOldHandleLossOnceAndPreservesTheSuccessor() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        AtomicInteger terminalCleanups = new AtomicInteger();
+        registry.register(p, first);
+        first.attachOnClose(() -> registry.unregister(p, first, terminalCleanups::incrementAndGet));
+        ControlStreamRegistry.HeartbeatSuppressionTicket ticket = registry.suppressHeartbeats(
+                "peer-1", "probe-1", 1_000L, 2_000L).orElseThrow();
+
+        ControlStreamHandle successor = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, successor);
+        successor.attachOnClose(() -> registry.unregister(p, successor, terminalCleanups::incrementAndGet));
+
+        assertTrue(first.isClosed());
+        assertTrue(registry.heartbeatFaultControlStreamClosed(ticket.probeId()));
+        assertEquals(1, terminalCleanups.get());
+        assertEquals(p, registry.connectedPeer("peer-1").orElseThrow(),
+                "the replacement transport remains available for a future session");
+    }
+
+    @Test
+    void explicitKillCancelsFaultCorrelationInsteadOfFakingHeartbeatLoss() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, handle);
+        handle.attachOnClose(() -> registry.unregister(p, handle));
+        ControlStreamRegistry.HeartbeatSuppressionTicket ticket = registry.suppressHeartbeats(
+                "peer-1", "probe-1", 1_000L, 2_000L).orElseThrow();
+
+        assertTrue(registry.killPeer("peer-1", "sess-1", "operator-close", 1_100L));
+
+        assertFalse(registry.heartbeatFaultControlStreamClosed(ticket.probeId()));
+        assertEquals(ControlStreamRegistry.HeartbeatFaultStatus.CANCELLED,
+                registry.heartbeatFaultStatus(ticket.probeId()).orElseThrow());
+    }
+
+    @Test
+    void concurrentArmsForTheSamePeerCollapseToOneNonExtendedProbe() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        registry.register(peer("peer-1"), new ControlStreamHandle(new CapturingObserver()));
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ConcurrentLinkedQueue<ControlStreamRegistry.HeartbeatSuppressionTicket> outcomes =
+                new ConcurrentLinkedQueue<>();
+        Thread first = Thread.ofPlatform().start(() -> {
+            ready.countDown();
+            await(start);
+            registry.suppressHeartbeats("peer-1", "probe-1", 1_000L, 2_000L).ifPresent(outcomes::add);
+        });
+        Thread second = Thread.ofPlatform().start(() -> {
+            ready.countDown();
+            await(start);
+            registry.suppressHeartbeats("peer-1", "probe-2", 1_000L, 9_000L).ifPresent(outcomes::add);
+        });
+
+        assertTrue(ready.await(2, TimeUnit.SECONDS));
+        start.countDown();
+        first.join(2_000L);
+        second.join(2_000L);
+
+        assertEquals(2, outcomes.size());
+        List<ControlStreamRegistry.HeartbeatSuppressionTicket> tickets = List.copyOf(outcomes);
+        assertEquals(tickets.get(0).probeId(), tickets.get(1).probeId());
+        assertEquals(tickets.get(0).suppressedUntilEpochMillis(), tickets.get(1).suppressedUntilEpochMillis());
+        assertEquals(1, tickets.stream().filter(ControlStreamRegistry.HeartbeatSuppressionTicket::newlyArmed).count());
+    }
+
+    @Test
+    void heartbeatFaultObservationLedgerHasAHardCapacityAndOverflowDoesNotSuppress() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        for (int i = 0; i < 1_024; i++) {
+            String peerKey = "peer-" + i;
+            registry.register(peer(peerKey), new ControlStreamHandle(new CapturingObserver()));
+            assertTrue(registry.suppressHeartbeats(peerKey, "probe-" + i,
+                    1_000L, 2_000L).isPresent());
+        }
+        ControlStreamHandle overflowHandle = new ControlStreamHandle(new CapturingObserver());
+        registry.register(peer("peer-overflow"), overflowHandle);
+
+        assertTrue(registry.suppressHeartbeats("peer-overflow", "probe-overflow",
+                1_000L, 2_000L).isEmpty());
+        Envelope heartbeat = Envelope.newBuilder().setChannelType(ChannelType.CONTROL)
+                .setHeartbeat(Heartbeat.newBuilder().setHeartbeatIntervalMillis(1_000L)).build();
+        assertTrue(overflowHandle.sendHeartbeat(heartbeat, 1_500L),
+                "capacity refusal must roll back the just-armed suppression");
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
