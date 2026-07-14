@@ -188,17 +188,18 @@ public final class RemoteBridgeOperatorService {
     }
 
     /** Explicit operator close outcome. A failed durable close audit refuses the close and keeps the slot live. */
-    public record SessionCloseOutcome(String sessionId, boolean closed, String rejectReason) {
+    public record SessionCloseOutcome(String sessionId, boolean closed, boolean controlKillDelivered,
+                                      String rejectReason) {
         public boolean accepted() {
             return closed && rejectReason == null;
         }
 
-        static SessionCloseOutcome closed(String sessionId) {
-            return new SessionCloseOutcome(sessionId, true, null);
+        static SessionCloseOutcome closed(String sessionId, boolean controlKillDelivered) {
+            return new SessionCloseOutcome(sessionId, true, controlKillDelivered, null);
         }
 
         static SessionCloseOutcome rejected(String sessionId, String reason) {
-            return new SessionCloseOutcome(sessionId, false, reason);
+            return new SessionCloseOutcome(sessionId, false, false, reason);
         }
     }
 
@@ -322,6 +323,7 @@ public final class RemoteBridgeOperatorService {
         if (session == null) {
             return SessionCloseOutcome.rejected(sessionId, "unknown-session");
         }
+        boolean controlKillDelivered;
         synchronized (session) {
             if (session.isTerminal()) {
                 store.evictIfTerminal(sessionId);
@@ -337,6 +339,15 @@ public final class RemoteBridgeOperatorService {
             } catch (RuntimeException recordingFailure) {
                 return SessionCloseOutcome.rejected(sessionId, "recording-failed");
             }
+            // The durable close record is now committed, so stop the endpoint data plane BEFORE publishing the
+            // terminal state/evicting the session. Closing only the viewer lifecycle is insufficient: the agent's
+            // active capture helper is cancelled by CONTROL KILL. A disconnected peer simply returns false; the
+            // local session still closes because there is no reachable stream left to stop.
+            controlKillDelivered = registry.killPeer(
+                    session.transportPeerKey(), session.sessionId(), "OPERATOR_CLOSE", now);
+            if (!controlKillDelivered) {
+                recordCloseKillDeliveryFailureBestEffort(session.sessionId(), now);
+            }
             if (!session.transition(Event.CLOSE).accepted()) {
                 return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
             }
@@ -345,7 +356,16 @@ public final class RemoteBridgeOperatorService {
         evictDeviceKeySession(sessionId, session.transportPeerKey()); // F1: no stale state for a reused sessionId
         evictDuressSignal(sessionId);
         terminateViewOnly(sessionId); // #1580 — no stale fanout grant after operator close
-        return SessionCloseOutcome.closed(sessionId);
+        return SessionCloseOutcome.closed(sessionId, controlKillDelivered);
+    }
+
+    private void recordCloseKillDeliveryFailureBestEffort(String sessionId, long now) {
+        String eventType = "SESSION_CLOSE:CONTROL_KILL_NOT_DELIVERED";
+        try {
+            auditSink.record(new AuditEvent(sessionId, eventType, auditContentHash(eventType), now));
+        } catch (RuntimeException ignored) {
+            // The authoritative close event is already durable. This diagnostic cannot reopen the session.
+        }
     }
 
     /**

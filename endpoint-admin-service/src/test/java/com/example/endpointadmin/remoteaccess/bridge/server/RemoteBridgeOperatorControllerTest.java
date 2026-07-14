@@ -621,7 +621,7 @@ class RemoteBridgeOperatorControllerTest {
     @Test
     void aCloseForTheOwnSessionDelegatesAndReturns204() throws Exception {
         when(operatorService.closeSession("s-owned", OWNER))
-                .thenReturn(new SessionCloseOutcome("s-owned", true, null));
+                .thenReturn(new SessionCloseOutcome("s-owned", true, true, null));
 
         mvc.perform(post(BASE + "s-owned/close").header("Authorization", AUTH))
                 .andExpect(status().isNoContent());
@@ -632,7 +632,7 @@ class RemoteBridgeOperatorControllerTest {
     @Test
     void aCloseTheServiceRefusesIs409WithGenericReason() throws Exception {
         when(operatorService.closeSession("s-owned", OWNER))
-                .thenReturn(new SessionCloseOutcome("s-owned", false, "recording-failed"));
+                .thenReturn(new SessionCloseOutcome("s-owned", false, false, "recording-failed"));
 
         mvc.perform(post(BASE + "s-owned/close").header("Authorization", AUTH))
                 .andExpect(status().isConflict())
