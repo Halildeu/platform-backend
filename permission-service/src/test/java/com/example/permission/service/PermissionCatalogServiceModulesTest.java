@@ -88,6 +88,19 @@ class PermissionCatalogServiceModulesTest {
     }
 
     @Test
+    void catalogExposesInterviewEvidenceAsExactOptInModule() {
+        ModuleCatalogItem interviewEvidence = module("INTERVIEW_EVIDENCE")
+                .orElseThrow(() -> new AssertionError(
+                        "INTERVIEW_EVIDENCE module missing from catalog"));
+
+        assertThat(interviewEvidence.label()).isEqualTo("Mülakat Kanıtı");
+        assertThat(interviewEvidence.levels()).containsExactly("VIEW", "MANAGE");
+        assertThat(service.getModuleKeys())
+                .contains("INTERVIEW_EVIDENCE")
+                .doesNotContain("interview_evidence", "interview-evidence");
+    }
+
+    @Test
     void meetingAndTranscriptModuleKeysAreUppercase() {
         // Guards the Option A invariant (Codex 019ed603): catalog key == OpenFGA
         // object id == service @RequireModule literal. The services were

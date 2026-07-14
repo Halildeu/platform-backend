@@ -62,7 +62,14 @@ public class PermissionCatalogService {
             // IMPERSONATION_AUDIT/SUGGESTIONS/ETHIC precedent) — meeting/transcript admin consoles are
             // platform-admin surfaces. Non-admin roles receive explicit grants via the access drawer.
             new ModuleCatalogItem("MEETING", "Toplantı", List.of("VIEW", "MANAGE")),
-            new ModuleCatalogItem("TRANSCRIPT", "Transkript", List.of("VIEW", "MANAGE"))
+            new ModuleCatalogItem("TRANSCRIPT", "Transkript", List.of("VIEW", "MANAGE")),
+            // Faz 25 P5: platform-web uses this exact key only as the Readiness
+            // Console shell visibility gate. ATS API authority remains the
+            // separate ats.* audience/scope/tenant contract. Candidate evidence
+            // is sensitive, so this module is deliberately opt-in: unlike the
+            // meeting/transcript admin surfaces it is NOT seeded onto ADMIN by
+            // PermissionDataInitializer. Named roles receive an explicit grant.
+            new ModuleCatalogItem("INTERVIEW_EVIDENCE", "Mülakat Kanıtı", List.of("VIEW", "MANAGE"))
     );
 
     private static final List<ActionCatalogItem> ACTIONS = List.of(
