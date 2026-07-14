@@ -16,9 +16,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -249,6 +252,62 @@ class ControlStreamRegistryTest {
 
         registry.unregister(p, first); // stale handle
         assertTrue(registry.connectedPeer("peer-1").isPresent(), "the successor stream must survive a stale unregister");
+    }
+
+    @Test
+    void transportLossCallbackCompletesBeforeSamePeerReconnectCanRegister() throws Exception {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle first = new ControlStreamHandle(new CapturingObserver());
+        ControlStreamHandle successor = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, first);
+
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        CountDownLatch successorRegistered = new CountDownLatch(1);
+        Thread unregister = Thread.ofPlatform().start(() -> registry.unregister(p, first, () -> {
+            callbackEntered.countDown();
+            try {
+                releaseCallback.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        }));
+        assertTrue(callbackEntered.await(2, TimeUnit.SECONDS));
+        assertTrue(registry.connectedPeer("peer-1").isEmpty(),
+                "the dead slot must be absent while terminal cleanup is still fencing reconnect");
+
+        Thread reconnect = Thread.ofPlatform().start(() -> {
+            registry.register(p, successor);
+            successorRegistered.countDown();
+        });
+        assertFalse(successorRegistered.await(100, TimeUnit.MILLISECONDS),
+                "same-peer successor must wait until transport-loss session cleanup finishes");
+
+        releaseCallback.countDown();
+        unregister.join(2_000);
+        reconnect.join(2_000);
+
+        assertFalse(unregister.isAlive());
+        assertFalse(reconnect.isAlive());
+        assertEquals(0, successorRegistered.getCount());
+        assertEquals(p, registry.connectedPeer("peer-1").orElseThrow());
+    }
+
+    @Test
+    void aThrowingTransportLossCallbackCannotLeaveTheDeadStreamRegistered() {
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        PeerIdentity p = peer("peer-1");
+        ControlStreamHandle handle = new ControlStreamHandle(new CapturingObserver());
+        registry.register(p, handle);
+
+        assertThrows(IllegalStateException.class,
+                () -> registry.unregister(p, handle, () -> {
+                    throw new IllegalStateException("cleanup failed");
+                }));
+
+        assertTrue(registry.connectedPeer("peer-1").isEmpty());
     }
 
     @Test

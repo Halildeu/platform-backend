@@ -330,7 +330,10 @@ public final class RemoteBridgeOperatorService {
                 return SessionCloseOutcome.rejected(sessionId, "session-not-live");
             }
             State state = session.state();
-            if (!state.isActive() && state != State.REVOKING) {
+            // Exactly one explicit operator close may own ACTIVE→REVOKING. Treat an already-REVOKING session as
+            // close-in-progress, not as a second closer; otherwise concurrent calls can duplicate the durable
+            // close audit and one can falsely report CONTROL_KILL_NOT_DELIVERED after the other removed the slot.
+            if (!state.isActive()) {
                 return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
             }
             try {
@@ -339,16 +342,25 @@ public final class RemoteBridgeOperatorService {
             } catch (RuntimeException recordingFailure) {
                 return SessionCloseOutcome.rejected(sessionId, "recording-failed");
             }
-            // The durable close record is now committed, so stop the endpoint data plane BEFORE publishing the
-            // terminal state/evicting the session. Closing only the viewer lifecycle is insufficient: the agent's
-            // active capture helper is cancelled by CONTROL KILL. A disconnected peer simply returns false; the
-            // local session still closes because there is no reachable stream left to stop.
-            controlKillDelivered = registry.killPeer(
-                    session.transportPeerKey(), session.sessionId(), "OPERATOR_CLOSE", now);
-            if (!controlKillDelivered) {
-                recordCloseKillDeliveryFailureBestEffort(session.sessionId(), now);
+            // Publish REVOKING while still under the session monitor: no new operation can pass an ACTIVE-state
+            // gate after the durable close record. CONTROL KILL runs only AFTER releasing this monitor; otherwise
+            // the synchronous handle-close callback can form session→registry/lifecycle versus
+            // registry/lifecycle→session lock inversion with transport-loss cleanup.
+            if (!session.transition(Event.REVOKE).accepted()) {
+                return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
             }
-            if (!session.transition(Event.CLOSE).accepted()) {
+        }
+        // Closing only the viewer lifecycle is insufficient: the endpoint capture helper is cancelled by CONTROL
+        // KILL. A disconnected peer returns false; local terminal cleanup still proceeds because it is unreachable.
+        controlKillDelivered = registry.killPeer(
+                session.transportPeerKey(), session.sessionId(), "OPERATOR_CLOSE", now);
+        if (!controlKillDelivered) {
+            recordCloseKillDeliveryFailureBestEffort(session.sessionId(), now);
+        }
+        synchronized (session) {
+            // A concurrent authenticated transport-loss callback may already have KILLed this session. That is a
+            // valid, stronger terminal outcome after the durable operator-close record, not a close refusal.
+            if (!session.isTerminal() && !session.transition(Event.CLOSE).accepted()) {
                 return SessionCloseOutcome.rejected(sessionId, "session-close-refused");
             }
         }

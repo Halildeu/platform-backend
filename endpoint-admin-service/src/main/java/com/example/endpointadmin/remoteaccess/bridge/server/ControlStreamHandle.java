@@ -23,22 +23,35 @@ final class ControlStreamHandle {
     private final StreamObserver<Envelope> outbound;
     private ScheduledFuture<?> heartbeat;
     private Runnable onClose;
-    private boolean closed;
+    private Runnable pendingCloseAction;
+    private boolean closeActionAttached;
+    private volatile boolean closed;
 
     ControlStreamHandle(StreamObserver<Envelope> outbound) {
         this.outbound = outbound;
     }
 
-    /** Attach the run-once close action (registry unregistration); runs immediately when already closed. */
-    synchronized void attachOnClose(Runnable action) {
+    /**
+     * Attach the one run-once close action (registry unregistration); runs immediately when already closed.
+     * A second attachment at any lifecycle point is a programming error: silently replacing or duplicating the
+     * registry cleanup action could leave a dead stream registered or emit duplicate terminal policy events.
+     */
+    void attachOnClose(Runnable action) {
         if (action == null) {
             return;
         }
-        if (closed) {
-            action.run();
-            return;
+        synchronized (this) {
+            if (closeActionAttached) {
+                throw new IllegalStateException("on-close action already attached");
+            }
+            closeActionAttached = true;
+            if (closed) {
+                pendingCloseAction = action;
+            } else {
+                this.onClose = action;
+            }
         }
-        this.onClose = action;
+        drainCloseAction();
     }
 
     /** Attach this stream's heartbeat task; cancelled immediately when the handle is already closed. */
@@ -54,47 +67,60 @@ final class ControlStreamHandle {
     }
 
     /** Serialized write; false when the handle is closed or the stream is dead (which self-closes). */
-    synchronized boolean send(Envelope envelope) {
-        if (closed) {
-            return false;
+    boolean send(Envelope envelope) {
+        boolean delivered;
+        synchronized (this) {
+            if (closed) {
+                return false;
+            }
+            try {
+                outbound.onNext(envelope);
+                delivered = true;
+            } catch (RuntimeException e) {
+                closeLocked();
+                delivered = false;
+            }
         }
-        try {
-            outbound.onNext(envelope);
-            return true;
-        } catch (RuntimeException e) {
-            closeLocked();
-            return false;
-        }
+        drainCloseAction();
+        return delivered;
     }
 
     /** Send (best-effort) then terminate — the KILL path and the error path share this. */
-    synchronized boolean sendAndClose(Envelope envelope) {
-        if (closed) {
-            return false;
-        }
+    boolean sendAndClose(Envelope envelope) {
         boolean delivered = false;
-        try {
-            outbound.onNext(envelope);
-            delivered = true;
-        } catch (RuntimeException ignored) {
-            // the stream is already dead — closing is the outcome that matters
+        synchronized (this) {
+            if (closed) {
+                return false;
+            }
+            try {
+                outbound.onNext(envelope);
+                delivered = true;
+            } catch (RuntimeException ignored) {
+                // the stream is already dead — closing is the outcome that matters
+            }
+            closeLocked();
         }
-        closeLocked();
+        drainCloseAction();
         return delivered;
     }
 
     /** Terminate the stream: cancel the heartbeat, complete the observer. Idempotent. */
-    synchronized void close() {
-        if (!closed) {
+    void close() {
+        synchronized (this) {
             closeLocked();
         }
+        drainCloseAction();
     }
 
-    synchronized boolean isClosed() {
+    boolean isClosed() {
         return closed;
     }
 
+    /** Mark terminal under this monitor; callbacks are queued for the outermost caller to drain after release. */
     private void closeLocked() {
+        if (closed) {
+            return;
+        }
         closed = true;
         if (heartbeat != null) {
             heartbeat.cancel(false);
@@ -106,9 +132,27 @@ final class ControlStreamHandle {
             // already terminated
         }
         if (onClose != null) {
-            Runnable action = onClose;
-            onClose = null;
-            // ConcurrentHashMap remove(key, value) — lock-free, reentrant-safe from this monitor
+            pendingCloseAction = onClose;
+        }
+        onClose = null;
+    }
+
+    private void drainCloseAction() {
+        // An observer is allowed to synchronously re-enter close() from onNext/onCompleted. Java monitors are
+        // reentrant, so leaving close()'s nested synchronized block does not mean the outer send released the
+        // lock. Defer until the outermost transport call exits; this preserves serialized observer writes while
+        // guaranteeing policy cleanup never runs under the transport monitor.
+        if (Thread.holdsLock(this)) {
+            return;
+        }
+        Runnable action;
+        synchronized (this) {
+            action = pendingCloseAction;
+            pendingCloseAction = null;
+        }
+        if (action != null) {
+            // Registry removal may synchronously trigger broker session cleanup and durable audit. Never execute
+            // that work under the stream monitor: doing so would couple transport serialization to policy I/O.
             action.run();
         }
     }

@@ -128,6 +128,20 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     }
 
     @Override
+    public void onControlStreamClosed(PeerIdentity peer) {
+        lastHelloByPeer.remove(peer.transportPeerKey());
+        ledger.forget(peer.transportPeerKey());
+        store.liveByPeer(peer.transportPeerKey()).ifPresent(session -> {
+            if (session.transition(Event.KILL).accepted()) {
+                store.evictIfTerminal(session.sessionId());
+                evictDeviceKeySession(session.sessionId(), session.transportPeerKey());
+                terminateViewOnly(session.sessionId());
+                recordBestEffort(session.sessionId(), "KILLED:control-stream-lost");
+            }
+        });
+    }
+
+    @Override
     public void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result) {
         long now = clock.getAsLong();
         RemoteBridgeSession session = store.bySessionId(result.sessionId()).orElse(null);

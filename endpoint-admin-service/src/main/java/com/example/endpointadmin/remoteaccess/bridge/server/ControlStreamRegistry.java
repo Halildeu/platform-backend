@@ -32,24 +32,52 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class ControlStreamRegistry {
 
+    private static final int PEER_LOCK_STRIPES = 256;
+
     /** One live CONTROL stream: the authenticated peer + its serialized write handle, kept atomically together. */
     private record ConnectedPeer(PeerIdentity peer, ControlStreamHandle handle) {
     }
 
     private final Map<String, ConnectedPeer> streams = new ConcurrentHashMap<>();
+    private final Object[] peerLocks = createPeerLocks();
 
     /** Register the peer's CONTROL handle; an existing handle for the SAME peer is closed and replaced. */
     void register(PeerIdentity peer, ControlStreamHandle handle) {
-        ConnectedPeer previous = streams.put(peer.transportPeerKey(), new ConnectedPeer(peer, handle));
-        if (previous != null && previous.handle() != handle) {
-            previous.handle().close();
+        synchronized (peerLock(peer.transportPeerKey())) {
+            ConnectedPeer previous = streams.put(peer.transportPeerKey(), new ConnectedPeer(peer, handle));
+            if (previous != null && previous.handle() != handle) {
+                previous.handle().close();
+            }
         }
     }
 
     /** Remove the peer's handle — only if it is still THIS handle (a replaced stream must not unregister its successor). */
-    void unregister(PeerIdentity peer, ControlStreamHandle handle) {
-        // handle-identity conditional remove (atomic): drop the entry only while its handle is still this one
-        streams.computeIfPresent(peer.transportPeerKey(), (key, entry) -> entry.handle() == handle ? null : entry);
+    boolean unregister(PeerIdentity peer, ControlStreamHandle handle) {
+        return unregister(peer, handle, null);
+    }
+
+    /**
+     * Remove the current handle and run its transport-loss action before a successor can register for the same
+     * peer key. The callback executes under an explicit re-entrant peer stripe (but outside the stream handle and
+     * ConcurrentHashMap internal locks), closing the remove→reconnect race without running broker/viewer/audit
+     * work inside a CHM compute callback. Same-key registry re-entry is therefore defined and deadlock-free.
+     */
+    boolean unregister(PeerIdentity peer, ControlStreamHandle handle, Runnable onRemoved) {
+        String peerKey = peer.transportPeerKey();
+        synchronized (peerLock(peerKey)) {
+            ConnectedPeer entry = streams.get(peerKey);
+            // handle-identity conditional remove: a replaced stream cannot remove or report loss for its successor
+            if (entry == null || entry.handle() != handle) {
+                return false;
+            }
+            streams.remove(peerKey, entry);
+            // Removal is already committed before policy cleanup. Holding the same peer stripe prevents a
+            // successor from registering until cleanup finishes, while a callback failure cannot restore the slot.
+            if (onRemoved != null) {
+                onRemoved.run();
+            }
+            return true;
+        }
     }
 
     public boolean isConnected(String transportPeerKey) {
@@ -120,7 +148,10 @@ public final class ControlStreamRegistry {
      *                  ({@link #TRANSPORT_KILL_SESSION})
      */
     public boolean killPeer(String transportPeerKey, String sessionId, String killReason, long nowEpochMillis) {
-        ConnectedPeer entry = streams.remove(transportPeerKey);
+        ConnectedPeer entry;
+        synchronized (peerLock(transportPeerKey)) {
+            entry = streams.remove(transportPeerKey);
+        }
         if (entry == null) {
             return false;
         }
@@ -244,5 +275,19 @@ public final class ControlStreamRegistry {
     public void completeAll() {
         streams.values().forEach(entry -> entry.handle().close());
         streams.clear();
+    }
+
+    private Object peerLock(String transportPeerKey) {
+        int hash = transportPeerKey.hashCode();
+        hash ^= hash >>> 16;
+        return peerLocks[hash & (PEER_LOCK_STRIPES - 1)];
+    }
+
+    private static Object[] createPeerLocks() {
+        Object[] locks = new Object[PEER_LOCK_STRIPES];
+        for (int i = 0; i < locks.length; i++) {
+            locks[i] = new Object();
+        }
+        return locks;
     }
 }

@@ -8,10 +8,12 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -96,6 +98,89 @@ class ControlStreamHandleTest {
         handle.close();
         AtomicInteger closes = new AtomicInteger();
         handle.attachOnClose(closes::incrementAndGet);
+        assertEquals(1, closes.get());
+    }
+
+    @Test
+    void closeActionRunsOutsideTheStreamMonitor() {
+        ControlStreamHandle handle = new ControlStreamHandle(quietObserver());
+        AtomicBoolean monitorHeld = new AtomicBoolean(true);
+        handle.attachOnClose(() -> monitorHeld.set(Thread.holdsLock(handle)));
+
+        handle.close();
+
+        assertFalse(monitorHeld.get(), "broker cleanup must never run under the transport serialization lock");
+    }
+
+    @Test
+    void observerReentrantCloseDefersCleanupUntilTheOutermostSendReleasesTheMonitor() {
+        ControlStreamHandle[] holder = new ControlStreamHandle[1];
+        AtomicBoolean monitorHeld = new AtomicBoolean(true);
+        AtomicInteger closes = new AtomicInteger();
+        StreamObserver<Envelope> reentrantObserver = new StreamObserver<>() {
+            @Override
+            public void onNext(Envelope envelope) {
+                holder[0].close();
+            }
+
+            @Override
+            public void onError(Throwable t) {
+            }
+
+            @Override
+            public void onCompleted() {
+            }
+        };
+        ControlStreamHandle handle = new ControlStreamHandle(reentrantObserver);
+        holder[0] = handle;
+        handle.attachOnClose(() -> {
+            monitorHeld.set(Thread.holdsLock(handle));
+            closes.incrementAndGet();
+        });
+
+        assertTrue(handle.send(HEARTBEAT));
+
+        assertTrue(handle.isClosed());
+        assertFalse(monitorHeld.get());
+        assertEquals(1, closes.get());
+    }
+
+    @Test
+    void closeActionMayReenterCloseWithoutRunningUnderTheMonitor() {
+        ControlStreamHandle handle = new ControlStreamHandle(quietObserver());
+        AtomicBoolean monitorHeld = new AtomicBoolean();
+        AtomicInteger actions = new AtomicInteger();
+        handle.attachOnClose(() -> {
+            monitorHeld.set(Thread.holdsLock(handle));
+            actions.incrementAndGet();
+            handle.close(); // re-entrant and idempotent
+        });
+
+        handle.close();
+
+        assertFalse(monitorHeld.get());
+        assertEquals(1, actions.get());
+    }
+
+    @Test
+    void aSecondOnCloseAttachmentCannotReplaceRegistryCleanup() {
+        ControlStreamHandle handle = new ControlStreamHandle(quietObserver());
+        handle.attachOnClose(() -> { });
+
+        assertThrows(IllegalStateException.class, () -> handle.attachOnClose(() -> { }));
+        handle.close();
+        assertThrows(IllegalStateException.class, () -> handle.attachOnClose(() -> { }));
+    }
+
+    @Test
+    void sendAndCloseStillRunsCleanupWhenTheObserverWriteThrows() {
+        ControlStreamHandle handle = new ControlStreamHandle(throwingObserver());
+        AtomicInteger closes = new AtomicInteger();
+        handle.attachOnClose(closes::incrementAndGet);
+
+        assertFalse(handle.sendAndClose(HEARTBEAT));
+
+        assertTrue(handle.isClosed());
         assertEquals(1, closes.get());
     }
 
