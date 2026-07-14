@@ -1,5 +1,6 @@
 package com.example.endpointadmin.remoteaccess.bridge.orchestrator;
 
+import com.example.endpointadmin.remoteaccess.RemoteSessionCapability;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
@@ -43,6 +44,9 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
 
     /** The visible 'remote-support active' indicator could not be kept on screen (D10-6). */
     public static final String EVENT_INDICATOR_LOST = "AGENT_INDICATOR_LOST";
+
+    /** Agent fail-closed signal emitted when the signed VIEW_ONLY permit expires during capture. */
+    public static final String ERROR_SCREEN_VIEW_PERMIT_EXPIRED = "screen-view-permit-expired";
 
     /** Agent-originated audit metadata the broker accepts; anything else is refused (audited, dropped). */
     private static final Set<String> INBOUND_AUDIT_ALLOWLIST = Set.of(
@@ -227,8 +231,28 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
         String eventType = "AGENT_ERROR:" + safeType(error.code()) + ":retryable=" + error.retryable();
         agentErrorLedger.record(peer, error, clock.getAsLong());
         recordBestEffort(sessionId, eventType);
+        terminateExpiredViewOnlyPermit(peer, error);
         log.warn("remote-bridge agent error frame peer={} session={} code={} retryable={}",
                 peer.transportPeerKey(), sessionId, safeType(error.code()), error.retryable());
+    }
+
+    private void terminateExpiredViewOnlyPermit(PeerIdentity peer, RemoteBridgeMessages.AgentErrorFrame error) {
+        if (error.retryable() || !ERROR_SCREEN_VIEW_PERMIT_EXPIRED.equals(error.code())
+                || error.sessionId() == null || error.sessionId().isBlank()) {
+            return;
+        }
+        store.bySessionId(error.sessionId())
+                .filter(session -> session.transportPeerKey().equals(peer.transportPeerKey()))
+                .filter(session -> session.requestedCapabilities().contains(RemoteSessionCapability.VIEW_ONLY))
+                .filter(session -> session.state().isActive())
+                .ifPresent(session -> {
+                    if (session.transition(Event.KILL).accepted()) {
+                        store.evictIfTerminal(session.sessionId());
+                        evictDeviceKeySession(session.sessionId(), session.transportPeerKey());
+                        terminateViewOnly(session.sessionId());
+                        recordBestEffort(session.sessionId(), "KILLED:screen-view-permit-expired");
+                    }
+                });
     }
 
     /**

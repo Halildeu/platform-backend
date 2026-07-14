@@ -106,13 +106,23 @@ class BrokerControlPlaneTest {
     }
 
     private static RemoteBridgeMessages.SessionRequest request(String sessionId) {
+        return request(sessionId, Set.of(RemoteSessionCapability.VIEW_ONLY));
+    }
+
+    private static RemoteBridgeMessages.SessionRequest request(
+            String sessionId, Set<RemoteSessionCapability> capabilities) {
         return new RemoteBridgeMessages.SessionRequest(sessionId, "dev-1", "operator@x", null,
-                Set.of(RemoteSessionCapability.VIEW_ONLY));
+                capabilities);
     }
 
     private static RemoteBridgeSession opened(RemoteBridgeSessionStore store, String sessionId) {
+        return opened(store, sessionId, Set.of(RemoteSessionCapability.VIEW_ONLY));
+    }
+
+    private static RemoteBridgeSession opened(
+            RemoteBridgeSessionStore store, String sessionId, Set<RemoteSessionCapability> capabilities) {
         RemoteBridgeSessionStore.OpenResult result =
-                store.open(request(sessionId), PEER, TENANT, "Op Erator", PROMPT_EXPIRY, NOW);
+                store.open(request(sessionId, capabilities), PEER, TENANT, "Op Erator", PROMPT_EXPIRY, NOW);
         assertTrue(result instanceof RemoteBridgeSessionStore.Opened, String.valueOf(result));
         return ((RemoteBridgeSessionStore.Opened) result).session();
     }
@@ -677,6 +687,90 @@ class BrokerControlPlaneTest {
 
         assertTrue(sink.has("AGENT_ERROR:operation-dispatch-failed:retryable=false"));
         assertFalse(sink.events.stream().anyMatch(e -> e.eventType().contains("local details")));
+    }
+
+    @Test
+    void nonRetryableScreenViewPermitExpiryTerminatesTheBoundActiveViewOnlySession() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        RemoteBridgeAgentErrorLedger errorLedger = new RemoteBridgeAgentErrorLedger(16);
+        BrokerControlPlane plane = new BrokerControlPlane(
+                ledger(PeerEvidenceParser.FAIL_CLOSED, false, AttestationVerifier.AttestationDecision.MISSING),
+                store, sink, () -> NOW + 1000, errorLedger);
+        ViewOnlyStreamAuthorizationRegistry authz = new ViewOnlyStreamAuthorizationRegistry();
+        ViewOnlyViewerRegistry viewers = new ViewOnlyViewerRegistry(1);
+        plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                "sess-1", true, "Console", NOW, PROMPT_EXPIRY));
+        Object incarnation = new Object();
+        authz.beginSession("sess-1", incarnation);
+        authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
+                "sess-1", "op-1", PEER.transportPeerKey(), "operator@x", "dev-1", PROMPT_EXPIRY));
+        ViewOnlyViewerSubscription viewer = viewers.subscribe(
+                "sess-1", "op-1", TENANT, "operator@x", null).orElseThrow();
+
+        plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame(
+                "sess-1", BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED, false, "redacted"));
+
+        assertEquals(State.KILLED, session.state());
+        assertEquals(0, store.liveCount());
+        assertTrue(viewer.isClosed());
+        assertFalse(authz.isAuthorized("sess-1", "op-1", PEER.transportPeerKey(), NOW + 1000));
+        assertTrue(sink.hasExact("AGENT_ERROR:screen-view-permit-expired:retryable=false"));
+        assertTrue(sink.hasExact("KILLED:screen-view-permit-expired"));
+        assertTrue(errorLedger.findAfter("sess-1", PEER.transportPeerKey(),
+                BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED, NOW).isPresent());
+    }
+
+    @Test
+    void screenViewPermitExpiryCannotTerminateOutsideItsExactBoundedContract() {
+        record ErrorVariant(PeerIdentity peer, String code, boolean retryable, boolean active,
+                            Set<RemoteSessionCapability> capabilities) {
+        }
+        List<ErrorVariant> variants = List.of(
+                new ErrorVariant(OTHER_PEER, BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED,
+                        false, true, Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                new ErrorVariant(PEER, BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED,
+                        true, true, Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                new ErrorVariant(PEER, "operation-dispatch-failed",
+                        false, true, Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                new ErrorVariant(PEER, BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED,
+                        false, false, Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                new ErrorVariant(PEER, BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED,
+                        false, true, Set.of(RemoteSessionCapability.CONSTRAINED_PTY)));
+
+        for (ErrorVariant variant : variants) {
+            RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+            // The protected resource belongs to PEER; OTHER_PEER is deliberately the unbound caller.
+            RemoteBridgeSession session = opened(store, "sess-1", variant.capabilities());
+            BrokerControlPlane plane = plane(store, new RecordingSinkStub());
+            if (variant.active()) {
+                plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                        "sess-1", true, "Console", NOW, PROMPT_EXPIRY));
+            }
+
+            plane.onAgentErrorFrame(variant.peer(), new RemoteBridgeMessages.AgentErrorFrame(
+                    "sess-1", variant.code(), variant.retryable(), "redacted"));
+
+            assertFalse(session.isTerminal(), String.valueOf(variant));
+            assertEquals(1, store.liveCount(), String.valueOf(variant));
+        }
+
+        for (String invalidSessionId : new String[] {null, "", " "}) {
+            RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+            RemoteBridgeSession session = opened(store, "sess-1");
+            BrokerControlPlane plane = plane(store, new RecordingSinkStub());
+            plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult(
+                    "sess-1", true, "Console", NOW, PROMPT_EXPIRY));
+
+            plane.onAgentErrorFrame(PEER, new RemoteBridgeMessages.AgentErrorFrame(
+                    invalidSessionId, BrokerControlPlane.ERROR_SCREEN_VIEW_PERMIT_EXPIRED,
+                    false, "redacted"));
+
+            assertFalse(session.isTerminal(), String.valueOf(invalidSessionId));
+            assertEquals(1, store.liveCount(), String.valueOf(invalidSessionId));
+        }
     }
 
     @Test
