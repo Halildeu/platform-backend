@@ -523,6 +523,57 @@ class BrokerControlPlaneTest {
         assertTrue(sink.has("KILLED:indicator-lost"));
     }
 
+    @Test
+    void controlStreamLossKillsSessionRevokesTrustAndTerminatesViewOnlyExactlyOnce() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        RemoteBridgeSession session = opened(store, "sess-1");
+        RecordingSinkStub sink = new RecordingSinkStub();
+        PeerTrustLedger trust = ledger(presentingParser(), true,
+                AttestationVerifier.AttestationDecision.VERIFIED);
+        DeviceKeyChallengeStore challengeStore = new DeviceKeyChallengeStore();
+        TpmDeviceKeySessionEvidenceStore evidenceStore = new TpmDeviceKeySessionEvidenceStore();
+        BrokerControlPlane plane = new BrokerControlPlane(trust, store, sink, () -> NOW + 1000,
+                new RemoteBridgeAgentErrorLedger(0), challengeStore, evidenceStore);
+        plane.onAgentHello(PEER, hello());
+        assertTrue(trust.fresh(PEER.transportPeerKey(), NOW + 1000).isPresent());
+
+        RemoteBridgeMessages.DeviceKeyChallenge consumed =
+                challengeStore.issue("sess-1", PEER.transportPeerKey(), 60_000L, NOW);
+        session.bindDeviceKeyChallenge(consumed.challengeId());
+        plane.onDeviceKeyAttestationResponse(PEER, shapedDeviceKeyResponse(consumed.challengeId()));
+        assertTrue(evidenceStore.consumeFresh("sess-1", PEER.transportPeerKey(), NOW + 1000).isPresent());
+        challengeStore.issue("sess-1", PEER.transportPeerKey(), 60_000L, NOW + 500);
+        assertEquals(1, challengeStore.pendingCount());
+
+        ViewOnlyStreamAuthorizationRegistry authz = new ViewOnlyStreamAuthorizationRegistry();
+        ViewOnlyViewerRegistry viewers = new ViewOnlyViewerRegistry(1);
+        plane.configureViewOnlyLifecycle(new ViewOnlySessionLifecycle(authz, viewers));
+        plane.onConsentResult(PEER, new RemoteBridgeMessages.ConsentResult("sess-1", true, "Console",
+                NOW, PROMPT_EXPIRY));
+
+        Object incarnation = new Object();
+        authz.beginSession("sess-1", incarnation);
+        authz.authorize(incarnation, new ViewOnlyStreamAuthorizationRegistry.Authorization(
+                "sess-1", "op-1", PEER.transportPeerKey(), "operator@x", "dev-1", PROMPT_EXPIRY));
+        ViewOnlyViewerSubscription viewer = viewers.subscribe(
+                "sess-1", "op-1", TENANT, "operator@x", null).orElseThrow();
+
+        plane.onControlStreamClosed(PEER);
+        plane.onControlStreamClosed(PEER); // a late duplicate transport callback is harmless
+
+        assertEquals(State.KILLED, session.state());
+        assertEquals(0, store.liveCount());
+        assertTrue(trust.fresh(PEER.transportPeerKey(), NOW + 1000).isEmpty());
+        assertFalse(authz.isAuthorized("sess-1", "op-1", PEER.transportPeerKey(), NOW + 1000));
+        assertTrue(viewer.isClosed());
+        assertEquals(0, viewers.viewerCount("sess-1"));
+        assertEquals(0, challengeStore.pendingCount());
+        assertTrue(evidenceStore.consumeFresh("sess-1", PEER.transportPeerKey(), NOW + 1000).isEmpty());
+        assertEquals(1, sink.events.stream()
+                .filter(event -> event.eventType().equals("KILLED:control-stream-lost"))
+                .count());
+    }
+
     // --- #1580: agent-driven terminals must terminate the VIEW_ONLY surface (Codex 019f0e78) ----------
 
     @Test

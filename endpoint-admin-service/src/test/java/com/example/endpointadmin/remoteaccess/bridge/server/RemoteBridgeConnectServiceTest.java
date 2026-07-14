@@ -85,17 +85,38 @@ class RemoteBridgeConnectServiceTest {
         final ConcurrentLinkedQueue<RemoteBridgeMessages.ConsentResult> consents = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
         final ConcurrentLinkedQueue<RemoteBridgeMessages.AgentErrorFrame> errors = new ConcurrentLinkedQueue<>();
+        final ConcurrentLinkedQueue<PeerIdentity> closedPeers = new ConcurrentLinkedQueue<>();
+        final CountDownLatch closeReported = new CountDownLatch(1);
+        volatile CountDownLatch helloEntered;
+        volatile CountDownLatch releaseHello;
         volatile PeerIdentity lastPeer;
 
         @Override
         public void onAgentHello(PeerIdentity peer, RemoteBridgeMessages.AgentHello hello) {
             lastPeer = peer;
             hellos.add(hello);
+            CountDownLatch entered = helloEntered;
+            CountDownLatch release = releaseHello;
+            if (entered != null && release != null) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
         }
 
         @Override
         public void onHeartbeat(PeerIdentity peer) {
             heartbeats.add(peer);
+        }
+
+        @Override
+        public void onControlStreamClosed(PeerIdentity peer) {
+            closedPeers.add(peer);
+            closeReported.countDown();
         }
 
         @Override
@@ -441,6 +462,52 @@ class RemoteBridgeConnectServiceTest {
         assertTrue(first.terminated.await(2, TimeUnit.SECONDS));
         assertEquals(1, registry.connectedCount());
         assertTrue(registry.isConnected("peer-fp-1"));
+        assertTrue(controlPlane.closedPeers.isEmpty(),
+                "closing the replaced handle must not report loss of its live successor");
+    }
+
+    @Test
+    void currentControlStreamCompletionReportsTransportLossExactlyOnce() throws Exception {
+        RemoteBridgeGrpc.RemoteBridgeStub stub = start(PEER, 0, 1024);
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = stub.connect(sink);
+        assertTrue(registry.isConnected("peer-fp-1"));
+
+        inbound.onCompleted();
+        assertTrue(sink.terminated.await(2, TimeUnit.SECONDS));
+
+        assertFalse(registry.isConnected("peer-fp-1"));
+        assertEquals(List.of(PEER), List.copyOf(controlPlane.closedPeers));
+    }
+
+    @Test
+    void transportLossCleanupWaitsForAnInflightInboundStateMutation() throws Exception {
+        RemoteBridgeConnectService service = new RemoteBridgeConnectService(registry, controlPlane,
+                dataPlane, meters, null, 0, 1024, System::currentTimeMillis, "rb-v1");
+        ClientSink sink = new ClientSink();
+        StreamObserver<Envelope> inbound = Context.current()
+                .withValue(PeerIdentityInterceptor.PEER_IDENTITY, PEER)
+                .call(() -> service.connect(sink));
+        controlPlane.helloEntered = new CountDownLatch(1);
+        controlPlane.releaseHello = new CountDownLatch(1);
+
+        Thread inboundMutation = Thread.ofPlatform().start(() -> inbound.onNext(control(0, hello("dev-1"))));
+        assertTrue(controlPlane.helloEntered.await(2, TimeUnit.SECONDS));
+
+        Thread transportLoss = Thread.ofPlatform().start(inbound::onCompleted);
+        assertFalse(controlPlane.closeReported.await(100, TimeUnit.MILLISECONDS),
+                "terminal cleanup must not race ahead of an in-flight AgentHello/consent/device-key mutation");
+
+        controlPlane.releaseHello.countDown();
+        assertTrue(controlPlane.closeReported.await(2, TimeUnit.SECONDS));
+        inboundMutation.join(2_000);
+        transportLoss.join(2_000);
+
+        assertFalse(inboundMutation.isAlive());
+        assertFalse(transportLoss.isAlive());
+        assertEquals(1, controlPlane.hellos.size());
+        assertEquals(List.of(PEER), List.copyOf(controlPlane.closedPeers));
+        assertFalse(registry.isConnected(PEER.transportPeerKey()));
     }
 
     @Test
@@ -482,6 +549,8 @@ class RemoteBridgeConnectServiceTest {
             // KILL is terminal: the CONTROL stream completes and the registry slot is gone
             assertTrue(controlSink.terminated.await(2, TimeUnit.SECONDS));
             assertFalse(registry.isConnected("peer-fp-1"));
+            assertTrue(controlPlane.closedPeers.isEmpty(),
+                    "broker-initiated KILL removes the slot before close and must not report transport loss");
         } finally {
             pumping.set(false);
             pump.join(2000);

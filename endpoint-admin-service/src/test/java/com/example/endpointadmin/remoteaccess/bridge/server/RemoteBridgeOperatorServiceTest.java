@@ -48,6 +48,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -113,10 +117,26 @@ class RemoteBridgeOperatorServiceTest {
     /** A capturing CONTROL StreamObserver so a transport kill/permit is observable. */
     private static final class CapturingObserver implements StreamObserver<Envelope> {
         final List<Envelope> sent = new ArrayList<>();
+        RemoteBridgeSession monitoredSession;
+        CountDownLatch killEntered;
+        CountDownLatch releaseKill;
+        boolean sessionMonitorHeldOnWrite;
         boolean completed;
 
         @Override public void onNext(Envelope value) {
+            if (monitoredSession != null) {
+                sessionMonitorHeldOnWrite |= Thread.holdsLock(monitoredSession);
+            }
             sent.add(value);
+            if (value.hasKill() && killEntered != null && releaseKill != null) {
+                killEntered.countDown();
+                try {
+                    releaseKill.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            }
         }
 
         @Override public void onError(Throwable t) { }
@@ -527,7 +547,9 @@ class RemoteBridgeOperatorServiceTest {
         CapturingObserver observer = new CapturingObserver();
         PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
         registry.register(peer, new ControlStreamHandle(observer));
-        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        RemoteBridgeSession session =
+                activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        observer.monitoredSession = session;
         List<AuditEvent> closeAudits = new ArrayList<>();
 
         RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
@@ -558,6 +580,8 @@ class RemoteBridgeOperatorServiceTest {
                         && "s1".equals(envelope.getKill().getSessionId())
                         && "OPERATOR_CLOSE".equals(envelope.getKill().getKillReason())),
                 "an accepted close must push a session-scoped KILL to stop endpoint capture");
+        assertFalse(observer.sessionMonitorHeldOnWrite,
+                "CONTROL KILL must run outside the session monitor to preserve terminal lock ordering");
         assertFalse(registry.isConnected("peer-1"),
                 "killPeer must remove the old control stream before a replacement session can start");
 
@@ -571,6 +595,41 @@ class RemoteBridgeOperatorServiceTest {
                 peer, TENANT, "Operator X");
         assertTrue(reopened.opened(), "explicit close must free the peer slot for a follow-up session");
         assertEquals("s2", reopened.sessionId());
+    }
+
+    @Test
+    void concurrentExplicitCloseHasOneOwnerOneAuditAndOneControlKill() throws Exception {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+        observer.killEntered = new CountDownLatch(1);
+        observer.releaseKill = new CountDownLatch(1);
+        List<AuditEvent> audits = new CopyOnWriteArrayList<>();
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                assembler((sid, now) -> DuressSignal.NONE), broker(), registry, audits::add,
+                () -> NOW, 120_000L);
+        AtomicReference<SessionCloseOutcome> first = new AtomicReference<>();
+
+        Thread owner = Thread.ofPlatform().start(() -> first.set(service.closeSession("s1", "operator@x")));
+        assertTrue(observer.killEntered.await(2, TimeUnit.SECONDS));
+
+        SessionCloseOutcome duplicate = service.closeSession("s1", "operator@x");
+        assertFalse(duplicate.accepted());
+        assertEquals("session-close-refused", duplicate.rejectReason());
+        assertEquals(List.of("SESSION_CLOSE:OPERATOR"), audits.stream().map(AuditEvent::eventType).toList());
+
+        observer.releaseKill.countDown();
+        owner.join(2_000);
+
+        assertFalse(owner.isAlive());
+        assertTrue(first.get().accepted());
+        assertTrue(first.get().controlKillDelivered());
+        assertEquals(1, observer.sent.stream().filter(Envelope::hasKill).count());
+        assertEquals(List.of("SESSION_CLOSE:OPERATOR"), audits.stream().map(AuditEvent::eventType).toList());
+        assertTrue(store.bySessionId("s1").isEmpty());
     }
 
     @Test

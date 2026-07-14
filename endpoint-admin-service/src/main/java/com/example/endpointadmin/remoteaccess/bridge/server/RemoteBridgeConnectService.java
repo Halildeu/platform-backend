@@ -11,6 +11,8 @@ import com.example.endpointadmin.remoteaccess.bridge.wire.DecodeResult;
 import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
 import io.grpc.stub.StreamObserver;
 import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -55,6 +57,8 @@ import static com.example.endpointadmin.remoteaccess.RemoteAccessMetrics.BRIDGE_
  * deterministically); {@code leaseExpiresAt} stays 0 until the broker lease wiring (T-4).
  */
 public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBridgeImplBase {
+
+    private static final Logger log = LoggerFactory.getLogger(RemoteBridgeConnectService.class);
 
     private final ControlStreamRegistry registry;
     private final ControlPlaneHandler controlPlane;
@@ -110,35 +114,53 @@ public final class RemoteBridgeConnectService extends RemoteBridgeGrpc.RemoteBri
         // the handle — a StreamObserver is not a thread-safe sink (Codex P2); closing the handle cancels ITS
         // heartbeat task, so a replaced/killed stream's timer can never keep writing to a completed observer
         ControlStreamHandle handle = new ControlStreamHandle(outbound);
+        // Serializes this stream's inbound state mutations with its terminal broker cleanup. gRPC serializes
+        // inbound callbacks, but the outbound heartbeat scheduler can discover a dead transport concurrently;
+        // without this guard, a late AgentHello/consent/device-key response could repopulate state after cleanup.
+        Object lifecycleLock = new Object();
         registry.register(peer, handle);
-        // whichever path closes the handle (replace, kill, error, or a heartbeat write dying on a broken
-        // stream) also vacates the registry slot — no stale slot until gRPC's inbound cancellation arrives
-        handle.attachOnClose(() -> registry.unregister(peer, handle));
+        // Whichever path closes the handle also conditionally vacates the registry slot. Only the handle that
+        // still owns the slot reports transport loss: replacement installs the successor BEFORE closing the old
+        // handle, and broker KILL removes the entry BEFORE sendAndClose, so neither can kill a new/already-
+        // terminal session through a late callback.
+        handle.attachOnClose(() -> {
+            try {
+                synchronized (lifecycleLock) {
+                    registry.unregister(peer, handle, () -> controlPlane.onControlStreamClosed(peer));
+                }
+            } catch (RuntimeException cleanupFailure) {
+                // Keep the transport terminal and do not escape the gRPC/scheduler close path. The registry
+                // guarantees callback failures cannot retain its dead slot; other failures remain visible here.
+                log.error("remote-bridge control-stream loss cleanup failed; transport remains closed", cleanupFailure);
+            }
+        });
         handle.attachHeartbeat(scheduleHeartbeat(handle));
         return new StreamObserver<>() {
             private long nextSeq = 0;
 
             @Override
             public void onNext(Envelope envelope) {
-                String defect = controlDefect(envelope, nextSeq, peer);
-                if (defect != null) {
-                    registry.unregister(peer, handle);
-                    handle.sendAndClose(errorEnvelope(ChannelType.CONTROL, defect));
-                    return;
+                synchronized (lifecycleLock) {
+                    if (handle.isClosed()) {
+                        return; // terminal transport: never absorb a late inbound event
+                    }
+                    String defect = controlDefect(envelope, nextSeq, peer);
+                    if (defect != null) {
+                        handle.sendAndClose(errorEnvelope(ChannelType.CONTROL, defect));
+                        return;
+                    }
+                    nextSeq = envelope.getFrameSeq() + 1;
+                    dispatchControl(peer, envelope);
                 }
-                nextSeq = envelope.getFrameSeq() + 1;
-                dispatchControl(peer, envelope);
             }
 
             @Override
             public void onError(Throwable t) {
-                registry.unregister(peer, handle);
                 handle.close();
             }
 
             @Override
             public void onCompleted() {
-                registry.unregister(peer, handle);
                 handle.close();
             }
         };

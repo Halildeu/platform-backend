@@ -24,6 +24,15 @@ public interface ControlPlaneHandler {
     default void onHeartbeat(PeerIdentity peer) {
     }
 
+    /**
+     * The authenticated peer's current CONTROL stream ended without the broker first removing it for an
+     * explicit KILL/replacement. Implementations must treat this as loss of the transport safety lease; it is
+     * never an authorization signal. The transport invokes this only after an identity-checked conditional
+     * registry removal, so a late callback from a replaced stream cannot terminate its successor.
+     */
+    default void onControlStreamClosed(PeerIdentity peer) {
+    }
+
     /** The endpoint user's consent outcome, reported by the agent. */
     void onConsentResult(PeerIdentity peer, RemoteBridgeMessages.ConsentResult result);
 
