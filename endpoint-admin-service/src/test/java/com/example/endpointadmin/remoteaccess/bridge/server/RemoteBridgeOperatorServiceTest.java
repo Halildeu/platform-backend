@@ -50,7 +50,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -87,6 +90,18 @@ class RemoteBridgeOperatorServiceTest {
             return HexFormat.of().formatHex(digest);
         } catch (Exception e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    private static AuditEvent killAppliedAck(String sessionId, long epochMillis) {
+        String canonical = sessionId + "\n" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED + "\n" + epochMillis;
+        try {
+            String contentHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+            return new AuditEvent(sessionId, ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED,
+                    contentHash, epochMillis);
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
         }
     }
 
@@ -595,6 +610,110 @@ class RemoteBridgeOperatorServiceTest {
                 peer, TENANT, "Operator X");
         assertTrue(reopened.opened(), "explicit close must free the peer slot for a follow-up session");
         assertEquals("s2", reopened.sessionId());
+    }
+
+    @Test
+    void configuredOperatorCloseStaysBoundToExactControlStreamUntilBrokerAcceptsAgentAck() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(NOW);
+            List<AuditEvent> durableAudits = new CopyOnWriteArrayList<>();
+            List<AuditEvent> inboundAudits = new CopyOnWriteArrayList<>();
+            RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, durableAudits::add, now::get, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+            ControlStreamHandle handle = new ControlStreamHandle(observer);
+            registry.register(peer, handle);
+            activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+
+            RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                    assembler((sid, at) -> DuressSignal.NONE), broker(), registry, durableAudits::add,
+                    now::get, 120_000L);
+            BrokerControlPlane controlPlane = new BrokerControlPlane(emptyLedger(), store,
+                    inboundAudits::add, now::get, new RemoteBridgeAgentErrorLedger(0),
+                    new DeviceKeyChallengeStore(), new TpmDeviceKeySessionEvidenceStore());
+            controlPlane.configureControlStreamRegistry(registry);
+
+            SessionCloseOutcome close = service.closeSession("s1", "operator@x");
+
+            assertTrue(close.accepted());
+            assertTrue(close.controlKillDelivered());
+            assertFalse(registry.isConnected("peer-1"),
+                    "the exact stream is physically open for ACK but quarantined from new authority");
+            assertFalse(observer.completed);
+            assertEquals(List.of("SESSION_CLOSE:OPERATOR"),
+                    durableAudits.stream().map(AuditEvent::eventType).toList());
+
+            SessionOpenOutcome blockedDuringAck = service.openSession(
+                    new SessionRequest("s2", "dev-1", "operator@x", "retry support",
+                            Set.of(RemoteSessionCapability.VIEW_ONLY)),
+                    peer, TENANT, "Operator X");
+            assertFalse(blockedDuringAck.opened());
+            assertEquals("peer-not-connected", blockedDuringAck.rejectReason());
+            assertTrue(store.bySessionId("s2").isEmpty(),
+                    "a quarantined old handle cannot leave a new ghost session behind");
+
+            now.set(NOW + 10L);
+            controlPlane.onAuditEvent(peer, killAppliedAck("s1", NOW + 5L));
+
+            assertFalse(registry.isConnected("peer-1"));
+            assertTrue(observer.completed);
+            assertEquals(List.of("SESSION_CLOSE:OPERATOR", "SESSION_CLOSE:AGENT_KILL_APPLIED"),
+                    durableAudits.stream().map(AuditEvent::eventType).toList());
+            assertTrue(inboundAudits.stream().anyMatch(event ->
+                    event.eventType().equals("AGENT:" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED)));
+
+            controlPlane.onAuditEvent(peer, killAppliedAck("s1", NOW + 6L));
+            assertEquals(2, durableAudits.size(), "a duplicate/replayed ACK cannot append another durable marker");
+            assertEquals(List.of("AGENT:" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED,
+                            "AGENT_KILL_ACK_REFUSED:refused_no_pending"),
+                    inboundAudits.stream().map(AuditEvent::eventType).toList());
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void ackWindowStartsAtActualKillDispatchAfterSlowDurableCloseAudit() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(NOW);
+            List<AuditEvent> durableAudits = new CopyOnWriteArrayList<>();
+            RemoteBridgeAuditSink slowCloseAudit = event -> {
+                durableAudits.add(event);
+                if (event.eventType().equals("SESSION_CLOSE:OPERATOR")) {
+                    now.addAndGet(10_000L);
+                }
+            };
+            RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, slowCloseAudit, now::get, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            PeerIdentity peer = new PeerIdentity("peer-1", Optional.of("dev-1"), List.of());
+            registry.register(peer, new ControlStreamHandle(observer));
+            activeSession(store, "s1", "peer-1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+            RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store,
+                    assembler((sid, at) -> DuressSignal.NONE), broker(), registry, slowCloseAudit,
+                    now::get, 120_000L);
+
+            SessionCloseOutcome close = service.closeSession("s1", "operator@x");
+
+            assertTrue(close.accepted());
+            assertTrue(close.controlKillDelivered());
+            Envelope kill = observer.sent.stream().filter(Envelope::hasKill).findFirst().orElseThrow();
+            assertEquals(NOW + 10_000L, kill.getKill().getIssuedAtEpochMillis(),
+                    "the ACK deadline starts after the slow durable close write, at real dispatch");
+            now.addAndGet(2L);
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED,
+                    registry.acceptOperatorKillAcknowledgement(
+                            peer, killAppliedAck("s1", NOW + 10_001L), now.get()));
+            assertEquals(List.of("SESSION_CLOSE:OPERATOR", "SESSION_CLOSE:AGENT_KILL_APPLIED"),
+                    durableAudits.stream().map(AuditEvent::eventType).toList());
+        } finally {
+            scheduler.shutdownNow();
+        }
     }
 
     @Test

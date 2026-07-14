@@ -339,9 +339,14 @@ class RemoteBridgeServerLifecycleTest {
                     MeterRegistry meters = context.getBean(MeterRegistry.class);
                     ControlStreamRegistry registry = context.getBean(ControlStreamRegistry.class);
                     Gauge connectedStreams = meters.find(BRIDGE_CONTROL_STREAMS_CONNECTED).gauge();
+                    Gauge killAckAuditFailure = meters.find(
+                            "remote_access_bridge_operator_kill_ack_audit_failure_latched").gauge();
                     assertNotNull(connectedStreams,
                             "live control-stream gauge must be registered when bridge is enabled");
+                    assertNotNull(killAckAuditFailure,
+                            "operator KILL ACK durable-audit failure latch must be observable");
                     assertEquals(0.0, connectedStreams.value());
+                    assertEquals(0.0, killAckAuditFailure.value());
                     PeerIdentity peer = new PeerIdentity("metric-peer", Optional.empty(), List.of());
                     ControlStreamHandle handle = new ControlStreamHandle(new NoopObserver());
                     registry.register(peer, handle);

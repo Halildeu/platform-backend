@@ -161,8 +161,14 @@ public class RemoteBridgeServerConfig {
     }
 
     @Bean
-    public ControlStreamRegistry remoteBridgeControlStreamRegistry() {
-        return new ControlStreamRegistry();
+    public ControlStreamRegistry remoteBridgeControlStreamRegistry(
+            @Qualifier("remoteBridgeKillAckScheduler") ScheduledExecutorService killAckScheduler,
+            DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
+            @Value("${remote-bridge.operator-kill-ack.timeout-millis:5000}") long killAckTimeoutMillis,
+            @Value("${remote-bridge.operator-kill-ack.future-clock-skew-millis:30000}")
+                    long killAckFutureClockSkewMillis) {
+        return new ControlStreamRegistry(killAckScheduler, remoteBridgeDurableAuditSink,
+                System::currentTimeMillis, killAckTimeoutMillis, killAckFutureClockSkewMillis);
     }
 
     /**
@@ -190,6 +196,15 @@ public class RemoteBridgeServerConfig {
     public ScheduledExecutorService remoteBridgeHeartbeatScheduler() {
         return Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "remote-bridge-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @Bean(destroyMethod = "shutdownNow")
+    public ScheduledExecutorService remoteBridgeKillAckScheduler() {
+        return Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "remote-bridge-kill-ack");
             thread.setDaemon(true);
             return thread;
         });
@@ -231,7 +246,8 @@ public class RemoteBridgeServerConfig {
                                                        DeviceKeyChallengeStore remoteBridgeDeviceKeyChallengeStore,
                                                        TpmDeviceKeySessionEvidenceStore
                                                                remoteBridgeDeviceKeySessionEvidenceStore,
-                                                       ViewOnlySessionLifecycle remoteBridgeViewOnlySessionLifecycle) {
+                                                       ViewOnlySessionLifecycle remoteBridgeViewOnlySessionLifecycle,
+                                                       ControlStreamRegistry remoteBridgeControlStreamRegistry) {
         // pin the BEST-EFFORT inbound sink explicitly: slice-3c adds a second RemoteBridgeAuditSink bean (the
         // DURABLE broker recorder) — the control plane's inbound audit must stay the best-effort log sink, so
         // a durable-write failure can never make it ignore a consent denial / kill (the safe outcome proceeds).
@@ -242,6 +258,7 @@ public class RemoteBridgeServerConfig {
         // #1580 — agent-driven terminals (consent-denied / local-abort / indicator-lost) must also terminate the
         // VIEW_ONLY surface, so a stale authorization never keeps fanning frames out after the user pulls consent.
         controlPlane.configureViewOnlyLifecycle(remoteBridgeViewOnlySessionLifecycle);
+        controlPlane.configureControlStreamRegistry(remoteBridgeControlStreamRegistry);
         return controlPlane;
     }
 
@@ -733,12 +750,17 @@ public class RemoteBridgeServerConfig {
     @Bean
     public RemoteBridgeConnectService remoteBridgeConnectService(RemoteBridgeServerProperties properties,
                                                                  ControlStreamRegistry registry,
+                                                                 @Qualifier("remoteBridgeHeartbeatScheduler")
                                                                  ScheduledExecutorService heartbeatScheduler,
                                                                  BrokerControlPlane controlPlane,
                                                                  DataPlaneHandler remoteBridgeDataPlane,
                                                                  MeterRegistry meterRegistry) {
         Gauge.builder(BRIDGE_CONTROL_STREAMS_CONNECTED, registry, ControlStreamRegistry::connectedCount)
                 .description("Live authenticated remote-bridge CONTROL streams registered by the broker.")
+                .register(meterRegistry);
+        Gauge.builder("remote_access_bridge_operator_kill_ack_audit_failure_latched", registry,
+                        value -> value.operatorKillAckAuditFailureLatched() ? 1.0d : 0.0d)
+                .description("1 when any durable operator KILL ACK outcome write failed during this pod lifetime.")
                 .register(meterRegistry);
         return new RemoteBridgeConnectService(registry, controlPlane, remoteBridgeDataPlane, meterRegistry,
                 heartbeatScheduler, properties.heartbeatIntervalMillis(), properties.maxDataFrameBytes(),

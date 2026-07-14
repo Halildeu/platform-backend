@@ -12,15 +12,23 @@ import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
 import java.security.cert.X509Certificate;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -78,6 +86,21 @@ class ControlStreamRegistryTest {
     private static RemoteBridgeMessages.DeviceKeyChallenge deviceKeyChallenge(String transportPeerKey) {
         return new RemoteBridgeMessages.DeviceKeyChallenge("00112233445566778899aabbccddeeff", "bm9uY2U=",
                 1_000L, 9_999_999L, transportPeerKey, "device-key-session-v1");
+    }
+
+    private static RemoteBridgeMessages.AuditEvent killAck(String sessionId, long epochMillis) {
+        String canonical = sessionId + "\n" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED + "\n" + epochMillis;
+        return new RemoteBridgeMessages.AuditEvent(sessionId, ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED,
+                sha256Hex(canonical), epochMillis);
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     @Test
@@ -400,6 +423,417 @@ class ControlStreamRegistryTest {
         assertFalse(registry.heartbeatFaultControlStreamClosed(ticket.probeId()));
         assertEquals(ControlStreamRegistry.HeartbeatFaultStatus.CANCELLED,
                 registry.heartbeatFaultStatus(ticket.probeId()).orElseThrow());
+    }
+
+    @Test
+    void operatorKillWaitsForExactAgentAckThenClosesAndDurablyRecords() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(1_000L);
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, now::get, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            ControlStreamHandle handle = new ControlStreamHandle(observer);
+            registry.register(peer("peer-1"), handle);
+            handle.attachOnClose(() -> registry.unregister(peer("peer-1"), handle));
+
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
+            assertEquals(1, observer.sent.size());
+            assertTrue(observer.sent.get(0).hasKill());
+            assertEquals("OPERATOR_CLOSE", observer.sent.get(0).getKill().getKillReason());
+            assertFalse(handle.isClosed(), "the exact CONTROL generation stays open only for its bounded ACK");
+
+            now.set(1_010L);
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 1_005L), 1_010L));
+
+            assertTrue(handle.isClosed());
+            assertTrue(observer.completed);
+            assertFalse(registry.isConnected("peer-1"));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_APPLIED"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 1_006L), 1_011L));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void pendingOperatorKillQuarantinesEveryAuthorityBearingControlPush() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, event -> { }, () -> 5_000L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
+
+            assertFalse(registry.isConnected("peer-1"));
+            assertTrue(registry.connectedPeer("peer-1").isEmpty());
+            assertFalse(registry.sendOperationPermit("peer-1", permit("sess-2", "op-1"), 5_001L));
+            assertFalse(registry.sendOperationDispatch("peer-1",
+                    new RemoteBridgeMessages.OperationDispatch(permit("sess-2", "op-1"), "hostname"), 5_001L));
+            assertFalse(registry.sendConsentPrompt("peer-1", prompt("sess-2"), 5_001L));
+            assertFalse(registry.sendDeviceKeyChallenge("peer-1", "sess-2",
+                    deviceKeyChallenge("peer-1"), 5_001L));
+            assertEquals(1, observer.sent.size(), "only the original OPERATOR_CLOSE KILL may use the quarantine");
+            assertTrue(observer.sent.get(0).hasKill());
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void emergencyKillSupersedesPendingOperatorAckWithoutLeavingCorrelationState() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, () -> 6_000L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
+
+            assertTrue(registry.killPeer("peer-1", "sess-1", "DURESS", 6_000L));
+
+            assertTrue(observer.completed);
+            assertEquals(2, observer.sent.stream().filter(Envelope::hasKill).count());
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_STREAM_CLOSED"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 6_001L), 6_002L));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void emergencyKillAndCloseCompleteBeforeAStalledPendingAckAudit() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        CountDownLatch releaseAudit = new CountDownLatch(1);
+        try {
+            CountDownLatch auditEntered = new CountDownLatch(1);
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                auditEntered.countDown();
+                await(releaseAudit);
+            }, () -> 7_000L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 1_000L));
+            AtomicReference<Boolean> delivered = new AtomicReference<>();
+
+            Thread emergency = Thread.ofPlatform().start(() ->
+                    delivered.set(registry.killPeer("peer-1", "sess-1", "DURESS", 7_000L)));
+            assertTrue(auditEntered.await(2, TimeUnit.SECONDS));
+
+            assertTrue(observer.completed,
+                    "emergency handle close must not wait for the pending-ACK durable audit");
+            assertEquals(2, observer.sent.stream().filter(Envelope::hasKill).count());
+            assertEquals("DURESS", observer.sent.get(1).getKill().getKillReason());
+            assertTrue(emergency.isAlive(), "only the post-close audit is intentionally stalled");
+
+            releaseAudit.countDown();
+            emergency.join(2_000L);
+            assertFalse(emergency.isAlive());
+            assertEquals(Boolean.TRUE, delivered.get());
+        } finally {
+            releaseAudit.countDown();
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void wrongPeerSessionHashAndReplayCannotConsumePendingOperatorKill() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(10_000L);
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, now::get, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 10_000L));
+
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-2"), killAck("sess-1", 10_001L), 10_002L));
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_WRONG_SESSION,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-2", 10_001L), 10_002L));
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_INVALID_PROVENANCE,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"),
+                            new RemoteBridgeMessages.AuditEvent("sess-1",
+                                    ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED, "0".repeat(64), 10_001L), 10_002L));
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_OUTSIDE_FRESHNESS_WINDOW,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 9_999L), 10_002L));
+            assertFalse(observer.completed);
+            assertTrue(audits.isEmpty());
+
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 10_003L), 10_004L));
+            assertTrue(observer.completed);
+            assertEquals(1, audits.size());
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void operatorKillAckTimeoutClosesOnlyTheArmedHandleAndRecordsFailure() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(20_100L);
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            CountDownLatch recorded = new CountDownLatch(1);
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                audits.add(event);
+                recorded.countDown();
+            }, now::get, 25L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 20_000L));
+            assertTrue(recorded.await(2, TimeUnit.SECONDS));
+
+            assertTrue(observer.completed);
+            assertFalse(registry.isConnected("peer-1"));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_TIMEOUT"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void reconnectFailsPendingAckButNeverClosesTheSuccessor() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            AtomicLong now = new AtomicLong(30_010L);
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, now::get, 5_000L, 30_000L);
+            CapturingObserver oldObserver = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(oldObserver));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 30_000L));
+
+            CapturingObserver successorObserver = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(successorObserver));
+
+            assertTrue(oldObserver.completed);
+            assertFalse(successorObserver.completed);
+            assertTrue(registry.isConnected("peer-1"));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_STREAM_REPLACED"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 30_005L), 30_010L));
+            assertFalse(successorObserver.completed);
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void durableAckAuditFailureNeverLeavesTheTransportOrPendingClaimOpen() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ControlStreamRegistry registry = new ControlStreamRegistry(scheduler, event -> {
+                throw new IllegalStateException("durable recorder unavailable");
+            }, () -> 40_010L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 40_000L));
+
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED_AUDIT_FAILED,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 40_010L), 40_010L));
+            assertTrue(observer.completed);
+            assertFalse(registry.isConnected("peer-1"));
+            assertTrue(registry.operatorKillAckAuditFailureLatched(),
+                    "acceptance must remain failed for this pod lifetime after a durable write failure");
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 40_006L), 40_011L));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void failedOperatorKillWriteCannotLeaveAClosedHandleOrPendingAckRegistered() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, () -> 50_010L, 5_000L, 30_000L);
+            StreamObserver<Envelope> deadObserver = new StreamObserver<>() {
+                @Override public void onNext(Envelope value) { throw new IllegalStateException("dead stream"); }
+                @Override public void onError(Throwable t) { }
+                @Override public void onCompleted() { }
+            };
+            registry.register(peer("peer-1"), new ControlStreamHandle(deadObserver));
+
+            assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 50_000L));
+
+            assertFalse(registry.isConnected("peer-1"));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_SEND_FAILED"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 50_005L), 50_010L));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void productionStyleOnCloseOwnsFailedSendAndRecordsOneStreamClosedOutcome() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, () -> 55_010L, 5_000L, 30_000L);
+            PeerIdentity p = peer("peer-1");
+            StreamObserver<Envelope> deadObserver = new StreamObserver<>() {
+                @Override public void onNext(Envelope value) { throw new IllegalStateException("dead stream"); }
+                @Override public void onError(Throwable t) { }
+                @Override public void onCompleted() { }
+            };
+            ControlStreamHandle handle = new ControlStreamHandle(deadObserver);
+            registry.register(p, handle);
+            handle.attachOnClose(() -> registry.unregister(p, handle));
+
+            assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 55_000L));
+
+            assertFalse(registry.isConnected("peer-1"));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_STREAM_CLOSED"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void duplicateOperatorCloseCannotReplaceOrExtendTheExistingPendingAck() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, () -> 60_010L, 5_000L, 30_000L);
+            CapturingObserver observer = new CapturingObserver();
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 60_000L));
+            assertFalse(registry.killPeerAwaitingOperatorAck("peer-1", "sess-2", 60_001L));
+            assertEquals(1, observer.sent.stream().filter(Envelope::hasKill).count());
+            assertEquals("sess-1", observer.sent.get(0).getKill().getSessionId());
+
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 60_010L), 60_010L));
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_APPLIED"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void serverShutdownCancelsPendingAckClosesHandleAndRecordsWhy() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+            CapturingObserver observer = new CapturingObserver();
+            ControlStreamRegistry registry = new ControlStreamRegistry(
+                    scheduler, audits::add, () -> 70_010L, 5_000L, 30_000L);
+            registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+            assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 70_000L));
+
+            registry.completeAll();
+
+            assertTrue(observer.completed);
+            assertEquals(0, registry.connectedCount());
+            assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_SERVER_SHUTDOWN"),
+                    audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+            assertEquals(ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING,
+                    registry.acceptOperatorKillAcknowledgement(peer("peer-1"), killAck("sess-1", 70_005L), 70_010L));
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void unavailableAckSchedulerFallsBackToImmediateFailClosedKillWithDurableReason() {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        scheduler.shutdownNow();
+        ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+        CapturingObserver observer = new CapturingObserver();
+        ControlStreamRegistry registry = new ControlStreamRegistry(
+                scheduler, audits::add, () -> 80_000L, 5_000L, 30_000L);
+        registry.register(peer("peer-1"), new ControlStreamHandle(observer));
+
+        assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", 80_000L));
+
+        assertTrue(observer.completed, "capture termination remains fail-closed when ACK scheduling is unavailable");
+        assertFalse(registry.isConnected("peer-1"));
+        assertEquals(List.of("SESSION_CLOSE:AGENT_KILL_ACK_SCHEDULER_UNAVAILABLE"),
+                audits.stream().map(RemoteBridgeMessages.AuditEvent::eventType).toList());
+    }
+
+    @Test
+    void concurrentAckAndReconnectProduceExactlyOneOldHandleOutcomeAndPreserveSuccessor() throws Exception {
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            for (int iteration = 0; iteration < 100; iteration++) {
+                long base = 90_000L + iteration * 100L;
+                AtomicLong now = new AtomicLong(base + 10L);
+                ConcurrentLinkedQueue<RemoteBridgeMessages.AuditEvent> audits = new ConcurrentLinkedQueue<>();
+                ControlStreamRegistry registry = new ControlStreamRegistry(
+                        scheduler, audits::add, now::get, 5_000L, 30_000L);
+                CapturingObserver oldObserver = new CapturingObserver();
+                registry.register(peer("peer-1"), new ControlStreamHandle(oldObserver));
+                assertTrue(registry.killPeerAwaitingOperatorAck("peer-1", "sess-1", base));
+
+                CapturingObserver successorObserver = new CapturingObserver();
+                CountDownLatch ready = new CountDownLatch(2);
+                CountDownLatch start = new CountDownLatch(1);
+                AtomicReference<ControlStreamRegistry.OperatorKillAckResult> ackResult = new AtomicReference<>();
+                Thread ack = Thread.ofPlatform().start(() -> {
+                    ready.countDown();
+                    await(start);
+                    ackResult.set(registry.acceptOperatorKillAcknowledgement(
+                            peer("peer-1"), killAck("sess-1", base + 11L), base + 12L));
+                });
+                Thread reconnect = Thread.ofPlatform().start(() -> {
+                    ready.countDown();
+                    await(start);
+                    registry.register(peer("peer-1"), new ControlStreamHandle(successorObserver));
+                });
+                assertTrue(ready.await(2, TimeUnit.SECONDS));
+                start.countDown();
+                ack.join(2_000L);
+                reconnect.join(2_000L);
+
+                assertFalse(ack.isAlive());
+                assertFalse(reconnect.isAlive());
+                assertTrue(oldObserver.completed);
+                assertFalse(successorObserver.completed,
+                        "iteration " + iteration + ": old ACK cleanup must never close the successor");
+                assertTrue(registry.isConnected("peer-1"));
+                assertEquals(1, audits.size(),
+                        "iteration " + iteration + ": old handle gets exactly one durable terminal outcome");
+                String outcome = audits.element().eventType();
+                assertTrue(outcome.equals("SESSION_CLOSE:AGENT_KILL_APPLIED")
+                                || outcome.equals("SESSION_CLOSE:AGENT_KILL_ACK_STREAM_REPLACED"),
+                        "iteration " + iteration + ": unexpected outcome " + outcome);
+                if (outcome.equals("SESSION_CLOSE:AGENT_KILL_APPLIED")) {
+                    assertEquals(ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED, ackResult.get());
+                } else {
+                    assertTrue(ackResult.get() == ControlStreamRegistry.OperatorKillAckResult.REFUSED_NO_PENDING
+                                    || ackResult.get()
+                                    == ControlStreamRegistry.OperatorKillAckResult.REFUSED_HANDLE_MISMATCH,
+                            "iteration " + iteration + ": replacement winner must refuse old ACK");
+                }
+                registry.completeAll();
+            }
+        } finally {
+            scheduler.shutdownNow();
+        }
     }
 
     @Test

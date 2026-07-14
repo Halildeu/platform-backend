@@ -31,6 +31,7 @@ final class ControlStreamHandle {
     private String heartbeatSuppressionProbeId;
     private long heartbeatSuppressedUntilEpochMillis;
     private boolean heartbeatFaultTerminalClaimed;
+    private boolean operatorKillPending;
     private volatile boolean closed;
 
     ControlStreamHandle(StreamObserver<Envelope> outbound) {
@@ -74,9 +75,18 @@ final class ControlStreamHandle {
 
     /** Serialized write; false when the handle is closed or the stream is dead (which self-closes). */
     boolean send(Envelope envelope) {
+        return sendInternal(envelope, true);
+    }
+
+    /** Application/control authority must not reuse a handle quarantined for an operator-close ACK. */
+    boolean sendApplicationControl(Envelope envelope) {
+        return sendInternal(envelope, false);
+    }
+
+    private boolean sendInternal(Envelope envelope, boolean allowedDuringOperatorKill) {
         boolean delivered;
         synchronized (this) {
-            if (closed) {
+            if (closed || (!allowedDuringOperatorKill && operatorKillPending)) {
                 return false;
             }
             try {
@@ -89,6 +99,19 @@ final class ControlStreamHandle {
         }
         drainCloseAction();
         return delivered;
+    }
+
+    /** One-way quarantine: this exact handle can carry only heartbeat/KILL/ACK teardown until it closes. */
+    synchronized boolean quarantineForOperatorKill() {
+        if (closed || operatorKillPending) {
+            return false;
+        }
+        operatorKillPending = true;
+        return true;
+    }
+
+    synchronized boolean isApplicationControlAvailable() {
+        return !closed && !operatorKillPending;
     }
 
     /**
