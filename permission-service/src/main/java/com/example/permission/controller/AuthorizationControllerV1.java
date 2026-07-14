@@ -17,6 +17,7 @@ import com.example.permission.repository.UserRoleAssignmentRepository;
 import com.example.permission.service.AuthenticatedUserLookupService;
 import com.example.permission.service.AuthorizationQueryService;
 import com.example.permission.service.PermissionCatalogService;
+import com.example.permission.service.PermissionModulePolicy;
 import com.example.permission.service.PermissionService;
 import com.example.permission.service.AuthzVersionService;
 import com.example.permission.service.TupleSyncService;
@@ -878,7 +879,9 @@ public class AuthorizationControllerV1 {
             for (String role : roles) {
                 if (role != null && role.equalsIgnoreCase("admin")) {
                     for (String module : catalogService.getModuleKeys()) {
-                        upsertGrant(modules, module, "MANAGE");
+                        if (PermissionModulePolicy.allowsImplicitAdminExpansion(module)) {
+                            upsertGrant(modules, module, "MANAGE");
+                        }
                     }
                 }
             }

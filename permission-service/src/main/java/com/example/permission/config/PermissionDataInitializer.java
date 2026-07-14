@@ -13,6 +13,7 @@ import com.example.permission.repository.PermissionRepository;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.RoleRepository;
 import com.example.permission.service.RolePermissionGranuleDefaults;
+import com.example.permission.service.PermissionModulePolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -219,7 +220,12 @@ public class PermissionDataInitializer implements CommandLineRunner {
         // meeting-service (#410) + transcript-service (#411).
         out.add(MEETING_ADMIN_GRANULE);
         out.add(TRANSCRIPT_ADMIN_GRANULE);
-        return List.copyOf(out);
+        // Defense in depth: an explicit-grant-only module must not become an
+        // ADMIN seed merely because a future catalog/admin list is broadened.
+        return out.stream()
+                .filter(seed -> seed.type() != PermissionType.MODULE
+                        || PermissionModulePolicy.allowsImplicitAdminExpansion(seed.key()))
+                .toList();
     }
 
     @SafeVarargs

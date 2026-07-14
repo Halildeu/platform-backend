@@ -193,6 +193,107 @@ class AuthorizationControllerV1Test {
         assertTrue(body.getAllowedModules().contains("AUDIT"));
         assertTrue(body.getAllowedModules().contains("REPORT"));
     }
+
+    @Test
+    void getMe_projectsInterviewEvidenceViewFromExplicitNamedRoleWithoutSuperAdmin() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("2501")
+                .claim("permissions", List.of())
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+
+        when(authenticatedUserLookupService.resolve(jwt))
+                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                        2501L, "2501", "p5-readiness-viewer@localtest.me"));
+        when(authorizationQueryService.getUserScopeSummary(2501L)).thenReturn(Map.of());
+        when(catalogService.getModuleKeys()).thenReturn(List.of("INTERVIEW_EVIDENCE"));
+        when(authzService.check("2501", "admin", "organization", "default")).thenReturn(false);
+        when(authzService.check("2501", "can_manage", "module", "INTERVIEW_EVIDENCE"))
+                .thenReturn(false);
+        when(authzService.check("2501", "can_view", "module", "INTERVIEW_EVIDENCE"))
+                .thenReturn(true);
+        when(permissionService.getAssignments(2501L, null, null, null)).thenReturn(List.of());
+
+        var role = new com.example.permission.model.Role();
+        role.setId(832L);
+        role.setName("P5_READINESS_VIEWER");
+        var assignment = new com.example.permission.model.UserRoleAssignment();
+        assignment.setRole(role);
+        var granule = new com.example.permission.model.RolePermission(
+                role,
+                com.example.permission.model.PermissionType.MODULE,
+                "INTERVIEW_EVIDENCE",
+                com.example.permission.model.GrantType.VIEW);
+
+        when(assignmentRepository.findActiveAssignments(2501L)).thenReturn(List.of(assignment));
+        when(rolePermissionRepository.findByRoleIdIn(List.of(832L))).thenReturn(List.of(granule));
+        when(tupleSyncService.resolveEffectiveGrants(List.of(granule)))
+                .thenReturn(Map.of(
+                        "MODULE:INTERVIEW_EVIDENCE",
+                        new TupleSyncService.ResolvedGrant(
+                                com.example.permission.model.GrantType.VIEW,
+                                "P5_READINESS_VIEWER")));
+
+        AuthzMeResponseDto body = controller.getMe(jwt).getBody();
+
+        assertNotNull(body);
+        assertFalse(body.isSuperAdmin());
+        assertEquals(List.of("P5_READINESS_VIEWER"), body.getRoles());
+        assertEquals(Map.of("INTERVIEW_EVIDENCE", "VIEW"), body.getModules());
+        assertEquals(List.of("INTERVIEW_EVIDENCE"), body.getAllowedModules());
+        assertFalse(body.getPermissions().stream().anyMatch("admin"::equalsIgnoreCase));
+    }
+
+    @Test
+    void getMe_doesNotProjectInterviewEvidenceFromAdminRoleWithoutExplicitGranule() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("2502")
+                .claim("permissions", List.of())
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+
+        when(authenticatedUserLookupService.resolve(jwt))
+                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
+                        2502L, "2502", "catalog-admin-without-p5-grant@localtest.me"));
+        when(authorizationQueryService.getUserScopeSummary(2502L)).thenReturn(Map.of());
+        when(catalogService.getModuleKeys())
+                .thenReturn(List.of("USER_MANAGEMENT", "INTERVIEW_EVIDENCE"));
+        when(authzService.check("2502", "admin", "organization", "default")).thenReturn(false);
+        when(authzService.check("2502", "can_manage", "module", "USER_MANAGEMENT"))
+                .thenReturn(false);
+        when(authzService.check("2502", "can_view", "module", "USER_MANAGEMENT"))
+                .thenReturn(false);
+        when(authzService.check("2502", "can_manage", "module", "INTERVIEW_EVIDENCE"))
+                .thenReturn(false);
+        when(authzService.check("2502", "can_view", "module", "INTERVIEW_EVIDENCE"))
+                .thenReturn(false);
+        when(permissionService.getAssignments(2502L, null, null, null)).thenReturn(List.of());
+
+        var adminRole = new com.example.permission.model.Role();
+        adminRole.setId(833L);
+        adminRole.setName("ADMIN");
+        var assignment = new com.example.permission.model.UserRoleAssignment();
+        assignment.setRole(adminRole);
+
+        when(assignmentRepository.findActiveAssignments(2502L)).thenReturn(List.of(assignment));
+        when(rolePermissionRepository.findByRoleIdIn(List.of(833L))).thenReturn(List.of());
+        when(tupleSyncService.resolveEffectiveGrants(List.of())).thenReturn(Map.of());
+
+        AuthzMeResponseDto body = controller.getMe(jwt).getBody();
+
+        assertNotNull(body);
+        assertFalse(body.isSuperAdmin());
+        assertEquals(List.of("ADMIN"), body.getRoles());
+        assertEquals(Map.of("USER_MANAGEMENT", "MANAGE"), body.getModules());
+        assertEquals(List.of("USER_MANAGEMENT"), body.getAllowedModules());
+        assertFalse(body.getModules().containsKey("INTERVIEW_EVIDENCE"));
+        assertFalse(body.getPermissions().stream().anyMatch("admin"::equalsIgnoreCase));
+    }
+
     // Codex 019dddb7 iter-42 — /authz/me 5xx contract.
     // Pre-iter-42 the controller returned ResponseEntity.status(503).body(null)
     // on any RuntimeException, which the api-gateway / variant-service chain

@@ -263,6 +263,21 @@ class PermissionDataInitializerImpersonationAdminSeedTest {
         }
     }
 
+    @Test
+    void run_freshAdminRole_doesNotAutoSeedInterviewEvidence() throws Exception {
+        Role admin = adminRoleWithGranuleMarker(99L);
+        when(roleRepository.findAll()).thenReturn(List.of(admin));
+
+        initializer.run();
+
+        ArgumentCaptor<RolePermission> rpCaptor = ArgumentCaptor.forClass(RolePermission.class);
+        verify(rolePermissionRepository, atLeastOnce()).save(rpCaptor.capture());
+        assertThat(rpCaptor.getAllValues())
+                .as("INTERVIEW_EVIDENCE is explicit opt-in and must not be inherited by ADMIN")
+                .noneMatch(rp -> rp.getPermissionType() == PermissionType.MODULE
+                        && "INTERVIEW_EVIDENCE".equals(rp.getPermissionKey()));
+    }
+
     // ---------- helpers ----------
 
     /**
