@@ -352,8 +352,8 @@ public final class RemoteBridgeOperatorService {
         }
         // Closing only the viewer lifecycle is insufficient: the endpoint capture helper is cancelled by CONTROL
         // KILL. A disconnected peer returns false; local terminal cleanup still proceeds because it is unreachable.
-        controlKillDelivered = registry.killPeer(
-                session.transportPeerKey(), session.sessionId(), "OPERATOR_CLOSE", now);
+        controlKillDelivered = registry.killPeerAwaitingOperatorAck(
+                session.transportPeerKey(), session.sessionId(), now);
         if (!controlKillDelivered) {
             recordCloseKillDeliveryFailureBestEffort(session.sessionId(), now);
         }

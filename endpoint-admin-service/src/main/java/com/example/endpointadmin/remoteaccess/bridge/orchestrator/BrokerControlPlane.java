@@ -5,6 +5,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeAuditSink;
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.Event;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages;
 import com.example.endpointadmin.remoteaccess.bridge.server.ControlPlaneHandler;
+import com.example.endpointadmin.remoteaccess.bridge.server.ControlStreamRegistry;
 import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlySessionLifecycle;
 import org.slf4j.Logger;
@@ -14,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -70,6 +72,9 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
     // authorization can never keep fanning screen frames out after the endpoint user pulls consent. Optional
     // (null = no #1580 view-only plane); set post-construction by the server config.
     private volatile ViewOnlySessionLifecycle viewOnlyLifecycle;
+    // #2373 protected operator-close acceptance: the registry owns exact CONTROL-handle correlation and durable
+    // ACK/timeout evidence. Null keeps legacy/inert constructor seams fail-closed (ACK is refused, never trusted).
+    private volatile ControlStreamRegistry controlStreamRegistry;
 
     public BrokerControlPlane(PeerTrustLedger ledger,
                               RemoteBridgeSessionStore store,
@@ -202,6 +207,22 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
 
     @Override
     public void onAuditEvent(PeerIdentity peer, RemoteBridgeMessages.AuditEvent event) {
+        if (ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED.equals(event.eventType())) {
+            ControlStreamRegistry registry = controlStreamRegistry;
+            if (registry == null) {
+                recordBestEffort(event.sessionId(), "AGENT_KILL_ACK_REFUSED:not-wired");
+                return;
+            }
+            ControlStreamRegistry.OperatorKillAckResult result =
+                    registry.acceptOperatorKillAcknowledgement(peer, event, clock.getAsLong());
+            if (result == ControlStreamRegistry.OperatorKillAckResult.ACKNOWLEDGED) {
+                recordBestEffort(event.sessionId(), "AGENT:" + ControlStreamRegistry.EVENT_AGENT_KILL_APPLIED);
+            } else {
+                recordBestEffort(event.sessionId(),
+                        "AGENT_KILL_ACK_REFUSED:" + result.name().toLowerCase(Locale.ROOT));
+            }
+            return;
+        }
         if (!INBOUND_AUDIT_ALLOWLIST.contains(event.eventType())) {
             recordBestEffort(event.sessionId(), "AGENT_AUDIT_REFUSED:" + safeType(event.eventType()));
             return;
@@ -335,6 +356,11 @@ public final class BrokerControlPlane implements ControlPlaneHandler {
      */
     public void configureViewOnlyLifecycle(ViewOnlySessionLifecycle lifecycle) {
         this.viewOnlyLifecycle = lifecycle;
+    }
+
+    /** Wire exact peer/session/CONTROL-generation correlation for the operator KILL acknowledgement. */
+    public void configureControlStreamRegistry(ControlStreamRegistry registry) {
+        this.controlStreamRegistry = registry;
     }
 
     private void terminateViewOnly(String sessionId) {
