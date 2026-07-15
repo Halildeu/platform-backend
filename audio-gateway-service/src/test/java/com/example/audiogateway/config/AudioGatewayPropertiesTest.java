@@ -16,6 +16,42 @@ class AudioGatewayPropertiesTest {
     private Path tempDir;
 
     @Test
+    void defaultBoundsPassValidation() {
+        assertThatCode(new AudioGatewayProperties()::validate).doesNotThrowAnyException();
+    }
+
+    @Test
+    void boundsRejectZeroMaxBufferedSeconds() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxBufferedSeconds(0);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-buffered-seconds must be positive");
+    }
+
+    @Test
+    void boundsRejectNegativeMaxBufferedSeconds() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxBufferedSeconds(-5);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-buffered-seconds must be positive");
+    }
+
+    @Test
+    void boundsValidationLeavesMaxSessionMinutesZeroSupported() {
+        // max-session-minutes=0 is a supported degenerate value (session expires at
+        // creation time — SessionExpiryContractTest relies on it), so bounds
+        // validation must NOT reject it; only maxBufferedSeconds is guarded (#428).
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxSessionMinutes(0);
+
+        assertThatCode(props::validate).doesNotThrowAnyException();
+    }
+
+    @Test
     void directSttHttpWithoutTlsRemainsValidForLocalAndMockServerPaths() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
 

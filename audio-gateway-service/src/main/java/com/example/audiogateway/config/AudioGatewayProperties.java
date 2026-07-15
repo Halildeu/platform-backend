@@ -23,6 +23,7 @@ public class AudioGatewayProperties {
      */
     @jakarta.annotation.PostConstruct
     public void validate() {
+        bounds.validate();
         dispatcher.validate();
         directStt.validate();
         meetingAccess.validate();
@@ -88,6 +89,28 @@ public class AudioGatewayProperties {
         private int maxSessionMinutes = 60;
         private int admissionQueueCapacity = 1_000;
         private int maxActiveSessions = 1_000;
+
+        /**
+         * Fail-closed startup validation for {@code maxBufferedSeconds} — the subject
+         * of the #428 owner decision (acceptance #6). It is the server-observed
+         * undelivered-audio backlog bound; an invalid / negative / zero value is a
+         * misconfiguration, not a "disabled" signal, so it fails startup rather than
+         * silently bounding nothing.
+         *
+         * <p>The other bounds are intentionally NOT validated here: {@code
+         * maxSessionMinutes=0} is a supported (degenerate) value — sessions expire at
+         * creation time, exercised by {@code SessionExpiryContractTest} — so a
+         * strict-positive rule would forbid a config the enforcement path handles.
+         * {@code maxSessionMinutes} and {@code maxChunkBytes} stay independent bounds
+         * (acceptance #7), unchanged by this method.
+         */
+        public void validate() {
+            if (maxBufferedSeconds <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.max-buffered-seconds must be positive, got "
+                                + maxBufferedSeconds);
+            }
+        }
 
         public long getMaxChunkBytes() {
             return maxChunkBytes;
