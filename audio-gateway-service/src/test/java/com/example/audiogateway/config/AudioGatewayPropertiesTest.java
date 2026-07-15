@@ -41,23 +41,14 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
-    void boundsRejectNonPositiveMaxSessionMinutesIndependently() {
+    void boundsValidationLeavesMaxSessionMinutesZeroSupported() {
+        // max-session-minutes=0 is a supported degenerate value (session expires at
+        // creation time — SessionExpiryContractTest relies on it), so bounds
+        // validation must NOT reject it; only maxBufferedSeconds is guarded (#428).
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getBounds().setMaxSessionMinutes(0);
 
-        assertThatThrownBy(props::validate)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("max-session-minutes must be positive");
-    }
-
-    @Test
-    void boundsRejectNonPositiveMaxChunkBytesIndependently() {
-        final AudioGatewayProperties props = new AudioGatewayProperties();
-        props.getBounds().setMaxChunkBytes(0);
-
-        assertThatThrownBy(props::validate)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("max-chunk-bytes must be positive");
+        assertThatCode(props::validate).doesNotThrowAnyException();
     }
 
     @Test
