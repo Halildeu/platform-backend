@@ -61,6 +61,8 @@ public final class RemoteBridgeProtoAdapter {
 
     /** {@code CanonicalCommand.hash()} — SHA-256, lowercase hex. */
     private static final Pattern COMMAND_HASH = Pattern.compile("[0-9a-f]{64}");
+    private static final Pattern FEATURE_ID = Pattern.compile("[a-z0-9][a-z0-9._-]{2,127}");
+    private static final int MAX_POLICY_ENVELOPE_JSON = 64 * 1024;
 
     /**
      * Free-text wire fields (display name, reason, kill reason, event type): bounded and free of control
@@ -205,9 +207,15 @@ public final class RemoteBridgeProtoAdapter {
         if (!advertised.isOk()) {
             return DecodeResult.reject(advertised.rejectReason());
         }
+        Set<String> features = new LinkedHashSet<>();
+        for (String feature : hello.getSupportedFeaturesList()) {
+            if (!FEATURE_ID.matcher(feature).matches() || !features.add(feature)) {
+                return DecodeResult.reject("agent-hello-supported-features");
+            }
+        }
         return DecodeResult.ok(new RemoteBridgeMessages.AgentHello(hello.getAgentVersion(), hello.getDeviceId(),
                 hello.getCertFingerprint(), hello.getAttestationEvidenceB64(), hello.getProtocolVersion(),
-                advertised.orElseThrow()));
+                advertised.orElseThrow(), features));
     }
 
     public static AgentHello encode(RemoteBridgeMessages.AgentHello hello) {
@@ -218,6 +226,7 @@ public final class RemoteBridgeProtoAdapter {
                 .setAttestationEvidenceB64(nullToEmpty(hello.attestationEvidenceB64()))
                 .setProtocolVersion(nullToEmpty(hello.protocolVersion()));
         hello.advertisedCapabilities().forEach(c -> builder.addAdvertisedCapabilities(encodeCapability(c)));
+        hello.supportedFeatures().stream().sorted().forEach(builder::addSupportedFeatures);
         return builder.build();
     }
 
@@ -271,9 +280,20 @@ public final class RemoteBridgeProtoAdapter {
         if (prompt.getExpiryEpochMillis() <= 0) {
             return DecodeResult.reject("consent-prompt-expiry");
         }
+        RemoteBridgeMessages.SessionPolicyEnvelope policyEnvelope = null;
+        if (prompt.hasSessionPolicyEnvelope()) {
+            String canonicalJson = prompt.getSessionPolicyEnvelope().getCanonicalJson();
+            if (canonicalJson.isBlank()
+                    || canonicalJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    > MAX_POLICY_ENVELOPE_JSON
+                    || canonicalJson.chars().anyMatch(c -> c < 0x20 && c != '\n' && c != '\r' && c != '\t')) {
+                return DecodeResult.reject("consent-prompt-policy-envelope");
+            }
+            policyEnvelope = new RemoteBridgeMessages.SessionPolicyEnvelope(canonicalJson);
+        }
         return DecodeResult.ok(new RemoteBridgeMessages.ConsentPrompt(prompt.getSessionId(),
                 prompt.getOperatorDisplayName(), emptyToNull(prompt.getReason()), capabilities.orElseThrow(),
-                prompt.getExpiryEpochMillis()));
+                prompt.getExpiryEpochMillis(), policyEnvelope));
     }
 
     public static ConsentPrompt encode(RemoteBridgeMessages.ConsentPrompt prompt) {
@@ -283,6 +303,12 @@ public final class RemoteBridgeProtoAdapter {
                 .setReason(nullToEmpty(prompt.reason()))
                 .setExpiryEpochMillis(prompt.expiryEpochMillis());
         prompt.capabilities().forEach(c -> builder.addCapabilities(encodeCapability(c)));
+        if (prompt.sessionPolicyEnvelope() != null) {
+            builder.setSessionPolicyEnvelope(
+                    com.example.endpointadmin.remoteaccess.bridge.proto.SessionPolicyEnvelope.newBuilder()
+                            .setCanonicalJson(nullToEmpty(prompt.sessionPolicyEnvelope().canonicalJson()))
+                            .build());
+        }
         return builder.build();
     }
 
@@ -432,7 +458,8 @@ public final class RemoteBridgeProtoAdapter {
         if (permit == null) {
             return DecodeResult.reject("permit-null");
         }
-        if (permit.getPermitVersion() != RemoteBridgePermitSigner.PERMIT_VERSION) {
+        if (permit.getPermitVersion() != RemoteBridgePermitSigner.PERMIT_VERSION
+                && permit.getPermitVersion() != RemoteBridgePermitSigner.POLICY_BOUND_PERMIT_VERSION) {
             return DecodeResult.reject("permit-version");
         }
         if (!RemoteBridgePermitSigner.PERMIT_ALG.equals(permit.getAlg())) {
@@ -466,6 +493,11 @@ public final class RemoteBridgeProtoAdapter {
         if (permit.getSeq() <= 0) {
             return DecodeResult.reject("permit-seq");
         }
+        String policyEnvelopeDigest = permit.getPolicyEnvelopeDigest();
+        boolean policyBound = permit.getPermitVersion() == RemoteBridgePermitSigner.POLICY_BOUND_PERMIT_VERSION;
+        if (policyBound != policyEnvelopeDigest.matches("sha256:[0-9a-f]{64}")) {
+            return DecodeResult.reject("permit-policy-envelope-digest");
+        }
         String signature = permit.getSignatureB64();
         if (signature.isEmpty()) {
             return DecodeResult.reject("permit-signature-missing"); // an unsigned permit never travels
@@ -478,7 +510,8 @@ public final class RemoteBridgeProtoAdapter {
         return DecodeResult.ok(new OperationPermit(permit.getAlg(), permit.getKid(), permit.getPermitVersion(),
                 permit.getPolicyVersion(), permit.getDecisionId(), permit.getSessionId(), permit.getOperationId(),
                 permit.getDeviceId(), permit.getOperatorSubject(), capability.orElseThrow(), commandHash,
-                permit.getIssuedAtEpochMillis(), permit.getExpiresAtEpochMillis(), permit.getSeq(), signature));
+                permit.getIssuedAtEpochMillis(), permit.getExpiresAtEpochMillis(), permit.getSeq(),
+                emptyToNull(policyEnvelopeDigest), signature));
     }
 
     public static com.example.endpointadmin.remoteaccess.bridge.proto.OperationPermit encode(
@@ -498,6 +531,7 @@ public final class RemoteBridgeProtoAdapter {
                 .setIssuedAtEpochMillis(permit.issuedAtEpochMillis())
                 .setExpiresAtEpochMillis(permit.expiresAtEpochMillis())
                 .setSeq(permit.seq())
+                .setPolicyEnvelopeDigest(nullToEmpty(permit.policyEnvelopeDigest()))
                 .setSignatureB64(nullToEmpty(permit.signatureB64()))
                 .build();
     }

@@ -9,6 +9,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.PeerIdentity;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -29,7 +30,18 @@ public final class PeerTrustLedger {
                             boolean deviceTrusted,
                             Optional<String> certBoundDeviceId,
                             String helloDeviceId,
-                            long recordedAtEpochMillis) {
+                            long recordedAtEpochMillis,
+                            Set<String> supportedFeatures) {
+        public PeerTrust {
+            supportedFeatures = supportedFeatures == null ? Set.of() : Set.copyOf(supportedFeatures);
+        }
+
+        public PeerTrust(boolean certTrusted, boolean attestationVerified, boolean deviceTrusted,
+                         Optional<String> certBoundDeviceId, String helloDeviceId,
+                         long recordedAtEpochMillis) {
+            this(certTrusted, attestationVerified, deviceTrusted, certBoundDeviceId, helloDeviceId,
+                    recordedAtEpochMillis, Set.of());
+        }
     }
 
     private final CertTrustEvaluator certTrustEvaluator;
@@ -92,7 +104,7 @@ public final class PeerTrustLedger {
             }
         }).orElse(false);
         PeerTrust trust = new PeerTrust(cert, attestation, device, peer.certBoundDeviceId(),
-                hello.deviceId(), nowEpochMillis);
+                hello.deviceId(), nowEpochMillis, hello.supportedFeatures());
         byPeer.put(peer.transportPeerKey(), trust);
         return trust;
     }

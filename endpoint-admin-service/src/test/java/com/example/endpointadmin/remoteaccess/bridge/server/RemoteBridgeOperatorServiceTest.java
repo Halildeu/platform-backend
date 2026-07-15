@@ -35,6 +35,8 @@ import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDuressS
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.TrustEvidenceAssembler;
 import com.example.endpointadmin.remoteaccess.bridge.proto.Envelope;
 import com.example.endpointadmin.remoteaccess.bridge.wire.RemoteBridgeProtoAdapter;
+import com.example.endpointadmin.remoteaccess.policy.RemoteViewSessionPolicyResolver;
+import com.example.endpointadmin.remoteaccess.policy.SignedRemoteViewSessionPolicy;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
@@ -59,6 +61,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Faz 22.6 T-4a-ii slice-4b-2 (Codex 019ebd7f) — the operator service routes the broker verdict to the
@@ -225,6 +231,64 @@ class RemoteBridgeOperatorServiceTest {
 
             @Override public void onCompleted() { }
         };
+    }
+
+    @Test
+    void policyModeRequiresExplicitAgentFeatureBeforeSendingAnyPrompt() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        PeerIdentity peer = new PeerIdentity("peer-policy", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        TrustEvidenceAssembler evidence = mock(TrustEvidenceAssembler.class);
+        when(evidence.peerSupportsFeature(peer.transportPeerKey(),
+                RemoteViewSessionPolicyResolver.AGENT_FEATURE, NOW)).thenReturn(false);
+        RemoteViewSessionPolicyResolver resolver = mock(RemoteViewSessionPolicyResolver.class);
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store, evidence, broker(), registry,
+                operatorAuditSink(), () -> NOW, 120_000L);
+        service.configureSessionPolicyResolver(resolver);
+
+        SessionOpenOutcome outcome = service.openSession(new SessionRequest("policy-s1", "dev-1", "operator@x",
+                "support", Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+
+        assertFalse(outcome.opened());
+        assertEquals("POLICY_AGENT_UNSUPPORTED", outcome.rejectReason());
+        assertTrue(observer.sent.isEmpty(), "an unsupported agent receives no legacy consent prompt");
+        assertEquals(0, store.liveCount(), "the just-opened session is killed and evicted");
+        verify(resolver, never()).resolveAndSign(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void policyModeBindsAuditsAndSendsTheExactSignedEnvelope() {
+        RemoteBridgeSessionStore store = new RemoteBridgeSessionStore();
+        ControlStreamRegistry registry = new ControlStreamRegistry();
+        CapturingObserver observer = new CapturingObserver();
+        RecordingAuditSink audit = new RecordingAuditSink();
+        PeerIdentity peer = new PeerIdentity("peer-policy", Optional.of("dev-1"), List.of());
+        registry.register(peer, new ControlStreamHandle(observer));
+        TrustEvidenceAssembler evidence = mock(TrustEvidenceAssembler.class);
+        when(evidence.peerSupportsFeature(peer.transportPeerKey(),
+                RemoteViewSessionPolicyResolver.AGENT_FEATURE, NOW)).thenReturn(true);
+        RemoteViewSessionPolicyResolver resolver = mock(RemoteViewSessionPolicyResolver.class);
+        String digest = "sha256:" + "d".repeat(64);
+        when(resolver.resolveAndSign(org.mockito.ArgumentMatchers.any())).thenReturn(
+                new SignedRemoteViewSessionPolicy("{\"schemaVersion\":\"remote-view-session-policy-envelope-v1\"}",
+                        digest, "sha256:" + "e".repeat(64), "policy-key-1", "sha256:" + "f".repeat(64)));
+        RemoteBridgeOperatorService service = new RemoteBridgeOperatorService(store, evidence, broker(), registry,
+                audit, () -> NOW, 120_000L);
+        service.configureSessionPolicyResolver(resolver);
+
+        SessionOpenOutcome outcome = service.openSession(new SessionRequest("policy-s1", "dev-1", "operator@x",
+                "support", Set.of(RemoteSessionCapability.VIEW_ONLY)), peer, TENANT, "Operator X");
+
+        assertTrue(outcome.opened());
+        assertEquals(1, observer.sent.size());
+        assertEquals("{\"schemaVersion\":\"remote-view-session-policy-envelope-v1\"}",
+                observer.sent.get(0).getConsentPrompt().getSessionPolicyEnvelope().getCanonicalJson());
+        RemoteBridgeSession session = store.bySessionId("policy-s1").orElseThrow();
+        assertEquals(digest, session.policyEnvelopeDigest());
+        assertEquals("policy-key-1", session.policyEnvelopeKeyId());
+        assertTrue(audit.hasExact("POLICY_ENVELOPE:policy-key-1"));
     }
 
     // --- device-key session attestation issuance (Faz 22.6 #548 step-5b) ------

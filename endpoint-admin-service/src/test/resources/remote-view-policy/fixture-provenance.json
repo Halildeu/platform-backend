@@ -1,0 +1,31 @@
+{
+  "authorityRepository": "Halildeu/platform-k8s-gitops",
+  "authorityCommit": "72c95be75f95946990c7a49fc71bb17057992413",
+  "files": [
+    {
+      "fixture": "baseline.json",
+      "authorityPath": "config/remote-view-platform-safety-baseline.v1.json",
+      "sha256": "0c9477f49466020a153d7c82ae59042ad49353e18536e80ba922141027a4c923"
+    },
+    {
+      "fixture": "baseline.schema.json",
+      "authorityPath": "schema/remote-view-platform-safety-baseline-v1.schema.json",
+      "sha256": "83a0c8d3f10233ef77e825c3921125dc1209a0cc64062fc679228a28ddfd2b59"
+    },
+    {
+      "fixture": "envelope.schema.json",
+      "authorityPath": "schema/remote-view-session-policy-envelope-v1.schema.json",
+      "sha256": "0551e05ed566376e07f40e2db1e9d5df41f89355ce6c4ddeb74e63752d1a8f7c"
+    },
+    {
+      "fixture": "example-policy.json",
+      "authorityPath": "examples/remote-view/example-tr-domestic-tenant-policy.v1.json",
+      "sha256": "eb333322f6478a7933985d6c8f691c881fdc7d728e82938a706c2a0f5023c603"
+    },
+    {
+      "fixture": "tenant-policy.schema.json",
+      "authorityPath": "schema/remote-view-tenant-privacy-policy-v1.schema.json",
+      "sha256": "99062c81b71c0ef7aa79b85a0aab61e4d3b87ee79c5b804fe97689b9db7a9b35"
+    }
+  ]
+}

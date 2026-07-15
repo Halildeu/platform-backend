@@ -15,6 +15,11 @@ import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessag
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationDispatch;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionRequest;
+import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.SessionPolicyEnvelope;
+import com.example.endpointadmin.remoteaccess.policy.RemoteViewPolicyException;
+import com.example.endpointadmin.remoteaccess.policy.RemoteViewPolicyReason;
+import com.example.endpointadmin.remoteaccess.policy.RemoteViewSessionPolicyResolver;
+import com.example.endpointadmin.remoteaccess.policy.SignedRemoteViewSessionPolicy;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.OpenResult;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Opened;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.RemoteBridgeSessionStore.Refused;
@@ -90,6 +95,9 @@ public final class RemoteBridgeOperatorService {
     // out). Set post-construction by the server config — this service mints no authority of its own.
     private volatile ViewOnlySessionLifecycle viewOnlyLifecycle;
     private volatile long viewOnlyStreamAuthorizationTtlMillis;
+    // Faz 23 #838. Null means policy mode is disabled and the legacy path is
+    // unchanged. Non-null means the signed envelope is mandatory.
+    private volatile RemoteViewSessionPolicyResolver sessionPolicyResolver;
 
     /** Back-compat: no device-key session attestation issuance (the prior behaviour). */
     public RemoteBridgeOperatorService(RemoteBridgeSessionStore store, TrustEvidenceAssembler assembler,
@@ -170,6 +178,10 @@ public final class RemoteBridgeOperatorService {
         if (duressSignalStore != null) {
             duressSignalStore.evict(sessionId);
         }
+    }
+
+    public void configureSessionPolicyResolver(RemoteViewSessionPolicyResolver resolver) {
+        this.sessionPolicyResolver = Objects.requireNonNull(resolver, "resolver");
     }
 
     /** The outcome of opening an attended session: the session id, whether the consent prompt reached the agent. */
@@ -254,6 +266,31 @@ public final class RemoteBridgeOperatorService {
         }
         RemoteBridgeSession session = ((Opened) result).session(); // ALREADY CONSENT_PENDING (store walked it)
         evictDuressSignal(session.sessionId()); // reused session ids must not inherit stale clean/duress signals
+        SessionPolicyEnvelope wirePolicyEnvelope = null;
+        RemoteViewSessionPolicyResolver policyResolver = this.sessionPolicyResolver;
+        if (policyResolver != null) {
+            if (!assembler.peerSupportsFeature(peer.transportPeerKey(),
+                    RemoteViewSessionPolicyResolver.AGENT_FEATURE, now)) {
+                terminateOpenedSession(session, peer);
+                return SessionOpenOutcome.rejected(session.sessionId(),
+                        RemoteViewPolicyReason.POLICY_AGENT_UNSUPPORTED.name());
+            }
+            SignedRemoteViewSessionPolicy signedPolicy;
+            try {
+                signedPolicy = policyResolver.resolveAndSign(session);
+                session.bindPolicyEnvelope(signedPolicy.envelopeDigest(), signedPolicy.keyId());
+                auditSink.record(new AuditEvent(session.sessionId(),
+                        "POLICY_ENVELOPE:" + signedPolicy.keyId(), signedPolicy.envelopeDigest(), now));
+            } catch (RemoteViewPolicyException e) {
+                terminateOpenedSession(session, peer);
+                return SessionOpenOutcome.rejected(session.sessionId(), e.reason().name());
+            } catch (RuntimeException e) {
+                terminateOpenedSession(session, peer);
+                return SessionOpenOutcome.rejected(session.sessionId(),
+                        RemoteViewPolicyReason.POLICY_AUDIT_FAILED.name());
+            }
+            wirePolicyEnvelope = new SessionPolicyEnvelope(signedPolicy.canonicalEnvelopeJson());
+        }
         // #1580 — a fresh VIEW_ONLY incarnation: record this session as the incarnation token + clear stale authz
         // for this (reused) sessionId so a legitimately reused session can authorize a screen stream again.
         beginViewOnlySession(session);
@@ -292,7 +329,8 @@ public final class RemoteBridgeOperatorService {
         }
 
         ConsentPrompt prompt = new ConsentPrompt(session.sessionId(), session.operatorDisplayName(),
-                request.reason(), session.requestedCapabilities(), session.promptExpiryEpochMillis());
+                request.reason(), session.requestedCapabilities(), session.promptExpiryEpochMillis(),
+                wirePolicyEnvelope);
         boolean sent = registry.sendConsentPrompt(peer.transportPeerKey(), prompt, now);
         if (!sent) {
             // the peer dropped between the pre-guard and the send → don't leave an orphan CONSENT_PENDING session
@@ -304,6 +342,14 @@ public final class RemoteBridgeOperatorService {
             return SessionOpenOutcome.rejected(session.sessionId(), "consent-prompt-not-delivered");
         }
         return SessionOpenOutcome.prompted(session.sessionId());
+    }
+
+    private void terminateOpenedSession(RemoteBridgeSession session, PeerIdentity peer) {
+        evictDeviceKeySession(session.sessionId(), peer.transportPeerKey());
+        evictDuressSignal(session.sessionId());
+        session.transition(Event.KILL);
+        store.evictIfTerminal(session.sessionId());
+        terminateViewOnly(session.sessionId());
     }
 
     /**
@@ -569,7 +615,8 @@ public final class RemoteBridgeOperatorService {
         RemoteBridgeTrustEvidence evidence = assembler.assemble(session, now);
         recordDeviceTrustDecisionBestEffort(session, evidence, now);
         // nextSeq() consumed ONLY here, at the broker boundary, after the session is found (Codex S2)
-        BrokerOutcome outcome = broker.handle(request, evidence, session.state(), session.nextSeq(), now);
+        BrokerOutcome outcome = broker.handle(request, evidence, session.state(), session.nextSeq(), now,
+                session.policyEnvelopeDigest());
 
         return switch (outcome.kind()) {
             case PERMIT -> {
