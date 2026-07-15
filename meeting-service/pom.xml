@@ -40,6 +40,16 @@
             <artifactId>common-export</artifactId>
             <version>1.0.0</version>
         </dependency>
+        <!-- common-meeting-events (#802): the shared meeting-event contract —
+             versioned envelope, public event types, deterministic event-key
+             factory, v1 serializer/validator and the outbox conformance kit.
+             The outbox ENTITY, its migration and the poller stay local to this
+             service by design; only the contract is shared. -->
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>common-meeting-events</artifactId>
+            <version>1.0.0</version>
+        </dependency>
         <!-- endpoint-admin live-only catch mirror: pin commons-compress 1.25.0
              so the POI-compatible version always wins the nearest-wins race
              (else every .xlsx export 500s with NoSuchMethodError). -->
