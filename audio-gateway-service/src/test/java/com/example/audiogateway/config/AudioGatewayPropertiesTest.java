@@ -16,6 +16,51 @@ class AudioGatewayPropertiesTest {
     private Path tempDir;
 
     @Test
+    void defaultBoundsPassValidation() {
+        assertThatCode(new AudioGatewayProperties()::validate).doesNotThrowAnyException();
+    }
+
+    @Test
+    void boundsRejectZeroMaxBufferedSeconds() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxBufferedSeconds(0);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-buffered-seconds must be positive");
+    }
+
+    @Test
+    void boundsRejectNegativeMaxBufferedSeconds() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxBufferedSeconds(-5);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-buffered-seconds must be positive");
+    }
+
+    @Test
+    void boundsRejectNonPositiveMaxSessionMinutesIndependently() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxSessionMinutes(0);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-session-minutes must be positive");
+    }
+
+    @Test
+    void boundsRejectNonPositiveMaxChunkBytesIndependently() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxChunkBytes(0);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-chunk-bytes must be positive");
+    }
+
+    @Test
     void directSttHttpWithoutTlsRemainsValidForLocalAndMockServerPaths() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
 

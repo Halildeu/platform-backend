@@ -23,6 +23,7 @@ public class AudioGatewayProperties {
      */
     @jakarta.annotation.PostConstruct
     public void validate() {
+        bounds.validate();
         dispatcher.validate();
         directStt.validate();
         meetingAccess.validate();
@@ -88,6 +89,43 @@ public class AudioGatewayProperties {
         private int maxSessionMinutes = 60;
         private int admissionQueueCapacity = 1_000;
         private int maxActiveSessions = 1_000;
+
+        /**
+         * Fail-closed startup validation for the admission bounds (#428 owner decision).
+         * Every bound is an independent guard and must be strictly positive — an
+         * invalid / negative / zero value is a misconfiguration, not a "disabled"
+         * signal, so it fails startup rather than silently admitting unbounded
+         * input. {@code maxBufferedSeconds} is the server-observed undelivered-audio
+         * backlog bound whose enforcement contract is defined in #428; this method
+         * guards its configuration. {@code maxSessionMinutes} and {@code maxChunkBytes}
+         * stay independent bounds (they are validated separately here).
+         */
+        public void validate() {
+            if (maxChunkBytes <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.max-chunk-bytes must be positive, got " + maxChunkBytes);
+            }
+            if (maxBufferedSeconds <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.max-buffered-seconds must be positive, got "
+                                + maxBufferedSeconds);
+            }
+            if (maxSessionMinutes <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.max-session-minutes must be positive, got "
+                                + maxSessionMinutes);
+            }
+            if (admissionQueueCapacity <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.admission-queue-capacity must be positive, got "
+                                + admissionQueueCapacity);
+            }
+            if (maxActiveSessions <= 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.max-active-sessions must be positive, got "
+                                + maxActiveSessions);
+            }
+        }
 
         public long getMaxChunkBytes() {
             return maxChunkBytes;
