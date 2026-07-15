@@ -133,6 +133,43 @@ jobs:
       - name: Run endpoint-admin-service tests
         run: ./mvnw -pl endpoint-admin-service test
 
+  common-meeting-events-test:
+    name: common-meeting-events contract test (Faz 24 #802 shared meeting-event contract)
+    runs-on: ubuntu-latest
+    needs: [full-reactor-build]
+    timeout-minutes: 10
+
+    # Faz 24 #802 slice 1 — full-reactor-build runs `verify -DskipTests`, so the shared
+    # contract's own surface would never execute there. Without this lane the module's
+    # tests would exist but never run, which for a wire contract is worse than having
+    # none: the golden fixtures are the ONLY thing standing between a refactor and a
+    # silent break of every pinned consumer. This lane runs, on every PR / main push:
+    #   - the frozen meeting.event.v1 golden bytes + event keys (field order and the
+    #     explicit "orgId":null are the contract, not incidental formatting);
+    #   - unknown-event-type + conditional required-field validation;
+    #   - tenant/org isolation + payload redaction fixtures;
+    #   - the poller/outbox conformance kit against its reference store.
+    # The enforcer's banned-dependency rule (no Spring/JPA/transport in the contract's
+    # dependency graph) binds at `validate`, so it runs here too: re-coupling the
+    # contract to a framework, an ORM or a broker fails this lane rather than review.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: 'maven'
+
+      # No pre-install: the contract module depends on no reactor sibling — that is
+      # exactly the boundary #802 asks for, and this lane's dependency-free run is a
+      # standing demonstration of it.
+      - name: Run common-meeting-events tests
+        run: ./mvnw -pl common-meeting-events test
+
   meeting-service-test:
     name: meeting-service unit + Testcontainers PG test (Faz 24 #410 meeting intelligence)
     runs-on: ubuntu-latest
@@ -157,8 +194,11 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
-      - name: Pre-install reactor deps (common-auth + common-export — not in Maven Central)
-        run: ./mvnw -q -pl common-auth,common-export install -DskipTests
+      # #802 slice 1: common-meeting-events joins the pre-install list — meeting-service
+      # now resolves the shared event contract from it, and `-pl meeting-service` alone
+      # would fail to resolve a reactor sibling that is not in Maven Central.
+      - name: Pre-install reactor deps (common-auth + common-export + common-meeting-events — not in Maven Central)
+        run: ./mvnw -q -pl common-auth,common-export,common-meeting-events install -DskipTests
 
       - name: Run meeting-service tests
         run: ./mvnw -pl meeting-service test
