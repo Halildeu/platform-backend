@@ -123,6 +123,16 @@ public final class TrustEvidenceAssembler {
                 session.operatorSubject());
     }
 
+    /** Advisory feature support can only enable delivery after policy mode is already required server-side. */
+    public boolean peerSupportsFeature(String transportPeerKey, String featureId, long nowEpochMillis) {
+        if (transportPeerKey == null || featureId == null) {
+            return false;
+        }
+        return ledger.fresh(transportPeerKey, nowEpochMillis)
+                .map(trust -> trust.supportedFeatures().contains(featureId))
+                .orElse(false);
+    }
+
     private DuressSignal classifyDuress(String sessionId, long nowEpochMillis) {
         DuressSignal signal = duressSource.classify(sessionId, nowEpochMillis);
         return signal == null ? DuressSignal.AMBIGUOUS : signal; // a null classification is fail-closed

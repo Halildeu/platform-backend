@@ -102,12 +102,16 @@ class RemoteBridgeProtoAdapterTest {
     @Test
     void agentHelloRoundTripsAndEmptyAdvertisedCapabilitiesAreAllowed() {
         RemoteBridgeMessages.AgentHello hello = new RemoteBridgeMessages.AgentHello(
-                "0.2.3", "dev-1", "ab12cd", "ZXZpZGVuY2U=", "rb-v1", Set.of(RemoteSessionCapability.VIEW_ONLY));
+                "0.2.3", "dev-1", "ab12cd", "ZXZpZGVuY2U=", "rb-v1",
+                Set.of(RemoteSessionCapability.VIEW_ONLY),
+                Set.of("remote-view-session-policy-envelope-v1"));
         AgentHello proto = RemoteBridgeProtoAdapter.encode(hello);
         assertEquals(hello, RemoteBridgeProtoAdapter.decode(proto).orElseThrow());
 
         AgentHello noCaps = proto.toBuilder().clearAdvertisedCapabilities().build();
         assertEquals(Set.of(), RemoteBridgeProtoAdapter.decode(noCaps).orElseThrow().advertisedCapabilities());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder()
+                .addSupportedFeatures("bad feature").build()).isOk());
     }
 
     @Test
@@ -146,12 +150,37 @@ class RemoteBridgeProtoAdapterTest {
     @Test
     void consentPromptRoundTripsAndRejectsEmptyCapabilitiesOrNonPositiveExpiry() {
         RemoteBridgeMessages.ConsentPrompt prompt = new RemoteBridgeMessages.ConsentPrompt(
-                "sess-1", "Halil K", "disk doluluk", Set.of(RemoteSessionCapability.VIEW_ONLY), 2000L);
+                "sess-1", "Halil K", "disk doluluk", Set.of(RemoteSessionCapability.VIEW_ONLY), 2000L,
+                new RemoteBridgeMessages.SessionPolicyEnvelope("{\"schemaVersion\":\"remote-view-session-policy-envelope-v1\"}"));
         ConsentPrompt proto = RemoteBridgeProtoAdapter.encode(prompt);
         assertEquals(prompt, RemoteBridgeProtoAdapter.decode(proto).orElseThrow());
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().clearCapabilities().build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setExpiryEpochMillis(0).build()).isOk());
         assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().setOperatorDisplayName("").build()).isOk());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder()
+                .setSessionPolicyEnvelope(proto.getSessionPolicyEnvelope().toBuilder().setCanonicalJson(""))
+                .build()).isOk());
+        String oversizedUtf8 = "{\"x\":\"" + "€".repeat(22_000) + "\"}";
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder()
+                .setSessionPolicyEnvelope(proto.getSessionPolicyEnvelope().toBuilder()
+                        .setCanonicalJson(oversizedUtf8))
+                .build()).isOk());
+    }
+
+    @Test
+    void policyBoundPermitV2RoundTripsWithEnvelopeDigestInSignedPayload() throws Exception {
+        OperationPermit unsigned = new OperationPermit(RemoteBridgePermitSigner.PERMIT_ALG, "kid-1",
+                RemoteBridgePermitSigner.POLICY_BOUND_PERMIT_VERSION, "policy-1", "sess-1:op-1",
+                "sess-1", "op-1", "dev-1", "operator@x", RemoteSessionCapability.VIEW_ONLY, "",
+                1000L, 2000L, 1L,
+                "sha256:" + "a".repeat(64), null);
+        OperationPermit signed = new RemoteBridgePermitSigner(ec().getPrivate(), "kid-1",
+                RemoteBridgePermitSigner.PERMIT_ALG).sign(unsigned).orElseThrow();
+        var proto = RemoteBridgeProtoAdapter.encode(signed);
+        OperationPermit decoded = RemoteBridgeProtoAdapter.decode(proto).orElseThrow();
+        assertEquals(signed, decoded);
+        assertArrayEquals(signed.canonicalPayload(), decoded.canonicalPayload());
+        assertFalse(RemoteBridgeProtoAdapter.decode(proto.toBuilder().clearPolicyEnvelopeDigest().build()).isOk());
     }
 
     @Test

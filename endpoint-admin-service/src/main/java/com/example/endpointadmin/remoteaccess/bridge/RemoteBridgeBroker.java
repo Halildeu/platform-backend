@@ -100,6 +100,11 @@ public final class RemoteBridgeBroker {
      */
     public BrokerOutcome handle(OperationRequest request, RemoteBridgeTrustEvidence evidence, State sessionState,
                                 long seq, long nowEpochMillis) {
+        return handle(request, evidence, sessionState, seq, nowEpochMillis, null);
+    }
+
+    public BrokerOutcome handle(OperationRequest request, RemoteBridgeTrustEvidence evidence, State sessionState,
+                                long seq, long nowEpochMillis, String policyEnvelopeDigest) {
         if (!enabled) {
             return BrokerOutcome.deny("remote-bridge-disabled");
         }
@@ -164,10 +169,12 @@ public final class RemoteBridgeBroker {
         RemoteSessionCapability capability = isPty ? RemoteSessionCapability.CONSTRAINED_PTY
                 : RemoteSessionCapability.VIEW_ONLY;
         String commandHash = isPty ? command.hash() : ""; // matches the signer's capability<->commandHash invariant
+        int permitVersion = policyEnvelopeDigest == null || policyEnvelopeDigest.isBlank()
+                ? RemoteBridgePermitSigner.PERMIT_VERSION : RemoteBridgePermitSigner.POLICY_BOUND_PERMIT_VERSION;
         OperationPermit unsigned = new OperationPermit(signer.alg(), signer.kid(),
-                RemoteBridgePermitSigner.PERMIT_VERSION, policyVersion, decisionId(request), request.sessionId(),
+                permitVersion, policyVersion, decisionId(request), request.sessionId(),
                 request.operationId(), evidence.deviceId(), evidence.operatorSubject(), capability, commandHash,
-                nowEpochMillis, nowEpochMillis + permitTtlMillis, seq, null);
+                nowEpochMillis, nowEpochMillis + permitTtlMillis, seq, policyEnvelopeDigest, null);
         // the signer is the final boundary — it refuses anything not a complete, consistent pilot permit
         return signer.sign(unsigned).map(BrokerOutcome::permit)
                 .orElseGet(() -> BrokerOutcome.deny("permit-signing-refused"));

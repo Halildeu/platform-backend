@@ -33,9 +33,18 @@ public final class RemoteBridgeMessages {
                              String certFingerprint,
                              String attestationEvidenceB64,
                              String protocolVersion,
-                             Set<RemoteSessionCapability> advertisedCapabilities) {
+                             Set<RemoteSessionCapability> advertisedCapabilities,
+                             Set<String> supportedFeatures) {
         public AgentHello {
             advertisedCapabilities = advertisedCapabilities == null ? Set.of() : Set.copyOf(advertisedCapabilities);
+            supportedFeatures = supportedFeatures == null ? Set.of() : Set.copyOf(supportedFeatures);
+        }
+
+        public AgentHello(String agentVersion, String deviceId, String certFingerprint,
+                          String attestationEvidenceB64, String protocolVersion,
+                          Set<RemoteSessionCapability> advertisedCapabilities) {
+            this(agentVersion, deviceId, certFingerprint, attestationEvidenceB64, protocolVersion,
+                    advertisedCapabilities, Set.of());
         }
     }
 
@@ -55,10 +64,20 @@ public final class RemoteBridgeMessages {
                                 String operatorDisplayName,
                                 String reason,
                                 Set<RemoteSessionCapability> capabilities,
-                                long expiryEpochMillis) {
+                                long expiryEpochMillis,
+                                SessionPolicyEnvelope sessionPolicyEnvelope) {
         public ConsentPrompt {
             capabilities = capabilities == null ? Set.of() : Set.copyOf(capabilities);
         }
+
+        public ConsentPrompt(String sessionId, String operatorDisplayName, String reason,
+                             Set<RemoteSessionCapability> capabilities, long expiryEpochMillis) {
+            this(sessionId, operatorDisplayName, reason, capabilities, expiryEpochMillis, null);
+        }
+    }
+
+    /** Exact signed JSON artifact. Null on the legacy, policy-mode-disabled path only. */
+    public record SessionPolicyEnvelope(String canonicalJson) {
     }
 
     /** Agent → broker: the endpoint user's consent outcome (becomes a {@link ConsentLease}). */

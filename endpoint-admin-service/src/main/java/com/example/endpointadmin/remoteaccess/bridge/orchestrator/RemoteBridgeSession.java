@@ -54,6 +54,10 @@ public final class RemoteBridgeSession {
     // equals this. Null until openSession issues one; a stale in-flight writer for a prior incarnation therefore
     // cannot mint authority for a reused-id session even if it races past the eviction. Restart drops it.
     private String deviceKeyChallengeId = null;
+    // Faz 23 #838: immutable lineage for this session incarnation. Bound once
+    // before consent prompt delivery; later permit minting consumes the digest.
+    private String policyEnvelopeDigest = null;
+    private String policyEnvelopeKeyId = null;
 
     RemoteBridgeSession(String sessionId,
                         String transportPeerKey,
@@ -210,6 +214,23 @@ public final class RemoteBridgeSession {
     /** The device-key challenge issued for this session incarnation, or null if none was issued. */
     public synchronized String deviceKeyChallengeId() {
         return deviceKeyChallengeId;
+    }
+
+    public synchronized void bindPolicyEnvelope(String envelopeDigest, String keyId) {
+        if (policyEnvelopeDigest != null || envelopeDigest == null || envelopeDigest.isBlank()
+                || keyId == null || keyId.isBlank()) {
+            throw new IllegalStateException("session policy envelope can be bound exactly once");
+        }
+        policyEnvelopeDigest = envelopeDigest;
+        policyEnvelopeKeyId = keyId;
+    }
+
+    public synchronized String policyEnvelopeDigest() {
+        return policyEnvelopeDigest;
+    }
+
+    public synchronized String policyEnvelopeKeyId() {
+        return policyEnvelopeKeyId;
     }
 
     public String operatorSubject() {

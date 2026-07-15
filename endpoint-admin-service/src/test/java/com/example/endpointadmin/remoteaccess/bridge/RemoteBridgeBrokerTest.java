@@ -10,6 +10,7 @@ import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeBroker.BrokerOu
 import com.example.endpointadmin.remoteaccess.bridge.RemoteBridgeSessionStateMachine.State;
 import com.example.endpointadmin.remoteaccess.bridge.contract.CanonicalCommand;
 import com.example.endpointadmin.remoteaccess.bridge.contract.ConsentLease;
+import com.example.endpointadmin.remoteaccess.bridge.contract.OperationPermit;
 import com.example.endpointadmin.remoteaccess.bridge.contract.RemoteBridgeMessages.OperationRequest;
 import com.example.endpointadmin.remoteaccess.bridge.orchestrator.SessionDeviceTrustVerifier.Basis;
 import org.junit.jupiter.api.Test;
@@ -94,6 +95,23 @@ class RemoteBridgeBrokerTest {
         assertEquals(RemoteSessionCapability.VIEW_ONLY, o.permit().capability());
         assertEquals("", o.permit().commandHash());
         assertTrue(verifier.verify(o.permit(), NOW));
+    }
+
+    @Test
+    void policyModeMintsV2PermitBoundToTheSignedSessionEnvelopeDigest() {
+        String digest = "sha256:" + "b".repeat(64);
+        BrokerOutcome o = broker.handle(view(), good(), State.ACTIVE, 1L, NOW, digest);
+        assertTrue(o.permitted());
+        assertEquals(RemoteBridgePermitSigner.POLICY_BOUND_PERMIT_VERSION, o.permit().permitVersion());
+        assertEquals(digest, o.permit().policyEnvelopeDigest());
+        assertTrue(verifier.verify(o.permit(), NOW));
+        OperationPermit tampered = new OperationPermit(o.permit().alg(), o.permit().kid(),
+                o.permit().permitVersion(), o.permit().policyVersion(), o.permit().decisionId(),
+                o.permit().sessionId(), o.permit().operationId(), o.permit().deviceId(),
+                o.permit().operatorSubject(), o.permit().capability(), o.permit().commandHash(),
+                o.permit().issuedAtEpochMillis(), o.permit().expiresAtEpochMillis(), o.permit().seq(),
+                "sha256:" + "c".repeat(64), o.permit().signatureB64());
+        assertFalse(verifier.verify(tampered, NOW));
     }
 
     @Test

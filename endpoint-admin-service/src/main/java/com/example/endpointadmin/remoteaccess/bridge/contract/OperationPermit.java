@@ -34,6 +34,7 @@ import java.nio.charset.StandardCharsets;
  * @param issuedAtEpochMillis issuance time
  * @param expiresAtEpochMillis short expiry — the agent refuses an expired permit
  * @param seq                monotonic per-session sequence (replay guard)
+ * @param policyEnvelopeDigest policy-bound permit v2 session-envelope digest; null for legacy v1
  * @param signatureB64       the broker signature over {@link #canonicalPayload()} (set by the signer; not signed)
  */
 public record OperationPermit(String alg,
@@ -50,9 +51,20 @@ public record OperationPermit(String alg,
                               long issuedAtEpochMillis,
                               long expiresAtEpochMillis,
                               long seq,
+                              String policyEnvelopeDigest,
                               String signatureB64) {
 
-    private static final String DOMAIN = "RemoteBridgeOperationPermit:v1";
+    private static final String DOMAIN_V1 = "RemoteBridgeOperationPermit:v1";
+    private static final String DOMAIN_V2 = "RemoteBridgeOperationPermit:v2";
+
+    public OperationPermit(String alg, String kid, int permitVersion, String policyVersion, String decisionId,
+                           String sessionId, String operationId, String deviceId, String operatorSubject,
+                           RemoteSessionCapability capability, String commandHash, long issuedAtEpochMillis,
+                           long expiresAtEpochMillis, long seq, String signatureB64) {
+        this(alg, kid, permitVersion, policyVersion, decisionId, sessionId, operationId, deviceId,
+                operatorSubject, capability, commandHash, issuedAtEpochMillis, expiresAtEpochMillis,
+                seq, null, signatureB64);
+    }
 
     /** True when {@code now} is within {@code [issuedAt, expiresAt)} — the agent enforces this too. */
     public boolean isFresh(long nowEpochMillis) {
@@ -67,7 +79,7 @@ public record OperationPermit(String alg,
     public byte[] canonicalPayload() {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try (DataOutputStream dos = new DataOutputStream(out)) {
-            writeField(dos, DOMAIN);
+            writeField(dos, permitVersion >= 2 ? DOMAIN_V2 : DOMAIN_V1);
             writeField(dos, alg);
             writeField(dos, kid);
             dos.writeInt(permitVersion);
@@ -82,6 +94,9 @@ public record OperationPermit(String alg,
             dos.writeLong(issuedAtEpochMillis);
             dos.writeLong(expiresAtEpochMillis);
             dos.writeLong(seq);
+            if (permitVersion >= 2) {
+                writeField(dos, policyEnvelopeDigest);
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e); // ByteArrayOutputStream never throws
         }
@@ -92,7 +107,7 @@ public record OperationPermit(String alg,
     public OperationPermit withSignature(String signatureB64) {
         return new OperationPermit(alg, kid, permitVersion, policyVersion, decisionId, sessionId, operationId,
                 deviceId, operatorSubject, capability, commandHash, issuedAtEpochMillis, expiresAtEpochMillis,
-                seq, signatureB64);
+                seq, policyEnvelopeDigest, signatureB64);
     }
 
     private static void writeField(DataOutputStream dos, String field) throws IOException {

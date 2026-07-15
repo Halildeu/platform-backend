@@ -113,6 +113,14 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
+        <!-- Faz 23 #838: RFC 8785 JSON Canonicalization Scheme. Policy,
+             localization, legal-evidence and signed-envelope digests must be
+             byte-identical in Java, Go, JavaScript and the GitOps verifier. -->
+        <dependency>
+            <groupId>io.github.erdtman</groupId>
+            <artifactId>java-json-canonicalization</artifactId>
+            <version>1.1</version>
+        </dependency>
         <!-- BE-023 (Codex 019e6bbf iter-2): maven-artifact ComparableVersion
              for EXACT / MINIMUM / RANGE version comparison in the compliance
              evaluator. Windows / WinGet version strings are not reliably

@@ -51,6 +51,7 @@ import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyStr
 import com.example.endpointadmin.remoteaccess.bridge.server.viewonly.ViewOnlyViewerRegistry;
 import com.example.endpointadmin.repository.EndpointMachineCertRepository;
 import com.example.endpointadmin.repository.EndpointTpmDeviceBindingRepository;
+import com.example.endpointadmin.remoteaccess.policy.RemoteViewSessionPolicyResolver;
 import com.example.endpointadmin.tpmattest.TpmEkChainValidator;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -597,7 +598,8 @@ public class RemoteBridgeServerConfig {
             @Value("${remote-bridge.consent-prompt-ttl-millis:120000}") long consentPromptTtlMillis,
             @Value("${remote-bridge.device-trust.verifier:FAIL_CLOSED}") String deviceTrustVerifierType,
             @Value("${remote-bridge.device-trust.device-key-session.challenge-ttl-millis:180000}")
-                    long deviceKeyChallengeTtlMillis) {
+                    long deviceKeyChallengeTtlMillis,
+            ObjectProvider<RemoteViewSessionPolicyResolver> sessionPolicyResolverProvider) {
         // Faz 22.6 #548 step-5b — derive issuance ON exactly when the canonical TPM-native (REAL) verifier is the
         // active device-trust basis, so there is NO config gap (REAL verifier on ⇒ challenges issued) and non-REAL
         // deployments emit no challenges agents would not answer. The challenge TTL MUST exceed the consent-prompt
@@ -617,6 +619,10 @@ public class RemoteBridgeServerConfig {
         // every operator-driven session terminal.
         service.configureViewOnlyStreamAuthorization(remoteBridgeViewOnlySessionLifecycle,
                 properties.viewOnly().streamAuthorizationTtlMillis());
+        RemoteViewSessionPolicyResolver sessionPolicyResolver = sessionPolicyResolverProvider.getIfAvailable();
+        if (sessionPolicyResolver != null) {
+            service.configureSessionPolicyResolver(sessionPolicyResolver);
+        }
         return service;
     }
 

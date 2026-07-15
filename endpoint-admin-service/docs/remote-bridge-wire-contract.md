@@ -1,5 +1,8 @@
 # Remote-Bridge Wire Contract (Faz 22.6 transport, T-1a + T-2a)
 
+Tenant policy configuration, signing-key rotation and rollout order are documented in
+[`remote-view-tenant-policy-runtime.md`](remote-view-tenant-policy-runtime.md).
+
 > **Status:** T-1 domain model + T-2a protobuf encoding + T-2b grpc server runtime + **T-2c mutual-TLS
 > credential wiring LANDED** (`…bridge.server`: Netty lifecycle behind `remote-bridge.enabled=false` — the
 > DEFAULT context has ZERO remote-bridge beans; an ENABLED server is mTLS-only, fail-closed). Real cert
@@ -57,6 +60,7 @@ Required/optional + validation per field; `req` = required (validated), `opt` = 
 | 4 | attestationEvidenceB64 | string | req | passed to the B1.4d verifier; never trusted as a boolean; max 16 KiB |
 | 5 | protocolVersion | string | req | |
 | 6 | advertisedCapabilities | repeated Capability | opt | advisory; the broker computes the granted set |
+| 7 | supportedFeatures | repeated string | opt | advisory compatibility gate; may only narrow/deny. Policy mode requires `remote-view-session-policy-envelope-v1` |
 
 #### `AgentHello.attestationEvidenceB64` payloads
 
@@ -115,6 +119,13 @@ accepted.
 | 3 | reason | string | opt |
 | 4 | capabilities | repeated Capability | req |
 | 5 | expiryEpochMillis | int64 | req |
+| 6 | sessionPolicyEnvelope | SessionPolicyEnvelope | opt | absent only when server policy mode is disabled; enabled mode denies a non-advertising agent before prompt delivery |
+
+`SessionPolicyEnvelope.canonicalJson` is the exact UTF-8
+`remote-view-session-policy-envelope-v1` JSON artifact. The endpoint strict-parses it, validates the
+schema, recomputes the RFC 8785 payload digest and verifies the Ed25519 signature before rendering consent.
+Proto unknown-field tolerance is not compatibility acceptance: an old agent that did not advertise the
+feature is denied and receives no legacy prompt when server policy mode is enabled.
 
 ### `ConsentResult` (proto `ConsentResult`) → becomes a `ConsentLease`
 | # | field | type | r/o |
@@ -134,7 +145,8 @@ accepted.
 | 4 | commandLine | string | opt | PTY only; null for non-PTY; canonicalised by `CanonicalCommand` |
 
 ### `OperationPermit` (proto `OperationPermit`) — broker-signed (T-1b signer), agent-verified
-The `canonicalPayload()` covers fields 1–14 (NOT the signature). Asymmetric key (broker-private/agent-public).
+Permit v1 `canonicalPayload()` covers fields 1–14. Permit v2 uses a distinct domain and also covers field 16.
+The signature field is never part of its own signed payload. Asymmetric key (broker-private/agent-public).
 
 | # | field | type | signed | notes |
 |---|---|---|---|---|
@@ -152,7 +164,8 @@ The `canonicalPayload()` covers fields 1–14 (NOT the signature). Asymmetric ke
 | 12 | issuedAtEpochMillis | int64 | ✓ | |
 | 13 | expiresAtEpochMillis | int64 | ✓ | short; agent enforces `isFresh` |
 | 14 | seq | int64 | ✓ | monotonic per-session (replay guard) |
-| 15 | signatureB64 | string | ✗ | the broker signature over fields 1–14 |
+| 15 | signatureB64 | string | ✗ | v1 signs fields 1–14; v2 signs fields 1–14 and field 16 |
+| 16 | policyEnvelopeDigest | string | v2: ✓ | required lowercase `sha256:` digest for policy-bound permit v2; empty on legacy v1 |
 
 ### `OperationDispatch` (proto `OperationDispatch`) — broker→agent CONTROL, T-4 CONSTRAINED_PTY command transport
 
@@ -368,7 +381,8 @@ T-2b enforces a max frame byte size at the stream layer (no decode-time size gua
   `encodeOperation` throw on a non-pilot value (it must never reach the wire).
 - **proto3 implicit defaults explicit**: optional text (reason, commandLine) empty↔null normalised; an empty
   repeated `requestedCapabilities` (the proto3 default!) rejects a SessionRequest.
-- **OperationPermit strict decode**: permitVersion pin (=1), alg pin (`SHA256withECDSA`), capability↔commandHash
+- **OperationPermit strict decode**: permitVersion pin (=1 legacy or =2 policy-bound), alg pin (`SHA256withECDSA`),
+  v1 requires an empty policy-envelope digest and v2 requires a canonical `sha256:` digest; capability↔commandHash
   consistency re-enforced at the wire (CONSTRAINED_PTY ⇒ sha-256 lowercase hex; VIEW_ONLY ⇒ empty), positive
   validity window, seq ≥ 0, non-empty base64-checked signature.
 - **Canonical-payload byte stability**: sign → encode → real wire bytes → parse → decode →

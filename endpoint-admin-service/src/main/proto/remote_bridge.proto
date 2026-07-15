@@ -118,6 +118,10 @@ message AgentHello {
   string attestation_evidence_b64 = 4;
   string protocol_version = 5;
   repeated Capability advertised_capabilities = 6;
+  // Advisory compatibility advertisement. It can only narrow/deny; it never
+  // grants authority. Policy mode requires
+  // "remote-view-session-policy-envelope-v1" explicitly.
+  repeated string supported_features = 7;
 }
 
 // Operator console → broker (the operator never talks to the agent directly).
@@ -136,6 +140,14 @@ message ConsentPrompt {
   string reason = 3;
   repeated Capability capabilities = 4;
   int64 expiry_epoch_millis = 5;
+  SessionPolicyEnvelope session_policy_envelope = 6;
+}
+
+// Exact UTF-8 JSON artifact validated by the strict v1 envelope schema and
+// signed over its RFC8785 projection. Consumers parse and independently verify
+// the contained payload digest, Ed25519 signature and session binding.
+message SessionPolicyEnvelope {
+  string canonical_json = 1;
 }
 
 // Agent → broker: the endpoint user's consent outcome (becomes a ConsentLease).
@@ -159,10 +171,9 @@ message OperationRequest {
 }
 
 // Broker-signed (T-1b ECDSA P-256 signer), agent-verified. The signature
-// covers OperationPermit.canonicalPayload() — the T-1 length-prefixed byte
-// sequence over fields 1-14, independent of this protobuf encoding. The
-// adapters MUST reproduce those exact bytes after a round-trip (tested
-// byte-for-byte). Field 15 (signature) is NOT signed.
+// covers OperationPermit.canonicalPayload() — v1 signs fields 1-14; v2 uses a
+// distinct domain and additionally signs field 16. This is independent of the
+// protobuf encoding. Field 15 (signature) is never signed.
 message OperationPermit {
   string alg = 1;
   string kid = 2;
@@ -178,7 +189,10 @@ message OperationPermit {
   int64 issued_at_epoch_millis = 12;
   int64 expires_at_epoch_millis = 13;
   int64 seq = 14;                    // monotonic per-session (replay guard)
-  string signature_b64 = 15;         // broker signature over fields 1-14
+  string signature_b64 = 15;         // v1: fields 1-14; v2: fields 1-14 and field 16
+  // Permit v2 only: signed same-session policy-envelope digest. Empty for
+  // legacy v1 permits while policy mode is disabled.
+  string policy_envelope_digest = 16;
 }
 
 // Broker → agent (CONTROL, T-4 CONSTRAINED_PTY): a signed permit paired with the

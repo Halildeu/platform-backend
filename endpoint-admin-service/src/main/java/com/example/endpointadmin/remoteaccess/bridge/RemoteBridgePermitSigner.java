@@ -38,6 +38,7 @@ public final class RemoteBridgePermitSigner {
     public static final String PERMIT_ALG = "SHA256withECDSA";
     /** The current permit schema version the signer will sign. */
     public static final int PERMIT_VERSION = 1;
+    public static final int POLICY_BOUND_PERMIT_VERSION = 2;
 
     /** The exact secp256r1 (NIST P-256) domain parameters — the pin compares against these, not just field size. */
     private static final ECParameterSpec SECP256R1 = secp256r1();
@@ -115,13 +116,19 @@ public final class RemoteBridgePermitSigner {
     private boolean isSignable(OperationPermit p) {
         if (p == null
                 || !alg.equals(p.alg()) || !kid.equals(p.kid())
-                || p.permitVersion() != PERMIT_VERSION || p.seq() <= 0
+                || (p.permitVersion() != PERMIT_VERSION && p.permitVersion() != POLICY_BOUND_PERMIT_VERSION)
+                || p.seq() <= 0
                 || !notBlank(p.policyVersion()) || !notBlank(p.decisionId()) || !notBlank(p.sessionId())
                 || !notBlank(p.operationId()) || !notBlank(p.deviceId()) || !notBlank(p.operatorSubject())
                 || p.commandHash() == null
                 || p.issuedAtEpochMillis() < 0
                 || p.expiresAtEpochMillis() <= p.issuedAtEpochMillis()
                 || !WireContract.isPilotCapability(p.capability())) { // a NON-pilot capability is never signed
+            return false;
+        }
+        boolean policyBound = p.permitVersion() == POLICY_BOUND_PERMIT_VERSION;
+        if (policyBound != (p.policyEnvelopeDigest() != null
+                && p.policyEnvelopeDigest().matches("sha256:[0-9a-f]{64}"))) {
             return false;
         }
         // capability <-> commandHash consistency (Codex): PTY must carry a command; VIEW_ONLY must not
