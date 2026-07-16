@@ -33,8 +33,11 @@ final class InMemoryOutboxHarness implements OutboxTestHarness {
         for (MeetingEventEnvelope event : events) {
             final String key = event.eventKey();
             if (rows.containsKey(key) || staged.containsKey(key)) {
-                // Stands in for the UNIQUE index; the transaction aborts, staging is dropped.
-                throw new IllegalStateException("duplicate event_key: " + key);
+                // Stands in for the UNIQUE index; the transaction aborts, staging is
+                // dropped. A real harness translates its store's native rejection here —
+                // Postgres SQLState 23505, Spring DuplicateKeyException — into this type,
+                // so the kit can tell an enforced duplicate from an unrelated failure.
+                throw new DuplicateEventKeyException(key);
             }
             staged.put(key, new StoredOutboxEvent(
                     key,

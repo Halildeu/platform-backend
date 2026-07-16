@@ -25,9 +25,16 @@ public interface OutboxTestHarness {
      * pattern's entire premise is that the business row and its events share a
      * transaction, so a rollback must leave neither.
      *
+     * <p><b>Duplicate keys must be reported as {@link DuplicateEventKeyException}.</b>
+     * The implementation translates its store's native rejection (Postgres SQLState
+     * 23505, Spring {@code DuplicateKeyException}, …) into that type. This is a contract,
+     * not a convenience: the kit has to distinguish "the store enforced idempotency" from
+     * "the second call failed for some unrelated reason", and only the harness knows its
+     * store's dialect well enough to tell them apart.
+     *
      * @param events  the envelopes to append
      * @param commit  {@code true} to commit, {@code false} to roll back
-     * @throws RuntimeException if the store rejects the append (e.g. duplicate key)
+     * @throws DuplicateEventKeyException if any event key already exists in the store
      */
     void appendInTransaction(List<MeetingEventEnvelope> events, boolean commit);
 

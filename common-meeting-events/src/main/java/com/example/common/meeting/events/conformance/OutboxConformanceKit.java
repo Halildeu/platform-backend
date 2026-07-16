@@ -11,6 +11,7 @@ import com.example.common.meeting.events.MeetingEventV1Serializer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -33,13 +34,24 @@ import org.junit.jupiter.api.Test;
  * differently. Each new producer (audio-gateway consent, transcript-service
  * finalization) inherits the same executable definition of correct.
  *
- * <h2>The delivery guarantee being pinned</h2>
+ * <h2>What this kit does and does NOT prove</h2>
  * The transport gives at-least-once: the crash window between "delivery succeeded" and
- * "marked published" is real and cannot be closed by ordering alone. So the contract is
- * at-least-once DELIVERY plus exactly-once EFFECT, and the effect half rests on the
- * deterministic event key — which is why redelivery must reproduce the key and the bytes
- * exactly, and why {@link #redeliveryAfterCrash_reproducesTheSameKeyAndBytes} is the
- * load-bearing test here rather than a nicety.
+ * "marked published" is real and cannot be closed by ordering alone. The system-level
+ * contract is therefore at-least-once DELIVERY plus exactly-once EFFECT — but those two
+ * halves live on opposite sides of the wire, and this kit only owns the producer half.
+ *
+ * <p>What it proves: a redelivered event carries the SAME key and the SAME bytes, which
+ * is the PRECONDITION a consumer needs in order to de-duplicate at all. If the key or the
+ * payload drifted between deliveries, no consumer could recognise the second copy.
+ *
+ * <p>What it does NOT prove: that any consumer actually applies one effect. A consumer
+ * that happily processes the same event twice and produces two side effects passes every
+ * test in this class — the events it received were, after all, identical. Claiming
+ * "exactly-once effect" here would be a false positive.
+ *
+ * <p>The effect half is executable in {@link ConsumerInboxConformanceKit}, which drives a
+ * real consumer/inbox and counts side effects. A producer runs this kit; a consumer runs
+ * that one; the guarantee only holds when both pass.
  */
 public abstract class OutboxConformanceKit {
 
@@ -133,10 +145,40 @@ public abstract class OutboxConformanceKit {
         MeetingEventEnvelope event = summaryReady(UUID.randomUUID());
         store.appendInTransaction(List.of(event), true);
 
+        // The specific type matters: asserting only that "something was thrown" would stay
+        // green if the second append failed for an unrelated reason (a closed connection,
+        // an NPE) while the UNIQUE constraint was quietly missing — the exact regression
+        // this test exists to catch.
         assertThatThrownBy(() -> store.appendInTransaction(List.of(event), true))
-                .as("a second append of the same event key must be rejected by the store");
+                .as("a second append of the same event key must be rejected as a duplicate key")
+                .isInstanceOf(DuplicateEventKeyException.class)
+                .asInstanceOf(InstanceOfAssertFactories.type(DuplicateEventKeyException.class))
+                .extracting(DuplicateEventKeyException::eventKey)
+                .isEqualTo(event.eventKey());
 
         assertThat(store.pollPublishable(10)).hasSize(1);
+    }
+
+    @Test
+    void aRejectedDuplicateLeavesTheOriginalIntact_andTheWholeBatchRollsBack() {
+        // The duplicate must abort its own transaction without disturbing what is already
+        // stored: a retry that collides on one key must not delete, republish or duplicate
+        // the committed original, and must not half-commit the rest of its batch.
+        UUID runId = UUID.randomUUID();
+        MeetingEventEnvelope summary = summaryReady(runId);
+        store.appendInTransaction(List.of(summary), true);
+        String storedPayload = store.pollPublishable(10).get(0).payloadJson();
+
+        MeetingEventEnvelope freshAction = actionAssigned(runId, 0);
+        assertThatThrownBy(() -> store.appendInTransaction(List.of(summary, freshAction), true))
+                .isInstanceOf(DuplicateEventKeyException.class);
+
+        assertThat(store.pollPublishable(10))
+                .as("the colliding batch commits nothing, and the original is untouched")
+                .extracting(StoredOutboxEvent::eventKey)
+                .containsExactly(summary.eventKey());
+        assertThat(store.findByEventKey(summary.eventKey()))
+                .get().extracting(StoredOutboxEvent::payloadJson).isEqualTo(storedPayload);
     }
 
     @Test
@@ -145,6 +187,9 @@ public abstract class OutboxConformanceKit {
         // IDENTICAL: same key for the consumer to de-duplicate on, same bytes so the two
         // copies cannot be interpreted differently. If either drifted, a duplicate
         // delivery would become a second, distinct effect.
+        //
+        // This is the PRECONDITION for exactly-once effect, not the effect itself — the
+        // consumer still has to de-duplicate, which ConsumerInboxConformanceKit proves.
         UUID runId = UUID.randomUUID();
         MeetingEventEnvelope first = summaryReady(runId);
         store.appendInTransaction(List.of(first), true);
