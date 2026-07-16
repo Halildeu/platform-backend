@@ -67,6 +67,12 @@ final class DirectSttAudioAccountant {
     /** Reserved sample frames per session. A session is absent when it holds nothing. */
     private final Map<SessionKey, Long> reservedFrames = new HashMap<>();
 
+    /**
+     * Process shutdown deliberately drops every byte and reservation together. A terminal
+     * callback that races after that boundary is expected, not a double-refund invariant breach.
+     */
+    private boolean closed;
+
     DirectSttAudioAccountant(final int maxBufferedSeconds) {
         if (maxBufferedSeconds <= 0) {
             throw new IllegalArgumentException(
@@ -212,6 +218,10 @@ final class DirectSttAudioAccountant {
             final int channels,
             final int byteLength) {
 
+        if (closed) {
+            throw new IllegalStateException("Direct-STT audio accountant is closed");
+        }
+
         // Validation runs BEFORE any short-circuit so a nonsensical input is reported as
         // unmeterable rather than silently charged as zero.
         if (sessionId == null || sessionId.isBlank()) {
@@ -301,6 +311,11 @@ final class DirectSttAudioAccountant {
     private long negativeInvariantBreaches;
 
     private synchronized void releaseFrames(final SessionKey key, final long frames) {
+        if (closed) {
+            // destroy() discarded the process-local bytes and reservations atomically. A
+            // late HTTP/cancel terminal callback owns no live charge after that boundary.
+            return;
+        }
         final long current = reservedFrames.getOrDefault(key, 0L);
         final long next = current - frames;
         if (next < 0) {
@@ -319,8 +334,20 @@ final class DirectSttAudioAccountant {
         }
     }
 
-    /** Drop all state — process shutdown, and the reset a restart gives for free. */
+    /**
+     * Clear reservations without closing the accountant. Kept for invariant tests and
+     * explicit in-process resets; process shutdown must use {@link #close()}.
+     */
     synchronized void discardAll() {
+        reservedFrames.clear();
+    }
+
+    /**
+     * Atomically close the process-local accountant and discard all remaining state.
+     * Idempotent; terminal refunds that arrive afterwards are intentional no-ops.
+     */
+    synchronized void close() {
+        closed = true;
         reservedFrames.clear();
     }
 

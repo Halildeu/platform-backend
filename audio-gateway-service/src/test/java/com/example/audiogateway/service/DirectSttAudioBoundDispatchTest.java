@@ -1,6 +1,7 @@
 package com.example.audiogateway.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioChunkPayload;
@@ -173,6 +174,20 @@ class DirectSttAudioBoundDispatchTest {
     }
 
     @Test
+    void delegateExceptionRefundsTheReservationBeforeItPropagates() {
+        final IllegalStateException failure = new IllegalStateException("delegate failed");
+        final DirectSttForwardingDispatcher dispatcher = dispatcherWith(cmd -> {
+            throw failure;
+        }, props(30));
+
+        assertThatThrownBy(() -> dispatcher.dispatch(pcm16("SES-1", seconds16kMono(1))))
+                .isSameAs(failure);
+
+        assertThat(gauge(meters, "audio_bound_reserved_frames")).isZero();
+        assertThat(gauge(meters, "audio_bound_negative_invariant_total")).isZero();
+    }
+
+    @Test
     void expiryDiscardsOnlyBufferedTailAndReopensAggregatorCapacity() {
         final AudioGatewayProperties properties = props(30);
         properties.getDirectStt().getAggregation().setMaxBufferedSessions(1);
@@ -230,6 +245,39 @@ class DirectSttAudioBoundDispatchTest {
         awaitGauge(meters, "audio_bound_reserved_frames", 0.0);
         assertThat(gauge(meters, "audio_bound_negative_invariant_total")).isZero();
         dispatcher.destroy();
+    }
+
+    @Test
+    void shutdownDoesNotTurnAnInFlightTerminalRefundIntoANegativeInvariant() throws Exception {
+        final AudioGatewayProperties properties = props(2);
+        properties.getDirectStt().getAggregation().setWindowSeconds(1);
+        final CountDownLatch requestStarted = new CountDownLatch(1);
+        final Sinks.One<ClientResponse> response = Sinks.one();
+        final WebClient pendingClient = WebClient.builder()
+                .exchangeFunction(request -> {
+                    requestStarted.countDown();
+                    return response.asMono();
+                })
+                .build();
+        final DirectSttForwardingDispatcher dispatcher = new DirectSttForwardingDispatcher(
+                acceptDelegate(), noopAudit(), DirectSttTranscriptResultSink.noop(),
+                pendingClient, properties, meters);
+
+        assertThat(dispatcher.dispatch(pcm16("SES-1", seconds16kMono(1))))
+                .isInstanceOf(DispatchOutcome.Accepted.class);
+        assertThat(requestStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(gauge(meters, "audio_bound_reserved_frames")).isEqualTo(RATE_16K);
+
+        dispatcher.destroy();
+        response.tryEmitValue(ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                .body("{\"text\":\"ok\",\"language\":\"tr\",\"elapsed_ms\":10.0}")
+                .build());
+
+        awaitGauge(meters, "audio_bound_reserved_frames", 0.0);
+        assertThat(gauge(meters, "audio_bound_negative_invariant_total"))
+                .as("shutdown must not clear a charge before its in-flight owner terminates")
+                .isZero();
     }
 
     // ────────────────────────── unmeterable → 503, never a silent pass ──────────────────────────

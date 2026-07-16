@@ -204,7 +204,15 @@ public class DirectSttForwardingDispatcher
             }
             case DirectSttAudioAccountant.ReserveOutcome.Reserved ok -> {
                 // Reservation held. Now the base gate (Redis XADD / NoOp).
-                final DispatchOutcome base = delegate.dispatch(cmd);
+                final DispatchOutcome base;
+                try {
+                    base = delegate.dispatch(cmd);
+                } catch (final RuntimeException ex) {
+                    // A delegate should normally return Unavailable, but an unexpected
+                    // fail-loud exception must not strand the charge before it propagates.
+                    refund(cmd, ok.frames());
+                    throw ex;
+                }
                 if (!(base instanceof DispatchOutcome.Accepted)) {
                     // The base gate refused (QueueFull/Unavailable). No bytes are queued for
                     // a chunk it rejected, so the reservation must be released terminally —
@@ -298,7 +306,7 @@ public class DirectSttForwardingDispatcher
         // The buffered audio and its reservations go together, which is the whole reason a
         // process-local counter is safe here: nothing durable is left believing in bytes
         // that no longer exist.
-        accountant.discardAll();
+        accountant.close();
         if (discarded.sessions() > 0) {
             counter("aggregation_shutdown_discarded_sessions").increment(discarded.sessions());
             counter("aggregation_shutdown_discarded_bytes").increment(discarded.bytes());
