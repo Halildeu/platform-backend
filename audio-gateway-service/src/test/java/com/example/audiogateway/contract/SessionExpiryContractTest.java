@@ -4,6 +4,8 @@ import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
+import com.example.audiogateway.service.AudioChunkDispatcher;
+import com.example.audiogateway.service.AudioSessionRegistry;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,9 +13,15 @@ import org.springframework.boot.test.autoconfigure.web.reactive.AutoConfigureWeb
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt;
 
 /**
@@ -27,7 +35,8 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 @AutoConfigureWebTestClient
 @TestPropertySource(properties = {
         "spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:9999/realms/test",
-        "audio.gateway.bounds.max-session-minutes=0"
+        "audio.gateway.bounds.max-session-minutes=0",
+        "audio.gateway.bounds.session-expiry-sweep-ms=600000"
 })
 class SessionExpiryContractTest {
 
@@ -36,6 +45,12 @@ class SessionExpiryContractTest {
 
     @Autowired
     private WebTestClient client;
+
+    @Autowired
+    private AudioSessionRegistry registry;
+
+    @MockitoBean
+    private AudioChunkDispatcher dispatcher;
 
     private WebTestClient asUser(final long companyId, final long userId) {
         return client.mutateWith(mockJwt()
@@ -72,5 +87,40 @@ class SessionExpiryContractTest {
                 .expectStatus().isEqualTo(409)
                 .expectBody(ErrorResponse.class)
                 .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_SESSION_EXPIRED));
+
+        assertThat(registry.get(sessionId))
+                .as("expired session must stop consuming registry capacity")
+                .isEmpty();
+        verify(dispatcher, times(1)).discardSession(argThat(command ->
+                sessionId.equals(command.sessionId())
+                        && Long.valueOf(1L).equals(command.tenantId())
+                        && Long.valueOf(1L).equals(command.userId())));
+    }
+
+    @Test
+    void finishAfterMaxSessionMinutes_discardsInsteadOfFlushingTail() {
+        final String sessionId = asUser(1L, 1L)
+                .post().uri(SESSIONS_PATH)
+                .header(IDEMP_HEADER, "fixture-finish-session-expiry-1")
+                .bodyValue(new StartSessionRequest(
+                        "22222222-2222-4222-8222-222222222222", "device-1", "tr",
+                        AudioFormat.WAV, 16000, 1))
+                .exchange()
+                .expectStatus().isCreated()
+                .expectBody(StartSessionResponse.class)
+                .returnResult().getResponseBody().sessionId();
+
+        asUser(1L, 1L)
+                .post().uri(SESSIONS_PATH + "/" + sessionId + "/finish")
+                .header(IDEMP_HEADER, "fixture-finish-session-expiry-1-finish")
+                .exchange()
+                .expectStatus().isEqualTo(409)
+                .expectBody(ErrorResponse.class)
+                .value(err -> assertThat(err.code()).isEqualTo(ErrorResponse.CODE_SESSION_EXPIRED));
+
+        assertThat(registry.get(sessionId)).isEmpty();
+        verify(dispatcher, times(1)).discardSession(argThat(command ->
+                sessionId.equals(command.sessionId())));
+        verify(dispatcher, never()).finishSession(any());
     }
 }

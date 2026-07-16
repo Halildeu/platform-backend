@@ -87,6 +87,7 @@ public class AudioGatewayProperties {
         private long maxChunkBytes = 262_144L;
         private int maxBufferedSeconds = 30;
         private int maxSessionMinutes = 60;
+        private long sessionExpirySweepMs = 30_000L;
         private int admissionQueueCapacity = 1_000;
         private int maxActiveSessions = 1_000;
 
@@ -97,18 +98,26 @@ public class AudioGatewayProperties {
          * misconfiguration, not a "disabled" signal, so it fails startup rather than
          * silently bounding nothing.
          *
-         * <p>The other bounds are intentionally NOT validated here: {@code
-         * maxSessionMinutes=0} is a supported (degenerate) value — sessions expire at
-         * creation time, exercised by {@code SessionExpiryContractTest} — so a
-         * strict-positive rule would forbid a config the enforcement path handles.
-         * {@code maxSessionMinutes} and {@code maxChunkBytes} stay independent bounds
-         * (acceptance #7), unchanged by this method.
+         * <p>{@code maxSessionMinutes=0} is a supported (degenerate) value — sessions
+         * expire at creation time, exercised by {@code SessionExpiryContractTest}. A
+         * negative duration and a non-positive sweep cadence are invalid. Session duration,
+         * buffered audio and chunk size remain independent bounds.
          */
         public void validate() {
             if (maxBufferedSeconds <= 0) {
                 throw new IllegalStateException(
                         "audio.gateway.bounds.max-buffered-seconds must be positive, got "
                                 + maxBufferedSeconds);
+            }
+            if (maxSessionMinutes < 0) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.max-session-minutes must be non-negative, got "
+                                + maxSessionMinutes);
+            }
+            if (sessionExpirySweepMs <= 0L) {
+                throw new IllegalStateException(
+                        "audio.gateway.bounds.session-expiry-sweep-ms must be positive, got "
+                                + sessionExpirySweepMs);
             }
         }
 
@@ -134,6 +143,14 @@ public class AudioGatewayProperties {
 
         public void setMaxSessionMinutes(final int maxSessionMinutes) {
             this.maxSessionMinutes = maxSessionMinutes;
+        }
+
+        public long getSessionExpirySweepMs() {
+            return sessionExpirySweepMs;
+        }
+
+        public void setSessionExpirySweepMs(final long sessionExpirySweepMs) {
+            this.sessionExpirySweepMs = sessionExpirySweepMs;
         }
 
         public int getAdmissionQueueCapacity() {

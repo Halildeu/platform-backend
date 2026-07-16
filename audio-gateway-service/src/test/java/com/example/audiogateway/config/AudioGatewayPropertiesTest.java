@@ -52,6 +52,26 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void boundsRejectNegativeMaxSessionMinutes() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setMaxSessionMinutes(-1);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-session-minutes must be non-negative");
+    }
+
+    @Test
+    void boundsRejectNonPositiveSessionExpirySweep() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getBounds().setSessionExpirySweepMs(0L);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("session-expiry-sweep-ms must be positive");
+    }
+
+    @Test
     void directSttHttpWithoutTlsRemainsValidForLocalAndMockServerPaths() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
 

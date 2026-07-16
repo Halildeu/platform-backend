@@ -1,6 +1,7 @@
 package com.example.audiogateway.service;
 
 import com.example.audiogateway.service.AudioChunkDispatcher.ChunkDispatchCommand;
+import com.example.audiogateway.service.AudioChunkDispatcher.SessionDiscardCommand;
 import com.example.audiogateway.service.AudioChunkDispatcher.SessionFinishCommand;
 
 import java.security.MessageDigest;
@@ -59,6 +60,25 @@ final class DirectSttAudioWindowAggregator {
         return buffer.flushTail();
     }
 
+    synchronized DiscardOutcome discard(final SessionDiscardCommand cmd) {
+        final SessionBuffer buffer = sessions.get(cmd.sessionId());
+        if (buffer == null) {
+            return new DiscardOutcome.NotFound();
+        }
+        if (!buffer.isOwnedBy(cmd.tenantId(), cmd.userId())) {
+            return new DiscardOutcome.OwnerMismatch();
+        }
+        final int bytes = buffer.size();
+        final long frames = DirectSttAudioAccountant.framesIn(bytes, buffer.channels());
+        if (frames < 0L) {
+            throw new IllegalStateException(
+                    "Discarded Direct-STT tail is not a whole PCM16 frame");
+        }
+        sessions.remove(cmd.sessionId());
+        buffer.discard();
+        return new DiscardOutcome.Discarded(bytes, frames);
+    }
+
     synchronized int activeSessions() {
         return sessions.size();
     }
@@ -92,6 +112,17 @@ final class DirectSttAudioWindowAggregator {
     }
 
     record DiscardSummary(int sessions, long bytes) {
+    }
+
+    sealed interface DiscardOutcome {
+        record Discarded(int bytes, long frames) implements DiscardOutcome {
+        }
+
+        record NotFound() implements DiscardOutcome {
+        }
+
+        record OwnerMismatch() implements DiscardOutcome {
+        }
     }
 
     record AudioWindow(
@@ -198,6 +229,10 @@ final class DirectSttAudioWindowAggregator {
 
         int size() {
             return size;
+        }
+
+        int channels() {
+            return channels;
         }
 
         void discard() {

@@ -213,7 +213,7 @@ class DirectSttAudioAccountantTest {
         DirectSttAudioAccountant a = accountant();
         ReserveOutcome ten = reserve16k(a, SESSION, seconds16kMono(10));
         DirectSttAudioAccountant.Refund r = refundFor(a, SESSION, ten);
-        a.discardSession(TENANT, SESSION); // the session's audio went away underneath it
+        a.discardAll(); // process shutdown dropped the map underneath this stale handle
 
         r.release(); // refunds a charge the map no longer holds
 
@@ -418,18 +418,6 @@ class DirectSttAudioAccountantTest {
     }
 
     // ────────────────────────── session / process lifecycle ──────────────────────────
-
-    @Test
-    void discardSessionDropsTheWholeSessionsCharge() {
-        DirectSttAudioAccountant a = accountant();
-        reserve16k(a, SESSION, seconds16kMono(10));
-        reserve16k(a, SESSION, seconds16kMono(5));
-
-        long dropped = a.discardSession(TENANT, SESSION);
-
-        assertThat(dropped).isEqualTo(15L * RATE_16K);
-        assertThat(a.reservedFrames(TENANT, SESSION)).isZero();
-    }
 
     @Test
     void restartResetsTheBoundAndTheAudioTogether_soNoCounterOutlivesItsBytes() {

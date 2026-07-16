@@ -23,7 +23,9 @@ import com.example.audiogateway.service.AudioSessionRegistry.ChunkOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.ChunkRecordCommand;
 import com.example.audiogateway.service.AudioSessionRegistry.CreateOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.FinishOutcome;
+import com.example.audiogateway.service.AudioSessionRegistry.ExpiryOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.SessionCreateCommand;
+import com.example.audiogateway.service.AudioSessionExpiryCoordinator;
 import com.example.audiogateway.service.DirectSttTranscriptEventReader;
 import com.example.audiogateway.service.MeetingAccessValidator;
 import com.example.audiogateway.service.MeetingAccessValidator.Decision;
@@ -103,6 +105,7 @@ public class AudioSessionController {
     private final MeetingAccessValidator meetingAccessValidator;
     private final MeterRegistry meters;
     private final DirectSttTranscriptEventReader transcriptEventReader;
+    private final AudioSessionExpiryCoordinator expiryCoordinator;
 
     public AudioSessionController(final AudioGatewayProperties props,
                                   final AudioSessionRegistry registry,
@@ -110,7 +113,8 @@ public class AudioSessionController {
                                   final AudioGatewayAuditSink auditSink,
                                   final MeetingAccessValidator meetingAccessValidator,
                                   final MeterRegistry meters,
-                                  final DirectSttTranscriptEventReader transcriptEventReader) {
+                                  final DirectSttTranscriptEventReader transcriptEventReader,
+                                  final AudioSessionExpiryCoordinator expiryCoordinator) {
         this.props = props;
         this.registry = registry;
         this.dispatcher = dispatcher;
@@ -119,6 +123,7 @@ public class AudioSessionController {
         this.meters = meters;
         meters.counter("audio_gateway_session_finish_notification_error");
         this.transcriptEventReader = transcriptEventReader;
+        this.expiryCoordinator = expiryCoordinator;
     }
 
     // ----- POST /sessions ---------------------------------------------------
@@ -397,9 +402,11 @@ public class AudioSessionController {
         // real-clock contract for the header, or a different staleness signal)
         // before it can be safely enforced — left as an explicit open item.
         final long admissionCheckNowMs = Instant.now().toEpochMilli();
-        final long sessionAgeMs = admissionCheckNowMs - existing.sessionStartMs();
-        final long maxSessionMs = props.getBounds().getMaxSessionMinutes() * 60_000L;
-        if (sessionAgeMs >= maxSessionMs) {
+        final ExpiryOutcome expiry = expiryCoordinator.expireIfDue(
+                sessionId, admissionCheckNowMs, corrId);
+        if (expiry instanceof ExpiryOutcome.Expired
+                || expiry instanceof ExpiryOutcome.CleanupFailed
+                || expiry instanceof ExpiryOutcome.NotFound) {
             safeAudit(new AuditEvent.ChunkAdmissionRejected(
                     sessionId, tenantId, userId, chunkSeq, 409,
                     ErrorResponse.CODE_SESSION_EXPIRED, null, corrId, admissionCheckNowMs));
@@ -541,6 +548,18 @@ public class AudioSessionController {
                         .body(ErrorResponse.of(
                                 ErrorResponse.CODE_IDEMPOTENCY_CONFLICT,
                                 "Same chunkSeq=" + chunkSeq + " with different Idempotency-Key or payload",
+                                corrId, false));
+            }
+            case ChunkOutcome.SessionExpired expired -> {
+                safeAudit(new AuditEvent.ChunkAdmissionRejected(
+                        sessionId, tenantId, userId, chunkSeq, 409,
+                        ErrorResponse.CODE_SESSION_EXPIRED, null, corrId, ts));
+                yield ResponseEntity
+                        .status(HttpStatus.CONFLICT)
+                        .body(ErrorResponse.of(
+                                ErrorResponse.CODE_SESSION_EXPIRED,
+                                "Session exceeds max-session-minutes="
+                                        + props.getBounds().getMaxSessionMinutes(),
                                 corrId, false));
             }
             case ChunkOutcome.DispatchQueueFull qf -> {
@@ -729,7 +748,9 @@ public class AudioSessionController {
         if (tenantId == null) return Mono.just(forbidden(props.getJwt().getTenantClaim(), corrId));
         if (userId == null) return Mono.just(forbidden(props.getJwt().getUserClaim(), corrId));
 
-        final FinishOutcome outcome = registry.finish(sessionId, idempotencyKey, tenantId, userId);
+        final FinishOutcome outcome = registry.finish(
+                sessionId, idempotencyKey, tenantId, userId,
+                Instant.now().toEpochMilli(), corrId, dispatcher);
         return Mono.just(switch (outcome) {
             case FinishOutcome.Finished f -> {
                 notifyDispatcherFinished(new SessionFinishCommand(
@@ -758,6 +779,13 @@ public class AudioSessionController {
                     .body(ErrorResponse.of(
                             ErrorResponse.CODE_IDEMPOTENCY_CONFLICT,
                             "Idempotency-Key reused for already-finished session with different key",
+                            corrId, false));
+            case FinishOutcome.SessionExpired expired -> ResponseEntity
+                    .status(HttpStatus.CONFLICT)
+                    .body(ErrorResponse.of(
+                            ErrorResponse.CODE_SESSION_EXPIRED,
+                            "Session exceeds max-session-minutes="
+                                    + props.getBounds().getMaxSessionMinutes(),
                             corrId, false));
         });
     }

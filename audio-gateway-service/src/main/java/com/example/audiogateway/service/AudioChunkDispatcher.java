@@ -45,6 +45,18 @@ public interface AudioChunkDispatcher {
     }
 
     /**
+     * Discard session-local downstream state after a server-side terminal decision.
+     *
+     * <p>This signal is different from {@link #finishSession(SessionFinishCommand)}:
+     * finish may flush a short tail to STT, while expiry/abandon must discard that tail.
+     * Implementations must not release audio already queued or in flight; those bytes keep
+     * their own terminal refund responsibility.
+     */
+    default void discardSession(final SessionDiscardCommand cmd) {
+        // No buffered audio in the base dispatcher implementations.
+    }
+
+    /**
      * Gateway-built command — fields derived from session record + JWT (NOT client headers).
      * Codex {@code 019e8df2} iter-2 absorb: meetingId/deviceId/language/audioFormat/
      * sampleRateHz/channels SessionRecord'tan; correlationId controller'dan.
@@ -68,6 +80,15 @@ public interface AudioChunkDispatcher {
 
     /** Gateway-derived terminal-session metadata; never contains raw audio or credentials. */
     record SessionFinishCommand(
+            String sessionId,
+            Long tenantId,
+            Long userId,
+            String correlationId
+    ) {
+    }
+
+    /** Gateway-derived abandoned/expired-session metadata; contains no raw audio. */
+    record SessionDiscardCommand(
             String sessionId,
             Long tenantId,
             Long userId,

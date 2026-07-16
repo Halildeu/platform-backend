@@ -57,6 +57,7 @@ audio:
       max-chunk-bytes: 262144        # 256 KB per chunk
       max-buffered-seconds: 30
       max-session-minutes: 60        # 60 dk max session
+      session-expiry-sweep-ms: 30000 # abandoned-session cleanup cadence
       admission-queue-capacity: 1000
       # Bounded in-memory session registry (PR-gw-01A persistence iddiası YOK;
       # durability sonraki slice PR-gw-01C Redis Streams ile gelir).
