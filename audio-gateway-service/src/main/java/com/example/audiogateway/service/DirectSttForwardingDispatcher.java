@@ -158,6 +158,11 @@ public class DirectSttForwardingDispatcher
                 DirectSttAudioAccountant::negativeInvariantBreaches);
         meters.gauge(METRIC_PREFIX + "aggregation_buffered_bytes", aggregator,
                 DirectSttAudioWindowAggregator::bufferedBytes);
+        // Runtime acceptance scrapes a zero baseline before the first chunk.
+        // Register these counters eagerly so "no event yet" is observable as 0
+        // instead of being indistinguishable from missing instrumentation.
+        counter("aggregation_chunks_buffered");
+        counter("aggregation_dropped_capacity");
         counter("aggregation_shutdown_discarded_sessions");
         counter("aggregation_shutdown_discarded_bytes");
         counter("aggregation_session_discarded");
