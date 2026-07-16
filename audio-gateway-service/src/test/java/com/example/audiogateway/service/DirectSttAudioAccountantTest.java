@@ -213,13 +213,30 @@ class DirectSttAudioAccountantTest {
         DirectSttAudioAccountant a = accountant();
         ReserveOutcome ten = reserve16k(a, SESSION, seconds16kMono(10));
         DirectSttAudioAccountant.Refund r = refundFor(a, SESSION, ten);
-        a.discardAll(); // process shutdown dropped the map underneath this stale handle
+        a.discardAll(); // an explicit reset dropped the map underneath this stale handle
 
         r.release(); // refunds a charge the map no longer holds
 
         assertThat(a.negativeInvariantBreaches()).isEqualTo(1);
         assertThat(a.hasNegativeInvariantBreach()).isTrue();
         assertThat(a.reservedFrames(TENANT, SESSION)).isZero();
+    }
+
+    @Test
+    void lateTerminalRefundAfterProcessShutdownIsNotAnInvariantBreach() {
+        DirectSttAudioAccountant a = accountant();
+        ReserveOutcome ten = reserve16k(a, SESSION, seconds16kMono(10));
+        DirectSttAudioAccountant.Refund r = refundFor(a, SESSION, ten);
+        a.close();
+        a.close();
+
+        r.release();
+
+        assertThat(a.reservedFrames(TENANT, SESSION)).isZero();
+        assertThat(a.negativeInvariantBreaches()).isZero();
+        assertThatThrownBy(() -> reserve16k(a, SESSION, seconds16kMono(1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("accountant is closed");
     }
 
     @Test
@@ -437,7 +454,7 @@ class DirectSttAudioAccountantTest {
     }
 
     @Test
-    void discardAllClearsEverything_theShutdownPath() {
+    void discardAllClearsEverything_withoutClosingTheAccountant() {
         DirectSttAudioAccountant a = accountant();
         reserve16k(a, "s1", seconds16kMono(10));
         reserve16k(a, "s2", seconds16kMono(10));
@@ -446,6 +463,8 @@ class DirectSttAudioAccountantTest {
 
         assertThat(a.totalReservedFrames()).isZero();
         assertThat(a.activeSessions()).isZero();
+        assertThat(reserve16k(a, "s3", seconds16kMono(1)))
+                .isInstanceOf(ReserveOutcome.Reserved.class);
     }
 
     // ────────────────────────── configuration ──────────────────────────
