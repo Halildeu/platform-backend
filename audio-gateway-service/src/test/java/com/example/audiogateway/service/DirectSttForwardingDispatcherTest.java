@@ -150,6 +150,18 @@ class DirectSttForwardingDispatcherTest {
     }
 
     @Test
+    void registersRuntimeAcceptanceCountersAtZeroBeforeFirstDispatch() {
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props(1), meters, recordingAuditSink());
+
+        assertThat(meters.get("audio_gateway_direct_stt_aggregation_chunks_buffered")
+                .counter().count()).isZero();
+        assertThat(meters.get("audio_gateway_direct_stt_aggregation_dropped_capacity")
+                .counter().count()).isZero();
+        dispatcher.destroy();
+    }
+
+    @Test
     void forwardsAudioMultipartAndParsesTranscriptOnAccepted() throws Exception {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "application/json")
