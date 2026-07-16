@@ -524,12 +524,16 @@ class DirectSttForwardingDispatcherTest {
     @Test
     void delegateBackpressureSkipsForward() throws Exception {
         // Delegate rejects with QueueFull → no audio forwarded for a rejected chunk.
+        // Two bytes = one whole PCM16 frame: the reservation (taken before the delegate
+        // since the #428 ordering fix) succeeds, so the chunk actually reaches the delegate,
+        // which is what this test exercises. A 1-byte partial-frame chunk would now be a
+        // 503 at the bound and never reach the delegate at all.
         final AudioChunkDispatcher queueFull = cmd -> new DispatchOutcome.QueueFull(5L);
         final RecordingAuditSink auditSink = recordingAuditSink();
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 queueFull, webClient, props(8), meters, auditSink);
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {9}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {9, 10}));
 
         assertThat(out).isInstanceOf(DispatchOutcome.QueueFull.class);
         assertThat(((DispatchOutcome.QueueFull) out).retryAfterSeconds()).isEqualTo(5L);

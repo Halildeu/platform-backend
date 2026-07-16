@@ -163,43 +163,51 @@ public class DirectSttForwardingDispatcher
 
     @Override
     public DispatchOutcome dispatch(final ChunkDispatchCommand cmd) {
-        final DispatchOutcome base = delegate.dispatch(cmd);
-        if (!(base instanceof DispatchOutcome.Accepted)) {
-            return base;
-        }
-
-        // The audio bound (#428 / platform-ai#257). Taken here — after the registry's
-        // replay/idempotency decision, before the byte copy and the queue handoff — so a
-        // replayed chunk never reaches this line and can never charge a second time, and a
-        // refused chunk leaves no bytes behind to account for.
+        // The audio bound (#428 / platform-ai#257) is charged BEFORE the delegate — this is
+        // the ordering fix. The delegate in Redis mode is RedisStreamsAudioChunkDispatcher,
+        // whose dispatch() performs the XADD; charging afterwards let a 429/503 refusal
+        // return to the client while a Redis descriptor had ALREADY been written, and the
+        // retry re-XADD'd the same chunk (orphan descriptor, XLEN/XPENDING inflation). The
+        // registry has already made the replay/idempotency decision before dispatch() is
+        // called, so a replayed chunk never reaches this line — reserving here is safe and a
+        // refused chunk truly leaves no trace: the delegate is not invoked at all.
         final DirectSttAudioAccountant.ReserveOutcome reserved = accountant.reserve(
                 cmd.tenantId(), cmd.sessionId(), cmd.audioFormat(),
                 cmd.sampleRateHz(), cmd.channels(), cmd.payload().length());
 
-        switch (reserved) {
+        return switch (reserved) {
             case DirectSttAudioAccountant.ReserveOutcome.OverLimit over -> {
                 // Measured refusal: the session is holding its bound. 429 + Retry-After;
-                // the client retries once the in-flight windows drain.
+                // the client retries once the in-flight windows drain. Delegate NOT called.
                 counter("audio_bound_over_limit").increment();
                 log.warn("Direct-STT audio bound reached; rejecting chunk reservedFrames={} "
                                 + "requestedFrames={} limitFrames={} {}",
                         over.reservedFrames(), over.requestedFrames(), over.limitFrames(), kv(cmd));
-                return new DispatchOutcome.QueueFull(queueFullRetryAfterSeconds);
+                yield new DispatchOutcome.QueueFull(queueFullRetryAfterSeconds);
             }
             case DirectSttAudioAccountant.ReserveOutcome.Unmeterable unknown -> {
                 // NOT "there is room". Admitting audio whose duration we cannot derive is
                 // how an unbounded buffer grows while the gauge reads zero, so this is an
-                // explicit 503 rather than a silent pass. Reason is a low-cardinality label.
+                // explicit 503 rather than a silent pass. Delegate NOT called (no XADD).
                 counter("audio_capacity_unknown", "reason", unknownReasonLabel(cmd)).increment();
                 log.warn("Direct-STT capacity unmeterable ({}); rejecting chunk {}",
                         unknown.reason(), kv(cmd));
-                return new DispatchOutcome.Unavailable(unavailableRetryAfterSeconds);
+                yield new DispatchOutcome.Unavailable(unavailableRetryAfterSeconds);
             }
             case DirectSttAudioAccountant.ReserveOutcome.Reserved ok -> {
+                // Reservation held. Now the base gate (Redis XADD / NoOp).
+                final DispatchOutcome base = delegate.dispatch(cmd);
+                if (!(base instanceof DispatchOutcome.Accepted)) {
+                    // The base gate refused (QueueFull/Unavailable). No bytes are queued for
+                    // a chunk it rejected, so the reservation must be released terminally —
+                    // otherwise a base-side backpressure refusal would leak capacity.
+                    refund(cmd, ok.frames());
+                    yield base;
+                }
                 dispatchReserved(cmd, ok.frames());
+                yield base;
             }
-        }
-        return base;
+        };
     }
 
     /** The chunk is paid for; move its bytes into the aggregator or straight to a forward. */
@@ -352,6 +360,16 @@ public class DirectSttForwardingDispatcher
             final DirectSttAudioWindowAggregator.AudioWindow window,
             final String flushReason) {
         final long windowFrames = DirectSttAudioAccountant.framesIn(window.audio().length, window.channels());
+        if (windowFrames < 0) {
+            // framesIn returns -1 only for a non-whole-frame window — which cannot happen
+            // today because reserve() rejects partial frames up front, so a window is always
+            // built from whole-frame chunks. If it ever did, flooring the refund to 0 would
+            // silently leak the charge (the reservation never comes back and the session's
+            // bound shrinks for its whole life). Fail loud instead of hiding it.
+            throw new IllegalStateException(
+                    "Window has non-whole-frame audio (bytes=" + window.audio().length
+                            + ", channels=" + window.channels() + ") — refund would be ambiguous");
+        }
         return new ForwardTask(
                 window.audio(), window.sessionId(), window.tenantId(), window.userId(),
                 window.windowSeq(), window.firstChunkSeq(), window.lastChunkSeq(),
@@ -359,8 +377,7 @@ public class DirectSttForwardingDispatcher
                 window.meetingId(), window.deviceId(), window.language(), AudioFormat.PCM16.name(),
                 window.sampleRateHz(), window.channels(), window.correlationId(), window.sha256(),
                 window.audio().length,
-                accountant.refundHandle(window.tenantId(), window.sessionId(),
-                        Math.max(0L, windowFrames)));
+                accountant.refundHandle(window.tenantId(), window.sessionId(), windowFrames));
     }
 
     private void recordWindowMetrics(final DirectSttAudioWindowAggregator.AudioWindow window) {

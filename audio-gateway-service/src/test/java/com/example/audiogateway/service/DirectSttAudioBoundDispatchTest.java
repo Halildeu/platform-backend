@@ -11,6 +11,7 @@ import com.example.audiogateway.service.AudioChunkDispatcher.DispatchOutcome;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -38,6 +39,33 @@ class DirectSttAudioBoundDispatchTest {
     /** A base dispatcher that always accepts — isolates the audio bound as the only gate. */
     private static AudioChunkDispatcher acceptDelegate() {
         return cmd -> new DispatchOutcome.Accepted();
+    }
+
+    /**
+     * A base delegate that counts how many times it was invoked — stands in for
+     * RedisStreamsAudioChunkDispatcher, whose invocation IS the XADD. A refusal by the
+     * audio bound must leave this at zero: no descriptor written for a rejected chunk.
+     */
+    static final class CountingDelegate implements AudioChunkDispatcher {
+        final AtomicInteger invocations = new AtomicInteger();
+        private final DispatchOutcome outcome;
+
+        CountingDelegate(final DispatchOutcome outcome) {
+            this.outcome = outcome;
+        }
+
+        @Override
+        public DispatchOutcome dispatch(final ChunkDispatchCommand cmd) {
+            invocations.incrementAndGet();
+            return outcome;
+        }
+    }
+
+    private DirectSttForwardingDispatcher dispatcherWith(
+            final AudioChunkDispatcher delegate, final AudioGatewayProperties props) {
+        return new DirectSttForwardingDispatcher(
+                delegate, noopAudit(), DirectSttTranscriptResultSink.noop(),
+                WebClient.builder().build(), props, meters);
     }
 
     private AudioGatewayProperties props(final int maxBufferedSeconds) {
@@ -166,20 +194,51 @@ class DirectSttAudioBoundDispatchTest {
                 .isInstanceOf(DispatchOutcome.Unavailable.class);
     }
 
-    // ────────────────────────── the base gate still comes first ──────────────────────────
+    // ─────────────── reservation BEFORE the delegate (no orphan descriptor) ───────────────
 
     @Test
-    void aDelegateRejectionShortCircuitsBeforeTheBound() {
-        // The audio bound must not reserve for a chunk the base dispatcher already refused —
-        // otherwise a rejected chunk would consume capacity it never used. Same dispatcher,
-        // same accountant: the delegate rejects the first chunk, then accepts, and the full
-        // bound is still free — proving the refused chunk charged nothing.
+    void overLimitDoesNotInvokeTheDelegate_soNoOrphanDescriptorIsWritten() {
+        // The P1 fix: the audio bound is charged before the delegate. In Redis mode the
+        // delegate's dispatch() IS the XADD, so a 429 refusal must not have called it — else
+        // a rejected chunk would leave a Redis descriptor the client was told was refused.
+        CountingDelegate delegate = new CountingDelegate(new DispatchOutcome.Accepted());
+        DirectSttForwardingDispatcher dispatcher = dispatcherWith(delegate, props(30));
+
+        // Fill the bound (this dispatch DOES pass through the delegate once).
+        dispatcher.dispatch(pcm16("SES-1", seconds16kMono(30)));
+        int afterFill = delegate.invocations.get();
+
+        DispatchOutcome out = dispatcher.dispatch(pcm16("SES-1", MONO * 2)); // one frame over
+
+        assertThat(out).isInstanceOf(DispatchOutcome.QueueFull.class);
+        assertThat(delegate.invocations.get())
+                .as("an over-limit chunk must not reach the delegate (no XADD)")
+                .isEqualTo(afterFill);
+    }
+
+    @Test
+    void unmeterableDoesNotInvokeTheDelegate_soNoOrphanDescriptorIsWritten() {
+        CountingDelegate delegate = new CountingDelegate(new DispatchOutcome.Accepted());
+        DirectSttForwardingDispatcher dispatcher = dispatcherWith(delegate, props(30));
+
+        DispatchOutcome out = dispatcher.dispatch(command("SES-1", AudioFormat.WAV, RATE_16K, MONO, 4_096));
+
+        assertThat(out).isInstanceOf(DispatchOutcome.Unavailable.class);
+        assertThat(delegate.invocations.get())
+                .as("a 503-unmeterable chunk must not reach the delegate (no XADD)")
+                .isZero();
+    }
+
+    @Test
+    void reservedButDelegateRejects_refundsTheReservationFully() {
+        // Reservation succeeds, then the base gate refuses (its own backpressure). The
+        // reservation must be released terminally — otherwise a base QueueFull would leak
+        // capacity. Toggle the delegate: reject first, then accept; if the refund happened,
+        // the whole bound is free again on the second try (else it would 429 at 30+30).
         final boolean[] rejectNext = {true};
         AudioChunkDispatcher togglingDelegate = cmd ->
                 rejectNext[0] ? new DispatchOutcome.QueueFull(9L) : new DispatchOutcome.Accepted();
-        DirectSttForwardingDispatcher dispatcher = new DirectSttForwardingDispatcher(
-                togglingDelegate, noopAudit(), DirectSttTranscriptResultSink.noop(),
-                WebClient.builder().build(), props(30), meters);
+        DirectSttForwardingDispatcher dispatcher = dispatcherWith(togglingDelegate, props(30));
 
         DispatchOutcome refused = dispatcher.dispatch(pcm16("SES-1", seconds16kMono(30)));
         assertThat(refused).isInstanceOfSatisfying(DispatchOutcome.QueueFull.class,
@@ -187,7 +246,7 @@ class DirectSttAudioBoundDispatchTest {
 
         rejectNext[0] = false;
         assertThat(dispatcher.dispatch(pcm16("SES-1", seconds16kMono(30))))
-                .as("the refused chunk charged nothing, so the whole bound is still free")
+                .as("a base-gate rejection refunds the reservation fully, so the bound reopens")
                 .isInstanceOf(DispatchOutcome.Accepted.class);
     }
 }
