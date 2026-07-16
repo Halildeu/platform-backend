@@ -1,6 +1,7 @@
 package com.example.commonauth.scope;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -86,14 +87,20 @@ class OpenFgaScopeReaderDualSubjectTest {
     }
 
     @Test
-    @DisplayName("superAdmin is true when either verified subject carries the admin tuple")
-    void superAdminViaAlias() {
+    @DisplayName("superAdmin is computed from the PRIMARY subject only — alias is not admin-checked")
+    void superAdminIsNotAliasChecked() {
+        // Deliberate narrow surface (Codex, board #2531): the only production dual-subject caller
+        // is the /authz/me scope summary, which does not consume ScopeContext.superAdmin — the
+        // controller derives superAdmin from the verified numeric identity. Alias-checking here
+        // would cost an admin lookup per summary miss and widen this shared API's semantics.
         when(authz.check(eq(SUB), eq("admin"), eq("organization"), eq("default"))).thenReturn(true);
+        when(authz.check(eq(NUMERIC), eq("admin"), eq("organization"), eq("default"))).thenReturn(false);
 
         OpenFgaScopeReader reader = new OpenFgaScopeReader(authz, props);
         ScopeContext ctx = reader.readScopeContext(NUMERIC, SUB);
 
-        assertTrue(ctx.superAdmin(), "admin tuple stored under the sub subject must still be honoured");
+        assertFalse(ctx.superAdmin(), "alias must not grant superAdmin");
+        verify(authz, never()).check(eq(SUB), eq("admin"), eq("organization"), eq("default"));
     }
 
     @Test
@@ -110,13 +117,51 @@ class OpenFgaScopeReaderDualSubjectTest {
     }
 
     @Test
-    @DisplayName("cache key keeps '<userId>:' prefix so evictUser() still invalidates alias reads")
-    void aliasCacheKeyStaysEvictable() {
-        // Guards the trap: a '|' separator would produce "1204|<sub>:v1..." which
-        // ScopeContextCache.evictUser("1204") (prefix "1204:") would NOT remove — the user would
-        // keep a stale empty scope right after a grant.
-        String key = ScopeContextCache.cacheKey(NUMERIC + ":" + SUB, 1L, "store", "model");
-        assertTrue(key.startsWith(NUMERIC + ":"),
-                "alias cache key must remain matchable by evictUser's \"<userId>:\" prefix");
+    @DisplayName("REVOKE: global version bump really breaks the cached ALLOW (real reader + cache)")
+    void versionBumpInvalidatesCachedAliasScope() {
+        // Drives the PRODUCTION reader with a real ScopeContextCache and a mutable version
+        // provider — the previous version of this test hand-built a key string and asserted a
+        // prefix, so it stayed green even if the reader changed its key format.
+        //
+        // Scenario is the dangerous direction (stale-positive privilege retention):
+        //   v1: alias holds project 1204 → read caches ALLOW
+        //   OpenFGA now returns nothing (tuple revoked) but version is still v1 → cached ALLOW served
+        //   version bumps to v2 (OutboxPoller does this after the FGA delete) → read re-fetches → deny
+        ScopeContextCache cache = new ScopeContextCache(java.time.Duration.ofMinutes(2), 100, true);
+        long[] version = {1L};
+        OpenFgaScopeReader reader = new OpenFgaScopeReader(authz, props, cache, () -> version[0]);
+
+        when(authz.listObjectIds(eq(SUB), eq("viewer"), eq("project"))).thenReturn(Set.of(1204L));
+        assertEquals(Set.of(1204L), reader.readScopeSummary(NUMERIC, SUB).get("PROJECT"),
+                "grant under the alias subject must be visible");
+
+        // tuple revoked in OpenFGA, but no version bump yet
+        when(authz.listObjectIds(eq(SUB), eq("viewer"), eq("project"))).thenReturn(Set.of());
+        assertEquals(Set.of(1204L), reader.readScopeSummary(NUMERIC, SUB).get("PROJECT"),
+                "still cached → proves the cache was really primed (this is the stale window)");
+
+        // OutboxPoller bumps the global version after the FGA delete lands
+        version[0] = 2L;
+        assertTrue(reader.readScopeSummary(NUMERIC, SUB).isEmpty(),
+                "after the version bump the revoked scope must disappear immediately — "
+                        + "otherwise the user keeps revoked access for the cache TTL");
+    }
+
+    @Test
+    @DisplayName("evictUser(primary) also drops alias-keyed entries (same-pod optimisation)")
+    void evictUserDropsAliasKeyedEntry() {
+        // Not the correctness mechanism (that is the global version bump) but the key format must
+        // stay compatible with prefix eviction. Driven through the real reader, not a hand-built key.
+        ScopeContextCache cache = new ScopeContextCache(java.time.Duration.ofMinutes(2), 100, true);
+        OpenFgaScopeReader reader = new OpenFgaScopeReader(authz, props, cache, () -> 7L);
+
+        when(authz.listObjectIds(eq(SUB), eq("viewer"), eq("project"))).thenReturn(Set.of(1204L));
+        assertEquals(Set.of(1204L), reader.readScopeSummary(NUMERIC, SUB).get("PROJECT"));
+
+        when(authz.listObjectIds(eq(SUB), eq("viewer"), eq("project"))).thenReturn(Set.of());
+        cache.evictUser(NUMERIC);
+
+        assertTrue(reader.readScopeSummary(NUMERIC, SUB).isEmpty(),
+                "alias-keyed entry must be reachable by evictUser(\"<primary>\")");
     }
 }

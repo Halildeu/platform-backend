@@ -163,6 +163,61 @@ class OpenFgaAuthzServiceEnabledTest {
         }
 
         @Test
+        @DisplayName("board #2531: ADR-0008 canonical slugs decode through the REAL reader chain")
+        void listObjectIds_decodesCanonicalSlugs() throws Exception {
+            // This is the actual production chain the bug lived in:
+            //   SDK listObjects → "project:wc-project-1204" → type-prefix strip → codec → Set<Long>
+            // Testing the codec alone is not enough: if this method ever goes back to a bare
+            // Long.parseLong(raw), the codec/round-trip tests stay green while every canonical
+            // grant silently disappears again (API 201, user 403).
+            assertCanonicalDecodes("company", "company:wc-our-company-1", 1L);
+            assertCanonicalDecodes("project", "project:wc-project-1204", 1204L);
+            assertCanonicalDecodes("warehouse", "warehouse:wc-department-3792", 3792L);
+            assertCanonicalDecodes("branch", "branch:wc-branch-7", 7L);
+        }
+
+        private void assertCanonicalDecodes(String objectType, String sdkObject, long expected)
+                throws Exception {
+            var resp = mock(ClientListObjectsResponse.class);
+            when(resp.getObjects()).thenReturn(List.of(sdkObject));
+            when(client.listObjects(any(ClientListObjectsRequest.class)))
+                    .thenReturn(CompletableFuture.completedFuture(resp));
+
+            assertEquals(Set.of(expected), service.listObjectIds("user-1", "viewer", objectType),
+                    "canonical id must survive the real reader chain: " + sdkObject);
+        }
+
+        @Test
+        @DisplayName("board #2531: legacy bare numerics stay readable alongside canonical slugs")
+        void listObjectIds_mixedCanonicalAndLegacy() throws Exception {
+            // TupleSyncService still writes bare numerics; failing closed on them would revoke
+            // access that works today.
+            var resp = mock(ClientListObjectsResponse.class);
+            when(resp.getObjects()).thenReturn(List.of("project:wc-project-1204", "project:9"));
+            when(client.listObjects(any(ClientListObjectsRequest.class)))
+                    .thenReturn(CompletableFuture.completedFuture(resp));
+
+            assertEquals(Set.of(1204L, 9L), service.listObjectIds("user-1", "viewer", "project"));
+        }
+
+        @Test
+        @DisplayName("board #2531: foreign-prefix / malformed / Unicode-digit ids are skipped, not guessed")
+        void listObjectIds_skipsUndecodable() throws Exception {
+            var resp = mock(ClientListObjectsResponse.class);
+            when(resp.getObjects()).thenReturn(List.of(
+                    "project:wc-project-1204",        // valid
+                    "project:wc-our-company-5",       // another type's prefix
+                    "project:wc-project-",            // empty numeric tail
+                    "project:wc-project-\u0661\u0662\u0660\u0664",  // Arabic-Indic digits → must NOT become 1204
+                    "project: wc-project-77"));       // whitespace → not canonical
+            when(client.listObjects(any(ClientListObjectsRequest.class)))
+                    .thenReturn(CompletableFuture.completedFuture(resp));
+
+            assertEquals(Set.of(1204L), service.listObjectIds("user-1", "viewer", "project"),
+                    "only the canonical id may decode; the rest must be skipped rather than guessed");
+        }
+
+        @Test
         @DisplayName("skips non-numeric IDs")
         void listObjectIds_skipsNonNumeric() throws Exception {
             var resp = mock(ClientListObjectsResponse.class);

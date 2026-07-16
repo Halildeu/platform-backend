@@ -146,11 +146,10 @@ public class OpenFgaScopeReader {
             // The alias participates in the cache key: a single-subject read and a dual-subject
             // read can legitimately yield different scope sets, so they must not share an entry.
             //
-            // Separator MUST be ':' and the primary id MUST stay first — ScopeContextCache
-            // .evictUser(userId) invalidates by the prefix "<userId>:". A key like "1204|<sub>:v1"
-            // would NOT match that prefix and would survive tuple-write eviction, leaving the user
-            // with a stale (empty) scope right after a grant — i.e. re-creating the very bug this
-            // slice fixes. "1204:<sub>:v1" is matched by the existing prefix eviction.
+            // Separator ':' with the primary id first, so ScopeContextCache.evictUser(userId)
+            // (prefix "<userId>:") can still match alias keys. NOTE: correctness after a
+            // grant/revoke comes from the GLOBAL authz version bump (OutboxPoller), which changes
+            // this key on every pod; local eviction is only a same-pod optimisation.
             String cacheSubject = alias == null ? userId : userId + ":" + alias;
             String cacheKey = ScopeContextCache.cacheKey(
                     cacheSubject, version, properties.getStoreId(), properties.getModelId());
@@ -269,9 +268,14 @@ public class OpenFgaScopeReader {
                 () -> unionObjectIds(userId, alias, "viewer", "warehouse"));
         var branchFuture = CompletableFuture.supplyAsync(
                 () -> unionObjectIds(userId, alias, "viewer", "branch"));
+        // superAdmin is deliberately NOT alias-checked (Codex, board #2531): the only production
+        // dual-subject caller is the /authz/me scope summary, which does not consume
+        // ScopeContext.superAdmin — the controller computes superAdmin separately from the verified
+        // numeric identity. Alias-checking here would add an admin lookup on every summary miss and
+        // widen this shared public API's semantics for no acceptance benefit. Alias stays scoped to
+        // the four `viewer` object-id unions.
         var adminFuture = CompletableFuture.supplyAsync(
-                () -> authzService.check(userId, "admin", "organization", "default")
-                        || (alias != null && authzService.check(alias, "admin", "organization", "default")));
+                () -> authzService.check(userId, "admin", "organization", "default"));
 
         CompletableFuture.allOf(companyFuture, projectFuture, warehouseFuture, branchFuture, adminFuture).join();
 

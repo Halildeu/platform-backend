@@ -130,18 +130,20 @@ public class OutboxPoller {
             // board #2531: bump the GLOBAL authz version AFTER the FGA write/delete lands but
             // BEFORE marking the row PROCESSED.
             //
-            // Why it must exist: /authz/me caches its scope answer for ~120s
-            // (app.authz.scope-cache.ttl-ms). Without a version bump a REVOKE stays invisible —
+            // Why it must exist: /authz/me caches its scope answer for ~120s + jitter
+            // (scope.cache.ttl-seconds=${SCOPE_CACHE_TTL_SECONDS:120} +
+            // scope.cache.ttl-jitter-seconds). Without a version bump a REVOKE stays invisible —
             // the tuple is gone from OpenFGA, the outbox says PROCESSED, and the user keeps the
             // revoked scope in allowedScopes for up to two minutes (stale-positive privilege
-            // retention). A local scopeContextCache.evictUser() is not enough: the cache key is
+            // retention, ~120s + jitter). A local scopeContextCache.evictUser() is not enough: the cache key is
             // keyed on the numeric id (not the sub this row carries) and other permission-service
             // pods hold their own caches. The version is DB-backed, so bumping it changes the
             // cache key on every pod at once.
             //
             // Why it must be BEFORE finalizeProcessed: if the bump fails, the row must NOT be
-            // marked PROCESSED — the exception below reschedules a retry, and both the FGA
-            // write/delete and the bump are idempotent, so the retry is safe.
+            // marked PROCESSED — the exception below reschedules a retry. The FGA write/delete is
+            // idempotent; the version bump is NOT (it increments again), but a repeated monotonic
+            // bump is harmless: it only costs an extra cache miss.
             authzVersionService.incrementVersion();
             finalizeProcessed(entry, claimedLockedUntil);
         } catch (Exception cause) {
