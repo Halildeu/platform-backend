@@ -80,6 +80,23 @@ public class AuthorizationQueryService {
      */
     @Transactional(readOnly = true)
     public Map<String, Set<Long>> getUserScopeSummary(Long userId) {
+        return getUserScopeSummary(userId, null);
+    }
+
+    /**
+     * Dual-subject variant (board #2531).
+     *
+     * <p>Grants written by the canonical data-access path ({@code POST /api/v1/access/scope})
+     * carry the Keycloak {@code sub} as the OpenFGA subject, while role/permission derived tuples
+     * carry the numeric DB id. Reading with the numeric id alone made those grants invisible —
+     * the API returned 201 and the user still got 403. Callers that hold the verified JWT should
+     * pass its {@code sub} here so neither writer's tuples are lost.
+     *
+     * @param kcSub verified Keycloak subject for the SAME principal as {@code userId}, or
+     *              {@code null} when the caller has no JWT in hand
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Set<Long>> getUserScopeSummary(Long userId, String kcSub) {
         if (userId == null) {
             return Map.of();
         }
@@ -90,7 +107,8 @@ public class AuthorizationQueryService {
             // is also stored upper-case via UserScopeService.addScope's
             // toUpperCase() normalization). Cast Set→LinkedHashSet for
             // identical iteration order.
-            Map<String, Set<Long>> fromOpenFga = openFgaScopeReader.readScopeSummarySafe(String.valueOf(userId));
+            Map<String, Set<Long>> fromOpenFga =
+                    openFgaScopeReader.readScopeSummarySafe(String.valueOf(userId), kcSub);
             Map<String, Set<Long>> groupedByType = new LinkedHashMap<>();
             fromOpenFga.forEach((scopeType, refIds) -> groupedByType.put(scopeType, new LinkedHashSet<>(refIds)));
             return groupedByType;

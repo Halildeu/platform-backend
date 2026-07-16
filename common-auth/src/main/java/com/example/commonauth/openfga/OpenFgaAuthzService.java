@@ -260,17 +260,32 @@ public class OpenFgaAuthzService {
         if (!enabled) {
             return devFallbackLongIds(objectType);
         }
-        return listObjects(userId, relation, objectType).stream()
-                .map(id -> {
-                    try {
-                        return Long.parseLong(id);
-                    } catch (NumberFormatException e) {
-                        log.warn("Non-numeric object ID skipped: {}", id);
-                        return null;
-                    }
-                })
-                .filter(id -> id != null)
-                .collect(Collectors.toSet());
+        Set<Long> ids = new java.util.LinkedHashSet<>();
+        for (String raw : listObjects(userId, relation, objectType)) {
+            // ADR-0008 § "Object id encoding": the canonical id is the slug (project:wc-project-1204),
+            // NOT a bare number. The previous bare Long.parseLong here dropped every canonical id
+            // ("Non-numeric object ID skipped") — so grants written by the canonical path
+            // (POST /api/v1/access/scope → DataAccessScopeTupleEncoder) returned 201 but never
+            // reached /authz/me.allowedScopes, and the user kept getting 403 (board #2531).
+            java.util.Optional<ScopeObjectIdCodec.DecodedObjectId> decoded =
+                    ScopeObjectIdCodec.decode(objectType, raw);
+            if (decoded.isEmpty()) {
+                // Unknown shape: do NOT guess. Skipping stays the behaviour, but it is now a real
+                // anomaly (not the normal canonical path), so keep it loud.
+                log.warn("Undecodable OpenFGA object id skipped: type={} id={} (expected ADR-0008 "
+                        + "canonical slug or legacy numeric)", objectType, raw);
+                continue;
+            }
+            if (decoded.get().legacyNumeric() && ScopeObjectIdCodec.supports(objectType)) {
+                // Pre-ADR-0008 tuple (TupleSyncService writes bare numerics). Still honoured so
+                // live access is not revoked, but surfaced for the migration to canonical slugs.
+                log.warn("Legacy non-canonical OpenFGA object id accepted: type={} id={} "
+                        + "(ADR-0008 canonical form is {}) — migrate writer to canonical encoding",
+                        objectType, raw, ScopeObjectIdCodec.encode(objectType, decoded.get().id()));
+            }
+            ids.add(decoded.get().id());
+        }
+        return ids;
     }
 
     /**
