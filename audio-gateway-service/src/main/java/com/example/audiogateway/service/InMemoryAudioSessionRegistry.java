@@ -7,11 +7,13 @@ import com.example.audiogateway.service.AudioChunkDispatcher.DispatchOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.ChunkOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.ChunkRecordCommand;
 import com.example.audiogateway.service.AudioSessionRegistry.CreateOutcome;
+import com.example.audiogateway.service.AudioSessionRegistry.ExpiryOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.FinishOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.SessionCreateCommand;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -69,7 +71,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
             startReplay.remove(idempKey);
         }
 
-        if (sessions.size() >= props.getBounds().getMaxActiveSessions()) {
+        if (activeCountLocked() >= props.getBounds().getMaxActiveSessions()) {
             return new CreateOutcome.RegistryFull(props.getBounds().getMaxActiveSessions());
         }
 
@@ -108,6 +110,15 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
         if (!Objects.equals(existing.tenantId(), cmd.tenantId())
                 || !Objects.equals(existing.userId(), cmd.userId())) {
             return new ChunkOutcome.OwnerMismatch();
+        }
+
+        final ExpiryOutcome expiry = expireIfDueLocked(
+                cmd.sessionId(), cmd.nowMs(), maxSessionAgeMs(), cmd.correlationId(), dispatcher);
+        if (expiry instanceof ExpiryOutcome.Expired) {
+            return new ChunkOutcome.SessionExpired(false);
+        }
+        if (expiry instanceof ExpiryOutcome.CleanupFailed) {
+            return new ChunkOutcome.SessionExpired(true);
         }
         if (existing.state() != SessionState.STARTED && existing.state() != SessionState.STREAMING) {
             return new ChunkOutcome.InvalidState(existing.state());
@@ -161,8 +172,14 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     }
 
     @Override
-    public synchronized FinishOutcome finish(final String sessionId, final String finishIdempotencyKey,
-                                final Long tenantId, final Long userId) {
+    public synchronized FinishOutcome finish(
+            final String sessionId,
+            final String finishIdempotencyKey,
+            final Long tenantId,
+            final Long userId,
+            final long nowMs,
+            final String correlationId,
+            final AudioChunkDispatcher dispatcher) {
         final SessionRecord existing = sessions.get(sessionId);
         if (existing == null) {
             return new FinishOutcome.NotFound();
@@ -178,8 +195,16 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
             return new FinishOutcome.IdempotencyConflict(existing.finishIdempotencyKey());
         }
 
-        final long now = System.currentTimeMillis();
-        final SessionRecord finished = existing.withFinish(finishIdempotencyKey, now);
+        final ExpiryOutcome expiry = expireIfDueLocked(
+                sessionId, nowMs, maxSessionAgeMs(), correlationId, dispatcher);
+        if (expiry instanceof ExpiryOutcome.Expired) {
+            return new FinishOutcome.SessionExpired(false);
+        }
+        if (expiry instanceof ExpiryOutcome.CleanupFailed) {
+            return new FinishOutcome.SessionExpired(true);
+        }
+
+        final SessionRecord finished = existing.withFinish(finishIdempotencyKey, nowMs);
         if (!sessions.replace(sessionId, existing, finished)) {
             final SessionRecord current = sessions.get(sessionId);
             if (current != null && current.state() == SessionState.FINISHED
@@ -193,8 +218,36 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     }
 
     @Override
-    public int activeCount() {
-        return sessions.size();
+    public synchronized ExpiryOutcome expireIfDue(
+            final String sessionId,
+            final long nowMs,
+            final long maxSessionAgeMs,
+            final String correlationId,
+            final AudioChunkDispatcher dispatcher) {
+        return expireIfDueLocked(
+                sessionId, nowMs, maxSessionAgeMs, correlationId, dispatcher);
+    }
+
+    @Override
+    public List<ExpiryOutcome> expireDue(
+            final long nowMs,
+            final long maxSessionAgeMs,
+            final String correlationId,
+            final AudioChunkDispatcher dispatcher) {
+        final List<String> candidates = sessions.values().stream()
+                .filter(InMemoryAudioSessionRegistry::isActive)
+                .filter(record -> isDue(record, nowMs, maxSessionAgeMs))
+                .map(SessionRecord::sessionId)
+                .toList();
+        return candidates.stream()
+                .map(sessionId -> expireIfDue(
+                        sessionId, nowMs, maxSessionAgeMs, correlationId, dispatcher))
+                .toList();
+    }
+
+    @Override
+    public synchronized int activeCount() {
+        return activeCountLocked();
     }
 
     @Override
@@ -211,6 +264,50 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     private static String startSignature(final SessionCreateCommand cmd) {
         return cmd.meetingId() + "|" + cmd.deviceId() + "|" + cmd.language() + "|"
                 + cmd.audioFormat() + "|" + cmd.sampleRateHz() + "|" + cmd.channels();
+    }
+
+    private ExpiryOutcome expireIfDueLocked(
+            final String sessionId,
+            final long nowMs,
+            final long maxSessionAgeMs,
+            final String correlationId,
+            final AudioChunkDispatcher dispatcher) {
+        final SessionRecord existing = sessions.get(sessionId);
+        if (existing == null) {
+            return new ExpiryOutcome.NotFound();
+        }
+        if (!isActive(existing) || !isDue(existing, nowMs, maxSessionAgeMs)) {
+            return new ExpiryOutcome.NotExpired(existing);
+        }
+
+        try {
+            dispatcher.discardSession(new AudioChunkDispatcher.SessionDiscardCommand(
+                    existing.sessionId(), existing.tenantId(), existing.userId(), correlationId));
+        } catch (final RuntimeException ex) {
+            return new ExpiryOutcome.CleanupFailed(existing, ex.getClass().getSimpleName());
+        }
+
+        sessions.remove(sessionId);
+        return new ExpiryOutcome.Expired(existing);
+    }
+
+    private int activeCountLocked() {
+        return sessions.size();
+    }
+
+    private static boolean isActive(final SessionRecord record) {
+        return record.state() == SessionState.STARTED || record.state() == SessionState.STREAMING;
+    }
+
+    private static boolean isDue(
+            final SessionRecord record, final long nowMs, final long maxSessionAgeMs) {
+        return maxSessionAgeMs >= 0L
+                && nowMs >= record.sessionStartMs()
+                && nowMs - record.sessionStartMs() >= maxSessionAgeMs;
+    }
+
+    private long maxSessionAgeMs() {
+        return props.getBounds().getMaxSessionMinutes() * 60_000L;
     }
 
     private record IdempotencyEntry(String sessionId, String signature) {

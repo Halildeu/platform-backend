@@ -1,10 +1,12 @@
 package com.example.audiogateway.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.audiogateway.dto.AudioChunkPayload;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.service.AudioChunkDispatcher.ChunkDispatchCommand;
+import com.example.audiogateway.service.AudioChunkDispatcher.SessionDiscardCommand;
 import com.example.audiogateway.service.AudioChunkDispatcher.SessionFinishCommand;
 
 import org.junit.jupiter.api.Test;
@@ -93,6 +95,51 @@ class DirectSttAudioWindowAggregatorTest {
                 .isEqualTo(new DirectSttAudioWindowAggregator.DiscardSummary(1, 32_000L));
         assertThat(aggregator.activeSessions()).isZero();
         assertThat(aggregator.bufferedBytes()).isZero();
+    }
+
+    @Test
+    void discardReportsExactFramesAndReleasesTheSessionSlotOnce() {
+        final DirectSttAudioWindowAggregator aggregator =
+                new DirectSttAudioWindowAggregator(10, 1);
+        aggregator.append(command("SES-1", 0L, pcm16Seconds(1)), pcm16Seconds(1));
+        final SessionDiscardCommand discard =
+                new SessionDiscardCommand("SES-1", 1L, 2L, "discard");
+
+        assertThat(aggregator.discard(discard))
+                .isEqualTo(new DirectSttAudioWindowAggregator.DiscardOutcome.Discarded(
+                        32_000, 16_000L));
+        assertThat(aggregator.activeSessions()).isZero();
+        assertThat(aggregator.bufferedBytes()).isZero();
+        assertThat(aggregator.discard(discard))
+                .isInstanceOf(DirectSttAudioWindowAggregator.DiscardOutcome.NotFound.class);
+    }
+
+    @Test
+    void wrongOwnerCannotDiscardAnotherSessionsAudio() {
+        final DirectSttAudioWindowAggregator aggregator =
+                new DirectSttAudioWindowAggregator(10, 1);
+        aggregator.append(command("SES-1", 0L, pcm16Seconds(1)), pcm16Seconds(1));
+
+        assertThat(aggregator.discard(new SessionDiscardCommand(
+                "SES-1", 99L, 2L, "wrong-owner")))
+                .isInstanceOf(DirectSttAudioWindowAggregator.DiscardOutcome.OwnerMismatch.class);
+        assertThat(aggregator.activeSessions()).isEqualTo(1);
+        assertThat(aggregator.bufferedBytes()).isEqualTo(32_000L);
+    }
+
+    @Test
+    void invalidPartialFrameFailsBeforeStateIsRemoved() {
+        final DirectSttAudioWindowAggregator aggregator =
+                new DirectSttAudioWindowAggregator(10, 1);
+        final byte[] partialFrame = new byte[] {1, 2, 3};
+        aggregator.append(command("SES-1", 0L, partialFrame), partialFrame);
+
+        assertThatThrownBy(() -> aggregator.discard(new SessionDiscardCommand(
+                "SES-1", 1L, 2L, "discard")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("whole PCM16 frame");
+        assertThat(aggregator.activeSessions()).isEqualTo(1);
+        assertThat(aggregator.bufferedBytes()).isEqualTo(3L);
     }
 
     private static ChunkDispatchCommand command(

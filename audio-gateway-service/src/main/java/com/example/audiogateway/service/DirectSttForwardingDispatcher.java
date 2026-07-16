@@ -4,6 +4,7 @@ import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.TranscriptResult;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
+import com.example.audiogateway.service.AudioChunkDispatcher.SessionDiscardCommand;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -159,6 +160,8 @@ public class DirectSttForwardingDispatcher
                 DirectSttAudioWindowAggregator::bufferedBytes);
         counter("aggregation_shutdown_discarded_sessions");
         counter("aggregation_shutdown_discarded_bytes");
+        counter("aggregation_session_discarded");
+        counter("aggregation_session_discarded_bytes");
     }
 
     @Override
@@ -249,14 +252,38 @@ public class DirectSttForwardingDispatcher
 
     @Override
     public void finishSession(final SessionFinishCommand cmd) {
-        if (!cfg.getAggregation().isEnabled()) {
-            return;
+        if (cfg.getAggregation().isEnabled()) {
+            aggregator.finish(cmd).ifPresent(window -> {
+                counter("aggregation_windows_flushed", "reason", "finish").increment();
+                recordWindowMetrics(window);
+                scheduleForward(windowTask(window, "finish"));
+            });
         }
-        aggregator.finish(cmd).ifPresent(window -> {
-            counter("aggregation_windows_flushed", "reason", "finish").increment();
-            recordWindowMetrics(window);
-            scheduleForward(windowTask(window, "finish"));
-        });
+        delegate.finishSession(cmd);
+    }
+
+    @Override
+    public void discardSession(final SessionDiscardCommand cmd) {
+        if (cfg.getAggregation().isEnabled()) {
+            switch (aggregator.discard(cmd)) {
+                case DirectSttAudioWindowAggregator.DiscardOutcome.Discarded discarded -> {
+                    accountant.refundHandle(
+                            cmd.tenantId(), cmd.sessionId(), discarded.frames()).release();
+                    counter("aggregation_session_discarded").increment();
+                    counter("aggregation_session_discarded_bytes").increment(discarded.bytes());
+                    log.info("Direct-STT session tail discarded on server terminal sessionId={} "
+                                    + "correlationId={} bytes={}",
+                            cmd.sessionId(), nullSafe(cmd.correlationId()), discarded.bytes());
+                }
+                case DirectSttAudioWindowAggregator.DiscardOutcome.NotFound ignored -> {
+                    // Idempotent retry or a session whose full window already left the aggregator.
+                }
+                case DirectSttAudioWindowAggregator.DiscardOutcome.OwnerMismatch ignored ->
+                        throw new IllegalStateException(
+                                "Direct-STT session discard owner mismatch for " + cmd.sessionId());
+            }
+        }
+        delegate.discardSession(cmd);
     }
 
     /** Dispose the dedicated scheduler on context shutdown (graceful resource hygiene). */

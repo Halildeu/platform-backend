@@ -7,13 +7,21 @@ import com.example.audiogateway.dto.AudioChunkPayload;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.service.AudioChunkDispatcher.ChunkDispatchCommand;
 import com.example.audiogateway.service.AudioChunkDispatcher.DispatchOutcome;
+import com.example.audiogateway.service.AudioChunkDispatcher.SessionDiscardCommand;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.junit.jupiter.api.Test;
+import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
+
+import reactor.core.publisher.Sinks;
 
 /**
  * The #428 / platform-ai#257 audio bound, at its dispatch seam.
@@ -118,6 +126,19 @@ class DirectSttAudioBoundDispatchTest {
         return c == null ? 0.0 : c.count();
     }
 
+    private static double gauge(final MeterRegistry meters, final String name) {
+        return meters.get("audio_gateway_direct_stt_" + name).gauge().value();
+    }
+
+    private static void awaitGauge(
+            final MeterRegistry meters, final String name, final double expected) throws Exception {
+        final long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline && gauge(meters, name) != expected) {
+            Thread.sleep(10L);
+        }
+        assertThat(gauge(meters, name)).isEqualTo(expected);
+    }
+
     // ────────────────────────── within the bound ──────────────────────────
 
     @Test
@@ -149,6 +170,66 @@ class DirectSttAudioBoundDispatchTest {
         assertThat(dispatcher.dispatch(pcm16("SES-2", seconds16kMono(30))))
                 .as("one session at its bound must not throttle another")
                 .isInstanceOf(DispatchOutcome.Accepted.class);
+    }
+
+    @Test
+    void expiryDiscardsOnlyBufferedTailAndReopensAggregatorCapacity() {
+        final AudioGatewayProperties properties = props(30);
+        properties.getDirectStt().getAggregation().setMaxBufferedSessions(1);
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(properties);
+        dispatcher.dispatch(pcm16("SES-1", seconds16kMono(1)));
+        assertThat(gauge(meters, "aggregation_active_sessions")).isEqualTo(1.0);
+        assertThat(gauge(meters, "audio_bound_reserved_frames")).isEqualTo(RATE_16K);
+
+        dispatcher.discardSession(new SessionDiscardCommand(
+                "SES-1", TENANT, 7L, "expiry-correlation"));
+
+        assertThat(gauge(meters, "aggregation_active_sessions")).isZero();
+        assertThat(gauge(meters, "audio_bound_reserved_frames")).isZero();
+        assertThat(gauge(meters, "audio_bound_negative_invariant_total")).isZero();
+        assertThat(dispatcher.dispatch(pcm16("SES-2", seconds16kMono(1))))
+                .as("discarded session must release the sole aggregation slot")
+                .isInstanceOf(DispatchOutcome.Accepted.class);
+    }
+
+    @Test
+    void expiryDoesNotEarlyRefundAnInFlightWindow() throws Exception {
+        final AudioGatewayProperties properties = props(2);
+        properties.getDirectStt().getAggregation().setWindowSeconds(1);
+        final CountDownLatch requestStarted = new CountDownLatch(1);
+        final Sinks.One<ClientResponse> response = Sinks.one();
+        final WebClient pendingClient = WebClient.builder()
+                .exchangeFunction(request -> {
+                    requestStarted.countDown();
+                    return response.asMono();
+                })
+                .build();
+        final DirectSttForwardingDispatcher dispatcher = new DirectSttForwardingDispatcher(
+                acceptDelegate(), noopAudit(), DirectSttTranscriptResultSink.noop(),
+                pendingClient, properties, meters);
+
+        assertThat(dispatcher.dispatch(pcm16("SES-1", seconds16kMono(1))))
+                .isInstanceOf(DispatchOutcome.Accepted.class);
+        assertThat(requestStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(gauge(meters, "audio_bound_reserved_frames")).isEqualTo(RATE_16K);
+
+        dispatcher.discardSession(new SessionDiscardCommand(
+                "SES-1", TENANT, 7L, "expiry-during-forward"));
+
+        assertThat(gauge(meters, "aggregation_active_sessions")).isZero();
+        assertThat(gauge(meters, "audio_bound_reserved_frames"))
+                .as("in-flight bytes still occupy heap and must remain charged")
+                .isEqualTo(RATE_16K);
+        assertThat(gauge(meters, "audio_bound_negative_invariant_total")).isZero();
+
+        response.tryEmitValue(ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                .body("{\"text\":\"ok\",\"language\":\"tr\",\"elapsed_ms\":10.0}")
+                .build());
+
+        awaitGauge(meters, "audio_bound_reserved_frames", 0.0);
+        assertThat(gauge(meters, "audio_bound_negative_invariant_total")).isZero();
+        dispatcher.destroy();
     }
 
     // ────────────────────────── unmeterable → 503, never a silent pass ──────────────────────────

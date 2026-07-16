@@ -3,6 +3,7 @@ package com.example.audiogateway;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * audio-gateway-service — Faz 24 Meeting Intelligence Audio Gateway.
@@ -18,6 +19,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan("com.example.audiogateway.config")
+@EnableScheduling
 public class AudioGatewayApplication {
 
     public static void main(final String[] args) {

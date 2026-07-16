@@ -4,6 +4,7 @@ import com.example.audiogateway.dto.AudioChunkPayload;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.dto.ChunkAdmissionResponse;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -49,9 +50,35 @@ public interface AudioSessionRegistry {
      * Mark session as FINISHED. Idempotent: same {@code finishIdempotencyKey} returns
      * {@link FinishOutcome.AlreadyFinished} without state mutation.
      */
-    FinishOutcome finish(String sessionId, String finishIdempotencyKey, Long tenantId, Long userId);
+    FinishOutcome finish(
+            String sessionId,
+            String finishIdempotencyKey,
+            Long tenantId,
+            Long userId,
+            long nowMs,
+            String correlationId,
+            AudioChunkDispatcher dispatcher);
 
-    /** Number of currently-tracked sessions (any state). */
+    /**
+     * Atomically discard and remove a session when its server-observed age reaches the
+     * configured maximum. Cleanup runs before removal; a cleanup failure leaves the record
+     * present so a later request or sweep can retry without losing ownership of the leak.
+     */
+    ExpiryOutcome expireIfDue(
+            String sessionId,
+            long nowMs,
+            long maxSessionAgeMs,
+            String correlationId,
+            AudioChunkDispatcher dispatcher);
+
+    /** Proactively expire abandoned sessions that no longer send requests. */
+    List<ExpiryOutcome> expireDue(
+            long nowMs,
+            long maxSessionAgeMs,
+            String correlationId,
+            AudioChunkDispatcher dispatcher);
+
+    /** Number of currently-tracked sessions consuming bounded registry capacity. */
     int activeCount();
 
     /** Bounded capacity (configured via properties). */
@@ -132,6 +159,10 @@ public interface AudioSessionRegistry {
         record IdempotencyConflict() implements ChunkOutcome {
         }
 
+        /** Session reached its server-observed age bound before dispatch. */
+        record SessionExpired(boolean cleanupFailed) implements ChunkOutcome {
+        }
+
         /**
          * Dispatcher reported bounded queue full — caller should retry after the given
          * seconds. NO mutation (Codex {@code 019e8df2} iter-2 B3 atomicity gate).
@@ -163,6 +194,27 @@ public interface AudioSessionRegistry {
         }
 
         record OwnerMismatch() implements FinishOutcome {
+        }
+
+        /** Session reached its server-observed age bound before terminal flush. */
+        record SessionExpired(boolean cleanupFailed) implements FinishOutcome {
+        }
+    }
+
+    // ----- Server-side expiry outcome ------------------------------------
+
+    sealed interface ExpiryOutcome {
+        record Expired(SessionRecord record) implements ExpiryOutcome {
+        }
+
+        /** Cleanup failed; the registry deliberately retained the record for retry. */
+        record CleanupFailed(SessionRecord record, String errorType) implements ExpiryOutcome {
+        }
+
+        record NotExpired(SessionRecord record) implements ExpiryOutcome {
+        }
+
+        record NotFound() implements ExpiryOutcome {
         }
     }
 }

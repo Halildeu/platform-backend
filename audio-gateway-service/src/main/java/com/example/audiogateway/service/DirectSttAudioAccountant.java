@@ -319,27 +319,6 @@ final class DirectSttAudioAccountant {
         }
     }
 
-    /**
-     * Drop every reservation for a session — for when the session's audio is gone.
-     *
-     * <p><b>NOT yet wired to a server-side abandon/expiry path — tracked in
-     * platform-backend#841 (#428 follow-up), a rollout condition of #428.</b> Today the
-     * only callers are {@link #discardAll} at shutdown and the tests. A session that
-     * streams PCM and then disconnects WITHOUT an explicit finish keeps its reservation
-     * (and its aggregator slot) until process restart — enough abandoned sessions push new
-     * ones into capacity drop. Closing that gap means binding the registry's
-     * session-removal terminal to {@code aggregator.discard} + this method, which #841
-     * tracks rather than being claimed here.
-     *
-     * <p>Even once wired, this is a leak safety net, not a substitute for the per-window
-     * refund: a reservation whose forward is still in flight must NOT be un-charged here
-     * while its bytes are on the heap.
-     */
-    synchronized long discardSession(final long tenantId, final String sessionId) {
-        final Long dropped = reservedFrames.remove(new SessionKey(tenantId, sessionId));
-        return dropped == null ? 0L : dropped;
-    }
-
     /** Drop all state — process shutdown, and the reset a restart gives for free. */
     synchronized void discardAll() {
         reservedFrames.clear();

@@ -53,6 +53,7 @@ audio:
       max-chunk-bytes: ${AUDIO_GATEWAY_MAX_CHUNK_BYTES:1048576}
       max-buffered-seconds: ${AUDIO_GATEWAY_MAX_BUFFERED_SECONDS:30}
       max-session-minutes: ${AUDIO_GATEWAY_MAX_SESSION_MINUTES:120}
+      session-expiry-sweep-ms: ${AUDIO_GATEWAY_SESSION_EXPIRY_SWEEP_MS:30000}
       admission-queue-capacity: ${AUDIO_GATEWAY_QUEUE_CAPACITY:1000}
     jwt:
       tenant-claim: ${AUDIO_GATEWAY_JWT_TENANT_CLAIM:companyId}
