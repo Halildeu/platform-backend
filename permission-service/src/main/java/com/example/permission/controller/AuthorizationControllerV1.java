@@ -189,7 +189,11 @@ public class AuthorizationControllerV1 {
             dto.setSuperAdmin(isSuperAdmin);
 
             // Scopes (existing)
-            Map<String, Set<Long>> scopeSummary = resolveScopeSummarySafely(numericUserId);
+            // board #2531: pass the verified KC sub as an alias subject — canonical
+            // /access/scope grants are stored under user:<sub>, role-derived tuples under
+            // user:<numeric>. Reading only one form silently loses the other writer's grants.
+            Map<String, Set<Long>> scopeSummary =
+                    resolveScopeSummarySafely(numericUserId, jwt.getSubject());
             List<AuthzScopeSummaryDto> scopes = scopeSummary.entrySet().stream()
                     .map(e -> new AuthzScopeSummaryDto(e.getKey(), e.getValue().stream().toList()))
                     .collect(Collectors.toList());
@@ -766,11 +770,16 @@ public class AuthorizationControllerV1 {
     }
 
     private Map<String, Set<Long>> resolveScopeSummarySafely(Long numericUserId) {
+        return resolveScopeSummarySafely(numericUserId, null);
+    }
+
+    /** @param kcSub verified KC subject for the same principal (board #2531); may be null */
+    private Map<String, Set<Long>> resolveScopeSummarySafely(Long numericUserId, String kcSub) {
         if (numericUserId == null) {
             return Collections.emptyMap();
         }
         try {
-            return authorizationQueryService.getUserScopeSummary(numericUserId);
+            return authorizationQueryService.getUserScopeSummary(numericUserId, kcSub);
         } catch (RuntimeException ex) {
             log.warn("Authz /me scope summary çözümleme başarısız; boş scope dönülecek. cause={}", ex.getMessage());
             return Collections.emptyMap();

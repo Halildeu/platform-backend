@@ -27,6 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -73,7 +75,10 @@ class AuthorizationControllerV1Test {
                 .build();
         when(authenticatedUserLookupService.resolve(jwt))
                 .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "admin@example.com"));
-        when(authorizationQueryService.getUserScopeSummary(15L))
+        // board #2531: /authz/me artık numeric id'nin YANINDA doğrulanmış KC sub'ı da alias
+        // olarak geçiriyor — canonical /access/scope grant'leri user:<sub> altında saklanıyor.
+        when(authorizationQueryService.getUserScopeSummary(
+                15L, "2fd0e4f7-c9da-4622-b4b6-b90adab28dd4"))
                 .thenReturn(Map.of("COMPANY", Set.of(11L)));
         when(catalogService.getModuleKeys()).thenReturn(List.of());
         PermissionResponse assignment = new PermissionResponse();
@@ -167,7 +172,7 @@ class AuthorizationControllerV1Test {
 
         when(authenticatedUserLookupService.resolve(jwt))
                 .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "user3@example.com"));
-        when(authorizationQueryService.getUserScopeSummary(15L)).thenReturn(Map.of());
+        when(authorizationQueryService.getUserScopeSummary(eq(15L), any())).thenReturn(Map.of());
         when(catalogService.getModuleKeys()).thenReturn(List.of("ACCESS", "AUDIT", "REPORT", "THEME"));
         when(authzService.check("15", "can_manage", "module", "ACCESS")).thenReturn(false);
         when(authzService.check("15", "can_view", "module", "ACCESS")).thenReturn(true);
@@ -575,7 +580,7 @@ class AuthorizationControllerV1Test {
             when(authenticatedUserLookupService.resolve(token))
                     .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
                             1205L, "1205", "d35-granted@example.com"));
-            when(authorizationQueryService.getUserScopeSummary(1205L)).thenReturn(Map.of());
+            when(authorizationQueryService.getUserScopeSummary(eq(1205L), any())).thenReturn(Map.of());
             // resolvePermissions: USER_MANAGEMENT module tuple resolved; the DB
             // legacy permissions deliberately omit REPORT_VIEW so the assertion
             // proves the projection invariant *injected* it.
@@ -615,7 +620,7 @@ class AuthorizationControllerV1Test {
             when(authenticatedUserLookupService.resolve(token))
                     .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
                             1206L, "1206", "report-mgr@example.com"));
-            when(authorizationQueryService.getUserScopeSummary(1206L)).thenReturn(Map.of());
+            when(authorizationQueryService.getUserScopeSummary(eq(1206L), any())).thenReturn(Map.of());
             when(catalogService.getModuleKeys()).thenReturn(List.of());
             when(permissionService.getAssignments(1206L, null, null, null)).thenReturn(List.of());
             when(assignmentRepository.findActiveAssignments(1206L))
@@ -643,7 +648,7 @@ class AuthorizationControllerV1Test {
             when(authenticatedUserLookupService.resolve(token))
                     .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
                             1207L, "1207", "report-denied@example.com"));
-            when(authorizationQueryService.getUserScopeSummary(1207L)).thenReturn(Map.of());
+            when(authorizationQueryService.getUserScopeSummary(eq(1207L), any())).thenReturn(Map.of());
             when(catalogService.getModuleKeys()).thenReturn(List.of());
             PermissionResponse dbAssignment = new PermissionResponse();
             dbAssignment.setPermissions(Set.of("VIEW_USERS"));
@@ -677,7 +682,7 @@ class AuthorizationControllerV1Test {
             when(authenticatedUserLookupService.resolve(token))
                     .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
                             1208L, "1208", "merge@example.com"));
-            when(authorizationQueryService.getUserScopeSummary(1208L)).thenReturn(Map.of());
+            when(authorizationQueryService.getUserScopeSummary(eq(1208L), any())).thenReturn(Map.of());
             when(catalogService.getModuleKeys()).thenReturn(List.of("USER_MANAGEMENT"));
             when(authzService.check("1208", "can_manage", "module", "USER_MANAGEMENT")).thenReturn(false);
             when(authzService.check("1208", "can_view", "module", "USER_MANAGEMENT")).thenReturn(true);
