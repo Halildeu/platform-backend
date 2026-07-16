@@ -77,7 +77,10 @@ class DirectSttForwardingDispatcherTest {
     }
 
     private static ChunkDispatchCommand command(final byte[] audio) {
-        return command(audio, AudioFormat.WAV);
+        // Direct-STT is PCM16-only (platform-ai#257): a plain forward-mechanics command is
+        // PCM16. Non-PCM16 formats are 503 at the audio bound and covered by
+        // DirectSttAudioBoundDispatchTest, not here.
+        return command(audio, AudioFormat.PCM16);
     }
 
     private static ChunkDispatchCommand command(final byte[] audio, final AudioFormat audioFormat) {
@@ -159,7 +162,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props(8), meters, auditSink);
 
-        final byte[] audio = new byte[] {10, 20, 30, 40, 50};
+        final byte[] audio = new byte[] {10, 20, 30, 40, 50, 60};
         final DispatchOutcome out = dispatcher.dispatch(command(audio));
 
         // (1) Admission returns Accepted IMMEDIATELY (does not await the HTTP response).
@@ -185,7 +188,7 @@ class DirectSttForwardingDispatcherTest {
                 .contains("Content-Type: audio/wav");
         assertThat(bodyUtf8.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1))
                 .as("multipart body must carry the raw audio bytes")
-                .contains(new byte[] {10, 20, 30, 40, 50});
+                .contains(new byte[] {10, 20, 30, 40, 50, 60});
 
         // (3) Success metric increments (await the async callback), no transcript text leaked.
         awaitCounter(meters, "success", 1.0);
@@ -211,34 +214,16 @@ class DirectSttForwardingDispatcherTest {
                     assertThat(f.windowStartedAtMs()).isEqualTo(1_000L);
                     assertThat(f.flushReason()).isEqualTo("chunk");
                     assertThat(f.sha256()).isEqualTo("deadbeefcafe0000sha");
-                    assertThat(f.byteLength()).isEqualTo(5);
+                    assertThat(f.byteLength()).isEqualTo(6);
                     assertThat(f.computePlane()).isEqualTo("live-stt");
                 });
     }
 
-    @Test
-    void forwardsMultipartAudioPartUsingSessionAudioFormat() throws Exception {
-        server.enqueue(new MockResponse()
-                .setHeader("Content-Type", "application/json")
-                .setBody("{\"text\":\"webm ok\",\"language\":\"tr\"}"));
-
-        final DirectSttForwardingDispatcher dispatcher = dispatcher(
-                acceptDelegate(), webClient, props(8), meters, recordingAuditSink());
-
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3}, AudioFormat.WEBM_OPUS));
-
-        assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
-        final RecordedRequest req = server.takeRequest(5, TimeUnit.SECONDS);
-        assertThat(req).as("direct-STT POST must reach /transcribe").isNotNull();
-        final String bodyUtf8 = req.getBody().readUtf8();
-        assertThat(bodyUtf8)
-                .contains("Content-Disposition: form-data; name=\"audio\"; filename=\"chunk.webm\"")
-                .contains("Content-Type: audio/webm")
-                .contains("codecs=opus")
-                .doesNotContain("application/octet-stream")
-                .doesNotContain("chunk.bin");
-        awaitCounter(meters, "success", 1.0);
-    }
+    // (forwardsMultipartAudioPartUsingSessionAudioFormat removed: it forwarded WEBM_OPUS to
+    // assert the session's format was preserved on the wire. Under the platform-ai#257
+    // owner decision, direct-STT is PCM16-only and a WEBM_OPUS chunk is now a 503 at the
+    // audio bound — proven in DirectSttAudioBoundDispatchTest.nonPcm16FormatsAre503 — so it
+    // never reaches the forward, and this case no longer describes a reachable path.)
 
     @Test
     void wrapsPcm16IntoWavContainerForLiveStt() throws Exception {
@@ -442,7 +427,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props, meters, recordingAuditSink(), transcriptSink);
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30, 40}));
 
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
         assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
@@ -465,7 +450,7 @@ class DirectSttForwardingDispatcherTest {
                     assertThat(ctx.windowStartedAtMs()).isEqualTo(1_000L);
                     assertThat(ctx.flushReason()).isEqualTo("chunk");
                     assertThat(ctx.correlationId()).isEqualTo("corr-xyz");
-                    assertThat(ctx.byteLength()).isEqualTo(3);
+                    assertThat(ctx.byteLength()).isEqualTo(4);
                 });
     }
 
@@ -483,7 +468,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props, meters, recordingAuditSink(), failingSink);
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30, 40}));
 
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
         assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
@@ -504,7 +489,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props, meters, recordingAuditSink(), transcriptSink);
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {10, 20, 30, 40}));
 
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
         assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
@@ -521,7 +506,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props(8), meters, recordingAuditSink());
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3, 4}));
 
         // Admission still Accepted — STT failure is best-effort, never breaks ingest.
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
@@ -570,14 +555,14 @@ class DirectSttForwardingDispatcherTest {
                 acceptDelegate(), webClient, props(1), meters, recordingAuditSink());
 
         // First chunk: acquires the only permit and starts the (slow) forward.
-        final DispatchOutcome first = dispatcher.dispatch(command(new byte[] {1}));
+        final DispatchOutcome first = dispatcher.dispatch(command(new byte[] {1, 2}));
         assertThat(first).isInstanceOf(DispatchOutcome.Accepted.class);
         // Ensure the first forward is in-flight (permit taken) before the second dispatch.
         final RecordedRequest firstReq = server.takeRequest(3, TimeUnit.SECONDS);
         assertThat(firstReq).isNotNull();
 
         // Second chunk while saturated → dropped, but admission still Accepted.
-        final DispatchOutcome second = dispatcher.dispatch(command(new byte[] {2}));
+        final DispatchOutcome second = dispatcher.dispatch(command(new byte[] {3, 4}));
         assertThat(second).isInstanceOf(DispatchOutcome.Accepted.class);
 
         awaitCounter(meters, "dropped_saturation", 1.0);
@@ -612,7 +597,7 @@ class DirectSttForwardingDispatcherTest {
                 acceptDelegate(), webClient, props(4), meters, recordingAuditSink());
         final ChunkDispatchCommand cmd = new ChunkDispatchCommand(
                 "SES-1", 1L, 1L, "22222222-2222-4222-8222-222222222222", "dev", "tr",
-                AudioFormat.values()[0], 16_000, 1, 0L, 0L, "c", payload);
+                AudioFormat.PCM16, 16_000, 1, 0L, 0L, "c", payload);
 
         dispatcher.dispatch(cmd);
 
@@ -638,7 +623,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props(4), meters, auditSink);
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3, 4}));
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
 
         assertThat(auditSink.awaitStarted())
@@ -667,7 +652,7 @@ class DirectSttForwardingDispatcherTest {
         final DirectSttForwardingDispatcher dispatcher = dispatcher(
                 acceptDelegate(), webClient, props(4), meters, failingAudit);
 
-        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3}));
+        final DispatchOutcome out = dispatcher.dispatch(command(new byte[] {1, 2, 3, 4}));
 
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
         assertThat(server.takeRequest(750, TimeUnit.MILLISECONDS))

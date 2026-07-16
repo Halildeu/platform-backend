@@ -98,6 +98,12 @@ public class DirectSttForwardingDispatcher
     private final MeterRegistry meters;
     private final Semaphore inFlight;
     private final DirectSttAudioWindowAggregator aggregator;
+    /** The #428 audio bound: how much PCM this process still owes a terminal path, per session. */
+    private final DirectSttAudioAccountant accountant;
+    /** Retry-After seconds for the two audio-bound refusals. Shared with the Redis path's
+     *  vocabulary on purpose: a client sees one 429/503 contract, whichever gate refused. */
+    private final long queueFullRetryAfterSeconds;
+    private final long unavailableRetryAfterSeconds;
     private final Scheduler forwardScheduler;
     private final Scheduler transcriptSinkScheduler;
     private final String transcribeUri;
@@ -119,6 +125,12 @@ public class DirectSttForwardingDispatcher
         this.aggregator = new DirectSttAudioWindowAggregator(
                 cfg.getAggregation().getWindowSeconds(),
                 cfg.getAggregation().getMaxBufferedSessions());
+        // #836 landed maxBufferedSeconds as config and validated it; this is the
+        // enforcement site that config was always for.
+        this.accountant = new DirectSttAudioAccountant(
+                properties.getBounds().getMaxBufferedSeconds());
+        this.queueFullRetryAfterSeconds = properties.getDispatcher().getQueueFullRetryAfterSeconds();
+        this.unavailableRetryAfterSeconds = properties.getDispatcher().getUnavailableRetryAfterSeconds();
         this.transcribeUri = cfg.getTranscribeUrl().trim();
         // Dedicated bounded scheduler — the "leave the admission monitor now" boundary.
         // Bounded so a slow/down live-stt cannot spawn unbounded threads; the Semaphore is
@@ -136,6 +148,13 @@ public class DirectSttForwardingDispatcher
                 d -> (double) (cfg.getMaxInFlight() - d.inFlight.availablePermits()));
         meters.gauge(METRIC_PREFIX + "aggregation_active_sessions", aggregator,
                 DirectSttAudioWindowAggregator::activeSessions);
+        // Low cardinality: totals only, never a per-session label.
+        meters.gauge(METRIC_PREFIX + "audio_bound_reserved_frames", accountant,
+                DirectSttAudioAccountant::totalReservedFrames);
+        meters.gauge(METRIC_PREFIX + "audio_bound_active_sessions", accountant,
+                a -> (double) a.activeSessions());
+        meters.gauge(METRIC_PREFIX + "audio_bound_negative_invariant_total", accountant,
+                DirectSttAudioAccountant::negativeInvariantBreaches);
         meters.gauge(METRIC_PREFIX + "aggregation_buffered_bytes", aggregator,
                 DirectSttAudioWindowAggregator::bufferedBytes);
         counter("aggregation_shutdown_discarded_sessions");
@@ -149,22 +168,75 @@ public class DirectSttForwardingDispatcher
             return base;
         }
 
+        // The audio bound (#428 / platform-ai#257). Taken here — after the registry's
+        // replay/idempotency decision, before the byte copy and the queue handoff — so a
+        // replayed chunk never reaches this line and can never charge a second time, and a
+        // refused chunk leaves no bytes behind to account for.
+        final DirectSttAudioAccountant.ReserveOutcome reserved = accountant.reserve(
+                cmd.tenantId(), cmd.sessionId(), cmd.audioFormat(),
+                cmd.sampleRateHz(), cmd.channels(), cmd.payload().length());
+
+        switch (reserved) {
+            case DirectSttAudioAccountant.ReserveOutcome.OverLimit over -> {
+                // Measured refusal: the session is holding its bound. 429 + Retry-After;
+                // the client retries once the in-flight windows drain.
+                counter("audio_bound_over_limit").increment();
+                log.warn("Direct-STT audio bound reached; rejecting chunk reservedFrames={} "
+                                + "requestedFrames={} limitFrames={} {}",
+                        over.reservedFrames(), over.requestedFrames(), over.limitFrames(), kv(cmd));
+                return new DispatchOutcome.QueueFull(queueFullRetryAfterSeconds);
+            }
+            case DirectSttAudioAccountant.ReserveOutcome.Unmeterable unknown -> {
+                // NOT "there is room". Admitting audio whose duration we cannot derive is
+                // how an unbounded buffer grows while the gauge reads zero, so this is an
+                // explicit 503 rather than a silent pass. Reason is a low-cardinality label.
+                counter("audio_capacity_unknown", "reason", unknownReasonLabel(cmd)).increment();
+                log.warn("Direct-STT capacity unmeterable ({}); rejecting chunk {}",
+                        unknown.reason(), kv(cmd));
+                return new DispatchOutcome.Unavailable(unavailableRetryAfterSeconds);
+            }
+            case DirectSttAudioAccountant.ReserveOutcome.Reserved ok -> {
+                dispatchReserved(cmd, ok.frames());
+            }
+        }
+        return base;
+    }
+
+    /** The chunk is paid for; move its bytes into the aggregator or straight to a forward. */
+    private void dispatchReserved(final ChunkDispatchCommand cmd, final long chunkFrames) {
         final byte[] audio;
         try {
             audio = copyBytes(cmd.payload().bytes(), cmd.payload().length());
         } catch (final RuntimeException ex) {
+            // The bytes never made it in, so the charge must not stand.
+            refund(cmd, chunkFrames);
             counter("exception").increment();
             log.warn("Direct-STT byte copy failed err={} {}", ex.getClass().getSimpleName(), kv(cmd));
-            return base;
+            return;
         }
 
-        if (cfg.getAggregation().isEnabled() && cmd.audioFormat() == AudioFormat.PCM16) {
-            appendAggregated(cmd, audio);
+        if (cfg.getAggregation().isEnabled()) {
+            // The aggregator now owns these frames; each window it emits refunds its own.
+            appendAggregated(cmd, audio, chunkFrames);
         } else {
-            scheduleForward(chunkTask(cmd, audio));
+            // No aggregation: the chunk IS the unit that leaves, so it carries its own refund.
+            scheduleForward(chunkTask(cmd, audio, chunkFrames));
         }
+    }
 
-        return base;
+    /** Low-cardinality reason label — never the session id, never the raw byte length. */
+    private static String unknownReasonLabel(final ChunkDispatchCommand cmd) {
+        if (cmd.audioFormat() != AudioFormat.PCM16) {
+            return "non_pcm16_format";
+        }
+        if (cmd.sampleRateHz() <= 0 || cmd.channels() <= 0) {
+            return "invalid_pcm_params";
+        }
+        return "partial_frame";
+    }
+
+    private void refund(final ChunkDispatchCommand cmd, final long frames) {
+        accountant.refundHandle(cmd.tenantId(), cmd.sessionId(), frames).release();
     }
 
     @Override
@@ -183,6 +255,10 @@ public class DirectSttForwardingDispatcher
     @Override
     public void destroy() {
         final DirectSttAudioWindowAggregator.DiscardSummary discarded = aggregator.discardAll();
+        // The buffered audio and its reservations go together, which is the whole reason a
+        // process-local counter is safe here: nothing durable is left believing in bytes
+        // that no longer exist.
+        accountant.discardAll();
         if (discarded.sessions() > 0) {
             counter("aggregation_shutdown_discarded_sessions").increment(discarded.sessions());
             counter("aggregation_shutdown_discarded_bytes").increment(discarded.bytes());
@@ -194,11 +270,14 @@ public class DirectSttForwardingDispatcher
         transcriptSinkScheduler.dispose();
     }
 
-    private void appendAggregated(final ChunkDispatchCommand cmd, final byte[] audio) {
+    private void appendAggregated(
+            final ChunkDispatchCommand cmd, final byte[] audio, final long chunkFrames) {
         try {
             final DirectSttAudioWindowAggregator.AppendResult result =
                     aggregator.append(cmd, audio);
             if (result.capacityExceeded()) {
+                // The aggregator refused the bytes, so nothing is holding them: refund.
+                refund(cmd, chunkFrames);
                 counter("aggregation_dropped_capacity").increment();
                 log.warn("Direct-STT aggregation capacity exceeded (maxBufferedSessions={}) {}",
                         cfg.getAggregation().getMaxBufferedSessions(), kv(cmd));
@@ -211,6 +290,10 @@ public class DirectSttForwardingDispatcher
                 scheduleForward(windowTask(window, "window_full"));
             });
         } catch (final RuntimeException ex) {
+            // The append's outcome is unknown, so the safest accounting is to refund this
+            // chunk: an over-refund would alarm loudly (negative invariant), whereas a
+            // leaked charge would silently shrink the session's bound for the rest of its life.
+            refund(cmd, chunkFrames);
             counter("aggregation_error").increment();
             log.warn("Direct-STT aggregation failed err={} {}",
                     ex.getClass().getSimpleName(), kv(cmd));
@@ -221,6 +304,8 @@ public class DirectSttForwardingDispatcher
 
     private void scheduleForward(final ForwardTask task) {
         if (!inFlight.tryAcquire()) {
+            // Saturation drop is a terminal path: these bytes are never going anywhere.
+            task.refund().release();
             counter("dropped_saturation").increment();
             log.warn("Direct-STT forward dropped (in-flight saturated, maxInFlight={}) {}",
                     cfg.getMaxInFlight(), kv(task));
@@ -231,6 +316,7 @@ public class DirectSttForwardingDispatcher
             forwardScheduler.schedule(() -> forward(task));
         } catch (final RuntimeException ex) {
             inFlight.release();
+            task.refund().release();
             clearAudio(task);
             counter("exception").increment();
             log.warn("Direct-STT schedule rejected err={} {}",
@@ -238,7 +324,8 @@ public class DirectSttForwardingDispatcher
         }
     }
 
-    private ForwardTask chunkTask(final ChunkDispatchCommand cmd, final byte[] audio) {
+    private ForwardTask chunkTask(
+            final ChunkDispatchCommand cmd, final byte[] audio, final long chunkFrames) {
         final int durationMs = cmd.audioFormat() == AudioFormat.PCM16
                 ? pcmDurationMs(audio.length, cmd.sampleRateHz(), cmd.channels())
                 : 0;
@@ -248,19 +335,32 @@ public class DirectSttForwardingDispatcher
                 cmd.chunkStartedAtMs(), durationMs, "chunk",
                 cmd.meetingId(), cmd.deviceId(), cmd.language(), cmd.audioFormat().name(),
                 cmd.sampleRateHz(), cmd.channels(), cmd.correlationId(), cmd.payload().sha256(),
-                cmd.payload().length());
+                cmd.payload().length(),
+                accountant.refundHandle(cmd.tenantId(), cmd.sessionId(), chunkFrames));
     }
 
-    private static ForwardTask windowTask(
+    /**
+     * The task for a flushed window, carrying the refund for the frames IT holds.
+     *
+     * <p>Not the frames of any one chunk: the aggregator slices chunks at window
+     * boundaries, so this window's audio may come from several chunks and a chunk's audio
+     * may leave in several windows. Charges and refunds only agree in total — which is
+     * also what makes the aggregator to queued/in-flight hand-off carry the same
+     * reservation rather than count a second one.
+     */
+    private ForwardTask windowTask(
             final DirectSttAudioWindowAggregator.AudioWindow window,
             final String flushReason) {
+        final long windowFrames = DirectSttAudioAccountant.framesIn(window.audio().length, window.channels());
         return new ForwardTask(
                 window.audio(), window.sessionId(), window.tenantId(), window.userId(),
                 window.windowSeq(), window.firstChunkSeq(), window.lastChunkSeq(),
                 window.startedAtMs(), window.durationMs(), flushReason,
                 window.meetingId(), window.deviceId(), window.language(), AudioFormat.PCM16.name(),
                 window.sampleRateHz(), window.channels(), window.correlationId(), window.sha256(),
-                window.audio().length);
+                window.audio().length,
+                accountant.refundHandle(window.tenantId(), window.sessionId(),
+                        Math.max(0L, windowFrames)));
     }
 
     private void recordWindowMetrics(final DirectSttAudioWindowAggregator.AudioWindow window) {
@@ -285,6 +385,8 @@ public class DirectSttForwardingDispatcher
 
         try {
             if (!emitComputePlaneAudit(task)) {
+                // Audit refused, so the audio never leaves — a terminal path like any other.
+                task.refund().release();
                 clearAudio(task);
                 releaseOnce(released);
                 return;
@@ -329,7 +431,10 @@ public class DirectSttForwardingDispatcher
                     .bodyToMono(TranscriptResult.class)
                     .timeout(Duration.ofMillis(cfg.getResponseTimeoutMs()))
                     .publishOn(forwardScheduler)
+                    // doFinally covers EVERY terminal signal — success, error, timeout and
+                    // cancel — which is exactly the set the audio bound must refund on.
                     .doFinally(signal -> {
+                        task.refund().release();
                         clearAudio(task);
                         releaseOnce(released);
                     })
@@ -338,6 +443,7 @@ public class DirectSttForwardingDispatcher
                             error -> onError(error, task));
         } catch (final RuntimeException ex) {
             // Synchronous build/subscribe failure — release here (doFinally never ran).
+            task.refund().release();
             clearAudio(task);
             releaseOnce(released);
             counter("exception").increment();
@@ -594,7 +700,13 @@ public class DirectSttForwardingDispatcher
             int channels,
             String correlationId,
             String sha256,
-            int length) {
+            int length,
+            /**
+             * The audio bound's refund for the frames THIS task holds. Single-shot, so
+             * every terminal path can call it: success, error, timeout, cancel, saturation
+             * drop, a rejected schedule and shutdown all do, and they overlap in practice.
+             */
+            DirectSttAudioAccountant.Refund refund) {
     }
 
     /**
