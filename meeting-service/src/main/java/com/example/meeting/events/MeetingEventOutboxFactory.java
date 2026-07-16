@@ -1,58 +1,86 @@
 package com.example.meeting.events;
 
+import com.example.common.meeting.events.MeetingEventEnvelope;
+import com.example.common.meeting.events.MeetingEventKeys;
+import com.example.common.meeting.events.MeetingEventPayload;
+import com.example.common.meeting.events.MeetingEventV1Serializer;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.MeetingEventType;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
  * Builds the transactional-outbox rows for a persisted analysis run — Faz 24
- * (platform-ai#244 BE-1d). A deliberately plain (non-Spring) collaborator: the
- * writer constructs it with the shared {@link ObjectMapper}, and it is unit-tested
- * in isolation (no DB, no context).
+ * (platform-ai#244 BE-1d), migrated onto the shared contract in #802 slice 1.
  *
- * <h2>What it emits (the #412 events, Codex acceptance)</h2>
+ * <h2>What this class is now</h2>
+ * The adapter between meeting-service's JPA world and the shared contract, and nothing
+ * more. It maps entities onto {@link MeetingEventEnvelope}s and lets
+ * {@code common-meeting-events} own the envelope shape, the deterministic keys, the
+ * validation and the v1 bytes; it then copies the result onto this service's OWN outbox
+ * entity. The persistence half — the table, the migration, the poller — stays here on
+ * purpose (#802 owner decision: no shared DB table, no central relay).
+ *
+ * <p>It is the SINGLE path from a run to an event: every emission goes through
+ * {@link #build}, so a second envelope builder cannot quietly grow beside it. The two
+ * rules that decide whether a fact exists at all stay here, because both are
+ * meeting-service domain judgements rather than wire concerns:
  * <ul>
- *   <li><b>meeting.summary.ready</b> — one row per run that actually HAS a summary.
- *       A run with a null/blank summary produces no "summary ready" event (there is
- *       no summary to be ready). Emitted only here, i.e. only once the run is being
- *       persisted — never before commit.</li>
- *   <li><b>meeting.action.assigned</b> — one row per AI action with a real,
- *       non-blank assignee (the LLM attribution guard). An action the model could
- *       not attribute (assignee null/blank) produces NO event.</li>
+ *   <li><b>the summary gate</b> — a run with a null/blank summary has no summary to be
+ *       ready, so it emits no {@code meeting.summary.ready};</li>
+ *   <li><b>the attribution guard</b> — an action the model could not attribute emits no
+ *       {@code meeting.action.assigned}. The shared validator enforces the same rule as
+ *       a backstop: if one ever slipped through, it would be rejected here rather than
+ *       published with an empty assignee.</li>
  * </ul>
  *
- * <p>{@code event_key} is deterministic ({@code <run>|<type>[|<ordinal>]}) so the
- * UNIQUE index makes a retried/raced ingestion idempotent (exactly-once).
- *
- * <p>Payload is thin + deterministic: identifiers, timestamps and small metadata
- * rendered as strings/ints so the JSON is identical under any {@code ObjectMapper}
- * config, and NEVER the summary/transcript text.
+ * <h2>Wire compatibility</h2>
+ * This migration changes NO byte and NO event key — see
+ * {@code MeetingEventOutboxFactoryGoldenTest}, which asserts this service's output
+ * against the golden fixtures captured from the pre-migration code.
  */
 public final class MeetingEventOutboxFactory {
 
-    /** Event payload schema tag — lets a consumer pin the contract it parses. */
-    static final String SCHEMA = "meeting.event.v1";
+    /**
+     * Which producer this is, stamped on every envelope.
+     *
+     * <p>Not on the v1 wire (those bytes are frozen) — it is envelope-level provenance
+     * for the shared contract, and what a future v2 would render.
+     */
+    private static final String PRODUCER = "meeting-service";
 
-    private final ObjectMapper objectMapper;
+    /** The aggregate these events are about: the analysis run. */
+    private static final String AGGREGATE_TYPE = "meeting.analysis.run";
 
+    /**
+     * Occurrence counter for the aggregate — always 0 here, and that is a domain fact
+     * rather than a stub: {@code analysisRunId} is minted per analysis, so a re-analysis
+     * is a NEW run with a NEW id and therefore already a distinct event key. Producers
+     * whose aggregate id is stable across repeats (consent revocation, transcript
+     * re-finalization) are the ones that need a real revision.
+     */
+    private static final long AGGREGATE_REVISION = 0L;
+
+    /**
+     * @param objectMapper unused since #802 — the v1 writer is owned by the shared
+     *     serializer, so the wire format can no longer vary with a service's mapper
+     *     config. The parameter stays for now to keep the constructor signature (and its
+     *     single call site) unchanged; a later slice can drop it.
+     */
+    @SuppressWarnings("unused")
     public MeetingEventOutboxFactory(final ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+        // Intentionally empty — see the parameter note above.
     }
 
     /**
-     * Build every outbox row for a just-persisted run and its AI children. The
-     * caller saves the returned rows in the SAME transaction as the run.
+     * Build every outbox row for a just-persisted run and its AI children. The caller
+     * saves the returned rows in the SAME transaction as the run.
      */
     public List<MeetingEventOutbox> build(
             final MeetingAnalysisRun run,
@@ -62,58 +90,48 @@ public final class MeetingEventOutboxFactory {
         final List<MeetingEventOutbox> rows = new ArrayList<>();
 
         if (hasText(run.getSummary())) {
-            rows.add(summaryReady(run, decisions.size(), actions.size()));
+            rows.add(row(run, MeetingEventType.SUMMARY_READY,
+                    new MeetingEventPayload.SummaryReady(
+                            run.getAnalysisRunId(),
+                            run.getSummaryGroundingStatus(),
+                            decisions.size(),
+                            actions.size())));
         }
 
         for (MeetingAction action : actions) {
             // Attribution guard: only a real, non-blank assignee yields an event.
             if (hasText(action.getAssigneeSubject())) {
-                rows.add(actionAssigned(run, action));
+                rows.add(row(run, MeetingEventType.ACTION_ASSIGNED,
+                        new MeetingEventPayload.ActionAssigned(
+                                run.getAnalysisRunId(),
+                                action.getOrdinal(),
+                                action.getAssigneeSubject(),
+                                action.getDueAt())));
             }
         }
         return rows;
     }
 
-    private MeetingEventOutbox summaryReady(
-            final MeetingAnalysisRun run, final int decisionCount, final int actionCount) {
-
-        final Map<String, Object> payload = basePayload(run, MeetingEventType.SUMMARY_READY);
-        payload.put("summaryGroundingStatus", run.getSummaryGroundingStatus());
-        payload.put("decisionCount", decisionCount);
-        payload.put("actionCount", actionCount);
-
-        return row(run, MeetingEventType.SUMMARY_READY,
-                summaryEventKey(run.getAnalysisRunId()), payload);
-    }
-
-    private MeetingEventOutbox actionAssigned(final MeetingAnalysisRun run, final MeetingAction action) {
-        final Map<String, Object> payload = basePayload(run, MeetingEventType.ACTION_ASSIGNED);
-        payload.put("ordinal", action.getOrdinal());
-        payload.put("assigneeSubject", action.getAssigneeSubject());
-        payload.put("dueAt", action.getDueAt() == null ? null : action.getDueAt().toString());
-
-        return row(run, MeetingEventType.ACTION_ASSIGNED,
-                actionEventKey(run.getAnalysisRunId(), action.getOrdinal()), payload);
-    }
-
-    private Map<String, Object> basePayload(final MeetingAnalysisRun run, final MeetingEventType type) {
-        final Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("schema", SCHEMA);
-        payload.put("eventType", type.wireValue());
-        payload.put("analysisRunId", run.getAnalysisRunId().toString());
-        payload.put("meetingId", run.getMeetingId().toString());
-        payload.put("tenantId", run.getTenantId().toString());
-        payload.put("orgId", run.getOrgId() == null ? null : run.getOrgId().toString());
-        final Instant generatedAt = run.getGeneratedAt();
-        payload.put("generatedAt", generatedAt == null ? null : generatedAt.toString());
-        return payload;
-    }
-
+    /** Maps one shared envelope onto this service's own outbox entity. */
     private MeetingEventOutbox row(
             final MeetingAnalysisRun run,
             final MeetingEventType type,
-            final String eventKey,
-            final Map<String, Object> payload) {
+            final MeetingEventPayload payload) {
+
+        final MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()
+                .eventType(sharedType(type))
+                .producer(PRODUCER)
+                .meetingId(run.getMeetingId())
+                .tenantId(run.getTenantId())
+                .orgId(run.getOrgId())
+                .occurredAt(run.getGeneratedAt())
+                .aggregateType(AGGREGATE_TYPE)
+                .aggregateId(run.getAnalysisRunId())
+                .aggregateRevision(AGGREGATE_REVISION)
+                .payload(payload)
+                // eventKey is derived by the shared factory rather than restated here,
+                // so this service cannot drift from the one deterministic derivation.
+                .build();
 
         final MeetingEventOutbox outbox = new MeetingEventOutbox();
         outbox.setEventType(type.wireValue());
@@ -121,33 +139,47 @@ public final class MeetingEventOutboxFactory {
         outbox.setMeetingId(run.getMeetingId());
         outbox.setTenantId(run.getTenantId());
         outbox.setOrgId(run.getOrgId());
-        outbox.setEventKey(eventKey);
-        outbox.setPayload(toJson(payload));
+        outbox.setEventKey(envelope.eventKey());
+        outbox.setPayload(MeetingEventV1Serializer.toJson(envelope));
         return outbox;
+    }
+
+    /**
+     * This service's local enum to the shared one.
+     *
+     * <p>The local {@code MeetingEventType} is what the DB CHECK constraint and the
+     * entity speak, so the two coexist until a later slice retires the local copy. They
+     * are joined on the wire value rather than the enum name, because the wire value is
+     * the canonical thing both sides already agree on.
+     */
+    private static com.example.common.meeting.events.MeetingEventType sharedType(final MeetingEventType type) {
+        return com.example.common.meeting.events.MeetingEventType.fromWire(type.wireValue());
     }
 
     // ────────────────────────── deterministic keys / guards ──────────────────────────
 
-    /** {@code <run>|meeting.summary.ready}. */
+    /**
+     * {@code <run>|meeting.summary.ready}.
+     *
+     * @deprecated Delegates to {@link MeetingEventKeys#summaryReadyKey} — call that directly.
+     */
+    @Deprecated(forRemoval = true)
     public static String summaryEventKey(final UUID analysisRunId) {
-        return analysisRunId + "|" + MeetingEventType.SUMMARY_READY.wireValue();
+        return MeetingEventKeys.summaryReadyKey(analysisRunId);
     }
 
-    /** {@code <run>|meeting.action.assigned|<ordinal>}. */
+    /**
+     * {@code <run>|meeting.action.assigned|<ordinal>}.
+     *
+     * @deprecated Delegates to {@link MeetingEventKeys#actionAssignedKey} — call that directly.
+     */
+    @Deprecated(forRemoval = true)
     public static String actionEventKey(final UUID analysisRunId, final int ordinal) {
-        return analysisRunId + "|" + MeetingEventType.ACTION_ASSIGNED.wireValue() + "|" + ordinal;
+        return MeetingEventKeys.actionAssignedKey(analysisRunId, ordinal);
     }
 
-    /** The attribution guard, exposed for the negative-proof test. */
+    /** The summary gate / attribution guard, exposed for the negative-proof test. */
     public static boolean hasText(final String value) {
-        return value != null && !value.isBlank();
-    }
-
-    private String toJson(final Map<String, Object> payload) {
-        try {
-            return objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Failed to serialise meeting event payload.", e);
-        }
+        return MeetingEventKeys.hasText(value);
     }
 }
