@@ -3,6 +3,7 @@ package com.example.permission.dataaccess;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
@@ -23,6 +24,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -46,6 +48,7 @@ class OutboxPollerTest {
     private OutboxConfig config;
     private PlatformTransactionManager txManager;
     private Environment env;
+    private com.example.permission.service.AuthzVersionService authzVersionService;
 
     private OutboxPoller poller;
 
@@ -65,6 +68,7 @@ class OutboxPollerTest {
         when(txManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
 
         env = mock(Environment.class);
+        authzVersionService = mock(com.example.permission.service.AuthzVersionService.class);
         when(env.getProperty("HOSTNAME")).thenReturn("test-poller");
 
         // CAS UPDATEs default to 1 row affected (success).
@@ -72,7 +76,8 @@ class OutboxPollerTest {
         when(outboxRepository.markRetry(anyLong(), any(), any(), anyString(), any())).thenReturn(1);
         when(outboxRepository.markFailed(anyLong(), any(), anyString(), any())).thenReturn(1);
 
-        poller = new OutboxPoller(outboxRepository, authzService, backoffPolicy, config, txManager, env);
+        poller = new OutboxPoller(outboxRepository, authzService, backoffPolicy, config,
+                authzVersionService, txManager, env);
     }
 
     @Test
@@ -240,4 +245,69 @@ class OutboxPollerTest {
         e.setPayload(payload);
         return e;
     }
+
+    // ---- board #2531: global authz version bump (revoke visibility) ----
+
+    @Test
+    void processEntry_grant_bumpsGlobalAuthzVersion_beforeMarkingProcessed() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
+        DataAccessScopeOutboxEntry entry = grantEntry(201L, 1, "wc-project-1204", "project");
+
+        poller.processEntry(entry, lockToken);
+
+        // /authz/me caches the scope answer for ~120s keyed on the authz version. Without this
+        // bump a fresh grant stays invisible until the TTL expires.
+        InOrder order = inOrder(authzService, authzVersionService, outboxRepository);
+        order.verify(authzService).writeTuple(any(), any(), any(), any());
+        order.verify(authzVersionService).incrementVersion();
+        order.verify(outboxRepository).markProcessed(eq(201L), any(Instant.class), eq("test-poller"), eq(lockToken));
+    }
+
+    @Test
+    void processEntry_revoke_bumpsGlobalAuthzVersion_soDenyIsImmediate() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
+        DataAccessScopeOutboxEntry entry = revokeEntry(202L, 1, "wc-project-1204", "project");
+
+        poller.processEntry(entry, lockToken);
+
+        // The dangerous direction: without the bump the tuple is gone from OpenFGA but the user
+        // keeps the revoked scope in allowedScopes for up to the cache TTL (stale-positive
+        // privilege retention).
+        InOrder order = inOrder(authzService, authzVersionService, outboxRepository);
+        order.verify(authzService).deleteTuple(any(), any(), any(), any());
+        order.verify(authzVersionService).incrementVersion();
+        order.verify(outboxRepository).markProcessed(eq(202L), any(Instant.class), eq("test-poller"), eq(lockToken));
+    }
+
+    @Test
+    void processEntry_versionBumpFails_doesNotMarkProcessed_andRetries() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
+        DataAccessScopeOutboxEntry entry = revokeEntry(203L, 1, "wc-project-1204", "project");
+        doThrow(new RuntimeException("authz_sync_version update failed"))
+                .when(authzVersionService).incrementVersion();
+        when(backoffPolicy.nextAttemptAt(anyInt(), any(), any())).thenReturn(Instant.parse("2026-04-28T12:00:30Z"));
+
+        poller.processEntry(entry, lockToken);
+
+        // Marking PROCESSED after a failed bump would strand readers on a stale ALLOW with no
+        // retry to correct it. Both the FGA delete and the bump are idempotent → retry is safe.
+        verify(outboxRepository, never()).markProcessed(anyLong(), any(), anyString(), any());
+        verify(outboxRepository).markRetry(eq(203L), any(), any(), anyString(), any());
+    }
+
+    @Test
+    void processEntry_fgaFailure_doesNotBumpVersion() {
+        Instant lockToken = Instant.parse("2026-04-28T12:02:00Z");
+        DataAccessScopeOutboxEntry entry = grantEntry(204L, 1, "wc-project-1204", "project");
+        doThrow(new RuntimeException("openfga down"))
+                .when(authzService).writeTuple(any(), any(), any(), any());
+        when(backoffPolicy.nextAttemptAt(anyInt(), any(), any())).thenReturn(Instant.parse("2026-04-28T12:00:30Z"));
+
+        poller.processEntry(entry, lockToken);
+
+        // Nothing changed in OpenFGA → invalidating every pod's scope cache would be pure churn.
+        verify(authzVersionService, never()).incrementVersion();
+        verify(outboxRepository, never()).markProcessed(anyLong(), any(), anyString(), any());
+    }
+
 }

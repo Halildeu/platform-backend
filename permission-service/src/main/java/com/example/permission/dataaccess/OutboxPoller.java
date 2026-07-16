@@ -1,6 +1,7 @@
 package com.example.permission.dataaccess;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.example.permission.service.AuthzVersionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -64,6 +65,7 @@ public class OutboxPoller {
     private final OpenFgaAuthzService authzService;
     private final OutboxBackoffPolicy backoffPolicy;
     private final OutboxConfig config;
+    private final AuthzVersionService authzVersionService;
     private final TransactionTemplate txTemplate;
     private final String pollerId;
 
@@ -71,12 +73,14 @@ public class OutboxPoller {
                         OpenFgaAuthzService authzService,
                         OutboxBackoffPolicy backoffPolicy,
                         OutboxConfig config,
+                        AuthzVersionService authzVersionService,
                         @Qualifier("reportsDbTransactionManager") PlatformTransactionManager txManager,
                         Environment env) {
         this.outboxRepository = outboxRepository;
         this.authzService = authzService;
         this.backoffPolicy = backoffPolicy;
         this.config = config;
+        this.authzVersionService = authzVersionService;
         this.txTemplate = new TransactionTemplate(txManager);
         this.pollerId = resolvePollerId(env);
     }
@@ -123,6 +127,22 @@ public class OutboxPoller {
     void processEntry(DataAccessScopeOutboxEntry entry, Instant claimedLockedUntil) {
         try {
             invokeFga(entry);
+            // board #2531: bump the GLOBAL authz version AFTER the FGA write/delete lands but
+            // BEFORE marking the row PROCESSED.
+            //
+            // Why it must exist: /authz/me caches its scope answer for ~120s
+            // (app.authz.scope-cache.ttl-ms). Without a version bump a REVOKE stays invisible —
+            // the tuple is gone from OpenFGA, the outbox says PROCESSED, and the user keeps the
+            // revoked scope in allowedScopes for up to two minutes (stale-positive privilege
+            // retention). A local scopeContextCache.evictUser() is not enough: the cache key is
+            // keyed on the numeric id (not the sub this row carries) and other permission-service
+            // pods hold their own caches. The version is DB-backed, so bumping it changes the
+            // cache key on every pod at once.
+            //
+            // Why it must be BEFORE finalizeProcessed: if the bump fails, the row must NOT be
+            // marked PROCESSED — the exception below reschedules a retry, and both the FGA
+            // write/delete and the bump are idempotent, so the retry is safe.
+            authzVersionService.incrementVersion();
             finalizeProcessed(entry, claimedLockedUntil);
         } catch (Exception cause) {
             int attempts = entry.getAttemptCount() == null ? 0 : entry.getAttemptCount();

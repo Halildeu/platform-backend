@@ -96,6 +96,51 @@ class ScopeObjectIdCodecTest {
     }
 
     @Test
+    @DisplayName("SECURITY: Unicode digits must NOT decode into a real entity id (authz widening)")
+    void unicodeDigitsAreNotIds() {
+        // Character.isDigit() is true for these AND Long.parseLong converts them:
+        //   Long.parseLong("١٢٠٤")   == 1204   (Arabic-Indic)
+        //   Long.parseLong("１２０４") == 1204   (full-width)
+        // The canonical writer can never emit them, so decoding them into project 1204 would grant
+        // access through the decoder itself.
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-١٢٠٤").isEmpty(),
+                "Arabic-Indic digits must not decode");
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-１２０４").isEmpty(),
+                "full-width digits must not decode");
+        assertTrue(ScopeObjectIdCodec.decode("project", "١٢٠٤").isEmpty(),
+                "Unicode digits must not decode via the legacy numeric path either");
+    }
+
+    @Test
+    @DisplayName("SECURITY: whitespace is not trimmed — a padded id is not the canonical id")
+    void whitespaceIsNotNormalised() {
+        assertTrue(ScopeObjectIdCodec.decode("project", " wc-project-1204 ").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-1204\n").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-1204\t").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project- 1204").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", " 1204").isEmpty(),
+                "legacy numeric path must not trim either");
+    }
+
+    @Test
+    @DisplayName("leading zeros are non-canonical (both live writers emit minimal decimal)")
+    void leadingZerosRejected() {
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-001204").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", "01204").isEmpty());
+        // but a bare zero is still a valid minimal decimal
+        assertEquals(0L, ScopeObjectIdCodec.decode("project", "wc-project-0").orElseThrow().id());
+    }
+
+    @Test
+    @DisplayName("plus/minus signs and overflow do not decode")
+    void signsAndOverflow() {
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-+1204").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project--1204").isEmpty());
+        assertTrue(ScopeObjectIdCodec.decode("project", "wc-project-99999999999999999999").isEmpty(),
+                "overflow must not silently wrap");
+    }
+
+    @Test
     @DisplayName("supports() only covers ADR-0008 scope object types")
     void supportsOnlyScopeTypes() {
         assertTrue(ScopeObjectIdCodec.supports("project"));

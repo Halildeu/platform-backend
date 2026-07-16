@@ -91,32 +91,48 @@ public final class ScopeObjectIdCodec {
      * yields {@link OptionalLong#empty()}: unknown shapes are <em>not</em> guessed at.
      */
     public static java.util.Optional<DecodedObjectId> decode(String objectType, String rawId) {
-        if (rawId == null) {
+        if (rawId == null || rawId.isEmpty()) {
             return java.util.Optional.empty();
         }
-        String id = rawId.trim();
-        if (id.isEmpty()) {
-            return java.util.Optional.empty();
-        }
+        // NO trim(): an authz decoder must not normalise. " wc-project-1204 " is NOT what the
+        // canonical writer emits, so accepting it would silently widen what counts as a grant.
+        String id = rawId;
 
         String prefix = CANONICAL_PREFIX.get(objectType == null ? null : objectType.toLowerCase(Locale.ROOT));
         if (prefix != null && id.startsWith(prefix)) {
-            return parseLong(id.substring(prefix.length()))
+            return parseAsciiDecimal(id.substring(prefix.length()))
                     .map(v -> new DecodedObjectId(v, false));
         }
 
         // Legacy bare-numeric form (TupleSyncService). Kept readable on purpose: these tuples are
         // live today and failing closed on them would revoke working access.
-        return parseLong(id).map(v -> new DecodedObjectId(v, true));
+        return parseAsciiDecimal(id).map(v -> new DecodedObjectId(v, true));
     }
 
-    private static java.util.Optional<Long> parseLong(String s) {
+    /**
+     * Strict ASCII decimal parse — the object-id contract, not a lenient number reader.
+     *
+     * <p>Deliberately NOT {@code Character.isDigit}: that returns {@code true} for Unicode digits
+     * (Arabic-Indic, full-width, …) and {@code Long.parseLong} happily converts them
+     * ({@code Long.parseLong("١٢٠٤") == 1204}). An id like {@code wc-project-١٢٠٤} is not
+     * something the canonical writer can ever produce, so decoding it into real project 1204
+     * would be an authorization widening through the decoder.
+     *
+     * <p>Also rejects leading zeros: the canonical encoding is the minimal decimal form
+     * ({@code wc-project-1204}), so {@code wc-project-001204} is a non-canonical id, not an alias
+     * for the same entity. Both live writers emit minimal form.
+     */
+    private static java.util.Optional<Long> parseAsciiDecimal(String s) {
         if (s == null || s.isEmpty()) {
             return java.util.Optional.empty();
         }
+        if (s.length() > 1 && s.charAt(0) == '0') {
+            return java.util.Optional.empty();   // non-minimal decimal → not canonical
+        }
         for (int i = 0; i < s.length(); i++) {
-            if (!Character.isDigit(s.charAt(i))) {
-                return java.util.Optional.empty();
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return java.util.Optional.empty();   // ASCII 0-9 only
             }
         }
         try {
