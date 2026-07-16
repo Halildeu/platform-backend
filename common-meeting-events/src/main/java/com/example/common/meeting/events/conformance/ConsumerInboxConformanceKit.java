@@ -6,7 +6,15 @@ import com.example.common.meeting.events.MeetingEventEnvelope;
 import com.example.common.meeting.events.MeetingEventPayload;
 import com.example.common.meeting.events.MeetingEventType;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -35,6 +43,22 @@ import org.junit.jupiter.api.Test;
  * <p>This kit counts REAL side effects, not inbox rows. An inbox row is the consumer's own
  * bookkeeping: asking it whether it de-duplicated is asking it to grade its own work. The
  * question that matters is whether the notification was sent twice.
+ *
+ * <h2>Scope — what a green run here does and does not license</h2>
+ * The kit pins the CONTRACT: an atomic claim per {@code eventKey}, effect and inbox entry
+ * committing together, and one effect under a real in-process collision. It is written
+ * against whatever store the harness wraps, so a green run says the consumer's logic
+ * honours the contract on that store.
+ *
+ * <p>It is NOT a substitute for exercising the real store under real concurrency. The
+ * failures that matter most — a missing UNIQUE index on {@code event_key}, an isolation
+ * level that lets two transactions both read "absent", a claim that races across
+ * processes rather than threads — are properties of the deployed database, not of the
+ * logic above it. Binding a producer's real Postgres inbox to this kit is a later slice
+ * (#802 acceptance 6 asks for the contract to be DEFINED here). What this kit does
+ * guarantee is that it will not leave the collision path falsely green in the meantime:
+ * {@link #concurrentDeliveriesOfTheSameEventApplyExactlyOneEffect} fails a check-then-act
+ * consumer, and {@code ConformanceKitTeethTest} proves it.
  */
 public abstract class ConsumerInboxConformanceKit {
 
@@ -136,14 +160,45 @@ public abstract class ConsumerInboxConformanceKit {
     // ────────────────────────── the effect/inbox atomicity window ──────────────────────────
 
     @Test
+    void theFailureInjectionActuallyRuns_orTheAtomicityRulesProveNothing() {
+        // Checked FIRST and on its own, because every rule below is vacuous without it: a
+        // deliverWithFailureAfterEffect that quietly does nothing would satisfy "no effect
+        // committed" by never attempting one. That is the consumer-side twin of the defect
+        // DuplicateEventKeyException closed on the producer side — an empty result keeping
+        // a test green.
+        //
+        // The harness's own outcome is not taken on trust: attemptedEffectCount is an
+        // independent observation it cannot satisfy without genuinely running the path.
+        InboxDelivery delivery = summaryReadyDelivery(UUID.randomUUID());
+
+        InboxTestHarness.FailureInjection injection = consumer.deliverWithFailureAfterEffect(delivery);
+
+        assertThat(injection)
+                .as("the harness must report what its injection did")
+                .isNotNull();
+        assertThat(injection.effectPointReached())
+                .as("the injection must reach the effect point, not skip it")
+                .isTrue();
+        assertThat(injection.transactionFailed())
+                .as("the injection must fail the transaction, not commit it")
+                .isTrue();
+        assertThat(consumer.attemptedEffectCount(delivery.eventKey()))
+                .as("and the attempt must be independently observable, corroborating the outcome")
+                .isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
     void aFailedConsumerTransactionLeavesNoEffect() {
         // If the effect is applied outside the transaction that records the inbox entry,
         // it survives the rollback — and the redelivery that follows adds a second one.
-        // Zero effects here is what proves the two commit together.
+        // Zero COMMITTED effects next to a non-zero ATTEMPT is what proves the two commit
+        // together: it says the consumer tried and unwound, not that it never tried.
         InboxDelivery delivery = summaryReadyDelivery(UUID.randomUUID());
 
-        consumer.deliverWithFailureAfterEffect(delivery);
+        InboxTestHarness.FailureInjection injection = consumer.deliverWithFailureAfterEffect(delivery);
 
+        assertThat(injection.effectPointReached()).isTrue();
+        assertThat(consumer.attemptedEffectCount(delivery.eventKey())).isGreaterThanOrEqualTo(1);
         assertThat(consumer.effectCount(delivery.eventKey()))
                 .as("effect and inbox entry commit together, so a failed transaction leaves neither")
                 .isZero();
@@ -155,7 +210,8 @@ public abstract class ConsumerInboxConformanceKit {
         // The whole point of leaving nothing behind: the event is not lost. The broker
         // redelivers it and the effect happens — once, not zero times and not twice.
         InboxDelivery delivery = summaryReadyDelivery(UUID.randomUUID());
-        consumer.deliverWithFailureAfterEffect(delivery);
+        InboxTestHarness.FailureInjection injection = consumer.deliverWithFailureAfterEffect(delivery);
+        assertThat(injection.effectPointReached()).isTrue();
 
         assertThat(consumer.deliver(delivery.redelivery()))
                 .as("a retry after a failed transaction must still apply the effect")
@@ -172,11 +228,92 @@ public abstract class ConsumerInboxConformanceKit {
         InboxDelivery poison = summaryReadyDelivery(UUID.randomUUID());
         consumer.deliver(healthy);
 
-        consumer.deliverWithFailureAfterEffect(poison);
+        InboxTestHarness.FailureInjection injection = consumer.deliverWithFailureAfterEffect(poison);
+        assertThat(injection.effectPointReached()).isTrue();
 
         assertThat(consumer.effectCount(healthy.eventKey())).isEqualTo(1);
         assertThat(consumer.effectCount(poison.eventKey())).isZero();
         assertThat(consumer.totalEffectCount()).isEqualTo(1);
+    }
+
+    // ────────────────────────── concurrent duplicate collision ──────────────────────────
+
+    @Test
+    void concurrentDeliveriesOfTheSameEventApplyExactlyOneEffect() throws Exception {
+        // Sequential redelivery is the easy half. The half that actually breaks consumers
+        // is this one: two workers claim the same event at once. A consumer that reads
+        // "have I seen this key?" and then writes passes every sequential test here while
+        // both workers sail past the read and both send the notification. Only the store's
+        // own atomicity — INSERT … ON CONFLICT DO NOTHING on a UNIQUE event_key, or an
+        // equivalent atomic claim — resolves the race to one winner.
+        InboxDelivery delivery = summaryReadyDelivery(UUID.randomUUID());
+        int workers = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        CyclicBarrier allAtOnce = new CyclicBarrier(workers);
+        AtomicInteger claimedIt = new AtomicInteger();
+        List<Future<?>> futures = new ArrayList<>();
+
+        try {
+            for (int i = 0; i < workers; i++) {
+                futures.add(pool.submit(() -> {
+                    // The barrier makes the collision real rather than hoped for: every
+                    // worker is inside deliver() at the same moment.
+                    allAtOnce.await(10, TimeUnit.SECONDS);
+                    if (consumer.deliver(delivery.redelivery())) {
+                        claimedIt.incrementAndGet();
+                    }
+                    return null;
+                }));
+            }
+            for (Future<?> f : futures) {
+                f.get(20, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(consumer.effectCount(delivery.eventKey()))
+                .as("%d workers raced for one event: the notification goes out once", workers)
+                .isEqualTo(1);
+        assertThat(claimedIt.get())
+                .as("and exactly one worker may believe it was the one that applied it")
+                .isEqualTo(1);
+        assertThat(consumer.totalEffectCount()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentDeliveriesOfDistinctEventsEachApplyTheirOwnEffect() throws Exception {
+        // The mirror: an inbox whose claim is too coarse (a global lock keyed on nothing,
+        // a table-level claim) would serialise correctly AND swallow real work.
+        int events = 16;
+        List<InboxDelivery> deliveries = new ArrayList<>();
+        for (int i = 0; i < events; i++) {
+            deliveries.add(summaryReadyDelivery(UUID.randomUUID()));
+        }
+        // One thread per party: a barrier with more parties than the pool can run at once
+        // never trips, and the test would hang rather than measure anything.
+        ExecutorService pool = Executors.newFixedThreadPool(events);
+        CyclicBarrier allAtOnce = new CyclicBarrier(events);
+        List<Future<?>> futures = new ArrayList<>();
+
+        try {
+            for (InboxDelivery d : deliveries) {
+                futures.add(pool.submit(() -> {
+                    allAtOnce.await(10, TimeUnit.SECONDS);
+                    return consumer.deliver(d);
+                }));
+            }
+            for (Future<?> f : futures) {
+                f.get(20, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertThat(consumer.totalEffectCount()).isEqualTo(events);
+        for (InboxDelivery d : deliveries) {
+            assertThat(consumer.effectCount(d.eventKey())).isEqualTo(1);
+        }
     }
 
     @Test

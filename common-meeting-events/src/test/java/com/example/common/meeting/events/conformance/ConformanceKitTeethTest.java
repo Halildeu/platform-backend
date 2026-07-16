@@ -1,5 +1,6 @@
 package com.example.common.meeting.events.conformance;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -81,16 +82,77 @@ class ConformanceKitTeethTest {
     }
 
     @Test
-    void theReferenceInboxPassesTheRulesTheBrokenOnesFail() {
+    void kitRejectsAConsumerWhoseFailureInjectionQuietlyDoesNothing() {
+        // The consumer-side twin of the duplicate-exception defect: an atomicity rule that
+        // passes VACUOUSLY. This harness de-duplicates perfectly and claims its injection
+        // ran, so "no effect committed" is true — but only because it never attempted one.
+        // The outcome alone cannot catch it; the independent attempted-effect observation can.
+        ConsumerInboxConformanceKit kit = inboxKitOver(new BrokenHarnesses.NoOpFailureInjectionInbox());
+
+        assertThatThrownBy(kit::theFailureInjectionActuallyRuns_orTheAtomicityRulesProveNothing)
+                .as("a no-op fault injection must not be able to satisfy the atomicity rules")
+                .isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void aNoOpFailureInjectionPassesTheNaiveZeroEffectCheck_whichIsWhyTheEvidenceRuleExists() {
+        // Documents WHY the evidence rule is not redundant: the obvious "did it leave an
+        // effect behind?" assertion alone blesses a harness that did nothing at all.
+        BrokenHarnesses.NoOpFailureInjectionInbox noop = new BrokenHarnesses.NoOpFailureInjectionInbox();
+        noop.reset();
+
+        assertThat(noop.deliverWithFailureAfterEffect(
+                inboxKitOver(noop).summaryReadyDelivery(UUID.randomUUID())).transactionFailed())
+                .as("it cheerfully claims the transaction failed")
+                .isTrue();
+        assertThat(noop.totalEffectCount())
+                .as("and committed nothing — the naive check is satisfied")
+                .isZero();
+    }
+
+    @Test
+    void kitRejectsACheckThenActConsumerThatLosesTheConcurrentCollision() throws Exception {
+        // The rule the review asked for. This consumer reads "have I seen this key?" then
+        // writes, with no atomic claim — a plain SELECT then INSERT, or an inbox table with
+        // no UNIQUE index on event_key. It passes every sequential test; under a real
+        // collision two workers both pass the read and the notification goes out twice.
+        ConsumerInboxConformanceKit kit = inboxKitOver(new BrokenHarnesses.CheckThenActInbox(8));
+
+        assertThatThrownBy(kit::concurrentDeliveriesOfTheSameEventApplyExactlyOneEffect)
+                .as("a check-then-act inbox must fail the concurrent collision rule")
+                .isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void aCheckThenActConsumerPassesEverySequentialRule_whichIsWhyTheCollisionRuleExists() {
+        // Documents WHY the concurrent rule is not redundant: single-thread redelivery
+        // tests bless this consumer completely.
+        ConsumerInboxConformanceKit kit = inboxKitOver(new BrokenHarnesses.CheckThenActInbox(1));
+
+        assertThatCode(() -> {
+            kit.redeliveryOfTheSameEventDoesNotApplyASecondEffect();
+            kit.resetConsumer();
+            kit.repeatedRedeliveryStillAppliesExactlyOneEffect();
+        }).doesNotThrowAnyException();
+    }
+
+    @Test
+    void theReferenceInboxPassesTheRulesTheBrokenOnesFail() throws Exception {
         // Guards against the opposite failure: rules so strict nothing can satisfy them.
         ConsumerInboxConformanceKit kit = inboxKitOver(new InMemoryInboxHarness());
 
         assertThatCode(() -> {
             kit.redeliveryOfTheSameEventDoesNotApplyASecondEffect();
             kit.resetConsumer();
+            kit.theFailureInjectionActuallyRuns_orTheAtomicityRulesProveNothing();
+            kit.resetConsumer();
             kit.aFailedConsumerTransactionLeavesNoEffect();
             kit.resetConsumer();
             kit.deliveryAfterAnAppliedEffectIsSuppressedEvenAcrossOtherTraffic();
+            kit.resetConsumer();
+            kit.concurrentDeliveriesOfTheSameEventApplyExactlyOneEffect();
+            kit.resetConsumer();
+            kit.concurrentDeliveriesOfDistinctEventsEachApplyTheirOwnEffect();
         }).doesNotThrowAnyException();
     }
 

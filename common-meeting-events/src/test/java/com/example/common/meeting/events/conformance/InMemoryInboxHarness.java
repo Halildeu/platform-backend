@@ -1,73 +1,99 @@
 package com.example.common.meeting.events.conformance;
 
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * A minimal correct consumer inbox, used to prove {@link ConsumerInboxConformanceKit}
  * itself runs and that its rules are mutually satisfiable.
  *
- * <p>It models the one structural property the kit is really testing: the side effect and
- * the inbox entry commit TOGETHER. Both are staged and applied in a single step, so a
- * failure part-way leaves neither — exactly what a real consumer gets from wrapping the
- * effect and the inbox insert in one database transaction.
+ * <p>It models the two structural properties the kit tests:
+ *
+ * <ul>
+ *   <li><b>An atomic claim per event key.</b> {@link ConcurrentHashMap#computeIfAbsent} is
+ *       atomic for a key, so exactly one of several racing callers runs the mapping
+ *       function. It stands in for {@code INSERT … ON CONFLICT DO NOTHING} on a UNIQUE
+ *       {@code event_key}. A {@code contains()} followed by {@code add()} would look
+ *       equivalent and lose the race — see {@code BrokenHarnesses.CheckThenActInbox}.</li>
+ *   <li><b>Effect and inbox entry commit together.</b> The effect is applied INSIDE the
+ *       mapping function, so there is no window where one exists without the other —
+ *       what a real consumer buys by sharing one transaction between the two.</li>
+ * </ul>
  *
  * <p>It is NOT a substitute for a real consumer running the kit against its real store:
- * the interesting failures (an inbox insert outside the effect's transaction, a missing
- * UNIQUE index on event_key, an in-memory "seen" set that empties on restart) are exactly
- * the ones a correct-by-construction fake cannot have. Its job is to keep the kit honest —
- * a rule that cannot be satisfied here is a rule with a bug in it.
+ * the failures that matter most (a missing UNIQUE index, an isolation level that lets two
+ * transactions both read "absent", a claim that races across processes) are properties of
+ * the deployed database, not of this map. Its job is to keep the kit honest — a rule that
+ * cannot be satisfied here is a rule with a bug in it.
  */
 final class InMemoryInboxHarness implements InboxTestHarness {
 
-    /** The durable inbox: event keys whose effect has committed. */
-    private final Set<String> inbox = new HashSet<>();
+    /** The durable inbox: event keys whose effect has committed. The claim is on this map. */
+    private final Map<String, Boolean> inbox = new ConcurrentHashMap<>();
 
-    /** The real side effects, counted per key — what the kit actually asserts on. */
-    private final Map<String, Integer> effects = new HashMap<>();
+    /** Committed side effects per key — what the kit asserts on. */
+    private final Map<String, AtomicInteger> committed = new ConcurrentHashMap<>();
+
+    /** Times the effect point was reached, committed or not — the fault-injection witness. */
+    private final Map<String, AtomicInteger> attempted = new ConcurrentHashMap<>();
 
     @Override
     public boolean deliver(final InboxDelivery delivery) {
-        if (inbox.contains(delivery.eventKey())) {
-            return false; // already applied; suppress
-        }
-        commit(delivery.eventKey());
-        return true;
+        final boolean[] applied = {false};
+        // Atomic claim: only one caller's mapping function runs for a given key, so only
+        // one caller can apply the effect no matter how many race here.
+        inbox.computeIfAbsent(delivery.eventKey(), key -> {
+            count(attempted, key);
+            count(committed, key);
+            applied[0] = true;
+            return Boolean.TRUE;
+        });
+        return applied[0];
     }
 
     @Override
-    public void deliverWithFailureAfterEffect(final InboxDelivery delivery) {
-        if (inbox.contains(delivery.eventKey())) {
-            return;
+    public FailureInjection deliverWithFailureAfterEffect(final InboxDelivery delivery) {
+        if (inbox.containsKey(delivery.eventKey())) {
+            // Already applied; the consumer would suppress before reaching the effect.
+            return new FailureInjection(false, false);
         }
-        // The transaction dies before commit. Because the effect is only ever applied AS
-        // PART OF commit(), there is nothing to unwind — which is the property a real
-        // consumer buys by sharing one transaction between effect and inbox insert.
-        // A consumer that applied its effect here, before the commit, would leave it
-        // behind and fail the kit.
-    }
-
-    /** The single atomic step: the effect and the inbox entry land together or not at all. */
-    private void commit(final String eventKey) {
-        effects.merge(eventKey, 1, Integer::sum);
-        inbox.add(eventKey);
+        // Reach the effect point for real — this is the witness the kit corroborates. The
+        // transaction then dies before commit, and because the effect only ever lands as
+        // part of the claim above, there is nothing left behind. A consumer that applied
+        // its effect here, outside the claim, would leave an orphan and fail the kit.
+        count(attempted, delivery.eventKey());
+        return FailureInjection.injected();
     }
 
     @Override
     public int effectCount(final String eventKey) {
-        return effects.getOrDefault(eventKey, 0);
+        return value(committed, eventKey);
+    }
+
+    @Override
+    public int attemptedEffectCount(final String eventKey) {
+        return value(attempted, eventKey);
     }
 
     @Override
     public int totalEffectCount() {
-        return effects.values().stream().mapToInt(Integer::intValue).sum();
+        return committed.values().stream().mapToInt(AtomicInteger::get).sum();
     }
 
     @Override
     public void reset() {
         inbox.clear();
-        effects.clear();
+        committed.clear();
+        attempted.clear();
+    }
+
+    private static void count(final Map<String, AtomicInteger> counts, final String key) {
+        counts.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
+    }
+
+    private static int value(final Map<String, AtomicInteger> counts, final String key) {
+        final AtomicInteger n = counts.get(key);
+        return n == null ? 0 : n.get();
     }
 }

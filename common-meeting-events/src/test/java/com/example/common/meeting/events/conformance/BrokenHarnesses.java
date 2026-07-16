@@ -4,13 +4,16 @@ import com.example.common.meeting.events.MeetingEventEnvelope;
 import com.example.common.meeting.events.MeetingEventV1Serializer;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Deliberately non-conformant implementations, each embodying ONE realistic mistake.
@@ -29,38 +32,134 @@ final class BrokenHarnesses {
 
     // ────────────────────────── consumer-side ──────────────────────────
 
-    /**
-     * A consumer with no inbox at all: it just does the work every time it is handed an
-     * event. Under at-least-once delivery this sends the notification twice.
-     */
-    static final class NoDedupInbox implements InboxTestHarness {
+    /** Shared counting for the consumer-side broken harnesses. */
+    abstract static class CountingInbox implements InboxTestHarness {
 
-        private final Map<String, Integer> effects = new HashMap<>();
+        final Map<String, AtomicInteger> committed = new ConcurrentHashMap<>();
+        final Map<String, AtomicInteger> attempted = new ConcurrentHashMap<>();
 
-        @Override
-        public boolean deliver(final InboxDelivery delivery) {
-            effects.merge(delivery.eventKey(), 1, Integer::sum);
-            return true;
+        static void count(final Map<String, AtomicInteger> counts, final String key) {
+            counts.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
         }
 
         @Override
-        public void deliverWithFailureAfterEffect(final InboxDelivery delivery) {
-            // no-op
+        public FailureInjection deliverWithFailureAfterEffect(final InboxDelivery delivery) {
+            count(attempted, delivery.eventKey());
+            return FailureInjection.injected();
         }
 
         @Override
         public int effectCount(final String eventKey) {
-            return effects.getOrDefault(eventKey, 0);
+            final AtomicInteger n = committed.get(eventKey);
+            return n == null ? 0 : n.get();
+        }
+
+        @Override
+        public int attemptedEffectCount(final String eventKey) {
+            final AtomicInteger n = attempted.get(eventKey);
+            return n == null ? 0 : n.get();
         }
 
         @Override
         public int totalEffectCount() {
-            return effects.values().stream().mapToInt(Integer::intValue).sum();
+            return committed.values().stream().mapToInt(AtomicInteger::get).sum();
         }
 
         @Override
         public void reset() {
-            effects.clear();
+            committed.clear();
+            attempted.clear();
+        }
+    }
+
+    /**
+     * A consumer with no inbox at all: it just does the work every time it is handed an
+     * event. Under at-least-once delivery this sends the notification twice.
+     */
+    static final class NoDedupInbox extends CountingInbox {
+
+        @Override
+        public boolean deliver(final InboxDelivery delivery) {
+            count(attempted, delivery.eventKey());
+            count(committed, delivery.eventKey());
+            return true;
+        }
+    }
+
+    /**
+     * A consumer whose {@code deliverWithFailureAfterEffect} quietly does nothing — the
+     * defect the review named. Its de-duplication is fine, so it passes every redelivery
+     * rule; but its atomicity rules would pass VACUOUSLY, satisfying "no effect committed"
+     * by never attempting one. The kit must refuse it on the evidence, not the outcome.
+     */
+    static final class NoOpFailureInjectionInbox extends CountingInbox {
+
+        private final Map<String, Boolean> inbox = new ConcurrentHashMap<>();
+
+        @Override
+        public boolean deliver(final InboxDelivery delivery) {
+            final boolean[] applied = {false};
+            inbox.computeIfAbsent(delivery.eventKey(), key -> {
+                count(attempted, key);
+                count(committed, key);
+                applied[0] = true;
+                return Boolean.TRUE;
+            });
+            return applied[0];
+        }
+
+        @Override
+        public FailureInjection deliverWithFailureAfterEffect(final InboxDelivery delivery) {
+            // Claims the injection ran while doing nothing at all. The outcome alone cannot
+            // catch this — only the independent attempted-effect observation can.
+            return FailureInjection.injected();
+        }
+
+        @Override
+        public void reset() {
+            super.reset();
+            inbox.clear();
+        }
+    }
+
+    /**
+     * A consumer that reads "have I seen this key?" and then writes, with no atomic claim —
+     * a plain {@code SELECT} followed by an {@code INSERT}, or an inbox table with no
+     * UNIQUE index on {@code event_key}.
+     *
+     * <p>Correct under every sequential test. Under a real collision both workers pass the
+     * read before either writes, and the notification goes out twice. The barrier makes
+     * that window deterministic rather than hoping the scheduler produces it — the bug is
+     * real either way, the barrier just stops the test from being flaky about it.
+     */
+    static final class CheckThenActInbox extends CountingInbox {
+
+        private final Map<String, Boolean> inbox = new ConcurrentHashMap<>();
+        private final CyclicBarrier insideTheWindow;
+
+        CheckThenActInbox(final int racers) {
+            this.insideTheWindow = new CyclicBarrier(racers);
+        }
+
+        @Override
+        public boolean deliver(final InboxDelivery delivery) {
+            final boolean seen = inbox.containsKey(delivery.eventKey());
+            try {
+                // Hold every racer between the check and the act.
+                insideTheWindow.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            } catch (BrokenBarrierException | TimeoutException e) {
+                // Fewer racers than expected; the window simply does not open.
+            }
+            if (seen) {
+                return false;
+            }
+            count(attempted, delivery.eventKey());
+            count(committed, delivery.eventKey());
+            inbox.put(delivery.eventKey(), Boolean.TRUE);
+            return true;
         }
     }
 
@@ -70,46 +169,37 @@ final class BrokenHarnesses {
      * but a transaction failure leaves the effect behind, and the redelivery adds a second.
      * This is the single most likely real-world inbox bug.
      */
-    static final class EffectOutsideTransactionInbox implements InboxTestHarness {
+    static final class EffectOutsideTransactionInbox extends CountingInbox {
 
-        private final Set<String> inbox = new HashSet<>();
-        private final Map<String, Integer> effects = new HashMap<>();
+        private final Map<String, Boolean> inbox = new ConcurrentHashMap<>();
 
         @Override
         public boolean deliver(final InboxDelivery delivery) {
-            if (inbox.contains(delivery.eventKey())) {
+            if (inbox.containsKey(delivery.eventKey())) {
                 return false;
             }
-            effects.merge(delivery.eventKey(), 1, Integer::sum);
-            inbox.add(delivery.eventKey());
+            count(attempted, delivery.eventKey());
+            count(committed, delivery.eventKey());
+            inbox.put(delivery.eventKey(), Boolean.TRUE);
             return true;
         }
 
         @Override
-        public void deliverWithFailureAfterEffect(final InboxDelivery delivery) {
-            if (inbox.contains(delivery.eventKey())) {
-                return;
+        public FailureInjection deliverWithFailureAfterEffect(final InboxDelivery delivery) {
+            if (inbox.containsKey(delivery.eventKey())) {
+                return new FailureInjection(false, false);
             }
-            // The effect is applied outside the transaction, so the rollback below cannot
-            // take it back: the inbox entry is lost but the notification already went out.
-            effects.merge(delivery.eventKey(), 1, Integer::sum);
-            // ... transaction fails here; inbox entry never committed.
-        }
-
-        @Override
-        public int effectCount(final String eventKey) {
-            return effects.getOrDefault(eventKey, 0);
-        }
-
-        @Override
-        public int totalEffectCount() {
-            return effects.values().stream().mapToInt(Integer::intValue).sum();
+            // The effect is applied outside the transaction, so the rollback cannot take it
+            // back: the inbox entry is never committed but the notification already went out.
+            count(attempted, delivery.eventKey());
+            count(committed, delivery.eventKey());
+            return FailureInjection.injected();
         }
 
         @Override
         public void reset() {
+            super.reset();
             inbox.clear();
-            effects.clear();
         }
     }
 
@@ -118,39 +208,24 @@ final class BrokenHarnesses {
      * durable inbox. Correct for an immediate retry, wrong the moment any other event is
      * interleaved — which is normal traffic.
      */
-    static final class LastSeenOnlyInbox implements InboxTestHarness {
+    static final class LastSeenOnlyInbox extends CountingInbox {
 
-        private final Map<String, Integer> effects = new HashMap<>();
         private String lastSeen;
 
         @Override
-        public boolean deliver(final InboxDelivery delivery) {
+        public synchronized boolean deliver(final InboxDelivery delivery) {
             if (delivery.eventKey().equals(lastSeen)) {
                 return false;
             }
-            effects.merge(delivery.eventKey(), 1, Integer::sum);
+            count(attempted, delivery.eventKey());
+            count(committed, delivery.eventKey());
             lastSeen = delivery.eventKey();
             return true;
         }
 
         @Override
-        public void deliverWithFailureAfterEffect(final InboxDelivery delivery) {
-            // no-op
-        }
-
-        @Override
-        public int effectCount(final String eventKey) {
-            return effects.getOrDefault(eventKey, 0);
-        }
-
-        @Override
-        public int totalEffectCount() {
-            return effects.values().stream().mapToInt(Integer::intValue).sum();
-        }
-
-        @Override
         public void reset() {
-            effects.clear();
+            super.reset();
             lastSeen = null;
         }
     }
