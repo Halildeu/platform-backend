@@ -202,6 +202,32 @@ class AuthorizationContextCacheTest {
     }
 
     @Test
+    @DisplayName("SECURITY: key encoding is injective — no two principals can collide")
+    void keyEncodingIsInjective() {
+        // The exact collision a delimiter-joined key produces: with a space separator both of these
+        // render as "a b c". Two principals sharing an entry means one is served the other's authority.
+        assertNotEquals(AuthorizationContextCache.key("a b", "c", null),
+                AuthorizationContextCache.key("a", "b c", null),
+                "a separator that can occur inside an issuer or subject is not a safe encoding");
+
+        // Same class of ambiguity on the tenant boundary, and for the ':' used by the length prefix.
+        assertNotEquals(AuthorizationContextCache.key("i", "s", "1 2"),
+                AuthorizationContextCache.key("i", "s 1", "2"));
+        assertNotEquals(AuthorizationContextCache.key("2:xx", "y", null),
+                AuthorizationContextCache.key("2", "xxy", null));
+
+        // null and "" are different principals, not the same one.
+        assertNotEquals(AuthorizationContextCache.key(null, "s", null),
+                AuthorizationContextCache.key("", "s", null));
+        assertNotEquals(AuthorizationContextCache.key("i", "s", null),
+                AuthorizationContextCache.key("i", "s", ""));
+
+        // Equal inputs must still produce equal keys, or nothing would ever cache.
+        assertEquals(AuthorizationContextCache.key("https://i", "sub", 1L),
+                AuthorizationContextCache.key("https://i", "sub", 1L));
+    }
+
+    @Test
     @DisplayName("a global revision bump single-flights the refresh instead of stampeding upstream")
     void concurrentRefreshIsSingleFlighted() throws Exception {
         var cache = new AuthorizationContextCache(Duration.ofMinutes(5), new TestClock());
@@ -233,10 +259,15 @@ class AuthorizationContextCacheTest {
     }
 
     @Test
-    @DisplayName("null context from upstream is treated as granting nothing, not as a crash")
-    void nullContextBecomesEmpty() {
+    @DisplayName("SECURITY: a null answer from upstream is refused, not cached as a deny")
+    void nullContextIsRefused() {
         var cache = new AuthorizationContextCache(Duration.ofMinutes(5), new TestClock());
-        assertTrue(cache.get(KEY, () -> 1L, () -> null).grantsNothing());
+
+        assertThrows(AuthorizationContextCache.RevisionUnavailableException.class,
+                () -> cache.get(KEY, () -> 1L, () -> null),
+                "a non-answer is not a decision; caching it as 'grants nothing' would look like a "
+                        + "deny and would then be served during an outage as if it had been derived");
+        assertEquals(0, cache.size(), "and nothing is left behind to be served later");
     }
 
     @Test
