@@ -202,6 +202,30 @@ class AuthorizationContextCacheTest {
     }
 
     @Test
+    @DisplayName("SECURITY: loader failure after a revision bump must not serve or re-stamp the old grant")
+    void loaderFailureNeverServesTheStaleGrant() {
+        var cache = new AuthorizationContextCache(Duration.ofMinutes(5), new TestClock());
+        AtomicLong revision = new AtomicLong(127);
+        cache.get(KEY, revision::get, AuthorizationContextCacheTest::granting);   // warm: allow @127
+
+        // Admin revokes (revision moves) and /authz/me is down at exactly that moment.
+        revision.set(129);
+        assertThrows(RuntimeException.class,
+                () -> cache.get(KEY, revision::get, () -> { throw new IllegalStateException("/authz/me down"); }),
+                "the failure must surface, not be papered over with the cached decision");
+
+        // The stale entry must not have been re-stamped with the new revision: if it had, the next
+        // call would find revision 129 "matching" and hand back the grant that was just revoked.
+        AtomicInteger loads = new AtomicInteger();
+        AuthorizationContext next = cache.get(KEY, revision::get, () -> {
+            loads.incrementAndGet();
+            return revoked();
+        });
+        assertEquals(1, loads.get(), "revision 129 must still be considered unresolved, forcing a real load");
+        assertTrue(next.grantsNothing(), "and the answer is the revoked one, not the cached grant");
+    }
+
+    @Test
     @DisplayName("SECURITY: key encoding is injective — no two principals can collide")
     void keyEncodingIsInjective() {
         // The exact collision a delimiter-joined key produces: with a space separator both of these

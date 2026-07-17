@@ -184,4 +184,45 @@ class AuthorizationContextServiceTest {
     private static final class AtomicBooleanish {
         volatile boolean value;
     }
+
+    @Test
+    @DisplayName("SECURITY: /authz/me unreachable → fail closed; authority is never rebuilt from the token")
+    void authzMeUnreachableFailsClosed() {
+        ExchangeFunction exchange = request -> {
+            if (request.url().getPath().endsWith("/api/v1/authz/version")) {
+                return Mono.just(json("{\"authzVersion\":1}"));
+            }
+            return Mono.error(new IllegalStateException("permission-service down"));
+        };
+        var service = service(exchange);
+
+        // A token carrying rich claims — the old fallback would have handed these back as authority.
+        Jwt loaded = Jwt.withTokenValue("t").header("alg", "none")
+                .subject("admin@example.com")
+                .claim("iss", "https://testai.acik.com/realms/platform-test")
+                .claim("email", "admin@example.com")
+                .claim("permissions", java.util.List.of("VIEW_USERS", "MANAGE_USERS"))
+                .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60))
+                .build();
+
+        assertThatThrownBy(() -> service.buildContext(loaded, Collections.emptyList()))
+                .as("an unreachable authority must not degrade into 'trust the token'")
+                .isInstanceOf(AuthorizationContextCache.RevisionUnavailableException.class);
+    }
+
+    @Test
+    @DisplayName("SECURITY: /authz/me returns no body → fail closed (a non-answer is not a deny)")
+    void authzMeNullBodyFailsClosed() {
+        ExchangeFunction exchange = request -> {
+            if (request.url().getPath().endsWith("/api/v1/authz/version")) {
+                return Mono.just(json("{\"authzVersion\":1}"));
+            }
+            return Mono.just(ClientResponse.create(HttpStatus.OK)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .build());   // 2xx, empty body
+        };
+
+        assertThatThrownBy(() -> service(exchange).buildContext(jwt(), Collections.emptyList()))
+                .isInstanceOf(AuthorizationContextCache.RevisionUnavailableException.class);
+    }
 }
