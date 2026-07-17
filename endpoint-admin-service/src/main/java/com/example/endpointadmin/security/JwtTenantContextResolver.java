@@ -96,6 +96,19 @@ public class JwtTenantContextResolver implements TenantContextResolver {
                         "endpoint-admin.tenant.org-aliases maps org " + org + " to two tenants");
             }
         }
+        // The bridge must be injective: two orgs sharing one tenant would hand both of them the same
+        // devices, which is precisely the cross-tenant leak this resolver exists to prevent. Reject
+        // it at startup — a deployment cannot discover this by reading an empty grid later.
+        Map<UUID, UUID> byTenant = new LinkedHashMap<>();
+        for (Map.Entry<UUID, UUID> alias : aliases.entrySet()) {
+            UUID clashingOrg = byTenant.put(alias.getValue(), alias.getKey());
+            if (clashingOrg != null) {
+                throw new IllegalArgumentException(
+                        "endpoint-admin.tenant.org-aliases maps orgs " + clashingOrg + " and "
+                                + alias.getKey() + " to the same tenant " + alias.getValue()
+                                + "; an org -> tenant alias must be one-to-one");
+            }
+        }
         return Map.copyOf(aliases);
     }
 
@@ -139,7 +152,10 @@ public class JwtTenantContextResolver implements TenantContextResolver {
             mergeTenantClaims(canonicalOrg, companyTenant, enforceClaimConsistency);
             return aliasFor(canonicalOrg);
         }
-        return aliasFor(mergeTenantClaims(compatibilityTenant, companyTenant, true));
+        // Deliberately NOT aliased: without a canonical org claim the token has not proven which org
+        // it speaks for, and a tenant/company-derived value is exactly the legacy path. Aliasing it
+        // would let a token that carries only `tenant_id` redirect itself into the alias target.
+        return mergeTenantClaims(compatibilityTenant, companyTenant, true);
     }
 
     /**

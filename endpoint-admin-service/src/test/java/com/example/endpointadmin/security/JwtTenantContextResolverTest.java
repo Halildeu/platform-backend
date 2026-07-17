@@ -171,6 +171,7 @@ class JwtTenantContextResolverTest {
     private static final String ORG_A = "68c73eb9-c410-37dc-aff7-5ade8fbbcbb7";
     private static final String TENANT_FIXTURE = "00000000-0000-0000-0000-000000000001";
     private static final String ORG_B = "11111111-2222-3333-4444-555555555555";
+    private static final String TENANT_OTHER = "00000000-0000-0000-0000-000000000002";
 
     private static void authenticateWithOrg(String orgId) {
         Jwt jwt = Jwt.withTokenValue("t").header("alg", "none")
@@ -240,11 +241,43 @@ class JwtTenantContextResolverTest {
     @Test
     void multipleAliasesAreIndependent() {
         var resolver = new JwtTenantContextResolver(
-                "", true, ORG_A + "=" + TENANT_FIXTURE + " , " + ORG_B + "=" + TENANT_FIXTURE, new MockEnvironment());
+                "", true, ORG_A + "=" + TENANT_FIXTURE + " , " + ORG_B + "=" + TENANT_OTHER, new MockEnvironment());
 
         authenticateWithOrg(ORG_A);
         assertThat(resolver.resolveRequired().tenantId()).isEqualTo(UUID.fromString(TENANT_FIXTURE));
         authenticateWithOrg(ORG_B);
-        assertThat(resolver.resolveRequired().tenantId()).isEqualTo(UUID.fromString(TENANT_FIXTURE));
+        assertThat(resolver.resolveRequired().tenantId()).isEqualTo(UUID.fromString(TENANT_OTHER));
+    }
+
+    /** Two orgs sharing one tenant would hand both of them the same devices — reject at startup. */
+    @Test
+    void aliasTargetMustBeUniqueAcrossOrgs() {
+        assertThatThrownBy(() -> new JwtTenantContextResolver(
+                "", true, ORG_A + "=" + TENANT_FIXTURE + "," + ORG_B + "=" + TENANT_FIXTURE, new MockEnvironment()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("one-to-one");
+    }
+
+    /**
+     * A token carrying only {@code tenant_id} never proved which org it speaks for, so the alias
+     * must not fire: otherwise the token could redirect itself into the alias target.
+     */
+    @Test
+    void legacyTenantClaimIsNotAliased() {
+        var resolver = new JwtTenantContextResolver(
+                "", true, ORG_A + "=" + TENANT_FIXTURE, new MockEnvironment());
+
+        // No canonical org claim: the alias key itself arrives as a bare tenant_id. Aliasing this
+        // would let the token redirect itself into the alias target without ever proving the org.
+        Jwt jwt = Jwt.withTokenValue("t").header("alg", "none")
+                .subject("admin@example.com")
+                .claim("tenant_id", ORG_A)
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(
+                jwt, List.of(new SimpleGrantedAuthority("SCOPE_endpoint-admin"))));
+
+        assertThat(resolver.resolveRequired().tenantId())
+                .as("legacy path must keep its pre-alias behaviour")
+                .isEqualTo(UUID.fromString(ORG_A));
     }
 }
