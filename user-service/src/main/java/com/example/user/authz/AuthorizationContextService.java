@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -41,14 +42,16 @@ public class AuthorizationContextService {
         if (jwt == null) {
             return AuthorizationContext.of(null, null, Collections.emptySet(), Collections.emptySet());
         }
-        String cacheKey = buildCacheKey(jwt);
-        AuthorizationContext cached = cache.getIfPresent(cacheKey);
-        if (isReusable(cached)) {
-            return cached;
+        if (webClient == null) {
+            // No upstream ⇒ no revision to check ⇒ nothing may be cached. Deriving from the JWT is
+            // already a degraded path; holding onto it would turn it into a stale grant.
+            return loadContext(jwt, authorities);
         }
-        AuthorizationContext fresh = loadContext(jwt, authorities);
-        cache.put(cacheKey, fresh);
-        return fresh;
+        // board #2556: reuse is bound to the authorization revision, not to elapsed time. The old
+        // key (subject:exp:tokenHash) survived a revoke for the whole TTL, and isReusable() cached
+        // exactly the decisions that grant something — the ones that must not go stale.
+        String cacheKey = buildCacheKey(jwt);
+        return cache.get(cacheKey, this::fetchAuthzVersion, () -> loadContext(jwt, authorities));
     }
 
     public AuthorizationContext getCurrentUserContext() {
@@ -163,15 +166,36 @@ public class AuthorizationContextService {
         return null;
     }
 
+    /**
+     * board #2556: identifies the principal, not the token.
+     *
+     * <p>The previous key mixed in the token's {@code exp} and a hash of its value, so a refreshed
+     * token silently started a new entry (looking "fresh" without being re-authorized) while an
+     * unchanged token kept a revoked grant for the whole TTL. Authority belongs to the principal, so
+     * the entry does too; whether it is still valid is now decided by the revision.
+     */
     private static String buildCacheKey(Jwt jwt) {
         String subject = firstNonBlank(jwt.getSubject(), jwt.getClaimAsString("preferred_username"), "anonymous");
-        String expiresAt = jwt.getExpiresAt() == null ? "na" : String.valueOf(jwt.getExpiresAt().getEpochSecond());
-        int tokenHash = Objects.hashCode(jwt.getTokenValue());
-        return subject + ":" + expiresAt + ":" + Integer.toHexString(tokenHash);
+        return AuthorizationContextCache.key(jwt.getClaimAsString("iss"), subject, null);
     }
 
-    private static boolean isReusable(AuthorizationContext context) {
-        return context != null && !context.getPermissions().isEmpty();
+    /**
+     * Reads permission-service's authorization revision — the cheap counter bumped after every FGA
+     * mutation. Failure propagates deliberately: the cache turns it into "refuse to reuse a cached
+     * grant" (503) instead of treating unknown as unchanged, which is exactly how a revoked grant
+     * used to survive.
+     */
+    private long fetchAuthzVersion() {
+        Map<?, ?> body = webClient.get()
+                .uri("/api/v1/authz/version")
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+        Object value = body == null ? null : body.get("authzVersion");
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        throw new IllegalStateException("permission-service /authz/version returned no usable authzVersion");
     }
 
 }

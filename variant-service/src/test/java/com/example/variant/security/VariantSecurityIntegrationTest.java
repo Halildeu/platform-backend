@@ -221,6 +221,7 @@ class VariantSecurityIntegrationTest {
 
     static class StubPermissionServiceAuthzClient extends com.example.variant.authz.PermissionServiceAuthzClient {
         private AuthzMeResponse response = new AuthzMeResponse();
+        private long authzVersion = 1L;
 
         StubPermissionServiceAuthzClient() {
             super(org.springframework.web.reactive.function.client.WebClient.builder());
@@ -231,8 +232,19 @@ class VariantSecurityIntegrationTest {
             return response;
         }
 
+        /** board #2556: the cache reads the revision on every authorized request. */
+        @Override
+        public long getAuthzVersion() {
+            return authzVersion;
+        }
+
         void setResponse(AuthzMeResponse response) {
             this.response = response;
+            // A test that changes the answer is standing in for an admin changing a grant, and a
+            // real grant change always moves the revision. Without this the cache would correctly
+            // keep serving the previous decision and the test would be asserting against a state
+            // the product can never actually be in.
+            this.authzVersion++;
         }
     }
 

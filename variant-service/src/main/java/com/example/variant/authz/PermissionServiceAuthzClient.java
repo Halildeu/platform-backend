@@ -29,6 +29,44 @@ public class PermissionServiceAuthzClient {
     }
 
     /**
+     * Reads the current authorization revision (board #2556).
+     *
+     * <p>This is the cheap half of the pair: a single counter that permission-service bumps after
+     * every FGA mutation (and before the outbox entry is marked processed), so it answers "could any
+     * cached decision have gone stale?" without re-running the expensive {@code /authz/me}
+     * evaluation. Every authorized request reads it; {@code /authz/me} is only re-fetched when it
+     * moved.
+     *
+     * <p>Failure is propagated, never defaulted. Returning a placeholder here (0, or the last known
+     * value) would silently re-create the bug this exists to kill: an unreadable revision would
+     * "match" the cached one and a revoked grant would keep answering 200. The cache turns this
+     * exception into "refuse to reuse a cached grant" → 503.
+     */
+    public long getAuthzVersion() {
+        try {
+            java.util.Map<?, ?> body = webClient.get()
+                    .uri("/api/v1/authz/version")
+                    .retrieve()
+                    .bodyToMono(java.util.Map.class)
+                    .block();
+            Object value = body == null ? null : body.get("authzVersion");
+            if (value instanceof Number number) {
+                return number.longValue();
+            }
+            throw new AuthzDependencyUnavailableException(
+                    "permission-service /authz/version returned no usable authzVersion", null);
+        } catch (WebClientResponseException ex) {
+            throw new AuthzDependencyUnavailableException(
+                    "permission-service /authz/version failed with HTTP " + ex.getStatusCode().value(), ex);
+        } catch (AuthzDependencyUnavailableException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            throw new AuthzDependencyUnavailableException(
+                    "permission-service /authz/version transport failure", ex);
+        }
+    }
+
+    /**
      * Codex 019dddb7 iter-42 — typed-error contract.
      *
      * <p>Pre-iter-42 every failure path produced a fresh empty

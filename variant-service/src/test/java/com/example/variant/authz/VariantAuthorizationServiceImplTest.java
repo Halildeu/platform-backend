@@ -202,9 +202,25 @@ class VariantAuthorizationServiceImplTest {
         private final AtomicInteger callCount = new AtomicInteger(0);
         private AuthzMeResponse response = new AuthzMeResponse();
         private final java.util.Deque<Object> queue = new java.util.ArrayDeque<>();
+        private final java.util.concurrent.atomic.AtomicLong authzVersion =
+                new java.util.concurrent.atomic.AtomicLong(1L);
 
         CountingStubClient() {
             super(org.springframework.web.reactive.function.client.WebClient.builder());
+        }
+
+        /**
+         * board #2556: the cache reads the revision on every authorized request and only reuses a
+         * decision while it is unchanged.
+         */
+        @Override
+        public long getAuthzVersion() {
+            return authzVersion.get();
+        }
+
+        /** Stands in for an admin changing a grant, which always moves the revision. */
+        void bumpAuthzVersion() {
+            authzVersion.incrementAndGet();
         }
 
         void setResponse(AuthzMeResponse response) {

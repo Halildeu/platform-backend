@@ -73,6 +73,29 @@ public final class AuthorizationContext {
         return allowedWarehouseIds;
     }
 
+    /**
+     * True when this context confers no authority at all.
+     *
+     * <p>Used by {@link AuthorizationContextCache} to decide what may survive an outage: a decision
+     * that grants nothing can be reused when the authorization revision is unreadable, because
+     * continuing to deny cannot widen anyone's access. Anything that grants something must be
+     * re-derived instead — that is the difference between a cache and a stale privilege.
+     *
+     * <p>Identity fields ({@code userId}, {@code email}) are deliberately ignored: knowing who
+     * someone is confers no authority.
+     */
+    public boolean grantsNothing() {
+        return isEmpty(roles)
+                && isEmpty(permissions)
+                && isEmpty(allowedCompanyIds)
+                && isEmpty(allowedProjectIds)
+                && isEmpty(allowedWarehouseIds);
+    }
+
+    private static boolean isEmpty(Set<?> set) {
+        return set == null || set.isEmpty();
+    }
+
     public boolean isAdmin() {
         return roles.stream().anyMatch(r -> r != null && r.equalsIgnoreCase("ADMIN"))
                 || permissions.stream().anyMatch(p -> p != null && p.equalsIgnoreCase("ADMIN"));

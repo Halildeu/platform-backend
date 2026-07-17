@@ -61,14 +61,31 @@ class AuthorizationContextBuilderTest {
     }
 
     @Test
-    void cacheReturnsCachedValueUntilTtlExpires() {
-        AuthorizationContextCache cache = new AuthorizationContextCache(Duration.ofMillis(100));
-        AuthorizationContext first = cache.get("u1", () ->
+    void cacheReusesDecisionWhileRevisionIsUnchanged() {
+        // board #2556: reuse is now bound to the authorization revision, not to elapsed time.
+        AuthorizationContextCache cache = new AuthorizationContextCache(Duration.ofMinutes(5));
+        String key = AuthorizationContextCache.key("https://issuer", "u1", 1L);
+
+        AuthorizationContext first = cache.get(key, () -> 1L, () ->
                 AuthorizationContext.of(1L, "e", Set.of(), Set.of("p1"), Set.of(10L), Set.of(), Set.of()));
-        AuthorizationContext second = cache.get("u1", () ->
+        AuthorizationContext second = cache.get(key, () -> 1L, () ->
                 AuthorizationContext.of(2L, "x", Set.of(), Set.of("p2"), Set.of(), Set.of(), Set.of()));
 
         assertEquals(1L, first.getUserId());
-        assertEquals(1L, second.getUserId()); // cached
+        assertEquals(1L, second.getUserId(), "same revision ⇒ cached decision reused");
+    }
+
+    @Test
+    void cacheDropsDecisionAsSoonAsRevisionMoves() {
+        AuthorizationContextCache cache = new AuthorizationContextCache(Duration.ofMinutes(5));
+        String key = AuthorizationContextCache.key("https://issuer", "u1", 1L);
+
+        cache.get(key, () -> 1L, () ->
+                AuthorizationContext.of(1L, "e", Set.of(), Set.of("p1"), Set.of(10L), Set.of(), Set.of()));
+        AuthorizationContext afterBump = cache.get(key, () -> 2L, () ->
+                AuthorizationContext.of(2L, "x", Set.of(), Set.of(), Set.of(), Set.of(), Set.of()));
+
+        assertEquals(2L, afterBump.getUserId(), "a revision bump must re-derive, not serve the old grant");
+        assertTrue(afterBump.grantsNothing());
     }
 }
