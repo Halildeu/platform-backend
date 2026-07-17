@@ -21,13 +21,17 @@ public class AuditConsumerProperties {
 
     /**
      * Dead-letter stream key for poison/INVALID events. A malformed or
-     * unmappable stream entry is XADDed here (raw fields + error + original
-     * entry id) BEFORE it is ACKed, so an event that cannot be persisted is
+     * unmappable stream entry is XADDed here as a PII-minimal fingerprinted
+     * diagnostic BEFORE it is ACKed, so an event that cannot be persisted is
      * parked — never silently dropped (KVKK audit-loss guard) and never wedged
      * in an infinite redelivery loop. If the DLQ XADD itself fails, the entry is
      * NOT ACKed and stays in the PEL for retry.
      */
     private String dlqStreamKey = "audit:events:dlq";
+    /** Approximate maximum number of retained DLQ diagnostics. */
+    private long dlqMaxLen = 10_000L;
+    /** Redis key retention for the DLQ stream. Must be positive in active deployments. */
+    private long dlqTtlSeconds = 604_800L;
 
     private final Stream stream = new Stream();
     private final Group group = new Group();
@@ -48,6 +52,22 @@ public class AuditConsumerProperties {
 
     public void setDlqStreamKey(final String dlqStreamKey) {
         this.dlqStreamKey = dlqStreamKey;
+    }
+
+    public long getDlqMaxLen() {
+        return dlqMaxLen;
+    }
+
+    public void setDlqMaxLen(final long dlqMaxLen) {
+        this.dlqMaxLen = dlqMaxLen;
+    }
+
+    public long getDlqTtlSeconds() {
+        return dlqTtlSeconds;
+    }
+
+    public void setDlqTtlSeconds(final long dlqTtlSeconds) {
+        this.dlqTtlSeconds = dlqTtlSeconds;
     }
 
     public Stream getStream() {
@@ -81,7 +101,7 @@ public class AuditConsumerProperties {
 
     /** Consumer-group identity (XREADGROUP group/consumer). */
     public static class Group {
-        private String name = "audit-persist-v1";
+        private String name = "audit-persist-v2";
         /**
          * Consumer name within the group. Defaults to a stable per-instance id;
          * override with the pod name (e.g. {@code ${HOSTNAME}}) so PEL claim of a
@@ -121,6 +141,8 @@ public class AuditConsumerProperties {
         private long claimMinIdleMillis = 60_000L;
         /** Max pending entries to reclaim per cycle. */
         private int claimBatchSize = 64;
+        /** Delivery attempts before an unresolved predecessor is parked in the DLQ. */
+        private long dependencyMaxDeliveryAttempts = 5L;
 
         public int getBatchSize() {
             return batchSize;
@@ -161,6 +183,14 @@ public class AuditConsumerProperties {
         public void setClaimBatchSize(final int claimBatchSize) {
             this.claimBatchSize = claimBatchSize;
         }
+
+        public long getDependencyMaxDeliveryAttempts() {
+            return dependencyMaxDeliveryAttempts;
+        }
+
+        public void setDependencyMaxDeliveryAttempts(final long dependencyMaxDeliveryAttempts) {
+            this.dependencyMaxDeliveryAttempts = dependencyMaxDeliveryAttempts;
+        }
     }
 
     /** Consumer-lag health gate. */
@@ -171,6 +201,13 @@ public class AuditConsumerProperties {
          * only reflects loop liveness + Redis reachability).
          */
         private long maxPendingForHealthy = 50_000L;
+        /**
+         * Source stream length at/above which health reports DOWN. Persisted or
+         * DLQ-parked entries are deleted by the consumer, so sustained growth
+         * indicates an unconsumed/backlogged transport even when PEL is small.
+         * 0 disables this gate.
+         */
+        private long maxStreamLengthForHealthy = 50_000L;
 
         public long getMaxPendingForHealthy() {
             return maxPendingForHealthy;
@@ -178,6 +215,14 @@ public class AuditConsumerProperties {
 
         public void setMaxPendingForHealthy(final long maxPendingForHealthy) {
             this.maxPendingForHealthy = maxPendingForHealthy;
+        }
+
+        public long getMaxStreamLengthForHealthy() {
+            return maxStreamLengthForHealthy;
+        }
+
+        public void setMaxStreamLengthForHealthy(final long maxStreamLengthForHealthy) {
+            this.maxStreamLengthForHealthy = maxStreamLengthForHealthy;
         }
     }
 }

@@ -125,18 +125,16 @@ audio:
       max-length: 128
       # Bounded LRU cache for idempotency-key replay window (memory-only PR-gw-01A).
       replay-cache-size: 4096
-
-# Faz 24 KVKK audit pipeline (gitops#1249) — separate top-level prefix so the
-# audit sink is independent of the audio chunk dispatcher.
-audiogateway:
-  audit:
-    redis:
-      # DEFAULT-OFF: NoOpAudioGatewayAuditSink stays the bean. Flip true per
-      # overlay (k8s configmap) once audit-event-consumer-service is deployed.
-      enabled: false
-      stream-key: audit:events
-      # 0 = no producer-side trim (consumer + retention worker own lifecycle).
-      max-len: 0
+    # Faz 24 KVKK audit pipeline (gitops#1249). This is part of the canonical
+    # audio.gateway.* typed contract but remains independent of chunk dispatch.
+    audit:
+      redis:
+        # DEFAULT-OFF: NoOpAudioGatewayAuditSink stays the bean. Flip true per
+        # overlay once audit-event-consumer-service is deployed.
+        enabled: false
+        stream-key: audit:events
+        # 0 = no producer-side trim; durable consumer owns source-entry deletion.
+        max-len: 0
 
 logging:
   level:

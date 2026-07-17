@@ -1,5 +1,6 @@
 package com.example.meeting.controller;
 
+import com.example.meeting.dto.MeetingRecordingAccessResponse;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingService;
@@ -13,8 +14,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Non-admin recorder preflight surface for audio-gateway.
  *
- * <p>The endpoint intentionally returns no body: 204 means the caller may
- * record; 403/404 deny without exposing meeting data to the gateway.
+ * <p>A 200 response contains only canonical UUID scope required for a
+ * tenant-safe recorder event. 403/404 deny without exposing meeting content.
  */
 @RestController
 @RequestMapping("/api/v1/meetings")
@@ -31,9 +32,8 @@ public class MeetingRecordingAccessController {
     }
 
     @GetMapping("/{id}/recording-access")
-    public ResponseEntity<Void> checkRecordingAccess(@PathVariable UUID id) {
+    public ResponseEntity<MeetingRecordingAccessResponse> checkRecordingAccess(@PathVariable UUID id) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        meetingService.requireRecordingAccess(tenant, id);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(meetingService.requireRecordingAccess(tenant, id));
     }
 }

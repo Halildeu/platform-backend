@@ -50,14 +50,31 @@ eureka:
 
 # Faz 24 KVKK audit pipeline consumer (gitops#1249)
 audit:
+  consent-events:
+    redis:
+      enabled: ${AUDIT_CONSENT_EVENTS_REDIS_ENABLED:false}
+      stream-key: ${AUDIT_CONSENT_EVENTS_REDIS_STREAM_KEY:meeting:events}
+    outbox:
+      poller:
+        enabled: ${AUDIT_CONSENT_EVENTS_OUTBOX_POLLER_ENABLED:false}
+      scheduling-enabled: ${AUDIT_CONSENT_EVENTS_OUTBOX_SCHEDULING_ENABLED:true}
+      poll-delay-ms: ${AUDIT_CONSENT_EVENTS_OUTBOX_POLL_DELAY_MS:5000}
+      batch-size: ${AUDIT_CONSENT_EVENTS_OUTBOX_BATCH_SIZE:100}
+      lease-duration-ms: ${AUDIT_CONSENT_EVENTS_OUTBOX_LEASE_DURATION_MS:60000}
+      max-attempts: ${AUDIT_CONSENT_EVENTS_OUTBOX_MAX_ATTEMPTS:8}
+      retry-delay-ms: ${AUDIT_CONSENT_EVENTS_OUTBOX_RETRY_DELAY_MS:5000}
+      owner: ${AUDIT_CONSENT_EVENTS_OUTBOX_OWNER:}
   consumer:
     enabled: ${AUDIT_CONSUMER_ENABLED:true}
     # Dead-letter stream for poison/INVALID events (parked, not dropped — KVKK audit-loss guard).
     dlq-stream-key: ${AUDIT_CONSUMER_DLQ_STREAM_KEY:audit:events:dlq}
+    dlq-max-len: ${AUDIT_CONSUMER_DLQ_MAX_LEN:10000}
+    dlq-ttl-seconds: ${AUDIT_CONSUMER_DLQ_TTL_SECONDS:604800}
     stream:
       key: ${AUDIT_CONSUMER_STREAM_KEY:audit:events}
     group:
-      name: ${AUDIT_CONSUMER_GROUP_NAME:audit-persist-v1}
+      # v2 replays retained v1 backlog from offset 0 without old consumers ACKing new contracts.
+      name: ${AUDIT_CONSUMER_GROUP_NAME:audit-persist-v2}
       consumer: ${AUDIT_CONSUMER_INSTANCE_NAME:${HOSTNAME:audit-consumer-1}}
     poll:
       batch-size: ${AUDIT_CONSUMER_POLL_BATCH_SIZE:64}
@@ -65,8 +82,10 @@ audit:
       error-backoff-millis: ${AUDIT_CONSUMER_POLL_ERROR_BACKOFF_MILLIS:1000}
       claim-min-idle-millis: ${AUDIT_CONSUMER_POLL_CLAIM_MIN_IDLE_MILLIS:60000}
       claim-batch-size: ${AUDIT_CONSUMER_POLL_CLAIM_BATCH_SIZE:64}
+      dependency-max-delivery-attempts: ${AUDIT_CONSUMER_DEPENDENCY_MAX_DELIVERY_ATTEMPTS:5}
     health:
       max-pending-for-healthy: ${AUDIT_CONSUMER_HEALTH_MAX_PENDING:50000}
+      max-stream-length-for-healthy: ${AUDIT_CONSUMER_HEALTH_MAX_STREAM_LENGTH:50000}
 
 management:
   endpoints:

@@ -15,6 +15,7 @@ import com.example.meeting.dto.v1.admin.MeetingSessionUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
+import com.example.meeting.dto.MeetingRecordingAccessResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
@@ -113,17 +114,20 @@ public class MeetingService {
     }
 
     @Transactional(readOnly = true)
-    public void requireRecordingAccess(AdminTenantContext tenant, UUID id) {
+    public MeetingRecordingAccessResponse requireRecordingAccess(AdminTenantContext tenant, UUID id) {
         Meeting meeting = requireMeeting(tenant, id);
-        requireRecordingAccess(tenant, id, meeting);
+        return requireRecordingAccess(tenant, id, meeting);
     }
 
-    private void requireRecordingAccess(AdminTenantContext tenant, UUID id, Meeting meeting) {
+    private MeetingRecordingAccessResponse requireRecordingAccess(
+            AdminTenantContext tenant, UUID id, Meeting meeting) {
         String stablePrincipalRef = toUserPrincipalRef(tenant.subject());
 
         OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
         if (authz == null || !authz.isEnabled()) {
-            return;
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "Meeting recording authorization is unavailable.");
         }
 
         boolean allowed = authz.checkPrincipal(
@@ -132,7 +136,7 @@ public class MeetingService {
                 MeetingAuthz.OBJECT_TYPE,
                 id.toString());
         if (allowed) {
-            return;
+            return recordingAccessResponse(meeting);
         }
 
         if (legacyUserIdFallbackEnabled
@@ -151,11 +155,16 @@ public class MeetingService {
                         MeetingAuthz.CAN_RECORD,
                         MeetingAuthz.OBJECT_TYPE,
                         id.toString())) {
-                    return;
+                    return recordingAccessResponse(meeting);
                 }
             }
         }
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied.");
+    }
+
+    private static MeetingRecordingAccessResponse recordingAccessResponse(Meeting meeting) {
+        return new MeetingRecordingAccessResponse(
+                meeting.getId(), meeting.getTenantId(), meeting.getEffectiveOrgId());
     }
 
     @Transactional

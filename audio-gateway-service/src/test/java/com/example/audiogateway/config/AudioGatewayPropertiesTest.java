@@ -72,6 +72,16 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void auditRejectsAnyProducerSideStreamTrim() {
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getAudit().getRedis().setMaxLen(1L);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("audit.redis.max-len must be 0");
+    }
+
+    @Test
     void directSttHttpWithoutTlsRemainsValidForLocalAndMockServerPaths() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
 

@@ -68,6 +68,14 @@ class MeetingServiceRecordingLifecycleTest {
         meeting = meeting(MeetingStatus.SCHEDULED);
         when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting));
+        lenient().when(authzProvider.getIfAvailable()).thenReturn(authzService);
+        lenient().when(authzService.isEnabled()).thenReturn(true);
+        lenient().when(authzService.checkPrincipal(
+                        "user:stable-user",
+                        MeetingAuthz.CAN_RECORD,
+                        MeetingAuthz.OBJECT_TYPE,
+                        MEETING_ID.toString()))
+                .thenReturn(true);
         lenient().when(sessionRepository.saveAndFlush(any(MeetingSession.class))).thenAnswer(invocation -> {
             MeetingSession session = invocation.getArgument(0);
             if (session.getId() == null) {

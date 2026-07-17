@@ -25,6 +25,7 @@ public class AudioGatewayProperties {
     public void validate() {
         bounds.validate();
         dispatcher.validate();
+        audit.validate();
         directStt.validate();
         meetingAccess.validate();
     }
@@ -962,7 +963,7 @@ public class AudioGatewayProperties {
      *
      * <p>The {@code AudioGatewayAuditSink} emission point is wired to a Redis
      * Stream producer ({@code RedisStreamAuditSink}) only when
-     * {@code audiogateway.audit.redis.enabled=true}. DEFAULT-OFF: the
+     * {@code audio.gateway.audit.redis.enabled=true}. DEFAULT-OFF: the
      * {@link com.example.audiogateway.service.NoOpAudioGatewayAuditSink} stays
      * the bean otherwise, so live behaviour does not change until an overlay
      * flips the flag (mirrors the dispatcher {@code mode=noop|redis} discipline).
@@ -978,27 +979,39 @@ public class AudioGatewayProperties {
             return redis;
         }
 
+        public void validate() {
+            redis.validate();
+        }
+
         public static class Redis {
             /** DEFAULT-OFF — see {@link Audit}. */
             private boolean enabled = false;
             /** Audit event stream key (consumer reads the same key). */
             private String streamKey = "audit:events";
             /**
-             * Optional MAXLEN cap on the audit stream (approximate trim).
+             * Legacy compatibility property for the shared audit stream.
              *
              * <p><b>DEFAULT 0 = NO producer-side trim — and it must stay that
              * way for KVKK audit integrity.</b> A positive MAXLEN would let the
              * producer evict the oldest audit entries before the immutable
              * consumer has persisted them → audit-event loss (KVKK m.12 violation).
-             * Stream growth is instead bounded by (a) the consumer keeping up
-             * (its consumer-lag health indicator surfaces backpressure / XPENDING
-             * over threshold as DOWN) and (b) poison entries being parked in the
-             * consumer's DLQ stream rather than looping. The 7yr archive/expiry of
+             * Stream growth is instead bounded by (a) the durable consumer atomically
+             * ACKing and deleting each source entry after PostgreSQL persistence or
+             * DLQ parking, and (b) its health indicator surfacing both XPENDING and
+             * source-stream length thresholds. The 7yr archive/expiry of
              * persisted rows is the #1250 retention-worker follow-up, not a
-             * producer trim. Only set a cap if a non-KVKK stream ever reuses this
-             * sink.
+             * producer trim. Every event type shares this stream, so any non-zero
+             * value is rejected at startup and the producer never reads it.
              */
             private long maxLen = 0L;
+
+            void validate() {
+                if (maxLen != 0L) {
+                    throw new IllegalStateException(
+                            "audio.gateway.audit.redis.max-len must be 0; producer-side trimming "
+                                    + "can evict unpersisted audit evidence");
+                }
+            }
 
             public boolean isEnabled() {
                 return enabled;

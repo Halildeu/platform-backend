@@ -24,7 +24,8 @@ class MeetingEventValidatorTest {
         // Named in the #802 decision as later slices. Until a producer emits them with an
         // agreed payload, accepting the names would advertise a contract that does not
         // exist — so they are unknown ON PURPOSE, and this test is the reminder.
-        assertThat(MeetingEventType.find("meeting.consent.revoked")).isEmpty();
+        assertThat(MeetingEventType.find("meeting.consent.revoked"))
+                .contains(MeetingEventType.CONSENT_REVOKED);
         assertThat(MeetingEventType.find("meeting.transcript.ready")).isEmpty();
     }
 
@@ -191,5 +192,71 @@ class MeetingEventValidatorTest {
                 "meeting.consent", MeetingEventGoldens.MEETING_ID, MeetingEventType.SUMMARY_READY, -1))
                 .isInstanceOf(MeetingEventValidationException.class)
                 .hasMessageContaining("aggregateRevision must be >= 0");
+    }
+
+    @Test
+    void consentRevoked_hasDeterministicOccurrenceKeyAndFrozenThinWire() {
+        var captureId = java.util.UUID.fromString("33333333-3333-4333-8333-333333333333");
+        var envelope = MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.CONSENT_REVOKED)
+                .producer("audit-event-consumer-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .orgId(MeetingEventGoldens.ORG_ID)
+                .occurredAt(MeetingEventGoldens.GENERATED_AT)
+                .aggregateType("meeting.consent")
+                .aggregateId(captureId)
+                .aggregateRevision(2)
+                .payload(new MeetingEventPayload.ConsentRevoked(
+                        captureId, "recorder-consent-v1", 2, "USER_WITHDREW"))
+                .build();
+
+        assertThat(envelope.eventKey()).isEqualTo(
+                "meeting.consent|" + captureId + "|meeting.consent.revoked|2");
+        assertThat(MeetingEventV1Serializer.toJson(envelope)).isEqualTo(
+                "{\"schema\":\"meeting.event.v1\","
+                        + "\"eventType\":\"meeting.consent.revoked\","
+                        + "\"analysisRunId\":null,"
+                        + "\"meetingId\":\"22222222-2222-2222-2222-222222222222\","
+                        + "\"tenantId\":\"33333333-3333-3333-3333-333333333333\","
+                        + "\"orgId\":\"44444444-4444-4444-4444-444444444444\","
+                        + "\"generatedAt\":\"2026-07-11T10:00:00Z\","
+                        + "\"captureId\":\"33333333-3333-4333-8333-333333333333\","
+                        + "\"consentVersion\":\"recorder-consent-v1\","
+                        + "\"consentRevision\":2,"
+                        + "\"reasonCode\":\"USER_WITHDREW\"}");
+    }
+
+    @Test
+    void consentRevoked_rejectsZeroRevisionAndUnboundedReasonText() {
+        var captureId = java.util.UUID.fromString("33333333-3333-4333-8333-333333333333");
+
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.CONSENT_REVOKED)
+                .producer("audit-event-consumer-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.consent")
+                .aggregateId(captureId)
+                .aggregateRevision(0)
+                .payload(new MeetingEventPayload.ConsentRevoked(
+                        captureId, "v1", 0, "USER_WITHDREW"))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("consentRevision must be >= 1");
+
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.CONSENT_REVOKED)
+                .producer("audit-event-consumer-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.consent")
+                .aggregateId(captureId)
+                .aggregateRevision(2)
+                .payload(new MeetingEventPayload.ConsentRevoked(
+                        captureId, "v1", 2, "PERSONAL_DETAILS"))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("reasonCode must be USER_WITHDREW");
     }
 }

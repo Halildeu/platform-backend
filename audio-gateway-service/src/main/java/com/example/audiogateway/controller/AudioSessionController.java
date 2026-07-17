@@ -9,6 +9,8 @@ import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.FinishResponse;
 import com.example.audiogateway.dto.RecordingConsentRequest;
 import com.example.audiogateway.dto.RecordingConsentResponse;
+import com.example.audiogateway.dto.RecordingConsentRevocationRequest;
+import com.example.audiogateway.dto.RecordingConsentRevocationResponse;
 import com.example.audiogateway.dto.StartSessionRequest;
 import com.example.audiogateway.dto.StartSessionResponse;
 import com.example.audiogateway.dto.StatusResponse;
@@ -150,9 +152,17 @@ public class AudioSessionController {
         if (userId == null) return Mono.just(forbidden(props.getJwt().getUserClaim(), corrId));
 
         return meetingAccessValidator.validate(req.meetingId(), jwt, corrId)
-                .map(decision -> decision.allowed()
-                        ? recordConsentAudit(req, tenantId, userId, jwt.getSubject(), corrId)
-                        : meetingAccessError(decision, corrId));
+                .map(decision -> {
+                    if (!decision.allowed()) {
+                        return meetingAccessError(decision, corrId);
+                    }
+                    if (decision.tenantId() == null || decision.orgId() == null) {
+                        return meetingAccessError(
+                                Decision.unavailable("Canonical meeting scope unavailable"), corrId);
+                    }
+                    return recordConsentAudit(
+                            req, tenantId, userId, jwt.getSubject(), decision, corrId);
+                });
     }
 
     private ResponseEntity<?> recordConsentAudit(
@@ -160,6 +170,7 @@ public class AudioSessionController {
             final Long tenantId,
             final Long userId,
             final String subjectId,
+            final Decision scope,
             final String corrId) {
         final long acceptedAtMs = Instant.now().toEpochMilli();
         try {
@@ -168,6 +179,8 @@ public class AudioSessionController {
                     req.captureId(),
                     tenantId,
                     userId,
+                    scope.tenantId().toString(),
+                    scope.orgId().toString(),
                     subjectId,
                     req.consentVersion(),
                     req.consentTextHash(),
@@ -194,6 +207,75 @@ public class AudioSessionController {
                 req.locale(),
                 corrId,
                 acceptedAtMs));
+    }
+
+    /**
+     * Accept a user consent withdrawal only after canonical meeting access is
+     * re-authorized. The Redis audit write is synchronous and fail-closed; the
+     * durable consumer owns idempotent state + meeting-event outbox creation.
+     */
+    @PostMapping("/consents/revocations")
+    public Mono<ResponseEntity<?>> revokeConsent(
+            @Valid @RequestBody final RecordingConsentRevocationRequest req,
+            @AuthenticationPrincipal final Jwt jwt,
+            final ServerWebExchange exchange) {
+        final String corrId = correlationId(exchange);
+        final ResponseEntity<?> authErr = validateAuth(jwt, corrId);
+        if (authErr != null) return Mono.just(authErr);
+
+        final Long tenantId = claimAsLong(jwt, props.getJwt().getTenantClaim());
+        final Long userId = claimAsLong(jwt, props.getJwt().getUserClaim());
+        if (tenantId == null) return Mono.just(forbidden(props.getJwt().getTenantClaim(), corrId));
+        if (userId == null) return Mono.just(forbidden(props.getJwt().getUserClaim(), corrId));
+
+        return meetingAccessValidator.validate(req.meetingId(), jwt, corrId)
+                .map(decision -> {
+                    if (!decision.allowed()) {
+                        return meetingAccessError(decision, corrId);
+                    }
+                    if (decision.tenantId() == null || decision.orgId() == null) {
+                        return meetingAccessError(
+                                Decision.unavailable("Canonical meeting scope unavailable"), corrId);
+                    }
+                    return recordConsentRevocationAudit(req, tenantId, userId, jwt.getSubject(), decision, corrId);
+                });
+    }
+
+    private ResponseEntity<?> recordConsentRevocationAudit(
+            final RecordingConsentRevocationRequest req,
+            final Long tenantId,
+            final Long userId,
+            final String subjectId,
+            final Decision scope,
+            final String corrId) {
+        final long revokedAtMs = Instant.now().toEpochMilli();
+        try {
+            auditSink.emit(new AuditEvent.RecordingConsentRevoked(
+                    req.meetingId(),
+                    req.captureId(),
+                    tenantId,
+                    userId,
+                    scope.tenantId().toString(),
+                    scope.orgId().toString(),
+                    subjectId,
+                    req.consentVersion(),
+                    req.consentRevision(),
+                    req.reasonCode(),
+                    corrId,
+                    revokedAtMs));
+        } catch (Exception ex) {
+            log.warn("ALERT consent revoke audit persist failed; command denied err={} meetingId={} captureId={}",
+                    ex.getClass().getSimpleName(), req.meetingId(), req.captureId());
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(ErrorResponse.of(
+                    ErrorResponse.CODE_AUDIT_UNAVAILABLE,
+                    "Recording consent revocation persistence unavailable",
+                    corrId,
+                    true));
+        }
+
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(new RecordingConsentRevocationResponse(
+                req.meetingId(), req.captureId(), req.consentVersion(), req.consentRevision(),
+                req.reasonCode(), corrId, revokedAtMs));
     }
 
     @PostMapping("/sessions")

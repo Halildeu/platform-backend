@@ -257,8 +257,8 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
-      - name: Pre-install reactor deps (common-auth + common-export — not in Maven Central)
-        run: ./mvnw -q -pl common-auth,common-export install -DskipTests
+      - name: Pre-install reactor deps (common-auth + common-export + common-meeting-events)
+        run: ./mvnw -q -pl common-auth,common-export,common-meeting-events install -DskipTests
 
       - name: Run audit-event-consumer-service tests
         run: ./mvnw -pl audit-event-consumer-service test

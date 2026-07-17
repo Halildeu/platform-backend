@@ -2,8 +2,15 @@ package com.example.auditconsumer;
 
 import com.example.auditconsumer.audit.AuditIntegrityVerifier;
 import com.example.auditconsumer.config.AuditConsumerProperties;
+import com.example.auditconsumer.events.ConsentEventOutboxPoller;
 import com.example.auditconsumer.model.AuditEvent;
+import com.example.auditconsumer.model.ConsentEventOutbox;
+import com.example.auditconsumer.model.ConsentEventOutboxStatus;
+import com.example.auditconsumer.model.RecordingConsentGrant;
 import com.example.auditconsumer.repository.AuditEventRepository;
+import com.example.auditconsumer.repository.ConsentEventOutboxRepository;
+import com.example.auditconsumer.repository.RecordingConsentGrantRepository;
+import com.example.auditconsumer.repository.RecordingConsentRevocationRepository;
 import com.example.auditconsumer.service.AuditEventPersistenceService;
 import com.example.auditconsumer.service.AuditEventPersistenceService.PersistOutcome;
 import com.example.auditconsumer.service.AuditEventPersistenceService.PersistResult;
@@ -11,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -31,6 +39,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -103,13 +116,22 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
         registry.add("audit.consumer.enabled", () -> "true");
         registry.add("audit.consumer.poll.block-millis", () -> "250");
         registry.add("audit.consumer.poll.claim-min-idle-millis", () -> "500");
+        registry.add("audit.consumer.poll.dependency-max-delivery-attempts", () -> "4");
         registry.add("audit.consumer.dlq-stream-key", () -> "audit:events:dlq");
+        registry.add("audit.consumer.dlq-max-len", () -> "100");
+        registry.add("audit.consumer.dlq-ttl-seconds", () -> "3600");
+        registry.add("audit.consent-events.redis.enabled", () -> "true");
+        registry.add("audit.consent-events.redis.stream-key", () -> "meeting:events:test");
+        registry.add("audit.consent-events.outbox.poller.enabled", () -> "true");
+        registry.add("audit.consent-events.outbox.poll-delay-ms", () -> "100");
+        registry.add("audit.consent-events.outbox.scheduling-enabled", () -> "false");
         // Eureka off in tests.
         registry.add("eureka.client.enabled", () -> "false");
     }
 
     private static final String STREAM_KEY = "audit:events";
     private static final String DLQ_KEY = "audit:events:dlq";
+    private static final String MEETING_EVENT_STREAM_KEY = "meeting:events:test";
     // Numeric companyId tenant keys (producer contract — NOT UUIDs).
     private static final long TENANT_A = 1001L;
     private static final long TENANT_B = 1002L;
@@ -119,6 +141,18 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
 
     @Autowired
     private AuditEventRepository repository;
+
+    @Autowired
+    private RecordingConsentGrantRepository grantRepository;
+
+    @Autowired
+    private RecordingConsentRevocationRepository revocationRepository;
+
+    @Autowired
+    private ConsentEventOutboxRepository outboxRepository;
+
+    @Autowired
+    private ConsentEventOutboxPoller consentEventOutboxPoller;
 
     @Autowired
     private AuditIntegrityVerifier verifier;
@@ -156,6 +190,62 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
         return fields;
     }
 
+    private Map<String, String> revokedEvent(
+            long tenantId,
+            UUID meetingId,
+            UUID captureId,
+            long revision) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("eventType", "RECORDING_CONSENT_REVOKED");
+        fields.put("meetingId", meetingId.toString());
+        fields.put("captureId", captureId.toString());
+        fields.put("tenantId", Long.toString(tenantId));
+        fields.put("userId", "7");
+        fields.put("canonicalTenantId", "33333333-3333-3333-3333-333333333333");
+        fields.put("orgId", "44444444-4444-4444-4444-444444444444");
+        fields.put("subjectId", "user:7");
+        fields.put("consentVersion", "v1");
+        fields.put("consentRevision", Long.toString(revision));
+        fields.put("reasonCode", "USER_WITHDREW");
+        fields.put("correlationId", "corr-revoked-" + revision);
+        fields.put("revokedAtMs", "1700002000000");
+        fields.put("timestampMs", "1700002000000");
+        return fields;
+    }
+
+    private Map<String, String> grantedEvent(
+            long tenantId,
+            UUID meetingId,
+            UUID captureId) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("eventType", "RECORDING_CONSENT_GRANTED");
+        fields.put("meetingId", meetingId.toString());
+        fields.put("captureId", captureId.toString());
+        fields.put("tenantId", Long.toString(tenantId));
+        fields.put("userId", "7");
+        fields.put("canonicalTenantId", "33333333-3333-3333-3333-333333333333");
+        fields.put("orgId", "44444444-4444-4444-4444-444444444444");
+        fields.put("subjectId", "user:7");
+        fields.put("consentVersion", "v1");
+        fields.put("consentTextHash", "sha256:" + "a".repeat(64));
+        fields.put("locale", "tr-TR");
+        fields.put("correlationId", "corr-granted");
+        fields.put("timestampMs", "1700001000000");
+        return fields;
+    }
+
+    private Map<String, String> legacyGrantedEvent(
+            long tenantId,
+            UUID meetingId,
+            UUID captureId) {
+        Map<String, String> fields = grantedEvent(tenantId, meetingId, captureId);
+        fields.remove("canonicalTenantId");
+        fields.remove("orgId");
+        fields.remove("timestampMs");
+        fields.put("acceptedAtMs", "1700001000000");
+        return fields;
+    }
+
     private void xadd(Map<String, String> fields) {
         redis.opsForStream().add(StreamRecords.mapBacked(fields).withStreamKey(STREAM_KEY));
     }
@@ -169,8 +259,34 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
         return size == null ? 0L : size;
     }
 
+    private long pendingCount() {
+        var summary = redis.opsForStream().pending(STREAM_KEY, props.getGroup().getName());
+        return summary == null ? 0L : summary.getTotalPendingMessages();
+    }
+
+    private long sourceStreamLen() {
+        Long size = redis.opsForStream().size(STREAM_KEY);
+        return size == null ? 0L : size;
+    }
+
+    private ConsentEventOutbox persistConsentOutbox(
+            long tenant,
+            UUID meetingId,
+            UUID captureId,
+            String streamPrefix) {
+        PersistOutcome grant = persistence.persist(
+                grantedEvent(tenant, meetingId, captureId), streamPrefix + "-0");
+        assertThat(grant.result()).isEqualTo(PersistResult.PERSISTED);
+        PersistOutcome revoke = persistence.persist(
+                revokedEvent(tenant, meetingId, captureId, 2L), streamPrefix + "-1");
+        assertThat(revoke.result()).isEqualTo(PersistResult.PERSISTED);
+        String eventKey = "meeting.consent|" + captureId + "|meeting.consent.revoked|2";
+        return outboxRepository.findByEventKey(eventKey).orElseThrow();
+    }
+
     @Test
     void realNumericTenantEventsFlowThroughToImmutableHashChainedPersist() {
+        long initialDlq = dlqLen();
         long base = 1_700_000_000_000L;
         xadd(rejectedEvent(TENANT_A, "sess-1", 1, 413, "OVERSIZE", null, base));
         xadd(rejectedEvent(TENANT_A, "sess-1", 2, 429, "QUEUE_FULL", 10L, base + 10));
@@ -179,10 +295,14 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
         // 1. PIPELINE — consumer XREADGROUP + persist lands all three rows.
         //    (A UUID-parsing consumer would have dropped all three as INVALID.)
         await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
-                .untilAsserted(() -> assertThat(rowCount(TENANT_A)).isEqualTo(3));
+                .untilAsserted(() -> {
+                    assertThat(rowCount(TENANT_A)).isEqualTo(3);
+                    assertThat(pendingCount()).isZero();
+                    assertThat(sourceStreamLen()).isZero();
+                });
 
         // Nothing was dead-lettered — these are all well-formed.
-        assertThat(dlqLen()).isZero();
+        assertThat(dlqLen()).isEqualTo(initialDlq);
 
         List<AuditEvent> chain = repository.findByTenantIdOrderBySeqAsc(TENANT_A);
         AuditEvent first = chain.get(0);
@@ -229,6 +349,365 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
     }
 
     @Test
+    void consentRevocationCommitsAuditProjectionOutboxAndRedisEventExactlyOnce() {
+        long tenant = 1007L;
+        UUID meetingId = UUID.fromString("55555555-5555-4555-8555-555555555555");
+        UUID captureId = UUID.fromString("66666666-6666-4666-8666-666666666666");
+        String eventKey = "meeting.consent|" + captureId + "|meeting.consent.revoked|2";
+        Map<String, String> event = revokedEvent(tenant, meetingId, captureId, 2);
+        long initialPublished = redis.opsForStream().size(MEETING_EVENT_STREAM_KEY) == null
+                ? 0L : redis.opsForStream().size(MEETING_EVENT_STREAM_KEY);
+
+        xadd(grantedEvent(tenant, meetingId, captureId));
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> assertThat(grantRepository.findByCaptureId(captureId)).isPresent());
+        xadd(event);
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(rowCount(tenant)).isEqualTo(2);
+                    assertThat(revocationRepository.findByEventKey(eventKey)).isPresent();
+                    assertThat(outboxRepository.findByEventKey(eventKey))
+                            .get().extracting(ConsentEventOutbox::getStatus)
+                            .isEqualTo(ConsentEventOutboxStatus.PENDING);
+                });
+
+        consentEventOutboxPoller.runCycle();
+        await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(100))
+                .untilAsserted(() -> {
+                    assertThat(outboxRepository.findByEventKey(eventKey))
+                            .get().extracting(ConsentEventOutbox::getStatus)
+                            .isEqualTo(ConsentEventOutboxStatus.PUBLISHED);
+                    assertThat(redis.opsForStream().size(MEETING_EVENT_STREAM_KEY))
+                            .isGreaterThan(initialPublished);
+                });
+
+        var projection = revocationRepository.findByEventKey(eventKey).orElseThrow();
+        var outbox = outboxRepository.findByEventKey(eventKey).orElseThrow();
+        assertThat(projection.getMeetingId()).isEqualTo(meetingId);
+        assertThat(projection.getCaptureId()).isEqualTo(captureId);
+        assertThat(projection.getConsentRevision()).isEqualTo(2);
+        assertThat(projection.getSourceHash()).matches("[0-9a-f]{64}");
+        assertThat(outbox.getPayload())
+                .contains("\"eventType\":\"meeting.consent.revoked\"")
+                .contains("\"captureId\":\"" + captureId + "\"")
+                .doesNotContain("user:7")
+                .doesNotContain("transcript")
+                .doesNotContain("audio");
+
+        List<MapRecord<String, Object, Object>> published = redis.opsForStream()
+                .range(MEETING_EVENT_STREAM_KEY, org.springframework.data.domain.Range.unbounded());
+        assertThat(published.stream()
+                .filter(record -> eventKey.equals(record.getValue().get("eventKey")))
+                .count()).isEqualTo(1L);
+
+        xadd(event);
+        await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(10))
+                .pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(rowCount(tenant)).isEqualTo(2);
+                    assertThat(revocationRepository.findByEventKey(eventKey)).isPresent();
+                    assertThat(outboxRepository.findByEventKey(eventKey)).isPresent();
+                    List<MapRecord<String, Object, Object>> events = redis.opsForStream()
+                            .range(MEETING_EVENT_STREAM_KEY,
+                                    org.springframework.data.domain.Range.unbounded());
+                    assertThat(events.stream()
+                            .filter(record -> eventKey.equals(record.getValue().get("eventKey")))
+                            .count()).isEqualTo(1L);
+                });
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE recording_consent_revocation SET reason_code = 'TAMPERED' WHERE event_key = ?",
+                eventKey)).hasMessageContaining("append-only");
+        assertThatThrownBy(() -> jdbc.update(
+                "DELETE FROM recording_consent_revocation WHERE event_key = ?", eventKey))
+                .hasMessageContaining("append-only");
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE recording_consent_grant SET actor_user_id = 99 WHERE capture_id = ?",
+                captureId)).hasMessageContaining("append-only");
+        assertThatThrownBy(() -> jdbc.update(
+                "DELETE FROM recording_consent_grant WHERE capture_id = ?", captureId))
+                .hasMessageContaining("append-only");
+        assertThat(verifier.verifyTenant(tenant).valid()).isTrue();
+        assertThat(verifier.verifyTenant(tenant).checkedCount()).isEqualTo(2);
+    }
+
+    @Test
+    void consentRevocationWithDifferentActorIsDlqParkedAndConsumerContinues() {
+        long tenant = 1008L;
+        UUID meetingId = UUID.fromString("77777777-7777-4777-8777-777777777777");
+        UUID captureId = UUID.fromString("88888888-8888-4888-8888-888888888888");
+        long initialDlq = dlqLen();
+
+        xadd(grantedEvent(tenant, meetingId, captureId));
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> assertThat(grantRepository.findByCaptureId(captureId)).isPresent());
+
+        Map<String, String> forged = revokedEvent(tenant, meetingId, captureId, 2);
+        forged.put("subjectId", "user:99");
+        xadd(forged);
+        xadd(rejectedEvent(tenant, "after-consent-conflict", 1, 429, "QUEUE_FULL", 1L,
+                1_700_003_000_000L));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(dlqLen()).isEqualTo(initialDlq + 1);
+                    assertThat(repository.existsByDedupKey(
+                            "CHUNK_ADMISSION_REJECTED:after-consent-conflict:1")).isTrue();
+                    assertThat(revocationRepository.findByEventKey(
+                            "meeting.consent|" + captureId + "|meeting.consent.revoked|2"))
+                            .isEmpty();
+                });
+    }
+
+    @Test
+    void consentUuidCaseIsCanonicalizedForDedupAndProjectionIdentity() {
+        long tenant = 1011L;
+        UUID meetingId = UUID.fromString("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+        UUID captureId = UUID.fromString("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
+        Map<String, String> upper = grantedEvent(tenant, meetingId, captureId);
+        upper.put("meetingId", meetingId.toString().toUpperCase(java.util.Locale.ROOT));
+        upper.put("captureId", captureId.toString().toUpperCase(java.util.Locale.ROOT));
+
+        xadd(upper);
+        xadd(grantedEvent(tenant, meetingId, captureId));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(grantRepository.findByCaptureId(captureId)).isPresent();
+                    assertThat(rowCount(tenant)).isEqualTo(1);
+                    assertThat(pendingCount()).isZero();
+                });
+        assertThat(repository.existsByDedupKey(
+                "RECORDING_CONSENT_GRANTED:" + captureId)).isTrue();
+    }
+
+    @Test
+    void revokeBeforeGrantRetriesThenPersistsAfterPredecessorArrives() {
+        long tenant = 1012L;
+        UUID meetingId = UUID.fromString("f1111111-1111-4111-8111-111111111111");
+        UUID captureId = UUID.fromString("f2222222-2222-4222-8222-222222222222");
+        long initialDlq = dlqLen();
+        String eventKey = "meeting.consent|" + captureId + "|meeting.consent.revoked|2";
+
+        xadd(revokedEvent(tenant, meetingId, captureId, 2));
+        xadd(grantedEvent(tenant, meetingId, captureId));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(grantRepository.findByCaptureId(captureId)).isPresent();
+                    assertThat(revocationRepository.findByEventKey(eventKey)).isPresent();
+                    assertThat(outboxRepository.findByEventKey(eventKey)).isPresent();
+                    assertThat(pendingCount()).isZero();
+                });
+        assertThat(dlqLen()).isEqualTo(initialDlq);
+    }
+
+    @Test
+    void missingGrantIsBoundedlyRetriedThenParkedWithoutBlockingFollowingEvent() {
+        long tenant = 1013L;
+        UUID meetingId = UUID.fromString("f3333333-3333-4333-8333-333333333333");
+        UUID captureId = UUID.fromString("f4444444-4444-4444-8444-444444444444");
+        long initialDlq = dlqLen();
+
+        xadd(revokedEvent(tenant, meetingId, captureId, 2));
+        xadd(rejectedEvent(tenant, "after-missing-grant", 1, 429, "QUEUE_FULL", 1L,
+                1_700_004_000_000L));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(dlqLen()).isEqualTo(initialDlq + 1);
+                    assertThat(pendingCount()).isZero();
+                    assertThat(repository.existsByDedupKey(
+                            "CHUNK_ADMISSION_REJECTED:after-missing-grant:1")).isTrue();
+                });
+    }
+
+    @Test
+    void retainedLegacyGrantWithoutCanonicalScopeReplaysThenAuthorizesScopedRevoke() {
+        long tenant = 1014L;
+        UUID meetingId = UUID.fromString("f5555555-5555-4555-8555-555555555555");
+        UUID captureId = UUID.fromString("f6666666-6666-4666-8666-666666666666");
+        String eventKey = "meeting.consent|" + captureId + "|meeting.consent.revoked|2";
+
+        xadd(legacyGrantedEvent(tenant, meetingId, captureId));
+        xadd(revokedEvent(tenant, meetingId, captureId, 2));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    RecordingConsentGrant grant = grantRepository.findByCaptureId(captureId).orElseThrow();
+                    assertThat(grant.getTenantId()).isNull();
+                    assertThat(grant.getOrgId()).isNull();
+                    assertThat(revocationRepository.findByEventKey(eventKey)).isPresent();
+                    assertThat(outboxRepository.findByEventKey(eventKey)).isPresent();
+                    assertThat(pendingCount()).isZero();
+                });
+    }
+
+    @Test
+    void revocationAndAuditRollBackWhenOutboxInsertFails() {
+        long tenant = 1015L;
+        UUID meetingId = UUID.fromString("f7777777-7777-4777-8777-777777777777");
+        UUID captureId = UUID.fromString("f8888888-8888-4888-8888-888888888888");
+        String eventKey = "meeting.consent|" + captureId + "|meeting.consent.revoked|2";
+        assertThat(persistence.persist(grantedEvent(tenant, meetingId, captureId), "rollback-0").result())
+                .isEqualTo(PersistResult.PERSISTED);
+
+        jdbc.execute("CREATE OR REPLACE FUNCTION test_fail_consent_outbox_insert() RETURNS TRIGGER AS $$ "
+                + "BEGIN RAISE EXCEPTION 'forced outbox failure'; END; $$ LANGUAGE plpgsql");
+        jdbc.execute("CREATE TRIGGER trg_test_fail_consent_outbox BEFORE INSERT ON consent_event_outbox "
+                + "FOR EACH ROW EXECUTE FUNCTION test_fail_consent_outbox_insert()");
+        try {
+            assertThatThrownBy(() -> persistence.persist(
+                    revokedEvent(tenant, meetingId, captureId, 2), "rollback-1"))
+                    .isInstanceOf(DataAccessException.class);
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS trg_test_fail_consent_outbox ON consent_event_outbox");
+            jdbc.execute("DROP FUNCTION IF EXISTS test_fail_consent_outbox_insert()");
+        }
+
+        assertThat(rowCount(tenant)).isEqualTo(1);
+        assertThat(revocationRepository.findByEventKey(eventKey)).isEmpty();
+        assertThat(outboxRepository.findByEventKey(eventKey)).isEmpty();
+    }
+
+    @Test
+    void realProjectionConflictIsDlqAckedAndDoesNotBlockFollowingEvent() {
+        long tenant = 1016L;
+        UUID meetingId = UUID.fromString("f9999999-9999-4999-8999-999999999999");
+        UUID captureId = UUID.fromString("faaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        String eventKey = "meeting.consent|" + captureId + "|meeting.consent.revoked|2";
+        Map<String, String> revoke = revokedEvent(tenant, meetingId, captureId, 2);
+        xadd(grantedEvent(tenant, meetingId, captureId));
+        xadd(revoke);
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> assertThat(revocationRepository.findByEventKey(eventKey)).isPresent());
+
+        jdbc.execute("ALTER TABLE recording_consent_revocation DISABLE TRIGGER USER");
+        try {
+            jdbc.update("UPDATE recording_consent_revocation SET source_hash = ? WHERE event_key = ?",
+                    "0".repeat(64), eventKey);
+        } finally {
+            jdbc.execute("ALTER TABLE recording_consent_revocation ENABLE TRIGGER USER");
+        }
+        long initialDlq = dlqLen();
+        xadd(revoke);
+        xadd(rejectedEvent(tenant, "after-real-conflict", 1, 429, "QUEUE_FULL", 1L,
+                1_700_005_000_000L));
+
+        await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() -> {
+                    assertThat(dlqLen()).isEqualTo(initialDlq + 1);
+                    assertThat(pendingCount()).isZero();
+                    assertThat(repository.existsByDedupKey(
+                            "CHUNK_ADMISSION_REJECTED:after-real-conflict:1")).isTrue();
+                });
+    }
+
+    @Test
+    void consentOutboxPayloadAndRoutingAreDatabaseImmutable() {
+        ConsentEventOutbox row = persistConsentOutbox(
+                1009L,
+                UUID.fromString("99999999-9999-4999-8999-999999999999"),
+                UUID.fromString("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                "901");
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE consent_event_outbox SET payload = '{}' WHERE id = ?", row.getId()))
+                .hasMessageContaining("immutable payload/routing");
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE consent_event_outbox SET tenant_id = ? WHERE id = ?",
+                UUID.randomUUID(), row.getId()))
+                .hasMessageContaining("immutable payload/routing");
+        assertThatThrownBy(() -> jdbc.update(
+                "DELETE FROM consent_event_outbox WHERE id = ?", row.getId()))
+                .hasMessageContaining("delete rejected");
+    }
+
+    @Test
+    void consentOutboxLeaseRecoveryEndsAtAttemptLimitThenControlledRedriveCanPublish() {
+        ConsentEventOutbox row = persistConsentOutbox(
+                1010L,
+                UUID.fromString("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                UUID.fromString("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+                "902");
+        TransactionTemplate tx = new TransactionTemplate(txManager);
+        Instant firstClaimAt = Instant.now()
+                .truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        UUID firstToken = UUID.randomUUID();
+
+        int firstClaim = tx.execute(status -> outboxRepository.claimBatch(
+                firstClaimAt, firstClaimAt.plusMillis(10), "worker-a", firstToken, 100));
+        assertThat(firstClaim).isPositive();
+        assertThat(outboxRepository.findById(row.getId()).orElseThrow().getClaimToken())
+                .isEqualTo(firstToken);
+        Integer stalePublish = tx.execute(status -> outboxRepository.markPublishedFenced(
+                row.getId(), UUID.randomUUID(), firstClaimAt.plusMillis(1)));
+        assertThat(stalePublish).isZero();
+
+        Instant firstRecoveryAt = firstClaimAt.plusMillis(20);
+        Instant retryAt = firstRecoveryAt.plusSeconds(5);
+        Integer firstRecovery = tx.execute(status -> outboxRepository.recoverStaleLeases(
+                firstRecoveryAt, retryAt, 2));
+        assertThat(firstRecovery).isPositive();
+        ConsentEventOutbox afterFirstRecovery = outboxRepository.findById(row.getId()).orElseThrow();
+        assertThat(afterFirstRecovery.getStatus()).isEqualTo(ConsentEventOutboxStatus.PENDING);
+        assertThat(afterFirstRecovery.getAttempts()).isEqualTo(1);
+        assertThat(afterFirstRecovery.getNextAttemptAt()).isEqualTo(retryAt);
+
+        Integer tooEarly = tx.execute(status -> outboxRepository.claimBatch(
+                retryAt.minusMillis(1), retryAt.plusSeconds(1), "too-early",
+                UUID.randomUUID(), 100));
+        assertThat(tooEarly).isZero();
+
+        UUID secondToken = UUID.randomUUID();
+        Instant secondClaimAt = retryAt.plusMillis(1);
+        Integer secondClaim = tx.execute(status -> outboxRepository.claimBatch(
+                secondClaimAt, secondClaimAt.plusMillis(10), "worker-b", secondToken, 100));
+        assertThat(secondClaim).isPositive();
+        assertThat(outboxRepository.findById(row.getId()).orElseThrow().getClaimToken())
+                .isEqualTo(secondToken);
+        Instant secondRecoveryAt = secondClaimAt.plusMillis(20);
+        Integer secondRecovery = tx.execute(status -> outboxRepository.recoverStaleLeases(
+                secondRecoveryAt, secondRecoveryAt.plusSeconds(5), 2));
+        assertThat(secondRecovery).isPositive();
+
+        ConsentEventOutbox dead = outboxRepository.findById(row.getId()).orElseThrow();
+        assertThat(dead.getStatus()).isEqualTo(ConsentEventOutboxStatus.DEAD);
+        assertThat(dead.getAttempts()).isEqualTo(2);
+        assertThat(dead.getLastError()).isEqualTo("LEASE_EXPIRED");
+        Integer latePublish = tx.execute(status -> outboxRepository.markPublishedFenced(
+                row.getId(), secondToken, secondRecoveryAt.plusMillis(1)));
+        assertThat(latePublish).isZero();
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE consent_event_outbox SET status = 'PENDING', next_attempt_at = now() "
+                        + "WHERE id = ?", row.getId()))
+                .hasMessageContaining("requires controlled redrive");
+
+        Integer redriven = jdbc.queryForObject(
+                "SELECT consent_event_outbox_redrive(?, ?)",
+                Integer.class, row.getEventKey(), "operator approved");
+        assertThat(redriven).isOne();
+        ConsentEventOutbox pendingAgain = outboxRepository.findById(row.getId()).orElseThrow();
+        assertThat(pendingAgain.getStatus()).isEqualTo(ConsentEventOutboxStatus.PENDING);
+        assertThat(pendingAgain.getAttempts()).isEqualTo(2);
+        assertThat(pendingAgain.getLastError()).isEqualTo("MANUAL_REDRIVE:operatorapproved");
+
+        UUID redriveToken = UUID.randomUUID();
+        Instant redriveClaimAt = Instant.now().plusMillis(1);
+        Integer redriveClaim = tx.execute(status -> outboxRepository.claimBatch(
+                redriveClaimAt, redriveClaimAt.plusSeconds(1), "worker-redrive",
+                redriveToken, 100));
+        assertThat(redriveClaim).isPositive();
+        Integer redrivePublished = tx.execute(status -> outboxRepository.markPublishedFenced(
+                row.getId(), redriveToken, redriveClaimAt.plusMillis(1)));
+        assertThat(redrivePublished).isOne();
+        assertThat(outboxRepository.findById(row.getId()).orElseThrow().getStatus())
+                .isEqualTo(ConsentEventOutboxStatus.PUBLISHED);
+    }
+
+    @Test
     void dedupRaceThroughServicePersistPathIsDuplicateWithoutTransactionAbort() {
         // CODEX iter-2 #2 — the load-bearing proof. Drive the SAME logical event
         // through the REAL service persist() path TWICE on real PostgreSQL (NOT a
@@ -271,6 +750,127 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
         // The transaction was NOT aborted: an ordinary read AFTER the duplicate
         // persist succeeds (an aborted tx would have poisoned subsequent SELECTs).
         assertThat(repository.existsByDedupKey("CHUNK_ADMISSION_REJECTED:race-sess:1")).isTrue();
+    }
+
+    @Test
+    void concurrentServicePersistsProduceOneRowAndOneDuplicate() throws Exception {
+        long tenant = 1017L;
+        Map<String, String> event = rejectedEvent(
+                tenant, "concurrent-race-sess", 1, 413, "OVERSIZE", null,
+                1_700_006_000_000L);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<PersistOutcome> first = executor.submit(() -> {
+                ready.countDown();
+                assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+                return persistence.persist(new LinkedHashMap<>(event), "concurrent-1");
+            });
+            Future<PersistOutcome> second = executor.submit(() -> {
+                ready.countDown();
+                assertThat(start.await(5, TimeUnit.SECONDS)).isTrue();
+                return persistence.persist(new LinkedHashMap<>(event), "concurrent-2");
+            });
+
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            List<PersistResult> results = List.of(
+                    first.get(15, TimeUnit.SECONDS).result(),
+                    second.get(15, TimeUnit.SECONDS).result());
+
+            assertThat(results).containsExactlyInAnyOrder(
+                    PersistResult.PERSISTED, PersistResult.DUPLICATE);
+            assertThat(rowCount(tenant)).isEqualTo(1);
+            assertThat(verifier.verifyTenant(tenant).valid()).isTrue();
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void concurrentOutboxWorkersCannotClaimTheSameRow() throws Exception {
+        drainPendingOutbox();
+        ConsentEventOutbox row = persistConsentOutbox(
+                1018L,
+                UUID.fromString("ab111111-1111-4111-8111-111111111111"),
+                UUID.fromString("ab222222-2222-4222-8222-222222222222"),
+                "concurrent-claim");
+        Instant now = Instant.now().plusMillis(1);
+        UUID firstToken = UUID.randomUUID();
+        UUID secondToken = UUID.randomUUID();
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch queried = new CountDownLatch(2);
+        CountDownLatch releaseWinner = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> first = executor.submit(() -> concurrentClaim(
+                    now, "worker-concurrent-a", firstToken, ready, start, queried, releaseWinner));
+            Future<Integer> second = executor.submit(() -> concurrentClaim(
+                    now, "worker-concurrent-b", secondToken, ready, start, queried, releaseWinner));
+
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(queried.await(10, TimeUnit.SECONDS)).isTrue();
+            releaseWinner.countDown();
+
+            int firstClaimed = first.get(15, TimeUnit.SECONDS);
+            int secondClaimed = second.get(15, TimeUnit.SECONDS);
+            assertThat(firstClaimed + secondClaimed).isEqualTo(1);
+            assertThat(outboxRepository.findByClaimToken(firstToken).size()
+                    + outboxRepository.findByClaimToken(secondToken).size()).isEqualTo(1);
+            assertThat(outboxRepository.findById(row.getId()).orElseThrow().getStatus())
+                    .isEqualTo(ConsentEventOutboxStatus.CLAIMED);
+        } finally {
+            releaseWinner.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    private void drainPendingOutbox() {
+        for (int cycle = 0;
+                cycle < 10 && outboxRepository.countByStatus(ConsentEventOutboxStatus.PENDING) > 0;
+                cycle++) {
+            consentEventOutboxPoller.runCycle();
+        }
+        assertThat(outboxRepository.countByStatus(ConsentEventOutboxStatus.PENDING)).isZero();
+    }
+
+    private int concurrentClaim(
+            Instant now,
+            String owner,
+            UUID claimToken,
+            CountDownLatch ready,
+            CountDownLatch start,
+            CountDownLatch queried,
+            CountDownLatch releaseWinner) {
+        TransactionTemplate transaction = new TransactionTemplate(txManager);
+        Integer claimed = transaction.execute(status -> {
+            ready.countDown();
+            awaitLatch(start);
+            int count = outboxRepository.claimBatch(
+                    now, now.plusSeconds(30), owner, claimToken, 1);
+            queried.countDown();
+            if (count > 0) {
+                awaitLatch(releaseWinner);
+            }
+            return count;
+        });
+        return claimed == null ? 0 : claimed;
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Timed out waiting for concurrent test barrier");
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Concurrent test interrupted", ex);
+        }
     }
 
     @Test
@@ -325,6 +925,7 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
         // be routed to the DLQ stream and only then ACKed off the source, so the
         // audit event is parked (never silently dropped) and never loops forever.
         long ts = 1_700_000_800_000L;
+        long initialDlq = dlqLen();
         Map<String, String> poison = rejectedEvent(99L, "poison-sess", 1, 413, "OVERSIZE", null, ts);
         poison.put("tenantId", "not-a-number"); // unmappable → INVALID → DLQ
 
@@ -332,27 +933,31 @@ class AuditPipelineEndToEndPostgresIntegrationTest {
 
         // The poison entry lands on the DLQ stream...
         await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(200))
-                .untilAsserted(() -> assertThat(dlqLen()).isEqualTo(1));
+                .untilAsserted(() -> assertThat(dlqLen()).isEqualTo(initialDlq + 1));
 
-        // ...carrying the verbatim source fields + diagnostic envelope.
+        // ...carrying only a fingerprinted diagnostic envelope, never raw identity fields.
         List<MapRecord<String, Object, Object>> dlqRecords = redis.opsForStream()
                 .range(DLQ_KEY, org.springframework.data.domain.Range.unbounded());
-        assertThat(dlqRecords).hasSize(1);
-        Map<Object, Object> dlqFields = dlqRecords.get(0).getValue();
-        assertThat(dlqFields).containsEntry("sessionId", "poison-sess");
-        assertThat(dlqFields).containsEntry("tenantId", "not-a-number");
-        assertThat(dlqFields).containsKey("_dlqReason");
+        Map<Object, Object> dlqFields = dlqRecords.stream()
+                .map(MapRecord::getValue)
+                .filter(fields -> "INVALID_EVENT".equals(fields.get("_dlqReason")))
+                .reduce((first, second) -> second)
+                .orElseThrow();
+        assertThat(dlqFields).doesNotContainKeys("sessionId", "tenantId", "userId", "subjectId");
+        assertThat(dlqFields).containsEntry("_dlqReason", "INVALID_EVENT");
         assertThat(dlqFields).containsEntry("_dlqSourceStream", STREAM_KEY);
-        assertThat(String.valueOf(dlqFields.get("_dlqReason"))).contains("tenantId");
+        assertThat(String.valueOf(dlqFields.get("_dlqFingerprint"))).matches("[0-9a-f]{64}");
+        assertThat(redis.getExpire(DLQ_KEY, java.util.concurrent.TimeUnit.SECONDS)).isPositive();
 
-        // ...and the source entry is ACKed (pending drains to 0), so it is not
-        // redelivered in an infinite poison loop.
+        // ...and the source entry is atomically ACKed + deleted, so it is not
+        // redelivered and the transient source stream does not grow forever.
         await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(200))
                 .untilAsserted(() -> {
                     var summary = redis.opsForStream()
                             .pending(STREAM_KEY, props.getGroup().getName());
                     long pending = summary == null ? 0L : summary.getTotalPendingMessages();
                     assertThat(pending).isZero();
+                    assertThat(sourceStreamLen()).isZero();
                 });
 
         // No audit row was written for the poison event.

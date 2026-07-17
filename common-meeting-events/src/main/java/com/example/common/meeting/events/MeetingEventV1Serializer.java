@@ -94,6 +94,12 @@ public final class MeetingEventV1Serializer {
                 json.put("assigneeSubject", p.assigneeSubject());
                 json.put("dueAt", text(p.dueAt()));
             }
+            case MeetingEventPayload.ConsentRevoked p -> {
+                json.put("captureId", text(p.captureId()));
+                json.put("consentVersion", p.consentVersion());
+                json.put("consentRevision", p.consentRevision());
+                json.put("reasonCode", p.reasonCode());
+            }
         }
         return json;
     }

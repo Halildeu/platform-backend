@@ -19,7 +19,8 @@ import java.util.UUID;
  * it is today — see {@link MeetingEventV1Serializer}.
  */
 public sealed interface MeetingEventPayload
-        permits MeetingEventPayload.SummaryReady, MeetingEventPayload.ActionAssigned {
+        permits MeetingEventPayload.SummaryReady, MeetingEventPayload.ActionAssigned,
+        MeetingEventPayload.ConsentRevoked {
 
     /** The event type this payload belongs to — cross-checked against the envelope. */
     MeetingEventType eventType();
@@ -64,6 +65,34 @@ public sealed interface MeetingEventPayload
         @Override
         public MeetingEventType eventType() {
             return MeetingEventType.ACTION_ASSIGNED;
+        }
+    }
+
+    /**
+     * {@code meeting.consent.revoked} — recording consent was withdrawn.
+     *
+     * <p>The payload is intentionally thin. Actor identity remains in the durable
+     * audit record and is not broadcast to meeting-event consumers.
+     *
+     * @param captureId capture whose consent was withdrawn; the stable aggregate id
+     * @param consentVersion version of the consent text/contract being withdrawn
+     * @param consentRevision producer-owned occurrence counter for re-grant/revoke cycles
+     * @param reasonCode bounded non-free-text reason code
+     */
+    record ConsentRevoked(
+            UUID captureId,
+            String consentVersion,
+            long consentRevision,
+            String reasonCode) implements MeetingEventPayload {
+
+        @Override
+        public MeetingEventType eventType() {
+            return MeetingEventType.CONSENT_REVOKED;
+        }
+
+        @Override
+        public UUID analysisRunId() {
+            return null;
         }
     }
 }

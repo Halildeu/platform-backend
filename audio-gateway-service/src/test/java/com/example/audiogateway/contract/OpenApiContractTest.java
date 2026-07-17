@@ -80,6 +80,7 @@ class OpenApiContractTest {
                 .expectStatus().isOk()
                 .expectBody()
                 .jsonPath("$.paths./api/v1/audio-gateway/consents.post").exists()
+                .jsonPath("$.paths./api/v1/audio-gateway/consents/revocations.post").exists()
                 .jsonPath("$.paths./api/v1/audio-gateway/sessions/{sessionId}/chunks.post").exists()
                 .jsonPath("$.paths./api/v1/audio-gateway/sessions/{sessionId}/status.get").exists();
     }

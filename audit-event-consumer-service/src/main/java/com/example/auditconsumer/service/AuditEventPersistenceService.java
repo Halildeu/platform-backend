@@ -2,16 +2,33 @@ package com.example.auditconsumer.service;
 
 import com.example.auditconsumer.audit.AuditChainLock;
 import com.example.auditconsumer.audit.AuditChainSupport;
+import com.example.auditconsumer.model.ConsentEventOutbox;
 import com.example.auditconsumer.model.AuditEvent;
+import com.example.auditconsumer.model.RecordingConsentGrant;
+import com.example.auditconsumer.model.RecordingConsentRevocation;
 import com.example.auditconsumer.repository.AuditEventRepository;
+import com.example.auditconsumer.repository.ConsentEventOutboxRepository;
+import com.example.auditconsumer.repository.RecordingConsentGrantRepository;
+import com.example.auditconsumer.repository.RecordingConsentRevocationRepository;
+import com.example.common.meeting.events.MeetingEventEnvelope;
+import com.example.common.meeting.events.MeetingEventPayload;
+import com.example.common.meeting.events.MeetingEventType;
+import com.example.common.meeting.events.MeetingEventV1Serializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,6 +71,12 @@ import java.util.UUID;
 public class AuditEventPersistenceService {
 
     private static final Logger log = LoggerFactory.getLogger(AuditEventPersistenceService.class);
+    private static final String CONSENT_GRANTED = "RECORDING_CONSENT_GRANTED";
+    private static final String CONSENT_REVOKED = "RECORDING_CONSENT_REVOKED";
+    private static final String CONSENT_AGGREGATE_TYPE = "meeting.consent";
+    private static final String PRODUCER = "audit-event-consumer-service";
+    private static final Instant EARLIEST_ACCEPTED_EVENT = Instant.parse("2000-01-01T00:00:00Z");
+    private static final Duration MAX_FUTURE_CLOCK_SKEW = Duration.ofMinutes(5);
 
     /** Outcome of a single persist attempt — drives the consumer ack/skip decision. */
     public enum PersistResult {
@@ -61,6 +84,10 @@ public class AuditEventPersistenceService {
         PERSISTED,
         /** Already present (idempotent redelivery) — ack and skip. */
         DUPLICATE,
+        /** Same natural key with different material content — route to conflict DLQ then ack. */
+        CONFLICT,
+        /** A required durable predecessor has not arrived yet — leave pending for bounded retry. */
+        RETRYABLE,
         /** Malformed / unmappable record — route to DLQ then ack (poison-message safe). */
         INVALID
     }
@@ -78,18 +105,43 @@ public class AuditEventPersistenceService {
         static PersistOutcome invalid(String reason) {
             return new PersistOutcome(PersistResult.INVALID, reason);
         }
+
+        static PersistOutcome conflict(String reason) {
+            return new PersistOutcome(PersistResult.CONFLICT, reason);
+        }
+
+        static PersistOutcome retryable(String reason) {
+            return new PersistOutcome(PersistResult.RETRYABLE, reason);
+        }
     }
 
     private final AuditEventRepository repository;
     private final AuditChainLock chainLock;
     private final Clock clock;
+    private final RecordingConsentGrantRepository grantRepository;
+    private final RecordingConsentRevocationRepository revocationRepository;
+    private final ConsentEventOutboxRepository outboxRepository;
 
     public AuditEventPersistenceService(AuditEventRepository repository,
                                         AuditChainLock chainLock,
                                         Clock clock) {
+        this(repository, chainLock, clock, null, null, null);
+    }
+
+    @Autowired
+    public AuditEventPersistenceService(
+            AuditEventRepository repository,
+            AuditChainLock chainLock,
+            Clock clock,
+            RecordingConsentGrantRepository grantRepository,
+            RecordingConsentRevocationRepository revocationRepository,
+            ConsentEventOutboxRepository outboxRepository) {
         this.repository = repository;
         this.chainLock = chainLock;
         this.clock = clock;
+        this.grantRepository = grantRepository;
+        this.revocationRepository = revocationRepository;
+        this.outboxRepository = outboxRepository;
     }
 
     /**
@@ -112,17 +164,34 @@ public class AuditEventPersistenceService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public PersistOutcome persist(Map<String, String> fields, String streamEntryId) {
         final AuditEvent event;
+        final GrantProjection grant;
+        final RevocationProjection revocation;
         try {
             event = map(fields);
+            grant = CONSENT_GRANTED.equals(event.getEventType())
+                    ? mapGrant(fields, event)
+                    : null;
+            revocation = CONSENT_REVOKED.equals(event.getEventType())
+                    ? mapRevocation(fields, event)
+                    : null;
+        } catch (org.springframework.dao.DataAccessException ex) {
+            throw ex;
+        } catch (ConsentDependencyPendingException ex) {
+            log.info("Consent predecessor not available yet entryId={}", streamEntryId);
+            return PersistOutcome.retryable("CONSENT_DEPENDENCY_PENDING");
         } catch (RuntimeException ex) {
-            log.warn("Dropping malformed audit record entryId={} err={} msg={}",
-                    streamEntryId, ex.getClass().getSimpleName(), ex.getMessage());
-            return PersistOutcome.invalid(ex.getClass().getSimpleName() + ": " + ex.getMessage());
+            log.warn("Rejecting malformed audit record entryId={} err={}",
+                    streamEntryId, ex.getClass().getSimpleName());
+            return PersistOutcome.invalid("INVALID_EVENT");
         }
         event.setStreamEntryId(streamEntryId);
 
         // Fast-path idempotency: a redelivery should not take the chain lock.
         if (repository.existsByDedupKey(event.getDedupKey())) {
+            if ((grant != null && !duplicateGrantMatches(grant))
+                    || (revocation != null && !duplicateRevocationMatches(revocation))) {
+                return PersistOutcome.conflict("IDEMPOTENCY_CONFLICT");
+            }
             log.debug("Skipping duplicate audit event dedupKey={} entryId={}",
                     event.getDedupKey(), streamEntryId);
             return PersistOutcome.of(PersistResult.DUPLICATE);
@@ -159,9 +228,19 @@ public class AuditEventPersistenceService {
                 event.getDedupKey(), event.getStreamEntryId(), event.getPrevHash(),
                 event.getEntryHash(), event.getEntryHashAlg(), event.getEntryHashVersion());
         if (affected == 0) {
+            if ((grant != null && !duplicateGrantMatches(grant))
+                    || (revocation != null && !duplicateRevocationMatches(revocation))) {
+                return PersistOutcome.conflict("IDEMPOTENCY_CONFLICT");
+            }
             log.debug("Duplicate on insert (ON CONFLICT dedup_key) dedupKey={} entryId={}",
                     event.getDedupKey(), streamEntryId);
             return PersistOutcome.of(PersistResult.DUPLICATE);
+        }
+        if (grant != null) {
+            persistGrant(grant);
+        }
+        if (revocation != null) {
+            persistRevocationAndOutbox(revocation);
         }
         return PersistOutcome.of(PersistResult.PERSISTED);
     }
@@ -178,7 +257,7 @@ public class AuditEventPersistenceService {
         // a numeric string (NOT a UUID). UUID-parsing it would fail every live
         // event → event loss; parse as Long to match the producer.
         final long tenantId = parseLongStrict(req(fields, "tenantId"), "tenantId");
-        final long timestampMs = parseLongStrict(req(fields, "timestampMs"), "timestampMs");
+        final Instant eventTimestamp = parseEventTimestamp(eventType, fields);
 
         final AuditEvent event = new AuditEvent();
         event.setId(UUID.randomUUID());
@@ -191,9 +270,16 @@ public class AuditEventPersistenceService {
         event.setRejectionCode(emptyToNull(fields.get("rejectionCode")));
         event.setRetryAfterSeconds(parseLongOrNull(fields.get("retryAfterSeconds")));
         event.setCorrelationId(emptyToNull(fields.get("correlationId")));
-        event.setEventTimestamp(
-                AuditChainSupport.normalizeTimestamp(java.time.Instant.ofEpochMilli(timestampMs)));
+        event.setEventTimestamp(AuditChainSupport.normalizeTimestamp(eventTimestamp));
         event.setDedupKey(dedupKey(eventType, fields));
+        if (CONSENT_GRANTED.equals(eventType)) {
+            event.setSessionId(parseUuidStrict(required(fields, "captureId"), "captureId").toString());
+            event.setChunkSeq(1L);
+        } else if (CONSENT_REVOKED.equals(eventType)) {
+            event.setSessionId(parseUuidStrict(required(fields, "captureId"), "captureId").toString());
+            event.setChunkSeq(parseLongStrict(required(fields, "consentRevision"), "consentRevision"));
+            event.setRejectionCode(required(fields, "reasonCode"));
+        }
         return event;
     }
 
@@ -206,6 +292,15 @@ public class AuditEventPersistenceService {
      * stream entry, because the same fields produce the same key).
      */
     private String dedupKey(String eventType, Map<String, String> fields) {
+        if (CONSENT_GRANTED.equals(eventType)) {
+            return eventType + ":"
+                    + parseUuidStrict(required(fields, "captureId"), "captureId");
+        }
+        if (CONSENT_REVOKED.equals(eventType)) {
+            return eventType + ":"
+                    + parseUuidStrict(required(fields, "captureId"), "captureId") + ":"
+                    + parseLongStrict(required(fields, "consentRevision"), "consentRevision");
+        }
         String sessionId = emptyToNull(fields.get("sessionId"));
         String chunkSeq = emptyToNull(fields.get("chunkSeq"));
         if (sessionId != null && chunkSeq != null) {
@@ -217,6 +312,288 @@ public class AuditEventPersistenceService {
                 + emptyToNull(fields.get("timestampMs")) + ":"
                 + emptyToNull(fields.get("correlationId"));
         return composite.length() > 320 ? composite.substring(0, 320) : composite;
+    }
+
+    private GrantProjection mapGrant(Map<String, String> fields, AuditEvent audit) {
+        requireConsentRepositories();
+        UUID meetingId = parseUuidStrict(required(fields, "meetingId"), "meetingId");
+        UUID captureId = parseUuidStrict(required(fields, "captureId"), "captureId");
+        UUID tenantId = optionalUuid(fields.get("canonicalTenantId"), "canonicalTenantId");
+        UUID orgId = optionalUuid(fields.get("orgId"), "orgId");
+        if ((tenantId == null) != (orgId == null)) {
+            throw new IllegalArgumentException("canonical consent scope must be complete");
+        }
+        String actorSubject = bounded(required(fields, "subjectId"), "subjectId", 255);
+        long actorUserId = parseLongStrict(required(fields, "userId"), "userId");
+        String consentVersion = bounded(required(fields, "consentVersion"), "consentVersion", 64);
+        if (!consentVersion.matches("[A-Za-z0-9._:-]+")) {
+            throw new IllegalArgumentException("consentVersion has invalid format");
+        }
+        String consentTextHash = required(fields, "consentTextHash");
+        if (!consentTextHash.matches("sha256:[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("consentTextHash has invalid format");
+        }
+        String locale = required(fields, "locale");
+        if (!locale.matches("[a-z]{2}(-[A-Z]{2})?")) {
+            throw new IllegalArgumentException("locale has invalid format");
+        }
+        long revision = 1L;
+        String eventKey = CONSENT_GRANTED + "|" + captureId;
+        String sourceHash = sha256Hex(String.join("\n",
+                meetingId.toString(), captureId.toString(), Long.toString(audit.getTenantId()),
+                Long.toString(actorUserId), uuidOrEmpty(tenantId), uuidOrEmpty(orgId), actorSubject,
+                consentVersion, consentTextHash, locale, Long.toString(revision)));
+        return new GrantProjection(
+                meetingId, captureId, audit.getTenantId(), tenantId, orgId,
+                actorUserId, actorSubject, consentVersion, consentTextHash, locale, revision,
+                emptyToNull(fields.get("correlationId")), audit.getEventTimestamp(), eventKey, sourceHash);
+    }
+
+    private void persistGrant(GrantProjection value) {
+        RecordingConsentGrant row = new RecordingConsentGrant();
+        row.setId(UUID.randomUUID());
+        row.setEventKey(value.eventKey());
+        row.setSourceHash(value.sourceHash());
+        row.setMeetingId(value.meetingId());
+        row.setCaptureId(value.captureId());
+        row.setSourceTenantId(value.sourceTenantId());
+        row.setTenantId(value.tenantId());
+        row.setOrgId(value.orgId());
+        row.setActorSubject(value.actorSubject());
+        row.setActorUserId(value.actorUserId());
+        row.setConsentVersion(value.consentVersion());
+        row.setConsentTextHash(value.consentTextHash());
+        row.setLocale(value.locale());
+        row.setConsentRevision(value.consentRevision());
+        row.setCorrelationId(value.correlationId());
+        row.setGrantedAt(value.grantedAt());
+        grantRepository.saveAndFlush(row);
+    }
+
+    private RevocationProjection mapRevocation(Map<String, String> fields, AuditEvent audit) {
+        requireConsentRepositories();
+        UUID meetingId = parseUuidStrict(required(fields, "meetingId"), "meetingId");
+        UUID captureId = parseUuidStrict(required(fields, "captureId"), "captureId");
+        UUID tenantId = parseUuidStrict(required(fields, "canonicalTenantId"), "canonicalTenantId");
+        UUID orgId = parseUuidStrict(required(fields, "orgId"), "orgId");
+        String actorSubject = bounded(required(fields, "subjectId"), "subjectId", 255);
+        long actorUserId = parseLongStrict(required(fields, "userId"), "userId");
+        String consentVersion = bounded(required(fields, "consentVersion"), "consentVersion", 64);
+        if (!consentVersion.matches("[A-Za-z0-9._:-]+")) {
+            throw new IllegalArgumentException("consentVersion has invalid format");
+        }
+        long requestedRevision = parseLongStrict(required(fields, "consentRevision"), "consentRevision");
+        String reasonCode = bounded(required(fields, "reasonCode"), "reasonCode", 64);
+        if (!"USER_WITHDREW".equals(reasonCode)) {
+            throw new IllegalArgumentException("reasonCode has invalid format");
+        }
+        RecordingConsentGrant grant = grantRepository.findByCaptureId(captureId)
+                .orElseThrow(ConsentDependencyPendingException::new);
+        long revision = Math.addExact(grant.getConsentRevision(), 1L);
+        if (requestedRevision != revision
+                || !meetingId.equals(grant.getMeetingId())
+                || audit.getTenantId() != grant.getSourceTenantId()
+                || actorUserId != grant.getActorUserId()
+                || (grant.getTenantId() != null && !tenantId.equals(grant.getTenantId()))
+                || (grant.getOrgId() != null && !orgId.equals(grant.getOrgId()))
+                || !actorSubject.equals(grant.getActorSubject())
+                || !consentVersion.equals(grant.getConsentVersion())
+                || audit.getEventTimestamp().isBefore(grant.getGrantedAt())) {
+            throw new IllegalArgumentException("consent grant ownership or scope mismatch");
+        }
+        String eventKey = CONSENT_AGGREGATE_TYPE + "|" + captureId + "|"
+                + MeetingEventType.CONSENT_REVOKED.wireValue() + "|" + revision;
+        String sourceHash = sha256Hex(String.join("\n",
+                meetingId.toString(),
+                captureId.toString(),
+                Long.toString(audit.getTenantId()),
+                Long.toString(actorUserId),
+                tenantId.toString(),
+                orgId.toString(),
+                actorSubject,
+                consentVersion,
+                Long.toString(revision),
+                reasonCode));
+        return new RevocationProjection(
+                meetingId, captureId, audit.getTenantId(), tenantId, orgId, actorUserId,
+                actorSubject, consentVersion, revision, reasonCode,
+                emptyToNull(fields.get("correlationId")), audit.getEventTimestamp(), eventKey, sourceHash);
+    }
+
+    private void persistRevocationAndOutbox(RevocationProjection value) {
+        RecordingConsentRevocation row = new RecordingConsentRevocation();
+        row.setId(UUID.randomUUID());
+        row.setEventKey(value.eventKey());
+        row.setSourceHash(value.sourceHash());
+        row.setMeetingId(value.meetingId());
+        row.setCaptureId(value.captureId());
+        row.setSourceTenantId(value.sourceTenantId());
+        row.setTenantId(value.tenantId());
+        row.setOrgId(value.orgId());
+        row.setActorSubject(value.actorSubject());
+        row.setActorUserId(value.actorUserId());
+        row.setConsentVersion(value.consentVersion());
+        row.setConsentRevision(value.consentRevision());
+        row.setReasonCode(value.reasonCode());
+        row.setCorrelationId(value.correlationId());
+        row.setRevokedAt(value.revokedAt());
+
+        MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.CONSENT_REVOKED)
+                .producer(PRODUCER)
+                .meetingId(value.meetingId())
+                .tenantId(value.tenantId())
+                .orgId(value.orgId())
+                .occurredAt(value.revokedAt())
+                .aggregateType(CONSENT_AGGREGATE_TYPE)
+                .aggregateId(value.captureId())
+                .aggregateRevision(value.consentRevision())
+                .payload(new MeetingEventPayload.ConsentRevoked(
+                        value.captureId(), value.consentVersion(), value.consentRevision(), value.reasonCode()))
+                .build();
+        String payload = MeetingEventV1Serializer.toJson(envelope);
+
+        ConsentEventOutbox outbox = new ConsentEventOutbox();
+        outbox.setId(UUID.randomUUID());
+        outbox.setEventType(MeetingEventType.CONSENT_REVOKED.wireValue());
+        outbox.setEventKey(envelope.eventKey());
+        outbox.setAggregateId(value.captureId());
+        outbox.setMeetingId(value.meetingId());
+        outbox.setTenantId(value.tenantId());
+        outbox.setOrgId(value.orgId());
+        outbox.setPayload(payload);
+        outbox.setPayloadHash(sha256Hex(payload));
+
+        revocationRepository.saveAndFlush(row);
+        outboxRepository.saveAndFlush(outbox);
+    }
+
+    private boolean duplicateGrantMatches(GrantProjection incoming) {
+        return grantRepository.findByEventKey(incoming.eventKey())
+                .map(existing -> hashesEqual(existing.getSourceHash(), incoming.sourceHash()))
+                .orElse(false);
+    }
+
+    private boolean duplicateRevocationMatches(RevocationProjection incoming) {
+        return revocationRepository.findByEventKey(incoming.eventKey())
+                .filter(existing -> hashesEqual(existing.getSourceHash(), incoming.sourceHash()))
+                .filter(existing -> outboxRepository.findByEventKey(incoming.eventKey()).isPresent())
+                .isPresent();
+    }
+
+    private static boolean hashesEqual(String left, String right) {
+        return left != null && right != null && MessageDigest.isEqual(
+                left.getBytes(StandardCharsets.US_ASCII),
+                right.getBytes(StandardCharsets.US_ASCII));
+    }
+
+    private static String timestampValue(String eventType, Map<String, String> fields) {
+        String timestamp = emptyToNull(fields.get("timestampMs"));
+        if (timestamp != null) {
+            return timestamp;
+        }
+        if (CONSENT_GRANTED.equals(eventType)) {
+            return required(fields, "acceptedAtMs");
+        }
+        if (CONSENT_REVOKED.equals(eventType)) {
+            return required(fields, "revokedAtMs");
+        }
+        return required(fields, "timestampMs");
+    }
+
+    private Instant parseEventTimestamp(String eventType, Map<String, String> fields) {
+        long timestampMs = parseLongStrict(timestampValue(eventType, fields), "timestampMs");
+        final Instant timestamp;
+        try {
+            timestamp = Instant.ofEpochMilli(timestampMs);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("timestampMs is outside the supported range", ex);
+        }
+        Instant latestAccepted = clock.instant().plus(MAX_FUTURE_CLOCK_SKEW);
+        if (timestamp.isBefore(EARLIEST_ACCEPTED_EVENT) || timestamp.isAfter(latestAccepted)) {
+            throw new IllegalArgumentException("timestampMs is outside the accepted audit window");
+        }
+        return timestamp;
+    }
+
+    private static UUID optionalUuid(String raw, String fieldName) {
+        String value = emptyToNull(raw);
+        return value == null ? null : parseUuidStrict(value, fieldName);
+    }
+
+    private static String uuidOrEmpty(UUID value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private static final class ConsentDependencyPendingException extends RuntimeException {
+        private ConsentDependencyPendingException() {
+            super("consent predecessor pending");
+        }
+    }
+
+    private void requireConsentRepositories() {
+        if (grantRepository == null || revocationRepository == null || outboxRepository == null) {
+            throw new IllegalStateException("Consent repositories are unavailable");
+        }
+    }
+
+    private static UUID parseUuidStrict(String raw, String field) {
+        try {
+            return UUID.fromString(raw.trim());
+        } catch (IllegalArgumentException ex) {
+            throw new IllegalArgumentException(field + " is not a UUID: '" + raw + "'");
+        }
+    }
+
+    private static String bounded(String value, String field, int maxLength) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(field + " exceeds max length " + maxLength);
+        }
+        return value;
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
+    }
+
+    private record GrantProjection(
+            UUID meetingId,
+            UUID captureId,
+            long sourceTenantId,
+            UUID tenantId,
+            UUID orgId,
+            long actorUserId,
+            String actorSubject,
+            String consentVersion,
+            String consentTextHash,
+            String locale,
+            long consentRevision,
+            String correlationId,
+            java.time.Instant grantedAt,
+            String eventKey,
+            String sourceHash) {
+    }
+
+    private record RevocationProjection(
+            UUID meetingId,
+            UUID captureId,
+            long sourceTenantId,
+            UUID tenantId,
+            UUID orgId,
+            long actorUserId,
+            String actorSubject,
+            String consentVersion,
+            long consentRevision,
+            String reasonCode,
+            String correlationId,
+            java.time.Instant revokedAt,
+            String eventKey,
+            String sourceHash) {
     }
 
     private static String required(Map<String, String> fields, String key) {

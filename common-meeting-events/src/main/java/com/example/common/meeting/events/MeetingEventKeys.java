@@ -104,6 +104,11 @@ public final class MeetingEventKeys {
         return switch (payload) {
             case MeetingEventPayload.SummaryReady p -> summaryReadyKey(p.analysisRunId());
             case MeetingEventPayload.ActionAssigned p -> actionAssignedKey(p.analysisRunId(), p.ordinal());
+            case MeetingEventPayload.ConsentRevoked p -> occurrenceKey(
+                    "meeting.consent",
+                    p.captureId(),
+                    MeetingEventType.CONSENT_REVOKED,
+                    p.consentRevision());
         };
     }
 

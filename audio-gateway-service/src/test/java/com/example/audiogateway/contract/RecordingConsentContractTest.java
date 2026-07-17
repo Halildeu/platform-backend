@@ -10,11 +10,14 @@ import static org.springframework.security.test.web.reactive.server.SecurityMock
 import com.example.audiogateway.dto.ErrorResponse;
 import com.example.audiogateway.dto.RecordingConsentRequest;
 import com.example.audiogateway.dto.RecordingConsentResponse;
+import com.example.audiogateway.dto.RecordingConsentRevocationRequest;
+import com.example.audiogateway.dto.RecordingConsentRevocationResponse;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
 import com.example.audiogateway.service.MeetingAccessValidator;
 import com.example.audiogateway.service.MeetingAccessValidator.Decision;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,6 +51,8 @@ class RecordingConsentContractTest {
     private static final String CONSENTS_PATH = "/api/v1/audio-gateway/consents";
     private static final String MEETING_ID = "22222222-2222-4222-8222-222222222222";
     private static final String CAPTURE_ID = "33333333-3333-4333-8333-333333333333";
+    private static final UUID TENANT_UUID = UUID.fromString("44444444-4444-4444-8444-444444444444");
+    private static final UUID ORG_UUID = UUID.fromString("55555555-5555-4555-8555-555555555555");
     private static final String CONSENT_HASH =
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -64,7 +69,7 @@ class RecordingConsentContractTest {
     void resetFakes() {
         auditSink.reset();
         when(meetingAccessValidator.validate(any(), any(), any()))
-                .thenReturn(Mono.just(Decision.granted()));
+                .thenReturn(Mono.just(Decision.granted(TENANT_UUID, ORG_UUID)));
     }
 
     @TestConfiguration
@@ -144,6 +149,8 @@ class RecordingConsentContractTest {
                     assertThat(event.captureId()).isEqualTo(CAPTURE_ID);
                     assertThat(event.tenantId()).isEqualTo(1L);
                     assertThat(event.userId()).isEqualTo(990001L);
+                    assertThat(event.canonicalTenantId()).isEqualTo(TENANT_UUID.toString());
+                    assertThat(event.orgId()).isEqualTo(ORG_UUID.toString());
                     assertThat(event.subjectId()).isEqualTo("sub-990001");
                     assertThat(event.consentVersion()).isEqualTo("recorder-consent-v1");
                     assertThat(event.consentTextHash()).isEqualTo(CONSENT_HASH);
@@ -243,5 +250,75 @@ class RecordingConsentContractTest {
                     assertThat(err.code()).isEqualTo(ErrorResponse.CODE_AUDIT_UNAVAILABLE);
                     assertThat(err.retryable()).isTrue();
                 });
+    }
+
+    @Test
+    void consentRevoked_returns202_andEmitsCanonicalScopedAuditEvent() {
+        final long before = System.currentTimeMillis();
+        final RecordingConsentRevocationRequest request = new RecordingConsentRevocationRequest(
+                MEETING_ID, CAPTURE_ID, "recorder-consent-v1", 2, "USER_WITHDREW");
+
+        asUser(1L, 990001L)
+                .post().uri(CONSENTS_PATH + "/revocations")
+                .bodyValue(request)
+                .exchange()
+                .expectStatus().isAccepted()
+                .expectBody(RecordingConsentRevocationResponse.class)
+                .value(response -> {
+                    assertThat(response.meetingId()).isEqualTo(MEETING_ID);
+                    assertThat(response.captureId()).isEqualTo(CAPTURE_ID);
+                    assertThat(response.consentRevision()).isEqualTo(2);
+                    assertThat(response.reasonCode()).isEqualTo("USER_WITHDREW");
+                    assertThat(response.revokedAtMs()).isBetween(before, System.currentTimeMillis());
+                });
+
+        assertThat(auditSink.events()).singleElement()
+                .isInstanceOfSatisfying(AuditEvent.RecordingConsentRevoked.class, event -> {
+                    assertThat(event.meetingId()).isEqualTo(MEETING_ID);
+                    assertThat(event.captureId()).isEqualTo(CAPTURE_ID);
+                    assertThat(event.tenantId()).isEqualTo(1L);
+                    assertThat(event.userId()).isEqualTo(990001L);
+                    assertThat(event.canonicalTenantId()).isEqualTo(TENANT_UUID.toString());
+                    assertThat(event.orgId()).isEqualTo(ORG_UUID.toString());
+                    assertThat(event.subjectId()).isEqualTo("sub-990001");
+                    assertThat(event.consentVersion()).isEqualTo("recorder-consent-v1");
+                    assertThat(event.consentRevision()).isEqualTo(2);
+                    assertThat(event.reasonCode()).isEqualTo("USER_WITHDREW");
+                });
+    }
+
+    @Test
+    void consentRevoked_withoutCanonicalScope_failsClosedBeforeAudit() {
+        when(meetingAccessValidator.validate(any(), any(), any()))
+                .thenReturn(Mono.just(Decision.granted()));
+
+        asUser(1L, 990001L)
+                .post().uri(CONSENTS_PATH + "/revocations")
+                .bodyValue(new RecordingConsentRevocationRequest(
+                        MEETING_ID, CAPTURE_ID, "recorder-consent-v1", 2, "USER_WITHDREW"))
+                .exchange()
+                .expectStatus().isEqualTo(503)
+                .expectBody(ErrorResponse.class)
+                .value(error -> {
+                    assertThat(error.code()).isEqualTo(ErrorResponse.CODE_MEETING_VALIDATION_UNAVAILABLE);
+                    assertThat(error.retryable()).isTrue();
+                });
+
+        assertThat(auditSink.events()).isEmpty();
+    }
+
+    @Test
+    void consentRevoked_revisionOutsideCurrentOccurrence_isRejectedBeforeAudit() {
+        for (long invalidRevision : java.util.List.of(1L, 3L)) {
+            asUser(1L, 990001L)
+                    .post().uri(CONSENTS_PATH + "/revocations")
+                    .bodyValue(new RecordingConsentRevocationRequest(
+                            MEETING_ID, CAPTURE_ID, "recorder-consent-v1",
+                            invalidRevision, "USER_WITHDREW"))
+                    .exchange()
+                    .expectStatus().isBadRequest();
+        }
+
+        assertThat(auditSink.events()).isEmpty();
     }
 }
