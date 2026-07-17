@@ -56,10 +56,20 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         }
         Set<String> permissions = new HashSet<>(base.getPermissions());
 
-        String cacheKey = subject;
+        // board #2556: the entry is keyed by issuer+subject+tenant (a bare subject would let two
+        // issuers, or the same human in two tenants, share one decision) and is only reused while
+        // the authorization revision it was computed under is still current. Measured before this
+        // change: a revoked grant kept answering 200 for ~271s, the full TTL.
+        // Read `iss` as a raw string: Jwt#getIssuer() coerces the claim to a URL and throws when it
+        // is anything else, and an issuer that is merely unusual must not turn an authorization
+        // decision into a 500.
+        String cacheKey = AuthorizationContextCache.key(jwt.getClaimAsString("iss"), subject,
+                userId == null ? null : userId.toString());
         String finalEmail = email;
         Long finalUserId = userId;
-        return cache.get(cacheKey, () -> fetchContext(finalUserId, finalEmail, roles, permissions, jwt.getTokenValue()));
+        return cache.get(cacheKey,
+                permissionServiceAuthzClient::getAuthzVersion,
+                () -> fetchContext(finalUserId, finalEmail, roles, permissions, jwt.getTokenValue()));
     }
 
     private AuthorizationContext fetchContext(Long userId,

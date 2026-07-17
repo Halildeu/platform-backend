@@ -127,4 +127,47 @@ class AuthorizationContextTest {
         assertThrows(UnsupportedOperationException.class, () -> ctx.getPermissions().add("X"));
         assertThrows(UnsupportedOperationException.class, () -> ctx.getAllowedCompanyIds().add(99L));
     }
+
+    /**
+     * board #2556 — guards the fail-closed decision in {@link AuthorizationContextCache}.
+     *
+     * <p>During an outage the cache serves a cached decision only when {@code grantsNothing()} says
+     * it confers no authority. That method enumerates the authority-bearing fields by hand, so a
+     * field added later would be invisible to it: a context that actually grants something would be
+     * mistaken for a deny and then served — fail-open, silently.
+     *
+     * <p>This test pins the field set. If it fails because a field was added, do not just update the
+     * number: decide whether the new field carries authority and, if so, add it to
+     * {@code grantsNothing()} first.
+     */
+    @Test
+    void grantsNothing_mustAccountForEveryAuthorityBearingField() {
+        java.util.Set<String> declared = java.util.Arrays.stream(AuthorizationContext.class.getDeclaredFields())
+                .filter(f -> !java.lang.reflect.Modifier.isStatic(f.getModifiers()))
+                .map(java.lang.reflect.Field::getName)
+                .collect(java.util.stream.Collectors.toSet());
+
+        assertEquals(
+                java.util.Set.of("userId", "email", "roles", "permissions",
+                        "allowedCompanyIds", "allowedProjectIds", "allowedWarehouseIds"),
+                declared,
+                "AuthorizationContext gained/lost a field — re-check grantsNothing() before updating this");
+
+        // And the enumeration is live, not just documented: each authority field alone must defeat it.
+        assertFalse(AuthorizationContext.of(1L, "e", java.util.Set.of("ADMIN"), java.util.Set.of(),
+                java.util.Set.of(), java.util.Set.of(), java.util.Set.of()).grantsNothing(), "roles");
+        assertFalse(AuthorizationContext.of(1L, "e", java.util.Set.of(), java.util.Set.of("P"),
+                java.util.Set.of(), java.util.Set.of(), java.util.Set.of()).grantsNothing(), "permissions");
+        assertFalse(AuthorizationContext.of(1L, "e", java.util.Set.of(), java.util.Set.of(),
+                java.util.Set.of(1L), java.util.Set.of(), java.util.Set.of()).grantsNothing(), "companies");
+        assertFalse(AuthorizationContext.of(1L, "e", java.util.Set.of(), java.util.Set.of(),
+                java.util.Set.of(), java.util.Set.of(1L), java.util.Set.of()).grantsNothing(), "projects");
+        assertFalse(AuthorizationContext.of(1L, "e", java.util.Set.of(), java.util.Set.of(),
+                java.util.Set.of(), java.util.Set.of(), java.util.Set.of(1L)).grantsNothing(), "warehouses");
+
+        // superAdmin is not a field here: callers fold it into roles (variant-service adds "ADMIN").
+        // If that ever changes, the field assertion above fails first.
+        assertTrue(AuthorizationContext.of(1L, "e", java.util.Set.of(), java.util.Set.of(),
+                java.util.Set.of(), java.util.Set.of(), java.util.Set.of()).grantsNothing(), "no authority");
+    }
 }
