@@ -21,6 +21,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
@@ -113,7 +114,10 @@ public class TranscriptFinalizationService {
                 tenantId, meetingId, sessionId);
         validateFinalSegments(segments);
 
-        Instant finalizedAt = clock.instant();
+        // PostgreSQL timestamptz persists microseconds. Normalize before both the
+        // immutable row and event payload are created so replayed DTOs and exact
+        // serialized bytes cannot diverge after a database round trip.
+        Instant finalizedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
         MeetingEventPayload.TranscriptReady payload = new MeetingEventPayload.TranscriptReady(
                 sessionId, requestedVersion, segments.size());
         MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()

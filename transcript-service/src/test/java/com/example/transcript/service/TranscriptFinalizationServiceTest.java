@@ -38,7 +38,7 @@ class TranscriptFinalizationServiceTest {
     private static final UUID TENANT = UUID.randomUUID();
     private static final UUID MEETING = UUID.randomUUID();
     private static final UUID SESSION = UUID.randomUUID();
-    private static final Instant NOW = Instant.parse("2026-07-17T13:00:00Z");
+    private static final Instant NOW = Instant.parse("2026-07-17T13:00:00.123456789Z");
 
     private final TranscriptSessionAssociationRepository associations =
             mock(TranscriptSessionAssociationRepository.class);
@@ -84,6 +84,8 @@ class TranscriptFinalizationServiceTest {
         var replayed = service.finalizeTranscript(context(), MEETING, SESSION, 1L);
 
         assertThat(replayed).isEqualTo(created);
+        assertThat(created.finalizedAt())
+                .isEqualTo(Instant.parse("2026-07-17T13:00:00.123456Z"));
         verify(outbox, times(1)).save(event.capture());
         assertThat(event.getValue().getEventKey())
                 .isEqualTo("meeting.transcript|" + SESSION + "|meeting.transcript.ready|1");
