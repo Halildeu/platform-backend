@@ -327,6 +327,7 @@ public class RemoteBridgeServerConfig {
             DurableRemoteBridgeAuditSink remoteBridgeDurableAuditSink,
             @Value("${remote-bridge.broker.policy-version:rb-pilot-v1}") String policyVersion,
             @Value("${remote-bridge.broker.permit-ttl-millis:60000}") long permitTtlMillis,
+            @Value("${remote-bridge.broker.view-only-permit-ttl-millis:0}") long viewOnlyPermitTtlMillis,
             @Value("${remote-bridge.broker.enrollment-backed-crypto-identity-pilot-risk-accepted:false}")
                     boolean enrollmentBackedCryptoIdentityPilotRiskAccepted) {
         boolean productionLike = isProductionLike(environment);
@@ -337,7 +338,7 @@ public class RemoteBridgeServerConfig {
         RemoteSessionPolicyEngine policyEngine = enrollmentBackedCryptoIdentityPilotRiskAccepted
                 ? RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED : RemoteSessionPolicyEngine.PILOT;
         return new RemoteBridgeBroker(true, policyEngine, remoteBridgePermitSigner,
-                remoteBridgeDurableAuditSink, policyVersion, permitTtlMillis);
+                remoteBridgeDurableAuditSink, policyVersion, permitTtlMillis, viewOnlyPermitTtlMillis);
     }
 
     /**

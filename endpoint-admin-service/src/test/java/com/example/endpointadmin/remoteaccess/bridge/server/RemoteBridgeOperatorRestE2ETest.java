@@ -76,7 +76,8 @@ class RemoteBridgeOperatorRestE2ETest {
             g.initialize(new ECGenParameterSpec("secp256r1"));
             RemoteBridgePermitSigner signer = new RemoteBridgePermitSigner(
                     g.generateKeyPair().getPrivate(), "kid-1", RemoteBridgePermitSigner.PERMIT_ALG);
-            return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, event -> { }, "rb-v1", 60_000L);
+            return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, event -> { },
+                    "rb-v1", 60_000L, 600_000L);
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
