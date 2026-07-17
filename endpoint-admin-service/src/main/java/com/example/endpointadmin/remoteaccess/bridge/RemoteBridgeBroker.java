@@ -39,6 +39,8 @@ import java.util.Optional;
  */
 public final class RemoteBridgeBroker {
 
+    private static final long MAX_VIEW_ONLY_PERMIT_TTL_MILLIS = 10 * 60_000L;
+
     /** The broker's verdict for one operation. */
     public record BrokerOutcome(Kind kind, OperationPermit permit, Kill kill, String reason, String policyDetail) {
         public enum Kind { PERMIT, KILL, DENY }
@@ -74,9 +76,11 @@ public final class RemoteBridgeBroker {
     private final RemoteBridgeAuditSink auditSink;
     private final String policyVersion;
     private final long permitTtlMillis;
+    private final long viewOnlyPermitTtlMillis;
 
     public RemoteBridgeBroker(boolean enabled, RemoteSessionPolicyEngine engine, RemoteBridgePermitSigner signer,
-                              RemoteBridgeAuditSink auditSink, String policyVersion, long permitTtlMillis) {
+                              RemoteBridgeAuditSink auditSink, String policyVersion, long permitTtlMillis,
+                              long viewOnlyPermitTtlMillis) {
         if (engine == null || signer == null || auditSink == null) {
             throw new IllegalArgumentException("engine, signer, auditSink are required");
         }
@@ -86,12 +90,16 @@ public final class RemoteBridgeBroker {
         if (permitTtlMillis <= 0) {
             throw new IllegalArgumentException("permitTtlMillis must be positive");
         }
+        if (viewOnlyPermitTtlMillis < 0 || viewOnlyPermitTtlMillis > MAX_VIEW_ONLY_PERMIT_TTL_MILLIS) {
+            throw new IllegalArgumentException("viewOnlyPermitTtlMillis must be between 0 and 600000 inclusive");
+        }
         this.enabled = enabled;
         this.engine = engine;
         this.signer = signer;
         this.auditSink = auditSink;
         this.policyVersion = policyVersion;
         this.permitTtlMillis = permitTtlMillis;
+        this.viewOnlyPermitTtlMillis = viewOnlyPermitTtlMillis;
     }
 
     /**
@@ -135,6 +143,10 @@ public final class RemoteBridgeBroker {
         if (!isPty && request.commandLine() != null && !request.commandLine().isBlank()) {
             return BrokerOutcome.deny("non-pty-with-command");
         }
+        if (!isPty && viewOnlyPermitTtlMillis == 0) {
+            recordBestEffort(request.sessionId(), "DENY:VIEW_ONLY_PERMIT_DISABLED", "", nowEpochMillis);
+            return BrokerOutcome.deny("view-only-permit-disabled");
+        }
         if (!sessionState.isActive()) {
             return BrokerOutcome.deny("session-not-active");
         }
@@ -158,6 +170,14 @@ public final class RemoteBridgeBroker {
                     ? evidence.cryptoIdentityDetail() : null;
             return BrokerOutcome.deny("policy:" + decision.gate(), detail);
         }
+        long selectedPermitTtlMillis = isPty ? permitTtlMillis : viewOnlyPermitTtlMillis;
+        long permitExpiresAtEpochMillis;
+        try {
+            permitExpiresAtEpochMillis = Math.addExact(nowEpochMillis, selectedPermitTtlMillis);
+        } catch (ArithmeticException e) {
+            recordBestEffort(request.sessionId(), "DENY:PERMIT_EXPIRY_OVERFLOW", command.hash(), nowEpochMillis);
+            return BrokerOutcome.deny("permit-expiry-overflow");
+        }
         // ALLOW — the decision MUST be durably recorded BEFORE a permit is issued (fail-closed: ADR-0034). The
         // event is ALLOW_DECISION (the permit may still be refused by the signer below — it is not yet issued).
         try {
@@ -174,7 +194,7 @@ public final class RemoteBridgeBroker {
         OperationPermit unsigned = new OperationPermit(signer.alg(), signer.kid(),
                 permitVersion, policyVersion, decisionId(request), request.sessionId(),
                 request.operationId(), evidence.deviceId(), evidence.operatorSubject(), capability, commandHash,
-                nowEpochMillis, nowEpochMillis + permitTtlMillis, seq, policyEnvelopeDigest, null);
+                nowEpochMillis, permitExpiresAtEpochMillis, seq, policyEnvelopeDigest, null);
         // the signer is the final boundary — it refuses anything not a complete, consistent pilot permit
         return signer.sign(unsigned).map(BrokerOutcome::permit)
                 .orElseGet(() -> BrokerOutcome.deny("permit-signing-refused"));

@@ -219,7 +219,7 @@ class RemoteBridgeNonProdPermitCompositionE2ETest {
         RemoteSessionPolicyEngine policyEngine = enrollmentBackedPolicyEngine
                 ? RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED : RemoteSessionPolicyEngine.PILOT;
         RemoteBridgeBroker broker = new RemoteBridgeBroker(true, policyEngine, signer,
-                auditSink, "rb-pilot-v1", 60_000L);
+                auditSink, "rb-pilot-v1", 60_000L, 600_000L);
 
         String commandLine = operation == RemoteOperation.PTY_COMMAND ? "whoami" : null;
         return broker.handle(new OperationRequest(SESSION_ID, "op-1", operation, commandLine),

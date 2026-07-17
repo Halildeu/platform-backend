@@ -173,7 +173,7 @@ class RemoteBridgeServerLifecycleTest {
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
                 () -> config.remoteBridgeBroker(prod, permitSigner("kid-1"), unusedDurableSink(),
-                        "policy-1", 60_000L, true));
+                        "policy-1", 60_000L, 0, true));
 
         assertTrue(thrown.getMessage().contains("enrollment-backed-crypto-identity-pilot-risk-accepted"),
                 "message was: " + thrown.getMessage());
@@ -186,9 +186,25 @@ class RemoteBridgeServerLifecycleTest {
         nonprod.setActiveProfiles("nonprod");
 
         RemoteBridgeBroker broker = config.remoteBridgeBroker(nonprod, permitSigner("kid-1"), unusedDurableSink(),
-                "policy-1", 60_000L, true);
+                "policy-1", 60_000L, 0, true);
 
         assertNotNull(broker);
+    }
+
+    @Test
+    void viewOnlyPermitTtlIsDisabledByDefaultAndRejectsOutOfBoundsValues() throws Exception {
+        RemoteBridgeServerConfig config = new RemoteBridgeServerConfig();
+        MockEnvironment test = new MockEnvironment();
+        test.setActiveProfiles("test");
+
+        assertNotNull(config.remoteBridgeBroker(test, permitSigner("kid-1"), unusedDurableSink(),
+                "policy-1", 60_000L, 0, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.remoteBridgeBroker(test, permitSigner("kid-1"), unusedDurableSink(),
+                        "policy-1", 60_000L, -1, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.remoteBridgeBroker(test, permitSigner("kid-1"), unusedDurableSink(),
+                        "policy-1", 60_000L, 600_001L, false));
     }
 
     @Test

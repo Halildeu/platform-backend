@@ -29,7 +29,8 @@ class RemoteBridgeBrokerTest {
 
     private static final long T0 = 1_000_000_000_000L;
     private static final long NOW = T0 + 2000;
-    private static final long TTL = 5 * 60_000L;
+    private static final long TTL = 60_000L;
+    private static final long VIEW_ONLY_TTL = 600_000L;
     private static final StepUpState UV = new StepUpState(T0 + 1000, T0, MethodStrength.WEBAUTHN_USER_VERIFICATION);
     private static final ConsentLease LEASE = new ConsentLease(true, false, T0 + 1_000_000L);
 
@@ -38,7 +39,8 @@ class RemoteBridgeBrokerTest {
     private final RemoteBridgePermitVerifier verifier = new RemoteBridgePermitVerifier(kp.getPublic(), "kid-1");
     private final java.util.List<String> recorded = new java.util.ArrayList<>();
     private final RemoteBridgeAuditSink sink = e -> recorded.add(e.eventType());
-    private final RemoteBridgeBroker broker = new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "policy-1", TTL);
+    private final RemoteBridgeBroker broker = new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer,
+            sink, "policy-1", TTL, VIEW_ONLY_TTL);
 
     private static KeyPair ec() {
         try {
@@ -69,6 +71,7 @@ class RemoteBridgeBrokerTest {
         assertTrue(o.permitted());
         assertEquals(RemoteSessionCapability.CONSTRAINED_PTY, o.permit().capability());
         assertEquals(CanonicalCommand.of("hostname").hash(), o.permit().commandHash());
+        assertEquals(NOW + TTL, o.permit().expiresAtEpochMillis());
         assertTrue(verifier.verify(o.permit(), NOW)); // a real signature the agent can verify
         assertTrue(recorded.contains("ALLOW_DECISION:op-1")); // recorded before issuance (permit not yet issued)
     }
@@ -94,7 +97,20 @@ class RemoteBridgeBrokerTest {
         assertTrue(o.permitted());
         assertEquals(RemoteSessionCapability.VIEW_ONLY, o.permit().capability());
         assertEquals("", o.permit().commandHash());
+        assertEquals(NOW + VIEW_ONLY_TTL, o.permit().expiresAtEpochMillis());
         assertTrue(verifier.verify(o.permit(), NOW));
+    }
+
+    @Test
+    void viewOnlyIsFailClosedWhenItsDedicatedPermitTtlIsDisabled() {
+        RemoteBridgeBroker viewDisabled = new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer,
+                sink, "policy-1", TTL, 0);
+
+        BrokerOutcome o = viewDisabled.handle(view(), good(), State.ACTIVE, 1L, NOW);
+
+        assertEquals(BrokerOutcome.Kind.DENY, o.kind());
+        assertEquals("view-only-permit-disabled", o.reason());
+        assertTrue(recorded.contains("DENY:VIEW_ONLY_PERMIT_DISABLED"));
     }
 
     @Test
@@ -167,7 +183,7 @@ class RemoteBridgeBrokerTest {
     @Test
     void enrollmentBackedPilotBrokerPermitsConstrainedOperationWithMachineCertDeviceTrust() {
         RemoteBridgeBroker enrollmentBackedBroker = new RemoteBridgeBroker(true,
-                RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED, signer, sink, "policy-1", TTL);
+                RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED, signer, sink, "policy-1", TTL, 0);
         RemoteBridgeTrustEvidence evidence = new RemoteBridgeTrustEvidence(true, false, true,
                 Basis.MACHINE_CERT_ENROLLMENT, "attestation-unverified", UV, DuressSignal.NONE,
                 Set.of(RemoteSessionCapability.CONSTRAINED_PTY), LEASE, "dev-1", "operator@x");
@@ -182,7 +198,7 @@ class RemoteBridgeBrokerTest {
     @Test
     void enrollmentBackedPilotBrokerStillDeniesWhenBasisIsNotEnrollment() {
         RemoteBridgeBroker enrollmentBackedBroker = new RemoteBridgeBroker(true,
-                RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED, signer, sink, "policy-1", TTL);
+                RemoteSessionPolicyEngine.PILOT_ENROLLMENT_BACKED, signer, sink, "policy-1", TTL, 0);
         RemoteBridgeTrustEvidence evidence = new RemoteBridgeTrustEvidence(true, false, true,
                 Basis.NONE, "attestation-unverified", UV, DuressSignal.NONE,
                 Set.of(RemoteSessionCapability.CONSTRAINED_PTY), LEASE, "dev-1", "operator@x");
@@ -220,14 +236,16 @@ class RemoteBridgeBrokerTest {
 
     @Test
     void aDisabledBrokerDeniesEverything() {
-        RemoteBridgeBroker off = new RemoteBridgeBroker(false, RemoteSessionPolicyEngine.PILOT, signer, sink, "policy-1", TTL);
+        RemoteBridgeBroker off = new RemoteBridgeBroker(false, RemoteSessionPolicyEngine.PILOT, signer, sink,
+                "policy-1", TTL, 0);
         assertEquals("remote-bridge-disabled", off.handle(pty("hostname"), good(), State.ACTIVE, 1L, NOW).reason());
     }
 
     @Test
     void aRecordingFailureBlocksPermitIssuanceButNotAKill() {
         RemoteBridgeAuditSink throwing = e -> { throw new RuntimeException("durable write failed"); };
-        RemoteBridgeBroker b = new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, throwing, "policy-1", TTL);
+        RemoteBridgeBroker b = new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, throwing,
+                "policy-1", TTL, 0);
         // ALLOW path: a recording failure -> no permit (fail-closed)
         assertEquals("recording-failed", b.handle(pty("hostname"), good(), State.ACTIVE, 1L, NOW).reason());
         // duress: the kill still fires even if recording throws (safety over audit)
@@ -239,11 +257,16 @@ class RemoteBridgeBrokerTest {
     @Test
     void constructorValidatesItsInputs() {
         assertThrows(IllegalArgumentException.class,
-                () -> new RemoteBridgeBroker(true, null, signer, sink, "p", TTL));
+                () -> new RemoteBridgeBroker(true, null, signer, sink, "p", TTL, 0));
         assertThrows(IllegalArgumentException.class,
-                () -> new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "  ", TTL));
+                () -> new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "  ", TTL, 0));
         assertThrows(IllegalArgumentException.class,
-                () -> new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "p", 0));
+                () -> new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "p", 0, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "p", TTL, -1));
+        assertThrows(IllegalArgumentException.class,
+                () -> new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "p", TTL,
+                        VIEW_ONLY_TTL + 1));
     }
 
     // --- helpers ---

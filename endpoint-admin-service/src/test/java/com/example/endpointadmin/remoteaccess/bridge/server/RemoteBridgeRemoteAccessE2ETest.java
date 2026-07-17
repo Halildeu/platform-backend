@@ -66,7 +66,7 @@ class RemoteBridgeRemoteAccessE2ETest {
             RemoteBridgePermitSigner signer = new RemoteBridgePermitSigner(
                     g.generateKeyPair().getPrivate(), "kid-1", RemoteBridgePermitSigner.PERMIT_ALG);
             return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, event -> { },
-                    "rb-v1", 60_000L);
+                    "rb-v1", 60_000L, 600_000L);
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }

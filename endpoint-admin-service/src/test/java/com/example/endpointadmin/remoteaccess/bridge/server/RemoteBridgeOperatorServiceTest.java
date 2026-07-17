@@ -116,7 +116,8 @@ class RemoteBridgeOperatorServiceTest {
         RemoteBridgePermitSigner signer = new RemoteBridgePermitSigner(
                 ecKeyPair().getPrivate(), "kid-1", RemoteBridgePermitSigner.PERMIT_ALG);
         RemoteBridgeAuditSink sink = event -> { };
-        return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink, "rb-v1", 60_000L);
+        return new RemoteBridgeBroker(true, RemoteSessionPolicyEngine.PILOT, signer, sink,
+                "rb-v1", 60_000L, 600_000L);
     }
 
     private static RemoteBridgeAuditSink operatorAuditSink() {
