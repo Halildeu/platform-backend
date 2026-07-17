@@ -1,5 +1,5 @@
 ## Build Stage
-# Multi-module build — common-auth + common-export + meeting-service.
+# Multi-module build — shared local modules + meeting-service.
 # Mirrors endpoint-admin-service/Dockerfile (Faz 22.1.1b pattern).
 FROM maven:3.9-eclipse-temurin-21 AS build
 
@@ -13,14 +13,19 @@ COPY common-auth/src ./common-auth/src
 COPY common-export/pom.xml ./common-export/pom.xml
 COPY common-export/src ./common-export/src
 
+# common-meeting-events dependency (shared Faz 24 event contract)
+COPY common-meeting-events/pom.xml ./common-meeting-events/pom.xml
+COPY common-meeting-events/src ./common-meeting-events/src
+
 # meeting-service pom + src
 COPY meeting-service/pom.xml ./meeting-service/pom.xml
 COPY meeting-service/src ./meeting-service/src
 
-# common-auth + common-export'u önce install et (Maven local repo cache; bunlar
-# Maven Central'da yok — temiz Docker build için zorunlu)
+# Yerel ortak modulleri once install et (Maven local repo cache; bunlar Maven
+# Central'da yok - temiz Docker build icin zorunlu).
 RUN mvn -f common-auth/pom.xml clean install -Dmaven.test.skip=true -q
 RUN mvn -f common-export/pom.xml clean install -Dmaven.test.skip=true -q
+RUN mvn -f common-meeting-events/pom.xml clean install -Dmaven.test.skip=true -q
 
 # Sonra meeting-service'i package
 RUN mvn -f meeting-service/pom.xml clean package -Dmaven.test.skip=true -q
