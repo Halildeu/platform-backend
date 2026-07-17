@@ -127,6 +127,23 @@ class MeetingRepositoryH2Test {
     }
 
     @Test
+    void externalSessionLookupIsMeetingAndOrgScoped() {
+        UUID org = UUID.randomUUID();
+        UUID otherOrg = UUID.randomUUID();
+        Meeting meeting = meetingRepository.save(newMeeting(org, "recording", MeetingStatus.IN_PROGRESS));
+        MeetingSession session = newSession(meeting.getId(), org);
+        session.setExternalSessionId("SES-stable-1");
+        sessionRepository.saveAndFlush(session);
+
+        assertThat(sessionRepository.findByExternalSessionIdVisibleToOrg(
+                meeting.getId(), "SES-stable-1", org)).isPresent();
+        assertThat(sessionRepository.findByExternalSessionIdVisibleToOrg(
+                meeting.getId(), "SES-stable-1", otherOrg)).isEmpty();
+        assertThat(sessionRepository.findByExternalSessionIdVisibleToOrg(
+                UUID.randomUUID(), "SES-stable-1", org)).isEmpty();
+    }
+
+    @Test
     void intelligenceRead_selectsLatestRunAndOnlyItsOrdinalOrderedChildren() {
         UUID org = UUID.randomUUID();
         Meeting meeting = meetingRepository.save(newMeeting(org, "AI sync", MeetingStatus.COMPLETED));
