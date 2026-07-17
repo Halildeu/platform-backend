@@ -10,12 +10,9 @@ import java.util.Optional;
  * {@code event_type} column. Producers persist the wire value (not the enum name) so
  * the store and every downstream consumer see the same canonical string.
  *
- * <p><b>Only shipped types live here.</b> {@code meeting.consent.revoked} and
- * {@code meeting.transcript.ready} are named in the #802 owner decision as later
- * slices (audio-gateway / transcript-service, each with its own DB-local outbox), but
- * their payload contracts are not fixed yet. Adding their names here before a producer
- * emits them would publish a contract nobody has agreed to; until then they are, by
- * design, {@link #fromWire unknown} and rejected fail-closed.
+ * <p><b>Only shipped types live here.</b> {@code meeting.transcript.ready} remains a
+ * later #802 slice. {@code meeting.consent.revoked} is public only after its producer
+ * contract was fixed in slice 2.
  */
 public enum MeetingEventType {
 
@@ -23,7 +20,10 @@ public enum MeetingEventType {
     SUMMARY_READY("meeting.summary.ready"),
 
     /** An AI-extracted action item has a real, non-blank assignee. */
-    ACTION_ASSIGNED("meeting.action.assigned");
+    ACTION_ASSIGNED("meeting.action.assigned"),
+
+    /** A user withdrew recording consent for one capture occurrence. */
+    CONSENT_REVOKED("meeting.consent.revoked");
 
     private final String wireValue;
 

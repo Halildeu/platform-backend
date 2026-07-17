@@ -74,12 +74,34 @@ public interface AudioGatewayAuditSink {
                 String captureId,
                 Long tenantId,
                 Long userId,
+                String canonicalTenantId,
+                String orgId,
                 String subjectId,
                 String consentVersion,
                 String consentTextHash,
                 String locale,
                 String correlationId,
                 long acceptedAtMs
+        ) implements AuditEvent {
+        }
+
+        /**
+         * Recording consent withdrawal command accepted after object access.
+         * Canonical UUID scope comes from meeting-service, not client claims.
+         */
+        record RecordingConsentRevoked(
+                String meetingId,
+                String captureId,
+                Long tenantId,
+                Long userId,
+                String canonicalTenantId,
+                String orgId,
+                String subjectId,
+                String consentVersion,
+                long consentRevision,
+                String reasonCode,
+                String correlationId,
+                long revokedAtMs
         ) implements AuditEvent {
         }
 

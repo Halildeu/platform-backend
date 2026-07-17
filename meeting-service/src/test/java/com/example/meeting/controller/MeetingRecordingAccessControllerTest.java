@@ -7,12 +7,14 @@ import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.config.SecurityConfig;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingService;
+import com.example.meeting.dto.MeetingRecordingAccessResponse;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,6 +36,7 @@ class MeetingRecordingAccessControllerTest {
 
     private static final UUID TENANT_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID MEETING_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID ORG_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
     private static final AdminTenantContext TENANT =
             new AdminTenantContext(TENANT_ID, "user-3", "user-3");
 
@@ -52,21 +55,28 @@ class MeetingRecordingAccessControllerTest {
     @BeforeEach
     void setUp() {
         when(tenantContextResolver.resolveRequired()).thenReturn(TENANT);
+        when(meetingService.requireRecordingAccess(TENANT, MEETING_ID))
+                .thenReturn(new MeetingRecordingAccessResponse(MEETING_ID, TENANT_ID, ORG_ID));
     }
 
     @Test
     void nonAdminUserTokenCanUseRecordingAccessPreflight() throws Exception {
         mockMvc.perform(get("/api/v1/meetings/{id}/recording-access", MEETING_ID)
                         .with(nonAdminUserJwt()))
-                .andExpect(status().isNoContent());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.meetingId").value(MEETING_ID.toString()))
+                .andExpect(jsonPath("$.tenantId").value(TENANT_ID.toString()))
+                .andExpect(jsonPath("$.orgId").value(ORG_ID.toString()))
+                .andExpect(jsonPath("$.title").doesNotExist())
+                .andExpect(jsonPath("$.transcript").doesNotExist());
 
         verify(meetingService).requireRecordingAccess(TENANT, MEETING_ID);
     }
 
     @Test
     void recordingAccessDeniedReturns403() throws Exception {
-        doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied."))
-                .when(meetingService).requireRecordingAccess(TENANT, MEETING_ID);
+        when(meetingService.requireRecordingAccess(TENANT, MEETING_ID))
+                .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Meeting recording access denied."));
 
         mockMvc.perform(get("/api/v1/meetings/{id}/recording-access", MEETING_ID)
                         .with(nonAdminUserJwt()))

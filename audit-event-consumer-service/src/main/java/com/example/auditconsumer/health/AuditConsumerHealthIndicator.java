@@ -17,9 +17,8 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>loop liveness (the consumer thread is running and iterated recently);</li>
  *   <li>group readiness (consumer group created/confirmed);</li>
- *   <li>consumer lag — aggregate group pending (XPENDING) below the configured
- *       threshold. Lag at/above the threshold → DOWN (backpressure visible to
- *       orchestration / alerting).</li>
+ *   <li>consumer lag — both aggregate group pending (XPENDING) and transient
+ *       source stream length below configured thresholds.</li>
  * </ul>
  *
  * <p>DB + base Redis reachability are already covered by Boot's built-in
@@ -87,6 +86,22 @@ public class AuditConsumerHealthIndicator implements HealthIndicator {
                 // Group may not exist yet (pre-first-event) or Redis is down; the
                 // built-in redis indicator owns the hard reachability signal.
                 builder.withDetail("pending", "unavailable: " + ex.getClass().getSimpleName());
+            }
+        }
+
+        long streamThreshold = props.getHealth().getMaxStreamLengthForHealthy();
+        if (streamThreshold > 0) {
+            try {
+                Long size = redis.opsForStream().size(props.getStream().getKey());
+                long streamLength = size == null ? 0L : size;
+                builder.withDetail("streamLength", streamLength)
+                        .withDetail("streamLengthThreshold", streamThreshold);
+                if (streamLength >= streamThreshold) {
+                    builder.withDetail("sourceBacklog", "above-threshold");
+                    down = true;
+                }
+            } catch (DataAccessException ex) {
+                builder.withDetail("streamLength", "unavailable: " + ex.getClass().getSimpleName());
             }
         }
 

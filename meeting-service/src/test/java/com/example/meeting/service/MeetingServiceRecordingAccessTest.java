@@ -115,6 +115,34 @@ class MeetingServiceRecordingAccessTest {
     }
 
     @Test
+    void requireRecordingAccessFailsClosedWhenOpenFgaBeanIsMissing() {
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meetingCreatedBy("stable-sub-3")));
+        when(authzProvider.getIfAvailable()).thenReturn(null);
+
+        assertThatThrownBy(() -> meetingService.requireRecordingAccess(TENANT, MEETING_ID))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex ->
+                        org.assertj.core.api.Assertions.assertThat(ex.getStatusCode())
+                                .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        verifyNoInteractions(authzService);
+    }
+
+    @Test
+    void requireRecordingAccessFailsClosedWhenOpenFgaIsDisabled() {
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meetingCreatedBy("stable-sub-3")));
+        when(authzProvider.getIfAvailable()).thenReturn(authzService);
+        when(authzService.isEnabled()).thenReturn(false);
+
+        assertThatThrownBy(() -> meetingService.requireRecordingAccess(TENANT, MEETING_ID))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex ->
+                        org.assertj.core.api.Assertions.assertThat(ex.getStatusCode())
+                                .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        verify(authzService, never()).checkPrincipal(
+                any(), any(), any(), any());
+    }
+
+    @Test
     void requireRecordingAccessDeniesBlankAuthzPrincipalBeforeObjectAuthz() {
         AdminTenantContext blankPrincipalTenant = new AdminTenantContext(TENANT_ID, " ", "legacy-user-3");
         when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))

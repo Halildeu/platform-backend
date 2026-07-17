@@ -110,11 +110,40 @@ public final class MeetingEventValidator {
                     errors.add("payload.ordinal must be >= 0 but was " + p.ordinal());
                 }
             }
+            case MeetingEventPayload.ConsentRevoked p -> {
+                requireNotNull(errors, p.captureId(), "payload.captureId");
+                requireText(errors, p.consentVersion(), "payload.consentVersion");
+                requireText(errors, p.reasonCode(), "payload.reasonCode");
+                if (p.consentRevision() < 1) {
+                    errors.add("payload.consentRevision must be >= 1 but was "
+                            + p.consentRevision());
+                }
+                if (!"USER_WITHDREW".equals(p.reasonCode())) {
+                    errors.add("payload.reasonCode must be USER_WITHDREW");
+                }
+                if (p.consentVersion() != null
+                        && !p.consentVersion().matches("[A-Za-z0-9._:-]{1,64}")) {
+                    errors.add("payload.consentVersion has invalid format");
+                }
+                if (envelope.aggregateId() != null
+                        && p.captureId() != null
+                        && !envelope.aggregateId().equals(p.captureId())) {
+                    errors.add("aggregateId " + envelope.aggregateId()
+                            + " must equal payload.captureId " + p.captureId()
+                            + " for " + p.eventType().wireValue());
+                }
+                if (envelope.aggregateRevision() != p.consentRevision()) {
+                    errors.add("aggregateRevision " + envelope.aggregateRevision()
+                            + " must equal payload.consentRevision " + p.consentRevision()
+                            + " for " + p.eventType().wireValue());
+                }
+            }
         }
 
         // Coherence: for the v1 analysis events the aggregate IS the run. If these ever
         // drift apart, the outbox row and its payload would describe different things.
-        if (envelope.aggregateId() != null
+        if (!(payload instanceof MeetingEventPayload.ConsentRevoked)
+                && envelope.aggregateId() != null
                 && payload.analysisRunId() != null
                 && !envelope.aggregateId().equals(payload.analysisRunId())) {
             errors.add("aggregateId " + envelope.aggregateId()

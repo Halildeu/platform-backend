@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.redis.connection.RedisStreamCommands.XAddOptions;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -24,7 +23,7 @@ import org.springframework.stereotype.Service;
  * hash-chained {@code audit_event} table (KVKK m.12 audit-archive 7yr trail).
  *
  * <p><b>Config-gated, DEFAULT-OFF (mirrors dispatcher {@code mode} discipline):</b>
- * active only when {@code audiogateway.audit.redis.enabled=true}. Otherwise the
+ * active only when {@code audio.gateway.audit.redis.enabled=true}. Otherwise the
  * {@link NoOpAudioGatewayAuditSink} stays the bean — live behaviour is unchanged
  * until an overlay flips the flag. {@link Primary} so this wins injection over
  * the NoOp bean when both are present.
@@ -53,7 +52,7 @@ import org.springframework.stereotype.Service;
  */
 @Service
 @Primary
-@ConditionalOnProperty(name = "audiogateway.audit.redis.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "audio.gateway.audit.redis.enabled", havingValue = "true")
 public class RedisStreamAuditSink implements AudioGatewayAuditSink {
 
     private static final Logger log = LoggerFactory.getLogger(RedisStreamAuditSink.class);
@@ -62,6 +61,8 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
     static final String EVENT_TYPE_CHUNK_ADMISSION_REJECTED = "CHUNK_ADMISSION_REJECTED";
     /** Canonical audit event type discriminator for recorder consent proof. */
     static final String EVENT_TYPE_RECORDING_CONSENT_GRANTED = "RECORDING_CONSENT_GRANTED";
+    /** Canonical audit event type discriminator for recorder consent withdrawal. */
+    static final String EVENT_TYPE_RECORDING_CONSENT_REVOKED = "RECORDING_CONSENT_REVOKED";
     /** Canonical audit event type discriminator for direct-STT compute-plane transit. */
     static final String EVENT_TYPE_CHUNK_FORWARDED_TO_COMPUTE_PLANE =
             "CHUNK_FORWARDED_TO_COMPUTE_PLANE";
@@ -85,6 +86,10 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         }
         if (event instanceof AuditEvent.RecordingConsentGranted consent) {
             emitRecordingConsentGranted(consent);
+            return;
+        }
+        if (event instanceof AuditEvent.RecordingConsentRevoked revoked) {
+            emitRecordingConsentRevoked(revoked);
             return;
         }
         if (event instanceof AuditEvent.ChunkForwardedToComputePlane forwarded) {
@@ -116,12 +121,7 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         try {
             final MapRecord<String, String, String> record =
                     StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
-            if (cfg.getMaxLen() > 0) {
-                redis.opsForStream().add(record,
-                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
-            } else {
-                redis.opsForStream().add(record);
-            }
+            redis.opsForStream().add(record);
         } catch (final DataAccessException ex) {
             // PII-safe failure log (ids + class only). Re-throw so the
             // controller's safeAudit swallow is the single isolation point —
@@ -140,24 +140,55 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         fields.put("captureId", nullSafe(e.captureId()));
         fields.put("tenantId", longOrEmpty(e.tenantId()));
         fields.put("userId", longOrEmpty(e.userId()));
+        fields.put("canonicalTenantId", nullSafe(e.canonicalTenantId()));
+        fields.put("orgId", nullSafe(e.orgId()));
         fields.put("subjectId", nullSafe(e.subjectId()));
         fields.put("consentVersion", nullSafe(e.consentVersion()));
         fields.put("consentTextHash", nullSafe(e.consentTextHash()));
         fields.put("locale", nullSafe(e.locale()));
         fields.put("correlationId", nullSafe(e.correlationId()));
         fields.put("acceptedAtMs", Long.toString(e.acceptedAtMs()));
+        fields.put("timestampMs", Long.toString(e.acceptedAtMs()));
 
         try {
             final MapRecord<String, String, String> record =
                     StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
-            if (cfg.getMaxLen() > 0) {
-                redis.opsForStream().add(record,
-                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
-            } else {
-                redis.opsForStream().add(record);
-            }
+            // Consent evidence is authoritative until the durable consumer has
+            // persisted it. A generic stream cap must never evict an unconsumed
+            // grant, even when maxLen is configured for operational events.
+            redis.opsForStream().add(record);
         } catch (final DataAccessException ex) {
             log.warn("ALERT consent audit XADD failed; event may be lost err={} meetingId={} captureId={}",
+                    ex.getClass().getSimpleName(), e.meetingId(), e.captureId());
+            throw ex;
+        }
+    }
+
+    private void emitRecordingConsentRevoked(final AuditEvent.RecordingConsentRevoked e) {
+        final Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("eventType", EVENT_TYPE_RECORDING_CONSENT_REVOKED);
+        fields.put("meetingId", nullSafe(e.meetingId()));
+        fields.put("captureId", nullSafe(e.captureId()));
+        fields.put("tenantId", longOrEmpty(e.tenantId()));
+        fields.put("userId", longOrEmpty(e.userId()));
+        fields.put("canonicalTenantId", nullSafe(e.canonicalTenantId()));
+        fields.put("orgId", nullSafe(e.orgId()));
+        fields.put("subjectId", nullSafe(e.subjectId()));
+        fields.put("consentVersion", nullSafe(e.consentVersion()));
+        fields.put("consentRevision", Long.toString(e.consentRevision()));
+        fields.put("reasonCode", nullSafe(e.reasonCode()));
+        fields.put("correlationId", nullSafe(e.correlationId()));
+        fields.put("revokedAtMs", Long.toString(e.revokedAtMs()));
+        fields.put("timestampMs", Long.toString(e.revokedAtMs()));
+
+        try {
+            final MapRecord<String, String, String> record =
+                    StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
+            // Revocation is part of the same authoritative consent history as
+            // the grant and therefore cannot use producer-side trimming.
+            redis.opsForStream().add(record);
+        } catch (final DataAccessException ex) {
+            log.warn("ALERT consent revoke audit XADD failed; command denied err={} meetingId={} captureId={}",
                     ex.getClass().getSimpleName(), e.meetingId(), e.captureId());
             throw ex;
         }
@@ -192,12 +223,7 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         try {
             final MapRecord<String, String, String> record =
                     StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
-            if (cfg.getMaxLen() > 0) {
-                redis.opsForStream().add(record,
-                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
-            } else {
-                redis.opsForStream().add(record);
-            }
+            redis.opsForStream().add(record);
         } catch (final DataAccessException ex) {
             log.warn("ALERT compute-plane audit XADD failed; raw audio forward blocked err={} sessionId={} chunkSeq={}",
                     ex.getClass().getSimpleName(), e.sessionId(), e.chunkSeq());
@@ -221,12 +247,7 @@ public class RedisStreamAuditSink implements AudioGatewayAuditSink {
         try {
             final MapRecord<String, String, String> record =
                     StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
-            if (cfg.getMaxLen() > 0) {
-                redis.opsForStream().add(record,
-                        XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
-            } else {
-                redis.opsForStream().add(record);
-            }
+            redis.opsForStream().add(record);
         } catch (final DataAccessException ex) {
             log.warn("ALERT transcript access audit XADD failed; event may be lost err={} sessionId={} mode={}",
                     ex.getClass().getSimpleName(), e.sessionId(), e.deliveryMode());

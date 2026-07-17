@@ -29,6 +29,12 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>common-meeting-events</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+
         <!-- common-auth: shared auth/OpenFGA primitives (endpoint-admin emsali
              module parity; the consumer has no public HTTP surface today but the
              dependency keeps the build/deploy convention identical). -->

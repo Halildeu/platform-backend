@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.data.redis.connection.RedisStreamCommands.XAddOptions;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.StreamOperations;
@@ -56,12 +58,30 @@ class RedisStreamAuditSinkTest {
                 "33333333-3333-4333-8333-333333333333",
                 42L,
                 7L,
+                "44444444-4444-4444-8444-444444444444",
+                "55555555-5555-4555-8555-555555555555",
                 "sub-123",
                 "recorder-consent-v1",
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "tr-TR",
                 "corr-10",
                 3_000L);
+    }
+
+    private static AuditEvent.RecordingConsentRevoked consentRevoked() {
+        return new AuditEvent.RecordingConsentRevoked(
+                "22222222-2222-4222-8222-222222222222",
+                "33333333-3333-4333-8333-333333333333",
+                42L,
+                7L,
+                "44444444-4444-4444-8444-444444444444",
+                "55555555-5555-4555-8555-555555555555",
+                "sub-123",
+                "recorder-consent-v1",
+                2L,
+                "USER_WITHDREW",
+                "corr-11",
+                4_000L);
     }
 
     private static AuditEvent.ChunkForwardedToComputePlane computePlaneForward() {
@@ -181,13 +201,39 @@ class RedisStreamAuditSinkTest {
                 .containsEntry("captureId", "33333333-3333-4333-8333-333333333333")
                 .containsEntry("tenantId", "42")
                 .containsEntry("userId", "7")
+                .containsEntry("canonicalTenantId", "44444444-4444-4444-8444-444444444444")
+                .containsEntry("orgId", "55555555-5555-4555-8555-555555555555")
                 .containsEntry("subjectId", "sub-123")
                 .containsEntry("consentVersion", "recorder-consent-v1")
                 .containsEntry("consentTextHash",
                         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
                 .containsEntry("locale", "tr-TR")
                 .containsEntry("correlationId", "corr-10")
-                .containsEntry("acceptedAtMs", "3000");
+                .containsEntry("acceptedAtMs", "3000")
+                .containsEntry("timestampMs", "3000");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitRecordingConsentRevokedMapsCanonicalScopeAndNoContent() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("2-1"));
+
+        sink.emit(consentRevoked());
+
+        final ArgumentCaptor<MapRecord<String, String, String>> captor =
+                ArgumentCaptor.forClass(MapRecord.class);
+        verify(streamOps).add(captor.capture());
+        assertThat(captor.getValue().getValue())
+                .containsEntry("eventType", "RECORDING_CONSENT_REVOKED")
+                .containsEntry("meetingId", "22222222-2222-4222-8222-222222222222")
+                .containsEntry("captureId", "33333333-3333-4333-8333-333333333333")
+                .containsEntry("canonicalTenantId", "44444444-4444-4444-8444-444444444444")
+                .containsEntry("orgId", "55555555-5555-4555-8555-555555555555")
+                .containsEntry("consentVersion", "recorder-consent-v1")
+                .containsEntry("consentRevision", "2")
+                .containsEntry("reasonCode", "USER_WITHDREW")
+                .containsEntry("timestampMs", "4000")
+                .doesNotContainKeys("consentText", "transcript", "audio", "bytes", "token", "email");
     }
 
     @SuppressWarnings("unchecked")
@@ -203,6 +249,30 @@ class RedisStreamAuditSinkTest {
         assertThat(captor.getValue().getValue())
                 .doesNotContainKeys("consentText", "rawConsentText", "authorization",
                         "bearer", "token", "authCode", "email", "audio", "bytes", "transcript");
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void sharedAuditStreamNeverUsesProducerSideTrimEvenWhenConfigured() {
+        final StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        final StreamOperations<String, Object, Object> cappedStreamOps = mock(StreamOperations.class);
+        when(redis.opsForStream()).thenReturn(cappedStreamOps);
+        when(cappedStreamOps.add(any(MapRecord.class))).thenReturn(RecordId.of("5-0"));
+
+        final AudioGatewayProperties props = new AudioGatewayProperties();
+        props.getAudit().getRedis().setEnabled(true);
+        props.getAudit().getRedis().setStreamKey("audit:events");
+        props.getAudit().getRedis().setMaxLen(1);
+        final RedisStreamAuditSink cappedSink = new RedisStreamAuditSink(redis, props);
+
+        cappedSink.emit(rejected());
+        cappedSink.emit(consent());
+        cappedSink.emit(consentRevoked());
+        cappedSink.emit(computePlaneForward());
+        cappedSink.emit(transcriptAccess());
+
+        verify(cappedStreamOps, org.mockito.Mockito.times(5)).add(any(MapRecord.class));
+        verify(cappedStreamOps, never()).add(any(MapRecord.class), any(XAddOptions.class));
     }
 
     @SuppressWarnings("unchecked")

@@ -6,6 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Faz 24 KVKK audit pipeline (gitops#1249) — audit-event-consumer-service.
@@ -31,6 +32,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         UserDetailsServiceAutoConfiguration.class
 })
 @EnableConfigurationProperties(AuditConsumerProperties.class)
+@EnableScheduling
 public class AuditEventConsumerApplication {
 
     public static void main(String[] args) {
