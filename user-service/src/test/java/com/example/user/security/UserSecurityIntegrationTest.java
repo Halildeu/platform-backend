@@ -1,10 +1,17 @@
 package com.example.user.security;
 
+import org.springframework.context.annotation.Import;
+import com.example.user.authz.TestAuthzUpstreamConfig;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -375,7 +382,8 @@ class UserSecurityIntegrationTest {
     }
 
     @TestConfiguration
-    static class JwtTestConfig {
+    static class JwtTestConfig extends TestAuthzUpstreamConfig {
+
         @Bean(name = "serviceRsaKey")
         @Primary
         public RSAKey serviceRsaKeyForTests() throws Exception {

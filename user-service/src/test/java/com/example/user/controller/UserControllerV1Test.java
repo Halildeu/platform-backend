@@ -35,7 +35,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(classes = UserApplication.class, webEnvironment = WebEnvironment.MOCK)
+// AuthzUpstreamStub must be listed explicitly: when @SpringBootTest declares `classes`, nested
+// @TestConfiguration classes are not picked up automatically.
+@SpringBootTest(classes = {UserApplication.class, UserControllerV1Test.AuthzUpstreamStub.class},
+        webEnvironment = WebEnvironment.MOCK)
 @AutoConfigureMockMvc
 @Import(TestSecurityConfig.class)
 @TestPropertySource(properties = {
@@ -50,6 +53,46 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.main.allow-bean-definition-overriding=true"
 })
 class UserControllerV1Test {
+
+    /**
+     * Stands in for permission-service (board #2556).
+     *
+     * <p>Every authorized request now reads the authorization revision, and an unreadable
+     * revision is refused rather than assumed unchanged — that refusal is what stops a revoked
+     * grant from surviving (~271s measured on k3d-test). This test has no permission-service: the
+     * call used to fail on DNS and loadContext quietly fell back to JWT-derived authority.
+     *
+     * <p>Answering the revision here — while leaving /authz/me unavailable — keeps these
+     * assertions on the path they were written against and declares the dependency instead of
+     * relying on a DNS failure.
+     *
+     * <p>Nested and written out in full on purpose: an @Import'ed config is processed before the
+     * application's own @Configuration and loses the override, and an inherited @Bean method did
+     * not register either.
+     */
+    @org.springframework.boot.test.context.TestConfiguration
+    static class AuthzUpstreamStub {
+        @org.springframework.context.annotation.Bean(name = "plainWebClientBuilder")
+        @org.springframework.context.annotation.Primary
+        org.springframework.web.reactive.function.client.WebClient.Builder stubPlainWebClientBuilder() {
+            return org.springframework.web.reactive.function.client.WebClient.builder()
+                    .exchangeFunction(request -> {
+                        if (request.url().getPath().endsWith("/api/v1/authz/version")) {
+                            return reactor.core.publisher.Mono.just(
+                                    org.springframework.web.reactive.function.client.ClientResponse
+                                            .create(org.springframework.http.HttpStatus.OK)
+                                            .header("Content-Type", "application/json")
+                                            .body("{\"authzVersion\":1}")
+                                            .build());
+                        }
+                        return reactor.core.publisher.Mono.just(
+                                org.springframework.web.reactive.function.client.ClientResponse
+                                        .create(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+                                        .build());
+                    });
+        }
+    }
+
 
     @Autowired
     private MockMvc mockMvc;
