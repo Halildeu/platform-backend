@@ -37,7 +37,7 @@ public class TestSecurityConfig {
     public org.springframework.web.reactive.function.client.WebClient.Builder testPlainWebClientBuilder() {
         return org.springframework.web.reactive.function.client.WebClient.builder()
                 .exchangeFunction(request -> {
-                    if (request.url().getPath().endsWith("/api/v1/authz/version")) {
+                                        if (request.url().getPath().endsWith("/api/v1/authz/version")) {
                         return reactor.core.publisher.Mono.just(
                                 org.springframework.web.reactive.function.client.ClientResponse
                                         .create(org.springframework.http.HttpStatus.OK)
@@ -45,9 +45,15 @@ public class TestSecurityConfig {
                                         .body("{\"authzVersion\":1}")
                                         .build());
                     }
+                    // /authz/me: authority now comes ONLY from permission-service — the JWT fallback
+                    // was removed (it made the token its own authority). So the stub must answer with
+                    // the permissions these suites assert against, rather than letting the call fail.
                     return reactor.core.publisher.Mono.just(
                             org.springframework.web.reactive.function.client.ClientResponse
-                                    .create(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE)
+                                    .create(org.springframework.http.HttpStatus.OK)
+                                    .header("Content-Type", "application/json")
+                                    .body("{\"userId\":\"1\",\"permissions\":[\"VIEW_USERS\",\"MANAGE_USERS\"],"
+                                            + "\"allowedScopes\":[],\"superAdmin\":false}")
                                     .build());
                 });
     }

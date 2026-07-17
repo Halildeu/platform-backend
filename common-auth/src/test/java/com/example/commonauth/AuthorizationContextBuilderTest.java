@@ -64,7 +64,7 @@ class AuthorizationContextBuilderTest {
     void cacheReusesDecisionWhileRevisionIsUnchanged() {
         // board #2556: reuse is now bound to the authorization revision, not to elapsed time.
         AuthorizationContextCache cache = new AuthorizationContextCache(Duration.ofMinutes(5));
-        String key = AuthorizationContextCache.key("https://issuer", "u1", 1L);
+        String key = AuthorizationContextCache.key("https://issuer", "u1", "1");
 
         AuthorizationContext first = cache.get(key, () -> 1L, () ->
                 AuthorizationContext.of(1L, "e", Set.of(), Set.of("p1"), Set.of(10L), Set.of(), Set.of()));
@@ -78,7 +78,7 @@ class AuthorizationContextBuilderTest {
     @Test
     void cacheDropsDecisionAsSoonAsRevisionMoves() {
         AuthorizationContextCache cache = new AuthorizationContextCache(Duration.ofMinutes(5));
-        String key = AuthorizationContextCache.key("https://issuer", "u1", 1L);
+        String key = AuthorizationContextCache.key("https://issuer", "u1", "1");
 
         cache.get(key, () -> 1L, () ->
                 AuthorizationContext.of(1L, "e", Set.of(), Set.of("p1"), Set.of(10L), Set.of(), Set.of()));

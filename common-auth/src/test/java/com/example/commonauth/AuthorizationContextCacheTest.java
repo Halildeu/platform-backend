@@ -43,7 +43,7 @@ import org.junit.jupiter.api.Test;
 class AuthorizationContextCacheTest {
 
     private static final String KEY = AuthorizationContextCache.key(
-            "https://testai.acik.com/realms/platform-test", "c9ee4f46-1f67-41d6-a2c4-031d7fd7e2a8", 1L);
+            "https://testai.acik.com/realms/platform-test", "c9ee4f46-1f67-41d6-a2c4-031d7fd7e2a8", "1");
 
     /** A clock the test moves by hand; nothing here waits on wall time. */
     private static final class TestClock extends Clock {
@@ -185,17 +185,17 @@ class AuthorizationContextCacheTest {
     @DisplayName("principals are separated by issuer and tenant, not by subject alone")
     void keySeparatesIssuerAndTenant() {
         String sub = "same-subject";
-        assertNotEquals(AuthorizationContextCache.key("https://a", sub, 1L),
-                AuthorizationContextCache.key("https://b", sub, 1L),
+        assertNotEquals(AuthorizationContextCache.key("https://a", sub, "1"),
+                AuthorizationContextCache.key("https://b", sub, "1"),
                 "two issuers can mint the same sub");
-        assertNotEquals(AuthorizationContextCache.key("https://a", sub, 1L),
-                AuthorizationContextCache.key("https://a", sub, 2L),
+        assertNotEquals(AuthorizationContextCache.key("https://a", sub, "1"),
+                AuthorizationContextCache.key("https://a", sub, "2"),
                 "the same human can hold different authority per tenant");
 
         var cache = new AuthorizationContextCache(Duration.ofMinutes(5), new TestClock());
-        cache.get(AuthorizationContextCache.key("https://a", sub, 1L), () -> 1L,
+        cache.get(AuthorizationContextCache.key("https://a", sub, "1"), () -> 1L,
                 AuthorizationContextCacheTest::granting);
-        AuthorizationContext other = cache.get(AuthorizationContextCache.key("https://a", sub, 2L), () -> 1L,
+        AuthorizationContext other = cache.get(AuthorizationContextCache.key("https://a", sub, "2"), () -> 1L,
                 AuthorizationContextCacheTest::revoked);
 
         assertTrue(other.grantsNothing(), "tenant 2 must not inherit tenant 1's grant");
@@ -223,8 +223,8 @@ class AuthorizationContextCacheTest {
                 AuthorizationContextCache.key("i", "s", ""));
 
         // Equal inputs must still produce equal keys, or nothing would ever cache.
-        assertEquals(AuthorizationContextCache.key("https://i", "sub", 1L),
-                AuthorizationContextCache.key("https://i", "sub", 1L));
+        assertEquals(AuthorizationContextCache.key("https://i", "sub", "1"),
+                AuthorizationContextCache.key("https://i", "sub", "1"));
     }
 
     @Test
@@ -283,8 +283,8 @@ class AuthorizationContextCacheTest {
     @DisplayName("different principals keep separate entries")
     void differentPrincipalsAreSeparate() {
         var cache = new AuthorizationContextCache(Duration.ofMinutes(5), new TestClock());
-        String a = AuthorizationContextCache.key("https://i", "sub-a", 1L);
-        String b = AuthorizationContextCache.key("https://i", "sub-b", 1L);
+        String a = AuthorizationContextCache.key("https://i", "sub-a", "1");
+        String b = AuthorizationContextCache.key("https://i", "sub-b", "1");
 
         assertEquals(7L, cache.get(a, () -> 1L, AuthorizationContextCacheTest::granting).getUserId());
         assertTrue(cache.get(b, () -> 1L, AuthorizationContextCacheTest::revoked).grantsNothing());

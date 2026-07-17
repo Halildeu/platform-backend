@@ -123,15 +123,20 @@ public class AuthorizationContextCache {
      * authorization bug, so the key is unambiguous by construction rather than by assuming which
      * characters cannot appear.
      *
+     * <p>{@code tenant} is a {@code String}, not an {@code Object}: relying on {@code toString()}
+     * would make the key depend on whatever rendering a caller's tenant type happens to have, and
+     * two distinct tenants whose {@code toString()} agreed would silently share one entry. Callers
+     * pass a canonical id.
+     *
      * @param tenant may be null when the deployment is single-tenant — it still occupies a distinct
      *               position in the key so that adding tenancy later cannot silently alias entries.
      */
-    public static String key(String issuer, String subject, Object tenant) {
+    public static String key(String issuer, String subject, String tenant) {
         Objects.requireNonNull(subject, "subject required for cache key");
         StringBuilder sb = new StringBuilder(64);
         appendLengthPrefixed(sb, issuer);
         appendLengthPrefixed(sb, subject);
-        appendLengthPrefixed(sb, tenant == null ? null : tenant.toString());
+        appendLengthPrefixed(sb, tenant);
         return sb.toString();
     }
 

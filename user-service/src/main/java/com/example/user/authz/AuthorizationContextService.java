@@ -66,41 +66,62 @@ public class AuthorizationContextService {
         return buildContext(jwt, authorities);
     }
 
+    /**
+     * Derives authority from permission-service — and only from permission-service (board #2556).
+     *
+     * <p><b>The JWT fallback is gone on purpose.</b> This method used to catch any failure and
+     * rebuild authority from the token's {@code permissions}/authorities claims. That made the
+     * token its own authority: a claim minted before a revoke still granted access, and the
+     * revision cannot save us here — the revision versions FGA state, it does not certify that a
+     * claim is current. Concretely: revoke lands, the revision bumps, {@code /authz/me} then blips,
+     * and the stale claim-derived context gets cached *under the new revision* — the exact incident
+     * this class exists to prevent, wearing a fresh label.
+     *
+     * <p>So an unreachable permission-service now fails closed (503) instead of degrading into
+     * "trust the token". That is a deliberate availability-for-security trade: the JWT still proves
+     * *who* the caller is; it never says what they may do.
+     */
     private AuthorizationContext loadContext(Jwt jwt, List<GrantedAuthority> authorities) {
         String token = jwt.getTokenValue();
-
+        AuthzMeResponse body;
         try {
-            AuthzMeResponse body = webClient.get()
+            body = webClient.get()
                     .uri("/api/v1/authz/me")
                     .headers(headers -> headers.setBearerAuth(token))
                     .retrieve()
                     .bodyToMono(AuthzMeResponse.class)
                     .block();
-            Set<String> permissions = body != null && body.permissions() != null
-                    ? expandPermissionAliases(body.permissions())
-                    : extractPermissionsFromJwt(jwt, authorities);
-
-            Set<Long> allowedCompanies = body != null && body.allowedScopes() != null
-                    ? body.allowedScopes().stream()
-                    .filter(s -> "COMPANY".equalsIgnoreCase(s.scopeType()))
-                    .map(ScopeSummaryDto::scopeRefId)
-                    .filter(id -> id != null)
-                    .collect(Collectors.toSet())
-                    : Collections.emptySet();
-
-            Long userId = tryParseLong(body != null ? body.userId() : jwt.getSubject());
-            String email = firstNonBlank(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
-            Set<String> roles = extractRoles(authorities);
-
-            return AuthorizationContext.of(userId, email, roles, permissions, allowedCompanies, Collections.emptySet(), Collections.emptySet());
         } catch (Exception ex) {
-            log.warn("permission-service /authz/me çağrısı başarısız: {}. JWT izinleriyle devam edilecek.", ex.getMessage());
-            Set<String> permissions = extractPermissionsFromJwt(jwt, authorities);
-            Long userId = tryParseLong(jwt.getSubject());
-            String email = firstNonBlank(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
-            Set<String> roles = extractRoles(authorities);
-            return AuthorizationContext.of(userId, email, roles, permissions);
+            log.warn("permission-service /authz/me unreachable: {} — failing closed (no JWT authority fallback)",
+                    ex.getMessage());
+            throw new AuthorizationContextCache.RevisionUnavailableException(
+                    "permission-service /authz/me unavailable; refusing to derive authority from the token", ex);
         }
+        if (body == null) {
+            throw new AuthorizationContextCache.RevisionUnavailableException(
+                    "permission-service /authz/me returned no body; refusing to guess authority", null);
+        }
+
+        Set<String> permissions = body.permissions() != null
+                ? expandPermissionAliases(Set.copyOf(body.permissions()))
+                : Collections.emptySet();
+
+        Set<Long> allowedCompanies = body.allowedScopes() != null
+                ? body.allowedScopes().stream()
+                .filter(s -> "COMPANY".equalsIgnoreCase(s.scopeType()))
+                .map(ScopeSummaryDto::scopeRefId)
+                .filter(id -> id != null)
+                .collect(Collectors.toSet())
+                : Collections.emptySet();
+
+        Long userId = tryParseLong(body.userId());
+        String email = firstNonBlank(jwt.getClaimAsString("email"), jwt.getClaimAsString("preferred_username"));
+        // Roles still come from the granted authorities (populated by our own JWT converter); they
+        // are not an authority source on their own — every protected surface checks permissions.
+        Set<String> roles = extractRoles(authorities);
+
+        return AuthorizationContext.of(userId, email, roles, permissions, allowedCompanies,
+                Collections.emptySet(), Collections.emptySet());
     }
 
     private static Set<String> extractPermissionsFromJwt(Jwt jwt, List<GrantedAuthority> authorities) {

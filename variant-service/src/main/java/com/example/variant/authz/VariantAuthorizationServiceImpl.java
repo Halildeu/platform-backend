@@ -63,7 +63,8 @@ public class VariantAuthorizationServiceImpl implements VariantAuthorizationServ
         // Read `iss` as a raw string: Jwt#getIssuer() coerces the claim to a URL and throws when it
         // is anything else, and an issuer that is merely unusual must not turn an authorization
         // decision into a 500.
-        String cacheKey = AuthorizationContextCache.key(jwt.getClaimAsString("iss"), subject, userId);
+        String cacheKey = AuthorizationContextCache.key(jwt.getClaimAsString("iss"), subject,
+                userId == null ? null : userId.toString());
         String finalEmail = email;
         Long finalUserId = userId;
         return cache.get(cacheKey,
