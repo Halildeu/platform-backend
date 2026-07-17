@@ -111,16 +111,17 @@ class TranscriptSegmentRepositoryH2Test {
     @Test
     void findDirectSttSourceChunk_resolvesByTenantSourceSessionAndChunkSeq() {
         UUID orgA = UUID.randomUUID();
-        TranscriptSegment seg = persist(orgA, orgA, UUID.randomUUID(), 0.0, 1.0, "direct draft", null);
+        UUID meetingId = UUID.randomUUID();
+        TranscriptSegment seg = persist(orgA, orgA, meetingId, 0.0, 1.0, "direct draft", null);
         seg.setSourceSystem("DIRECT_STT");
         seg.setSourceSessionId("SES-abc");
         seg.setSourceChunkSeq(5L);
         repository.saveAndFlush(seg);
 
         Optional<TranscriptSegment> hit =
-                repository.findDirectSttSourceChunk(orgA, "SES-abc", 5L);
+                repository.findDirectSttSourceChunk(orgA, meetingId, "SES-abc", 5L);
         Optional<TranscriptSegment> miss =
-                repository.findDirectSttSourceChunk(UUID.randomUUID(), "SES-abc", 5L);
+                repository.findDirectSttSourceChunk(UUID.randomUUID(), meetingId, "SES-abc", 5L);
 
         assertThat(hit).isPresent();
         assertThat(hit.get().getId()).isEqualTo(seg.getId());

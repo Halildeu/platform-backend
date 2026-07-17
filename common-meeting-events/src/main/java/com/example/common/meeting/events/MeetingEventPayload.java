@@ -20,7 +20,7 @@ import java.util.UUID;
  */
 public sealed interface MeetingEventPayload
         permits MeetingEventPayload.SummaryReady, MeetingEventPayload.ActionAssigned,
-        MeetingEventPayload.ConsentRevoked {
+        MeetingEventPayload.ConsentRevoked, MeetingEventPayload.TranscriptReady {
 
     /** The event type this payload belongs to — cross-checked against the envelope. */
     MeetingEventType eventType();
@@ -88,6 +88,33 @@ public sealed interface MeetingEventPayload
         @Override
         public MeetingEventType eventType() {
             return MeetingEventType.CONSENT_REVOKED;
+        }
+
+        @Override
+        public UUID analysisRunId() {
+            return null;
+        }
+    }
+
+    /**
+     * {@code meeting.transcript.ready} — one canonical transcript occurrence was
+     * explicitly finalized in transcript-service.
+     *
+     * <p>No transcript or audio content is carried. Consumers use the canonical
+     * meeting/session identifiers and version to read the authoritative resource.
+     *
+     * @param transcriptSessionId canonical {@code meeting_sessions.id}
+     * @param finalizationVersion producer-owned occurrence counter; starts at one
+     * @param segmentCount number of canonical segments covered by this finalization
+     */
+    record TranscriptReady(
+            UUID transcriptSessionId,
+            long finalizationVersion,
+            int segmentCount) implements MeetingEventPayload {
+
+        @Override
+        public MeetingEventType eventType() {
+            return MeetingEventType.TRANSCRIPT_READY;
         }
 
         @Override

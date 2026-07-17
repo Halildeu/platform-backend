@@ -11,6 +11,7 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.authorization.AuthorizationDeniedException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -124,6 +125,13 @@ public class GlobalExceptionHandler {
         log.warn("optimistic lock race: {}", ex.getMessage());
         return build(HttpStatus.CONFLICT, "concurrent_modification",
                 "This record was modified concurrently. Refresh and retry.");
+    }
+
+    /** Method-security denials occur inside MVC and must retain 403 semantics. */
+    @ExceptionHandler(AuthorizationDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleAuthorizationDenied(
+            AuthorizationDeniedException ex) {
+        return build(HttpStatus.FORBIDDEN, "FORBIDDEN", "Access denied.");
     }
 
     @ExceptionHandler(Exception.class)

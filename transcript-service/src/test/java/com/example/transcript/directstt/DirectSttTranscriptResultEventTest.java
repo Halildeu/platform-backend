@@ -43,6 +43,18 @@ class DirectSttTranscriptResultEventTest {
                 .hasMessageNotContaining("secret transcript phrase");
     }
 
+    @Test
+    void parseRejectsSourceSessionOutsideDirectSttContractBeforePersistence() {
+        Map<String, String> fields = validFields();
+        fields.put("sessionId", "invalid session id");
+        fields.put("textDraft", "secret transcript phrase");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("SES-*")
+                .hasMessageNotContaining("secret transcript phrase");
+    }
+
     static Map<String, String> validFields() {
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("schemaVersion", "audioGateway.directSttTranscriptResult.v1");

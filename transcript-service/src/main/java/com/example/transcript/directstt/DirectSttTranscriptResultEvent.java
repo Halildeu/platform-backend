@@ -3,6 +3,7 @@ package com.example.transcript.directstt;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Parsed audio-gateway direct-STT result stream event.
@@ -32,12 +33,17 @@ public record DirectSttTranscriptResultEvent(
     private static final int MAX_SOURCE_ID_LEN = 128;
     private static final int MAX_CORRELATION_ID_LEN = 128;
     private static final int MAX_SHA256_LEN = 128;
+    private static final Pattern DIRECT_STT_SESSION_ID =
+            Pattern.compile("^SES-[A-Za-z0-9._:-]{1,124}$");
 
     public static DirectSttTranscriptResultEvent parse(Map<String, String> fields, String entryId) {
         requireEquals(fields, "schemaVersion", SCHEMA_VERSION);
         requireEquals(fields, "eventType", EVENT_TYPE);
         String sourceTenantId = required(fields, "tenantId", MAX_SOURCE_ID_LEN);
         String sourceSessionId = required(fields, "sessionId", MAX_SOURCE_ID_LEN);
+        if (!DIRECT_STT_SESSION_ID.matcher(sourceSessionId).matches()) {
+            throw invalid("sessionId must be a valid SES-* id");
+        }
         UUID tenantId = canonicalTenantId(sourceTenantId);
         UUID meetingId = requiredUuid(fields, "meetingId");
         long chunkSeq = requiredLong(fields, "chunkSeq");

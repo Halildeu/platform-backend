@@ -20,13 +20,11 @@ class MeetingEventValidatorTest {
     }
 
     @Test
-    void notYetShippedTypes_areUnknownUntilTheirProducerExists() {
-        // Named in the #802 decision as later slices. Until a producer emits them with an
-        // agreed payload, accepting the names would advertise a contract that does not
-        // exist — so they are unknown ON PURPOSE, and this test is the reminder.
+    void shippedProducerTypes_areKnown() {
         assertThat(MeetingEventType.find("meeting.consent.revoked"))
                 .contains(MeetingEventType.CONSENT_REVOKED);
-        assertThat(MeetingEventType.find("meeting.transcript.ready")).isEmpty();
+        assertThat(MeetingEventType.find("meeting.transcript.ready"))
+                .contains(MeetingEventType.TRANSCRIPT_READY);
     }
 
     @Test
@@ -258,5 +256,34 @@ class MeetingEventValidatorTest {
                 .build())
                 .isInstanceOf(MeetingEventValidationException.class)
                 .hasMessageContaining("reasonCode must be USER_WITHDREW");
+    }
+
+
+    @Test
+    void transcriptReady_requiresCanonicalSessionPositiveVersionAndSegments() {
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.TRANSCRIPT_READY)
+                .producer("transcript-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.transcript")
+                .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
+                .aggregateRevision(0)
+                .payload(new MeetingEventPayload.TranscriptReady(
+                        MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 0, 0))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("finalizationVersion must be >= 1")
+                .hasMessageContaining("segmentCount must be >= 1");
+    }
+
+    @Test
+    void transcriptReady_isThinAndCarriesNoTranscriptOrAudioContent() {
+        String json = MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.transcriptReady());
+
+        assertThat(json)
+                .contains("\"transcriptSessionId\"")
+                .contains("\"finalizationVersion\":1")
+                .doesNotContain("text", "audio", "speaker", "recordingUri", "sha256");
     }
 }

@@ -14,7 +14,6 @@ import static org.mockito.Mockito.when;
 import com.example.transcript.dto.CreateTranscriptSegmentRequest;
 import com.example.transcript.dto.TranscriptSegmentDto;
 import com.example.transcript.dto.UpdateTranscriptSegmentRequest;
-import com.example.transcript.directstt.DirectSttTranscriptResultEvent;
 import com.example.transcript.model.TranscriptAccessType;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
@@ -197,85 +196,6 @@ class TranscriptSegmentServiceTest {
                 .isInstanceOf(ResponseStatusException.class);
     }
 
-    // ───────────────── DIRECT-STT stream upsert ──────────────────────
-
-    @Test
-    void upsertDirectSttDraft_createsSourceScopedDraft_withoutAccessAudit() {
-        DirectSttTranscriptResultEvent event = directSttEvent("1-0", "merhaba dunya", 1.2d);
-        when(repository.findDirectSttSourceChunk(event.tenantId(), "SES-abc", 5L))
-                .thenReturn(Optional.empty());
-        ArgumentCaptor<TranscriptSegment> captor = ArgumentCaptor.forClass(TranscriptSegment.class);
-        when(repository.saveAndFlush(captor.capture())).thenAnswer(inv -> {
-            TranscriptSegment s = inv.getArgument(0);
-            s.setId(SEGMENT);
-            return s;
-        });
-
-        TranscriptSegmentDto dto = service.upsertDirectSttDraft(event);
-
-        assertThat(dto.id()).isEqualTo(SEGMENT);
-        TranscriptSegment saved = captor.getValue();
-        assertThat(saved.getTenantId()).isEqualTo(event.tenantId());
-        assertThat(saved.getOrgId()).isEqualTo(event.tenantId());
-        assertThat(saved.getMeetingId()).isEqualTo(MEETING);
-        assertThat(saved.getSessionId()).isNull();
-        assertThat(saved.getStartTime()).isEqualTo(1.25d);
-        assertThat(saved.getEndTime()).isEqualTo(2.45d);
-        assertThat(saved.getTextDraft()).isEqualTo("merhaba dunya");
-        assertThat(saved.getStatus()).isEqualTo(TranscriptSegmentStatus.DRAFT);
-        assertThat(saved.getSourceSystem()).isEqualTo("DIRECT_STT");
-        assertThat(saved.getSourceEventId()).isEqualTo("1-0");
-        assertThat(saved.getSourceSessionId()).isEqualTo("SES-abc");
-        assertThat(saved.getSourceChunkSeq()).isEqualTo(5L);
-        assertThat(saved.getSourceSha256()).isEqualTo("deadbeefcafe0000sha");
-        assertThat(saved.getSourceCorrelationId()).isEqualTo("corr-direct-stt");
-        verifyNoInteractions(accessAuditService);
-    }
-
-    @Test
-    void upsertDirectSttDraft_replayUpdatesSameSourceChunkWithoutDuplicateCreate() {
-        DirectSttTranscriptResultEvent event = directSttEvent("2-0", "ikinci taslak", 2.0d);
-        TranscriptSegment existing = segment();
-        existing.setSourceSystem("DIRECT_STT");
-        existing.setSourceSessionId("SES-abc");
-        existing.setSourceChunkSeq(5L);
-        when(repository.findDirectSttSourceChunk(event.tenantId(), "SES-abc", 5L))
-                .thenReturn(Optional.of(existing));
-        when(repository.saveAndFlush(existing)).thenReturn(existing);
-
-        service.upsertDirectSttDraft(event);
-
-        assertThat(existing.getTextDraft()).isEqualTo("ikinci taslak");
-        assertThat(existing.getStartTime()).isEqualTo(1.25d);
-        assertThat(existing.getEndTime()).isEqualTo(3.25d);
-        assertThat(existing.getSourceEventId()).isEqualTo("2-0");
-        verify(repository).saveAndFlush(existing);
-        verifyNoInteractions(accessAuditService);
-    }
-
-    @Test
-    void upsertDirectSttDraft_doesNotOverwriteFinalizedTextOnLateReplay() {
-        DirectSttTranscriptResultEvent event = directSttEvent("3-0", "late machine replay", 1.0d);
-        TranscriptSegment existing = segment();
-        existing.setSourceSystem("DIRECT_STT");
-        existing.setSourceSessionId("SES-abc");
-        existing.setSourceChunkSeq(5L);
-        existing.setTextFinal("human final text");
-        existing.setStatus(TranscriptSegmentStatus.FINALIZED);
-        when(repository.findDirectSttSourceChunk(event.tenantId(), "SES-abc", 5L))
-                .thenReturn(Optional.of(existing));
-        when(repository.saveAndFlush(existing)).thenReturn(existing);
-
-        service.upsertDirectSttDraft(event);
-
-        assertThat(existing.getStartTime()).isEqualTo(0.0d);
-        assertThat(existing.getEndTime()).isEqualTo(1.5d);
-        assertThat(existing.getTextDraft()).isEqualTo("hello world");
-        assertThat(existing.getTextFinal()).isEqualTo("human final text");
-        assertThat(existing.getStatus()).isEqualTo(TranscriptSegmentStatus.FINALIZED);
-        assertThat(existing.getSourceEventId()).isEqualTo("3-0");
-    }
-
     // ──────────────────── UPDATE optimistic-lock 409 ──────────────────
 
     @Test
@@ -340,21 +260,4 @@ class TranscriptSegmentServiceTest {
         return seg;
     }
 
-    private static DirectSttTranscriptResultEvent directSttEvent(
-            String entryId, String textDraft, Double durationSeconds) {
-        UUID tenant = UUID.nameUUIDFromBytes("company:42".getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        return new DirectSttTranscriptResultEvent(
-                entryId,
-                tenant,
-                "42",
-                "7",
-                MEETING,
-                "SES-abc",
-                5L,
-                1_250L,
-                "corr-direct-stt",
-                "deadbeefcafe0000sha",
-                textDraft,
-                durationSeconds);
-    }
 }

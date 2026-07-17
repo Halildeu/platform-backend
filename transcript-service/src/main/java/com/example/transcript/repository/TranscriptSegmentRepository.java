@@ -1,6 +1,7 @@
 package com.example.transcript.repository;
 
 import com.example.transcript.model.TranscriptSegment;
+import jakarta.persistence.LockModeType;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
@@ -9,6 +10,7 @@ import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -108,14 +110,62 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
             select s
             from TranscriptSegment s
             where s.tenantId = :tenantId
+              and s.meetingId = :meetingId
               and s.sourceSystem = 'DIRECT_STT'
               and s.sourceSessionId = :sourceSessionId
               and s.sourceChunkSeq = :sourceChunkSeq
             """)
     Optional<TranscriptSegment> findDirectSttSourceChunk(
             @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
             @Param("sourceSessionId") String sourceSessionId,
             @Param("sourceChunkSeq") Long sourceChunkSeq);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update TranscriptSegment s
+            set s.sessionId = :sessionId
+            where s.tenantId = :tenantId
+              and s.meetingId = :meetingId
+              and s.sourceSystem = 'DIRECT_STT'
+              and s.sourceSessionId = :sourceSessionId
+              and s.sessionId is null
+            """)
+    int backfillDirectSttSessionId(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sourceSessionId") String sourceSessionId,
+            @Param("sessionId") UUID sessionId);
+
+    @Query("""
+            select count(s)
+            from TranscriptSegment s
+            where s.tenantId = :tenantId
+              and s.meetingId = :meetingId
+              and s.sourceSystem = 'DIRECT_STT'
+              and s.sourceSessionId = :sourceSessionId
+              and s.sessionId is not null
+              and s.sessionId <> :sessionId
+            """)
+    long countDirectSttSessionConflicts(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sourceSessionId") String sourceSessionId,
+            @Param("sessionId") UUID sessionId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select s
+            from TranscriptSegment s
+            where s.tenantId = :tenantId
+              and s.meetingId = :meetingId
+              and s.sessionId = :sessionId
+            order by s.startTime asc, s.sourceChunkSeq asc, s.id asc
+            """)
+    List<TranscriptSegment> findCanonicalSessionForUpdate(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId);
 
     @Query("""
             select s.id

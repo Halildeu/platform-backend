@@ -40,6 +40,11 @@
             <artifactId>common-export</artifactId>
             <version>1.0.0</version>
         </dependency>
+        <dependency>
+            <groupId>com.example</groupId>
+            <artifactId>common-meeting-events</artifactId>
+            <version>1.0.0</version>
+        </dependency>
         <!-- Pin commons-compress 1.25.0 directly so the POI-compatible version
              always wins (same nearest-wins guard as endpoint-admin-service —
              a transitive 1.24.0 would NoSuchMethodError on .xlsx export). -->

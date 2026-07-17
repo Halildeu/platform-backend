@@ -57,4 +57,20 @@ final class MeetingEventTestEnvelopes {
                         null))
                 .build();
     }
+
+    static MeetingEventEnvelope transcriptReady() {
+        return MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.TRANSCRIPT_READY)
+                .producer("transcript-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .orgId(MeetingEventGoldens.ORG_ID)
+                .occurredAt(MeetingEventGoldens.GENERATED_AT)
+                .aggregateType("meeting.transcript")
+                .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.TranscriptReady(
+                        MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 1, 2))
+                .build();
+    }
 }

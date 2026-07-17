@@ -1,7 +1,9 @@
 package com.example.transcript.directstt;
 
 import com.example.transcript.directstt.DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException;
-import com.example.transcript.service.TranscriptSegmentService;
+import com.example.transcript.directstt.DirectSttTranscriptIngestionService.SessionAssociationConflictException;
+import com.example.transcript.directstt.DirectSttTranscriptIngestionService.SessionAssociationNotResolvedException;
+import com.example.transcript.directstt.DirectSttTranscriptIngestionService.TranscriptAlreadyFinalizedException;
 import java.util.Map;
 import org.springframework.stereotype.Service;
 
@@ -13,19 +15,34 @@ import org.springframework.stereotype.Service;
 @Service
 public class DirectSttTranscriptResultHandler {
 
-    private final TranscriptSegmentService segmentService;
+    private final TranscriptSessionAssociationService associationService;
+    private final DirectSttTranscriptIngestionService ingestionService;
 
-    public DirectSttTranscriptResultHandler(TranscriptSegmentService segmentService) {
-        this.segmentService = segmentService;
+    public DirectSttTranscriptResultHandler(
+            TranscriptSessionAssociationService associationService,
+            DirectSttTranscriptIngestionService ingestionService) {
+        this.associationService = associationService;
+        this.ingestionService = ingestionService;
     }
 
     public HandleOutcome handle(Map<String, String> fields, String entryId) {
         try {
             DirectSttTranscriptResultEvent event = DirectSttTranscriptResultEvent.parse(fields, entryId);
-            segmentService.upsertDirectSttDraft(event);
-            return HandleOutcome.processed();
+            var association = associationService.resolve(event);
+            return switch (association.result()) {
+                case RESOLVED -> {
+                    ingestionService.upsert(event, association.sessionId());
+                    yield HandleOutcome.processed();
+                }
+                case PENDING -> HandleOutcome.pending(association.reasonCode());
+                case DEAD -> HandleOutcome.dead(association.reasonCode());
+            };
         } catch (InvalidDirectSttTranscriptResultException ex) {
             return HandleOutcome.invalid(ex.getMessage());
+        } catch (SessionAssociationConflictException
+                 | SessionAssociationNotResolvedException
+                 | TranscriptAlreadyFinalizedException ex) {
+            return HandleOutcome.dead(ex.getClass().getSimpleName());
         }
     }
 
@@ -37,10 +54,20 @@ public class DirectSttTranscriptResultHandler {
         public static HandleOutcome invalid(String reason) {
             return new HandleOutcome(Result.INVALID, reason);
         }
+
+        public static HandleOutcome pending(String reason) {
+            return new HandleOutcome(Result.PENDING, reason);
+        }
+
+        public static HandleOutcome dead(String reason) {
+            return new HandleOutcome(Result.DEAD, reason);
+        }
     }
 
     public enum Result {
         PROCESSED,
-        INVALID
+        INVALID,
+        PENDING,
+        DEAD
     }
 }
