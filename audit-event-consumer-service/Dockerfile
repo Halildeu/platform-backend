@@ -1,6 +1,6 @@
 ## Build Stage
 # Faz 24 KVKK audit pipeline (gitops#1249) — multi-module build:
-# common-auth + audit-event-consumer-service (endpoint-admin Dockerfile pattern).
+# shared local modules + audit-event-consumer-service.
 FROM maven:3.9-eclipse-temurin-21 AS build
 
 WORKDIR /app
@@ -9,12 +9,18 @@ WORKDIR /app
 COPY common-auth/pom.xml ./common-auth/pom.xml
 COPY common-auth/src ./common-auth/src
 
+# common-meeting-events dependency (shared Faz 24 event contract)
+COPY common-meeting-events/pom.xml ./common-meeting-events/pom.xml
+COPY common-meeting-events/src ./common-meeting-events/src
+
 # audit-event-consumer-service pom + src
 COPY audit-event-consumer-service/pom.xml ./audit-event-consumer-service/pom.xml
 COPY audit-event-consumer-service/src ./audit-event-consumer-service/src
 
-# common-auth'u önce install et (temiz Docker build için zorunlu)
+# Yerel ortak modulleri once install et (Maven Central'da yok; temiz Docker
+# build icin zorunlu).
 RUN mvn -f common-auth/pom.xml clean install -Dmaven.test.skip=true -q
+RUN mvn -f common-meeting-events/pom.xml clean install -Dmaven.test.skip=true -q
 
 # Sonra audit-event-consumer-service'i package
 RUN mvn -f audit-event-consumer-service/pom.xml clean package -Dmaven.test.skip=true -q
