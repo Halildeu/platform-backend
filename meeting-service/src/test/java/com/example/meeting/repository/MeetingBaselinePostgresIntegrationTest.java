@@ -10,12 +10,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -73,6 +82,8 @@ class MeetingBaselinePostgresIntegrationTest {
     private MeetingRepository meetingRepository;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void trigger_backfillsOrgIdFromTenantId_whenWriterOmitsOrgId() {
@@ -181,6 +192,90 @@ class MeetingBaselinePostgresIntegrationTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
     }
 
+    @Test
+    void recordingLifecycleExternalSessionId_isUniqueWithinMeetingAndTenant() {
+        UUID tenant = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        insertMeetingCanonical(meetingId, tenant, "recording-lifecycle-unique");
+        insertExternalSession(UUID.randomUUID(), meetingId, tenant, "SES-unique");
+
+        assertThatThrownBy(() -> insertExternalSession(
+                UUID.randomUUID(), meetingId, tenant, "SES-unique"))
+                .as("V6 unique index must reject duplicate gateway identities")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void recordingLifecycleExternalSessionId_rejectsUnsafeFormat() {
+        UUID tenant = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        insertMeetingCanonical(meetingId, tenant, "recording-lifecycle-format");
+
+        assertThatThrownBy(() -> insertExternalSession(
+                UUID.randomUUID(), meetingId, tenant, "../foreign"))
+                .as("V6 format check must reject non-allowlisted gateway identities")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void recordingLifecycle_rejectsEndBeforeStartAtTheDatabaseBoundary() {
+        UUID tenant = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        insertMeetingCanonical(meetingId, tenant, "recording-lifecycle-time-order");
+
+        assertThatThrownBy(() -> insertExternalSession(
+                UUID.randomUUID(), meetingId, tenant, "SES-time-order",
+                Instant.parse("2026-07-17T08:44:20Z"),
+                Instant.parse("2026-07-17T08:43:20Z")))
+                .as("V6 time-order check must reject a canonical negative duration")
+                .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void findVisibleToOrgAndIdForUpdate_serializesConcurrentPostgresTransactions() throws Exception {
+        UUID tenant = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        insertMeetingCanonical(meetingId, tenant, "recording-lifecycle-lock");
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        CountDownLatch secondLocked = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<?> first = executor.submit(() -> new TransactionTemplate(transactionManager)
+                    .executeWithoutResult(ignored -> {
+                        assertThat(meetingRepository.findVisibleToOrgAndIdForUpdate(tenant, meetingId))
+                                .isPresent();
+                        firstLocked.countDown();
+                        await(releaseFirst);
+                    }));
+            assertThat(firstLocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<?> second = executor.submit(() -> new TransactionTemplate(transactionManager)
+                    .executeWithoutResult(ignored -> {
+                        secondStarted.countDown();
+                        assertThat(meetingRepository.findVisibleToOrgAndIdForUpdate(tenant, meetingId))
+                                .isPresent();
+                        secondLocked.countDown();
+                    }));
+            assertThat(secondStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(secondLocked.await(300, TimeUnit.MILLISECONDS))
+                    .as("the second FOR UPDATE must wait for the first transaction")
+                    .isFalse();
+
+            releaseFirst.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            second.get(5, TimeUnit.SECONDS);
+            assertThat(secondLocked.getCount()).isZero();
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+            jdbc.update("DELETE FROM " + SCHEMA + ".meetings WHERE id = ?", meetingId);
+        }
+    }
+
     // ───────────────────────────── Seed helpers ─────────────────────────────
 
     private static final Timestamp NOW = Timestamp.from(Instant.parse("2026-06-16T10:00:00Z"));
@@ -215,6 +310,42 @@ class MeetingBaselinePostgresIntegrationTest {
                         + " last_updated_by_subject, created_at, updated_at, version) "
                         + "VALUES (?, ?, ?, ?, 'PENDING', 'c@e.com', 'c@e.com', ?, ?, 0)",
                 id, meetingId, org, org, NOW, NOW);
+    }
+
+    private void insertExternalSession(
+            UUID id, UUID meetingId, UUID org, String externalSessionId) {
+        jdbc.update("INSERT INTO " + SCHEMA + ".meeting_sessions "
+                        + "(id, meeting_id, tenant_id, org_id, external_session_id, transcript_status, "
+                        + " created_by_subject, last_updated_by_subject, created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, ?, 'PENDING', 'c@e.com', 'c@e.com', ?, ?, 0)",
+                id, meetingId, org, org, externalSessionId, NOW, NOW);
+    }
+
+    private void insertExternalSession(
+            UUID id,
+            UUID meetingId,
+            UUID org,
+            String externalSessionId,
+            Instant startedAt,
+            Instant endedAt) {
+        jdbc.update("INSERT INTO " + SCHEMA + ".meeting_sessions "
+                        + "(id, meeting_id, tenant_id, org_id, external_session_id, started_at, ended_at, "
+                        + " transcript_status, created_by_subject, last_updated_by_subject, created_at, "
+                        + " updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 'c@e.com', 'c@e.com', ?, ?, 0)",
+                id, meetingId, org, org, externalSessionId,
+                Timestamp.from(startedAt), Timestamp.from(endedAt), NOW, NOW);
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("timed out waiting for concurrent lock test");
+            }
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("concurrent lock test interrupted", error);
+        }
     }
 
     private void insertAction(UUID id, UUID meetingId, UUID org) {

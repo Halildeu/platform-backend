@@ -55,6 +55,9 @@ public class MeetingSession {
     @Column(name = "session_label", length = 256)
     private String sessionLabel;
 
+    @Column(name = "external_session_id", length = 128)
+    private String externalSessionId;
+
     @Column(name = "started_at")
     private Instant startedAt;
 
@@ -138,6 +141,14 @@ public class MeetingSession {
 
     public void setSessionLabel(String sessionLabel) {
         this.sessionLabel = sessionLabel;
+    }
+
+    public String getExternalSessionId() {
+        return externalSessionId;
+    }
+
+    public void setExternalSessionId(String externalSessionId) {
+        this.externalSessionId = externalSessionId;
     }
 
     public Instant getStartedAt() {

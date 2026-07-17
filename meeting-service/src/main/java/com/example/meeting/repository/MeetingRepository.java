@@ -2,9 +2,11 @@ package com.example.meeting.repository;
 
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingStatus;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -35,6 +37,16 @@ public interface MeetingRepository extends JpaRepository<Meeting, UUID> {
               and m.id = :id
             """)
     Optional<Meeting> findVisibleToOrgAndId(
+            @Param("orgId") UUID orgId, @Param("id") UUID id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select m
+            from Meeting m
+            where (m.orgId = :orgId or (m.orgId is null and m.tenantId = :orgId))
+              and m.id = :id
+            """)
+    Optional<Meeting> findVisibleToOrgAndIdForUpdate(
             @Param("orgId") UUID orgId, @Param("id") UUID id);
 
     @Query("""

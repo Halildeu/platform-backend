@@ -40,4 +40,16 @@ public interface MeetingSessionRepository extends JpaRepository<MeetingSession, 
             @Param("id") UUID id,
             @Param("meetingId") UUID meetingId,
             @Param("orgId") UUID orgId);
+
+    @Query("""
+            select s
+            from MeetingSession s
+            where s.meetingId = :meetingId
+              and s.externalSessionId = :externalSessionId
+              and (s.orgId = :orgId or (s.orgId is null and s.tenantId = :orgId))
+            """)
+    Optional<MeetingSession> findByExternalSessionIdVisibleToOrg(
+            @Param("meetingId") UUID meetingId,
+            @Param("externalSessionId") String externalSessionId,
+            @Param("orgId") UUID orgId);
 }

@@ -10,6 +10,8 @@ import com.example.meeting.dto.v1.admin.MeetingDecisionUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingSessionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingSessionResponse;
 import com.example.meeting.dto.v1.admin.MeetingSessionUpdateRequest;
+import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
+import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
@@ -86,6 +88,15 @@ public class MeetingSubResourceController {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
         MeetingSessionResponse created = meetingService.createSession(tenant, meetingId, request);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    @PutMapping("/recording-lifecycle")
+    @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.MANAGER)
+    public RecordingLifecycleResponse syncRecordingLifecycle(
+            @PathVariable UUID meetingId,
+            @Valid @RequestBody RecordingLifecycleSyncRequest request) {
+        AdminTenantContext tenant = tenantContextResolver.resolveRequired();
+        return meetingService.syncRecordingLifecycle(tenant, meetingId, request);
     }
 
     @PutMapping("/sessions/{sessionId}")

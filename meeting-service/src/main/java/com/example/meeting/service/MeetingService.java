@@ -13,6 +13,8 @@ import com.example.meeting.dto.v1.admin.MeetingSessionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingSessionResponse;
 import com.example.meeting.dto.v1.admin.MeetingSessionUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
+import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
+import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
@@ -37,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -112,6 +115,10 @@ public class MeetingService {
     @Transactional(readOnly = true)
     public void requireRecordingAccess(AdminTenantContext tenant, UUID id) {
         Meeting meeting = requireMeeting(tenant, id);
+        requireRecordingAccess(tenant, id, meeting);
+    }
+
+    private void requireRecordingAccess(AdminTenantContext tenant, UUID id, Meeting meeting) {
         String stablePrincipalRef = toUserPrincipalRef(tenant.subject());
 
         OpenFgaAuthzService authz = authzServiceProvider.getIfAvailable();
@@ -266,6 +273,91 @@ public class MeetingService {
     }
 
     @Transactional
+    public RecordingLifecycleResponse syncRecordingLifecycle(
+            AdminTenantContext tenant, UUID meetingId, RecordingLifecycleSyncRequest request) {
+        Meeting meeting = requireMeetingForUpdate(tenant, meetingId);
+        requireRecordingAccess(tenant, meetingId, meeting);
+        if (meeting.getStatus() == MeetingStatus.CANCELLED) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Cancelled meeting cannot be recorded.");
+        }
+
+        Optional<MeetingSession> existingSession = sessionRepository.findByExternalSessionIdVisibleToOrg(
+                meetingId, request.externalSessionId(), tenant.tenantId());
+        MeetingSession session = existingSession
+                .orElseGet(() -> newRecordingSession(tenant, meeting, request));
+        boolean sessionChanged = existingSession.isEmpty();
+
+        if (session.getStartedAt() == null) {
+            session.setStartedAt(request.startedAt());
+            sessionChanged = true;
+        }
+        if (request.endedAt() != null
+                && session.getStartedAt() != null
+                && request.endedAt().isBefore(session.getStartedAt())) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "Recording end cannot precede the canonical start.");
+        }
+        if (request.endedAt() != null && session.getEndedAt() == null) {
+            session.setEndedAt(request.endedAt());
+            sessionChanged = true;
+        }
+        if (request.endedAt() != null && session.getTranscriptStatus() == TranscriptStatus.PENDING) {
+            session.setTranscriptStatus(TranscriptStatus.PROCESSING);
+            sessionChanged = true;
+        }
+        MeetingSession savedSession = session;
+        if (sessionChanged) {
+            session.setLastUpdatedBySubject(tenant.subject());
+            savedSession = sessionRepository.saveAndFlush(session);
+        }
+
+        boolean currentSessionActive = savedSession.getEndedAt() == null;
+        MeetingStatus desiredMeetingStatus;
+        if (currentSessionActive) {
+            desiredMeetingStatus = MeetingStatus.IN_PROGRESS;
+        } else {
+            UUID savedSessionId = savedSession.getId();
+            boolean anotherSessionActive = sessionRepository
+                    .findByMeetingIdVisibleToOrg(meetingId, tenant.tenantId())
+                    .stream()
+                    .anyMatch(candidate -> !candidate.getId().equals(savedSessionId)
+                            && candidate.getStartedAt() != null
+                            && candidate.getEndedAt() == null);
+            desiredMeetingStatus = anotherSessionActive ? MeetingStatus.IN_PROGRESS : MeetingStatus.COMPLETED;
+        }
+        Meeting savedMeeting = meeting;
+        if (meeting.getStatus() != desiredMeetingStatus) {
+            meeting.setStatus(desiredMeetingStatus);
+            meeting.setLastUpdatedBySubject(tenant.subject());
+            savedMeeting = meetingRepository.saveAndFlush(meeting);
+        }
+
+        return new RecordingLifecycleResponse(
+                savedMeeting.getId(),
+                savedSession.getId(),
+                savedSession.getExternalSessionId(),
+                savedMeeting.getStatus(),
+                savedSession.getTranscriptStatus(),
+                savedSession.getStartedAt(),
+                savedSession.getEndedAt());
+    }
+
+    private MeetingSession newRecordingSession(
+            AdminTenantContext tenant, Meeting meeting, RecordingLifecycleSyncRequest request) {
+        MeetingSession session = new MeetingSession();
+        session.setMeetingId(meeting.getId());
+        session.setTenantId(tenant.tenantId());
+        session.setOrgId(tenant.tenantId());
+        session.setSessionLabel(request.externalSessionId());
+        session.setExternalSessionId(request.externalSessionId());
+        session.setStartedAt(request.startedAt());
+        session.setTranscriptStatus(TranscriptStatus.PENDING);
+        session.setCreatedBySubject(tenant.subject());
+        session.setLastUpdatedBySubject(tenant.subject());
+        return session;
+    }
+
+    @Transactional
     public void deleteSession(AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
         requireMeeting(tenant, meetingId);
         sessionRepository.delete(requireSession(tenant, meetingId, sessionId));
@@ -379,6 +471,11 @@ public class MeetingService {
 
     private Meeting requireMeeting(AdminTenantContext tenant, UUID id) {
         return meetingRepository.findVisibleToOrgAndId(tenant.tenantId(), id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting not found."));
+    }
+
+    private Meeting requireMeetingForUpdate(AdminTenantContext tenant, UUID id) {
+        return meetingRepository.findVisibleToOrgAndIdForUpdate(tenant.tenantId(), id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting not found."));
     }
 
