@@ -1,12 +1,17 @@
 package com.example.permission.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.permission.model.GrantType;
 import com.example.permission.model.PermissionType;
 import com.example.permission.model.Role;
 import com.example.permission.model.RolePermission;
+import com.example.permission.model.UserRoleAssignment;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
 import java.util.List;
@@ -28,11 +33,18 @@ class EndpointAdminViewerGranuleTest {
 
     private static TupleSyncService newService() {
         return new TupleSyncService(
-                mock(com.example.commonauth.openfga.OpenFgaAuthzService.class),
+                mock(OpenFgaAuthzService.class),
                 mock(RolePermissionRepository.class),
                 mock(UserRoleAssignmentRepository.class),
                 mock(AuthzVersionService.class),
                 null);
+    }
+
+    private static Role viewerRole(long id) {
+        Role role = new Role();
+        role.setId(id);
+        role.setName("ENDPOINT_ADMIN_VIEWER");
+        return role;
     }
 
     private static RolePermission granule(String type, String key, GrantType grant) {
@@ -71,5 +83,36 @@ class EndpointAdminViewerGranuleTest {
         // produce module:ENDPOINT_ADMIN — which @RequireModule(module="endpoint-admin") never reads.
         assertThat(effective).doesNotContainKey("MODULE:endpoint-admin");
         assertThat(effective).containsKey("MODULE:ENDPOINT_ADMIN");
+    }
+
+    @Test
+    @DisplayName("assigning the V21 role actually writes can_view@module:endpoint-admin to OpenFGA")
+    void reconcileWritesTheEndpointAdminViewTuple() {
+        OpenFgaAuthzService authz = mock(OpenFgaAuthzService.class);
+        RolePermissionRepository rolePerms = mock(RolePermissionRepository.class);
+        UserRoleAssignmentRepository assignments = mock(UserRoleAssignmentRepository.class);
+        TupleSyncService service = new TupleSyncService(
+                authz, rolePerms, assignments, mock(AuthzVersionService.class), null);
+
+        // A user whose ONLY active role is ENDPOINT_ADMIN_VIEWER, carrying the exact V21 granule.
+        long roleId = 42L;
+        Role role = viewerRole(roleId);
+        UserRoleAssignment assignment = new UserRoleAssignment();
+        assignment.setUserId(11L);
+        assignment.setRole(role);
+        assignment.setActive(true);
+
+        RolePermission granule = granule("MODULE", "endpoint-admin", GrantType.VIEW);
+        granule.setRole(role);
+
+        when(assignments.findActiveAssignments(11L)).thenReturn(List.of(assignment));
+        when(rolePerms.findByRoleIdIn(List.of(roleId))).thenReturn(List.of(granule));
+
+        service.refreshFeatureAndLegacyTuplesForUser("11");
+
+        // The reconcile MUST write exactly the tuple the endpoint-admin grid guard reads. This is
+        // the assertion the live-403-after-grant defect (#2559/#2593) needed and the earlier
+        // resolveEffectiveGrants check could not make on its own.
+        verify(authz).writeTuple(eq("11"), eq("can_view"), eq("module"), eq("endpoint-admin"));
     }
 }
