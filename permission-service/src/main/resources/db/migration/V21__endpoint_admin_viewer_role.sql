@@ -18,21 +18,33 @@
 --
 -- Idempotent: safe to re-run, and a no-op if the role already exists.
 
+-- Description MUST fit roles.description VARCHAR(255) — this text is 214 chars. A longer string
+-- fails at INSERT time with SQLSTATE 22001 (value too long), which the file-discovery migration
+-- test does not catch; keep it under the column width.
 INSERT INTO roles (name, description, created_at, updated_at, permission_model)
 SELECT 'ENDPOINT_ADMIN_VIEWER',
-       'Grants read-only access to endpoint-admin viewer APIs and UI (board #2593) — the device '
-       || 'inventory and the other can_view surfaces (audit, command history, compliance). Does '
-       || 'NOT grant management actions. Assign a user to this role to let them view the fleet '
-       || 'without adding them to the bootstrap-admin list.',
+       'Read-only access to endpoint-admin viewer APIs and UI: device inventory, audit, command '
+       || 'history, and compliance. Does NOT grant management actions. Assign this role to view '
+       || 'the fleet without bootstrap-admin access.',
        now(), now(), 'GRANULE'
 WHERE NOT EXISTS (SELECT 1 FROM roles WHERE name = 'ENDPOINT_ADMIN_VIEWER');
 
 -- Convergent idempotency, not just exact-state idempotency: if a role with this name already
--- exists from an earlier hand-seed but is marked LEGACY, the granule below would be resolved
--- through the legacy path and never reach OpenFGA. Force the marker so a re-run converges the
--- role to the state this migration intends, whatever it found.
-UPDATE roles SET permission_model = 'GRANULE', updated_at = now()
-WHERE name = 'ENDPOINT_ADMIN_VIEWER' AND permission_model IS DISTINCT FROM 'GRANULE';
+-- exists from an earlier hand-seed but is marked LEGACY (so the granule would be resolved through
+-- the legacy path and never reach OpenFGA), or carries a stale description, pull BOTH fields to
+-- the canonical values this migration intends — so a re-run converges whatever it found.
+UPDATE roles SET
+        permission_model = 'GRANULE',
+        description = 'Read-only access to endpoint-admin viewer APIs and UI: device inventory, '
+                   || 'audit, command history, and compliance. Does NOT grant management actions. '
+                   || 'Assign this role to view the fleet without bootstrap-admin access.',
+        updated_at = now()
+WHERE name = 'ENDPOINT_ADMIN_VIEWER'
+  AND (permission_model IS DISTINCT FROM 'GRANULE'
+       OR description IS DISTINCT FROM
+          'Read-only access to endpoint-admin viewer APIs and UI: device inventory, audit, command '
+          || 'history, and compliance. Does NOT grant management actions. Assign this role to view '
+          || 'the fleet without bootstrap-admin access.');
 
 -- The granule. permission_key MUST be the exact FGA object id 'endpoint-admin' (kebab-case,
 -- matching EndpointAdminAuthz.MODULE): TupleSyncService writes the key verbatim as the object
