@@ -41,7 +41,7 @@ CREATE TABLE transcript_event_outbox (
     meeting_id          UUID         NOT NULL,
     tenant_id           UUID         NOT NULL,
     org_id              UUID,
-    payload             JSONB        NOT NULL,
+    payload             TEXT         NOT NULL,
     event_key           VARCHAR(240) NOT NULL,
     status              VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
     claim_token         UUID,
@@ -85,3 +85,5 @@ COMMENT ON TABLE transcript_finalizations IS
     'Explicit canonical transcript finalization occurrences. Snapshot hash is stored locally and never emitted.';
 COMMENT ON TABLE transcript_event_outbox IS
     'Transcript-service DB-local transactional outbox for thin meeting.event.v1 facts.';
+COMMENT ON COLUMN transcript_event_outbox.payload IS
+    'Immutable meeting.event.v1 serializer output; TEXT preserves exact field order and bytes.';

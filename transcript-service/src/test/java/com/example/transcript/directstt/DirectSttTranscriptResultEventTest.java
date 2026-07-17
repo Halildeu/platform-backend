@@ -25,10 +25,80 @@ class DirectSttTranscriptResultEventTest {
         assertThat(event.sourceUserId()).isEqualTo("7");
         assertThat(event.meetingId()).isEqualTo(MEETING);
         assertThat(event.sourceSessionId()).isEqualTo("SES-abc");
-        assertThat(event.chunkSeq()).isEqualTo(5L);
+        assertThat(event.windowSeq()).isEqualTo(2L);
+        assertThat(event.firstChunkSeq()).isEqualTo(3L);
+        assertThat(event.lastChunkSeq()).isEqualTo(5L);
         assertThat(event.chunkStartedAtMs()).isEqualTo(1_250L);
         assertThat(event.textDraft()).isEqualTo("merhaba dunya");
         assertThat(event.durationSeconds()).isEqualTo(1.2d);
+    }
+
+    @Test
+    void parseFallsBackToLegacyChunkSeqAsSingleChunkWindow() {
+        Map<String, String> fields = validFields();
+        fields.remove("windowSeq");
+        fields.remove("firstChunkSeq");
+        fields.remove("lastChunkSeq");
+
+        DirectSttTranscriptResultEvent event =
+                DirectSttTranscriptResultEvent.parse(fields, "1680000000000-0");
+
+        assertThat(event.windowSeq()).isEqualTo(5L);
+        assertThat(event.firstChunkSeq()).isEqualTo(5L);
+        assertThat(event.lastChunkSeq()).isEqualTo(5L);
+    }
+
+    @Test
+    void parseAcceptsCompleteWindowIdentityWithoutLegacyAlias() {
+        Map<String, String> fields = validFields();
+        fields.remove("chunkSeq");
+
+        DirectSttTranscriptResultEvent event =
+                DirectSttTranscriptResultEvent.parse(fields, "1680000000000-0");
+
+        assertThat(event.windowSeq()).isEqualTo(2L);
+        assertThat(event.firstChunkSeq()).isEqualTo(3L);
+        assertThat(event.lastChunkSeq()).isEqualTo(5L);
+    }
+
+    @Test
+    void parseRejectsPartialWindowIdentity() {
+        Map<String, String> fields = validFields();
+        fields.remove("firstChunkSeq");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("provided together");
+    }
+
+    @Test
+    void parseRejectsInvalidWindowRange() {
+        Map<String, String> fields = validFields();
+        fields.put("firstChunkSeq", "6");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("lastChunkSeq");
+    }
+
+    @Test
+    void parseRejectsNegativeWindowSequence() {
+        Map<String, String> fields = validFields();
+        fields.put("windowSeq", "-1");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("windowSeq must be >= 0");
+    }
+
+    @Test
+    void parseRejectsLegacyAliasThatDisagreesWithWindowRange() {
+        Map<String, String> fields = validFields();
+        fields.put("chunkSeq", "4");
+
+        assertThatThrownBy(() -> DirectSttTranscriptResultEvent.parse(fields, "1-0"))
+                .isInstanceOf(DirectSttTranscriptResultEvent.InvalidDirectSttTranscriptResultException.class)
+                .hasMessageContaining("chunkSeq must equal lastChunkSeq");
     }
 
     @Test
@@ -64,6 +134,9 @@ class DirectSttTranscriptResultEventTest {
         fields.put("userId", "7");
         fields.put("meetingId", MEETING.toString());
         fields.put("chunkSeq", "5");
+        fields.put("windowSeq", "2");
+        fields.put("firstChunkSeq", "3");
+        fields.put("lastChunkSeq", "5");
         fields.put("chunkStartedAtMs", "1250");
         fields.put("correlationId", "corr-direct-stt");
         fields.put("sha256", "deadbeefcafe0000sha");

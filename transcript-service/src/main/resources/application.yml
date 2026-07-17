@@ -102,7 +102,8 @@ transcript:
   events:
     redis:
       # Producer outbox remains durable while transport is disabled. Enabling
-      # this and the poller is one coordinated runtime rollout gate.
+      # this and the poller is one coordinated runtime rollout gate. A mismatch
+      # fails application startup before the poller can consume retry budget.
       enabled: ${TRANSCRIPT_MEETING_EVENTS_REDIS_ENABLED:false}
       stream-key: ${TRANSCRIPT_MEETING_EVENTS_REDIS_STREAM_KEY:meeting:events}
     outbox:

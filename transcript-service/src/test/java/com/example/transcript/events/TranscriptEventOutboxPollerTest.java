@@ -71,12 +71,12 @@ class TranscriptEventOutboxPollerTest {
     }
 
     @Test
-    void staleLeaseRecoveryConsumesAnAttemptAndSchedulesRetry() {
+    void staleLeaseRecoverySchedulesRetryWithoutConsumingFailureBudget() {
         poller.recoverStaleLeases();
 
         ArgumentCaptor<Instant> recoveredAt = ArgumentCaptor.forClass(Instant.class);
         ArgumentCaptor<Instant> retryAt = ArgumentCaptor.forClass(Instant.class);
-        verify(repository).recoverStaleLeases(recoveredAt.capture(), retryAt.capture(), eq(3));
+        verify(repository).recoverStaleLeases(recoveredAt.capture(), retryAt.capture());
         assertThat(Duration.between(recoveredAt.getValue(), retryAt.getValue()))
                 .isEqualTo(Duration.ofSeconds(5));
     }

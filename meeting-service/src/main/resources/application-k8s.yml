@@ -78,13 +78,14 @@ meeting:
     # jwk-set-uri ⇒ FAIL-CLOSED: the secondary (service) JWT decoder is not
     # built, no service-issuer token can decode, and the SVC_ authority the
     # internal chain requires is never minted. BE-1c wires the ingestion caller
-    # (meeting-ai-service) and populates MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI
-    # (auth-service JWKS) to activate the service decoder.
+    # (meeting-ai-service) and transcript session resolution both use this
+    # decoder. Client IDs are an exact CSV allowlist; a blank list while JWKS is
+    # enabled fails application startup.
     service-jwt:
       jwk-set-uri: ${MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI:}
       issuer: ${MEETING_INTERNAL_SERVICE_JWT_ISSUER:auth-service}
       audience: ${MEETING_INTERNAL_SERVICE_JWT_AUDIENCE:meeting-service}
-      client-id: ${MEETING_INTERNAL_SERVICE_JWT_CLIENT_ID:}
+      client-ids: ${MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS:}
 
 server:
   port: ${SERVER_PORT:8097}

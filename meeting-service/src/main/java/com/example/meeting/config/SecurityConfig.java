@@ -172,17 +172,14 @@ public class SecurityConfig {
         String serviceIssuer = resolveServiceIssuer();
         List<String> serviceAudiences = csvToList(firstNonBlank(
                 environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_AUDIENCE"),
-                environment.getProperty("meeting.internal.service-jwt.audience"),
-                "meeting-service"
+                environment.getProperty("meeting.internal.service-jwt.audience")
         ));
         List<String> serviceClientIds = csvToList(firstNonBlank(
+                environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS"),
+                environment.getProperty("meeting.internal.service-jwt.client-ids"),
                 environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_ID"),
                 environment.getProperty("meeting.internal.service-jwt.client-id")
         ));
-        if (serviceClientIds.isEmpty()) {
-            throw new IllegalStateException(
-                    "internal service JWT client id is required when the service JWKS is enabled");
-        }
         JwtDecoder serviceDecoder = buildInternalServiceDecoder(
                 serviceJwkSetUri, serviceIssuer, serviceAudiences, serviceClientIds);
         return new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
@@ -244,16 +241,35 @@ public class SecurityConfig {
             String issuer,
             Collection<String> audiences,
             Collection<String> expectedClientIds) {
+        requireInternalServiceTrustConfig(issuer, audiences, expectedClientIds);
         List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
-        if (StringUtils.hasText(issuer)) {
-            validators.add(JwtValidators.createDefaultWithIssuer(issuer));
-        } else {
-            validators.add(JwtValidators.createDefault());
-        }
+        validators.add(JwtValidators.createDefaultWithIssuer(issuer));
         validators.add(new AudienceValidator(audiences));
         validators.add(new ExpectedServiceClientValidator(expectedClientIds));
         return new DelegatingOAuth2TokenValidator<>(
                 validators.toArray(new OAuth2TokenValidator[0]));
+    }
+
+    private static void requireInternalServiceTrustConfig(
+            String issuer,
+            Collection<String> audiences,
+            Collection<String> expectedClientIds) {
+        if (!StringUtils.hasText(issuer)) {
+            throw new IllegalArgumentException(
+                    "internal service JWT issuer is required when the service JWKS is enabled");
+        }
+        if (!containsText(audiences)) {
+            throw new IllegalArgumentException(
+                    "internal service JWT audience is required when the service JWKS is enabled");
+        }
+        if (!containsText(expectedClientIds)) {
+            throw new IllegalArgumentException(
+                    "internal service JWT client allowlist is required when the service JWKS is enabled");
+        }
+    }
+
+    private static boolean containsText(Collection<String> values) {
+        return values != null && values.stream().anyMatch(StringUtils::hasText);
     }
 
     @Bean

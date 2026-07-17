@@ -5,10 +5,14 @@ import com.example.transcript.dto.TranscriptSegmentDto;
 import com.example.transcript.dto.UpdateTranscriptSegmentRequest;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
+import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.repository.TranscriptSegmentRepository;
+import com.example.transcript.repository.TranscriptSegmentMutationScope;
+import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.security.AdminTenantContext;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -41,6 +45,7 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 public class TranscriptSegmentService {
 
     private final TranscriptSegmentRepository repository;
+    private final TranscriptSessionAssociationRepository associationRepository;
     private final TranscriptAccessAuditService accessAuditService;
     private final int defaultPageSize;
     private final int maxPageSize;
@@ -48,11 +53,13 @@ public class TranscriptSegmentService {
 
     public TranscriptSegmentService(
             TranscriptSegmentRepository repository,
+            TranscriptSessionAssociationRepository associationRepository,
             TranscriptAccessAuditService accessAuditService,
             @Value("${transcript.search.default-page-size:50}") int defaultPageSize,
             @Value("${transcript.search.max-page-size:200}") int maxPageSize,
             @Value("${transcript.export.max-rows:50000}") int exportMaxRows) {
         this.repository = repository;
+        this.associationRepository = associationRepository;
         this.accessAuditService = accessAuditService;
         this.defaultPageSize = defaultPageSize;
         this.maxPageSize = maxPageSize;
@@ -69,6 +76,8 @@ public class TranscriptSegmentService {
                     "endTime must be greater than or equal to startTime.");
         }
         UUID tenantId = context.tenantId();
+        lockCanonicalSessionForMutation(tenantId, request.meetingId(), request.sessionId());
+
         TranscriptSegment segment = new TranscriptSegment();
         // Canonical org_id write: set BOTH columns to the same tenant UUID.
         segment.setTenantId(tenantId);
@@ -209,8 +218,7 @@ public class TranscriptSegmentService {
         if (request == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Update request is required.");
         }
-        TranscriptSegment segment = repository.findVisibleToOrgAndId(context.tenantId(), segmentId)
-                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Transcript segment not found."));
+        TranscriptSegment segment = lockMutableSegment(context.tenantId(), segmentId);
 
         // Optimistic-lock precondition: reject on mismatch BEFORE mutating.
         if (request.expectedVersion() != null
@@ -255,12 +263,50 @@ public class TranscriptSegmentService {
 
     @Transactional
     public void delete(AdminTenantContext context, UUID segmentId) {
-        TranscriptSegment segment = repository.findVisibleToOrgAndId(context.tenantId(), segmentId)
-                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Transcript segment not found."));
+        TranscriptSegment segment = lockMutableSegment(context.tenantId(), segmentId);
         repository.delete(segment);
     }
 
     // ───────────────────────────── helpers ────────────────────────────
+
+    private TranscriptSegment lockMutableSegment(UUID tenantId, UUID segmentId) {
+        TranscriptSegmentMutationScope scope = repository
+                .findVisibleMutationScope(tenantId, segmentId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        NOT_FOUND, "Transcript segment not found."));
+
+        lockCanonicalSessionForMutation(tenantId, scope.meetingId(), scope.sessionId());
+
+        TranscriptSegment segment = repository
+                .findVisibleToOrgAndIdForUpdate(tenantId, segmentId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        NOT_FOUND, "Transcript segment not found."));
+        if (!scope.meetingId().equals(segment.getMeetingId())
+                || !Objects.equals(scope.sessionId(), segment.getSessionId())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Transcript segment session changed concurrently; retry the mutation.");
+        }
+        return segment;
+    }
+
+    /**
+     * Finalization and every canonical segment writer take this association
+     * lock before locking segment rows. Once an immutable occurrence exists,
+     * admin CRUD must not rewrite the occurrence in place.
+     */
+    private void lockCanonicalSessionForMutation(
+            UUID tenantId, UUID meetingId, UUID sessionId) {
+        if (sessionId == null) {
+            return;
+        }
+        TranscriptSessionAssociation association = associationRepository
+                .findCanonicalForUpdate(tenantId, meetingId, sessionId)
+                .orElse(null);
+        if (association != null && association.getFinalizationVersion() > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Finalized canonical transcript segments are immutable.");
+        }
+    }
 
     private Pageable pageable(int page, int size) {
         int safePage = Math.max(page, 0);

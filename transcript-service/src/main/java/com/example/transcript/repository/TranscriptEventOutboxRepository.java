@@ -44,12 +44,9 @@ public interface TranscriptEventOutboxRepository extends JpaRepository<Transcrip
     @Modifying(clearAutomatically = true)
     @Query(value = """
         UPDATE {h-schema}transcript_event_outbox
-        SET attempts = attempts + 1,
-            last_error = 'LEASE_EXPIRED',
-            status = CASE WHEN attempts + 1 >= :maxAttempts THEN 'DEAD' ELSE 'PENDING' END,
-            next_attempt_at = CASE WHEN attempts + 1 >= :maxAttempts
-                THEN CAST(:now AS TIMESTAMP WITH TIME ZONE)
-                ELSE CAST(:retryAt AS TIMESTAMP WITH TIME ZONE) END,
+        SET last_error = 'LEASE_EXPIRED',
+            status = 'PENDING',
+            next_attempt_at = CAST(:retryAt AS TIMESTAMP WITH TIME ZONE),
             claim_token = NULL, processing_owner = NULL,
             claimed_at = NULL, lease_expires_at = NULL, updated_at = :now,
             version = version + 1
@@ -59,8 +56,7 @@ public interface TranscriptEventOutboxRepository extends JpaRepository<Transcrip
         """, nativeQuery = true)
     int recoverStaleLeases(
             @Param("now") Instant now,
-            @Param("retryAt") Instant retryAt,
-            @Param("maxAttempts") int maxAttempts);
+            @Param("retryAt") Instant retryAt);
 
     @Modifying(clearAutomatically = true)
     @Query(value = """

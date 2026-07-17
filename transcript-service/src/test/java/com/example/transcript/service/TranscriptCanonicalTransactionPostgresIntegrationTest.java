@@ -3,8 +3,13 @@ package com.example.transcript.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.common.meeting.events.MeetingEventEnvelope;
+import com.example.common.meeting.events.MeetingEventPayload;
+import com.example.common.meeting.events.MeetingEventType;
+import com.example.common.meeting.events.MeetingEventV1Serializer;
 import com.example.transcript.directstt.DirectSttTranscriptResultEvent;
 import com.example.transcript.directstt.TranscriptSessionAssociationStore;
+import com.example.transcript.events.TranscriptMeetingEventMessage;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
@@ -13,6 +18,7 @@ import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.security.AdminTenantContext;
+import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -119,7 +125,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Test
-    void duplicateFinalizationHasOneImmutableOccurrenceAndOneThinOutboxRow() {
+    void duplicateFinalizationPreservesExactSerializerTextAcrossPostgresRoundTrip() {
         insertResolvedAssociation();
         saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L,
                 TranscriptSegmentStatus.FINALIZED, "private final transcript");
@@ -130,11 +136,31 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         assertThat(duplicate).isEqualTo(first);
         assertThat(finalizations.count()).isEqualTo(1L);
         assertThat(outbox.count()).isEqualTo(1L);
-        String payload = jdbc.queryForObject(
-                "SELECT payload::text FROM " + SCHEMA + ".transcript_event_outbox",
+        String expectedPayload = MeetingEventV1Serializer.toJson(MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.TRANSCRIPT_READY)
+                .producer("transcript-service")
+                .meetingId(MEETING)
+                .tenantId(TENANT)
+                .orgId(TENANT)
+                .occurredAt(first.finalizedAt())
+                .aggregateType("meeting.transcript")
+                .aggregateId(SESSION)
+                .aggregateRevision(1L)
+                .payload(new MeetingEventPayload.TranscriptReady(SESSION, 1L, 1))
+                .build());
+        String storedPayload = jdbc.queryForObject(
+                "SELECT payload FROM " + SCHEMA + ".transcript_event_outbox",
                 String.class);
-        assertThat(payload)
-                .contains("meeting.transcript.ready", SESSION.toString())
+        assertThat(storedPayload).isEqualTo(expectedPayload);
+        assertThat(storedPayload.getBytes(StandardCharsets.UTF_8))
+                .containsExactly(expectedPayload.getBytes(StandardCharsets.UTF_8));
+
+        TranscriptMeetingEventMessage rehydrated = TranscriptMeetingEventMessage.from(
+                outbox.findAll().getFirst());
+        assertThat(rehydrated.payloadJson()).isEqualTo(expectedPayload);
+        assertThat(rehydrated.payloadJson().getBytes(StandardCharsets.UTF_8))
+                .containsExactly(expectedPayload.getBytes(StandardCharsets.UTF_8));
+        assertThat(rehydrated.payloadJson())
                 .doesNotContain("private final transcript", "textDraft", "textFinal", "audio");
     }
 
@@ -223,7 +249,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Test
-    void crashedAssociationClaimsConsumeAttemptsAndEndDead() {
+    void crashedAssociationClaimsRemainRetryableWithoutConsumingFailureBudget() {
         UUID associationId = UUID.randomUUID();
         UUID firstToken = UUID.randomUUID();
         insertAssociation(associationId, TENANT, MEETING, "SES-crash", null,
@@ -236,10 +262,10 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         Instant retryAt = firstRecoveryAt.plusSeconds(5);
 
         assertThat(associationStore.recoverStale(
-                TENANT, MEETING, "SES-crash", 2, retryAt, firstRecoveryAt)).isTrue();
+                TENANT, MEETING, "SES-crash", retryAt, firstRecoveryAt)).isTrue();
         var pending = associations.findById(associationId).orElseThrow();
         assertThat(pending.getStatus()).isEqualTo(TranscriptSessionAssociationStatus.PENDING);
-        assertThat(pending.getResolutionAttempts()).isEqualTo(1);
+        assertThat(pending.getResolutionAttempts()).isZero();
         assertThat(pending.getLastErrorCode()).isEqualTo("LEASE_EXPIRED");
         assertThat(pending.getNextRetryAt()).isEqualTo(retryAt);
         assertThat(associationStore.claim(
@@ -253,13 +279,13 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 secondClaimAt, secondClaimAt.plusMillis(10))).isTrue();
         Instant secondRecoveryAt = secondClaimAt.plusMillis(20);
         assertThat(associationStore.recoverStale(
-                TENANT, MEETING, "SES-crash", 2,
+                TENANT, MEETING, "SES-crash",
                 secondRecoveryAt.plusSeconds(5), secondRecoveryAt)).isTrue();
 
-        var dead = associations.findById(associationId).orElseThrow();
-        assertThat(dead.getStatus()).isEqualTo(TranscriptSessionAssociationStatus.DEAD);
-        assertThat(dead.getResolutionAttempts()).isEqualTo(2);
-        assertThat(dead.getLastErrorCode()).isEqualTo("LEASE_EXPIRED");
+        var stillPending = associations.findById(associationId).orElseThrow();
+        assertThat(stillPending.getStatus()).isEqualTo(TranscriptSessionAssociationStatus.PENDING);
+        assertThat(stillPending.getResolutionAttempts()).isZero();
+        assertThat(stillPending.getLastErrorCode()).isEqualTo("LEASE_EXPIRED");
         Integer lateSuccess = new TransactionTemplate(transactionManager).execute(status ->
                 associations.markResolvedFenced(
                         associationId, secondToken, SESSION, secondRecoveryAt.plusMillis(1)));
@@ -267,7 +293,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Test
-    void publishThenCrashLeaseRecoveryIsBackedOffBoundedAndFenced() {
+    void publishThenCrashLeaseRecoveryIsBackedOffRetryableAndFenced() {
         insertResolvedAssociation();
         saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L,
                 TranscriptSegmentStatus.FINALIZED, "final text");
@@ -283,12 +309,12 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         Instant firstRecoveryAt = firstClaimAt.plusMillis(20);
         Instant retryAt = firstRecoveryAt.plusSeconds(5);
         Integer firstRecovery = new TransactionTemplate(transactionManager).execute(status ->
-                outbox.recoverStaleLeases(firstRecoveryAt, retryAt, 2));
+                outbox.recoverStaleLeases(firstRecoveryAt, retryAt));
         assertThat(firstRecovery).isEqualTo(1);
         var pending = outbox.findAll().getFirst();
         assertThat(pending.getStatus())
                 .isEqualTo(com.example.transcript.model.TranscriptEventOutboxStatus.PENDING);
-        assertThat(pending.getAttempts()).isEqualTo(1);
+        assertThat(pending.getAttempts()).isZero();
         assertThat(pending.getLastError()).isEqualTo("LEASE_EXPIRED");
         assertThat(pending.getNextAttemptAt()).isEqualTo(retryAt);
         Integer tooEarly = new TransactionTemplate(transactionManager).execute(status ->
@@ -305,17 +331,17 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         Instant secondRecoveryAt = secondClaimAt.plusMillis(20);
         Integer secondRecovery = new TransactionTemplate(transactionManager).execute(status ->
                 outbox.recoverStaleLeases(
-                        secondRecoveryAt, secondRecoveryAt.plusSeconds(5), 2));
+                        secondRecoveryAt, secondRecoveryAt.plusSeconds(5)));
         assertThat(secondRecovery).isEqualTo(1);
 
-        var dead = outbox.findAll().getFirst();
-        assertThat(dead.getStatus())
-                .isEqualTo(com.example.transcript.model.TranscriptEventOutboxStatus.DEAD);
-        assertThat(dead.getAttempts()).isEqualTo(2);
-        assertThat(dead.getLastError()).isEqualTo("LEASE_EXPIRED");
+        var stillPending = outbox.findAll().getFirst();
+        assertThat(stillPending.getStatus())
+                .isEqualTo(com.example.transcript.model.TranscriptEventOutboxStatus.PENDING);
+        assertThat(stillPending.getAttempts()).isZero();
+        assertThat(stillPending.getLastError()).isEqualTo("LEASE_EXPIRED");
         Integer latePublish = new TransactionTemplate(transactionManager).execute(status ->
                 outbox.markPublishedFenced(
-                        dead.getId(), secondToken, secondRecoveryAt.plusMillis(1)));
+                        stillPending.getId(), secondToken, secondRecoveryAt.plusMillis(1)));
         assertThat(latePublish).isZero();
     }
 
@@ -394,7 +420,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         jdbc.update("INSERT INTO " + SCHEMA + ".transcript_event_outbox "
                         + "(id,event_type,aggregate_id,meeting_id,tenant_id,org_id,payload,event_key,"
                         + "status,attempts,created_at,updated_at,version) "
-                        + "VALUES (?,?,?,?,?,?,?::jsonb,?,'PENDING',0,?,?,0)",
+                        + "VALUES (?,?,?,?,?,?,?,?,'PENDING',0,?,?,0)",
                 UUID.randomUUID(), "meeting.transcript.ready", SESSION, MEETING, TENANT, TENANT,
                 "{}", eventKey, Timestamp.from(now), Timestamp.from(now));
     }

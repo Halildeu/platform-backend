@@ -60,12 +60,10 @@ public class TranscriptSessionAssociationService {
                 tenantId, meetingId, sourceSessionId, now);
         int recoveredAttempt = association.getResolutionAttempts() + 1;
         if (store.recoverStale(
-                tenantId, meetingId, sourceSessionId, maxAttempts(),
+                tenantId, meetingId, sourceSessionId,
                 now.plusMillis(backoffMillis(recoveredAttempt)), now)) {
             association = store.require(tenantId, meetingId, sourceSessionId);
-            String outcome = association.getStatus() == TranscriptSessionAssociationStatus.DEAD
-                    ? "dead" : "retry";
-            meters.counter("transcript_session_mapping_lease_expired_total", "outcome", outcome)
+            meters.counter("transcript_session_mapping_lease_expired_total", "outcome", "retry")
                     .increment();
             return terminalOrPending(association);
         }

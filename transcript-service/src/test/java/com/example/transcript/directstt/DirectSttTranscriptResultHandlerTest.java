@@ -51,6 +51,9 @@ class DirectSttTranscriptResultHandlerTest {
     void handleInvalidEventDoesNotCallServiceAndKeepsReasonTranscriptFree() {
         Map<String, String> fields = DirectSttTranscriptResultEventTest.validFields();
         fields.remove("chunkSeq");
+        fields.remove("windowSeq");
+        fields.remove("firstChunkSeq");
+        fields.remove("lastChunkSeq");
         fields.put("textDraft", "secret transcript phrase");
 
         DirectSttTranscriptResultHandler.HandleOutcome outcome = handler.handle(fields, "1-0");

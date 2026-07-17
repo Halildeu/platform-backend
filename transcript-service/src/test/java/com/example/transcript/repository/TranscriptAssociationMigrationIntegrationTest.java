@@ -16,7 +16,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** Runs the V3 to V5 upgrade path against rows written by the old consumer. */
+/** Runs the V3 to V6 upgrade path against rows written by the old consumer. */
 @Testcontainers
 class TranscriptAssociationMigrationIntegrationTest {
 
@@ -31,7 +31,7 @@ class TranscriptAssociationMigrationIntegrationTest {
                     .withPassword("test");
 
     @Test
-    void v4SeedsReconciliationStateAndMovesReplayUniquenessToMeetingBoundary()
+    void v6BackfillsWindowIdentityAndEnforcesMeetingScopedWindowUniqueness()
             throws Exception {
         migrateTo("3");
         UUID tenant = UUID.randomUUID();
@@ -60,22 +60,53 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + ".transcript_session_associations "
                             + "WHERE tenant_id = ? AND meeting_id = ? "
                             + "AND source_session_id = 'legacy invalid id'",
-                    tenant, meeting)).isEqualTo("DEAD:INVALID_SOURCE_SESSION_ID");
+                            tenant, meeting)).isEqualTo("DEAD:INVALID_SOURCE_SESSION_ID");
 
-            // V4 replaces the old tenant/source/chunk index. Reusing an external
-            // recorder id and chunk sequence in another meeting is now legal.
-            insertSegment(connection, tenant, UUID.randomUUID(), "SES-legacy", 5L);
-            assertThatThrownBy(() -> insertSegment(
-                    connection, tenant, meeting, "SES-legacy", 5L))
+            assertThat(singleString(connection,
+                    "SELECT source_window_seq || ':' || source_first_chunk_seq || ':' "
+                            + "|| source_last_chunk_seq FROM " + SCHEMA
+                            + ".transcript_segments WHERE tenant_id = ? AND meeting_id = ? "
+                            + "AND source_session_id = 'SES-legacy' AND source_chunk_seq = 5",
+                    tenant, meeting)).isEqualTo("5:5:5");
+
+            // V6 keys replay by tenant + meeting + source session + window.
+            // Reusing an external recorder/window in another meeting is legal.
+            insertWindowSegment(
+                    connection, tenant, UUID.randomUUID(), "SES-legacy", 5L, 5L, 5L);
+            assertThatThrownBy(() -> insertWindowSegment(
+                    connection, tenant, meeting, "SES-legacy", 5L, 6L, 6L))
                     .isInstanceOf(SQLException.class)
                     .satisfies(error -> assertThat(((SQLException) error).getSQLState())
                             .isEqualTo("23505"));
+            // lastChunkSeq is no longer the idempotency key.
+            insertWindowSegment(
+                    connection, tenant, meeting, "SES-legacy", 8L, 5L, 5L);
+
+            assertThatThrownBy(() -> insertWindowSegment(
+                    connection, tenant, meeting, "SES-invalid-range", 9L, 8L, 7L))
+                    .isInstanceOf(SQLException.class)
+                    .satisfies(error -> assertThat(((SQLException) error).getSQLState())
+                            .isEqualTo("23514"));
+            assertThatThrownBy(() -> insertPartialWindowSegment(
+                    connection, tenant, meeting, "SES-partial-window", 10L, 7L))
+                    .isInstanceOf(SQLException.class)
+                    .satisfies(error -> assertThat(((SQLException) error).getSQLState())
+                            .isEqualTo("23514"));
 
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM information_schema.tables "
                             + "WHERE table_schema = ? AND table_name IN "
                             + "('transcript_finalizations','transcript_event_outbox')",
                     SCHEMA)).isEqualTo(2L);
+            assertThat(singleString(connection,
+                    "SELECT data_type FROM information_schema.columns "
+                            + "WHERE table_schema = ? AND table_name = 'transcript_event_outbox' "
+                            + "AND column_name = 'payload'",
+                    SCHEMA)).isEqualTo("text");
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
+                            + "AND indexname = 'ux_transcript_segments_direct_stt_window'",
+                    SCHEMA)).isEqualTo(1L);
         }
     }
 
@@ -115,6 +146,66 @@ class TranscriptAssociationMigrationIntegrationTest {
             Timestamp now = Timestamp.from(Instant.now());
             statement.setTimestamp(7, now);
             statement.setTimestamp(8, now);
+            statement.executeUpdate();
+        }
+    }
+
+    private void insertWindowSegment(
+            Connection connection,
+            UUID tenant,
+            UUID meeting,
+            String sourceSession,
+            long windowSeq,
+            long firstChunkSeq,
+            long lastChunkSeq)
+            throws SQLException {
+        String sql = "INSERT INTO " + SCHEMA + ".transcript_segments "
+                + "(id,tenant_id,org_id,meeting_id,start_time,end_time,text_draft,status,"
+                + "source_system,source_session_id,source_chunk_seq,source_window_seq,"
+                + "source_first_chunk_seq,source_last_chunk_seq,created_at,updated_at,version) "
+                + "VALUES (?,?,?,?,0,1,'window draft','DRAFT','DIRECT_STT',?,?,?,?,?, ?,?,0)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, tenant);
+            statement.setObject(3, tenant);
+            statement.setObject(4, meeting);
+            statement.setString(5, sourceSession);
+            statement.setLong(6, lastChunkSeq);
+            statement.setLong(7, windowSeq);
+            statement.setLong(8, firstChunkSeq);
+            statement.setLong(9, lastChunkSeq);
+            Timestamp now = Timestamp.from(Instant.now());
+            statement.setTimestamp(10, now);
+            statement.setTimestamp(11, now);
+            statement.executeUpdate();
+        }
+    }
+
+    private void insertPartialWindowSegment(
+            Connection connection,
+            UUID tenant,
+            UUID meeting,
+            String sourceSession,
+            long windowSeq,
+            long lastChunkSeq)
+            throws SQLException {
+        String sql = "INSERT INTO " + SCHEMA + ".transcript_segments "
+                + "(id,tenant_id,org_id,meeting_id,start_time,end_time,text_draft,status,"
+                + "source_system,source_session_id,source_chunk_seq,source_window_seq,"
+                + "source_last_chunk_seq,created_at,updated_at,version) "
+                + "VALUES (?,?,?,?,0,1,'partial window','DRAFT','DIRECT_STT',?,?,?,?, ?,?,0)";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, tenant);
+            statement.setObject(3, tenant);
+            statement.setObject(4, meeting);
+            statement.setString(5, sourceSession);
+            statement.setLong(6, lastChunkSeq);
+            statement.setLong(7, windowSeq);
+            statement.setLong(8, lastChunkSeq);
+            Timestamp now = Timestamp.from(Instant.now());
+            statement.setTimestamp(9, now);
+            statement.setTimestamp(10, now);
             statement.executeUpdate();
         }
     }

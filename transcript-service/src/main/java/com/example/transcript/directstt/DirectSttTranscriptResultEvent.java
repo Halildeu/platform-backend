@@ -18,7 +18,9 @@ public record DirectSttTranscriptResultEvent(
         String sourceUserId,
         UUID meetingId,
         String sourceSessionId,
-        long chunkSeq,
+        long windowSeq,
+        long firstChunkSeq,
+        long lastChunkSeq,
         long chunkStartedAtMs,
         String correlationId,
         String sha256,
@@ -46,10 +48,7 @@ public record DirectSttTranscriptResultEvent(
         }
         UUID tenantId = canonicalTenantId(sourceTenantId);
         UUID meetingId = requiredUuid(fields, "meetingId");
-        long chunkSeq = requiredLong(fields, "chunkSeq");
-        if (chunkSeq < 0) {
-            throw invalid("chunkSeq must be >= 0");
-        }
+        SourceWindow sourceWindow = sourceWindow(fields);
         long chunkStartedAtMs = requiredLong(fields, "chunkStartedAtMs");
         if (chunkStartedAtMs < 0) {
             throw invalid("chunkStartedAtMs must be >= 0");
@@ -59,8 +58,9 @@ public record DirectSttTranscriptResultEvent(
             throw invalid("textDraft must be nonblank");
         }
         Double durationSeconds = optionalDouble(fields, "durationSeconds");
-        if (durationSeconds != null && durationSeconds < 0.0d) {
-            throw invalid("durationSeconds must be >= 0");
+        if (durationSeconds != null
+                && (!Double.isFinite(durationSeconds) || durationSeconds < 0.0d)) {
+            throw invalid("durationSeconds must be finite and >= 0");
         }
         String status = optional(fields, "status", 32);
         if (status != null && !status.isBlank() && !"DRAFT".equals(status)) {
@@ -73,12 +73,60 @@ public record DirectSttTranscriptResultEvent(
                 optional(fields, "userId", MAX_SOURCE_ID_LEN),
                 meetingId,
                 sourceSessionId,
-                chunkSeq,
+                sourceWindow.windowSeq(),
+                sourceWindow.firstChunkSeq(),
+                sourceWindow.lastChunkSeq(),
                 chunkStartedAtMs,
                 optional(fields, "correlationId", MAX_CORRELATION_ID_LEN),
                 optional(fields, "sha256", MAX_SHA256_LEN),
                 textDraft,
                 durationSeconds);
+    }
+
+    private static SourceWindow sourceWindow(Map<String, String> fields) {
+        String windowSeqValue = optional(fields, "windowSeq", 64);
+        String firstChunkSeqValue = optional(fields, "firstChunkSeq", 64);
+        String lastChunkSeqValue = optional(fields, "lastChunkSeq", 64);
+        boolean hasAnyWindowField = windowSeqValue != null
+                || firstChunkSeqValue != null
+                || lastChunkSeqValue != null;
+        boolean hasCompleteWindow = windowSeqValue != null
+                && firstChunkSeqValue != null
+                && lastChunkSeqValue != null;
+
+        long windowSeq;
+        long firstChunkSeq;
+        long lastChunkSeq;
+        if (hasAnyWindowField) {
+            if (!hasCompleteWindow) {
+                throw invalid("windowSeq, firstChunkSeq and lastChunkSeq must be provided together");
+            }
+            windowSeq = parseLong(windowSeqValue, "windowSeq");
+            firstChunkSeq = parseLong(firstChunkSeqValue, "firstChunkSeq");
+            lastChunkSeq = parseLong(lastChunkSeqValue, "lastChunkSeq");
+        } else {
+            long legacyChunkSeq = requiredLong(fields, "chunkSeq");
+            windowSeq = legacyChunkSeq;
+            firstChunkSeq = legacyChunkSeq;
+            lastChunkSeq = legacyChunkSeq;
+        }
+
+        if (windowSeq < 0) {
+            throw invalid("windowSeq must be >= 0");
+        }
+        if (firstChunkSeq < 0) {
+            throw invalid("firstChunkSeq must be >= 0");
+        }
+        if (lastChunkSeq < firstChunkSeq) {
+            throw invalid("lastChunkSeq must be >= firstChunkSeq");
+        }
+
+        String legacyChunkSeqValue = optional(fields, "chunkSeq", 64);
+        if (hasCompleteWindow && legacyChunkSeqValue != null
+                && parseLong(legacyChunkSeqValue, "chunkSeq") != lastChunkSeq) {
+            throw invalid("chunkSeq must equal lastChunkSeq when both are present");
+        }
+        return new SourceWindow(windowSeq, firstChunkSeq, lastChunkSeq);
     }
 
     private static void requireEquals(Map<String, String> fields, String key, String expected) {
@@ -104,8 +152,11 @@ public record DirectSttTranscriptResultEvent(
         return parsed;
     }
 
-    private static Long requiredLong(Map<String, String> fields, String key) {
-        String value = required(fields, key, 64);
+    private static long requiredLong(Map<String, String> fields, String key) {
+        return parseLong(required(fields, key, 64), key);
+    }
+
+    private static long parseLong(String value, String key) {
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException ex) {
@@ -158,6 +209,9 @@ public record DirectSttTranscriptResultEvent(
 
     private static InvalidDirectSttTranscriptResultException invalid(String reason) {
         return new InvalidDirectSttTranscriptResultException(reason);
+    }
+
+    private record SourceWindow(long windowSeq, long firstChunkSeq, long lastChunkSeq) {
     }
 
     public static class InvalidDirectSttTranscriptResultException extends IllegalArgumentException {

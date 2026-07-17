@@ -113,23 +113,23 @@ class TranscriptSessionAssociationServiceTest {
     }
 
     @Test
-    void expiredClaimConsumesFinalAttemptBeforeAnotherResolverCall() {
+    void expiredClaimStaysRetryableWithoutConsumingFailureBudget() {
         TranscriptSessionAssociation stale = mock(TranscriptSessionAssociation.class);
-        TranscriptSessionAssociation dead = mock(TranscriptSessionAssociation.class);
+        TranscriptSessionAssociation pending = mock(TranscriptSessionAssociation.class);
         when(stale.getStatus()).thenReturn(TranscriptSessionAssociationStatus.RESOLVING);
         when(stale.getResolutionAttempts()).thenReturn(2);
         when(store.ensurePending(any(), eq(TENANT), eq(MEETING), eq("SES-42"), eq(NOW)))
                 .thenReturn(stale);
         when(store.recoverStale(
-                TENANT, MEETING, "SES-42", 3, NOW.plusMillis(400), NOW))
+                TENANT, MEETING, "SES-42", NOW.plusMillis(400), NOW))
                 .thenReturn(true);
-        when(dead.getStatus()).thenReturn(TranscriptSessionAssociationStatus.DEAD);
-        when(dead.getLastErrorCode()).thenReturn("LEASE_EXPIRED");
-        when(store.require(TENANT, MEETING, "SES-42")).thenReturn(dead);
+        when(pending.getStatus()).thenReturn(TranscriptSessionAssociationStatus.PENDING);
+        when(pending.getLastErrorCode()).thenReturn("LEASE_EXPIRED");
+        when(store.require(TENANT, MEETING, "SES-42")).thenReturn(pending);
 
         var outcome = service.resolve(TENANT, MEETING, "SES-42");
 
-        assertThat(outcome.result()).isEqualTo(TranscriptSessionAssociationService.Result.DEAD);
+        assertThat(outcome.result()).isEqualTo(TranscriptSessionAssociationService.Result.PENDING);
         assertThat(outcome.reasonCode()).isEqualTo("LEASE_EXPIRED");
         verify(resolver, never()).resolve(any(), any(), any());
         verify(store, never()).claim(any(), any(), any(), any(), any(), any());

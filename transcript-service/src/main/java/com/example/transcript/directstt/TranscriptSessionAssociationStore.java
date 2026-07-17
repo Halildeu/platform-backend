@@ -60,12 +60,11 @@ public class TranscriptSessionAssociationStore {
             UUID tenantId,
             UUID meetingId,
             String sourceSessionId,
-            int maxAttempts,
             Instant nextRetryAt,
             Instant now) {
         return associations.recoverStaleResolution(
                 tenantId, meetingId, SOURCE_SYSTEM, sourceSessionId,
-                maxAttempts, nextRetryAt, now) == 1;
+                nextRetryAt, now) == 1;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

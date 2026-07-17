@@ -85,7 +85,7 @@ public class TranscriptEventOutboxPoller {
     public int recoverStaleLeases() {
         Instant now = Instant.now();
         return repository.recoverStaleLeases(
-                now, now.plusMillis(retryDelayMs), maxAttempts);
+                now, now.plusMillis(retryDelayMs));
     }
 
     @Transactional

@@ -11,8 +11,6 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import java.time.Instant;
 import java.util.UUID;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
 
 /** Transcript-service owned transactional outbox row. */
 @Entity
@@ -37,8 +35,7 @@ public class TranscriptEventOutbox {
     @Column(name = "org_id")
     private UUID orgId;
 
-    @JdbcTypeCode(SqlTypes.JSON)
-    @Column(name = "payload", nullable = false, updatable = false)
+    @Column(name = "payload", nullable = false, updatable = false, columnDefinition = "text")
     private String payload;
 
     @Column(name = "event_key", nullable = false, length = 240, updatable = false)

@@ -7,6 +7,7 @@ import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,19 +39,19 @@ public class DirectSttTranscriptIngestionService {
             throw new SessionAssociationNotResolvedException();
         }
 
-        TranscriptSegment segment = segments.findDirectSttSourceChunk(
+        TranscriptSegment segment = segments.findDirectSttSourceWindow(
                         event.tenantId(), event.meetingId(),
-                        event.sourceSessionId(), event.chunkSeq())
+                        event.sourceSessionId(), event.windowSeq())
                 .orElse(null);
         if (segment != null) {
             if (!event.meetingId().equals(segment.getMeetingId())
                     || !canonicalSessionId.equals(segment.getSessionId())) {
                 throw new SessionAssociationConflictException();
             }
-            // A replay after finalization is harmless and must not rewrite final text.
-            if (association.getFinalizationVersion() > 0) {
-                return TranscriptSegmentDto.from(segment);
+            if (!sameSourceContent(segment, event)) {
+                throw new SourceWindowReplayConflictException();
             }
+            return TranscriptSegmentDto.from(segment);
         } else {
             if (association.getFinalizationVersion() > 0) {
                 throw new TranscriptAlreadyFinalizedException();
@@ -62,25 +63,45 @@ public class DirectSttTranscriptIngestionService {
             segment.setSessionId(canonicalSessionId);
             segment.setSourceSystem(DirectSttTranscriptResultEvent.SOURCE_SYSTEM);
             segment.setSourceSessionId(event.sourceSessionId());
-            segment.setSourceChunkSeq(event.chunkSeq());
+            segment.setSourceChunkSeq(event.lastChunkSeq());
+            segment.setSourceWindowSeq(event.windowSeq());
+            segment.setSourceFirstChunkSeq(event.firstChunkSeq());
+            segment.setSourceLastChunkSeq(event.lastChunkSeq());
         }
 
-        if (segment.getId() == null
-                || (segment.getStatus() == TranscriptSegmentStatus.DRAFT
-                    && segment.getTextFinal() == null)) {
-            double startSeconds = event.chunkStartedAtMs() / 1000.0d;
-            double durationSeconds = event.durationSeconds() != null ? event.durationSeconds() : 0.0d;
-            segment.setStartTime(startSeconds);
-            segment.setEndTime(startSeconds + durationSeconds);
-            segment.setTextDraft(event.textDraft());
-            segment.setTextFinal(null);
-            segment.setConfidence(null);
-            segment.setStatus(TranscriptSegmentStatus.DRAFT);
-        }
+        double startSeconds = event.chunkStartedAtMs() / 1000.0d;
+        double durationSeconds = durationSeconds(event);
+        segment.setStartTime(startSeconds);
+        segment.setEndTime(startSeconds + durationSeconds);
+        segment.setTextDraft(event.textDraft());
+        segment.setTextFinal(null);
+        segment.setConfidence(null);
+        segment.setStatus(TranscriptSegmentStatus.DRAFT);
         segment.setSourceEventId(event.entryId());
         segment.setSourceSha256(event.sha256());
         segment.setSourceCorrelationId(event.correlationId());
         return TranscriptSegmentDto.from(segments.saveAndFlush(segment));
+    }
+
+    private boolean sameSourceContent(
+            TranscriptSegment segment, DirectSttTranscriptResultEvent event) {
+        double startSeconds = event.chunkStartedAtMs() / 1000.0d;
+        double endSeconds = startSeconds + durationSeconds(event);
+        return DirectSttTranscriptResultEvent.SOURCE_SYSTEM.equals(segment.getSourceSystem())
+                && event.tenantId().equals(segment.getTenantId())
+                && event.sourceSessionId().equals(segment.getSourceSessionId())
+                && Objects.equals(segment.getSourceWindowSeq(), event.windowSeq())
+                && Objects.equals(segment.getSourceFirstChunkSeq(), event.firstChunkSeq())
+                && Objects.equals(segment.getSourceLastChunkSeq(), event.lastChunkSeq())
+                && Objects.equals(segment.getSourceChunkSeq(), event.lastChunkSeq())
+                && Objects.equals(segment.getStartTime(), startSeconds)
+                && Objects.equals(segment.getEndTime(), endSeconds)
+                && Objects.equals(segment.getTextDraft(), event.textDraft())
+                && Objects.equals(segment.getSourceSha256(), event.sha256());
+    }
+
+    private double durationSeconds(DirectSttTranscriptResultEvent event) {
+        return event.durationSeconds() != null ? event.durationSeconds() : 0.0d;
     }
 
     public static class SessionAssociationNotResolvedException extends IllegalStateException {
@@ -91,13 +112,24 @@ public class DirectSttTranscriptIngestionService {
 
     public static class SessionAssociationConflictException extends IllegalStateException {
         public SessionAssociationConflictException() {
-            super("canonical session association conflicts with the stored segment");
+            this("canonical session association conflicts with the stored segment");
+        }
+
+        protected SessionAssociationConflictException(String message) {
+            super(message);
+        }
+    }
+
+    public static class SourceWindowReplayConflictException
+            extends SessionAssociationConflictException {
+        public SourceWindowReplayConflictException() {
+            super("source window replay conflicts with the stored segment");
         }
     }
 
     public static class TranscriptAlreadyFinalizedException extends IllegalStateException {
         public TranscriptAlreadyFinalizedException() {
-            super("new source chunks are rejected after transcript finalization");
+            super("new source windows are rejected after transcript finalization");
         }
     }
 }

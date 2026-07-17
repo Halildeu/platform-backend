@@ -1,5 +1,6 @@
 package com.example.meeting.config;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -142,6 +143,66 @@ class MeetingInternalDecoderTest {
 
         assertThrows(JwtException.class, () -> fallbackDecoder.decode(token),
                 "a service token from an unexpected client must be rejected");
+    }
+
+    @Test
+    void internalServiceValidator_missingTrustConstraint_failsClosed() {
+        assertThrows(IllegalArgumentException.class,
+                () -> SecurityConfig.buildInternalServiceValidator(
+                        " ", List.of(AUDIENCE), List.of(CLIENT_ID)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SecurityConfig.buildInternalServiceValidator(
+                        SVC_ISSUER, List.of(" "), List.of(CLIENT_ID)));
+        assertThrows(IllegalArgumentException.class,
+                () -> SecurityConfig.buildInternalServiceValidator(
+                        SVC_ISSUER, List.of(AUDIENCE), List.of(" ")));
+    }
+
+    @Test
+    void serviceJwksEnabled_withoutClientAllowlist_failsDecoderCreation() {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.security.oauth2.resourceserver.jwt.jwk-set-uri",
+                        "http://localhost/keycloak-jwks")
+                .withProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri", KC_ISSUER)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI",
+                        "http://localhost/service-jwks")
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_ISSUER", SVC_ISSUER)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_AUDIENCE", AUDIENCE)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS", " , ");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new SecurityConfig(environment).jwtDecoder());
+    }
+
+    @Test
+    void serviceJwksEnabled_pluralClientAllowlist_buildsDecoder() {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.security.oauth2.resourceserver.jwt.jwk-set-uri",
+                        "http://localhost/keycloak-jwks")
+                .withProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri", KC_ISSUER)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI",
+                        "http://localhost/service-jwks")
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_ISSUER", SVC_ISSUER)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_AUDIENCE", AUDIENCE)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS",
+                        CLIENT_ID + ",transcript-service");
+
+        assertDoesNotThrow(() -> new SecurityConfig(environment).jwtDecoder());
+    }
+
+    @Test
+    void serviceJwksEnabled_legacySingleClientPropertyRemainsCompatible() {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.security.oauth2.resourceserver.jwt.jwk-set-uri",
+                        "http://localhost/keycloak-jwks")
+                .withProperty("spring.security.oauth2.resourceserver.jwt.issuer-uri", KC_ISSUER)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_JWK_SET_URI",
+                        "http://localhost/service-jwks")
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_ISSUER", SVC_ISSUER)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_AUDIENCE", AUDIENCE)
+                .withProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_ID", CLIENT_ID);
+
+        assertDoesNotThrow(() -> new SecurityConfig(environment).jwtDecoder());
     }
 
     // ── Keycloak user token w/ perm → decodes but NO SVC_ (end-to-end iss-guard)

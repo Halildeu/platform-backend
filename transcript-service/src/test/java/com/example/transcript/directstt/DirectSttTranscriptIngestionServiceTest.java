@@ -44,9 +44,9 @@ class DirectSttTranscriptIngestionServiceTest {
     }
 
     @Test
-    void createsDraftWithSourceIdAndCanonicalSessionUuid() {
-        DirectSttTranscriptResultEvent event = event("1-0", 5L, "merhaba dunya");
-        when(segments.findDirectSttSourceChunk(TENANT, MEETING, "SES-abc", 5L))
+    void createsDraftWithSourceWindowAndCanonicalSessionUuid() {
+        DirectSttTranscriptResultEvent event = event("1-0", 2L, 3L, 5L, "merhaba dunya");
+        when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 2L))
                 .thenReturn(Optional.empty());
         ArgumentCaptor<TranscriptSegment> saved = ArgumentCaptor.forClass(TranscriptSegment.class);
         when(segments.saveAndFlush(saved.capture())).thenAnswer(invocation -> {
@@ -62,28 +62,76 @@ class DirectSttTranscriptIngestionServiceTest {
         assertThat(saved.getValue().getMeetingId()).isEqualTo(MEETING);
         assertThat(saved.getValue().getSourceSessionId()).isEqualTo("SES-abc");
         assertThat(saved.getValue().getSessionId()).isEqualTo(SESSION);
+        assertThat(saved.getValue().getSourceWindowSeq()).isEqualTo(2L);
+        assertThat(saved.getValue().getSourceFirstChunkSeq()).isEqualTo(3L);
+        assertThat(saved.getValue().getSourceLastChunkSeq()).isEqualTo(5L);
+        assertThat(saved.getValue().getSourceChunkSeq()).isEqualTo(5L);
         assertThat(saved.getValue().getTextDraft()).isEqualTo("merhaba dunya");
         assertThat(saved.getValue().getStatus()).isEqualTo(TranscriptSegmentStatus.DRAFT);
     }
 
     @Test
     void rejectsCanonicalUuidThatDoesNotMatchPinnedAssociation() {
-        assertThatThrownBy(() -> service.upsert(event("1-0", 5L, "draft"), UUID.randomUUID()))
+        assertThatThrownBy(() -> service.upsert(
+                event("1-0", 2L, 3L, 5L, "draft"), UUID.randomUUID()))
                 .isInstanceOf(DirectSttTranscriptIngestionService.SessionAssociationNotResolvedException.class);
         verify(segments, never()).saveAndFlush(any());
     }
 
     @Test
-    void postFinalizationReplayReturnsStoredSegmentWithoutMutation() {
+    void sameWindowSameContentReplayIsNoOp() {
+        TranscriptSegment existing = storedSegment(2L, 3L, 5L);
+        existing.setTextDraft("original");
+        when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 2L))
+                .thenReturn(Optional.of(existing));
+
+        var result = service.upsert(
+                event("different-entry", 2L, 3L, 5L, "original"), SESSION);
+
+        assertThat(result.textDraft()).isEqualTo("original");
+        verify(segments, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void sameWindowDifferentTextFailsClosed() {
+        TranscriptSegment existing = storedSegment(2L, 3L, 5L);
+        existing.setTextDraft("original");
+        when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 2L))
+                .thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.upsert(
+                event("2-0", 2L, 3L, 5L, "conflicting"), SESSION))
+                .isInstanceOf(
+                        DirectSttTranscriptIngestionService.SourceWindowReplayConflictException.class);
+        verify(segments, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void sameWindowDifferentChunkRangeFailsClosed() {
+        TranscriptSegment existing = storedSegment(2L, 3L, 5L);
+        existing.setTextDraft("original");
+        when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 2L))
+                .thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.upsert(
+                event("2-0", 2L, 4L, 5L, "original"), SESSION))
+                .isInstanceOf(
+                        DirectSttTranscriptIngestionService.SourceWindowReplayConflictException.class);
+        verify(segments, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void postFinalizationSameContentReplayReturnsStoredSegmentWithoutMutation() {
         when(association.getFinalizationVersion()).thenReturn(1L);
-        TranscriptSegment existing = storedSegment(5L);
+        TranscriptSegment existing = storedSegment(2L, 3L, 5L);
         existing.setTextDraft("original");
         existing.setTextFinal("human final");
         existing.setStatus(TranscriptSegmentStatus.FINALIZED);
-        when(segments.findDirectSttSourceChunk(TENANT, MEETING, "SES-abc", 5L))
+        when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 2L))
                 .thenReturn(Optional.of(existing));
 
-        var result = service.upsert(event("2-0", 5L, "late replay"), SESSION);
+        var result = service.upsert(
+                event("2-0", 2L, 3L, 5L, "original"), SESSION);
 
         assertThat(result.textDraft()).isEqualTo("original");
         assertThat(result.textFinal()).isEqualTo("human final");
@@ -93,15 +141,17 @@ class DirectSttTranscriptIngestionServiceTest {
     @Test
     void postFinalizationNewChunkIsRejected() {
         when(association.getFinalizationVersion()).thenReturn(1L);
-        when(segments.findDirectSttSourceChunk(TENANT, MEETING, "SES-abc", 6L))
+        when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 3L))
                 .thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.upsert(event("2-0", 6L, "late chunk"), SESSION))
+        assertThatThrownBy(() -> service.upsert(
+                event("2-0", 3L, 6L, 6L, "late window"), SESSION))
                 .isInstanceOf(DirectSttTranscriptIngestionService.TranscriptAlreadyFinalizedException.class);
         verify(segments, never()).saveAndFlush(any());
     }
 
-    private TranscriptSegment storedSegment(long chunkSeq) {
+    private TranscriptSegment storedSegment(
+            long windowSeq, long firstChunkSeq, long lastChunkSeq) {
         TranscriptSegment row = new TranscriptSegment();
         row.setId(SEGMENT);
         row.setTenantId(TENANT);
@@ -110,16 +160,26 @@ class DirectSttTranscriptIngestionServiceTest {
         row.setSessionId(SESSION);
         row.setSourceSystem(DirectSttTranscriptResultEvent.SOURCE_SYSTEM);
         row.setSourceSessionId("SES-abc");
-        row.setSourceChunkSeq(chunkSeq);
+        row.setSourceChunkSeq(lastChunkSeq);
+        row.setSourceWindowSeq(windowSeq);
+        row.setSourceFirstChunkSeq(firstChunkSeq);
+        row.setSourceLastChunkSeq(lastChunkSeq);
+        row.setSourceSha256("deadbeefcafe0000sha");
         row.setStartTime(1.25d);
         row.setEndTime(2.45d);
         row.setStatus(TranscriptSegmentStatus.DRAFT);
         return row;
     }
 
-    private DirectSttTranscriptResultEvent event(String entryId, long chunkSeq, String text) {
+    private DirectSttTranscriptResultEvent event(
+            String entryId,
+            long windowSeq,
+            long firstChunkSeq,
+            long lastChunkSeq,
+            String text) {
         return new DirectSttTranscriptResultEvent(
                 entryId, TENANT, TENANT.toString(), "7", MEETING, "SES-abc",
-                chunkSeq, 1_250L, "corr-direct-stt", "deadbeefcafe0000sha", text, 1.2d);
+                windowSeq, firstChunkSeq, lastChunkSeq, 1_250L,
+                "corr-direct-stt", "deadbeefcafe0000sha", text, 1.2d);
     }
 }

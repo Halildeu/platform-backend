@@ -46,7 +46,7 @@ import java.util.UUID;
                 @Index(name = "idx_transcript_segments_tenant_status",
                         columnList = "tenant_id,status"),
                 @Index(name = "idx_transcript_segments_tenant_source_order",
-                        columnList = "tenant_id,source_system,source_session_id,source_chunk_seq")
+                        columnList = "tenant_id,source_system,source_session_id,source_window_seq")
         })
 public class TranscriptSegment {
 
@@ -113,11 +113,23 @@ public class TranscriptSegment {
     @Column(name = "source_session_id", length = 128)
     private String sourceSessionId;
 
-    /** Producer chunk sequence used for idempotent direct-STT replay reconciliation. */
+    /** Legacy chunk sequence alias. Direct-STT stores the source window's last chunk. */
     @Column(name = "source_chunk_seq")
     private Long sourceChunkSeq;
 
-    /** SHA-256 metadata for the accepted source audio chunk. No raw audio is stored here. */
+    /** Producer window sequence used as the Direct-STT replay identity. */
+    @Column(name = "source_window_seq")
+    private Long sourceWindowSeq;
+
+    /** First admitted audio chunk included in the Direct-STT source window. */
+    @Column(name = "source_first_chunk_seq")
+    private Long sourceFirstChunkSeq;
+
+    /** Last admitted audio chunk included in the Direct-STT source window. */
+    @Column(name = "source_last_chunk_seq")
+    private Long sourceLastChunkSeq;
+
+    /** SHA-256 metadata for the accepted source audio window. No raw audio is stored here. */
     @Column(name = "source_sha256", length = 128)
     private String sourceSha256;
 
@@ -297,6 +309,30 @@ public class TranscriptSegment {
 
     public void setSourceChunkSeq(Long sourceChunkSeq) {
         this.sourceChunkSeq = sourceChunkSeq;
+    }
+
+    public Long getSourceWindowSeq() {
+        return sourceWindowSeq;
+    }
+
+    public void setSourceWindowSeq(Long sourceWindowSeq) {
+        this.sourceWindowSeq = sourceWindowSeq;
+    }
+
+    public Long getSourceFirstChunkSeq() {
+        return sourceFirstChunkSeq;
+    }
+
+    public void setSourceFirstChunkSeq(Long sourceFirstChunkSeq) {
+        this.sourceFirstChunkSeq = sourceFirstChunkSeq;
+    }
+
+    public Long getSourceLastChunkSeq() {
+        return sourceLastChunkSeq;
+    }
+
+    public void setSourceLastChunkSeq(Long sourceLastChunkSeq) {
+        this.sourceLastChunkSeq = sourceLastChunkSeq;
     }
 
     public String getSourceSha256() {

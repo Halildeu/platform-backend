@@ -92,15 +92,8 @@ public interface TranscriptSessionAssociationRepository
     @Modifying(clearAutomatically = true)
     @Query(value = """
         UPDATE {h-schema}transcript_session_associations
-        SET resolution_attempts = resolution_attempts + 1,
-            status = CASE
-                WHEN resolution_attempts + 1 >= :maxAttempts THEN 'DEAD'
-                ELSE 'PENDING'
-            END,
-            next_retry_at = CASE
-                WHEN resolution_attempts + 1 >= :maxAttempts THEN NULL
-                ELSE :nextRetryAt
-            END,
+        SET status = 'PENDING',
+            next_retry_at = :nextRetryAt,
             last_error_code = 'LEASE_EXPIRED',
             claim_token = NULL,
             lease_expires_at = NULL,
@@ -119,7 +112,6 @@ public interface TranscriptSessionAssociationRepository
             @Param("meetingId") UUID meetingId,
             @Param("sourceSystem") String sourceSystem,
             @Param("sourceSessionId") String sourceSessionId,
-            @Param("maxAttempts") int maxAttempts,
             @Param("nextRetryAt") Instant nextRetryAt,
             @Param("now") Instant now);
 
