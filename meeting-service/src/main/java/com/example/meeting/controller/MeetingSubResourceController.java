@@ -115,7 +115,7 @@ public class MeetingSubResourceController {
             @PathVariable UUID meetingId, @PathVariable UUID sessionId) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
         meetingService.deleteSession(tenant, meetingId, sessionId);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.accepted().build();
     }
 
     // ───────────────────────────── Actions ─────────────────────────────

@@ -372,16 +372,35 @@ data: {"eventId":"1782820000123-0","sessionId":"SES-...","meetingId":"22222222-2
 
 Payload length must be positive, even, match the declared length, and be at most
 `AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_FRAME_BYTES` (default 65535).
-Text frames from the client are rejected.
+
+Client text frames are rejected except for one terminal control JSON object with
+exactly one field: `{"type":"eof"}`. Its UTF-8 size is bounded by
+`AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TERMINAL_CONTROL_BYTES` (default 64, hard max
+1024). Unknown types, malformed JSON, and extra fields close the bridge as bad data.
+After the first valid EOF the upload subscription is terminal, so later client frames
+are neither accepted nor relayed. The gateway relays the canonical `{"type":"eof"}`
+form rather than caller bytes.
 
 **Sequence and reconnect semantics**:
 
-- The first live frame is `session.lastAcceptedChunkSeq + 1`.
-- Frames must remain contiguous.
-- A replayed sequence is suppressed without another compute-plane forward.
-- A gap closes the bridge as invalid data.
-- Sequence state is bounded, in-memory, and retained across reconnects for the
-  process lifetime. A process restart falls back to the session registry baseline.
+- Durable REST admission and live WebSocket relay use the same `chunkSeq` coordinate
+  but distinct registry state. REST owns `session.lastAcceptedChunkSeq`; live relay
+  owns per-session `lastRelayedLiveSeq`, initialized to `-1`.
+- A sequence accepted through REST and still above `lastRelayedLiveSeq` remains
+  eligible for exactly one WebSocket relay. A sequence at or below that live
+  watermark is duplicate/stale and is suppressed without another compute-plane
+  forward.
+- A reconnect may jump to any sequence above `lastRelayedLiveSeq` that is at or below
+  the durable REST baseline. The jump advances the live watermark; skipped lower
+  sequences are not replayed even if they arrive later for the first time.
+- Beyond the durable REST baseline, WS-only delivery remains contiguous: the only
+  accepted sequence is `max(lastRelayedLiveSeq, lastAcceptedChunkSeq) + 1`. Any
+  uncovered gap closes the bridge as invalid data.
+- Mandatory compute-plane audit runs before `lastRelayedLiveSeq` advances. Audit
+  failure leaves live relay state unchanged.
+- Live relay state survives WebSocket disconnects, is not released by `doFinally`,
+  and is removed on session finish/expiry. Durable REST counters and idempotency fields
+  are never advanced by WebSocket relay.
 - Accepted means the frame passed ownership, bounds, sequence, and mandatory
   compute-plane audit and entered the upstream WebSocket send path. Upstream
   disconnect remains an at-most-once transport boundary and requires a new
@@ -395,6 +414,11 @@ Text frames from the client are rejected.
 - When Direct-STT TLS is enabled the stream URL must be `wss://` and the same
   CA/client certificate material is used.
 - live-stt text events are relayed unchanged to the authenticated client.
+- After client EOF, the upload leg terminates but the download leg remains active.
+  `eof_ack`, zero or more `final` events, and `drained` are relayed unchanged. Bridge
+  completion occurs only after `drained` has been written to the client. Missing drain
+  fails closed after `AUDIO_GATEWAY_DIRECT_STT_STREAM_TERMINAL_DRAIN_TIMEOUT_MS`
+  (default 10000 ms, hard max 60000 ms).
 - Raw audio and transcript text are not written to disk/Redis or included in logs
   by this bridge.
 

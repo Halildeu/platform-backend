@@ -70,6 +70,7 @@ final class MeetingEventTestEnvelopes {
                 .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
                 .aggregateRevision(1)
                 .payload(new MeetingEventPayload.TranscriptReady(
+                        MeetingEventGoldens.RUN_ID,
                         MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 1, 2))
                 .build();
     }

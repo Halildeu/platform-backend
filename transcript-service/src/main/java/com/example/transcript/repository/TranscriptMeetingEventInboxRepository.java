@@ -43,4 +43,18 @@ public interface TranscriptMeetingEventInboxRepository
     int markProcessed(
             @Param("eventKey") String eventKey,
             @Param("processedAt") Instant processedAt);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            delete from TranscriptMeetingEventInbox i
+            where i.tenantId = :tenantId
+              and i.meetingId = :meetingId
+              and (i.sessionId = :sessionId
+                   or (:sourceSessionId is not null and i.sourceSessionId = :sourceSessionId))
+            """)
+    int deleteErasureScope(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId,
+            @Param("sourceSessionId") String sourceSessionId);
 }

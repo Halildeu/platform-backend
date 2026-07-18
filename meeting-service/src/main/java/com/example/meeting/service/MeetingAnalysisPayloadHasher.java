@@ -81,6 +81,9 @@ public class MeetingAnalysisPayloadHasher {
         canonical.put("tenantId", tenantId.toString());
         canonical.put("transcriptSessionId", request.transcriptSessionId());
         canonical.put("transcriptSha256", request.transcriptSha256());
+        canonical.put("finalizationVersion", request.finalizationVersion());
+        canonical.put("finalizedAt", request.finalizedAt().toString());
+        canonical.put("analysisSpecVersion", request.analysisSpecVersion());
         canonical.put("analyzerContractVersion", request.analyzerContractVersion());
         canonical.put("model", request.model());
         canonical.put("backend", request.backend());

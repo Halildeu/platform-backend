@@ -47,6 +47,15 @@ public interface AudioSessionRegistry {
     ChunkOutcome admitChunk(ChunkRecordCommand cmd, AudioChunkDispatcher dispatcher);
 
     /**
+     * Atomically admit one live-WebSocket relay against session-owned live sequence
+     * state. REST's durable chunk baseline is distinct: it may prove that skipped
+     * sequences were durably accepted, but it never marks those sequences as relayed.
+     * The mandatory commit callback runs while the registry lock is held; if it fails,
+     * no live sequence or session state is mutated.
+     */
+    LiveFrameOutcome admitLiveFrame(LiveFrameCommand cmd, LiveFrameCommit commit);
+
+    /**
      * Mark session as FINISHED. Idempotent: same {@code finishIdempotencyKey} returns
      * {@link FinishOutcome.AlreadyFinished} without state mutation.
      */
@@ -175,6 +184,42 @@ public interface AudioSessionRegistry {
          * given seconds. NO mutation.
          */
         record DispatchUnavailable(long retryAfterSeconds) implements ChunkOutcome {
+        }
+    }
+
+    // ----- Live WebSocket frame admission ----------------------------------
+
+    record LiveFrameCommand(
+            String sessionId,
+            Long tenantId,
+            Long userId,
+            long chunkSeq,
+            long acceptedAtMs
+    ) {
+    }
+
+    @FunctionalInterface
+    interface LiveFrameCommit {
+        void beforeCommit(SessionRecord current);
+    }
+
+    sealed interface LiveFrameOutcome {
+        record Accepted(long relayedLiveSeq) implements LiveFrameOutcome {
+        }
+
+        record Duplicate(long lastRelayedLiveSeq) implements LiveFrameOutcome {
+        }
+
+        record Gap(long expectedNextLiveSeq, long actualLiveSeq) implements LiveFrameOutcome {
+        }
+
+        record NotFound() implements LiveFrameOutcome {
+        }
+
+        record OwnerMismatch() implements LiveFrameOutcome {
+        }
+
+        record InvalidState(SessionState currentState) implements LiveFrameOutcome {
         }
     }
 

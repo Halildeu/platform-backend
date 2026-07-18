@@ -2,6 +2,7 @@ package com.example.transcript.finalization;
 
 import com.example.transcript.finalization.RecordingFinishedEventParser.RecordingFinishedEventInvalidException;
 import com.example.transcript.finalization.RecordingFinishedEventProcessor.RecordingFinishedEventConflictException;
+import com.example.transcript.service.SessionErasureFence.SessionErasedException;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
@@ -32,7 +33,8 @@ public class RecordingFinishedEventHandler {
         } catch (RecordingFinishedEventInvalidException ex) {
             return new HandleOutcome(HandleResult.INVALID, ex.reason());
         } catch (RecordingFinishedEventConflictException
-                | TranscriptFinalizationStateMachine.FinalizationScopeConflictException ex) {
+                | TranscriptFinalizationStateMachine.FinalizationScopeConflictException
+                | SessionErasedException ex) {
             return new HandleOutcome(HandleResult.DEAD, ex.getMessage());
         }
     }

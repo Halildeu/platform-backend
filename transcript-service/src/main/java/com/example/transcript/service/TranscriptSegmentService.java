@@ -47,6 +47,7 @@ public class TranscriptSegmentService {
     private final TranscriptSegmentRepository repository;
     private final TranscriptSessionAssociationRepository associationRepository;
     private final TranscriptAccessAuditService accessAuditService;
+    private final SessionErasureFence erasureFence;
     private final int defaultPageSize;
     private final int maxPageSize;
     private final int exportMaxRows;
@@ -55,12 +56,14 @@ public class TranscriptSegmentService {
             TranscriptSegmentRepository repository,
             TranscriptSessionAssociationRepository associationRepository,
             TranscriptAccessAuditService accessAuditService,
+            SessionErasureFence erasureFence,
             @Value("${transcript.search.default-page-size:50}") int defaultPageSize,
             @Value("${transcript.search.max-page-size:200}") int maxPageSize,
             @Value("${transcript.export.max-rows:50000}") int exportMaxRows) {
         this.repository = repository;
         this.associationRepository = associationRepository;
         this.accessAuditService = accessAuditService;
+        this.erasureFence = erasureFence;
         this.defaultPageSize = defaultPageSize;
         this.maxPageSize = maxPageSize;
         this.exportMaxRows = exportMaxRows;
@@ -299,6 +302,7 @@ public class TranscriptSegmentService {
         if (sessionId == null) {
             return;
         }
+        lockErasureFence(tenantId, meetingId, sessionId);
         TranscriptSessionAssociation association = associationRepository
                 .findCanonicalForUpdate(tenantId, meetingId, sessionId)
                 .orElse(null);
@@ -306,6 +310,16 @@ public class TranscriptSegmentService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Finalized canonical transcript segments are immutable.");
         }
+    }
+
+    private void lockErasureFence(UUID tenantId, UUID meetingId, UUID sessionId) {
+        if (sessionId == null) {
+            return;
+        }
+        SessionErasureFence.UUIDScope scope =
+                new SessionErasureFence.UUIDScope(tenantId, meetingId, sessionId);
+        erasureFence.lock(SessionErasureFence.canonicalKey(scope));
+        erasureFence.rejectErased(scope, null);
     }
 
     private Pageable pageable(int page, int size) {

@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.transcript.model.TranscriptEventOutbox;
+import com.example.transcript.finalization.FinalizedTranscriptSnapshotCodec;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptFinalizationState;
@@ -25,6 +26,7 @@ import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.security.AdminTenantContext;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -53,6 +55,7 @@ class TranscriptFinalizationServiceTest {
             mock(TranscriptFinalizationRepository.class);
     private final TranscriptEventOutboxRepository outbox = mock(TranscriptEventOutboxRepository.class);
     private final TranscriptSessionAssociation association = mock(TranscriptSessionAssociation.class);
+    private final SessionErasureFence erasureFence = mock(SessionErasureFence.class);
     private final AtomicLong currentVersion = new AtomicLong();
     private final AtomicLong currentCycleVersion = new AtomicLong();
     private final AtomicReference<TranscriptFinalizationState> currentState =
@@ -91,7 +94,9 @@ class TranscriptFinalizationServiceTest {
                 .thenReturn(List.of(finalSegment("approved transcript")));
         service = new TranscriptFinalizationService(
                 associations, segments, finalizations, outbox,
-                new TranscriptSnapshotHasher(),
+                new FinalizedTranscriptSnapshotCodec(
+                        new TranscriptSnapshotHasher(), new ObjectMapper()),
+                erasureFence,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
@@ -117,6 +122,8 @@ class TranscriptFinalizationServiceTest {
                 "generatedAt", "transcriptSessionId", "finalizationVersion", "segmentCount");
         assertThat(payload.path("schema").asText()).isEqualTo("meeting.event.v1");
         assertThat(payload.path("eventType").asText()).isEqualTo("meeting.transcript.ready");
+        assertThat(UUID.fromString(payload.path("analysisRunId").asText()))
+                .isEqualTo(storedFinalization.get().getAnalysisRunId());
         assertThat(payload.path("meetingId").asText()).isEqualTo(MEETING.toString());
         assertThat(payload.path("tenantId").asText()).isEqualTo(TENANT.toString());
         assertThat(payload.path("orgId").asText()).isEqualTo(TENANT.toString());
@@ -127,6 +134,15 @@ class TranscriptFinalizationServiceTest {
         verify(association).setFinalizationCycleVersion(1L);
         verify(association).setFinalizationState(TranscriptFinalizationState.FINALIZED);
         verify(association).setQuiescenceDueAt(null);
+        assertThat(storedFinalization.get().getCanonicalTranscript())
+                .isEqualTo("approved transcript");
+        assertThat(storedFinalization.get().getCanonicalTranscriptSha256())
+                .matches("[0-9a-f]{64}");
+        assertThat(storedFinalization.get().getCanonicalSegments())
+                .contains("approved transcript");
+        assertThat(storedFinalization.get().getCanonicalProjectionSha256())
+                .matches("[0-9a-f]{64}");
+        assertThat(storedFinalization.get().getAnalysisRunId()).isNotNull();
     }
 
     @Test

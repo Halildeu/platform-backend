@@ -4,6 +4,7 @@ import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.AudioSessionRegistry;
 import com.example.audiogateway.service.LiveAudioStreamFrame;
 import com.example.audiogateway.service.LiveSttWebSocketProxyHandler;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.ChannelOption;
 import java.time.Duration;
@@ -73,9 +74,10 @@ public class LiveSttWebSocketConfig {
             final AudioGatewayProperties properties,
             final AudioGatewayAuditSink auditSink,
             @Qualifier("directSttWebSocketClient") final WebSocketClient upstreamClient,
+            final ObjectMapper objectMapper,
             final MeterRegistry meters) {
         return new LiveSttWebSocketProxyHandler(
-                sessions, properties, auditSink, upstreamClient, meters);
+                sessions, properties, auditSink, upstreamClient, objectMapper, meters);
     }
 
     @Bean

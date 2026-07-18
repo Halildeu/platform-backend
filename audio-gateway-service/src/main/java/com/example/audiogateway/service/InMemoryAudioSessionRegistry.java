@@ -9,9 +9,13 @@ import com.example.audiogateway.service.AudioSessionRegistry.ChunkRecordCommand;
 import com.example.audiogateway.service.AudioSessionRegistry.CreateOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.ExpiryOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.FinishOutcome;
+import com.example.audiogateway.service.AudioSessionRegistry.LiveFrameCommand;
+import com.example.audiogateway.service.AudioSessionRegistry.LiveFrameCommit;
+import com.example.audiogateway.service.AudioSessionRegistry.LiveFrameOutcome;
 import com.example.audiogateway.service.AudioSessionRegistry.SessionCreateCommand;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,15 +35,18 @@ import org.springframework.stereotype.Service;
  * restart loses all sessions. Durability sonraki slice'da Redis Streams (PR-gw-01C).
  *
  * <p><b>Concurrency contract:</b> {@code create}, {@code admitChunk} (with dispatcher),
- * {@code finish} are fully {@code synchronized} on the same monitor — atomic state
- * transitions guaranteed. Dispatcher.dispatch() called inside synchronized region —
- * B3 NoOp/PoC OK; Redis (C) async pattern refactor borç notu.
+ * {@code admitLiveFrame}, and {@code finish} are fully {@code synchronized} on the same
+ * monitor. Durable REST chunk state stays in {@link SessionRecord}; reconnect-stable
+ * live relay sequence state is held separately in {@link #lastRelayedLiveSequences}.
+ * Dispatcher.dispatch() is called inside the synchronized region — B3 NoOp/PoC OK;
+ * Redis (C) async pattern refactor borç notu.
  */
 @Service
 public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
 
     private final AudioGatewayProperties props;
     private final ConcurrentMap<String, SessionRecord> sessions = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastRelayedLiveSequences = new HashMap<>();
     private final Map<String, IdempotencyEntry> startReplay;
 
     public InMemoryAudioSessionRegistry(final AudioGatewayProperties props) {
@@ -85,6 +92,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
                 null, 0L, cmd.sessionStartMs());
 
         sessions.put(sessionId, rec);
+        lastRelayedLiveSequences.put(sessionId, -1L);
         startReplay.put(idempKey, new IdempotencyEntry(sessionId, signature));
 
         return new CreateOutcome.Created(rec);
@@ -172,6 +180,46 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
     }
 
     @Override
+    public synchronized LiveFrameOutcome admitLiveFrame(
+            final LiveFrameCommand cmd,
+            final LiveFrameCommit commit) {
+        final SessionRecord existing = sessions.get(cmd.sessionId());
+        if (existing == null) {
+            return new LiveFrameOutcome.NotFound();
+        }
+        if (!Objects.equals(existing.tenantId(), cmd.tenantId())
+                || !Objects.equals(existing.userId(), cmd.userId())) {
+            return new LiveFrameOutcome.OwnerMismatch();
+        }
+        if (existing.state() != SessionState.STARTED
+                && existing.state() != SessionState.STREAMING) {
+            return new LiveFrameOutcome.InvalidState(existing.state());
+        }
+        final long lastRelayedLiveSeq =
+                lastRelayedLiveSequences.getOrDefault(cmd.sessionId(), -1L);
+        if (cmd.chunkSeq() <= lastRelayedLiveSeq) {
+            return new LiveFrameOutcome.Duplicate(lastRelayedLiveSeq);
+        }
+
+        final long durableRestBaseline = existing.lastAcceptedChunkSeq();
+        if (cmd.chunkSeq() > durableRestBaseline) {
+            final long expectedNextLiveSeq =
+                    Math.max(lastRelayedLiveSeq, durableRestBaseline) + 1L;
+            if (cmd.chunkSeq() != expectedNextLiveSeq) {
+                return new LiveFrameOutcome.Gap(expectedNextLiveSeq, cmd.chunkSeq());
+            }
+        }
+
+        commit.beforeCommit(existing);
+        if (existing.state() == SessionState.STARTED) {
+            sessions.put(cmd.sessionId(), existing.withState(
+                    SessionState.STREAMING, cmd.acceptedAtMs()));
+        }
+        lastRelayedLiveSequences.put(cmd.sessionId(), cmd.chunkSeq());
+        return new LiveFrameOutcome.Accepted(cmd.chunkSeq());
+    }
+
+    @Override
     public synchronized FinishOutcome finish(
             final String sessionId,
             final String finishIdempotencyKey,
@@ -189,6 +237,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
             return new FinishOutcome.OwnerMismatch();
         }
         if (existing.state() == SessionState.FINISHED) {
+            lastRelayedLiveSequences.remove(sessionId);
             if (Objects.equals(existing.finishIdempotencyKey(), finishIdempotencyKey)) {
                 return new FinishOutcome.AlreadyFinished(existing);
             }
@@ -209,11 +258,13 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
             final SessionRecord current = sessions.get(sessionId);
             if (current != null && current.state() == SessionState.FINISHED
                     && Objects.equals(current.finishIdempotencyKey(), finishIdempotencyKey)) {
+                lastRelayedLiveSequences.remove(sessionId);
                 return new FinishOutcome.AlreadyFinished(current);
             }
             return new FinishOutcome.IdempotencyConflict(
                     current != null ? current.finishIdempotencyKey() : null);
         }
+        lastRelayedLiveSequences.remove(sessionId);
         return new FinishOutcome.Finished(finished);
     }
 
@@ -288,6 +339,7 @@ public class InMemoryAudioSessionRegistry implements AudioSessionRegistry {
         }
 
         sessions.remove(sessionId);
+        lastRelayedLiveSequences.remove(sessionId);
         return new ExpiryOutcome.Expired(existing);
     }
 

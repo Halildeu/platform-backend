@@ -20,6 +20,7 @@ import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -59,6 +60,8 @@ class MeetingServiceRecordingLifecycleTest {
     @Mock private MeetingActionRepository actionRepository;
     @Mock private MeetingDecisionRepository decisionRepository;
     @Mock private MeetingEventOutboxRepository eventOutboxRepository;
+    @Mock private MeetingAnalysisRunRepository analysisRunRepository;
+    @Mock private MeetingSessionErasureService sessionErasureService;
     @Mock private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock private OpenFgaAuthzService authzService;
 
@@ -70,7 +73,8 @@ class MeetingServiceRecordingLifecycleTest {
     void setUp() {
         service = new MeetingService(
                 meetingRepository, sessionRepository, actionRepository, decisionRepository,
-                eventOutboxRepository, authzProvider, false, false);
+                eventOutboxRepository, analysisRunRepository, sessionErasureService,
+                authzProvider, false, false);
         meeting = meeting(MeetingStatus.SCHEDULED);
         lenient().when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting));
@@ -345,6 +349,23 @@ class MeetingServiceRecordingLifecycleTest {
                         error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
 
         verify(sessionRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void deleteSessionQueuesDurableCrossServiceErasure() {
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
+
+        verify(sessionErasureService).request(TENANT, MEETING_ID, SESSION_ID);
+        verify(sessionRepository, never()).delete(any());
+    }
+
+    @Test
+    void deleteSessionIsIdempotentlyDelegatedToLedger() {
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
+
+        verify(sessionErasureService, org.mockito.Mockito.times(2))
+                .request(TENANT, MEETING_ID, SESSION_ID);
     }
 
     private static Meeting meeting(MeetingStatus status) {

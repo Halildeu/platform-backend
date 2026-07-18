@@ -27,6 +27,7 @@ class MeetingAnalysisPayloadHasherTest {
     private static final UUID RUN = UUID.fromString("33333333-3333-4333-8333-333333333333");
     private static final String SHA = "a".repeat(64);
     private static final Instant GEN = Instant.parse("2026-07-11T10:00:00Z");
+    private static final Instant FINALIZED = Instant.parse("2026-07-11T09:59:00Z");
 
     private final MeetingAnalysisPayloadHasher hasher = new MeetingAnalysisPayloadHasher();
 
@@ -51,6 +52,12 @@ class MeetingAnalysisPayloadHasherTest {
         assertThat(hasher.hash(MEETING, TENANT, RUN, base().transcriptSha("b".repeat(64)).build()))
                 .isNotEqualTo(baseHash);
         assertThat(hasher.hash(MEETING, TENANT, RUN, base().generatedAt(GEN.plusSeconds(1)).build()))
+                .isNotEqualTo(baseHash);
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().finalizationVersion(2L).build()))
+                .isNotEqualTo(baseHash);
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().finalizedAt(FINALIZED.plusSeconds(1)).build()))
+                .isNotEqualTo(baseHash);
+        assertThat(hasher.hash(MEETING, TENANT, RUN, base().analysisSpecVersion("analysis-v2").build()))
                 .isNotEqualTo(baseHash);
     }
 
@@ -131,6 +138,9 @@ class MeetingAnalysisPayloadHasherTest {
         private String transcriptSha = SHA;
         private String summary = "ozet";
         private Instant generatedAt = GEN;
+        private long finalizationVersion = 1L;
+        private Instant finalizedAt = FINALIZED;
+        private String analysisSpecVersion = "analysis-v1";
         private List<String> decisions = List.of("karar-1");
         private List<MeetingAnalysisActionIngest> actions = List.of(action("aksiyon-1"));
         private List<MeetingIntelligenceCitation> citations = List.of();
@@ -141,6 +151,9 @@ class MeetingAnalysisPayloadHasherTest {
         Builder transcriptSha(String v) { this.transcriptSha = v; return this; }
         Builder summary(String v) { this.summary = v; return this; }
         Builder generatedAt(Instant v) { this.generatedAt = v; return this; }
+        Builder finalizationVersion(long v) { this.finalizationVersion = v; return this; }
+        Builder finalizedAt(Instant v) { this.finalizedAt = v; return this; }
+        Builder analysisSpecVersion(String v) { this.analysisSpecVersion = v; return this; }
         Builder decisions(List<String> v) { this.decisions = v; return this; }
         Builder actions(List<MeetingAnalysisActionIngest> v) { this.actions = v; return this; }
         Builder citations(List<MeetingIntelligenceCitation> v) { this.citations = v; return this; }
@@ -150,7 +163,9 @@ class MeetingAnalysisPayloadHasherTest {
 
         MeetingAnalysisResultIngestRequest build() {
             return new MeetingAnalysisResultIngestRequest(
-                    null, "SES-1", transcriptSha, "5-adr0043", "gpt-x", "openai", "p1",
+                    null, "44444444-4444-4444-8444-444444444444", transcriptSha,
+                    finalizationVersion, finalizedAt, analysisSpecVersion,
+                    "5-adr0043", "gpt-x", "openai", "p1",
                     summary, "verified", List.of(), citations, List.of(),
                     ungrounded, redacted, redactionCount, generatedAt, decisions, actions, null);
         }

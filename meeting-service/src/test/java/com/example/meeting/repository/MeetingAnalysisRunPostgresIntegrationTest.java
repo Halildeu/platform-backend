@@ -7,14 +7,20 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import com.example.meeting.model.MeetingSessionErasure;
+import com.example.meeting.model.MeetingSessionErasureStatus;
+import com.example.meeting.service.MeetingAnalysisRunDestructionRecorder;
+import com.example.meeting.service.MeetingRetentionCleanupService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -33,6 +39,13 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Import({MeetingRetentionCleanupService.class, MeetingAnalysisRunDestructionRecorder.class})
+@TestPropertySource(properties = {
+        "meeting.retention.meeting-intelligence-days=1",
+        "meeting.retention.result-access-audit-days=1",
+        "meeting.retention.cleanup-batch-size=100",
+        "meeting.retention.cleanup-max-batches-per-run=10"
+})
 class MeetingAnalysisRunPostgresIntegrationTest {
 
     private static final String SCHEMA = "meeting_service";
@@ -64,10 +77,123 @@ class MeetingAnalysisRunPostgresIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private MeetingSessionErasureRepository erasureRepository;
+    @Autowired
+    private MeetingAnalysisRunRepository runRepository;
+    @Autowired
+    private MeetingRetentionCleanupService retentionCleanupService;
+
+    @Test
+    void retentionCleanupCommitsAnalysisRunAuditAgainstTheRealFlywayConstraint() {
+        Instant cleanupAt = Instant.parse("2026-07-18T12:00:00Z");
+        Timestamp expiredAt = Timestamp.from(cleanupAt.minusSeconds(3 * 24 * 60 * 60));
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        insertRunForSession(runId, meetingId, org, UUID.randomUUID().toString(), SHA_A, HASH_1);
+        insertAiAction(meetingId, org, runId, 0);
+        insertAiDecision(meetingId, org, runId, 0);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs "
+                + "SET generated_at = ?, created_at = ?, updated_at = ? WHERE analysis_run_id = ?",
+                expiredAt, expiredAt, expiredAt, runId);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_actions SET created_at = ?, updated_at = ? "
+                + "WHERE analysis_run_id = ?", expiredAt, expiredAt, runId);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_decisions SET created_at = ?, updated_at = ? "
+                + "WHERE analysis_run_id = ?", expiredAt, expiredAt, runId);
+
+        MeetingRetentionCleanupService.CleanupResult result = retentionCleanupService.cleanup(cleanupAt);
+
+        assertThat(result.analysisRunDeletedCount()).isEqualTo(1);
+        assertThat(runCount(meetingId)).isZero();
+        assertThat(actionCount(meetingId)).isZero();
+        assertThat(decisionCount(meetingId)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.meeting_retention_destruction_audit
+                WHERE layer_id = 'db.meeting-intelligence'
+                  AND deleted_count = 1
+                  AND action_deleted_count = 0
+                  AND decision_deleted_count = 0
+                  AND result_access_audit_deleted_count = 0
+                  AND analysis_run_deleted_count = 1
+                """.formatted(SCHEMA), Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.meeting_analysis_run_destruction_tombstone
+                WHERE analysis_run_id = ? AND reason = 'RETENTION'
+                """.formatted(SCHEMA), Integer.class, runId)).isEqualTo(1);
+    }
+
+    @Test
+    void expiredActiveErasureLeaseIsRecoveredAndCanBeReclaimed() {
+        Instant now = Instant.parse("2026-07-18T12:00:00Z");
+        MeetingSessionErasure row = erasureRow(now, MeetingSessionErasureStatus.PENDING);
+        erasureRepository.saveAndFlush(row);
+        UUID firstClaim = UUID.randomUUID();
+        assertThat(erasureRepository.claimBatch(
+                now, now.plusSeconds(30), "worker-a", firstClaim, 1)).isEqualTo(1);
+
+        assertThat(erasureRepository.recoverStaleLeases(
+                now.plusSeconds(31), now.plusSeconds(31))).isEqualTo(1);
+        MeetingSessionErasure recovered = erasureRepository.findById(row.getSessionId()).orElseThrow();
+        assertThat(recovered.getStatus()).isEqualTo(MeetingSessionErasureStatus.PENDING);
+        assertThat(recovered.getClaimToken()).isNull();
+        assertThat(recovered.getLastErrorCode()).isEqualTo("LEASE_EXPIRED");
+
+        UUID secondClaim = UUID.randomUUID();
+        assertThat(erasureRepository.claimBatch(
+                now.plusSeconds(31), now.plusSeconds(61), "worker-b", secondClaim, 1)).isEqualTo(1);
+        assertThat(erasureRepository.findByClaimToken(secondClaim))
+                .extracting(MeetingSessionErasure::getSessionId)
+                .containsExactly(row.getSessionId());
+    }
+
+    @Test
+    void heldErasureBecomesClaimableForHoldReleaseRetryWhenDue() {
+        Instant now = Instant.parse("2026-07-18T12:00:00Z");
+        MeetingSessionErasure row = erasureRow(now, MeetingSessionErasureStatus.HELD);
+        erasureRepository.saveAndFlush(row);
+
+        UUID claim = UUID.randomUUID();
+        assertThat(erasureRepository.claimBatch(
+                now, now.plusSeconds(30), "worker", claim, 1)).isEqualTo(1);
+        assertThat(erasureRepository.findById(row.getSessionId()).orElseThrow().getStatus())
+                .isEqualTo(MeetingSessionErasureStatus.ACTIVE);
+    }
+
+    @Test
+    void erasureScopeDeletesOnlyTheRequestedTranscriptSession() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID requestedRun = UUID.randomUUID();
+        UUID otherRun = UUID.randomUUID();
+        insertRunForSession(requestedRun, meetingId, org, "session-requested", SHA_A, HASH_1);
+        insertRunForSession(otherRun, meetingId, org, "session-other", SHA_B, HASH_2);
+
+        assertThat(runRepository.deleteErasureScope(
+                meetingId, org, "session-requested")).isEqualTo(1);
+
+        assertThat(runRepository.findById(requestedRun)).isEmpty();
+        assertThat(runRepository.findById(otherRun)).isPresent();
+    }
 
     // ----------------------------------------------------------------
     // Identity & idempotency
     // ----------------------------------------------------------------
+
+    private static MeetingSessionErasure erasureRow(
+            Instant now, MeetingSessionErasureStatus status) {
+        MeetingSessionErasure row = new MeetingSessionErasure();
+        row.setSessionId(UUID.randomUUID());
+        row.setTenantId(UUID.randomUUID());
+        row.setOrgId(row.getTenantId());
+        row.setMeetingId(UUID.randomUUID());
+        row.setSourceSessionHash("c".repeat(64));
+        row.setStatus(status);
+        row.setNextAttemptAt(now);
+        row.setRequestedAt(now);
+        row.setUpdatedAt(now);
+        return row;
+    }
 
     @Test
     void sameAnalysisRunId_cannotBeInsertedTwice() {
@@ -565,14 +691,27 @@ class MeetingAnalysisRunPostgresIntegrationTest {
 
     private void insertRun(UUID runId, UUID meetingId, UUID org, String sha,
                            String payloadHash, UUID supersedes) {
+        insertRunForSession(runId, meetingId, org, "SES-1", sha, payloadHash, supersedes);
+    }
+
+    private void insertRunForSession(
+            UUID runId, UUID meetingId, UUID org, String transcriptSessionId,
+            String sha, String payloadHash) {
+        insertRunForSession(runId, meetingId, org, transcriptSessionId, sha, payloadHash, null);
+    }
+
+    private void insertRunForSession(
+            UUID runId, UUID meetingId, UUID org, String transcriptSessionId,
+            String sha, String payloadHash, UUID supersedes) {
         jdbc.update("""
                 INSERT INTO %s.meeting_analysis_runs
                   (analysis_run_id, meeting_id, tenant_id, org_id, transcript_session_id,
                    transcript_sha256, analyzer_contract_version, payload_hash,
                    supersedes_analysis_run_id, generated_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'SES-1', ?, '5-adr0043', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, '5-adr0043', ?, ?, ?, ?, ?)
                 """.formatted(SCHEMA),
-                runId, meetingId, org, org, sha, payloadHash, supersedes, now(), now(), now());
+                runId, meetingId, org, org, transcriptSessionId, sha, payloadHash,
+                supersedes, now(), now(), now());
     }
 
     private void insertAiAction(UUID meetingId, UUID org, UUID runId, int ordinal) {

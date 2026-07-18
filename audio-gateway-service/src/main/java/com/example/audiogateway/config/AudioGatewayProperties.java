@@ -518,7 +518,8 @@ public class AudioGatewayProperties {
             private boolean enabled = false;
             private String streamUrl = "";
             private int maxFrameBytes = 65_535;
-            private int maxTrackedSessions = 1_000;
+            private int maxTerminalControlBytes = 64;
+            private long terminalDrainTimeoutMs = 10_000L;
 
             void validate(final boolean tlsEnabled) {
                 if (!enabled) {
@@ -549,9 +550,13 @@ public class AudioGatewayProperties {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.streaming.max-frame-bytes must be in [1,65535]");
                 }
-                if (maxTrackedSessions <= 0) {
+                if (maxTerminalControlBytes < 14 || maxTerminalControlBytes > 1_024) {
                     throw new IllegalStateException(
-                            "audio.gateway.direct-stt.streaming.max-tracked-sessions must be positive");
+                            "audio.gateway.direct-stt.streaming.max-terminal-control-bytes must be in [14,1024]");
+                }
+                if (terminalDrainTimeoutMs <= 0L || terminalDrainTimeoutMs > 60_000L) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.terminal-drain-timeout-ms must be in [1,60000]");
                 }
             }
 
@@ -579,12 +584,20 @@ public class AudioGatewayProperties {
                 this.maxFrameBytes = maxFrameBytes;
             }
 
-            public int getMaxTrackedSessions() {
-                return maxTrackedSessions;
+            public int getMaxTerminalControlBytes() {
+                return maxTerminalControlBytes;
             }
 
-            public void setMaxTrackedSessions(final int maxTrackedSessions) {
-                this.maxTrackedSessions = maxTrackedSessions;
+            public void setMaxTerminalControlBytes(final int maxTerminalControlBytes) {
+                this.maxTerminalControlBytes = maxTerminalControlBytes;
+            }
+
+            public long getTerminalDrainTimeoutMs() {
+                return terminalDrainTimeoutMs;
+            }
+
+            public void setTerminalDrainTimeoutMs(final long terminalDrainTimeoutMs) {
+                this.terminalDrainTimeoutMs = terminalDrainTimeoutMs;
             }
         }
 

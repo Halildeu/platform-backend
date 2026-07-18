@@ -131,11 +131,14 @@ public sealed interface MeetingEventPayload
      * <p>No transcript or audio content is carried. Consumers use the canonical
      * meeting/session identifiers and version to read the authoritative resource.
      *
+     * @param analysisRunId producer-minted, unguessable authorization identity for
+     *                      the one analysis job spawned by this occurrence
      * @param transcriptSessionId canonical {@code meeting_sessions.id}
      * @param finalizationVersion producer-owned occurrence counter; starts at one
      * @param segmentCount number of canonical segments covered by this finalization
      */
     record TranscriptReady(
+            UUID analysisRunId,
             UUID transcriptSessionId,
             long finalizationVersion,
             int segmentCount) implements MeetingEventPayload {
@@ -145,10 +148,6 @@ public sealed interface MeetingEventPayload
             return MeetingEventType.TRANSCRIPT_READY;
         }
 
-        @Override
-        public UUID analysisRunId() {
-            return null;
-        }
     }
 
     /**

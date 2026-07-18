@@ -48,11 +48,15 @@ class MeetingAnalysisResultInternalControllerTest {
     private static final UUID RUN_ID = UUID.fromString("33333333-3333-4333-8333-333333333333");
     private static final String PATH = "/api/v1/internal/meetings/{id}/analysis-results";
     private static final String SVC_WRITE = "SVC_meeting:analysis-result:write";
+    private static final String CAPABILITY = "signed-job-capability";
 
     private static final String VALID_BODY = """
             {
-              "transcript_session_id": "SES-1",
+              "transcript_session_id": "44444444-4444-4444-8444-444444444444",
               "transcript_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "finalization_version": 1,
+              "finalized_at": "2026-07-11T09:59:00Z",
+              "analysis_spec_version": "analysis-v1",
               "analyzer_contract_version": "5-adr0043",
               "generated_at": "2026-07-11T10:00:00Z",
               "decisions": ["karar"],
@@ -87,11 +91,12 @@ class MeetingAnalysisResultInternalControllerTest {
 
     @Test
     void serviceToken_ingestsNewRun_201() throws Exception {
-        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), any()))
+        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), eq(CAPABILITY), any()))
                 .thenReturn(created());
 
         mockMvc.perform(post(PATH, MEETING_ID)
                         .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
                         .with(serviceJwt(SVC_WRITE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
@@ -100,16 +105,17 @@ class MeetingAnalysisResultInternalControllerTest {
                 .andExpect(jsonPath("$.storage_mode").value("persisted"))
                 .andExpect(jsonPath("$.analysis_run_id").value(RUN_ID.toString()));
 
-        verify(ingestionService).ingest(eq(MEETING_ID), eq(RUN_ID), any());
+        verify(ingestionService).ingest(eq(MEETING_ID), eq(RUN_ID), eq(CAPABILITY), any());
     }
 
     @Test
     void serviceToken_idempotentReplay_200() throws Exception {
-        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), any()))
+        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), eq(CAPABILITY), any()))
                 .thenReturn(replay());
 
         mockMvc.perform(post(PATH, MEETING_ID)
                         .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
                         .with(serviceJwt(SVC_WRITE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
@@ -146,6 +152,7 @@ class MeetingAnalysisResultInternalControllerTest {
     @Test
     void missingIdempotencyKeyHeader_400() throws Exception {
         mockMvc.perform(post(PATH, MEETING_ID)
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
                         .with(serviceJwt(SVC_WRITE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
@@ -160,6 +167,7 @@ class MeetingAnalysisResultInternalControllerTest {
     void invalidIdempotencyKeyHeader_400() throws Exception {
         mockMvc.perform(post(PATH, MEETING_ID)
                         .header("Idempotency-Key", "not-a-uuid")
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
                         .with(serviceJwt(SVC_WRITE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_BODY))
@@ -181,11 +189,24 @@ class MeetingAnalysisResultInternalControllerTest {
                 """;
         mockMvc.perform(post(PATH, MEETING_ID)
                         .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", CAPABILITY)
                         .with(serviceJwt(SVC_WRITE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalid))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("VALIDATION_ERROR"));
+        verifyNoInteractions(ingestionService);
+    }
+
+    @Test
+    void missingJobCapabilityHeader_400() throws Exception {
+        mockMvc.perform(post(PATH, MEETING_ID)
+                        .header("Idempotency-Key", RUN_ID.toString())
+                        .with(serviceJwt(SVC_WRITE))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("MISSING_HEADER"));
         verifyNoInteractions(ingestionService);
     }
 

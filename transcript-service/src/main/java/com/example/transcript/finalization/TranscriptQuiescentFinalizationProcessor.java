@@ -13,6 +13,7 @@ import com.example.transcript.repository.TranscriptEventOutboxRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -37,7 +38,8 @@ public class TranscriptQuiescentFinalizationProcessor {
     private final TranscriptFinalizationRepository finalizations;
     private final TranscriptEventOutboxRepository outbox;
     private final TranscriptFinalizationStateMachine stateMachine;
-    private final TranscriptSnapshotHasher snapshotHasher;
+    private final FinalizedTranscriptSnapshotCodec snapshotCodec;
+    private final SessionErasureFence erasureFence;
     private final Clock clock;
 
     public TranscriptQuiescentFinalizationProcessor(
@@ -46,25 +48,35 @@ public class TranscriptQuiescentFinalizationProcessor {
             TranscriptFinalizationRepository finalizations,
             TranscriptEventOutboxRepository outbox,
             TranscriptFinalizationStateMachine stateMachine,
-            TranscriptSnapshotHasher snapshotHasher,
+            FinalizedTranscriptSnapshotCodec snapshotCodec,
+            SessionErasureFence erasureFence,
             Clock transcriptFinalizationClock) {
         this.associations = associations;
         this.segments = segments;
         this.finalizations = finalizations;
         this.outbox = outbox;
         this.stateMachine = stateMachine;
-        this.snapshotHasher = snapshotHasher;
+        this.snapshotCodec = snapshotCodec;
+        this.erasureFence = erasureFence;
         this.clock = transcriptFinalizationClock;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Outcome process(UUID associationId) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
-        TranscriptSessionAssociation association = associations.findByIdForUpdate(associationId)
-                .orElse(null);
-        if (!isDue(association, now)) {
+        TranscriptSessionAssociation candidate = associations.findById(associationId).orElse(null);
+        if (candidate == null || candidate.getSessionId() == null) {
             return Outcome.NOT_DUE;
         }
+        SessionErasureFence.UUIDScope candidateScope = new SessionErasureFence.UUIDScope(
+                candidate.getTenantId(), candidate.getMeetingId(), candidate.getSessionId());
+        erasureFence.lock(SessionErasureFence.canonicalKey(candidateScope));
+        TranscriptSessionAssociation association = associations.findByIdForUpdate(associationId)
+                .orElse(null);
+        if (!isDue(association, now) || !sameScope(candidateScope, association)) {
+            return Outcome.NOT_DUE;
+        }
+        erasureFence.rejectErased(candidateScope, association.getSourceSessionId());
 
         List<TranscriptSegment> canonical = segments.findCanonicalSessionForUpdate(
                 association.getTenantId(), association.getMeetingId(), association.getSessionId());
@@ -81,9 +93,9 @@ public class TranscriptQuiescentFinalizationProcessor {
             return Outcome.FAILED;
         }
 
-        TranscriptSnapshotHasher.Snapshot snapshot;
+        FinalizedTranscriptSnapshotCodec.StoredSnapshot snapshot;
         try {
-            snapshot = snapshotHasher.machineSnapshot(canonical);
+            snapshot = snapshotCodec.captureMachine(canonical);
         } catch (TranscriptSnapshotHasher.InvalidSnapshotException ex) {
             emitFailed(association, now, INVALID_CANONICAL_SEGMENT);
             return Outcome.INVALID_SNAPSHOT;
@@ -91,6 +103,13 @@ public class TranscriptQuiescentFinalizationProcessor {
 
         emitReady(association, snapshot, now);
         return Outcome.READY;
+    }
+
+    private static boolean sameScope(
+            SessionErasureFence.UUIDScope expected, TranscriptSessionAssociation actual) {
+        return expected.tenantId().equals(actual.getTenantId())
+                && expected.meetingId().equals(actual.getMeetingId())
+                && expected.sessionId().equals(actual.getSessionId());
     }
 
     private boolean isDue(TranscriptSessionAssociation association, Instant now) {
@@ -104,11 +123,12 @@ public class TranscriptQuiescentFinalizationProcessor {
 
     private void emitReady(
             TranscriptSessionAssociation association,
-            TranscriptSnapshotHasher.Snapshot snapshot,
+            FinalizedTranscriptSnapshotCodec.StoredSnapshot snapshot,
             Instant now) {
         long cycle = requireCycle(association);
+        UUID analysisRunId = UUID.randomUUID();
         MeetingEventPayload.TranscriptReady payload = new MeetingEventPayload.TranscriptReady(
-                association.getSessionId(), cycle, snapshot.segmentCount());
+                analysisRunId, association.getSessionId(), cycle, snapshot.segmentCount());
         MeetingEventEnvelope envelope = envelope(association, cycle, payload, now);
         String eventKey = envelope.eventKey();
 
@@ -119,8 +139,13 @@ public class TranscriptQuiescentFinalizationProcessor {
         row.setMeetingId(association.getMeetingId());
         row.setSessionId(association.getSessionId());
         row.setFinalizationVersion(cycle);
+        row.setAnalysisRunId(analysisRunId);
         row.setSegmentCount(snapshot.segmentCount());
-        row.setSnapshotSha256(snapshot.sha256());
+        row.setSnapshotSha256(snapshot.sourceSnapshotSha256());
+        row.setCanonicalTranscript(snapshot.transcript());
+        row.setCanonicalTranscriptSha256(snapshot.transcriptSha256());
+        row.setCanonicalSegments(snapshot.canonicalSegments());
+        row.setCanonicalProjectionSha256(snapshot.canonicalProjectionSha256());
         row.setFinalizedAt(now);
         row.setCreatedAt(now);
         finalizations.save(row);

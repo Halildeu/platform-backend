@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.model.MeetingSession;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -28,6 +29,7 @@ class MeetingServiceSessionResolutionTest {
     private static final UUID SESSION = UUID.randomUUID();
 
     private final MeetingSessionRepository sessions = mock(MeetingSessionRepository.class);
+    private final MeetingSessionErasureService erasureService = mock(MeetingSessionErasureService.class);
     private MeetingService service;
 
     @BeforeEach
@@ -37,7 +39,8 @@ class MeetingServiceSessionResolutionTest {
         service = new MeetingService(
                 mock(MeetingRepository.class), sessions,
                 mock(MeetingActionRepository.class), mock(MeetingDecisionRepository.class),
-                mock(MeetingEventOutboxRepository.class), authz, false, false);
+                mock(MeetingEventOutboxRepository.class), mock(MeetingAnalysisRunRepository.class),
+                erasureService, authz, false, false);
     }
 
     @Test

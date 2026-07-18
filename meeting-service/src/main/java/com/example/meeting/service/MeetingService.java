@@ -26,6 +26,7 @@ import com.example.meeting.model.MeetingSession;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -80,6 +81,8 @@ public class MeetingService {
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingEventOutboxRepository eventOutboxRepository;
+    private final MeetingAnalysisRunRepository analysisRunRepository;
+    private final MeetingSessionErasureService sessionErasureService;
     private final MeetingEventOutboxFactory eventOutboxFactory;
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
     private final boolean legacyUserIdFallbackEnabled;
@@ -91,6 +94,8 @@ public class MeetingService {
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
             MeetingEventOutboxRepository eventOutboxRepository,
+            MeetingAnalysisRunRepository analysisRunRepository,
+            MeetingSessionErasureService sessionErasureService,
             ObjectProvider<OpenFgaAuthzService> authzServiceProvider,
             @Value("${meeting.authz.object-principal.legacy-user-id-fallback-enabled:false}")
             boolean legacyUserIdFallbackEnabled,
@@ -101,6 +106,8 @@ public class MeetingService {
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
         this.eventOutboxRepository = eventOutboxRepository;
+        this.analysisRunRepository = analysisRunRepository;
+        this.sessionErasureService = sessionErasureService;
         this.eventOutboxFactory = new MeetingEventOutboxFactory();
         this.authzServiceProvider = authzServiceProvider;
         this.legacyUserIdFallbackEnabled = legacyUserIdFallbackEnabled;
@@ -268,6 +275,7 @@ public class MeetingService {
     @Transactional(readOnly = true)
     public MeetingSessionResolutionResponse resolveSession(
             UUID tenantId, UUID meetingId, String externalSessionId) {
+        sessionErasureService.assertSourceNotErased(tenantId, meetingId, externalSessionId);
         MeetingSession session = sessionRepository.findByExternalSessionIdVisibleToOrg(
                         meetingId, externalSessionId, tenantId)
                 .orElseThrow(() -> new ResponseStatusException(
@@ -329,6 +337,8 @@ public class MeetingService {
         if (meeting.getStatus() == MeetingStatus.CANCELLED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Cancelled meeting cannot be recorded.");
         }
+        sessionErasureService.assertSourceNotErased(
+                tenant.tenantId(), meetingId, request.externalSessionId());
 
         Optional<MeetingSession> existingSession = sessionRepository.findByExternalSessionIdVisibleToOrg(
                 meetingId, request.externalSessionId(), tenant.tenantId());
@@ -413,8 +423,7 @@ public class MeetingService {
 
     @Transactional
     public void deleteSession(AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
-        requireMeeting(tenant, meetingId);
-        sessionRepository.delete(requireSession(tenant, meetingId, sessionId));
+        sessionErasureService.request(tenant, meetingId, sessionId);
     }
 
     // ──────────────────────────── Actions ────────────────────────────

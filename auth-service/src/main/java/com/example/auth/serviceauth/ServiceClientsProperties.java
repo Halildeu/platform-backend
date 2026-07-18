@@ -32,6 +32,7 @@ public class ServiceClientsProperties {
         private String secret = "";
         private Set<String> allowedAudiences = new LinkedHashSet<>();
         private Set<String> allowedPermissions = new LinkedHashSet<>();
+        private Map<String, Set<String>> allowedPermissionsByAudience = new HashMap<>();
         private boolean requireExplicitPermissions = true;
 
         public String getSecret() {
@@ -60,6 +61,17 @@ public class ServiceClientsProperties {
             this.allowedPermissions = allowedPermissions == null
                     ? new LinkedHashSet<>()
                     : allowedPermissions;
+        }
+
+        public Map<String, Set<String>> getAllowedPermissionsByAudience() {
+            return allowedPermissionsByAudience;
+        }
+
+        public void setAllowedPermissionsByAudience(
+                Map<String, Set<String>> allowedPermissionsByAudience) {
+            this.allowedPermissionsByAudience = allowedPermissionsByAudience == null
+                    ? new HashMap<>()
+                    : allowedPermissionsByAudience;
         }
 
         public boolean isRequireExplicitPermissions() {

@@ -21,8 +21,12 @@ Desktop must not connect directly to platform-ai and must not consume Redis.
 - JWT tenant/user ownership and active-session validation
 - PCM16, 16000 Hz, mono session guard
 - Versioned bounded binary frame decoder
-- Strict contiguous sequence checks and duplicate suppression across reconnects
+- Separate durable REST and reconnect-stable live relay sequence state
+- First live relay of REST-accepted audio, live duplicate suppression, and
+  durable-baseline reconnect jumps
 - One active connection per session
+- Strict bounded `{"type":"eof"}` terminal control relay
+- Bounded drain wait with `eof_ack`/`final`/`drained` client relay
 - In-memory PCM16-to-float32 conversion
 - Mandatory compute-plane audit before upstream forward
 - Direct-STT mTLS reuse for `wss://`
@@ -34,22 +38,21 @@ Desktop must not connect directly to platform-ai and must not consume Redis.
 
 ## Source Verification
 
-Executed on Windows with Java 21 and Maven 3.9:
+Executed in the current backend worktree with Java 26:
 
 ```text
-mvn -Dtest=LiveSttWebSocketConfigTest,LiveSttWebSocketProxyHandlerTest,LiveAudioStreamFrameTest,LiveStreamSequenceTrackerTest,AudioGatewayPropertiesTest test
-24 tests, 0 failures, 0 errors
+mvn -Dtest=LiveSttWebSocketProxyHandlerTest,LiveSttWebSocketProxyHandlerLoopbackTest,LiveAudioStreamFrameTest,LiveStreamControlFrameTest,InMemoryAudioSessionRegistryLiveSequenceTest,AudioGatewayPropertiesTest test
 
-mvn test
-170 tests, 0 failures, 0 errors
+mvn -pl audio-gateway-service test
+259 tests, 0 failures, 0 errors
 
 git diff --check
 PASS
 ```
 
-The full-service run was completed before the final frame-limit and bad-data
-close cleanup; the targeted 24-test run covers that final cleanup and recompiles all main/test
-sources.
+The loopback suite covers successful EOF drain, the bounded missing-drain failure
+path, and REST-first `seq=0` followed by first/duplicate WebSocket delivery using
+real Reactor-Netty WebSocket client/server frames.
 
 ## Dependencies
 

@@ -73,6 +73,9 @@ public interface TranscriptSessionAssociationRepository
     Optional<TranscriptSessionAssociation> findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
             UUID tenantId, UUID meetingId, String sourceSystem, String sourceSessionId);
 
+    List<TranscriptSessionAssociation> findByTenantIdAndMeetingIdAndSessionId(
+            UUID tenantId, UUID meetingId, UUID sessionId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             select a from TranscriptSessionAssociation a
@@ -225,4 +228,20 @@ public interface TranscriptSessionAssociationRepository
     List<TranscriptSessionAssociation> findDue(@Param("now") Instant now, Pageable pageable);
 
     long countByStatus(TranscriptSessionAssociationStatus status);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            delete from TranscriptSessionAssociation a
+            where a.tenantId = :tenantId
+              and a.meetingId = :meetingId
+              and (a.sessionId = :sessionId
+                   or (:sourceSessionId is not null
+                       and a.sourceSystem = 'DIRECT_STT'
+                       and a.sourceSessionId = :sourceSessionId))
+            """)
+    int deleteErasureScope(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId,
+            @Param("sourceSessionId") String sourceSessionId);
 }

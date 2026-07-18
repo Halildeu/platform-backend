@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -71,9 +72,12 @@ public class ServiceTokenController {
         if (registration.isRequireExplicitPermissions() && permissions.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_permission");
         }
+        Set<String> audiencePermissions = registration.getAllowedPermissionsByAudience().get(audience);
         for (String permission : permissions) {
             if (!mintPolicy.getAllowedPermissions().contains(permission)
-                    || !registration.getAllowedPermissions().contains(permission)) {
+                    || !registration.getAllowedPermissions().contains(permission)
+                    || (!registration.getAllowedPermissionsByAudience().isEmpty()
+                        && (audiencePermissions == null || !audiencePermissions.contains(permission)))) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid_permission");
             }
         }

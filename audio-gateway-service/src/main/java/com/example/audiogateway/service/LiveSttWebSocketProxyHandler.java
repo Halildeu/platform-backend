@@ -3,10 +3,15 @@ package com.example.audiogateway.service;
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioFormat;
 import com.example.audiogateway.service.AudioGatewayAuditSink.AuditEvent;
+import com.example.audiogateway.service.AudioSessionRegistry.LiveFrameCommand;
+import com.example.audiogateway.service.AudioSessionRegistry.LiveFrameOutcome;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.net.URI;
+import java.time.Duration;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -15,6 +20,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
@@ -25,6 +31,7 @@ import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
 /**
  * Authenticated, bounded, in-flight-only gateway bridge to live-stt /ws/stream.
@@ -41,7 +48,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
     private final AudioGatewayAuditSink auditSink;
     private final WebSocketClient upstreamClient;
     private final URI upstreamUri;
-    private final LiveStreamSequenceTracker sequences;
+    private final ObjectMapper objectMapper;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Counter acceptedFrames;
     private final Counter duplicateFrames;
@@ -53,14 +60,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
             final AudioGatewayProperties properties,
             final AudioGatewayAuditSink auditSink,
             final WebSocketClient upstreamClient,
+            final ObjectMapper objectMapper,
             final MeterRegistry meters) {
         this.sessions = sessions;
         this.properties = properties;
         this.auditSink = auditSink;
         this.upstreamClient = upstreamClient;
         this.upstreamUri = URI.create(properties.getDirectStt().getStreaming().getStreamUrl());
-        this.sequences = new LiveStreamSequenceTracker(
-                properties.getDirectStt().getStreaming().getMaxTrackedSessions());
+        this.objectMapper = objectMapper;
         this.acceptedFrames = meters.counter("audio_gateway_live_stream_frames_total", "outcome", "accepted");
         this.duplicateFrames = meters.counter("audio_gateway_live_stream_frames_total", "outcome", "duplicate");
         this.rejectedFrames = meters.counter("audio_gateway_live_stream_frames_total", "outcome", "rejected");
@@ -135,7 +142,6 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                             .onErrorResume(error -> clientSession.close(CloseStatus.SERVER_ERROR))
                             .doFinally(signal -> {
                                 activeSessions.remove(sessionId);
-                                sequences.release(sessionId);
                             });
                 });
     }
@@ -146,20 +152,48 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
             final SessionRecord record,
             final String correlationId) {
         final int maxFrameBytes = properties.getDirectStt().getStreaming().getMaxFrameBytes();
+        final int maxControlBytes = properties.getDirectStt().getStreaming()
+                .getMaxTerminalControlBytes();
+        final Duration drainTimeout = Duration.ofMillis(properties.getDirectStt().getStreaming()
+                .getTerminalDrainTimeoutMs());
+        final AtomicBoolean eofSent = new AtomicBoolean();
+        final AtomicBoolean drainedObserved = new AtomicBoolean();
+        final Sinks.One<Void> drainedRelayed = Sinks.one();
 
-        final Flux<WebSocketMessage> audioToUpstream = client.receive()
+        final Flux<WebSocketMessage> framesToUpstream = client.receive()
                 .limitRate(1)
-                .handle((message, sink) -> {
+                .<WebSocketMessage>handle((message, sink) -> {
                     // Do NOT release the payload: reactor-netty owns the inbound frame and
                     // releases it after this handler returns (FluxReceive.drainReceiver ->
                     // DefaultByteBufHolder.release). Releasing the DataBuffer here drops the
                     // shared ByteBuf's refCnt to 0, and the framework's own release then
                     // throws IllegalReferenceCountException. Copy synchronously instead —
                     // the bytes below outlive the frame, the buffer does not.
-                    if (message.getType() != WebSocketMessage.Type.BINARY) {
+                    if (message.getType() == WebSocketMessage.Type.TEXT) {
+                        final int readable = message.getPayload().readableByteCount();
+                        if (readable > maxControlBytes || !eofSent.compareAndSet(false, true)) {
+                            rejectedFrames.increment();
+                            sink.error(new ClientFrameException(
+                                    "live stream terminal control is invalid"));
+                            return;
+                        }
+                        final LiveStreamControlFrame control;
+                        try {
+                            control = LiveStreamControlFrame.decode(
+                                    message.getPayloadAsText(), maxControlBytes, objectMapper);
+                        } catch (IllegalArgumentException error) {
+                            eofSent.set(false);
+                            rejectedFrames.increment();
+                            sink.error(new ClientFrameException(error.getMessage()));
+                            return;
+                        }
+                        sink.next(upstream.textMessage(control.upstreamPayload()));
+                        return;
+                    }
+                    if (message.getType() != WebSocketMessage.Type.BINARY || eofSent.get()) {
                         rejectedFrames.increment();
                         sink.error(new ClientFrameException(
-                                "live audio stream accepts binary frames only"));
+                                "live stream frame type or terminal order is invalid"));
                         return;
                     }
                     final int readable = message.getPayload().readableByteCount();
@@ -179,33 +213,32 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                         sink.error(new ClientFrameException(error.getMessage()));
                         return;
                     }
-                    final LiveStreamSequenceTracker.Outcome outcome = sequences.accept(
-                            record.sessionId(), record.lastAcceptedChunkSeq(), frame.chunkSeq());
-                    if (outcome == LiveStreamSequenceTracker.Outcome.DUPLICATE) {
+                    final LiveFrameOutcome outcome = sessions.admitLiveFrame(
+                            new LiveFrameCommand(
+                                    record.sessionId(), record.tenantId(), record.userId(),
+                                    frame.chunkSeq(), System.currentTimeMillis()),
+                            current -> emitComputePlaneAudit(current, frame, correlationId));
+                    if (outcome instanceof LiveFrameOutcome.Duplicate) {
                         duplicateFrames.increment();
                         return;
                     }
-                    if (outcome != LiveStreamSequenceTracker.Outcome.ACCEPTED) {
+                    if (!(outcome instanceof LiveFrameOutcome.Accepted)) {
                         rejectedFrames.increment();
                         sink.error(new ClientFrameException(
-                                "live audio sequence is non-contiguous or tracker capacity is exhausted"));
+                                "live audio sequence, ownership, or session state is invalid"));
                         return;
-                    }
-
-                    try {
-                        emitComputePlaneAudit(record, frame, correlationId);
-                    } catch (RuntimeException error) {
-                        sequences.rollbackAccepted(record.sessionId(), frame.chunkSeq());
-                        throw error;
                     }
                     acceptedFrames.increment();
                     sink.next(upstream.binaryMessage(factory ->
                             factory.wrap(frame.toFloat32LittleEndian())));
-                });
+                })
+                // EOF is terminal for the upload leg even when the client keeps its
+                // inbound socket open while waiting for final/drained events.
+                .takeUntil(message -> message.getType() == WebSocketMessage.Type.TEXT);
 
-        final Flux<WebSocketMessage> eventsToClient = upstream.receive()
+        final Flux<RelayedEvent> relayedEvents = upstream.receive()
                 .limitRate(1)
-                .handle((message, sink) -> {
+                .<RelayedEvent>handle((message, sink) -> {
                     // Same ownership rule as above: the upstream session's inbound frames are
                     // released by reactor-netty. This relay copies the payload into a NEW
                     // message for the client, so nothing here outlives the frame.
@@ -216,18 +249,47 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                                     "live STT event exceeds configured response bound"));
                             return;
                         }
-                        sink.next(client.textMessage(message.getPayloadAsText()));
+                        final String event = message.getPayloadAsText();
+                        final boolean drained = eofSent.get()
+                                && "drained".equals(upstreamEventType(event));
+                        if (drained) {
+                            drainedObserved.set(true);
+                        }
+                        sink.next(new RelayedEvent(client.textMessage(event), drained));
                     } else if (message.getType() == WebSocketMessage.Type.PING) {
                         final byte[] payload = new byte[message.getPayload().readableByteCount()];
                         message.getPayload().read(payload);
-                        sink.next(client.pingMessage(factory -> factory.wrap(payload)));
+                        sink.next(new RelayedEvent(
+                                client.pingMessage(factory -> factory.wrap(payload)), false));
                     }
                     // Other frame types are dropped; reactor-netty releases them.
-                });
+                })
+                .takeUntil(RelayedEvent::drained);
 
-        final Mono<Void> upload = upstream.send(audioToUpstream);
-        final Mono<Void> download = client.send(eventsToClient);
+        final Mono<Void> upload = upstream.send(framesToUpstream)
+                .then(Mono.defer(() -> eofSent.get()
+                        ? drainedRelayed.asMono().timeout(drainTimeout)
+                        : Mono.empty()));
+        final Mono<Void> download = client.send(relayedEvents.map(RelayedEvent::message))
+                .doOnSuccess(ignored -> {
+                    if (drainedObserved.get()) {
+                        drainedRelayed.tryEmitEmpty();
+                    }
+                })
+                .then(Mono.defer(() -> eofSent.get() && !drainedObserved.get()
+                        ? Mono.error(new TerminalDrainException())
+                        : Mono.empty()));
         return Mono.firstWithSignal(upload, download).then();
+    }
+
+    private String upstreamEventType(final String value) {
+        try {
+            final JsonNode root = objectMapper.readTree(value);
+            return root != null && root.isObject() && root.path("type").isTextual()
+                    ? root.path("type").textValue() : "";
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 
     private void emitComputePlaneAudit(
@@ -312,5 +374,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
         private ClientFrameException(final String message) {
             super(message);
         }
+    }
+
+    private static final class TerminalDrainException extends RuntimeException {
+        private TerminalDrainException() {
+            super("live STT terminal drain did not complete");
+        }
+    }
+
+    private record RelayedEvent(WebSocketMessage message, boolean drained) {
     }
 }

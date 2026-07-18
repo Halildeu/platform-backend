@@ -7,6 +7,8 @@ import com.example.meeting.dto.v1.internal.MeetingAnalysisActionIngest;
 import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestRequest;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.repository.MeetingRepository;
+import com.example.meeting.security.AnalysisJobCapabilityVerifier;
+import com.example.meeting.support.AnalysisJobCapabilityTestTokens;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -58,6 +60,8 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
     private static final String SCHEMA = "meeting_service";
     private static final String SHA_A = "a".repeat(64);
     private static final Instant GEN = Instant.parse("2026-07-11T10:00:00Z");
+    private static final Instant FINALIZED = Instant.parse("2026-07-11T09:59:00Z");
+    private static final UUID SESSION_ID = UUID.fromString("41cced6d-b538-42ea-8178-92c3ce4157b4");
 
     @Container
     @SuppressWarnings("resource")
@@ -79,6 +83,9 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
         registry.add("spring.flyway.default-schema", () -> SCHEMA);
         registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.jpa.properties.hibernate.default_schema", () -> SCHEMA);
+        registry.add(
+                "security.analysis-job-capability.hmac-secret",
+                () -> AnalysisJobCapabilityTestTokens.ENCODED_SECRET);
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -95,7 +102,9 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
     @Import({
             MeetingAnalysisResultIngestionService.class,
             MeetingAnalysisResultWriter.class,
-            MeetingAnalysisPayloadHasher.class
+            MeetingAnalysisPayloadHasher.class,
+            AnalysisGeneratedAtPolicy.class,
+            AnalysisJobCapabilityVerifier.class
     })
     static class Boot {
     }
@@ -121,7 +130,7 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
         UUID runId = UUID.randomUUID();
         Instant due = Instant.parse("2026-07-20T09:00:00Z");
 
-        service.ingest(meetingId, runId, request(SHA_A, "Toplantı özeti",
+        ingest(meetingId, runId, request(SHA_A, "Toplantı özeti",
                 List.of("Karar 1", "Karar 2"),
                 List.of(new MeetingAnalysisActionIngest("Raporu gönder", "ali@example.com", due),
                         new MeetingAnalysisActionIngest("Takip et", null, null))));
@@ -158,7 +167,7 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
 
-        service.ingest(meetingId, runId, request(SHA_A, "özet", List.of(),
+        ingest(meetingId, runId, request(SHA_A, "özet", List.of(),
                 List.of(new MeetingAnalysisActionIngest("assigned", "bob@example.com", null),
                         new MeetingAnalysisActionIngest("nobody", null, null),
                         new MeetingAnalysisActionIngest("blank", "   ", null))));
@@ -177,7 +186,7 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
 
-        service.ingest(meetingId, runId, request(SHA_A, null, List.of(),
+        ingest(meetingId, runId, request(SHA_A, null, List.of(),
                 List.of(new MeetingAnalysisActionIngest("assigned", "carol@example.com", null))));
 
         assertThat(outboxRows(runId)).extracting(r -> r.get("event_type"))
@@ -192,8 +201,8 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
         var request = request(SHA_A, "özet",
                 List.of("k"), List.of(new MeetingAnalysisActionIngest("a", "dan@example.com", null)));
 
-        service.ingest(meetingId, runId, request);
-        service.ingest(meetingId, runId, request); // idempotent replay — must NOT re-emit
+        ingest(meetingId, runId, request);
+        ingest(meetingId, runId, request); // idempotent replay — must NOT re-emit
 
         // Still exactly 2 rows (1 summary.ready + 1 action.assigned) — the UNIQUE
         // event_key + the replay short-circuit make re-emission impossible.
@@ -212,7 +221,7 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
         var request = request(SHA_A, "özet", List.of("ok", overLong),
                 List.of(new MeetingAnalysisActionIngest("a", "erin@example.com", null)));
 
-        assertThatThrownBy(() -> service.ingest(meetingId, runId, request))
+        assertThatThrownBy(() -> ingest(meetingId, runId, request))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
         assertThat(outboxCount(runId)).isZero();
@@ -225,9 +234,23 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
     private MeetingAnalysisResultIngestRequest request(
             String sha, String summary, List<String> decisions, List<MeetingAnalysisActionIngest> actions) {
         return new MeetingAnalysisResultIngestRequest(
-                null, "SES-1", sha, "5-adr0043", "gpt-x", "openai", "p1",
+                null, SESSION_ID.toString(), sha, 1L, FINALIZED, "analysis-v1",
+                "5-adr0043", "gpt-x", "openai", "p1",
                 summary, "verified", List.of(), List.of(), List.of(),
                 0, false, 0, GEN, decisions, actions, null);
+    }
+
+    private void ingest(
+            UUID meetingId, UUID analysisRunId, MeetingAnalysisResultIngestRequest request) {
+        UUID tenantId = jdbc.queryForObject(
+                "SELECT tenant_id FROM " + SCHEMA + ".meetings WHERE id = ?",
+                UUID.class,
+                meetingId);
+        service.ingest(
+                meetingId,
+                analysisRunId,
+                AnalysisJobCapabilityTestTokens.issue(tenantId, meetingId, analysisRunId, request),
+                request);
     }
 
     private UUID insertMeeting(UUID org) {

@@ -139,8 +139,17 @@ security:
         secret: ${SERVICE_CLIENT_MEETING_AI_SECRET:}
         allowed-audiences:
           - meeting-service
+          - transcript-service
         allowed-permissions:
           - meeting:analysis-result:write
+          - transcript:canonical:read
+          - transcript:analysis-job-capability:issue
+        allowed-permissions-by-audience:
+          meeting-service:
+            - meeting:analysis-result:write
+          transcript-service:
+            - transcript:canonical:read
+            - transcript:analysis-job-capability:issue
         require-explicit-permissions: true
       transcript-service:
         # Blank by default: Vault/ESO provisioning is the activation gate.
@@ -150,12 +159,21 @@ security:
         allowed-permissions:
           - meeting:session:resolve
         require-explicit-permissions: true
+      meeting-service:
+        # Blank by default: Vault/ESO provisioning is the activation gate.
+        secret: ${SERVICE_CLIENT_MEETING_SERVICE_SECRET:}
+        allowed-audiences:
+          - transcript-service
+        allowed-permissions:
+          - transcript:session:erase
+          - transcript:canonical:read
+        require-explicit-permissions: true
   service-mint:
     # #734: notification-orchestrator + notify:intents:system added to the
     # defaults so the user-service admin-email mint works even before the gitops
     # env override; gitops sets the canonical list explicitly.
-    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service}
-    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve}
+    allowed-audiences: ${SECURITY_SERVICE_MINT_ALLOWED_AUDIENCES:permission-service,user-service,notification-orchestrator,meeting-service,transcript-service}
+    allowed-permissions: ${SECURITY_SERVICE_MINT_ALLOWED_PERMISSIONS:permissions:read,permissions:write,users:internal,notify:intents:system,meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase}
     rate-limit-per-minute: ${SECURITY_SERVICE_MINT_RATE_LIMIT:120}
     failed-auth-rate-limit-per-minute: ${SECURITY_SERVICE_MINT_FAILED_AUTH_RATE_LIMIT:30}
   admin-fallback:

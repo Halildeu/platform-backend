@@ -81,7 +81,8 @@ audio:
         enabled: ${AUDIO_GATEWAY_DIRECT_STT_STREAMING_ENABLED:false}
         stream-url: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_URL:}
         max-frame-bytes: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_FRAME_BYTES:65535}
-        max-tracked-sessions: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TRACKED_SESSIONS:1000}
+        max-terminal-control-bytes: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TERMINAL_CONTROL_BYTES:64}
+        terminal-drain-timeout-ms: ${AUDIO_GATEWAY_DIRECT_STT_STREAM_TERMINAL_DRAIN_TIMEOUT_MS:10000}
     # Faz 24 KVKK audit pipeline (gitops#1249). DEFAULT-OFF; overlay configmap
     # flips it once audit-event-consumer-service is up.
     audit:

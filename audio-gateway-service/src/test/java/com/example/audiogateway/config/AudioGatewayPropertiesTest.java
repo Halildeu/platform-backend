@@ -206,6 +206,30 @@ class AudioGatewayPropertiesTest {
                 .hasMessageContaining("streaming.max-frame-bytes must be in [1,65535]");
     }
 
+    @Test
+    void liveStreamingRejectsUnboundedTerminalControlSize() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+        props.getDirectStt().getStreaming().setMaxTerminalControlBytes(1_025);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("max-terminal-control-bytes must be in [14,1024]");
+    }
+
+    @Test
+    void liveStreamingRejectsTerminalDrainTimeoutAboveHardMinuteBound() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+        props.getDirectStt().getStreaming().setTerminalDrainTimeoutMs(60_001L);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("terminal-drain-timeout-ms must be in [1,60000]");
+    }
+
     private static AudioGatewayProperties directSttProps(final String transcribeUrl) {
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getDirectStt().setEnabled(true);
