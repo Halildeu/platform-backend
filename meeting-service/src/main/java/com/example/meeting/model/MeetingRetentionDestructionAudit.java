@@ -51,6 +51,9 @@ public class MeetingRetentionDestructionAudit {
     @Column(name = "result_access_audit_deleted_count", nullable = false)
     private long resultAccessAuditDeletedCount;
 
+    @Column(name = "analysis_run_deleted_count", nullable = false)
+    private long analysisRunDeletedCount;
+
     @Column(name = "job_id", nullable = false, length = 96)
     private String jobId;
 
@@ -121,6 +124,9 @@ public class MeetingRetentionDestructionAudit {
     public void setResultAccessAuditDeletedCount(long resultAccessAuditDeletedCount) {
         this.resultAccessAuditDeletedCount = resultAccessAuditDeletedCount;
     }
+
+    public long getAnalysisRunDeletedCount() { return analysisRunDeletedCount; }
+    public void setAnalysisRunDeletedCount(long value) { this.analysisRunDeletedCount = value; }
 
     public String getJobId() {
         return jobId;

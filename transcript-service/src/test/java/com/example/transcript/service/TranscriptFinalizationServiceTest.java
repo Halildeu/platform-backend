@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.transcript.model.TranscriptEventOutbox;
+import com.example.transcript.finalization.FinalizedTranscriptSnapshotCodec;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptFinalizationState;
@@ -23,6 +24,7 @@ import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.security.AdminTenantContext;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -88,7 +90,8 @@ class TranscriptFinalizationServiceTest {
                 .thenReturn(List.of(finalSegment("approved transcript")));
         service = new TranscriptFinalizationService(
                 associations, segments, finalizations, outbox,
-                new TranscriptSnapshotHasher(),
+                new FinalizedTranscriptSnapshotCodec(
+                        new TranscriptSnapshotHasher(), new ObjectMapper()),
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
@@ -115,6 +118,14 @@ class TranscriptFinalizationServiceTest {
         verify(association).setFinalizationCycleVersion(1L);
         verify(association).setFinalizationState(TranscriptFinalizationState.FINALIZED);
         verify(association).setQuiescenceDueAt(null);
+        assertThat(storedFinalization.get().getCanonicalTranscript())
+                .isEqualTo("approved transcript");
+        assertThat(storedFinalization.get().getCanonicalTranscriptSha256())
+                .matches("[0-9a-f]{64}");
+        assertThat(storedFinalization.get().getCanonicalSegments())
+                .contains("approved transcript");
+        assertThat(storedFinalization.get().getCanonicalProjectionSha256())
+                .matches("[0-9a-f]{64}");
     }
 
     @Test

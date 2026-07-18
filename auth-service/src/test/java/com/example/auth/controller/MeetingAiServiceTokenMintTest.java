@@ -41,7 +41,11 @@ import org.springframework.test.web.servlet.MvcResult;
 @TestPropertySource(properties = {
         "security.service-clients.clients.meeting-ai.secret=test-secret",
         "security.service-clients.clients.meeting-ai.allowed-audiences[0]=meeting-service",
+        "security.service-clients.clients.meeting-ai.allowed-audiences[1]=transcript-service",
         "security.service-clients.clients.meeting-ai.allowed-permissions[0]=meeting:analysis-result:write",
+        "security.service-clients.clients.meeting-ai.allowed-permissions[1]=transcript:canonical:read",
+        "security.service-clients.clients.meeting-ai.allowed-permissions-by-audience[meeting-service][0]=meeting:analysis-result:write",
+        "security.service-clients.clients.meeting-ai.allowed-permissions-by-audience[transcript-service][0]=transcript:canonical:read",
         "security.service-clients.clients.meeting-ai.require-explicit-permissions=true",
         "security.service-clients.clients.transcript-service.secret=transcript-secret",
         "security.service-clients.clients.transcript-service.allowed-audiences[0]=meeting-service",
@@ -58,8 +62,8 @@ import org.springframework.test.web.servlet.MvcResult;
         "security.service-clients.clients.unprovisioned-ai.secret=",
         "security.service-clients.clients.unprovisioned-ai.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.unprovisioned-ai.allowed-permissions[0]=meeting:analysis-result:write",
-        "security.service-mint.allowed-audiences=meeting-service",
-        "security.service-mint.allowed-permissions=meeting:analysis-result:write,meeting:session:resolve,permissions:read",
+        "security.service-mint.allowed-audiences=meeting-service,transcript-service",
+        "security.service-mint.allowed-permissions=meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,permissions:read",
         "security.service-mint.rate-limit-per-minute=100",
         "auth.impersonation.keycloak-token-url=http://localhost:9999/token",
         "auth.impersonation.keycloak-broker-url=http://localhost:9999/broker",
@@ -105,6 +109,30 @@ class MeetingAiServiceTokenMintTest {
         assertEquals("meeting-ai", claims.getStringClaim("svc"));
         assertEquals(java.util.List.of("meeting-service"), claims.getAudience());
         assertEquals(java.util.List.of("meeting:analysis-result:write"), claims.getStringListClaim("perm"));
+    }
+
+    @Test
+    void meetingAi_mintsOnlyCanonicalReadForTranscriptService() throws Exception {
+        MvcResult result = mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-ai", "test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=transcript-service"
+                                + "&permissions=transcript:canonical:read"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").isNotEmpty())
+                .andReturn();
+
+        JWTClaimsSet claims = claims(result);
+        assertEquals("meeting-ai", claims.getSubject());
+        assertEquals(java.util.List.of("transcript-service"), claims.getAudience());
+        assertEquals(java.util.List.of("transcript:canonical:read"), claims.getStringListClaim("perm"));
+
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-ai", "test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=transcript-service"
+                                + "&permissions=meeting:analysis-result:write"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

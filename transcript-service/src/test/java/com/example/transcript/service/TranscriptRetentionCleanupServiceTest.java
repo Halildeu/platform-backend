@@ -4,10 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.transcript.model.TranscriptAccessAudit;
 import com.example.transcript.model.TranscriptAccessType;
+import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptRetentionDestructionAudit;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.repository.TranscriptAccessAuditRepository;
+import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptRetentionDestructionAuditRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.testsupport.IsolatedH2DataJpaTest;
@@ -39,6 +41,8 @@ class TranscriptRetentionCleanupServiceTest {
     private TranscriptRetentionCleanupService service;
     @Autowired
     private TranscriptSegmentRepository segmentRepository;
+    @Autowired
+    private TranscriptFinalizationRepository finalizationRepository;
     @Autowired
     private TranscriptAccessAuditRepository accessAuditRepository;
     @Autowired
@@ -99,6 +103,30 @@ class TranscriptRetentionCleanupServiceTest {
         assertThat(transcriptAudits.get(0).getAuditPayload()).isEqualTo("metadata-only");
     }
 
+    @Test
+    void cleanupDeletesExpiredFinalizedSnapshotButPreservesLegalHold() {
+        TranscriptSegment expired = segment(EXPIRED_TRANSCRIPT, "expired canonical transcript");
+        TranscriptFinalization expiredFinalization = finalization(expired, false, EXPIRED_TRANSCRIPT);
+        TranscriptSegment held = segment(EXPIRED_TRANSCRIPT.plusSeconds(1), "held canonical transcript");
+        TranscriptFinalization heldFinalization = finalization(held, true, EXPIRED_TRANSCRIPT.plusSeconds(1));
+
+        TranscriptRetentionCleanupService.CleanupResult result = service.cleanup(NOW);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(result.transcriptRecords().deletedCount()).isEqualTo(2);
+        assertThat(segmentRepository.findById(expired.getId())).isEmpty();
+        assertThat(finalizationRepository.findById(expiredFinalization.getId())).isEmpty();
+        assertThat(segmentRepository.findById(held.getId())).isPresent();
+        assertThat(finalizationRepository.findById(heldFinalization.getId())).isPresent();
+
+        TranscriptRetentionDestructionAudit audit = destructionAuditRepository
+                .findByLayerIdOrderByExecutedAtDesc(TranscriptRetentionCleanupService.LAYER_TRANSCRIPT_RECORDS)
+                .get(0);
+        assertThat(audit.getDeletedCount()).isEqualTo(2);
+        assertThat(audit.getAuditPayload()).isEqualTo("metadata-only");
+    }
+
     private TranscriptSegment segment(Instant createdAt, String draft) {
         UUID org = UUID.randomUUID();
         TranscriptSegment segment = new TranscriptSegment();
@@ -126,6 +154,23 @@ class TranscriptRetentionCleanupServiceTest {
         audit.setAccessedAt(accessedAt);
         audit.setResultCount(1);
         return accessAuditRepository.saveAndFlush(audit);
+    }
+
+    private TranscriptFinalization finalization(
+            TranscriptSegment segment, boolean legalHold, Instant createdAt) {
+        TranscriptFinalization finalization = new TranscriptFinalization();
+        finalization.setId(UUID.randomUUID());
+        finalization.setTenantId(segment.getTenantId());
+        finalization.setOrgId(segment.getOrgId());
+        finalization.setMeetingId(segment.getMeetingId());
+        finalization.setSessionId(segment.getSessionId());
+        finalization.setFinalizationVersion(1L);
+        finalization.setSegmentCount(1);
+        finalization.setSnapshotSha256("a".repeat(64));
+        finalization.setFinalizedAt(createdAt);
+        finalization.setCreatedAt(createdAt);
+        finalization.setLegalHold(legalHold);
+        return finalizationRepository.saveAndFlush(finalization);
     }
 
     private void setSegmentTimestamps(UUID id, Instant timestamp) {

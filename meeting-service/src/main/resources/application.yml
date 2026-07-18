@@ -46,6 +46,12 @@ eureka:
     instance-id: ${spring.application.name}:${eureka.instance.hostname}:${server.port}
 
 security:
+  analysis-job-capability:
+    hmac-secret: ${ANALYSIS_JOB_CAPABILITY_HMAC_SECRET:}
+    issuer: ${ANALYSIS_JOB_CAPABILITY_ISSUER:transcript-service}
+    audience: ${ANALYSIS_JOB_CAPABILITY_AUDIENCE:meeting-service}
+    client-id: ${ANALYSIS_JOB_CAPABILITY_CLIENT_ID:meeting-ai}
+    max-ttl: ${ANALYSIS_JOB_CAPABILITY_MAX_TTL:PT30M}
   jwt:
     audience: ${SECURITY_JWT_AUDIENCE:meeting-service,frontend,account,serban-web}
     allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}

@@ -42,6 +42,14 @@ spring:
           jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://keycloak:8080/realms/serban/protocol/openid-connect/certs}
           audiences: ${SECURITY_JWT_AUDIENCE:transcript-service,frontend,account,serban-web}
 
+security:
+  analysis-job-capability:
+    hmac-secret: ${ANALYSIS_JOB_CAPABILITY_HMAC_SECRET:}
+    issuer: ${ANALYSIS_JOB_CAPABILITY_ISSUER:transcript-service}
+    audience: ${ANALYSIS_JOB_CAPABILITY_AUDIENCE:meeting-service}
+    client-id: ${ANALYSIS_JOB_CAPABILITY_CLIENT_ID:meeting-ai}
+    ttl: ${ANALYSIS_JOB_CAPABILITY_TTL:PT15M}
+
 # OpenFGA live config (mirrors endpoint-admin-service).
 #  - enabled=false → @RequireModule interceptor fail-OPEN no-op (authz gate
 #    silently disabled; pod stays green).
@@ -83,6 +91,12 @@ management:
       enabled: ${TRANSCRIPT_REDIS_HEALTH_ENABLED:false}
 
 transcript:
+  internal:
+    service-jwt:
+      jwk-set-uri: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_JWK_SET_URI:}
+      issuer: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_ISSUER:auth-service}
+      audience: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_AUDIENCE:transcript-service}
+      client-ids: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_CLIENT_IDS:meeting-ai}
   direct-stt-result-consumer:
     enabled: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_ENABLED:false}
     dlq-stream-key: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_DLQ_STREAM_KEY:transcript:direct-stt-results:dlq}

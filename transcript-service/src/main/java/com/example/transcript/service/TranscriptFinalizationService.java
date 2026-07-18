@@ -5,6 +5,7 @@ import com.example.common.meeting.events.MeetingEventPayload;
 import com.example.common.meeting.events.MeetingEventType;
 import com.example.common.meeting.events.MeetingEventV1Serializer;
 import com.example.transcript.dto.TranscriptFinalizationDto;
+import com.example.transcript.finalization.FinalizedTranscriptSnapshotCodec;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptEventOutbox;
 import com.example.transcript.model.TranscriptFinalization;
@@ -39,7 +40,7 @@ public class TranscriptFinalizationService {
     private final TranscriptSegmentRepository segmentRepository;
     private final TranscriptFinalizationRepository finalizationRepository;
     private final TranscriptEventOutboxRepository outboxRepository;
-    private final TranscriptSnapshotHasher snapshotHasher;
+    private final FinalizedTranscriptSnapshotCodec snapshotCodec;
     private final Clock clock;
 
     @Autowired
@@ -48,9 +49,9 @@ public class TranscriptFinalizationService {
             TranscriptSegmentRepository segmentRepository,
             TranscriptFinalizationRepository finalizationRepository,
             TranscriptEventOutboxRepository outboxRepository,
-            TranscriptSnapshotHasher snapshotHasher) {
+            FinalizedTranscriptSnapshotCodec snapshotCodec) {
         this(associationRepository, segmentRepository, finalizationRepository,
-                outboxRepository, snapshotHasher, Clock.systemUTC());
+                outboxRepository, snapshotCodec, Clock.systemUTC());
     }
 
     TranscriptFinalizationService(
@@ -58,13 +59,13 @@ public class TranscriptFinalizationService {
             TranscriptSegmentRepository segmentRepository,
             TranscriptFinalizationRepository finalizationRepository,
             TranscriptEventOutboxRepository outboxRepository,
-            TranscriptSnapshotHasher snapshotHasher,
+            FinalizedTranscriptSnapshotCodec snapshotCodec,
             Clock clock) {
         this.associationRepository = associationRepository;
         this.segmentRepository = segmentRepository;
         this.finalizationRepository = finalizationRepository;
         this.outboxRepository = outboxRepository;
-        this.snapshotHasher = snapshotHasher;
+        this.snapshotCodec = snapshotCodec;
         this.clock = clock;
     }
 
@@ -98,9 +99,10 @@ public class TranscriptFinalizationService {
                             "Canonical finalization version has no immutable occurrence row."));
             List<TranscriptSegment> currentSegments = segmentRepository
                     .findCanonicalSessionForUpdate(tenantId, meetingId, sessionId);
-            TranscriptSnapshotHasher.Snapshot currentSnapshot = editorialSnapshot(currentSegments);
+            FinalizedTranscriptSnapshotCodec.StoredSnapshot currentSnapshot =
+                    editorialSnapshot(currentSegments);
             if (existing.getSegmentCount() != currentSegments.size()
-                    || !existing.getSnapshotSha256().equals(currentSnapshot.sha256())) {
+                    || !existing.getSnapshotSha256().equals(currentSnapshot.sourceSnapshotSha256())) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
                         "Canonical transcript changed; use the next finalizationVersion.");
             }
@@ -114,7 +116,7 @@ public class TranscriptFinalizationService {
 
         List<TranscriptSegment> segments = segmentRepository.findCanonicalSessionForUpdate(
                 tenantId, meetingId, sessionId);
-        TranscriptSnapshotHasher.Snapshot snapshot = editorialSnapshot(segments);
+        FinalizedTranscriptSnapshotCodec.StoredSnapshot snapshot = editorialSnapshot(segments);
 
         // PostgreSQL timestamptz persists microseconds. Normalize before both the
         // immutable row and event payload are created so replayed DTOs and exact
@@ -144,7 +146,11 @@ public class TranscriptFinalizationService {
         finalization.setSessionId(sessionId);
         finalization.setFinalizationVersion(requestedVersion);
         finalization.setSegmentCount(segments.size());
-        finalization.setSnapshotSha256(snapshot.sha256());
+        finalization.setSnapshotSha256(snapshot.sourceSnapshotSha256());
+        finalization.setCanonicalTranscript(snapshot.transcript());
+        finalization.setCanonicalTranscriptSha256(snapshot.transcriptSha256());
+        finalization.setCanonicalSegments(snapshot.canonicalSegments());
+        finalization.setCanonicalProjectionSha256(snapshot.canonicalProjectionSha256());
         finalization.setFinalizedAt(finalizedAt);
         finalization.setCreatedAt(finalizedAt);
         finalizationRepository.save(finalization);
@@ -202,9 +208,10 @@ public class TranscriptFinalizationService {
         }
     }
 
-    private TranscriptSnapshotHasher.Snapshot editorialSnapshot(List<TranscriptSegment> segments) {
+    private FinalizedTranscriptSnapshotCodec.StoredSnapshot editorialSnapshot(
+            List<TranscriptSegment> segments) {
         try {
-            return snapshotHasher.editorialSnapshot(segments);
+            return snapshotCodec.captureEditorial(segments);
         } catch (TranscriptSnapshotHasher.InvalidSnapshotException ex) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "Canonical transcript is not ready for editorial finalization.");

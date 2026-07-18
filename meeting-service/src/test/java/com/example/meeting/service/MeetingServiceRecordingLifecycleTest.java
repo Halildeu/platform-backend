@@ -20,6 +20,7 @@ import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -59,6 +60,7 @@ class MeetingServiceRecordingLifecycleTest {
     @Mock private MeetingActionRepository actionRepository;
     @Mock private MeetingDecisionRepository decisionRepository;
     @Mock private MeetingEventOutboxRepository eventOutboxRepository;
+    @Mock private MeetingAnalysisRunRepository analysisRunRepository;
     @Mock private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock private OpenFgaAuthzService authzService;
 
@@ -70,7 +72,7 @@ class MeetingServiceRecordingLifecycleTest {
     void setUp() {
         service = new MeetingService(
                 meetingRepository, sessionRepository, actionRepository, decisionRepository,
-                eventOutboxRepository, authzProvider, false, false);
+                eventOutboxRepository, analysisRunRepository, authzProvider, false, false);
         meeting = meeting(MeetingStatus.SCHEDULED);
         lenient().when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting));
@@ -345,6 +347,42 @@ class MeetingServiceRecordingLifecycleTest {
                         error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
 
         verify(sessionRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void deleteSessionPurgesAnalysisDerivativesBeforeCanonicalSession() {
+        MeetingSession session = session(ENDED_AT);
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meeting));
+        when(sessionRepository.findByIdAndMeetingIdVisibleToOrg(SESSION_ID, MEETING_ID, TENANT_ID))
+                .thenReturn(Optional.of(session));
+        when(analysisRunRepository.existsLegalHoldForCanonicalSession(
+                MEETING_ID, TENANT_ID, SESSION_ID.toString())).thenReturn(false);
+
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
+
+        InOrder order = inOrder(analysisRunRepository, sessionRepository);
+        order.verify(analysisRunRepository).deleteByCanonicalSession(
+                MEETING_ID, TENANT_ID, SESSION_ID.toString());
+        order.verify(sessionRepository).delete(session);
+    }
+
+    @Test
+    void deleteSessionRejectsWhenAnalysisDerivativeHasLegalHold() {
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meeting));
+        when(analysisRunRepository.existsLegalHoldForCanonicalSession(
+                MEETING_ID, TENANT_ID, SESSION_ID.toString())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.deleteSession(TENANT, MEETING_ID, SESSION_ID))
+                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
+                    assertThat(error.getStatusCode()).isEqualTo(HttpStatus.LOCKED);
+                    assertThat(error.getReason()).isEqualTo("MEETING_ANALYSIS_LEGAL_HOLD");
+                });
+
+        verify(analysisRunRepository, never()).deleteByCanonicalSession(
+                MEETING_ID, TENANT_ID, SESSION_ID.toString());
+        verify(sessionRepository, never()).delete(any());
     }
 
     private static Meeting meeting(MeetingStatus status) {

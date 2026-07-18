@@ -12,6 +12,7 @@ import com.example.transcript.directstt.TranscriptSessionAssociationStore;
 import com.example.transcript.events.TranscriptMeetingEventMessage;
 import com.example.transcript.finalization.RecordingFinishedEvent;
 import com.example.transcript.finalization.RecordingFinishedEventProcessor;
+import com.example.transcript.finalization.FinalizedTranscriptSnapshotCodec;
 import com.example.transcript.finalization.TranscriptFinalizationStateMachine;
 import com.example.transcript.finalization.TranscriptQuiescentFinalizationProcessor;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
@@ -61,7 +62,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         RecordingFinishedEventProcessor.class,
         TranscriptQuiescentFinalizationProcessor.class,
         TranscriptFinalizationStateMachine.class,
+        FinalizedTranscriptSnapshotCodec.class,
         TranscriptSnapshotHasher.class,
+        com.fasterxml.jackson.databind.ObjectMapper.class,
         com.example.transcript.config.TranscriptFinalizationConfig.class
 })
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -195,6 +198,11 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 .containsExactly(expectedPayload.getBytes(StandardCharsets.UTF_8));
         assertThat(rehydrated.payloadJson())
                 .doesNotContain("private final transcript", "textDraft", "textFinal", "audio");
+        var storedFinalization = finalizations.findAll().getFirst();
+        assertThat(storedFinalization.getCanonicalTranscript())
+                .isEqualTo("private final transcript");
+        assertThat(storedFinalization.getCanonicalTranscriptSha256()).matches("[0-9a-f]{64}");
+        assertThat(storedFinalization.getCanonicalProjectionSha256()).matches("[0-9a-f]{64}");
     }
 
     @Test
@@ -214,6 +222,9 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         assertThat(finalization.getFinalizationVersion()).isEqualTo(1L);
         assertThat(finalization.getSegmentCount()).isEqualTo(1);
         assertThat(finalization.getSnapshotSha256()).matches("[0-9a-f]{64}");
+        assertThat(finalization.getCanonicalTranscript()).isEqualTo("draft");
+        assertThat(finalization.getCanonicalTranscriptSha256()).matches("[0-9a-f]{64}");
+        assertThat(finalization.getCanonicalProjectionSha256()).matches("[0-9a-f]{64}");
         var event = outbox.findAll().getFirst();
         assertThat(event.getEventType()).isEqualTo("meeting.transcript.ready");
         assertThat(event.getPayload())

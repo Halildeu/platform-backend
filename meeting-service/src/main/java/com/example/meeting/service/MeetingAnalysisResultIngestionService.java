@@ -6,6 +6,7 @@ import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingRepository;
+import com.example.meeting.security.AnalysisJobCapabilityVerifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -47,11 +48,10 @@ import java.util.UUID;
  * persistence failure is rethrown.
  *
  * <h2>Tenant</h2>
- * The internal service caller carries no tenant claim; the tenant is derived
- * canonically from the {@code {meetingId}} path row and the body's tenant is never
- * trusted (it is not even a field). See the controller's SECURITY note: the
- * meeting-derived tenant + composite FK are data-integrity controls, not
- * authorization.
+ * The job capability carries the tenant selected by transcript-service, while
+ * meeting-service independently derives the canonical tenant from the
+ * {@code {meetingId}} row. Ingestion requires both values to match; the body has
+ * no tenant field and is never trusted as tenant authority.
  */
 @Service
 public class MeetingAnalysisResultIngestionService {
@@ -62,21 +62,25 @@ public class MeetingAnalysisResultIngestionService {
     private final MeetingAnalysisRunRepository runRepository;
     private final MeetingAnalysisResultWriter writer;
     private final MeetingAnalysisPayloadHasher hasher;
+    private final AnalysisJobCapabilityVerifier capabilityVerifier;
 
     public MeetingAnalysisResultIngestionService(
             MeetingRepository meetingRepository,
             MeetingAnalysisRunRepository runRepository,
             MeetingAnalysisResultWriter writer,
-            MeetingAnalysisPayloadHasher hasher) {
+            MeetingAnalysisPayloadHasher hasher,
+            AnalysisJobCapabilityVerifier capabilityVerifier) {
         this.meetingRepository = meetingRepository;
         this.runRepository = runRepository;
         this.writer = writer;
         this.hasher = hasher;
+        this.capabilityVerifier = capabilityVerifier;
     }
 
     public MeetingAnalysisResultIngestResponse ingest(
             UUID meetingId,
             UUID analysisRunId,
+            String jobCapability,
             MeetingAnalysisResultIngestRequest request) {
 
         // Defence-in-depth: an optional body meetingId must not contradict the path.
@@ -89,21 +93,41 @@ public class MeetingAnalysisResultIngestionService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND"));
         UUID tenantId = meeting.getTenantId();
 
+        AnalysisJobCapabilityVerifier.JobBinding binding = capabilityVerifier.verify(jobCapability);
+        UUID transcriptSessionId;
+        try {
+            transcriptSessionId = UUID.fromString(request.transcriptSessionId());
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "TRANSCRIPT_SESSION_ID_INVALID");
+        }
+        boolean exactBinding = binding.tenantId().equals(tenantId)
+                && binding.meetingId().equals(meetingId)
+                && binding.sessionId().equals(transcriptSessionId)
+                && binding.finalizationVersion() == request.finalizationVersion()
+                && binding.finalizedAt().equals(request.finalizedAt())
+                && binding.transcriptSha256().equals(request.transcriptSha256())
+                && binding.analysisRunId().equals(analysisRunId)
+                && binding.analysisSpecVersion().equals(request.analysisSpecVersion());
+        if (!exactBinding) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "JOB_CAPABILITY_BINDING_MISMATCH");
+        }
         String payloadHash = hasher.hash(meetingId, tenantId, analysisRunId, request);
 
         // Global idempotency pre-check (matches the global PK).
         Optional<MeetingAnalysisRun> existing = runRepository.findById(analysisRunId);
         if (existing.isPresent()) {
-            return reconcile(existing.get(), meetingId, tenantId, payloadHash, request);
+            return reconcile(existing.get(), meetingId, tenantId, payloadHash, request, binding);
         }
 
         validateSupersedes(request.supersedesAnalysisRunId(), analysisRunId, meetingId, tenantId);
 
         try {
-            MeetingAnalysisRun saved = writer.insertNewRun(meeting, analysisRunId, payloadHash, request);
+            MeetingAnalysisRun saved = writer.insertNewRun(
+                    meeting, analysisRunId, payloadHash, request, binding);
             return response(saved, request, false);
         } catch (DataIntegrityViolationException ex) {
-            return reconcileAfterFailure(ex, meetingId, analysisRunId, tenantId, payloadHash, request);
+            return reconcileAfterFailure(
+                    ex, meetingId, analysisRunId, tenantId, payloadHash, request, binding);
         }
     }
 
@@ -116,11 +140,20 @@ public class MeetingAnalysisResultIngestionService {
             UUID meetingId,
             UUID tenantId,
             String payloadHash,
-            MeetingAnalysisResultIngestRequest request) {
+            MeetingAnalysisResultIngestRequest request,
+            AnalysisJobCapabilityVerifier.JobBinding binding) {
         boolean sameTarget = run.getMeetingId().equals(meetingId)
                 && run.getTenantId().equals(tenantId)
                 && run.getPayloadHash().equals(payloadHash);
         if (sameTarget) {
+            if (binding.capabilityId().equals(run.getJobCapabilityId())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "JOB_CAPABILITY_REPLAY");
+            }
+            try {
+                writer.consumeRetryCapability(run.getAnalysisRunId(), binding);
+            } catch (DataIntegrityViolationException ex) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "JOB_CAPABILITY_REPLAY");
+            }
             return response(run, request, true);
         }
         // Generic: never disclose that the key belongs to a different meeting/tenant.
@@ -140,15 +173,16 @@ public class MeetingAnalysisResultIngestionService {
             UUID analysisRunId,
             UUID tenantId,
             String payloadHash,
-            MeetingAnalysisResultIngestRequest request) {
+            MeetingAnalysisResultIngestRequest request,
+            AnalysisJobCapabilityVerifier.JobBinding binding) {
 
         Optional<MeetingAnalysisRun> committed = writer.findCommittedRun(analysisRunId);
         if (committed.isPresent()) {
             // Safe operational telemetry only — never the transcript/summary/citations/token.
-            log.warn("analysis-result ingestion reconciled after tx failure analysisRunId={} "
+            log.warn("analysis-result ingestion reconciled after tx failure "
                             + "reconciledAfterTransactionFailure=true cause={}",
-                    analysisRunId, ex.getClass().getSimpleName());
-            return reconcile(committed.get(), meetingId, tenantId, payloadHash, request);
+                    ex.getClass().getSimpleName());
+            return reconcile(committed.get(), meetingId, tenantId, payloadHash, request, binding);
         }
 
         // No committed run ⇒ not the PK. Re-validate raced-away preconditions.

@@ -45,6 +45,8 @@ class TranscriptAssociationMigrationIntegrationTest {
         migrateTo("6");
         insertLegacyFinalizedAssociation(
                 tenant, finalizedMeeting, finalizedSession, "SES-finalized", 2L);
+        UUID legacyFinalization = insertLegacyFinalization(
+                tenant, finalizedMeeting, finalizedSession, 2L);
 
         migrateTo(null);
 
@@ -147,6 +149,26 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + "AND indexname IN ('idx_transcript_session_association_finalization_due',"
                             + "'idx_transcript_meeting_event_inbox_scope')",
                     SCHEMA)).isEqualTo(2L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.columns "
+                            + "WHERE table_schema = ? AND table_name = 'transcript_finalizations' "
+                            + "AND column_name IN ('legal_hold','canonical_transcript',"
+                            + "'canonical_transcript_sha256','canonical_segments',"
+                            + "'canonical_projection_sha256')",
+                    SCHEMA)).isEqualTo(5L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM " + SCHEMA + ".transcript_finalizations "
+                            + "WHERE id = ? AND legal_hold = false "
+                            + "AND canonical_transcript IS NULL "
+                            + "AND canonical_transcript_sha256 IS NULL "
+                            + "AND canonical_segments IS NULL "
+                            + "AND canonical_projection_sha256 IS NULL",
+                    legacyFinalization)).isEqualTo(1L);
+            assertThatThrownBy(() -> updateLegacyWithPartialProjection(
+                    connection, legacyFinalization))
+                    .isInstanceOf(SQLException.class)
+                    .satisfies(error -> assertThat(((SQLException) error).getSQLState())
+                            .isEqualTo("23514"));
         }
     }
 
@@ -192,6 +214,41 @@ class TranscriptAssociationMigrationIntegrationTest {
             Timestamp now = Timestamp.from(Instant.now());
             statement.setTimestamp(9, now);
             statement.setTimestamp(10, now);
+            statement.executeUpdate();
+        }
+    }
+
+    private UUID insertLegacyFinalization(
+            UUID tenant, UUID meeting, UUID session, long finalizationVersion)
+            throws SQLException {
+        UUID id = UUID.randomUUID();
+        String sql = "INSERT INTO " + SCHEMA + ".transcript_finalizations "
+                + "(id,tenant_id,org_id,meeting_id,session_id,finalization_version,"
+                + "segment_count,snapshot_sha256,finalized_at,created_at) "
+                + "VALUES (?,?,?,?,?,?,1,?,?,?)";
+        try (Connection connection = connection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, id);
+            statement.setObject(2, tenant);
+            statement.setObject(3, tenant);
+            statement.setObject(4, meeting);
+            statement.setObject(5, session);
+            statement.setLong(6, finalizationVersion);
+            statement.setString(7, "a".repeat(64));
+            Timestamp now = Timestamp.from(Instant.now());
+            statement.setTimestamp(8, now);
+            statement.setTimestamp(9, now);
+            statement.executeUpdate();
+        }
+        return id;
+    }
+
+    private void updateLegacyWithPartialProjection(Connection connection, UUID id)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(
+                "UPDATE " + SCHEMA + ".transcript_finalizations "
+                        + "SET canonical_transcript = 'partial' WHERE id = ?")) {
+            statement.setObject(1, id);
             statement.executeUpdate();
         }
     }

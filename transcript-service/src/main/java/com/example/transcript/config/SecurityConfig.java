@@ -1,9 +1,14 @@
 package com.example.transcript.config;
 
 import com.example.transcript.security.AudienceValidator;
+import com.example.transcript.security.ExpectedServiceClientValidator;
+import com.example.transcript.security.FallbackJwtDecoder;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,11 +28,14 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.util.StringUtils;
 
 @Configuration
 @EnableMethodSecurity
 @Profile("!local & !dev")
 public class SecurityConfig {
+
+    static final String SVC_CANONICAL_READ = "SVC_transcript:canonical:read";
 
     private final Environment environment;
 
@@ -37,6 +45,23 @@ public class SecurityConfig {
 
     @Bean
     @Order(1)
+    public SecurityFilterChain internalServiceSecurityFilterChain(
+            HttpSecurity http,
+            JwtDecoder jwtDecoder,
+            JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
+        http
+                .securityMatcher("/api/v1/internal/tenants/**")
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority(SVC_CANONICAL_READ))
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
+                        .decoder(jwtDecoder)
+                        .jwtAuthenticationConverter(jwtAuthenticationConverter)));
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     public SecurityFilterChain adminSecurityFilterChain(HttpSecurity http,
                                                         JwtDecoder jwtDecoder,
                                                         JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
@@ -54,7 +79,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Order(2)
+    @Order(3)
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    JwtDecoder jwtDecoder,
                                                    JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
@@ -84,17 +109,63 @@ public class SecurityConfig {
                 "http://localhost:8081/realms/serban"
         );
 
-        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
-        OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
+        NimbusJwtDecoder keycloakDecoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        keycloakDecoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(issuer),
-                new AudienceValidator(resolveAudiences(), resolveAllowedClientIds())
-        );
-        decoder.setJwtValidator(validator);
+                new AudienceValidator(resolveAudiences(), resolveAllowedClientIds())));
+
+        String serviceJwkSetUri = firstNonBlank(
+                environment.getProperty("TRANSCRIPT_INTERNAL_SERVICE_JWT_JWK_SET_URI"),
+                environment.getProperty("transcript.internal.service-jwt.jwk-set-uri"));
+        if (!StringUtils.hasText(serviceJwkSetUri)) {
+            return keycloakDecoder;
+        }
+        String serviceIssuer = resolveServiceIssuer();
+        List<String> serviceAudiences = csvToList(firstNonBlank(
+                environment.getProperty("TRANSCRIPT_INTERNAL_SERVICE_JWT_AUDIENCE"),
+                environment.getProperty("transcript.internal.service-jwt.audience")));
+        List<String> serviceClientIds = csvToList(firstNonBlank(
+                environment.getProperty("TRANSCRIPT_INTERNAL_SERVICE_JWT_CLIENT_IDS"),
+                environment.getProperty("transcript.internal.service-jwt.client-ids"),
+                environment.getProperty("TRANSCRIPT_INTERNAL_SERVICE_JWT_CLIENT_ID"),
+                environment.getProperty("transcript.internal.service-jwt.client-id")));
+        JwtDecoder serviceDecoder = buildInternalServiceDecoder(
+                serviceJwkSetUri, serviceIssuer, serviceAudiences, serviceClientIds);
+        return new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
+    }
+
+    static JwtDecoder buildInternalServiceDecoder(
+            String jwkSetUri,
+            String issuer,
+            Collection<String> audiences,
+            Collection<String> expectedClientIds) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(buildInternalServiceValidator(issuer, audiences, expectedClientIds));
         return decoder;
+    }
+
+    static OAuth2TokenValidator<Jwt> buildInternalServiceValidator(
+            String issuer,
+            Collection<String> audiences,
+            Collection<String> expectedClientIds) {
+        if (!StringUtils.hasText(issuer) || !containsText(audiences) || !containsText(expectedClientIds)) {
+            throw new IllegalArgumentException(
+                    "Internal transcript service JWT issuer, audience and client allowlist are required");
+        }
+        List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
+        validators.add(JwtValidators.createDefaultWithIssuer(issuer));
+        validators.add(new AudienceValidator(audiences));
+        validators.add(new ExpectedServiceClientValidator(expectedClientIds));
+        return new DelegatingOAuth2TokenValidator<>(validators.toArray(new OAuth2TokenValidator[0]));
+    }
+
+    private static boolean containsText(Collection<String> values) {
+        return values != null && values.stream().anyMatch(StringUtils::hasText);
     }
 
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
+        final String serviceIssuer = resolveServiceIssuer();
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setPrincipalClaimName("sub");
         converter.setJwtGrantedAuthoritiesConverter(jwt -> {
@@ -108,7 +179,18 @@ public class SecurityConfig {
                 if (roles != null) {
                     roles.stream()
                             .filter(role -> role != null && !role.isBlank())
-                            .map(role -> "ROLE_" + role.trim().toUpperCase())
+                            .map(role -> "ROLE_" + role.trim().toUpperCase(Locale.ROOT))
+                            .map(SimpleGrantedAuthority::new)
+                            .forEach(authorities::add);
+                }
+            }
+
+            if (serviceIssuer.equals(jwt.getClaimAsString("iss"))) {
+                List<String> servicePermissions = jwt.getClaimAsStringList("perm");
+                if (servicePermissions != null) {
+                    servicePermissions.stream()
+                            .filter(permission -> permission != null && !permission.isBlank())
+                            .map(permission -> "SVC_" + permission.trim())
                             .map(SimpleGrantedAuthority::new)
                             .forEach(authorities::add);
                 }
@@ -127,6 +209,13 @@ public class SecurityConfig {
             return authorities;
         });
         return converter;
+    }
+
+    private String resolveServiceIssuer() {
+        return firstNonBlank(
+                environment.getProperty("TRANSCRIPT_INTERNAL_SERVICE_JWT_ISSUER"),
+                environment.getProperty("transcript.internal.service-jwt.issuer"),
+                "auth-service");
     }
 
     private List<String> resolveAudiences() {

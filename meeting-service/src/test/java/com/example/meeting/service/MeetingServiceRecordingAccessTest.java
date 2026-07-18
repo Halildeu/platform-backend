@@ -14,6 +14,7 @@ import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -50,6 +51,8 @@ class MeetingServiceRecordingAccessTest {
     @Mock
     private MeetingEventOutboxRepository eventOutboxRepository;
     @Mock
+    private MeetingAnalysisRunRepository analysisRunRepository;
+    @Mock
     private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock
     private OpenFgaAuthzService authzService;
@@ -64,6 +67,7 @@ class MeetingServiceRecordingAccessTest {
                 actionRepository,
                 decisionRepository,
                 eventOutboxRepository,
+                analysisRunRepository,
                 authzProvider,
                 false,
                 false);
@@ -336,7 +340,7 @@ class MeetingServiceRecordingAccessTest {
     private MeetingService transitionalMeetingService() {
         return new MeetingService(
                 meetingRepository, sessionRepository, actionRepository, decisionRepository,
-                eventOutboxRepository, authzProvider, true, true);
+                eventOutboxRepository, analysisRunRepository, authzProvider, true, true);
     }
 
     private static Meeting meetingCreatedBy(String subject) {

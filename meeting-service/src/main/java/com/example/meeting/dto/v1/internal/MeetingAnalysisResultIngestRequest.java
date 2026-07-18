@@ -10,6 +10,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.PositiveOrZero;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
@@ -58,6 +59,22 @@ public record MeetingAnalysisResultIngestRequest(
         @NotBlank
         @Pattern(regexp = "^[0-9a-f]{64}$", message = "must be lowercase SHA-256 hex (64 chars)")
         String transcriptSha256,
+
+        @JsonAlias("finalizationVersion")
+        @JsonProperty("finalization_version")
+        @Positive
+        long finalizationVersion,
+
+        @JsonAlias("finalizedAt")
+        @JsonProperty("finalized_at")
+        @NotNull
+        Instant finalizedAt,
+
+        @JsonAlias("analysisSpecVersion")
+        @JsonProperty("analysis_spec_version")
+        @NotBlank
+        @Size(max = 64)
+        String analysisSpecVersion,
 
         @JsonAlias("analyzerContractVersion")
         @JsonProperty("analyzer_contract_version")

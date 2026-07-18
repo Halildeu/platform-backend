@@ -4,7 +4,12 @@ import com.example.meeting.model.MeetingAnalysisRun;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.domain.Pageable;
 
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -34,9 +39,65 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             from MeetingAnalysisRun r
             where r.meetingId = :meetingId
               and (r.orgId = :orgId or (r.orgId is null and r.tenantId = :orgId))
-            order by r.generatedAt desc, r.createdAt desc, r.analysisRunId desc
+            order by case when r.finalizedAt is null then 1 else 0 end asc,
+                     r.finalizedAt desc,
+                     r.finalizationVersion desc,
+                     r.generatedAt desc,
+                     r.createdAt desc,
+                     r.analysisRunId desc
             limit 1
             """)
     Optional<MeetingAnalysisRun> findLatestByMeetingIdVisibleToOrg(
             @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
+
+    @Query("""
+            select r
+            from MeetingAnalysisRun r
+            where r.meetingId = :meetingId
+              and (r.orgId = :orgId or (r.orgId is null and r.tenantId = :orgId))
+              and r.finalizedAt is not null
+              and r.finalizationVersion is not null
+            order by r.finalizedAt desc, r.finalizationVersion desc, r.createdAt desc
+            limit 1
+            """)
+    Optional<MeetingAnalysisRun> findLatestCanonicalOccurrence(
+            @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
+
+    @Query("""
+            select r.analysisRunId
+            from MeetingAnalysisRun r
+            where r.createdAt < :cutoff and r.legalHold = false
+            order by r.createdAt asc, r.analysisRunId asc
+            """)
+    List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("delete from MeetingAnalysisRun r where r.analysisRunId in :ids")
+    int deleteByIdIn(@Param("ids") Collection<UUID> ids);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            delete from MeetingAnalysisRun r
+            where r.meetingId = :meetingId
+              and r.tenantId = :tenantId
+              and r.transcriptSessionId = :sessionId
+              and r.legalHold = false
+            """)
+    int deleteByCanonicalSession(
+            @Param("meetingId") UUID meetingId,
+            @Param("tenantId") UUID tenantId,
+            @Param("sessionId") String sessionId);
+
+    @Query("""
+            select count(r) > 0
+            from MeetingAnalysisRun r
+            where r.meetingId = :meetingId
+              and r.tenantId = :tenantId
+              and r.transcriptSessionId = :sessionId
+              and r.legalHold = true
+            """)
+    boolean existsLegalHoldForCanonicalSession(
+            @Param("meetingId") UUID meetingId,
+            @Param("tenantId") UUID tenantId,
+            @Param("sessionId") String sessionId);
 }

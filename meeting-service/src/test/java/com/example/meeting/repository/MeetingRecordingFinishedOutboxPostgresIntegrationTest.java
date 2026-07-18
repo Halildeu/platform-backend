@@ -197,7 +197,8 @@ class MeetingRecordingFinishedOutboxPostgresIntegrationTest {
         return new MeetingService(
                 meetingRepository, sessionRepository,
                 mock(MeetingActionRepository.class), mock(MeetingDecisionRepository.class),
-                outboxRepository, authzProvider, false, false);
+                outboxRepository, mock(MeetingAnalysisRunRepository.class),
+                authzProvider, false, false);
     }
 
     private Fixture insertFixture(String suffix) {

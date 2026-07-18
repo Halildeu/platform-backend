@@ -37,7 +37,7 @@ public class TranscriptQuiescentFinalizationProcessor {
     private final TranscriptFinalizationRepository finalizations;
     private final TranscriptEventOutboxRepository outbox;
     private final TranscriptFinalizationStateMachine stateMachine;
-    private final TranscriptSnapshotHasher snapshotHasher;
+    private final FinalizedTranscriptSnapshotCodec snapshotCodec;
     private final Clock clock;
 
     public TranscriptQuiescentFinalizationProcessor(
@@ -46,14 +46,14 @@ public class TranscriptQuiescentFinalizationProcessor {
             TranscriptFinalizationRepository finalizations,
             TranscriptEventOutboxRepository outbox,
             TranscriptFinalizationStateMachine stateMachine,
-            TranscriptSnapshotHasher snapshotHasher,
+            FinalizedTranscriptSnapshotCodec snapshotCodec,
             Clock transcriptFinalizationClock) {
         this.associations = associations;
         this.segments = segments;
         this.finalizations = finalizations;
         this.outbox = outbox;
         this.stateMachine = stateMachine;
-        this.snapshotHasher = snapshotHasher;
+        this.snapshotCodec = snapshotCodec;
         this.clock = transcriptFinalizationClock;
     }
 
@@ -81,9 +81,9 @@ public class TranscriptQuiescentFinalizationProcessor {
             return Outcome.FAILED;
         }
 
-        TranscriptSnapshotHasher.Snapshot snapshot;
+        FinalizedTranscriptSnapshotCodec.StoredSnapshot snapshot;
         try {
-            snapshot = snapshotHasher.machineSnapshot(canonical);
+            snapshot = snapshotCodec.captureMachine(canonical);
         } catch (TranscriptSnapshotHasher.InvalidSnapshotException ex) {
             emitFailed(association, now, INVALID_CANONICAL_SEGMENT);
             return Outcome.INVALID_SNAPSHOT;
@@ -104,7 +104,7 @@ public class TranscriptQuiescentFinalizationProcessor {
 
     private void emitReady(
             TranscriptSessionAssociation association,
-            TranscriptSnapshotHasher.Snapshot snapshot,
+            FinalizedTranscriptSnapshotCodec.StoredSnapshot snapshot,
             Instant now) {
         long cycle = requireCycle(association);
         MeetingEventPayload.TranscriptReady payload = new MeetingEventPayload.TranscriptReady(
@@ -120,7 +120,11 @@ public class TranscriptQuiescentFinalizationProcessor {
         row.setSessionId(association.getSessionId());
         row.setFinalizationVersion(cycle);
         row.setSegmentCount(snapshot.segmentCount());
-        row.setSnapshotSha256(snapshot.sha256());
+        row.setSnapshotSha256(snapshot.sourceSnapshotSha256());
+        row.setCanonicalTranscript(snapshot.transcript());
+        row.setCanonicalTranscriptSha256(snapshot.transcriptSha256());
+        row.setCanonicalSegments(snapshot.canonicalSegments());
+        row.setCanonicalProjectionSha256(snapshot.canonicalProjectionSha256());
         row.setFinalizedAt(now);
         row.setCreatedAt(now);
         finalizations.save(row);

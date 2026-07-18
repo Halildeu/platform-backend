@@ -63,6 +63,7 @@ class MeetingInternalSignedTokenSecurityTest {
     private static final String TRANSCRIPT_SERVICE = "transcript-service";
     private static final String WRITE = "meeting:analysis-result:write";
     private static final String RESOLVE = "meeting:session:resolve";
+    private static final String JOB_CAPABILITY = "signed-job-capability";
 
     private static final UUID TENANT_ID = UUID.fromString("11111111-1111-4111-8111-111111111111");
     private static final UUID MEETING_ID = UUID.fromString("22222222-2222-4222-8222-222222222222");
@@ -76,8 +77,11 @@ class MeetingInternalSignedTokenSecurityTest {
             + "\",\"externalSessionId\":\"SES-42\"}";
     private static final String WRITE_BODY = """
             {
-              "transcript_session_id": "SES-42",
+              "transcript_session_id": "33333333-3333-4333-8333-333333333333",
               "transcript_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "finalization_version": 1,
+              "finalized_at": "2026-07-18T09:59:00Z",
+              "analysis_spec_version": "analysis-v1",
               "analyzer_contract_version": "5-adr0043",
               "generated_at": "2026-07-18T10:00:00Z",
               "decisions": [],
@@ -126,6 +130,7 @@ class MeetingInternalSignedTokenSecurityTest {
     void transcriptResolvePermission_cannotWriteAnalysisResult() throws Exception {
         mockMvc.perform(post(WRITE_PATH, MEETING_ID)
                         .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", JOB_CAPABILITY)
                         .header(AUTHORIZATION, bearer(TRANSCRIPT_SERVICE, RESOLVE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(WRITE_BODY))
@@ -147,13 +152,14 @@ class MeetingInternalSignedTokenSecurityTest {
 
     @Test
     void meetingAiSignedToken_stillWritesAnalysisResult() throws Exception {
-        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), any()))
+        when(ingestionService.ingest(eq(MEETING_ID), eq(RUN_ID), eq(JOB_CAPABILITY), any()))
                 .thenReturn(MeetingAnalysisResultIngestResponse.persisted(
                         RUN_ID, MEETING_ID, false, 0, 0, null,
                         Instant.parse("2026-07-18T10:00:00Z")));
 
         mockMvc.perform(post(WRITE_PATH, MEETING_ID)
                         .header("Idempotency-Key", RUN_ID.toString())
+                        .header("X-Analysis-Job-Capability", JOB_CAPABILITY)
                         .header(AUTHORIZATION, bearer(MEETING_AI, WRITE))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(WRITE_BODY))

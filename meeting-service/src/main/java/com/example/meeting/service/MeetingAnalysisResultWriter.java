@@ -6,14 +6,20 @@ import com.example.meeting.events.MeetingEventOutboxFactory;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
+import com.example.meeting.model.MeetingAnalysisJobCapabilityUse;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.MeetingItemSource;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisJobCapabilityUseRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
+import com.example.meeting.repository.MeetingRepository;
+import com.example.meeting.security.AnalysisJobCapabilityVerifier;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
@@ -53,22 +59,28 @@ public class MeetingAnalysisResultWriter {
     private static final int DECISION_TITLE_MAX_CODE_POINTS = 512;
 
     private final MeetingAnalysisRunRepository runRepository;
+    private final MeetingAnalysisJobCapabilityUseRepository capabilityUseRepository;
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingEventOutboxRepository outboxRepository;
+    private final MeetingRepository meetingRepository;
     private final ObjectMapper objectMapper;
     private final MeetingEventOutboxFactory eventFactory;
 
     public MeetingAnalysisResultWriter(
             MeetingAnalysisRunRepository runRepository,
+            MeetingAnalysisJobCapabilityUseRepository capabilityUseRepository,
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
             MeetingEventOutboxRepository outboxRepository,
+            MeetingRepository meetingRepository,
             ObjectMapper objectMapper) {
         this.runRepository = runRepository;
+        this.capabilityUseRepository = capabilityUseRepository;
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
         this.outboxRepository = outboxRepository;
+        this.meetingRepository = meetingRepository;
         this.objectMapper = objectMapper;
         // Plain collaborator (not a Spring bean) — shares the same ObjectMapper.
         this.eventFactory = new MeetingEventOutboxFactory(objectMapper);
@@ -93,11 +105,25 @@ public class MeetingAnalysisResultWriter {
             Meeting meeting,
             UUID analysisRunId,
             String payloadHash,
-            MeetingAnalysisResultIngestRequest request) {
+            MeetingAnalysisResultIngestRequest request,
+            AnalysisJobCapabilityVerifier.JobBinding binding) {
 
         UUID meetingId = meeting.getId();
         UUID tenantId = meeting.getTenantId();
         UUID orgId = meeting.getEffectiveOrgId();
+
+        // Serialize occurrence admission per meeting. Delivery time and model
+        // generation time are not transcript occurrence order.
+        meetingRepository.findVisibleToOrgAndIdForUpdate(orgId, meetingId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND"));
+        runRepository.findLatestCanonicalOccurrence(meetingId, orgId).ifPresent(latest -> {
+            boolean olderTime = request.finalizedAt().isBefore(latest.getFinalizedAt());
+            boolean olderVersionAtSameTime = request.finalizedAt().equals(latest.getFinalizedAt())
+                    && request.finalizationVersion() < latest.getFinalizationVersion();
+            if (olderTime || olderVersionAtSameTime) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "STALE_FINALIZATION");
+            }
+        });
 
         MeetingAnalysisRun run = new MeetingAnalysisRun();
         run.setAnalysisRunId(analysisRunId);
@@ -106,6 +132,10 @@ public class MeetingAnalysisResultWriter {
         run.setOrgId(orgId); // canonical writer sets BOTH columns (DB trigger is the backstop)
         run.setTranscriptSessionId(request.transcriptSessionId());
         run.setTranscriptSha256(request.transcriptSha256());
+        run.setFinalizationVersion(request.finalizationVersion());
+        run.setFinalizedAt(request.finalizedAt());
+        run.setAnalysisSpecVersion(request.analysisSpecVersion());
+        run.setJobCapabilityId(binding.capabilityId());
         run.setAnalyzerContractVersion(request.analyzerContractVersion());
         run.setModel(request.model());
         run.setBackend(request.backend());
@@ -122,6 +152,7 @@ public class MeetingAnalysisResultWriter {
         run.setSupersedesAnalysisRunId(request.supersedesAnalysisRunId());
         run.setGeneratedAt(request.generatedAt());
         runRepository.saveAndFlush(run);
+        capabilityUseRepository.saveAndFlush(capabilityUse(analysisRunId, binding));
 
         List<MeetingDecision> savedDecisions = new ArrayList<>();
         int ordinal = 0;
@@ -185,6 +216,24 @@ public class MeetingAnalysisResultWriter {
     @Transactional(readOnly = true)
     public Optional<MeetingAnalysisRun> findCommittedRun(UUID analysisRunId) {
         return runRepository.findById(analysisRunId);
+    }
+
+    /** Persist one fresh capability used for a successful idempotent retry. */
+    @Transactional
+    public void consumeRetryCapability(
+            UUID analysisRunId,
+            AnalysisJobCapabilityVerifier.JobBinding binding) {
+        capabilityUseRepository.saveAndFlush(capabilityUse(analysisRunId, binding));
+    }
+
+    private static MeetingAnalysisJobCapabilityUse capabilityUse(
+            UUID analysisRunId,
+            AnalysisJobCapabilityVerifier.JobBinding binding) {
+        MeetingAnalysisJobCapabilityUse use = new MeetingAnalysisJobCapabilityUse();
+        use.setCapabilityId(binding.capabilityId());
+        use.setAnalysisRunId(analysisRunId);
+        use.setExpiresAt(binding.expiresAt());
+        return use;
     }
 
     private String toJson(List<?> value) {

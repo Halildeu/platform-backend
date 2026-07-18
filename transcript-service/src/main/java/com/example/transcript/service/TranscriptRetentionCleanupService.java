@@ -3,6 +3,7 @@ package com.example.transcript.service;
 import com.example.transcript.model.TranscriptRetentionDestructionAudit;
 import com.example.transcript.repository.TranscriptAccessAuditRepository;
 import com.example.transcript.repository.TranscriptRetentionDestructionAuditRepository;
+import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +36,7 @@ public class TranscriptRetentionCleanupService {
 
     private final TranscriptSegmentRepository segmentRepository;
     private final TranscriptAccessAuditRepository accessAuditRepository;
+    private final TranscriptFinalizationRepository finalizationRepository;
     private final TranscriptRetentionDestructionAuditRepository destructionAuditRepository;
     private final int transcriptRetentionDays;
     private final int accessAuditRetentionDays;
@@ -43,6 +45,7 @@ public class TranscriptRetentionCleanupService {
 
     public TranscriptRetentionCleanupService(
             TranscriptSegmentRepository segmentRepository,
+            TranscriptFinalizationRepository finalizationRepository,
             TranscriptAccessAuditRepository accessAuditRepository,
             TranscriptRetentionDestructionAuditRepository destructionAuditRepository,
             @Value("${transcript.retention.transcript-records-days:365}") int transcriptRetentionDays,
@@ -50,6 +53,7 @@ public class TranscriptRetentionCleanupService {
             @Value("${transcript.retention.cleanup-batch-size:1000}") int cleanupBatchSize,
             @Value("${transcript.retention.cleanup-max-batches-per-run:100}") int cleanupMaxBatchesPerRun) {
         this.segmentRepository = segmentRepository;
+        this.finalizationRepository = finalizationRepository;
         this.accessAuditRepository = accessAuditRepository;
         this.destructionAuditRepository = destructionAuditRepository;
         this.transcriptRetentionDays = transcriptRetentionDays;
@@ -82,7 +86,7 @@ public class TranscriptRetentionCleanupService {
 
     private LayerCleanupResult cleanupTranscriptRecords(Instant now) {
         Instant cutoff = now.minus(Duration.ofDays(transcriptRetentionDays));
-        long deleted = deleteExpiredTranscriptSegments(cutoff);
+        long deleted = deleteExpiredTranscriptSegments(cutoff) + deleteExpiredFinalizations(cutoff);
         UUID auditId = writeAudit(now, LAYER_TRANSCRIPT_RECORDS, JOB_TRANSCRIPT_RECORDS, cutoff, deleted);
         LOGGER.info(
                 "transcript retention cleanup completed layer={} cutoff={} deletedCount={} jobId={}",
@@ -150,6 +154,32 @@ public class TranscriptRetentionCleanupService {
                     "transcript retention cleanup batch limit reached layer={} cutoff={} "
                             + "deletedCount={} maxBatches={} batchSize={}",
                     LAYER_KVKK_ACCESS_LOG,
+                    cutoff,
+                    deleted,
+                    cleanupMaxBatchesPerRun,
+                    cleanupBatchSize);
+        }
+        return deleted;
+    }
+
+    private long deleteExpiredFinalizations(Instant cutoff) {
+        long deleted = 0;
+        for (int batch = 0; batch < cleanupMaxBatchesPerRun; batch++) {
+            List<UUID> ids = finalizationRepository.findExpiredIds(
+                    cutoff, PageRequest.of(0, cleanupBatchSize));
+            if (ids.isEmpty()) {
+                return deleted;
+            }
+            int batchDeleted = finalizationRepository.deleteByIdIn(ids);
+            if (batchDeleted <= 0) {
+                throw new IllegalStateException("transcript finalization retention cleanup made no progress");
+            }
+            deleted += batchDeleted;
+        }
+        if (!finalizationRepository.findExpiredIds(cutoff, PageRequest.of(0, 1)).isEmpty()) {
+            LOGGER.warn(
+                    "transcript retention cleanup batch limit reached entity=transcript_finalizations cutoff={} "
+                            + "deletedCount={} maxBatches={} batchSize={}",
                     cutoff,
                     deleted,
                     cleanupMaxBatchesPerRun,

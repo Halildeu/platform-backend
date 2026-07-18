@@ -193,9 +193,30 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
             @Param("sessionId") UUID sessionId);
 
     @Query("""
+            select s
+            from TranscriptSegment s
+            where (s.orgId = :tenantId or (s.orgId is null and s.tenantId = :tenantId))
+              and s.meetingId = :meetingId
+              and s.sessionId = :sessionId
+            order by s.startTime asc, coalesce(s.sourceWindowSeq, s.sourceChunkSeq) asc, s.id asc
+            """)
+    List<TranscriptSegment> findCanonicalFinalizedSession(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId);
+
+    @Query("""
             select s.id
             from TranscriptSegment s
             where s.createdAt < :cutoff
+              and not exists (
+                    select f.id
+                    from TranscriptFinalization f
+                    where f.tenantId = s.tenantId
+                      and f.meetingId = s.meetingId
+                      and f.sessionId = s.sessionId
+                      and f.legalHold = true
+              )
             order by s.createdAt asc, s.id asc
             """)
     List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);

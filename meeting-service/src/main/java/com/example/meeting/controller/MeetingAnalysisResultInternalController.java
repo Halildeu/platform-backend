@@ -24,24 +24,15 @@ import java.util.UUID;
  * result back.
  *
  * <p><b>Idempotency.</b> {@code Idempotency-Key: <analysisRunId UUID>} is the run's
- * primary key. Re-POSTing the same key with the same payload is a 200 replay; with a
- * different payload it is a {@code 409 IDEMPOTENCY_CONFLICT}; a brand-new key is a 201.
+ * primary key. Re-POSTing the same key and payload with a fresh exact capability is
+ * a 200 safe retry. Reusing the same capability is rejected as replay, a different
+ * payload is a {@code 409 IDEMPOTENCY_CONFLICT}, and a brand-new key is a 201.
  *
- * <p><b>SECURITY (accepted residual risk — read before changing this path).</b>
- * {@code SVC_meeting:analysis-result:write} is a platform-wide system-principal write
- * authority, NOT tenant-scoped. This endpoint does not further constrain the caller's
- * target-meeting selection by a tenant claim or an analysis-job binding. The
- * meeting-derived tenant + the composite tenant FK are relational data-integrity
- * controls, NOT authorization: they stop a payload from binding a run to the wrong
- * tenant, but they do not stop an authorised global principal from targeting any
- * meeting. BE-1b enforces the token CLASS (iss==auth-service, aud==meeting-service,
- * an env-gated service decoder; a Keycloak user token can never mint the SVC_
- * authority), but issuer validity is not caller-workload authorization, and the
- * NetworkPolicy is an additional barrier, not authorization. A compromise of the
- * analyzer service credential therefore carries a write blast radius across all
- * tenants' meetings. The documented future hardening is a server-side analysis-job
- * binding (runId ↔ meetingId ↔ tenantId). The {@code @PreAuthorize} below is
- * defence-in-depth behind the {@code @Order(1)} internal filter chain.
+ * <p><b>SECURITY.</b> The auth-service token proves the expected caller class while
+ * {@code X-Analysis-Job-Capability} binds that caller to one tenant, meeting,
+ * transcript session, finalization occurrence, analysis spec and analysis run.
+ * Both gates are required; neither a user token nor a generic service credential
+ * can select an arbitrary meeting.
  */
 @RestController
 @RequestMapping("/api/v1/internal/meetings/{meetingId}/analysis-results")
@@ -58,10 +49,11 @@ public class MeetingAnalysisResultInternalController {
     public ResponseEntity<MeetingAnalysisResultIngestResponse> ingest(
             @PathVariable UUID meetingId,
             @RequestHeader("Idempotency-Key") UUID analysisRunId,
+            @RequestHeader("X-Analysis-Job-Capability") String jobCapability,
             @Valid @RequestBody MeetingAnalysisResultIngestRequest request) {
         MeetingAnalysisResultIngestResponse body =
-                ingestionService.ingest(meetingId, analysisRunId, request);
-        // 200 on an idempotent replay of an existing run, 201 on a fresh write.
+                ingestionService.ingest(meetingId, analysisRunId, jobCapability, request);
+        // 200 on a fresh-capability retry of an existing run, 201 on a fresh write.
         HttpStatus status = body.idempotentReplay() ? HttpStatus.OK : HttpStatus.CREATED;
         return ResponseEntity.status(status).body(body);
     }

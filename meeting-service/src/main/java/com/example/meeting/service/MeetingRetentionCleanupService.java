@@ -4,6 +4,7 @@ import com.example.meeting.model.MeetingRetentionDestructionAudit;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingIntelligenceResultAccessAuditRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingRetentionDestructionAuditRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +39,7 @@ public class MeetingRetentionCleanupService {
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingIntelligenceResultAccessAuditRepository resultAccessAuditRepository;
+    private final MeetingAnalysisRunRepository analysisRunRepository;
     private final MeetingRetentionDestructionAuditRepository auditRepository;
     private final int retentionDays;
     private final int resultAccessAuditRetentionDays;
@@ -47,6 +49,7 @@ public class MeetingRetentionCleanupService {
     public MeetingRetentionCleanupService(
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
+            MeetingAnalysisRunRepository analysisRunRepository,
             MeetingIntelligenceResultAccessAuditRepository resultAccessAuditRepository,
             MeetingRetentionDestructionAuditRepository auditRepository,
             @Value("${meeting.retention.meeting-intelligence-days:730}") int retentionDays,
@@ -55,6 +58,7 @@ public class MeetingRetentionCleanupService {
             @Value("${meeting.retention.cleanup-max-batches-per-run:100}") int cleanupMaxBatchesPerRun) {
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
+        this.analysisRunRepository = analysisRunRepository;
         this.resultAccessAuditRepository = resultAccessAuditRepository;
         this.auditRepository = auditRepository;
         this.retentionDays = retentionDays;
@@ -85,27 +89,31 @@ public class MeetingRetentionCleanupService {
         }
         Instant cutoff = now.minus(Duration.ofDays(retentionDays));
         Instant resultAccessAuditCutoff = now.minus(Duration.ofDays(resultAccessAuditRetentionDays));
+        long analysisRunCount = deleteExpiredAnalysisRuns(cutoff);
+        // Legacy/manual children have no analysis-run parent and retain their
+        // existing timestamp-based lifecycle.
         long actionCount = deleteExpiredActions(cutoff);
         long decisionCount = deleteExpiredDecisions(cutoff);
         long resultAccessAuditCount = deleteExpiredResultAccessAudits(resultAccessAuditCutoff);
-        long total = actionCount + decisionCount;
+        long total = analysisRunCount + actionCount + decisionCount;
 
         MeetingRetentionDestructionAudit audit = writeAudit(
                 now, cutoff, LAYER_MEETING_INTELLIGENCE, JOB_ID,
-                total, actionCount, decisionCount, 0);
+                total, actionCount, decisionCount, 0, analysisRunCount);
         MeetingRetentionDestructionAudit resultAccessAudit = writeAudit(
                 now, resultAccessAuditCutoff, LAYER_RESULT_ACCESS_AUDIT,
                 RESULT_ACCESS_AUDIT_JOB_ID, resultAccessAuditCount, 0, 0,
-                resultAccessAuditCount);
+                resultAccessAuditCount, 0);
 
         LOGGER.info(
                 "meeting retention cleanup completed layer={} cutoff={} actionDeletedCount={} "
-                        + "decisionDeletedCount={} resultAccessAuditDeletedCount={} "
+                        + "decisionDeletedCount={} analysisRunDeletedCount={} resultAccessAuditDeletedCount={} "
                         + "deletedCount={} jobId={}",
                 LAYER_MEETING_INTELLIGENCE,
                 cutoff,
                 actionCount,
                 decisionCount,
+                analysisRunCount,
                 resultAccessAuditCount,
                 total + resultAccessAuditCount,
                 JOB_ID);
@@ -114,6 +122,7 @@ public class MeetingRetentionCleanupService {
                 resultAccessAuditCutoff,
                 actionCount,
                 decisionCount,
+                analysisRunCount,
                 resultAccessAuditCount,
                 audit.getId(),
                 resultAccessAudit.getId());
@@ -135,6 +144,32 @@ public class MeetingRetentionCleanupService {
         if (!actionRepository.findExpiredIds(cutoff, PageRequest.of(0, 1)).isEmpty()) {
             LOGGER.warn(
                     "meeting retention cleanup batch limit reached entity=meeting_actions cutoff={} "
+                            + "deletedCount={} maxBatches={} batchSize={}",
+                    cutoff,
+                    deleted,
+                    cleanupMaxBatchesPerRun,
+                    cleanupBatchSize);
+        }
+        return deleted;
+    }
+
+    private long deleteExpiredAnalysisRuns(Instant cutoff) {
+        long deleted = 0;
+        for (int batch = 0; batch < cleanupMaxBatchesPerRun; batch++) {
+            List<UUID> ids = analysisRunRepository.findExpiredIds(
+                    cutoff, PageRequest.of(0, cleanupBatchSize));
+            if (ids.isEmpty()) {
+                return deleted;
+            }
+            int batchDeleted = analysisRunRepository.deleteByIdIn(ids);
+            if (batchDeleted <= 0) {
+                throw new IllegalStateException("meeting analysis-run retention cleanup made no progress");
+            }
+            deleted += batchDeleted;
+        }
+        if (!analysisRunRepository.findExpiredIds(cutoff, PageRequest.of(0, 1)).isEmpty()) {
+            LOGGER.warn(
+                    "meeting retention cleanup batch limit reached entity=meeting_analysis_runs cutoff={} "
                             + "deletedCount={} maxBatches={} batchSize={}",
                     cutoff,
                     deleted,
@@ -204,7 +239,8 @@ public class MeetingRetentionCleanupService {
             long deletedCount,
             long actionDeletedCount,
             long decisionDeletedCount,
-            long resultAccessAuditDeletedCount) {
+            long resultAccessAuditDeletedCount,
+            long analysisRunDeletedCount) {
         MeetingRetentionDestructionAudit audit = new MeetingRetentionDestructionAudit();
         audit.setLayerId(layerId);
         audit.setCutoffAt(cutoff);
@@ -212,6 +248,7 @@ public class MeetingRetentionCleanupService {
         audit.setActionDeletedCount(actionDeletedCount);
         audit.setDecisionDeletedCount(decisionDeletedCount);
         audit.setResultAccessAuditDeletedCount(resultAccessAuditDeletedCount);
+        audit.setAnalysisRunDeletedCount(analysisRunDeletedCount);
         audit.setJobId(jobId);
         audit.setAuditPayload("metadata-only");
         audit.setExecutedAt(now);
@@ -223,12 +260,14 @@ public class MeetingRetentionCleanupService {
             Instant resultAccessAuditCutoffAt,
             long actionDeletedCount,
             long decisionDeletedCount,
+            long analysisRunDeletedCount,
             long resultAccessAuditDeletedCount,
             UUID auditId,
             UUID resultAccessAuditAuditId
     ) {
         public long deletedCount() {
-            return actionDeletedCount + decisionDeletedCount + resultAccessAuditDeletedCount;
+            return analysisRunDeletedCount + actionDeletedCount + decisionDeletedCount
+                    + resultAccessAuditDeletedCount;
         }
     }
 }

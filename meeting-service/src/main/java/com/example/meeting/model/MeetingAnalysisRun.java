@@ -30,9 +30,11 @@ import java.util.UUID;
  * an update — the service layer rejects it with {@code 409 IDEMPOTENCY_CONFLICT}.
  *
  * <p>{@link #transcriptSha256} identifies <em>which</em> transcript snapshot was
- * analysed. It deliberately does not <em>order</em> snapshots: this entity cannot
- * answer "is a newer transcript available", only "is this the snapshot we already
- * accepted". See {@code V3__meeting_analysis_runs.sql}.
+ * analysed. Canonical rows created since V8 also persist the immutable occurrence
+ * tuple: session, positive finalization version, finalized-at and analysis spec.
+ * Visibility orders occurrences by finalized-at and then finalization version, so
+ * a late older occurrence cannot supersede a newer accepted result. Legacy rows
+ * keep a null occurrence tuple and remain readable during the migration window.
  *
  * @see Meeting for the org_id compat pattern and the composite tenant-FK convention
  */
@@ -63,6 +65,23 @@ public class MeetingAnalysisRun {
 
     @Column(name = "transcript_sha256", nullable = false, length = 64)
     private String transcriptSha256;
+
+    /** Nullable only for rows created before V8; all new canonical writes set the tuple. */
+    @Column(name = "finalization_version")
+    private Long finalizationVersion;
+
+    @Column(name = "finalized_at")
+    private Instant finalizedAt;
+
+    @Column(name = "analysis_spec_version", length = 64)
+    private String analysisSpecVersion;
+
+    /** Metadata-only replay identity. The signed capability itself is never persisted. */
+    @Column(name = "job_capability_id")
+    private UUID jobCapabilityId;
+
+    @Column(name = "legal_hold", nullable = false)
+    private boolean legalHold;
 
     @Column(name = "analyzer_contract_version", nullable = false, length = 64)
     private String analyzerContractVersion;
@@ -182,6 +201,17 @@ public class MeetingAnalysisRun {
     public void setTranscriptSha256(final String transcriptSha256) {
         this.transcriptSha256 = transcriptSha256;
     }
+
+    public Long getFinalizationVersion() { return finalizationVersion; }
+    public void setFinalizationVersion(Long value) { this.finalizationVersion = value; }
+    public Instant getFinalizedAt() { return finalizedAt; }
+    public void setFinalizedAt(Instant value) { this.finalizedAt = value; }
+    public String getAnalysisSpecVersion() { return analysisSpecVersion; }
+    public void setAnalysisSpecVersion(String value) { this.analysisSpecVersion = value; }
+    public UUID getJobCapabilityId() { return jobCapabilityId; }
+    public void setJobCapabilityId(UUID value) { this.jobCapabilityId = value; }
+    public boolean isLegalHold() { return legalHold; }
+    public void setLegalHold(boolean value) { this.legalHold = value; }
 
     public String getAnalyzerContractVersion() {
         return analyzerContractVersion;

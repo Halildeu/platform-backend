@@ -18,6 +18,7 @@ import com.example.transcript.repository.TranscriptEventOutboxRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -50,7 +51,9 @@ class TranscriptQuiescentFinalizationProcessorTest {
         processor = new TranscriptQuiescentFinalizationProcessor(
                 associations, segments, finalizations, outbox,
                 new TranscriptFinalizationStateMachine(properties),
-                new TranscriptSnapshotHasher(), Clock.fixed(NOW, ZoneOffset.UTC));
+                new FinalizedTranscriptSnapshotCodec(
+                        new TranscriptSnapshotHasher(), new ObjectMapper()),
+                Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     @Test
@@ -105,6 +108,10 @@ class TranscriptQuiescentFinalizationProcessorTest {
         assertThat(finalization.getValue().getFinalizationVersion()).isEqualTo(1);
         assertThat(finalization.getValue().getSegmentCount()).isEqualTo(1);
         assertThat(finalization.getValue().getSnapshotSha256()).matches("[0-9a-f]{64}");
+        assertThat(finalization.getValue().getCanonicalTranscript()).isEqualTo("canonical phrase");
+        assertThat(finalization.getValue().getCanonicalTranscriptSha256()).matches("[0-9a-f]{64}");
+        assertThat(finalization.getValue().getCanonicalSegments()).contains("canonical phrase");
+        assertThat(finalization.getValue().getCanonicalProjectionSha256()).matches("[0-9a-f]{64}");
         assertThat(event.getValue().getEventType()).isEqualTo("meeting.transcript.ready");
         assertThat(event.getValue().getPayload())
                 .contains("\"segmentCount\":1")

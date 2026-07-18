@@ -9,6 +9,8 @@ import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestRequest;
 import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.repository.MeetingRepository;
+import com.example.meeting.security.AnalysisJobCapabilityVerifier;
+import com.example.meeting.support.AnalysisJobCapabilityTestTokens;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Timestamp;
@@ -71,6 +73,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     private static final String SHA_A = "a".repeat(64);
     private static final String SHA_B = "b".repeat(64);
     private static final Instant GEN = Instant.parse("2026-07-11T10:00:00Z");
+    private static final Instant FINALIZED = Instant.parse("2026-07-11T09:59:00Z");
+    private static final UUID SESSION_ID = UUID.fromString("41cced6d-b538-42ea-8178-92c3ce4157b4");
 
     @Container
     @SuppressWarnings("resource")
@@ -92,6 +96,9 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         registry.add("spring.flyway.default-schema", () -> SCHEMA);
         registry.add("spring.flyway.schemas", () -> SCHEMA);
         registry.add("spring.jpa.properties.hibernate.default_schema", () -> SCHEMA);
+        registry.add(
+                "security.analysis-job-capability.hmac-secret",
+                () -> AnalysisJobCapabilityTestTokens.ENCODED_SECRET);
     }
 
     /**
@@ -112,7 +119,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     @Import({
             MeetingAnalysisResultIngestionService.class,
             MeetingAnalysisResultWriter.class,
-            MeetingAnalysisPayloadHasher.class
+            MeetingAnalysisPayloadHasher.class,
+            AnalysisJobCapabilityVerifier.class
     })
     static class Boot {
     }
@@ -132,6 +140,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         // cascades to runs/actions/decisions, but delete children first to be explicit).
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_actions");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_decisions");
+        jdbc.update("DELETE FROM " + SCHEMA + ".meeting_analysis_job_capability_uses");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_analysis_runs");
         jdbc.update("DELETE FROM " + SCHEMA + ".meetings");
     }
@@ -153,7 +162,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
                         new MeetingAnalysisActionIngest("Takip et", null, null)),
                 null);
 
-        var response = service.ingest(meetingId, runId, request);
+        var response = ingest(meetingId, runId, request);
 
         assertThat(response.persisted()).isTrue();
         assertThat(response.storageMode()).isEqualTo("persisted");
@@ -202,7 +211,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
 
-        service.ingest(meetingId, runId, request(SHA_A, "özet", List.of("k"),
+        ingest(meetingId, runId, request(SHA_A, "özet", List.of("k"),
                 List.of(new MeetingAnalysisActionIngest("a", null, null)), null));
 
         // The request DTO has no tenant/org field at all — the only tenant authority is
@@ -219,7 +228,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
 
     @Test
     void unknownMeeting_is404() {
-        assertThatThrownBy(() -> service.ingest(UUID.randomUUID(), UUID.randomUUID(),
+        assertThatThrownBy(() -> ingest(UUID.randomUUID(), UUID.randomUUID(),
                 request(SHA_A, "özet", List.of(), List.of(), null)))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(404));
@@ -230,12 +239,35 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID org = UUID.randomUUID();
         UUID meetingId = insertMeeting(org);
         var mismatched = new MeetingAnalysisResultIngestRequest(
-                UUID.randomUUID(), "SES-1", SHA_A, "5-adr0043", null, null, null,
+                UUID.randomUUID(), SESSION_ID.toString(), SHA_A, 1L, FINALIZED, "analysis-v1",
+                "5-adr0043", null, null, null,
                 "özet", null, List.of(), List.of(), List.of(), 0, false, 0, GEN,
                 List.of(), List.of(), null);
-        assertThatThrownBy(() -> service.ingest(meetingId, UUID.randomUUID(), mismatched))
+        assertThatThrownBy(() -> ingest(meetingId, UUID.randomUUID(), mismatched))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(400));
+    }
+
+    @Test
+    void canonicalOccurrenceTuple_cannotBecomePartiallyNull() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+
+        ingest(meetingId, runId, request(SHA_A, "özet", List.of(), List.of(), null));
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE " + SCHEMA
+                        + ".meeting_analysis_runs SET finalization_version = NULL "
+                        + "WHERE analysis_run_id = ?",
+                runId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(jdbc.queryForObject(
+                "SELECT finalization_version FROM " + SCHEMA
+                        + ".meeting_analysis_runs WHERE analysis_run_id = ?",
+                Long.class,
+                runId))
+                .isEqualTo(1L);
     }
 
     // ────────────────────────── Idempotency & conflict ──────────────────────────
@@ -248,8 +280,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         var request = request(SHA_A, "özet", List.of("k1", "k2"),
                 List.of(new MeetingAnalysisActionIngest("a1", null, null)), null);
 
-        var first = service.ingest(meetingId, runId, request);
-        var retry = service.ingest(meetingId, runId, request);
+        var first = ingest(meetingId, runId, request);
+        var retry = ingest(meetingId, runId, request);
 
         assertThat(first.idempotentReplay()).isFalse();
         assertThat(retry.idempotentReplay()).isTrue();
@@ -265,9 +297,9 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
 
-        service.ingest(meetingId, runId, request(SHA_A, "orijinal", List.of("k"), List.of(), null));
+        ingest(meetingId, runId, request(SHA_A, "orijinal", List.of("k"), List.of(), null));
 
-        assertThatThrownBy(() -> service.ingest(meetingId, runId,
+        assertThatThrownBy(() -> ingest(meetingId, runId,
                 request(SHA_A, "DEĞİŞTİRİLMİŞ", List.of("k"), List.of(), null)))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(409);
@@ -288,17 +320,118 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID meetingB = insertMeeting(orgB);
         UUID key = UUID.randomUUID();
 
-        service.ingest(meetingA, key, request(SHA_A, "özet-A", List.of("k"), List.of(), null));
+        ingest(meetingA, key, request(SHA_A, "özet-A", List.of("k"), List.of(), null));
 
         // analysis_run_id is a GLOBAL pk; reusing it for tenant B must be a deterministic,
         // non-disclosing 409 — never a 500 from a raw PK collision.
-        assertThatThrownBy(() -> service.ingest(meetingB, key,
+        assertThatThrownBy(() -> ingest(meetingB, key,
                 request(SHA_B, "özet-B", List.of("k"), List.of(), null)))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(409);
                     assertThat(ex.getReason()).isEqualTo("IDEMPOTENCY_CONFLICT");
                 });
         assertThat(runCount(meetingB)).isZero();
+    }
+
+    @Test
+    void exactCapabilityReplay_isRejected_butFreshCapabilityKeepsHttpRetryIdempotent() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        var request = request(SHA_A, "özet", List.of(), List.of(), null);
+        String capability = AnalysisJobCapabilityTestTokens.issue(org, meetingId, runId, request);
+
+        service.ingest(meetingId, runId, capability, request);
+
+        assertThatThrownBy(() -> service.ingest(meetingId, runId, capability, request))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(409);
+                    assertThat(ex.getReason()).isEqualTo("JOB_CAPABILITY_REPLAY");
+                });
+        String retryCapability = AnalysisJobCapabilityTestTokens.issue(org, meetingId, runId, request);
+        assertThat(service.ingest(meetingId, runId, retryCapability, request).idempotentReplay()).isTrue();
+        assertThatThrownBy(() -> service.ingest(meetingId, runId, retryCapability, request))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(409);
+                    assertThat(ex.getReason()).isEqualTo("JOB_CAPABILITY_REPLAY");
+                });
+        assertThat(runCount(meetingId)).isEqualTo(1);
+        assertThat(capabilityUseCount(runId)).isEqualTo(2);
+    }
+
+    @Test
+    void foreignTenantSessionVersionHashRunOrSpecCapability_isRejected() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        var request = request(SHA_A, "özet", List.of(), List.of(), null);
+        Instant issuedAt = Instant.now().minusSeconds(1);
+        Instant expiresAt = Instant.now().plusSeconds(300);
+        List<String> foreignCapabilities = List.of(
+                capability(UUID.randomUUID(), meetingId, SESSION_ID, 1L, FINALIZED, SHA_A,
+                        runId, "analysis-v1", issuedAt, expiresAt),
+                capability(org, meetingId, UUID.randomUUID(), 1L, FINALIZED, SHA_A,
+                        runId, "analysis-v1", issuedAt, expiresAt),
+                capability(org, meetingId, SESSION_ID, 2L, FINALIZED, SHA_A,
+                        runId, "analysis-v1", issuedAt, expiresAt),
+                capability(org, meetingId, SESSION_ID, 1L, FINALIZED, SHA_B,
+                        runId, "analysis-v1", issuedAt, expiresAt),
+                capability(org, meetingId, SESSION_ID, 1L, FINALIZED, SHA_A,
+                        UUID.randomUUID(), "analysis-v1", issuedAt, expiresAt),
+                capability(org, meetingId, SESSION_ID, 1L, FINALIZED, SHA_A,
+                        runId, "analysis-v2", issuedAt, expiresAt));
+
+        for (String foreignCapability : foreignCapabilities) {
+            assertThatThrownBy(() -> service.ingest(meetingId, runId, foreignCapability, request))
+                    .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                        assertThat(ex.getStatusCode().value()).isEqualTo(403);
+                        assertThat(ex.getReason()).isEqualTo("JOB_CAPABILITY_BINDING_MISMATCH");
+                    });
+        }
+        assertThat(runCount(meetingId)).isZero();
+    }
+
+    @Test
+    void lateOlderFinalization_cannotOverwriteVisibleLatest() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID newRun = UUID.randomUUID();
+        UUID oldRun = UUID.randomUUID();
+        var newer = requestOccurrence(
+                SHA_B, "v2", List.of(), List.of(), null, 2L, FINALIZED.plusSeconds(60));
+        var older = requestOccurrence(
+                SHA_A, "v1", List.of(), List.of(), null, 1L, FINALIZED);
+
+        ingest(meetingId, newRun, newer);
+        assertThatThrownBy(() -> ingest(meetingId, oldRun, older))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(409);
+                    assertThat(ex.getReason()).isEqualTo("STALE_FINALIZATION");
+                });
+
+        assertThat(runCount(meetingId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject(
+                        "SELECT analysis_run_id FROM " + SCHEMA
+                                + ".meeting_analysis_runs WHERE meeting_id = ?"
+                                + " ORDER BY finalized_at DESC, finalization_version DESC LIMIT 1",
+                        UUID.class,
+                        meetingId))
+                .isEqualTo(newRun);
+    }
+
+    @Test
+    void freshRunForAlreadyPersistedFinalizationAndSpec_remainsAppendOnly() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        var request = request(SHA_A, "özet", List.of(), List.of(), null);
+        ingest(meetingId, UUID.randomUUID(), request);
+
+        ingest(meetingId, UUID.randomUUID(), request);
+
+        // A fresh run and capability are an explicit re-analysis, not a replay.
+        // The capability jti and Idempotency-Key still reject actual replay, while
+        // append-only re-analysis remains compatible with the V3 contract.
+        assertThat(runCount(meetingId)).isEqualTo(2);
     }
 
     // ────────────────────────── Supersession ──────────────────────────
@@ -310,8 +443,10 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
 
-        service.ingest(meetingId, first, request(SHA_A, "v1", List.of("k"), List.of(), null));
-        var resp = service.ingest(meetingId, second, request(SHA_B, "v2", List.of("k"), List.of(), first));
+        ingest(meetingId, first, request(SHA_A, "v1", List.of("k"), List.of(), null));
+        var resp = ingest(meetingId, second,
+                requestOccurrence(SHA_B, "v2", List.of("k"), List.of(), first, 2L,
+                        FINALIZED.plusSeconds(60)));
 
         assertThat(resp.supersedesAnalysisRunId()).isEqualTo(first);
         assertThat(runCount(meetingId)).isEqualTo(2); // append-only, first survives
@@ -325,7 +460,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
 
-        assertThatThrownBy(() -> service.ingest(meetingId, runId,
+        assertThatThrownBy(() -> ingest(meetingId, runId,
                 request(SHA_A, "özet", List.of(), List.of(), UUID.randomUUID())))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(422);
@@ -340,10 +475,10 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID meeting1 = insertMeeting(org);
         UUID meeting2 = insertMeeting(org);
         UUID runIn1 = UUID.randomUUID();
-        service.ingest(meeting1, runIn1, request(SHA_A, "özet", List.of(), List.of(), null));
+        ingest(meeting1, runIn1, request(SHA_A, "özet", List.of(), List.of(), null));
 
         // Same tenant, different meeting: supersession is a within-meeting relationship.
-        assertThatThrownBy(() -> service.ingest(meeting2, UUID.randomUUID(),
+        assertThatThrownBy(() -> ingest(meeting2, UUID.randomUUID(),
                 request(SHA_B, "özet", List.of(), List.of(), runIn1)))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(422));
@@ -355,7 +490,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID meetingId = insertMeeting(org);
         UUID runId = UUID.randomUUID();
 
-        assertThatThrownBy(() -> service.ingest(meetingId, runId,
+        assertThatThrownBy(() -> ingest(meetingId, runId,
                 request(SHA_A, "özet", List.of(), List.of(), runId)))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(422);
@@ -379,7 +514,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
 
         // Not misclassified as a race replay: no run is committed, so the original
         // persistence failure is preserved.
-        assertThatThrownBy(() -> service.ingest(meetingId, runId, request))
+        assertThatThrownBy(() -> ingest(meetingId, runId, request))
                 .isInstanceOf(DataIntegrityViolationException.class);
 
         assertThat(runCount(meetingId)).isZero();
@@ -398,8 +533,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
                 List.of(new MeetingAnalysisActionIngest("a1", null, null)), null);
 
         List<Outcome> outcomes = runConcurrently(
-                () -> classify(() -> service.ingest(meetingId, runId, request)),
-                () -> classify(() -> service.ingest(meetingId, runId, request)));
+                () -> classify(() -> ingest(meetingId, runId, request)),
+                () -> classify(() -> ingest(meetingId, runId, request)));
 
         assertThat(outcomes).containsExactlyInAnyOrder(Outcome.CREATED, Outcome.REPLAY);
         assertThat(runCount(meetingId)).isEqualTo(1);
@@ -419,8 +554,8 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
                 List.of(new MeetingAnalysisActionIngest("a", null, null)), null);
 
         List<Outcome> outcomes = runConcurrently(
-                () -> classify(() -> service.ingest(meetingId, runId, payloadA)),
-                () -> classify(() -> service.ingest(meetingId, runId, payloadB)));
+                () -> classify(() -> ingest(meetingId, runId, payloadA)),
+                () -> classify(() -> ingest(meetingId, runId, payloadB)));
 
         assertThat(outcomes).containsExactlyInAnyOrder(Outcome.CREATED, Outcome.CONFLICT);
         assertThat(runCount(meetingId)).isEqualTo(1);
@@ -473,7 +608,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
 
             Future<Object> main = exec.submit(() -> {
                 try {
-                    return service.ingest(meetingId, runId, request);
+                    return ingest(meetingId, runId, request);
                 } catch (ResponseStatusException e) {
                     return e;
                 }
@@ -542,10 +677,59 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     private MeetingAnalysisResultIngestRequest request(
             String sha, String summary, List<String> decisions,
             List<MeetingAnalysisActionIngest> actions, UUID supersedes) {
+        return requestOccurrence(sha, summary, decisions, actions, supersedes, 1L, FINALIZED);
+    }
+
+    private MeetingAnalysisResultIngestRequest requestOccurrence(
+            String sha, String summary, List<String> decisions,
+            List<MeetingAnalysisActionIngest> actions, UUID supersedes,
+            long finalizationVersion, Instant finalizedAt) {
         return new MeetingAnalysisResultIngestRequest(
-                null, "SES-1", sha, "5-adr0043", "gpt-x", "openai", "p1",
+                null, SESSION_ID.toString(), sha, finalizationVersion, finalizedAt, "analysis-v1",
+                "5-adr0043", "gpt-x", "openai", "p1",
                 summary, "verified", List.of(), List.of(), List.of(),
                 0, false, 0, GEN, decisions, actions, supersedes);
+    }
+
+    private MeetingAnalysisResultIngestResponse ingest(
+            UUID meetingId, UUID analysisRunId, MeetingAnalysisResultIngestRequest request) {
+        UUID tenantId = jdbc.query(
+                        "SELECT tenant_id FROM " + SCHEMA + ".meetings WHERE id = ?",
+                        (rs, rowNum) -> rs.getObject(1, UUID.class),
+                        meetingId)
+                .stream()
+                .findFirst()
+                .orElseGet(UUID::randomUUID);
+        return service.ingest(
+                meetingId,
+                analysisRunId,
+                AnalysisJobCapabilityTestTokens.issue(tenantId, meetingId, analysisRunId, request),
+                request);
+    }
+
+    private String capability(
+            UUID tenantId,
+            UUID meetingId,
+            UUID sessionId,
+            long finalizationVersion,
+            Instant finalizedAt,
+            String transcriptSha,
+            UUID analysisRunId,
+            String analysisSpecVersion,
+            Instant issuedAt,
+            Instant expiresAt) {
+        return AnalysisJobCapabilityTestTokens.issue(
+                UUID.randomUUID(),
+                tenantId,
+                meetingId,
+                sessionId,
+                finalizationVersion,
+                finalizedAt,
+                transcriptSha,
+                analysisRunId,
+                analysisSpecVersion,
+                issuedAt,
+                expiresAt);
     }
 
     private UUID insertMeeting(UUID org) {
@@ -566,17 +750,18 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
                         + "(analysis_run_id, meeting_id, tenant_id, org_id, transcript_session_id, "
                         + " transcript_sha256, analyzer_contract_version, payload_hash, "
                         + " generated_at, created_at, updated_at) "
-                        + "VALUES (?, ?, ?, ?, 'SES-1', ?, '5-adr0043', ?, ?, ?, ?)")) {
+                        + "VALUES (?, ?, ?, ?, ?, ?, '5-adr0043', ?, ?, ?, ?)")) {
             Timestamp now = now();
             ps.setObject(1, runId);
             ps.setObject(2, meetingId);
             ps.setObject(3, org);
             ps.setObject(4, org);
-            ps.setString(5, SHA_A);
-            ps.setString(6, payloadHash);
-            ps.setTimestamp(7, now);
+            ps.setString(5, SESSION_ID.toString());
+            ps.setString(6, SHA_A);
+            ps.setString(7, payloadHash);
             ps.setTimestamp(8, now);
             ps.setTimestamp(9, now);
+            ps.setTimestamp(10, now);
             ps.executeUpdate();
         }
     }
@@ -600,6 +785,13 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     private int actionCount(UUID meetingId) {
         Integer c = jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA
                 + ".meeting_actions WHERE meeting_id = ?", Integer.class, meetingId);
+        return c == null ? 0 : c;
+    }
+
+    private int capabilityUseCount(UUID analysisRunId) {
+        Integer c = jdbc.queryForObject("SELECT count(*) FROM " + SCHEMA
+                + ".meeting_analysis_job_capability_uses WHERE analysis_run_id = ?",
+                Integer.class, analysisRunId);
         return c == null ? 0 : c;
     }
 }

@@ -26,6 +26,7 @@ import com.example.meeting.model.MeetingSession;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
+import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
@@ -80,6 +81,7 @@ public class MeetingService {
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingEventOutboxRepository eventOutboxRepository;
+    private final MeetingAnalysisRunRepository analysisRunRepository;
     private final MeetingEventOutboxFactory eventOutboxFactory;
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
     private final boolean legacyUserIdFallbackEnabled;
@@ -91,6 +93,7 @@ public class MeetingService {
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
             MeetingEventOutboxRepository eventOutboxRepository,
+            MeetingAnalysisRunRepository analysisRunRepository,
             ObjectProvider<OpenFgaAuthzService> authzServiceProvider,
             @Value("${meeting.authz.object-principal.legacy-user-id-fallback-enabled:false}")
             boolean legacyUserIdFallbackEnabled,
@@ -101,6 +104,7 @@ public class MeetingService {
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
         this.eventOutboxRepository = eventOutboxRepository;
+        this.analysisRunRepository = analysisRunRepository;
         this.eventOutboxFactory = new MeetingEventOutboxFactory();
         this.authzServiceProvider = authzServiceProvider;
         this.legacyUserIdFallbackEnabled = legacyUserIdFallbackEnabled;
@@ -414,6 +418,12 @@ public class MeetingService {
     @Transactional
     public void deleteSession(AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
         requireMeeting(tenant, meetingId);
+        if (analysisRunRepository.existsLegalHoldForCanonicalSession(
+                meetingId, tenant.tenantId(), sessionId.toString())) {
+            throw new ResponseStatusException(HttpStatus.LOCKED, "MEETING_ANALYSIS_LEGAL_HOLD");
+        }
+        analysisRunRepository.deleteByCanonicalSession(
+                meetingId, tenant.tenantId(), sessionId.toString());
         sessionRepository.delete(requireSession(tenant, meetingId, sessionId));
     }
 
