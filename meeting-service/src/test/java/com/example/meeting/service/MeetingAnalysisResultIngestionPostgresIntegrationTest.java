@@ -120,6 +120,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
             MeetingAnalysisResultIngestionService.class,
             MeetingAnalysisResultWriter.class,
             MeetingAnalysisPayloadHasher.class,
+            AnalysisGeneratedAtPolicy.class,
             AnalysisJobCapabilityVerifier.class
     })
     static class Boot {
@@ -142,10 +143,33 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_decisions");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_analysis_job_capability_uses");
         jdbc.update("DELETE FROM " + SCHEMA + ".meeting_analysis_runs");
+        jdbc.update("DELETE FROM " + SCHEMA + ".meeting_analysis_run_destruction_tombstone");
         jdbc.update("DELETE FROM " + SCHEMA + ".meetings");
     }
 
     // ────────────────────────── Happy path + mapping ──────────────────────────
+
+    @Test
+    void generatedAtMustFollowFinalizationAndStayWithinServerSkew() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        MeetingAnalysisResultIngestRequest base = request(
+                SHA_A, "özet", List.of(), List.of(), null);
+
+        assertThatThrownBy(() -> ingest(
+                meetingId, UUID.randomUUID(), withGeneratedAt(base, FINALIZED.minusMillis(1))))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(400);
+                    assertThat(ex.getReason()).isEqualTo("ANALYSIS_GENERATED_AT_INVALID");
+                });
+        assertThatThrownBy(() -> ingest(
+                meetingId, UUID.randomUUID(), withGeneratedAt(base, Instant.now().plusSeconds(3600))))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(400);
+                    assertThat(ex.getReason()).isEqualTo("ANALYSIS_GENERATED_AT_INVALID");
+                });
+        assertThat(runCount(meetingId)).isZero();
+    }
 
     @Test
     void ingest_persistsRunAndChildrenInOneTransaction_withDecisionAndActionMapping() {
@@ -334,6 +358,28 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
     }
 
     @Test
+    void destroyedGlobalKey_cannotBeReusedOrConsumeCapability() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO %s.meeting_analysis_run_destruction_tombstone
+                  (analysis_run_id, tenant_id, org_id, meeting_id, session_id, reason, destroyed_at)
+                VALUES (?, ?, ?, ?, ?, 'RETENTION', ?)
+                """.formatted(SCHEMA), runId, org, org, meetingId, SESSION_ID, now());
+
+        assertThatThrownBy(() -> ingest(
+                meetingId, runId, request(SHA_A, "özet", List.of(), List.of(), null)))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(409);
+                    assertThat(ex.getReason()).isEqualTo("IDEMPOTENCY_CONFLICT");
+                });
+
+        assertThat(runCount(meetingId)).isZero();
+        assertThat(capabilityUseCount(runId)).isZero();
+    }
+
+    @Test
     void exactCapabilityReplay_isRejected_butFreshCapabilityKeepsHttpRetryIdempotent() {
         UUID org = UUID.randomUUID();
         UUID meetingId = insertMeeting(org);
@@ -366,7 +412,7 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
         UUID runId = UUID.randomUUID();
         var request = request(SHA_A, "özet", List.of(), List.of(), null);
         Instant issuedAt = Instant.now().minusSeconds(1);
-        Instant expiresAt = Instant.now().plusSeconds(300);
+        Instant expiresAt = issuedAt.plusSeconds(300);
         List<String> foreignCapabilities = List.of(
                 capability(UUID.randomUUID(), meetingId, SESSION_ID, 1L, FINALIZED, SHA_A,
                         runId, "analysis-v1", issuedAt, expiresAt),
@@ -689,6 +735,18 @@ class MeetingAnalysisResultIngestionPostgresIntegrationTest {
                 "5-adr0043", "gpt-x", "openai", "p1",
                 summary, "verified", List.of(), List.of(), List.of(),
                 0, false, 0, GEN, decisions, actions, supersedes);
+    }
+
+    private MeetingAnalysisResultIngestRequest withGeneratedAt(
+            MeetingAnalysisResultIngestRequest value, Instant generatedAt) {
+        return new MeetingAnalysisResultIngestRequest(
+                value.meetingId(), value.transcriptSessionId(), value.transcriptSha256(),
+                value.finalizationVersion(), value.finalizedAt(), value.analysisSpecVersion(),
+                value.analyzerContractVersion(), value.model(), value.backend(), value.promptVersion(),
+                value.summary(), value.summaryGroundingStatus(), value.summaryCitations(),
+                value.citations(), value.rejectedClaims(), value.ungroundedCount(),
+                value.redacted(), value.redactionCount(), generatedAt,
+                value.decisions(), value.actions(), value.supersedesAnalysisRunId());
     }
 
     private MeetingAnalysisResultIngestResponse ingest(

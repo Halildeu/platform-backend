@@ -122,8 +122,9 @@ public class TranscriptFinalizationService {
         // immutable row and event payload are created so replayed DTOs and exact
         // serialized bytes cannot diverge after a database round trip.
         Instant finalizedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        UUID analysisRunId = UUID.randomUUID();
         MeetingEventPayload.TranscriptReady payload = new MeetingEventPayload.TranscriptReady(
-                sessionId, requestedVersion, segments.size());
+                analysisRunId, sessionId, requestedVersion, segments.size());
         MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()
                 .eventType(MeetingEventType.TRANSCRIPT_READY)
                 .producer(PRODUCER)
@@ -145,6 +146,7 @@ public class TranscriptFinalizationService {
         finalization.setMeetingId(meetingId);
         finalization.setSessionId(sessionId);
         finalization.setFinalizationVersion(requestedVersion);
+        finalization.setAnalysisRunId(analysisRunId);
         finalization.setSegmentCount(segments.size());
         finalization.setSnapshotSha256(snapshot.sourceSnapshotSha256());
         finalization.setCanonicalTranscript(snapshot.transcript());
@@ -225,7 +227,8 @@ public class TranscriptFinalizationService {
 
     private TranscriptFinalizationDto toDto(TranscriptFinalization row) {
         MeetingEventPayload.TranscriptReady payload = new MeetingEventPayload.TranscriptReady(
-                row.getSessionId(), row.getFinalizationVersion(), row.getSegmentCount());
+                row.getAnalysisRunId(), row.getSessionId(),
+                row.getFinalizationVersion(), row.getSegmentCount());
         return toDto(row, com.example.common.meeting.events.MeetingEventKeys.forPayload(payload));
     }
 

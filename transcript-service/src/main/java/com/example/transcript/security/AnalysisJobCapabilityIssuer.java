@@ -25,6 +25,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AnalysisJobCapabilityIssuer {
 
     public static final String PERMISSION = "meeting:analysis-result:write";
+    static final Duration MAX_TTL = Duration.ofMinutes(5);
 
     private final byte[] secret;
     private final Duration ttl;
@@ -36,7 +37,7 @@ public class AnalysisJobCapabilityIssuer {
     @Autowired
     public AnalysisJobCapabilityIssuer(
             @Value("${security.analysis-job-capability.hmac-secret:}") String encodedSecret,
-            @Value("${security.analysis-job-capability.ttl:PT15M}") Duration ttl,
+            @Value("${security.analysis-job-capability.ttl:PT5M}") Duration ttl,
             @Value("${security.analysis-job-capability.issuer:transcript-service}") String issuer,
             @Value("${security.analysis-job-capability.audience:meeting-service}") String audience,
             @Value("${security.analysis-job-capability.client-id:meeting-ai}") String clientId) {
@@ -51,8 +52,8 @@ public class AnalysisJobCapabilityIssuer {
             String clientId,
             Clock clock) {
         this.secret = decodeSecret(encodedSecret);
-        if (ttl == null || ttl.isZero() || ttl.isNegative() || ttl.compareTo(Duration.ofMinutes(30)) > 0) {
-            throw new IllegalArgumentException("Analysis job capability TTL must be between 1 second and 30 minutes");
+        if (ttl == null || ttl.isZero() || ttl.isNegative() || ttl.compareTo(MAX_TTL) > 0) {
+            throw new IllegalArgumentException("Analysis job capability TTL must be between 1 second and 5 minutes");
         }
         if (!StringUtils.hasText(issuer) || !StringUtils.hasText(audience) || !StringUtils.hasText(clientId)) {
             throw new IllegalArgumentException("Analysis job capability issuer, audience and client-id are required");

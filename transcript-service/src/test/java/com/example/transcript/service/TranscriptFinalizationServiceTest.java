@@ -120,6 +120,8 @@ class TranscriptFinalizationServiceTest {
                 "generatedAt", "transcriptSessionId", "finalizationVersion", "segmentCount");
         assertThat(payload.path("schema").asText()).isEqualTo("meeting.event.v1");
         assertThat(payload.path("eventType").asText()).isEqualTo("meeting.transcript.ready");
+        assertThat(UUID.fromString(payload.path("analysisRunId").asText()))
+                .isEqualTo(storedFinalization.get().getAnalysisRunId());
         assertThat(payload.path("meetingId").asText()).isEqualTo(MEETING.toString());
         assertThat(payload.path("tenantId").asText()).isEqualTo(TENANT.toString());
         assertThat(payload.path("orgId").asText()).isEqualTo(TENANT.toString());
@@ -138,6 +140,7 @@ class TranscriptFinalizationServiceTest {
                 .contains("approved transcript");
         assertThat(storedFinalization.get().getCanonicalProjectionSha256())
                 .matches("[0-9a-f]{64}");
+        assertThat(storedFinalization.get().getAnalysisRunId()).isNotNull();
     }
 
     @Test

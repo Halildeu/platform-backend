@@ -44,13 +44,20 @@ import org.springframework.test.web.servlet.MvcResult;
         "security.service-clients.clients.meeting-ai.allowed-audiences[1]=transcript-service",
         "security.service-clients.clients.meeting-ai.allowed-permissions[0]=meeting:analysis-result:write",
         "security.service-clients.clients.meeting-ai.allowed-permissions[1]=transcript:canonical:read",
+        "security.service-clients.clients.meeting-ai.allowed-permissions[2]=transcript:analysis-job-capability:issue",
         "security.service-clients.clients.meeting-ai.allowed-permissions-by-audience[meeting-service][0]=meeting:analysis-result:write",
         "security.service-clients.clients.meeting-ai.allowed-permissions-by-audience[transcript-service][0]=transcript:canonical:read",
+        "security.service-clients.clients.meeting-ai.allowed-permissions-by-audience[transcript-service][1]=transcript:analysis-job-capability:issue",
         "security.service-clients.clients.meeting-ai.require-explicit-permissions=true",
         "security.service-clients.clients.transcript-service.secret=transcript-secret",
         "security.service-clients.clients.transcript-service.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.transcript-service.allowed-permissions[0]=meeting:session:resolve",
         "security.service-clients.clients.transcript-service.require-explicit-permissions=true",
+        "security.service-clients.clients.meeting-service.secret=meeting-secret",
+        "security.service-clients.clients.meeting-service.allowed-audiences[0]=transcript-service",
+        "security.service-clients.clients.meeting-service.allowed-permissions[0]=transcript:session:erase",
+        "security.service-clients.clients.meeting-service.allowed-permissions[1]=transcript:canonical:read",
+        "security.service-clients.clients.meeting-service.require-explicit-permissions=true",
         "security.service-clients.clients.other-service.secret=test-secret-2",
         "security.service-clients.clients.other-service.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.other-service.allowed-permissions[0]=permissions:read",
@@ -63,7 +70,7 @@ import org.springframework.test.web.servlet.MvcResult;
         "security.service-clients.clients.unprovisioned-ai.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.unprovisioned-ai.allowed-permissions[0]=meeting:analysis-result:write",
         "security.service-mint.allowed-audiences=meeting-service,transcript-service",
-        "security.service-mint.allowed-permissions=meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,permissions:read",
+        "security.service-mint.allowed-permissions=meeting:analysis-result:write,meeting:session:resolve,transcript:canonical:read,transcript:analysis-job-capability:issue,transcript:session:erase,permissions:read",
         "security.service-mint.rate-limit-per-minute=100",
         "security.service-mint.failed-auth-rate-limit-per-minute=1000",
         "auth.impersonation.keycloak-token-url=http://localhost:9999/token",
@@ -113,7 +120,7 @@ class MeetingAiServiceTokenMintTest {
     }
 
     @Test
-    void meetingAi_mintsOnlyCanonicalReadForTranscriptService() throws Exception {
+    void meetingAi_mintsCanonicalReadWithoutImplicitIssuePermission() throws Exception {
         MvcResult result = mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("meeting-ai", "test-secret"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
@@ -133,6 +140,50 @@ class MeetingAiServiceTokenMintTest {
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=transcript-service"
                                 + "&permissions=meeting:analysis-result:write"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void meetingAi_mintsDistinctAnalysisCapabilityIssuePermission() throws Exception {
+        MvcResult result = mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-ai", "test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=transcript-service"
+                                + "&permissions=transcript:analysis-job-capability:issue"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertEquals(java.util.List.of("transcript:analysis-job-capability:issue"),
+                claims(result).getStringListClaim("perm"));
+    }
+
+    @Test
+    void meetingService_mintsEraseOrReadSeparatelyButNeverCapabilityIssue() throws Exception {
+        MvcResult result = mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-service", "meeting-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=transcript-service"
+                                + "&permissions=transcript:session:erase"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertEquals(java.util.List.of("transcript:session:erase"),
+                claims(result).getStringListClaim("perm"));
+        MvcResult read = mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-service", "meeting-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=transcript-service"
+                                + "&permissions=transcript:canonical:read"))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertEquals(java.util.List.of("transcript:canonical:read"),
+                claims(read).getStringListClaim("perm"));
+
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-service", "meeting-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=transcript-service"
+                                + "&permissions=transcript:analysis-job-capability:issue"))
                 .andExpect(status().isBadRequest());
     }
 

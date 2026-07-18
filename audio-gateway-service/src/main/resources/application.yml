@@ -101,7 +101,8 @@ audio:
         enabled: false               # #184 default-off authenticated gateway WebSocket bridge
         stream-url: ""               # ws(s)://live-stt.../ws/stream; required when enabled
         max-frame-bytes: 65535        # uint16 frame length bound; PCM16 only
-        max-tracked-sessions: 1000    # memory-only reconnect/idempotency tracker bound
+        max-terminal-control-bytes: 64 # only strict {"type":"eof"} is accepted as client text
+        terminal-drain-timeout-ms: 10000 # bound while waiting for relayed drained event
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
       # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".

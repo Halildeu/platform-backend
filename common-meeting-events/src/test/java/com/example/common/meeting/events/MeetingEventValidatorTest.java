@@ -337,11 +337,29 @@ class MeetingEventValidatorTest {
                 .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
                 .aggregateRevision(0)
                 .payload(new MeetingEventPayload.TranscriptReady(
+                        MeetingEventGoldens.RUN_ID,
                         MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 0, 0))
                 .build())
                 .isInstanceOf(MeetingEventValidationException.class)
                 .hasMessageContaining("finalizationVersion must be >= 1")
                 .hasMessageContaining("segmentCount must be >= 1");
+    }
+
+    @Test
+    void transcriptReady_requiresProducerMintedAnalysisRunIdentity() {
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.TRANSCRIPT_READY)
+                .producer("transcript-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.transcript")
+                .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.TranscriptReady(
+                        null, MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 1, 1))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("payload.analysisRunId is required");
     }
 
     @Test

@@ -3,6 +3,8 @@ package com.example.transcript.directstt;
 import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
+import com.example.transcript.service.SessionErasureFence.UUIDScope;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,17 +20,22 @@ public class TranscriptSessionAssociationStore {
 
     private final TranscriptSessionAssociationRepository associations;
     private final TranscriptSegmentRepository segments;
+    private final SessionErasureFence erasureFence;
 
     public TranscriptSessionAssociationStore(
             TranscriptSessionAssociationRepository associations,
-            TranscriptSegmentRepository segments) {
+            TranscriptSegmentRepository segments,
+            SessionErasureFence erasureFence) {
         this.associations = associations;
         this.segments = segments;
+        this.erasureFence = erasureFence;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public TranscriptSessionAssociation ensurePending(
             UUID id, UUID tenantId, UUID meetingId, String sourceSessionId, Instant now) {
+        erasureFence.lock(SessionErasureFence.sourceKey(tenantId, meetingId, sourceSessionId));
+        erasureFence.rejectSourceErased(tenantId, meetingId, sourceSessionId);
         associations.insertPendingIfAbsent(
                 id, tenantId, meetingId, SOURCE_SYSTEM, sourceSessionId, now);
         return require(tenantId, meetingId, sourceSessionId);
@@ -76,6 +83,11 @@ public class TranscriptSessionAssociationStore {
             String sourceSessionId,
             UUID sessionId,
             Instant now) {
+        UUIDScope scope = new UUIDScope(tenantId, meetingId, sessionId);
+        erasureFence.lock(
+                SessionErasureFence.canonicalKey(scope),
+                SessionErasureFence.sourceKey(tenantId, meetingId, sourceSessionId));
+        erasureFence.rejectErased(scope, sourceSessionId);
         if (segments.countDirectSttSessionConflicts(
                 tenantId, meetingId, sourceSessionId, sessionId) > 0) {
             throw new SessionAssociationConflictException();

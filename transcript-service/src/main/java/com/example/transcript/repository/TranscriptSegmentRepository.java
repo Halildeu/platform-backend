@@ -222,6 +222,42 @@ public interface TranscriptSegmentRepository extends JpaRepository<TranscriptSeg
     List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("delete from TranscriptSegment s where s.id in :ids")
+    @Query("""
+            delete from TranscriptSegment s
+            where s.id in :ids
+              and not exists (
+                    select f.id from TranscriptFinalization f
+                    where f.tenantId = s.tenantId
+                      and f.meetingId = s.meetingId
+                      and f.sessionId = s.sessionId
+                      and f.legalHold = true
+              )
+            """)
     int deleteByIdIn(@Param("ids") Collection<UUID> ids);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            delete from TranscriptSegment s
+            where s.tenantId = :tenantId
+              and s.meetingId = :meetingId
+              and s.sessionId = :sessionId
+            """)
+    int deleteCanonicalErasureScope(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sessionId") UUID sessionId);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            delete from TranscriptSegment s
+            where s.tenantId = :tenantId
+              and s.meetingId = :meetingId
+              and s.sessionId is null
+              and s.sourceSystem = 'DIRECT_STT'
+              and s.sourceSessionId = :sourceSessionId
+            """)
+    int deleteLegacySourceErasureScope(
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sourceSessionId") String sourceSessionId);
 }

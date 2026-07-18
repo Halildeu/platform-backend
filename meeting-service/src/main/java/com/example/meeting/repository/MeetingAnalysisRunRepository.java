@@ -5,7 +5,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -32,6 +34,18 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             """)
     Optional<MeetingAnalysisRun> findByAnalysisRunIdAndTenantId(
             @Param("analysisRunId") UUID analysisRunId, @Param("tenantId") UUID tenantId);
+
+    @Query("""
+            select r
+            from MeetingAnalysisRun r
+            where r.analysisRunId = :analysisRunId
+              and r.meetingId = :meetingId
+              and (r.orgId = :orgId or (r.orgId is null and r.tenantId = :orgId))
+            """)
+    Optional<MeetingAnalysisRun> findVisibleExactRun(
+            @Param("analysisRunId") UUID analysisRunId,
+            @Param("meetingId") UUID meetingId,
+            @Param("orgId") UUID orgId);
 
     /** The most recent analysis for a meeting — the canonical read path for the UI. */
     @Query("""
@@ -72,18 +86,30 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
     List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("delete from MeetingAnalysisRun r where r.analysisRunId in :ids")
+    @Query("delete from MeetingAnalysisRun r where r.analysisRunId in :ids and r.legalHold = false")
     int deleteByIdIn(@Param("ids") Collection<UUID> ids);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select r from MeetingAnalysisRun r
+            where r.meetingId = :meetingId
+              and r.tenantId = :tenantId
+              and (r.transcriptSessionId = :sessionId or r.transcriptSessionId is null)
+            """)
+    List<MeetingAnalysisRun> findErasureScopeForUpdate(
+            @Param("meetingId") UUID meetingId,
+            @Param("tenantId") UUID tenantId,
+            @Param("sessionId") String sessionId);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             delete from MeetingAnalysisRun r
             where r.meetingId = :meetingId
               and r.tenantId = :tenantId
-              and r.transcriptSessionId = :sessionId
+              and (r.transcriptSessionId = :sessionId or r.transcriptSessionId is null)
               and r.legalHold = false
             """)
-    int deleteByCanonicalSession(
+    int deleteErasureScope(
             @Param("meetingId") UUID meetingId,
             @Param("tenantId") UUID tenantId,
             @Param("sessionId") String sessionId);
@@ -93,10 +119,10 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             from MeetingAnalysisRun r
             where r.meetingId = :meetingId
               and r.tenantId = :tenantId
-              and r.transcriptSessionId = :sessionId
+              and (r.transcriptSessionId = :sessionId or r.transcriptSessionId is null)
               and r.legalHold = true
             """)
-    boolean existsLegalHoldForCanonicalSession(
+    boolean existsLegalHoldForErasure(
             @Param("meetingId") UUID meetingId,
             @Param("tenantId") UUID tenantId,
             @Param("sessionId") String sessionId);

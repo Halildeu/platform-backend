@@ -4,12 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingAnalysisRun;
+import com.example.meeting.model.MeetingAnalysisRunDestructionReason;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingIntelligenceResultAccessAudit;
 import com.example.meeting.model.MeetingIntelligenceResultAccessType;
+import com.example.meeting.model.MeetingItemSource;
 import com.example.meeting.model.MeetingRetentionDestructionAudit;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
+import com.example.meeting.repository.MeetingAnalysisRunDestructionTombstoneRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingIntelligenceResultAccessAuditRepository;
 import com.example.meeting.repository.MeetingRetentionDestructionAuditRepository;
@@ -26,7 +29,7 @@ import java.util.List;
 import java.util.UUID;
 
 @IsolatedH2DataJpaTest
-@Import(MeetingRetentionCleanupService.class)
+@Import({MeetingRetentionCleanupService.class, MeetingAnalysisRunDestructionRecorder.class})
 @TestPropertySource(properties = {
         "meeting.retention.cleanup-batch-size=1",
         "meeting.retention.cleanup-max-batches-per-run=1"
@@ -43,6 +46,8 @@ class MeetingRetentionCleanupServiceTest {
     private MeetingActionRepository actionRepository;
     @Autowired
     private MeetingAnalysisRunRepository analysisRunRepository;
+    @Autowired
+    private MeetingAnalysisRunDestructionTombstoneRepository destructionTombstoneRepository;
     @Autowired
     private MeetingDecisionRepository decisionRepository;
     @Autowired
@@ -133,6 +138,10 @@ class MeetingRetentionCleanupServiceTest {
 
         assertThat(result.analysisRunDeletedCount()).isEqualTo(1);
         assertThat(analysisRunRepository.findById(expired.getAnalysisRunId())).isEmpty();
+        assertThat(destructionTombstoneRepository.findById(expired.getAnalysisRunId()))
+                .get()
+                .extracting(tombstone -> tombstone.getReason())
+                .isEqualTo(MeetingAnalysisRunDestructionReason.RETENTION);
         assertThat(analysisRunRepository.findById(held.getAnalysisRunId())).isPresent();
         assertThat(analysisRunRepository.findById(fresh.getAnalysisRunId())).isPresent();
 
@@ -141,6 +150,42 @@ class MeetingRetentionCleanupServiceTest {
                 .get(0);
         assertThat(audit.getAnalysisRunDeletedCount()).isEqualTo(1);
         assertThat(audit.getAuditPayload()).isEqualTo("metadata-only");
+    }
+
+    @Test
+    void heldParentPreservesAiChildrenWhileExpiredManualChildrenRemainIndependent() {
+        MeetingAnalysisRun held = analysisRun(EXPIRED, true);
+        MeetingAction aiAction = action(EXPIRED, "held AI action");
+        aiAction.setSource(MeetingItemSource.AI_ANALYSIS);
+        aiAction.setAnalysisRunId(held.getAnalysisRunId());
+        aiAction.setOrdinal(0);
+        actionRepository.saveAndFlush(aiAction);
+        MeetingDecision aiDecision = decision(EXPIRED, "held AI decision");
+        aiDecision.setSource(MeetingItemSource.AI_ANALYSIS);
+        aiDecision.setAnalysisRunId(held.getAnalysisRunId());
+        aiDecision.setOrdinal(0);
+        decisionRepository.saveAndFlush(aiDecision);
+
+        service.cleanup(NOW);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(analysisRunRepository.findById(held.getAnalysisRunId())).isPresent();
+        assertThat(actionRepository.findById(aiAction.getId())).isPresent();
+        assertThat(decisionRepository.findById(aiDecision.getId())).isPresent();
+    }
+
+    @Test
+    void deletePredicateRechecksLegalHoldAfterExpiredIdSelection() {
+        MeetingAnalysisRun candidate = analysisRun(EXPIRED, false);
+        List<UUID> ids = analysisRunRepository.findExpiredIds(
+                NOW, org.springframework.data.domain.PageRequest.of(0, 10));
+        candidate = analysisRunRepository.findById(candidate.getAnalysisRunId()).orElseThrow();
+        candidate.setLegalHold(true);
+        analysisRunRepository.saveAndFlush(candidate);
+
+        assertThat(analysisRunRepository.deleteByIdIn(ids)).isZero();
+        assertThat(analysisRunRepository.findById(candidate.getAnalysisRunId())).isPresent();
     }
 
     private MeetingIntelligenceResultAccessAudit accessAudit(Instant accessedAt) {

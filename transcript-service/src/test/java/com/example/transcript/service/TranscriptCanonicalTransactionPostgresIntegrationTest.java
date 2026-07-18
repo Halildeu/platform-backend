@@ -9,6 +9,7 @@ import com.example.common.meeting.events.MeetingEventType;
 import com.example.common.meeting.events.MeetingEventV1Serializer;
 import com.example.transcript.directstt.DirectSttTranscriptResultEvent;
 import com.example.transcript.directstt.TranscriptSessionAssociationStore;
+import com.example.transcript.directstt.DirectSttTranscriptIngestionService;
 import com.example.transcript.events.TranscriptMeetingEventMessage;
 import com.example.transcript.finalization.RecordingFinishedEvent;
 import com.example.transcript.finalization.RecordingFinishedEventProcessor;
@@ -24,6 +25,7 @@ import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptMeetingEventInboxRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.repository.TranscriptSessionErasureTombstoneRepository;
 import com.example.transcript.security.AdminTenantContext;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
@@ -32,6 +34,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,6 +63,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Import({
         TranscriptFinalizationService.class,
         TranscriptSessionAssociationStore.class,
+        DirectSttTranscriptIngestionService.class,
+        SessionErasureFence.class,
+        TranscriptSessionErasureTombstoneStore.class,
+        TranscriptSessionErasureService.class,
         RecordingFinishedEventProcessor.class,
         TranscriptQuiescentFinalizationProcessor.class,
         TranscriptFinalizationStateMachine.class,
@@ -100,6 +108,10 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     @Autowired private RecordingFinishedEventProcessor recordingFinishedEventProcessor;
     @Autowired private TranscriptQuiescentFinalizationProcessor quiescentFinalizationProcessor;
     @Autowired private TranscriptSessionAssociationStore associationStore;
+    @Autowired private DirectSttTranscriptIngestionService directSttIngestion;
+    @Autowired private TranscriptSessionErasureService erasureService;
+    @Autowired private SessionErasureFence erasureFence;
+    @Autowired private TranscriptSessionErasureTombstoneRepository erasureTombstones;
     @Autowired private TranscriptSessionAssociationRepository associations;
     @Autowired private TranscriptSegmentRepository segments;
     @Autowired private TranscriptFinalizationRepository finalizations;
@@ -110,11 +122,75 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
 
     @BeforeEach
     void clean() {
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_audit");
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_tombstones");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_meeting_event_inbox");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_event_outbox");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_finalizations");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_segments");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_associations");
+    }
+
+    @Test
+    void ingestionAndErasureRaceSerializesAndLeavesPermanentFenceWithoutSegments()
+            throws Exception {
+        insertResolvedAssociation();
+        DirectSttTranscriptResultEvent event = new DirectSttTranscriptResultEvent(
+                "race-entry", TENANT, TENANT.toString(), "7", MEETING, "SES-42",
+                1L, 1L, 1L, 1_000L, "race-correlation", "a".repeat(64),
+                "race payload", 1.0d);
+        CountDownLatch writerLocked = new CountDownLatch(1);
+        CountDownLatch releaseWriter = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> writer = executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                SessionErasureFence.UUIDScope scope =
+                        new SessionErasureFence.UUIDScope(TENANT, MEETING, SESSION);
+                erasureFence.lock(
+                        SessionErasureFence.canonicalKey(scope),
+                        SessionErasureFence.sourceKey(TENANT, MEETING, "SES-42"));
+                writerLocked.countDown();
+                try {
+                    if (!releaseWriter.await(10, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("writer release timeout");
+                    }
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("writer interrupted", ex);
+                }
+                directSttIngestion.upsert(event, SESSION);
+                return null;
+            }));
+            assertThat(writerLocked.await(10, TimeUnit.SECONDS)).isTrue();
+            Future<?> eraser = executor.submit(() ->
+                    erasureService.erase(TENANT, MEETING, SESSION, "SES-42"));
+            Thread.sleep(100);
+            assertThat(eraser.isDone()).isFalse();
+            releaseWriter.countDown();
+            writer.get(15, TimeUnit.SECONDS);
+            eraser.get(15, TimeUnit.SECONDS);
+        } finally {
+            releaseWriter.countDown();
+            executor.shutdownNow();
+        }
+
+        assertThat(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-42", 1L)).isEmpty();
+        assertThat(erasureTombstones.existsByTenantIdAndMeetingIdAndSessionId(
+                TENANT, MEETING, SESSION)).isTrue();
+        assertThat(associations.findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
+                TENANT, MEETING, DirectSttTranscriptResultEvent.SOURCE_SYSTEM, "SES-42")).isEmpty();
+    }
+
+    @Test
+    void erasedSourceRejectsAbsentAssociationCreation() {
+        erasureService.erase(TENANT, MEETING, SESSION, "SES-absent");
+
+        assertThatThrownBy(() -> associationStore.ensurePending(
+                        UUID.randomUUID(), TENANT, MEETING, "SES-absent", Instant.now()))
+                .isInstanceOf(SessionErasureFence.SessionErasedException.class);
+        assertThat(associations.findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
+                TENANT, MEETING, DirectSttTranscriptResultEvent.SOURCE_SYSTEM,
+                "SES-absent")).isEmpty();
     }
 
     @Test
@@ -182,7 +258,8 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 .aggregateType("meeting.transcript")
                 .aggregateId(SESSION)
                 .aggregateRevision(1L)
-                .payload(new MeetingEventPayload.TranscriptReady(SESSION, 1L, 1))
+                .payload(new MeetingEventPayload.TranscriptReady(
+                        finalizations.findAll().getFirst().getAnalysisRunId(), SESSION, 1L, 1))
                 .build());
         String storedPayload = jdbc.queryForObject(
                 "SELECT payload FROM " + SCHEMA + ".transcript_event_outbox",

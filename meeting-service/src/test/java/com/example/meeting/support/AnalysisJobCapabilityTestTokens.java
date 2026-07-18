@@ -28,6 +28,7 @@ public final class AnalysisJobCapabilityTestTokens {
             UUID meetingId,
             UUID analysisRunId,
             MeetingAnalysisResultIngestRequest request) {
+        Instant issuedAt = Instant.now().minusSeconds(1);
         return issue(
                 UUID.randomUUID(),
                 tenantId,
@@ -38,8 +39,8 @@ public final class AnalysisJobCapabilityTestTokens {
                 request.transcriptSha256(),
                 analysisRunId,
                 request.analysisSpecVersion(),
-                Instant.now().minusSeconds(1),
-                Instant.now().plusSeconds(300));
+                issuedAt,
+                issuedAt.plusSeconds(300));
     }
 
     public static String issue(

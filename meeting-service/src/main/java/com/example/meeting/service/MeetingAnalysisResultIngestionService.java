@@ -4,6 +4,7 @@ import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestRequest;
 import com.example.meeting.dto.v1.internal.MeetingAnalysisResultIngestResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAnalysisRun;
+import com.example.meeting.repository.MeetingAnalysisRunDestructionTombstoneRepository;
 import com.example.meeting.repository.MeetingAnalysisRunRepository;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.security.AnalysisJobCapabilityVerifier;
@@ -32,10 +33,10 @@ import java.util.UUID;
  * payload, or the same key reused for a different meeting/tenant) is a generic
  * {@code 409 IDEMPOTENCY_CONFLICT} that discloses nothing about the other row.
  *
- * <h2>Retention-bounded</h2>
- * The idempotency guarantee is bounded by run retention: a KVKK/retention purge
- * of a run frees its key, after which the same {@code analysisRunId} may be
- * accepted as a new run. A permanent tombstone ledger is out of scope for BE-1c.
+ * <h2>Permanent destruction boundary</h2>
+ * Erasure and retention write a metadata-only permanent tombstone for every
+ * destroyed run. A tombstoned global {@code analysisRunId} can never be reused,
+ * so an exact historical result identity cannot be resurrected after deletion.
  *
  * <h2>Concurrency</h2>
  * Two racing inserts of the same key both pass the pre-check, then collide on the
@@ -60,21 +61,27 @@ public class MeetingAnalysisResultIngestionService {
 
     private final MeetingRepository meetingRepository;
     private final MeetingAnalysisRunRepository runRepository;
+    private final MeetingAnalysisRunDestructionTombstoneRepository destructionTombstones;
     private final MeetingAnalysisResultWriter writer;
     private final MeetingAnalysisPayloadHasher hasher;
     private final AnalysisJobCapabilityVerifier capabilityVerifier;
+    private final AnalysisGeneratedAtPolicy generatedAtPolicy;
 
     public MeetingAnalysisResultIngestionService(
             MeetingRepository meetingRepository,
             MeetingAnalysisRunRepository runRepository,
+            MeetingAnalysisRunDestructionTombstoneRepository destructionTombstones,
             MeetingAnalysisResultWriter writer,
             MeetingAnalysisPayloadHasher hasher,
-            AnalysisJobCapabilityVerifier capabilityVerifier) {
+            AnalysisJobCapabilityVerifier capabilityVerifier,
+            AnalysisGeneratedAtPolicy generatedAtPolicy) {
         this.meetingRepository = meetingRepository;
         this.runRepository = runRepository;
+        this.destructionTombstones = destructionTombstones;
         this.writer = writer;
         this.hasher = hasher;
         this.capabilityVerifier = capabilityVerifier;
+        this.generatedAtPolicy = generatedAtPolicy;
     }
 
     public MeetingAnalysisResultIngestResponse ingest(
@@ -87,6 +94,7 @@ public class MeetingAnalysisResultIngestionService {
         if (request.meetingId() != null && !meetingId.equals(request.meetingId())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "MEETING_ID_MISMATCH");
         }
+        generatedAtPolicy.validate(request.finalizedAt(), request.generatedAt());
 
         // Tenant authority is the meeting row, not the payload. 404 (no existence leak) if absent.
         Meeting meeting = meetingRepository.findById(meetingId)
@@ -112,6 +120,8 @@ public class MeetingAnalysisResultIngestionService {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "JOB_CAPABILITY_BINDING_MISMATCH");
         }
         String payloadHash = hasher.hash(meetingId, tenantId, analysisRunId, request);
+
+        rejectDestroyedRunId(analysisRunId);
 
         // Global idempotency pre-check (matches the global PK).
         Optional<MeetingAnalysisRun> existing = runRepository.findById(analysisRunId);
@@ -185,6 +195,8 @@ public class MeetingAnalysisResultIngestionService {
             return reconcile(committed.get(), meetingId, tenantId, payloadHash, request, binding);
         }
 
+        rejectDestroyedRunId(analysisRunId);
+
         // No committed run ⇒ not the PK. Re-validate raced-away preconditions.
         if (meetingRepository.findById(meetingId).isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND");
@@ -195,6 +207,14 @@ public class MeetingAnalysisResultIngestionService {
         }
         // A genuine persistence failure (e.g. a child that violated a column bound).
         throw ex;
+    }
+
+    private void rejectDestroyedRunId(UUID analysisRunId) {
+        if (destructionTombstones.existsById(analysisRunId)) {
+            // Generic global-key conflict: never disclose tombstone scope or reason
+            // to a caller presenting a capability for a different tuple.
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT");
+        }
     }
 
     /**

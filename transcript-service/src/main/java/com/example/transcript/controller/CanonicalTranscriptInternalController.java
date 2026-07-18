@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -35,23 +36,38 @@ public class CanonicalTranscriptInternalController {
             @PathVariable UUID sessionId,
             @PathVariable long finalizationVersion,
             @RequestHeader("X-Tenant-Id") UUID requestedTenantId,
-            @RequestHeader("X-Analysis-Run-Id") UUID analysisRunId,
-            @RequestHeader("X-Analysis-Spec-Version") String analysisSpecVersion,
             Authentication authentication) {
-        CanonicalTranscriptReadService.CanonicalReadResult result = service.read(
+        CanonicalTranscriptSnapshotDto snapshot = service.read(
                 tenantId,
                 meetingId,
                 sessionId,
                 finalizationVersion,
                 requestedTenantId,
-                analysisRunId,
-                analysisSpecVersion,
                 authentication.getName());
         HttpHeaders headers = new HttpHeaders();
-        headers.set(CAPABILITY_HEADER, result.capability());
-        headers.set(CAPABILITY_EXPIRES_HEADER, result.capabilityExpiresAt().toString());
         headers.setCacheControl("no-store");
         headers.setPragma("no-cache");
-        return ResponseEntity.ok().headers(headers).body(result.snapshot());
+        return ResponseEntity.ok().headers(headers).body(snapshot);
+    }
+
+    @PostMapping("/{finalizationVersion}/analysis-capability")
+    @PreAuthorize("hasAuthority('SVC_transcript:analysis-job-capability:issue')")
+    public ResponseEntity<Void> issueAnalysisCapability(
+            @PathVariable UUID tenantId,
+            @PathVariable UUID meetingId,
+            @PathVariable UUID sessionId,
+            @PathVariable long finalizationVersion,
+            @RequestHeader("X-Tenant-Id") UUID requestedTenantId,
+            @RequestHeader("X-Analysis-Run-Id") UUID analysisRunId,
+            @RequestHeader("X-Analysis-Spec-Version") String analysisSpecVersion) {
+        var capability = service.issueAnalysisCapability(
+                tenantId, meetingId, sessionId, finalizationVersion,
+                requestedTenantId, analysisRunId, analysisSpecVersion);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(CAPABILITY_HEADER, capability.token());
+        headers.set(CAPABILITY_EXPIRES_HEADER, capability.expiresAt().toString());
+        headers.setCacheControl("no-store");
+        headers.setPragma("no-cache");
+        return ResponseEntity.noContent().headers(headers).build();
     }
 }

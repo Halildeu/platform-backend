@@ -82,6 +82,7 @@ public class MeetingService {
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingEventOutboxRepository eventOutboxRepository;
     private final MeetingAnalysisRunRepository analysisRunRepository;
+    private final MeetingSessionErasureService sessionErasureService;
     private final MeetingEventOutboxFactory eventOutboxFactory;
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
     private final boolean legacyUserIdFallbackEnabled;
@@ -94,6 +95,7 @@ public class MeetingService {
             MeetingDecisionRepository decisionRepository,
             MeetingEventOutboxRepository eventOutboxRepository,
             MeetingAnalysisRunRepository analysisRunRepository,
+            MeetingSessionErasureService sessionErasureService,
             ObjectProvider<OpenFgaAuthzService> authzServiceProvider,
             @Value("${meeting.authz.object-principal.legacy-user-id-fallback-enabled:false}")
             boolean legacyUserIdFallbackEnabled,
@@ -105,6 +107,7 @@ public class MeetingService {
         this.decisionRepository = decisionRepository;
         this.eventOutboxRepository = eventOutboxRepository;
         this.analysisRunRepository = analysisRunRepository;
+        this.sessionErasureService = sessionErasureService;
         this.eventOutboxFactory = new MeetingEventOutboxFactory();
         this.authzServiceProvider = authzServiceProvider;
         this.legacyUserIdFallbackEnabled = legacyUserIdFallbackEnabled;
@@ -272,6 +275,7 @@ public class MeetingService {
     @Transactional(readOnly = true)
     public MeetingSessionResolutionResponse resolveSession(
             UUID tenantId, UUID meetingId, String externalSessionId) {
+        sessionErasureService.assertSourceNotErased(tenantId, meetingId, externalSessionId);
         MeetingSession session = sessionRepository.findByExternalSessionIdVisibleToOrg(
                         meetingId, externalSessionId, tenantId)
                 .orElseThrow(() -> new ResponseStatusException(
@@ -333,6 +337,8 @@ public class MeetingService {
         if (meeting.getStatus() == MeetingStatus.CANCELLED) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Cancelled meeting cannot be recorded.");
         }
+        sessionErasureService.assertSourceNotErased(
+                tenant.tenantId(), meetingId, request.externalSessionId());
 
         Optional<MeetingSession> existingSession = sessionRepository.findByExternalSessionIdVisibleToOrg(
                 meetingId, request.externalSessionId(), tenant.tenantId());
@@ -417,14 +423,7 @@ public class MeetingService {
 
     @Transactional
     public void deleteSession(AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
-        requireMeeting(tenant, meetingId);
-        if (analysisRunRepository.existsLegalHoldForCanonicalSession(
-                meetingId, tenant.tenantId(), sessionId.toString())) {
-            throw new ResponseStatusException(HttpStatus.LOCKED, "MEETING_ANALYSIS_LEGAL_HOLD");
-        }
-        analysisRunRepository.deleteByCanonicalSession(
-                meetingId, tenant.tenantId(), sessionId.toString());
-        sessionRepository.delete(requireSession(tenant, meetingId, sessionId));
+        sessionErasureService.request(tenant, meetingId, sessionId);
     }
 
     // ──────────────────────────── Actions ────────────────────────────

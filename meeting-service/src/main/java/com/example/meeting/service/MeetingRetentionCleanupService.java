@@ -1,6 +1,8 @@
 package com.example.meeting.service;
 
 import com.example.meeting.model.MeetingRetentionDestructionAudit;
+import com.example.meeting.model.MeetingAnalysisRun;
+import com.example.meeting.model.MeetingAnalysisRunDestructionReason;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
 import com.example.meeting.repository.MeetingIntelligenceResultAccessAuditRepository;
@@ -40,6 +42,7 @@ public class MeetingRetentionCleanupService {
     private final MeetingDecisionRepository decisionRepository;
     private final MeetingIntelligenceResultAccessAuditRepository resultAccessAuditRepository;
     private final MeetingAnalysisRunRepository analysisRunRepository;
+    private final MeetingAnalysisRunDestructionRecorder destructionRecorder;
     private final MeetingRetentionDestructionAuditRepository auditRepository;
     private final int retentionDays;
     private final int resultAccessAuditRetentionDays;
@@ -50,6 +53,7 @@ public class MeetingRetentionCleanupService {
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
             MeetingAnalysisRunRepository analysisRunRepository,
+            MeetingAnalysisRunDestructionRecorder destructionRecorder,
             MeetingIntelligenceResultAccessAuditRepository resultAccessAuditRepository,
             MeetingRetentionDestructionAuditRepository auditRepository,
             @Value("${meeting.retention.meeting-intelligence-days:730}") int retentionDays,
@@ -59,6 +63,7 @@ public class MeetingRetentionCleanupService {
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
         this.analysisRunRepository = analysisRunRepository;
+        this.destructionRecorder = destructionRecorder;
         this.resultAccessAuditRepository = resultAccessAuditRepository;
         this.auditRepository = auditRepository;
         this.retentionDays = retentionDays;
@@ -89,7 +94,7 @@ public class MeetingRetentionCleanupService {
         }
         Instant cutoff = now.minus(Duration.ofDays(retentionDays));
         Instant resultAccessAuditCutoff = now.minus(Duration.ofDays(resultAccessAuditRetentionDays));
-        long analysisRunCount = deleteExpiredAnalysisRuns(cutoff);
+        long analysisRunCount = deleteExpiredAnalysisRuns(cutoff, now);
         // Legacy/manual children have no analysis-run parent and retain their
         // existing timestamp-based lifecycle.
         long actionCount = deleteExpiredActions(cutoff);
@@ -153,7 +158,7 @@ public class MeetingRetentionCleanupService {
         return deleted;
     }
 
-    private long deleteExpiredAnalysisRuns(Instant cutoff) {
+    private long deleteExpiredAnalysisRuns(Instant cutoff, Instant destroyedAt) {
         long deleted = 0;
         for (int batch = 0; batch < cleanupMaxBatchesPerRun; batch++) {
             List<UUID> ids = analysisRunRepository.findExpiredIds(
@@ -161,10 +166,13 @@ public class MeetingRetentionCleanupService {
             if (ids.isEmpty()) {
                 return deleted;
             }
+            List<MeetingAnalysisRun> candidates = analysisRunRepository.findAllById(ids);
             int batchDeleted = analysisRunRepository.deleteByIdIn(ids);
             if (batchDeleted <= 0) {
                 throw new IllegalStateException("meeting analysis-run retention cleanup made no progress");
             }
+            destructionRecorder.recordDestroyed(
+                    candidates, MeetingAnalysisRunDestructionReason.RETENTION, destroyedAt);
             deleted += batchDeleted;
         }
         if (!analysisRunRepository.findExpiredIds(cutoff, PageRequest.of(0, 1)).isEmpty()) {

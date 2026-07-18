@@ -103,6 +103,7 @@ class MeetingAnalysisOutboxIngestionPostgresIntegrationTest {
             MeetingAnalysisResultIngestionService.class,
             MeetingAnalysisResultWriter.class,
             MeetingAnalysisPayloadHasher.class,
+            AnalysisGeneratedAtPolicy.class,
             AnalysisJobCapabilityVerifier.class
     })
     static class Boot {

@@ -154,15 +154,16 @@ class TranscriptAssociationMigrationIntegrationTest {
                             + "WHERE table_schema = ? AND table_name = 'transcript_finalizations' "
                             + "AND column_name IN ('legal_hold','canonical_transcript',"
                             + "'canonical_transcript_sha256','canonical_segments',"
-                            + "'canonical_projection_sha256')",
-                    SCHEMA)).isEqualTo(5L);
+                            + "'canonical_projection_sha256','analysis_run_id')",
+                    SCHEMA)).isEqualTo(6L);
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM " + SCHEMA + ".transcript_finalizations "
                             + "WHERE id = ? AND legal_hold = false "
                             + "AND canonical_transcript IS NULL "
                             + "AND canonical_transcript_sha256 IS NULL "
                             + "AND canonical_segments IS NULL "
-                            + "AND canonical_projection_sha256 IS NULL",
+                            + "AND canonical_projection_sha256 IS NULL "
+                            + "AND analysis_run_id IS NULL",
                     legacyFinalization)).isEqualTo(1L);
             assertThatThrownBy(() -> updateLegacyWithPartialProjection(
                     connection, legacyFinalization))

@@ -10,9 +10,10 @@ import com.example.audiogateway.dto.AudioFormat;
  * mevcut session'lar kaybolur — A acceptance dışı.
  *
  * <p>PR-gw-01B-core absorb (Codex {@code 019e8d78} iter-2 AGREE): chunk admission state
- * fields eklendi — {@code lastAcceptedChunkSeq} (init -1, ilk admitted chunk için 0),
- * {@code chunkCount}, {@code lastChunkAtMs}, {@code lastChunkIdempotencyKey},
- * {@code lastChunkPayloadSha256} (idempotent replay için).
+ * fields eklendi — durable REST admission'a ait {@code lastAcceptedChunkSeq}
+ * (init -1, ilk admitted chunk için 0), {@code chunkCount}, {@code lastChunkAtMs},
+ * {@code lastChunkIdempotencyKey}, {@code lastChunkPayloadSha256} (idempotent replay
+ * için). WebSocket live relay dedup state'i bu record alanlarını değiştirmez.
  *
  * <p>{@code finishIdempotencyKey} ve {@code finishedAtMs} finish öncesi {@code null} / 0.
  */

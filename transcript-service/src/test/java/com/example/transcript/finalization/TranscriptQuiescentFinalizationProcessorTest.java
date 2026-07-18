@@ -151,9 +151,12 @@ class TranscriptQuiescentFinalizationProcessorTest {
         assertThat(finalization.getValue().getCanonicalTranscriptSha256()).matches("[0-9a-f]{64}");
         assertThat(finalization.getValue().getCanonicalSegments()).contains("canonical phrase");
         assertThat(finalization.getValue().getCanonicalProjectionSha256()).matches("[0-9a-f]{64}");
+        assertThat(finalization.getValue().getAnalysisRunId()).isNotNull();
         assertThat(event.getValue().getEventType()).isEqualTo("meeting.transcript.ready");
         assertThat(event.getValue().getPayload())
                 .contains("\"segmentCount\":1")
+                .contains("\"analysisRunId\":\""
+                        + finalization.getValue().getAnalysisRunId() + "\"")
                 .doesNotContain("canonical phrase");
         assertThat(association.getFinalizationState()).isEqualTo(TranscriptFinalizationState.FINALIZED);
         assertThat(association.getFinalizationVersion()).isEqualTo(1);

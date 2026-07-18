@@ -1,0 +1,110 @@
+package com.example.meeting.service;
+
+import com.example.meeting.config.MeetingSessionErasureProperties;
+import java.util.UUID;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
+
+/** Fail-closed service-token client for transcript-service erasure. */
+@Component
+public class HttpTranscriptSessionErasureClient implements TranscriptSessionErasureClient {
+
+    private final MeetingSessionErasureProperties properties;
+    private final MeetingServiceTokenProvider tokens;
+    private final RestClient restClient;
+
+    public HttpTranscriptSessionErasureClient(
+            MeetingSessionErasureProperties properties,
+            MeetingServiceTokenProvider tokens,
+            RestClient.Builder builder) {
+        this.properties = properties;
+        this.tokens = tokens;
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(properties.getConnectTimeoutMillis());
+        requestFactory.setReadTimeout(properties.getResponseTimeoutMillis());
+        this.restClient = builder.clone().requestFactory(requestFactory).build();
+    }
+
+    @Override
+    public Result erase(UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId) {
+        try {
+            return call(tenantId, meetingId, sessionId, sourceSessionId);
+        } catch (RemoteErasureException ex) {
+            throw ex;
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() == HttpStatus.UNAUTHORIZED.value()) {
+                tokens.invalidate();
+                try {
+                    return call(tenantId, meetingId, sessionId, sourceSessionId);
+                } catch (RemoteErasureException retryFailure) {
+                    throw retryFailure;
+                } catch (RestClientException | IllegalStateException retryFailure) {
+                    throw new RemoteErasureException("REMOTE_AUTH_RETRY_FAILED", retryFailure);
+                }
+            }
+            if (ex.getStatusCode().value() == HttpStatus.LOCKED.value()) {
+                return new Result(Result.Status.HELD, 0);
+            }
+            throw new RemoteErasureException("REMOTE_HTTP_ERROR", ex);
+        } catch (RestClientException | IllegalStateException ex) {
+            throw new RemoteErasureException("REMOTE_UNAVAILABLE", ex);
+        }
+    }
+
+    private Result call(UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId) {
+        ErasureResponse response = restClient.post()
+                .uri(properties.getTranscriptServiceBaseUrl()
+                                + "/api/v1/internal/tenants/{tenantId}/meetings/{meetingId}"
+                                + "/sessions/{sessionId}/erasure",
+                        tenantId, meetingId, sessionId)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
+                .body(new ErasureRequest(sourceSessionId))
+                .retrieve()
+                .body(ErasureResponse.class);
+        if (response == null || response.status() == null) {
+            throw new RemoteErasureException("REMOTE_INVALID_RESPONSE");
+        }
+        if (response.status() == Result.Status.HELD) {
+            return new Result(Result.Status.HELD, 0);
+        }
+        if (response.status() != Result.Status.COMPLETE
+                || !tenantId.equals(response.tenantId())
+                || !meetingId.equals(response.meetingId())
+                || !sessionId.equals(response.sessionId())) {
+            throw new RemoteErasureException("REMOTE_SCOPE_MISMATCH");
+        }
+        return new Result(Result.Status.COMPLETE, Math.max(0, response.deletedCount()));
+    }
+
+    record ErasureRequest(String sourceSessionId) {
+    }
+
+    record ErasureResponse(
+            UUID tenantId,
+            UUID meetingId,
+            UUID sessionId,
+            Result.Status status,
+            int deletedCount) {
+    }
+
+    public static class RemoteErasureException extends IllegalStateException {
+        private final String errorCode;
+
+        RemoteErasureException(String errorCode) {
+            super(errorCode);
+            this.errorCode = errorCode;
+        }
+
+        RemoteErasureException(String errorCode, Throwable cause) {
+            super(errorCode, cause);
+            this.errorCode = errorCode;
+        }
+
+        public String errorCode() { return errorCode; }
+    }
+}

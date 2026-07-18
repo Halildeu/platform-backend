@@ -198,6 +198,7 @@ class MeetingRecordingFinishedOutboxPostgresIntegrationTest {
                 meetingRepository, sessionRepository,
                 mock(MeetingActionRepository.class), mock(MeetingDecisionRepository.class),
                 outboxRepository, mock(MeetingAnalysisRunRepository.class),
+                mock(com.example.meeting.service.MeetingSessionErasureService.class),
                 authzProvider, false, false);
     }
 

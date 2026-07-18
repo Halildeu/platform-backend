@@ -65,6 +65,8 @@ class TranscriptSegmentServiceTest {
     private TranscriptSessionAssociationRepository associationRepository;
     @Mock
     private TranscriptAccessAuditService accessAuditService;
+    @Mock
+    private SessionErasureFence erasureFence;
 
     private TranscriptSegmentService service;
 
@@ -73,7 +75,8 @@ class TranscriptSegmentServiceTest {
     @BeforeEach
     void setUp() {
         service = new TranscriptSegmentService(
-                repository, associationRepository, accessAuditService, 50, 200, 50000);
+                repository, associationRepository, accessAuditService, erasureFence,
+                50, 200, 50000);
     }
 
     // ─────────────────────────── READ audits ──────────────────────────
@@ -163,7 +166,8 @@ class TranscriptSegmentServiceTest {
     void exportByMeeting_overCap_isRejected_andNoAudit() {
         // exportMaxRows=2 here so 3 returned (cap+1) trips the guard.
         service = new TranscriptSegmentService(
-                repository, associationRepository, accessAuditService, 50, 200, 2);
+                repository, associationRepository, accessAuditService, erasureFence,
+                50, 200, 2);
         when(repository.findAllVisibleToOrgByMeeting(eq(TENANT), eq(MEETING), any()))
                 .thenReturn(List.of(segment(), segment(), segment()));
 

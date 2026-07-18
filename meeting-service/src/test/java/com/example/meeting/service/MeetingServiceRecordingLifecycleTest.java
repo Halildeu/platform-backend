@@ -61,6 +61,7 @@ class MeetingServiceRecordingLifecycleTest {
     @Mock private MeetingDecisionRepository decisionRepository;
     @Mock private MeetingEventOutboxRepository eventOutboxRepository;
     @Mock private MeetingAnalysisRunRepository analysisRunRepository;
+    @Mock private MeetingSessionErasureService sessionErasureService;
     @Mock private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock private OpenFgaAuthzService authzService;
 
@@ -72,7 +73,8 @@ class MeetingServiceRecordingLifecycleTest {
     void setUp() {
         service = new MeetingService(
                 meetingRepository, sessionRepository, actionRepository, decisionRepository,
-                eventOutboxRepository, analysisRunRepository, authzProvider, false, false);
+                eventOutboxRepository, analysisRunRepository, sessionErasureService,
+                authzProvider, false, false);
         meeting = meeting(MeetingStatus.SCHEDULED);
         lenient().when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting));
@@ -350,39 +352,20 @@ class MeetingServiceRecordingLifecycleTest {
     }
 
     @Test
-    void deleteSessionPurgesAnalysisDerivativesBeforeCanonicalSession() {
-        MeetingSession session = session(ENDED_AT);
-        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
-                .thenReturn(Optional.of(meeting));
-        when(sessionRepository.findByIdAndMeetingIdVisibleToOrg(SESSION_ID, MEETING_ID, TENANT_ID))
-                .thenReturn(Optional.of(session));
-        when(analysisRunRepository.existsLegalHoldForCanonicalSession(
-                MEETING_ID, TENANT_ID, SESSION_ID.toString())).thenReturn(false);
-
+    void deleteSessionQueuesDurableCrossServiceErasure() {
         service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
 
-        InOrder order = inOrder(analysisRunRepository, sessionRepository);
-        order.verify(analysisRunRepository).deleteByCanonicalSession(
-                MEETING_ID, TENANT_ID, SESSION_ID.toString());
-        order.verify(sessionRepository).delete(session);
+        verify(sessionErasureService).request(TENANT, MEETING_ID, SESSION_ID);
+        verify(sessionRepository, never()).delete(any());
     }
 
     @Test
-    void deleteSessionRejectsWhenAnalysisDerivativeHasLegalHold() {
-        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
-                .thenReturn(Optional.of(meeting));
-        when(analysisRunRepository.existsLegalHoldForCanonicalSession(
-                MEETING_ID, TENANT_ID, SESSION_ID.toString())).thenReturn(true);
+    void deleteSessionIsIdempotentlyDelegatedToLedger() {
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
+        service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
 
-        assertThatThrownBy(() -> service.deleteSession(TENANT, MEETING_ID, SESSION_ID))
-                .isInstanceOfSatisfying(ResponseStatusException.class, error -> {
-                    assertThat(error.getStatusCode()).isEqualTo(HttpStatus.LOCKED);
-                    assertThat(error.getReason()).isEqualTo("MEETING_ANALYSIS_LEGAL_HOLD");
-                });
-
-        verify(analysisRunRepository, never()).deleteByCanonicalSession(
-                MEETING_ID, TENANT_ID, SESSION_ID.toString());
-        verify(sessionRepository, never()).delete(any());
+        verify(sessionErasureService, org.mockito.Mockito.times(2))
+                .request(TENANT, MEETING_ID, SESSION_ID);
     }
 
     private static Meeting meeting(MeetingStatus status) {

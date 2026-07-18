@@ -53,6 +53,8 @@ class MeetingServiceRecordingAccessTest {
     @Mock
     private MeetingAnalysisRunRepository analysisRunRepository;
     @Mock
+    private MeetingSessionErasureService sessionErasureService;
+    @Mock
     private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock
     private OpenFgaAuthzService authzService;
@@ -68,6 +70,7 @@ class MeetingServiceRecordingAccessTest {
                 decisionRepository,
                 eventOutboxRepository,
                 analysisRunRepository,
+                sessionErasureService,
                 authzProvider,
                 false,
                 false);
@@ -340,7 +343,8 @@ class MeetingServiceRecordingAccessTest {
     private MeetingService transitionalMeetingService() {
         return new MeetingService(
                 meetingRepository, sessionRepository, actionRepository, decisionRepository,
-                eventOutboxRepository, analysisRunRepository, authzProvider, true, true);
+                eventOutboxRepository, analysisRunRepository, sessionErasureService,
+                authzProvider, true, true);
     }
 
     private static Meeting meetingCreatedBy(String subject) {

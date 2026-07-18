@@ -76,10 +76,18 @@ platform-ai.
 - Session audio must be PCM16, 16 kHz, mono.
 - Each binary frame carries protocol version, contiguous `chunkSeq`, capture
   timestamp, unsigned 16-bit payload length, and little-endian PCM16.
-- Replayed sequence numbers are suppressed; gaps are rejected. Sequence state is
-  bounded and retained in memory across WebSocket reconnects for the process lifetime.
+- The registry keeps reconnect-stable `lastRelayedLiveSeq` separately from durable
+  REST `lastAcceptedChunkSeq`. A REST-accepted sequence above the current live
+  watermark is relayed on its first WebSocket delivery and suppressed on repeat.
+  Reconnects may jump across sequences already covered by the durable REST baseline;
+  lower skipped sequences then stay stale and are not replayed. Gaps beyond the
+  durable baseline remain fail-closed.
+- Client text is fail-closed except for a bounded JSON object containing only
+  `{"type":"eof"}`. The gateway canonicalizes and relays EOF upstream, then keeps the
+  download leg open until live-stt `eof_ack`, `final`, and terminal `drained` events have
+  been relayed; missing `drained` is bounded by a configured timeout.
 - Gateway converts PCM16 to live-stt float32 in memory and relays upstream text
-  events, including partial/final events, unchanged.
+  events, including partial/final/terminal events, unchanged.
 - Cross-host `wss` reuses the Direct-STT client certificate configuration.
 - Raw audio and transcript text are not persisted or logged by this bridge.
 - The feature remains disabled until the reviewed live-stt and desktop #184
@@ -122,6 +130,8 @@ platform-ai.
 | `AUDIO_GATEWAY_DISPATCHER_MODE` | `noop` (PR-gw-01C: `redis`) |
 | `AUDIO_GATEWAY_DISPATCHER_QUEUE_FULL_RETRY_AFTER_SECONDS` | `5` |
 | `AUDIO_GATEWAY_DISPATCHER_UNAVAILABLE_RETRY_AFTER_SECONDS` | `30` |
+| `AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TERMINAL_CONTROL_BYTES` | `64` |
+| `AUDIO_GATEWAY_DIRECT_STT_STREAM_TERMINAL_DRAIN_TIMEOUT_MS` | `10000` (hard max `60000`) |
 | `AUDIO_GATEWAY_BOUNDS_MAX_CHUNK_BYTES` | `262144` (256 KB) — **ADR-0031 update** |
 | `AUDIO_GATEWAY_BOUNDS_MAX_BUFFERED_SECONDS` | `30` |
 | `AUDIO_GATEWAY_BOUNDS_MAX_SESSION_MINUTES` | `60` — **ADR-0031 update** |
@@ -133,7 +143,6 @@ platform-ai.
 | `AUDIO_GATEWAY_DIRECT_STT_STREAMING_ENABLED` | `false` |
 | `AUDIO_GATEWAY_DIRECT_STT_STREAM_URL` | empty; required when enabled |
 | `AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_FRAME_BYTES` | `65535` |
-| `AUDIO_GATEWAY_DIRECT_STT_STREAM_MAX_TRACKED_SESSIONS` | `1000` |
 | `AUDIO_GATEWAY_JWT_TENANT_CLAIM` | `companyId` |
 | `AUDIO_GATEWAY_JWT_USER_CLAIM` | `userId` |
 | `AUDIO_GATEWAY_IDEMPOTENCY_HEADER_NAME` | `Idempotency-Key` |

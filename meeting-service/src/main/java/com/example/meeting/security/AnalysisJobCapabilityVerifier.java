@@ -24,6 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AnalysisJobCapabilityVerifier {
 
     public static final String PERMISSION = "meeting:analysis-result:write";
+    static final Duration MAX_TTL = Duration.ofMinutes(5);
 
     private final byte[] secret;
     private final String issuer;
@@ -38,7 +39,7 @@ public class AnalysisJobCapabilityVerifier {
             @Value("${security.analysis-job-capability.issuer:transcript-service}") String issuer,
             @Value("${security.analysis-job-capability.audience:meeting-service}") String audience,
             @Value("${security.analysis-job-capability.client-id:meeting-ai}") String clientId,
-            @Value("${security.analysis-job-capability.max-ttl:PT30M}") Duration maxTtl) {
+            @Value("${security.analysis-job-capability.max-ttl:PT5M}") Duration maxTtl) {
         this(encodedSecret, issuer, audience, clientId, maxTtl, Clock.systemUTC());
     }
 
@@ -54,8 +55,8 @@ public class AnalysisJobCapabilityVerifier {
             throw new IllegalArgumentException("Analysis job capability trust identity is required");
         }
         if (maxTtl == null || maxTtl.isZero() || maxTtl.isNegative()
-                || maxTtl.compareTo(Duration.ofMinutes(30)) > 0) {
-            throw new IllegalArgumentException("Analysis job capability max TTL must be at most 30 minutes");
+                || maxTtl.compareTo(MAX_TTL) > 0) {
+            throw new IllegalArgumentException("Analysis job capability max TTL must be at most 5 minutes");
         }
         this.issuer = issuer;
         this.audience = audience;

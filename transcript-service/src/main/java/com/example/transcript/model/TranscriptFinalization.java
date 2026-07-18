@@ -32,6 +32,10 @@ public class TranscriptFinalization {
     @Column(name = "finalization_version", nullable = false, updatable = false)
     private long finalizationVersion;
 
+    /** Producer-owned authorization identity emitted only with this occurrence. */
+    @Column(name = "analysis_run_id", updatable = false)
+    private UUID analysisRunId;
+
     @Column(name = "segment_count", nullable = false, updatable = false)
     private int segmentCount;
 
@@ -75,6 +79,8 @@ public class TranscriptFinalization {
     public void setSessionId(UUID sessionId) { this.sessionId = sessionId; }
     public long getFinalizationVersion() { return finalizationVersion; }
     public void setFinalizationVersion(long value) { this.finalizationVersion = value; }
+    public UUID getAnalysisRunId() { return analysisRunId; }
+    public void setAnalysisRunId(UUID analysisRunId) { this.analysisRunId = analysisRunId; }
     public int getSegmentCount() { return segmentCount; }
     public void setSegmentCount(int segmentCount) { this.segmentCount = segmentCount; }
     public String getSnapshotSha256() { return snapshotSha256; }

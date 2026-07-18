@@ -107,8 +107,9 @@ public class TranscriptQuiescentFinalizationProcessor {
             FinalizedTranscriptSnapshotCodec.StoredSnapshot snapshot,
             Instant now) {
         long cycle = requireCycle(association);
+        UUID analysisRunId = UUID.randomUUID();
         MeetingEventPayload.TranscriptReady payload = new MeetingEventPayload.TranscriptReady(
-                association.getSessionId(), cycle, snapshot.segmentCount());
+                analysisRunId, association.getSessionId(), cycle, snapshot.segmentCount());
         MeetingEventEnvelope envelope = envelope(association, cycle, payload, now);
         String eventKey = envelope.eventKey();
 
@@ -119,6 +120,7 @@ public class TranscriptQuiescentFinalizationProcessor {
         row.setMeetingId(association.getMeetingId());
         row.setSessionId(association.getSessionId());
         row.setFinalizationVersion(cycle);
+        row.setAnalysisRunId(analysisRunId);
         row.setSegmentCount(snapshot.segmentCount());
         row.setSnapshotSha256(snapshot.sourceSnapshotSha256());
         row.setCanonicalTranscript(snapshot.transcript());

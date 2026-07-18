@@ -29,6 +29,7 @@ class MeetingServiceSessionResolutionTest {
     private static final UUID SESSION = UUID.randomUUID();
 
     private final MeetingSessionRepository sessions = mock(MeetingSessionRepository.class);
+    private final MeetingSessionErasureService erasureService = mock(MeetingSessionErasureService.class);
     private MeetingService service;
 
     @BeforeEach
@@ -39,7 +40,7 @@ class MeetingServiceSessionResolutionTest {
                 mock(MeetingRepository.class), sessions,
                 mock(MeetingActionRepository.class), mock(MeetingDecisionRepository.class),
                 mock(MeetingEventOutboxRepository.class), mock(MeetingAnalysisRunRepository.class),
-                authz, false, false);
+                erasureService, authz, false, false);
     }
 
     @Test

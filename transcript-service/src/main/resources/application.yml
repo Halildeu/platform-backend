@@ -51,7 +51,8 @@ security:
     issuer: ${ANALYSIS_JOB_CAPABILITY_ISSUER:transcript-service}
     audience: ${ANALYSIS_JOB_CAPABILITY_AUDIENCE:meeting-service}
     client-id: ${ANALYSIS_JOB_CAPABILITY_CLIENT_ID:meeting-ai}
-    ttl: ${ANALYSIS_JOB_CAPABILITY_TTL:PT15M}
+    ttl: ${ANALYSIS_JOB_CAPABILITY_TTL:PT5M}
+    allowed-analysis-spec-versions: ${ANALYSIS_JOB_CAPABILITY_ALLOWED_SPEC_VERSIONS:meeting-intelligence-v1}
   jwt:
     audience: ${SECURITY_JWT_AUDIENCE:transcript-service,frontend,account,serban-web}
     allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}
@@ -62,7 +63,7 @@ transcript:
       jwk-set-uri: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_JWK_SET_URI:}
       issuer: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_ISSUER:auth-service}
       audience: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_AUDIENCE:transcript-service}
-      client-ids: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_CLIENT_IDS:meeting-ai}
+      client-ids: ${TRANSCRIPT_INTERNAL_SERVICE_JWT_CLIENT_IDS:meeting-ai,meeting-service}
   tenant:
     local-default-tenant-id: ${TRANSCRIPT_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
   retention:

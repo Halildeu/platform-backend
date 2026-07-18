@@ -8,6 +8,8 @@ import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
+import com.example.transcript.service.SessionErasureFence.UUIDScope;
 import java.time.Clock;
 import java.util.Objects;
 import java.util.UUID;
@@ -21,22 +23,31 @@ public class DirectSttTranscriptIngestionService {
     private final TranscriptSegmentRepository segments;
     private final TranscriptSessionAssociationRepository associations;
     private final TranscriptFinalizationStateMachine finalizationStateMachine;
+    private final SessionErasureFence erasureFence;
     private final Clock clock;
 
     public DirectSttTranscriptIngestionService(
             TranscriptSegmentRepository segments,
             TranscriptSessionAssociationRepository associations,
             TranscriptFinalizationStateMachine finalizationStateMachine,
+            SessionErasureFence erasureFence,
             Clock transcriptFinalizationClock) {
         this.segments = segments;
         this.associations = associations;
         this.finalizationStateMachine = finalizationStateMachine;
+        this.erasureFence = erasureFence;
         this.clock = transcriptFinalizationClock;
     }
 
     @Transactional
     public TranscriptSegmentDto upsert(
             DirectSttTranscriptResultEvent event, UUID canonicalSessionId) {
+        UUIDScope scope = new UUIDScope(event.tenantId(), event.meetingId(), canonicalSessionId);
+        erasureFence.lock(
+                SessionErasureFence.canonicalKey(scope),
+                SessionErasureFence.sourceKey(
+                        event.tenantId(), event.meetingId(), event.sourceSessionId()));
+        erasureFence.rejectErased(scope, event.sourceSessionId());
         TranscriptSessionAssociation association = associations.findSourceForUpdate(
                         event.tenantId(), event.meetingId(), DirectSttTranscriptResultEvent.SOURCE_SYSTEM,
                         event.sourceSessionId())

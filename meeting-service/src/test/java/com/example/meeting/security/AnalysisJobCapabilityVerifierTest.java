@@ -52,7 +52,7 @@ class AnalysisJobCapabilityVerifierTest {
         assertInvalid(verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET),
                 token(CAPABILITY_ID, TENANT_ID, MEETING_ID, SESSION_ID, 4L,
                         FINALIZED_AT, "a".repeat(64), RUN_ID, "analysis-v2",
-                        NOW.minusSeconds(1), NOW.plus(Duration.ofMinutes(31))));
+                        NOW.minusSeconds(1), NOW.plus(Duration.ofMinutes(6))));
         assertInvalid(verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET),
                 token(CAPABILITY_ID, TENANT_ID, MEETING_ID, SESSION_ID, 0L,
                         FINALIZED_AT, "a".repeat(64), RUN_ID, "analysis-v2",
@@ -67,6 +67,19 @@ class AnalysisJobCapabilityVerifierTest {
                     assertThat(ex.getStatusCode().value()).isEqualTo(503);
                     assertThat(ex.getReason()).isEqualTo("JOB_CAPABILITY_UNAVAILABLE");
                 });
+    }
+
+    @Test
+    void configuration_rejectsMaximumTtlAboveFiveMinutes() {
+        assertThatThrownBy(() -> new AnalysisJobCapabilityVerifier(
+                        AnalysisJobCapabilityTestTokens.ENCODED_SECRET,
+                        "transcript-service",
+                        "meeting-service",
+                        "meeting-ai",
+                        Duration.ofMinutes(5).plusSeconds(1),
+                        Clock.fixed(NOW, ZoneOffset.UTC)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("5 minutes");
     }
 
     private static String validToken() {
@@ -107,7 +120,7 @@ class AnalysisJobCapabilityVerifierTest {
                 "transcript-service",
                 "meeting-service",
                 "meeting-ai",
-                Duration.ofMinutes(30),
+                Duration.ofMinutes(5),
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

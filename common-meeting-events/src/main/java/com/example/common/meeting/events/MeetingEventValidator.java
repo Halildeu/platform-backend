@@ -155,6 +155,7 @@ public final class MeetingEventValidator {
                 }
             }
             case MeetingEventPayload.TranscriptReady p -> {
+                requireNotNull(errors, p.analysisRunId(), "payload.analysisRunId");
                 requireNotNull(errors, p.transcriptSessionId(), "payload.transcriptSessionId");
                 if (p.finalizationVersion() < 1) {
                     errors.add("payload.finalizationVersion must be >= 1 but was "

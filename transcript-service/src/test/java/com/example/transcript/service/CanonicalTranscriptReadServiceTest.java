@@ -14,10 +14,14 @@ import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
+import com.example.transcript.model.TranscriptSessionErasureStatus;
+import com.example.transcript.model.TranscriptSessionErasureTombstone;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
+import com.example.transcript.repository.TranscriptSessionErasureTombstoneRepository;
 import com.example.transcript.security.AdminTenantContext;
 import com.example.transcript.security.AnalysisJobCapabilityIssuer;
+import com.example.transcript.security.AnalysisSpecVersionPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
@@ -48,6 +52,10 @@ class CanonicalTranscriptReadServiceTest {
     private AnalysisJobCapabilityIssuer capabilityIssuer;
     @Mock
     private TranscriptAccessAuditService accessAuditService;
+    @Mock
+    private TranscriptSessionErasureTombstoneRepository erasureTombstones;
+    @Mock
+    private SessionErasureFence erasureFence;
 
     private TranscriptSnapshotHasher snapshotHasher;
     private FinalizedTranscriptSnapshotCodec snapshotCodec;
@@ -62,7 +70,10 @@ class CanonicalTranscriptReadServiceTest {
                 segmentRepository,
                 snapshotCodec,
                 capabilityIssuer,
-                accessAuditService);
+                new AnalysisSpecVersionPolicy("meeting-intelligence-v1"),
+                accessAuditService,
+                erasureTombstones,
+                erasureFence);
     }
 
     @Test
@@ -70,50 +81,26 @@ class CanonicalTranscriptReadServiceTest {
         List<TranscriptSegment> segments = List.of(
                 segment("Merhaba", 0.0, 1.2),
                 segment("Dünya", 1.3, 2.0));
-        TranscriptFinalization finalization = finalization(segments, true, true);
-        UUID capabilityId = UUID.randomUUID();
-        Instant expiresAt = Instant.parse("2026-07-18T03:10:00Z");
+        TranscriptFinalization finalization = finalization(segments, false, true);
         when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L)).thenReturn(Optional.of(finalization));
-        when(capabilityIssuer.issue(any())).thenReturn(
-                new AnalysisJobCapabilityIssuer.IssuedCapability("signed-capability", capabilityId, expiresAt));
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+                .thenReturn(Optional.of(finalization));
 
         var result = service.read(
-                TENANT_ID,
-                MEETING_ID,
-                SESSION_ID,
-                3L,
-                TENANT_ID,
-                RUN_ID,
-                "analysis-v2",
-                "meeting-ai");
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-ai");
 
-        assertThat(result.snapshot().tenantId()).isEqualTo(TENANT_ID);
-        assertThat(result.snapshot().meetingId()).isEqualTo(MEETING_ID);
-        assertThat(result.snapshot().sessionId()).isEqualTo(SESSION_ID);
-        assertThat(result.snapshot().finalizationVersion()).isEqualTo(3L);
-        assertThat(result.snapshot().finalizedAt()).isEqualTo(FINALIZED_AT);
-        assertThat(result.snapshot().state()).isEqualTo("FINALIZED");
-        assertThat(result.snapshot().transcript()).isEqualTo("Merhaba\nDünya");
-        assertThat(result.snapshot().transcriptSha256()).matches("^[0-9a-f]{64}$");
-        assertThat(result.snapshot().segmentCount()).isEqualTo(2);
-        assertThat(result.snapshot().segments()).extracting("text")
+        assertThat(result.tenantId()).isEqualTo(TENANT_ID);
+        assertThat(result.meetingId()).isEqualTo(MEETING_ID);
+        assertThat(result.sessionId()).isEqualTo(SESSION_ID);
+        assertThat(result.finalizationVersion()).isEqualTo(3L);
+        assertThat(result.finalizedAt()).isEqualTo(FINALIZED_AT);
+        assertThat(result.state()).isEqualTo("FINALIZED");
+        assertThat(result.transcript()).isEqualTo("Merhaba\nDünya");
+        assertThat(result.transcriptSha256()).matches("^[0-9a-f]{64}$");
+        assertThat(result.segmentCount()).isEqualTo(2);
+        assertThat(result.segments()).extracting("text")
                 .containsExactly("Merhaba", "Dünya");
-        assertThat(result.capability()).isEqualTo("signed-capability");
-        assertThat(result.capabilityExpiresAt()).isEqualTo(expiresAt);
-
-        ArgumentCaptor<AnalysisJobCapabilityIssuer.JobBinding> binding =
-                ArgumentCaptor.forClass(AnalysisJobCapabilityIssuer.JobBinding.class);
-        verify(capabilityIssuer).issue(binding.capture());
-        assertThat(binding.getValue().tenantId()).isEqualTo(TENANT_ID);
-        assertThat(binding.getValue().meetingId()).isEqualTo(MEETING_ID);
-        assertThat(binding.getValue().sessionId()).isEqualTo(SESSION_ID);
-        assertThat(binding.getValue().finalizationVersion()).isEqualTo(3L);
-        assertThat(binding.getValue().finalizedAt()).isEqualTo(FINALIZED_AT);
-        assertThat(binding.getValue().transcriptSha256())
-                .isEqualTo(result.snapshot().transcriptSha256());
-        assertThat(binding.getValue().analysisRunId()).isEqualTo(RUN_ID);
-        assertThat(binding.getValue().analysisSpecVersion()).isEqualTo("analysis-v2");
+        verify(capabilityIssuer, never()).issue(any());
         verify(accessAuditService).recordList(
                 new AdminTenantContext(TENANT_ID, "meeting-ai"), MEETING_ID, SESSION_ID, 2);
         verify(segmentRepository, never()).findCanonicalFinalizedSession(
@@ -121,30 +108,117 @@ class CanonicalTranscriptReadServiceTest {
     }
 
     @Test
+    void issueCapability_requiresPersistedProducerRunAndAllowedSpec() {
+        List<TranscriptSegment> segments = List.of(segment("Merhaba", 0.0, 1.2));
+        TranscriptFinalization finalization = finalization(segments, false, true);
+        Instant expiresAt = Instant.parse("2026-07-18T03:10:00Z");
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
+                .thenReturn(Optional.of(finalization));
+        when(capabilityIssuer.issue(any())).thenReturn(
+                new AnalysisJobCapabilityIssuer.IssuedCapability(
+                        "signed-capability", UUID.randomUUID(), expiresAt));
+
+        var result = service.issueAnalysisCapability(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1");
+
+        assertThat(result.token()).isEqualTo("signed-capability");
+        assertThat(result.expiresAt()).isEqualTo(expiresAt);
+        ArgumentCaptor<AnalysisJobCapabilityIssuer.JobBinding> binding =
+                ArgumentCaptor.forClass(AnalysisJobCapabilityIssuer.JobBinding.class);
+        verify(capabilityIssuer).issue(binding.capture());
+        assertThat(binding.getValue().tenantId()).isEqualTo(TENANT_ID);
+        assertThat(binding.getValue().meetingId()).isEqualTo(MEETING_ID);
+        assertThat(binding.getValue().sessionId()).isEqualTo(SESSION_ID);
+        assertThat(binding.getValue().finalizationVersion()).isEqualTo(3L);
+        assertThat(binding.getValue().analysisRunId()).isEqualTo(RUN_ID);
+        assertThat(binding.getValue().analysisSpecVersion()).isEqualTo("meeting-intelligence-v1");
+        verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void read_heldSnapshotIsExplicitButReleasedHoldPendingErasureIsNotDisclosed() {
+        List<TranscriptSegment> segments = List.of(segment("held", 0.0, 1.0));
+        TranscriptFinalization finalization = finalization(segments, true, true);
+        TranscriptSessionErasureTombstone tombstone =
+                tombstone(TranscriptSessionErasureStatus.HELD);
+        when(erasureTombstones.findByTenantIdAndMeetingIdAndSessionId(
+                TENANT_ID, MEETING_ID, SESSION_ID)).thenReturn(Optional.of(tombstone));
+        when(finalizationRepository.findVisibleOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L)).thenReturn(Optional.of(finalization));
+
+        var held = service.read(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-service");
+        assertThat(held.state()).isEqualTo("LEGAL_HOLD");
+
+        finalization.setLegalHold(false);
+        assertThatThrownBy(() -> service.read(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L,
+                        TENANT_ID, "meeting-service"))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(423);
+                    assertThat(ex.getReason()).isEqualTo("TRANSCRIPT_ERASURE_PENDING");
+                });
+    }
+
+    @Test
+    void completedErasureBlocksSnapshotAndCapabilityBeforeContentLookupOrMint() {
+        when(erasureTombstones.findByTenantIdAndMeetingIdAndSessionId(
+                TENANT_ID, MEETING_ID, SESSION_ID))
+                .thenReturn(Optional.of(tombstone(TranscriptSessionErasureStatus.COMPLETE)));
+
+        assertThatThrownBy(() -> service.read(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L,
+                        TENANT_ID, "meeting-service"))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(410);
+                    assertThat(ex.getReason()).isEqualTo("TRANSCRIPT_ERASED");
+                });
+        assertThatThrownBy(() -> service.issueAnalysisCapability(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID,
+                        RUN_ID, "meeting-intelligence-v1"))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode().value()).isEqualTo(410));
+
+        verify(finalizationRepository, never()).findVisibleOccurrence(
+                any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
+        verify(finalizationRepository, never()).findVisibleAnalysisOccurrence(
+                any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any());
+        verify(capabilityIssuer, never()).issue(any());
+    }
+
+    @Test
     void read_wrongTenantOrMissingExactVersion_failsWithoutIssuingCapability() {
         assertThatThrownBy(() -> service.read(
-                        TENANT_ID,
-                        MEETING_ID,
-                        SESSION_ID,
-                        3L,
-                        UUID.randomUUID(),
-                        RUN_ID,
-                        "analysis-v2",
-                        "meeting-ai"))
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L,
+                        UUID.randomUUID(), "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(403));
 
         when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 9L)).thenReturn(Optional.empty());
+                TENANT_ID, MEETING_ID, SESSION_ID, 9L))
+                .thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.read(
-                        TENANT_ID,
-                        MEETING_ID,
-                        SESSION_ID,
-                        9L,
-                        TENANT_ID,
-                        RUN_ID,
-                        "analysis-v2",
-                        "meeting-ai"))
+                        TENANT_ID, MEETING_ID, SESSION_ID, 9L,
+                        TENANT_ID, "meeting-ai"))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        ex -> assertThat(ex.getStatusCode().value()).isEqualTo(404));
+
+        verify(capabilityIssuer, never()).issue(any());
+        verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void issue_withoutProducerMintedRunIdentity_failsClosed() {
+        UUID callerChosenRun = UUID.randomUUID();
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, callerChosenRun))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.issueAnalysisCapability(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID,
+                        callerChosenRun, "meeting-intelligence-v1"))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(404));
 
@@ -158,19 +232,14 @@ class CanonicalTranscriptReadServiceTest {
         TranscriptFinalization finalization = finalization(original, false, false);
         List<TranscriptSegment> mutated = List.of(segment("değişmiş", 0.0, 1.0));
         when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L)).thenReturn(Optional.of(finalization));
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+                .thenReturn(Optional.of(finalization));
         when(segmentRepository.findCanonicalFinalizedSession(
                 TENANT_ID, MEETING_ID, SESSION_ID)).thenReturn(mutated);
 
         assertThatThrownBy(() -> service.read(
-                        TENANT_ID,
-                        MEETING_ID,
-                        SESSION_ID,
-                        3L,
-                        TENANT_ID,
-                        RUN_ID,
-                        "analysis-v2",
-                        "meeting-ai"))
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L,
+                        TENANT_ID, "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(409);
                     assertThat(ex.getReason()).isEqualTo("FINALIZATION_INTEGRITY_MISMATCH");
@@ -189,18 +258,15 @@ class CanonicalTranscriptReadServiceTest {
         TranscriptFinalization finalization = finalization(segments, false, false);
         finalization.setSnapshotSha256(snapshotHasher.machineSnapshot(segments).sha256());
         when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L)).thenReturn(Optional.of(finalization));
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+                .thenReturn(Optional.of(finalization));
         when(segmentRepository.findCanonicalFinalizedSession(
                 TENANT_ID, MEETING_ID, SESSION_ID)).thenReturn(segments);
-        when(capabilityIssuer.issue(any())).thenReturn(new AnalysisJobCapabilityIssuer.IssuedCapability(
-                "signed-capability", UUID.randomUUID(), FINALIZED_AT.plusSeconds(30)));
-
         var result = service.read(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
-                "analysis-v2", "meeting-ai");
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-ai");
 
-        assertThat(result.snapshot().transcript()).isEqualTo("makine anlık görüntüsü");
-        assertThat(result.snapshot().segments()).extracting("text")
+        assertThat(result.transcript()).isEqualTo("makine anlık görüntüsü");
+        assertThat(result.segments()).extracting("text")
                 .containsExactly("makine anlık görüntüsü");
     }
 
@@ -210,17 +276,33 @@ class CanonicalTranscriptReadServiceTest {
         TranscriptFinalization finalization = finalization(segments, false, true);
         finalization.setCanonicalTranscript("değiştirilmiş");
         when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L)).thenReturn(Optional.of(finalization));
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+                .thenReturn(Optional.of(finalization));
 
         assertThatThrownBy(() -> service.read(
-                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
-                        "analysis-v2", "meeting-ai"))
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(409);
                     assertThat(ex.getReason()).isEqualTo("FINALIZATION_INTEGRITY_MISMATCH");
                 });
 
         verify(segmentRepository, never()).findCanonicalFinalizedSession(any(), any(), any());
+        verify(capabilityIssuer, never()).issue(any());
+        verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void issue_unapprovedSpec_failsBeforeRepositoryCapabilityAndAudit() {
+        assertThatThrownBy(() -> service.issueAnalysisCapability(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                        "analysis-v2"))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(403);
+                    assertThat(ex.getReason()).isEqualTo("ANALYSIS_SPEC_VERSION_NOT_ALLOWED");
+                });
+
+        verify(finalizationRepository, never()).findVisibleAnalysisOccurrence(
+                any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any());
         verify(capabilityIssuer, never()).issue(any());
         verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
     }
@@ -234,6 +316,7 @@ class CanonicalTranscriptReadServiceTest {
         finalization.setMeetingId(MEETING_ID);
         finalization.setSessionId(SESSION_ID);
         finalization.setFinalizationVersion(3L);
+        finalization.setAnalysisRunId(RUN_ID);
         finalization.setSegmentCount(segments.size());
         TranscriptSnapshotHasher.Snapshot sourceSnapshot;
         try {
@@ -266,5 +349,17 @@ class CanonicalTranscriptReadServiceTest {
         segment.setTextFinal(text);
         segment.setStatus(TranscriptSegmentStatus.FINALIZED);
         return segment;
+    }
+
+    private static TranscriptSessionErasureTombstone tombstone(
+            TranscriptSessionErasureStatus status) {
+        TranscriptSessionErasureTombstone tombstone = new TranscriptSessionErasureTombstone();
+        tombstone.setId(UUID.randomUUID());
+        tombstone.setTenantId(TENANT_ID);
+        tombstone.setOrgId(TENANT_ID);
+        tombstone.setMeetingId(MEETING_ID);
+        tombstone.setSessionId(SESSION_ID);
+        tombstone.setStatus(status);
+        return tombstone;
     }
 }

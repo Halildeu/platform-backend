@@ -59,11 +59,12 @@ public interface MeetingActionRepository extends JpaRepository<MeetingAction, UU
             select a.id
             from MeetingAction a
             where a.createdAt < :cutoff
+              and a.analysisRunId is null
             order by a.createdAt asc, a.id asc
             """)
     List<UUID> findExpiredIds(@Param("cutoff") Instant cutoff, Pageable pageable);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Query("delete from MeetingAction a where a.id in :ids")
+    @Query("delete from MeetingAction a where a.id in :ids and a.analysisRunId is null")
     int deleteByIdIn(@Param("ids") Collection<UUID> ids);
 }

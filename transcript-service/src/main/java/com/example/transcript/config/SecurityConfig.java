@@ -36,6 +36,9 @@ import org.springframework.util.StringUtils;
 public class SecurityConfig {
 
     static final String SVC_CANONICAL_READ = "SVC_transcript:canonical:read";
+    static final String SVC_SESSION_ERASE = "SVC_transcript:session:erase";
+    static final String SVC_ANALYSIS_CAPABILITY_ISSUE =
+            "SVC_transcript:analysis-job-capability:issue";
 
     private final Environment environment;
 
@@ -53,7 +56,9 @@ public class SecurityConfig {
                 .securityMatcher("/api/v1/internal/tenants/**")
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth.anyRequest().hasAuthority(SVC_CANONICAL_READ))
+                .authorizeHttpRequests(auth -> auth.anyRequest().hasAnyAuthority(
+                        SVC_CANONICAL_READ, SVC_SESSION_ERASE,
+                        SVC_ANALYSIS_CAPABILITY_ISSUE))
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
                         .jwtAuthenticationConverter(jwtAuthenticationConverter)));

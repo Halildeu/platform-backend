@@ -7,6 +7,8 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
+import com.example.meeting.model.MeetingSessionErasure;
+import com.example.meeting.model.MeetingSessionErasureStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
@@ -64,10 +66,64 @@ class MeetingAnalysisRunPostgresIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private MeetingSessionErasureRepository erasureRepository;
+
+    @Test
+    void expiredActiveErasureLeaseIsRecoveredAndCanBeReclaimed() {
+        Instant now = Instant.parse("2026-07-18T12:00:00Z");
+        MeetingSessionErasure row = erasureRow(now, MeetingSessionErasureStatus.PENDING);
+        erasureRepository.saveAndFlush(row);
+        UUID firstClaim = UUID.randomUUID();
+        assertThat(erasureRepository.claimBatch(
+                now, now.plusSeconds(30), "worker-a", firstClaim, 1)).isEqualTo(1);
+
+        assertThat(erasureRepository.recoverStaleLeases(
+                now.plusSeconds(31), now.plusSeconds(31))).isEqualTo(1);
+        MeetingSessionErasure recovered = erasureRepository.findById(row.getSessionId()).orElseThrow();
+        assertThat(recovered.getStatus()).isEqualTo(MeetingSessionErasureStatus.PENDING);
+        assertThat(recovered.getClaimToken()).isNull();
+        assertThat(recovered.getLastErrorCode()).isEqualTo("LEASE_EXPIRED");
+
+        UUID secondClaim = UUID.randomUUID();
+        assertThat(erasureRepository.claimBatch(
+                now.plusSeconds(31), now.plusSeconds(61), "worker-b", secondClaim, 1)).isEqualTo(1);
+        assertThat(erasureRepository.findByClaimToken(secondClaim))
+                .extracting(MeetingSessionErasure::getSessionId)
+                .containsExactly(row.getSessionId());
+    }
+
+    @Test
+    void heldErasureBecomesClaimableForHoldReleaseRetryWhenDue() {
+        Instant now = Instant.parse("2026-07-18T12:00:00Z");
+        MeetingSessionErasure row = erasureRow(now, MeetingSessionErasureStatus.HELD);
+        erasureRepository.saveAndFlush(row);
+
+        UUID claim = UUID.randomUUID();
+        assertThat(erasureRepository.claimBatch(
+                now, now.plusSeconds(30), "worker", claim, 1)).isEqualTo(1);
+        assertThat(erasureRepository.findById(row.getSessionId()).orElseThrow().getStatus())
+                .isEqualTo(MeetingSessionErasureStatus.ACTIVE);
+    }
 
     // ----------------------------------------------------------------
     // Identity & idempotency
     // ----------------------------------------------------------------
+
+    private static MeetingSessionErasure erasureRow(
+            Instant now, MeetingSessionErasureStatus status) {
+        MeetingSessionErasure row = new MeetingSessionErasure();
+        row.setSessionId(UUID.randomUUID());
+        row.setTenantId(UUID.randomUUID());
+        row.setOrgId(row.getTenantId());
+        row.setMeetingId(UUID.randomUUID());
+        row.setSourceSessionHash("c".repeat(64));
+        row.setStatus(status);
+        row.setNextAttemptAt(now);
+        row.setRequestedAt(now);
+        row.setUpdatedAt(now);
+        return row;
+    }
 
     @Test
     void sameAnalysisRunId_cannotBeInsertedTwice() {

@@ -127,6 +127,23 @@ class TranscriptRetentionCleanupServiceTest {
         assertThat(audit.getAuditPayload()).isEqualTo("metadata-only");
     }
 
+    @Test
+    void deletePredicatesRecheckLegalHoldAfterExpiredIdSelection() {
+        TranscriptSegment segment = segment(EXPIRED_TRANSCRIPT, "candidate");
+        TranscriptFinalization finalization = finalization(segment, false, EXPIRED_TRANSCRIPT);
+        List<UUID> segmentIds = segmentRepository.findExpiredIds(
+                NOW, org.springframework.data.domain.PageRequest.of(0, 10));
+        List<UUID> finalizationIds = finalizationRepository.findExpiredIds(
+                NOW, org.springframework.data.domain.PageRequest.of(0, 10));
+        finalization.setLegalHold(true);
+        finalizationRepository.saveAndFlush(finalization);
+
+        assertThat(segmentRepository.deleteByIdIn(segmentIds)).isZero();
+        assertThat(finalizationRepository.deleteByIdIn(finalizationIds)).isZero();
+        assertThat(segmentRepository.findById(segment.getId())).isPresent();
+        assertThat(finalizationRepository.findById(finalization.getId())).isPresent();
+    }
+
     private TranscriptSegment segment(Instant createdAt, String draft) {
         UUID org = UUID.randomUUID();
         TranscriptSegment segment = new TranscriptSegment();

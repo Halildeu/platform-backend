@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
@@ -15,6 +16,7 @@ import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.finalization.TranscriptFinalizationStateMachine;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -37,11 +39,12 @@ class DirectSttTranscriptIngestionServiceTest {
     private final TranscriptSessionAssociation association = mock(TranscriptSessionAssociation.class);
     private final TranscriptFinalizationStateMachine finalizationStateMachine =
             mock(TranscriptFinalizationStateMachine.class);
+    private final SessionErasureFence erasureFence = mock(SessionErasureFence.class);
     private final Clock clock = Clock.fixed(
             Instant.parse("2026-07-17T14:00:00Z"), ZoneOffset.UTC);
     private final DirectSttTranscriptIngestionService service =
             new DirectSttTranscriptIngestionService(
-                    segments, associations, finalizationStateMachine, clock);
+                    segments, associations, finalizationStateMachine, erasureFence, clock);
 
     @BeforeEach
     void resolvedAssociation() {
@@ -87,6 +90,19 @@ class DirectSttTranscriptIngestionServiceTest {
         assertThatThrownBy(() -> service.upsert(
                 event("1-0", 2L, 3L, 5L, "draft"), UUID.randomUUID()))
                 .isInstanceOf(DirectSttTranscriptIngestionService.SessionAssociationNotResolvedException.class);
+        verify(segments, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void tombstoneFenceRejectsWriteBeforeAssociationOrSegmentMutation() {
+        doThrow(new SessionErasureFence.SessionErasedException())
+                .when(erasureFence).rejectErased(any(), any());
+
+        assertThatThrownBy(() -> service.upsert(
+                event("1-0", 2L, 3L, 5L, "draft"), SESSION))
+                .isInstanceOf(SessionErasureFence.SessionErasedException.class);
+
+        verify(associations, never()).findSourceForUpdate(any(), any(), any(), any());
         verify(segments, never()).saveAndFlush(any());
     }
 

@@ -51,12 +51,14 @@ security:
     issuer: ${ANALYSIS_JOB_CAPABILITY_ISSUER:transcript-service}
     audience: ${ANALYSIS_JOB_CAPABILITY_AUDIENCE:meeting-service}
     client-id: ${ANALYSIS_JOB_CAPABILITY_CLIENT_ID:meeting-ai}
-    max-ttl: ${ANALYSIS_JOB_CAPABILITY_MAX_TTL:PT30M}
+    max-ttl: ${ANALYSIS_JOB_CAPABILITY_MAX_TTL:PT5M}
   jwt:
     audience: ${SECURITY_JWT_AUDIENCE:meeting-service,frontend,account,serban-web}
     allowed-client-ids: ${SECURITY_AUTH_ALLOWED_CLIENT_IDS:frontend,admin-cli,serban-web,account}
 
 meeting:
+  analysis-ingestion:
+    generated-at-future-skew: ${MEETING_ANALYSIS_GENERATED_AT_FUTURE_SKEW:PT2M}
   tenant:
     local-default-tenant-id: ${MEETING_LOCAL_DEFAULT_TENANT_ID:00000000-0000-0000-0000-000000000001}
   authz:
@@ -76,6 +78,31 @@ meeting:
     cleanup-cron: ${MEETING_RETENTION_CLEANUP_CRON:0 31 2 * * *}
     cleanup-batch-size: ${MEETING_RETENTION_CLEANUP_BATCH_SIZE:1000}
     cleanup-max-batches-per-run: ${MEETING_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN:100}
+  session-erasure:
+    enabled: ${MEETING_SESSION_ERASURE_ENABLED:false}
+    scheduling-enabled: ${MEETING_SESSION_ERASURE_SCHEDULING_ENABLED:true}
+    transcript-service-base-url: ${MEETING_SESSION_ERASURE_TRANSCRIPT_URL:http://transcript-service:8098}
+    token-url: ${MEETING_SESSION_ERASURE_TOKEN_URL:http://auth-service:8088/oauth2/token}
+    client-id: ${MEETING_SESSION_ERASURE_CLIENT_ID:meeting-service}
+    client-secret: ${MEETING_SESSION_ERASURE_CLIENT_SECRET:}
+    connect-timeout-millis: ${MEETING_SESSION_ERASURE_CONNECT_TIMEOUT_MS:2000}
+    response-timeout-millis: ${MEETING_SESSION_ERASURE_RESPONSE_TIMEOUT_MS:10000}
+    poll-delay-ms: ${MEETING_SESSION_ERASURE_POLL_DELAY_MS:5000}
+    batch-size: ${MEETING_SESSION_ERASURE_BATCH_SIZE:25}
+    lease-duration: ${MEETING_SESSION_ERASURE_LEASE_DURATION:PT1M}
+    retry-delay: ${MEETING_SESSION_ERASURE_RETRY_DELAY:PT30S}
+    held-retry-delay: ${MEETING_SESSION_ERASURE_HELD_RETRY_DELAY:PT5M}
+    owner: ${MEETING_SESSION_ERASURE_OWNER:}
+  transcript-read:
+    # Separate activation gate from the deletion worker. The token requests
+    # only transcript:canonical:read and never the capability-issue permission.
+    enabled: ${MEETING_TRANSCRIPT_READ_ENABLED:false}
+    transcript-service-base-url: ${MEETING_TRANSCRIPT_READ_SERVICE_URL:http://transcript-service:8098}
+    token-url: ${MEETING_TRANSCRIPT_READ_TOKEN_URL:http://auth-service:8088/oauth2/token}
+    client-id: ${MEETING_TRANSCRIPT_READ_CLIENT_ID:meeting-service}
+    client-secret: ${MEETING_TRANSCRIPT_READ_CLIENT_SECRET:${MEETING_SESSION_ERASURE_CLIENT_SECRET:}}
+    connect-timeout-millis: ${MEETING_TRANSCRIPT_READ_CONNECT_TIMEOUT_MS:2000}
+    response-timeout-millis: ${MEETING_TRANSCRIPT_READ_RESPONSE_TIMEOUT_MS:10000}
   events:
     redis:
       # Publisher + poller form one rollout unit. Both are default-off and a

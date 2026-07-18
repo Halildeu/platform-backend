@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.AudioFormat;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.URI;
 import java.time.Instant;
@@ -49,6 +50,7 @@ class LiveSttWebSocketProxyHandlerTest {
                 properties,
                 auditSink,
                 upstreamClient,
+                new ObjectMapper(),
                 new SimpleMeterRegistry());
     }
 
@@ -115,6 +117,7 @@ class LiveSttWebSocketProxyHandlerTest {
                 configuredProperties(),
                 auditSink,
                 upstreamClient,
+                new ObjectMapper(),
                 meters);
         final WebSocketSession client = clientSession(jwt(true, true));
         final WebSocketSession upstream = mock(WebSocketSession.class);

@@ -62,8 +62,8 @@ class AnalysisJobCapabilityIssuerTest {
         assertThat(claims.getStringClaim("analysis_run_id")).isEqualTo(analysisRunId.toString());
         assertThat(claims.getStringClaim("analysis_spec_version")).isEqualTo("analysis-v3");
         assertThat(claims.getIssueTime().toInstant()).isEqualTo(NOW);
-        assertThat(claims.getExpirationTime().toInstant()).isEqualTo(NOW.plus(Duration.ofMinutes(15)));
-        assertThat(issued.expiresAt()).isEqualTo(NOW.plus(Duration.ofMinutes(15)));
+        assertThat(claims.getExpirationTime().toInstant()).isEqualTo(NOW.plus(Duration.ofMinutes(5)));
+        assertThat(issued.expiresAt()).isEqualTo(NOW.plus(Duration.ofMinutes(5)));
     }
 
     @Test
@@ -85,10 +85,23 @@ class AnalysisJobCapabilityIssuerTest {
                 });
     }
 
+    @Test
+    void configuration_rejectsCapabilityTtlAboveFiveMinutes() {
+        assertThatThrownBy(() -> new AnalysisJobCapabilityIssuer(
+                        ENCODED_SECRET,
+                        Duration.ofMinutes(5).plusSeconds(1),
+                        "transcript-service",
+                        "meeting-service",
+                        "meeting-ai",
+                        Clock.fixed(NOW, ZoneOffset.UTC)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("5 minutes");
+    }
+
     private static AnalysisJobCapabilityIssuer issuer(String secret) {
         return new AnalysisJobCapabilityIssuer(
                 secret,
-                Duration.ofMinutes(15),
+                Duration.ofMinutes(5),
                 "transcript-service",
                 "meeting-service",
                 "meeting-ai",
