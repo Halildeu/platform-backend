@@ -49,6 +49,7 @@ class LiveSttWebSocketProxyHandlerTest {
                 sessions,
                 properties,
                 auditSink,
+                DirectSttTranscriptResultSink.noop(),
                 upstreamClient,
                 new ObjectMapper(),
                 new SimpleMeterRegistry());
@@ -116,6 +117,7 @@ class LiveSttWebSocketProxyHandlerTest {
                 sessions,
                 configuredProperties(),
                 auditSink,
+                DirectSttTranscriptResultSink.noop(),
                 upstreamClient,
                 new ObjectMapper(),
                 meters);

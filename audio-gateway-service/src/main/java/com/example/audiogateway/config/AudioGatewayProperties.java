@@ -387,9 +387,9 @@ public class AudioGatewayProperties {
         private final Tls tls = new Tls();
 
         /**
-         * Optional transcript-result stream handoff. This is transcript content, not
-         * raw audio; it is config-gated so source can ship before a live evidence run
-         * flips the result stream path.
+         * Durable transcript-result stream handoff. This is transcript content, not raw
+         * audio. It may remain off while direct-STT is off, but startup fails closed when
+         * direct-STT is enabled without this handoff.
          */
         private final TranscriptResultStream transcriptResultStream = new TranscriptResultStream();
 
@@ -448,6 +448,11 @@ public class AudioGatewayProperties {
             aggregation.validate();
             transcriptResultStream.validate();
             streaming.validate(tls.isEnabled());
+            if (!transcriptResultStream.isEnabled()) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcript-result-stream.enabled must be true "
+                                + "when direct-stt is enabled");
+            }
         }
 
         public boolean isEnabled() {
@@ -716,7 +721,7 @@ public class AudioGatewayProperties {
         }
 
         public static class TranscriptResultStream {
-            /** DEFAULT-OFF — emits parsed transcript text to a Redis result stream when true. */
+            /** Required when direct-STT is enabled; emits parsed transcript text to Redis. */
             private boolean enabled = false;
 
             /** Redis stream key for direct-STT transcript result handoff. */

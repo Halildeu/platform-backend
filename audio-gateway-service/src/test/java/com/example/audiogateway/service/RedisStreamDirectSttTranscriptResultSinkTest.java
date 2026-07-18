@@ -176,4 +176,14 @@ class RedisStreamDirectSttTranscriptResultSinkTest {
         assertThatThrownBy(() -> sink.emit(result(), context()))
                 .isInstanceOf(QueryTimeoutException.class);
     }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void emitFailsClosedWhenRedisReturnsNoRecordId() {
+        when(streamOps.add(any(MapRecord.class))).thenReturn(null);
+
+        assertThatThrownBy(() -> sink.emit(result(), context()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("direct-STT transcript XADD returned no record id");
+    }
 }

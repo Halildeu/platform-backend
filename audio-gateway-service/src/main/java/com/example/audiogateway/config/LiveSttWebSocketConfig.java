@@ -2,6 +2,7 @@ package com.example.audiogateway.config;
 
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.AudioSessionRegistry;
+import com.example.audiogateway.service.DirectSttTranscriptResultSink;
 import com.example.audiogateway.service.LiveAudioStreamFrame;
 import com.example.audiogateway.service.LiveSttWebSocketProxyHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -73,11 +74,18 @@ public class LiveSttWebSocketConfig {
             final AudioSessionRegistry sessions,
             final AudioGatewayProperties properties,
             final AudioGatewayAuditSink auditSink,
+            final DirectSttTranscriptResultSink transcriptResultSink,
             @Qualifier("directSttWebSocketClient") final WebSocketClient upstreamClient,
             final ObjectMapper objectMapper,
             final MeterRegistry meters) {
         return new LiveSttWebSocketProxyHandler(
-                sessions, properties, auditSink, upstreamClient, objectMapper, meters);
+                sessions,
+                properties,
+                auditSink,
+                transcriptResultSink,
+                upstreamClient,
+                objectMapper,
+                meters);
     }
 
     @Bean

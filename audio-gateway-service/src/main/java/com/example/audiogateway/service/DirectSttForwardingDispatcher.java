@@ -27,6 +27,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.retry.Retry;
 
 /**
  * Direct-STT forwarding dispatcher — Faz 24 issue #182 CORE (architecture "A").
@@ -487,6 +488,7 @@ public class DirectSttForwardingDispatcher
                     .retrieve()
                     .bodyToMono(TranscriptResult.class)
                     .timeout(Duration.ofMillis(cfg.getResponseTimeoutMs()))
+                    .flatMap(result -> persistTranscriptResult(result, task))
                     .publishOn(forwardScheduler)
                     // doFinally covers EVERY terminal signal — success, error, timeout and
                     // cancel — which is exactly the set the audio bound must refund on.
@@ -556,11 +558,15 @@ public class DirectSttForwardingDispatcher
                 result == null ? null : result.language(),
                 result == null ? null : result.elapsedMs(),
                 result == null ? null : result.model());
-        routeTranscript(result, task);
     }
 
     private void onError(final Throwable error, final ForwardTask task) {
         // Order matters: timeout → real HTTP status (4xx/5xx) → connection/transport → other.
+        if (error instanceof TranscriptResultDeliveryException) {
+            counter("transcript_delivery_failed").increment();
+            log.warn("Direct-STT transcript delivery failed after STT success {}", kv(task));
+            return;
+        }
         if (error instanceof java.util.concurrent.TimeoutException
                 || causeContains(error, "TimeoutException")) {
             counter("timeout").increment();
@@ -593,35 +599,36 @@ public class DirectSttForwardingDispatcher
         log.warn("Direct-STT forward failed err={} {}", error.getClass().getSimpleName(), kv(task));
     }
 
-    private void routeTranscript(final TranscriptResult result, final ForwardTask task) {
-        if (!cfg.getTranscriptResultStream().isEnabled()) {
-            counter("transcript_sink_skipped_disabled").increment();
-            return;
-        }
+    private Mono<TranscriptResult> persistTranscriptResult(
+            final TranscriptResult result, final ForwardTask task) {
         if (result == null || result.text() == null || result.text().isBlank()) {
             counter("transcript_sink_skipped_empty").increment();
-            return;
+            return Mono.justOrEmpty(result);
         }
-        try {
-            transcriptSinkScheduler.schedule(() -> emitTranscriptResult(result, task));
-        } catch (final RuntimeException ex) {
-            counter("transcript_sink_error").increment();
-            log.warn("ALERT direct-STT transcript result sink scheduling failed err={} {}",
-                    ex.getClass().getSimpleName(), kv(task));
+        if (!cfg.getTranscriptResultStream().isEnabled()) {
+            return Mono.error(new TranscriptResultDeliveryException(
+                    new IllegalStateException("direct-STT transcript result stream is disabled")));
         }
-    }
-
-    private void emitTranscriptResult(final TranscriptResult result, final ForwardTask task) {
-        try {
-            transcriptResultSink.emit(result, transcriptContext(task));
-            counter("transcript_sink_success").increment();
-            log.info("Direct-STT transcript result routed {} textLen={} sttLang={} model={}",
-                    kv(task), result.textLength(), result.language(), result.model());
-        } catch (final RuntimeException ex) {
-            counter("transcript_sink_error").increment();
-            log.warn("ALERT direct-STT transcript result sink failed err={} {}",
-                    ex.getClass().getSimpleName(), kv(task));
-        }
+        return Mono.fromRunnable(() -> transcriptResultSink.emit(result, transcriptContext(task)))
+                .subscribeOn(transcriptSinkScheduler)
+                // XADD can be retried at-least-once: the downstream source-window identity
+                // makes an acknowledgement-loss duplicate idempotent, while a drop is not.
+                .retryWhen(Retry.backoff(5, Duration.ofMillis(100))
+                        .maxBackoff(Duration.ofSeconds(2))
+                        .jitter(0.2d)
+                        .doBeforeRetry(signal -> counter("transcript_sink_retry").increment()))
+                .doOnSuccess(ignored -> {
+                    counter("transcript_sink_success").increment();
+                    log.info("Direct-STT transcript result routed {} textLen={} sttLang={} model={}",
+                            kv(task), result.textLength(), result.language(), result.model());
+                })
+                .onErrorMap(error -> {
+                    counter("transcript_sink_error").increment();
+                    log.warn("ALERT direct-STT transcript result delivery exhausted err={} {}",
+                            error.getClass().getSimpleName(), kv(task));
+                    return new TranscriptResultDeliveryException(error);
+                })
+                .thenReturn(result);
     }
 
     private static DirectSttTranscriptResultContext transcriptContext(final ForwardTask task) {
@@ -783,6 +790,12 @@ public class DirectSttForwardingDispatcher
         @Override
         public String getFilename() {
             return filename;
+        }
+    }
+
+    private static final class TranscriptResultDeliveryException extends RuntimeException {
+        private TranscriptResultDeliveryException(final Throwable cause) {
+            super("direct-STT transcript result delivery failed", cause);
         }
     }
 }

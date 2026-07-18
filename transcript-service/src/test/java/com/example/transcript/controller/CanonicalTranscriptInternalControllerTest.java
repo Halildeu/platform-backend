@@ -33,12 +33,16 @@ class CanonicalTranscriptInternalControllerTest {
         UUID tenantId = UUID.randomUUID();
         UUID meetingId = UUID.randomUUID();
         UUID sessionId = UUID.randomUUID();
+        UUID runId = UUID.randomUUID();
         CanonicalTranscriptSnapshotDto snapshot = snapshot(tenantId, meetingId, sessionId);
-        when(service.read(tenantId, meetingId, sessionId, 4L, tenantId, "meeting-ai"))
+        when(service.read(
+                tenantId, meetingId, sessionId, 4L, tenantId, runId,
+                "meeting-intelligence-v1", "meeting-ai"))
                 .thenReturn(snapshot);
 
         var response = controller.read(
-                tenantId, meetingId, sessionId, 4L, tenantId,
+                tenantId, meetingId, sessionId, 4L, tenantId, runId,
+                "meeting-intelligence-v1",
                 UsernamePasswordAuthenticationToken.authenticated(
                         "meeting-ai", "n/a", List.of()));
 
@@ -50,7 +54,9 @@ class CanonicalTranscriptInternalControllerTest {
                 CanonicalTranscriptInternalController.CAPABILITY_EXPIRES_HEADER)).isFalse();
         assertThat(response.getHeaders().getCacheControl()).isEqualTo("no-store");
         assertThat(response.getHeaders().getFirst(HttpHeaders.PRAGMA)).isEqualTo("no-cache");
-        verify(service).read(tenantId, meetingId, sessionId, 4L, tenantId, "meeting-ai");
+        verify(service).read(
+                tenantId, meetingId, sessionId, 4L, tenantId, runId,
+                "meeting-intelligence-v1", "meeting-ai");
     }
 
     @Test

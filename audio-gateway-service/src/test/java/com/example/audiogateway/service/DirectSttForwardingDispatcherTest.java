@@ -73,6 +73,7 @@ class DirectSttForwardingDispatcherTest {
         p.getDirectStt().setResponseTimeoutMs(5_000);
         p.getDirectStt().setMaxResponseBytes(262_144);
         p.getDirectStt().getAggregation().setEnabled(false);
+        p.getDirectStt().getTranscriptResultStream().setEnabled(true);
         return p;
     }
 
@@ -204,7 +205,7 @@ class DirectSttForwardingDispatcherTest {
 
         // (3) Success metric increments (await the async callback), no transcript text leaked.
         awaitCounter(meters, "success", 1.0);
-        awaitCounter(meters, "transcript_sink_skipped_disabled", 1.0);
+        awaitCounter(meters, "transcript_sink_success", 1.0);
         assertThat(counter(meters, "attempted")).isEqualTo(1.0);
         assertThat(counter(meters, "http_error")).isZero();
         assertThat(counter(meters, "exception")).isZero();
@@ -467,7 +468,7 @@ class DirectSttForwardingDispatcherTest {
     }
 
     @Test
-    void transcriptSinkFailureIsMetricOnlyAndAdmissionStaysAccepted() throws Exception {
+    void transcriptSinkFailureRetriesAndNeverReportsTranscriptSuccess() throws Exception {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody("{\"text\":\"merhaba dunya\",\"language\":\"tr\"}"));
@@ -484,8 +485,11 @@ class DirectSttForwardingDispatcherTest {
 
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
         assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
-        awaitCounter(meters, "success", 1.0);
         awaitCounter(meters, "transcript_sink_error", 1.0);
+        assertThat(counter(meters, "transcript_sink_retry")).isEqualTo(5.0);
+        assertThat(counter(meters, "transcript_delivery_failed")).isEqualTo(1.0);
+        assertThat(counter(meters, "timeout")).isZero();
+        assertThat(counter(meters, "success")).isZero();
         assertThat(counter(meters, "transcript_sink_success")).isZero();
     }
 

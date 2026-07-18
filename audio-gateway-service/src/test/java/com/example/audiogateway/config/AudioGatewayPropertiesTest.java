@@ -166,8 +166,21 @@ class AudioGatewayPropertiesTest {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
         props.getDirectStt().getStreaming().setEnabled(true);
         props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
 
         assertThatCode(props::validate).doesNotThrowAnyException();
+    }
+
+    @Test
+    void liveStreamingRequiresDurableTranscriptResultStream() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getTranscriptResultStream().setEnabled(false);
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("transcript-result-stream.enabled must be true");
     }
 
     @Test
@@ -234,6 +247,7 @@ class AudioGatewayPropertiesTest {
         final AudioGatewayProperties props = new AudioGatewayProperties();
         props.getDirectStt().setEnabled(true);
         props.getDirectStt().setTranscribeUrl(transcribeUrl);
+        props.getDirectStt().getTranscriptResultStream().setEnabled(true);
         return props;
     }
 

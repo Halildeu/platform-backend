@@ -59,6 +59,7 @@ class DirectSttWiringTest {
     @TestPropertySource(properties = {
             ISSUER,
             "audio.gateway.direct-stt.enabled=true",
+            "audio.gateway.direct-stt.transcript-result-stream.enabled=true",
             "audio.gateway.direct-stt.transcribe-url=http://localhost:18999/transcribe"
     })
     class DirectSttEnabledNoopMode {
@@ -85,6 +86,7 @@ class DirectSttWiringTest {
             ISSUER,
             "audio.gateway.dispatcher.mode=redis",
             "audio.gateway.direct-stt.enabled=true",
+            "audio.gateway.direct-stt.transcript-result-stream.enabled=true",
             "audio.gateway.direct-stt.transcribe-url=http://localhost:18999/transcribe"
     })
     class DirectSttEnabledRedisMode {

@@ -5,9 +5,9 @@ import com.example.audiogateway.dto.TranscriptResult;
 /**
  * Downstream handoff for a parsed direct-STT transcript result.
  *
- * <p>Implementations must not log transcript text or segments. Failures are
- * surfaced to {@link DirectSttForwardingDispatcher}, which records a metric while
- * keeping chunk admission unaffected.
+ * <p>Implementations must not log transcript text or segments. They must throw when the
+ * durable handoff has no positive acknowledgement. Failures stay in the HTTP/WS terminal
+ * chain, are metered, and cannot be reported to the client as a persisted transcript.
  */
 @FunctionalInterface
 public interface DirectSttTranscriptResultSink {

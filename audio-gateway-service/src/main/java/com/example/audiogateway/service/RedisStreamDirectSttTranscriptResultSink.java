@@ -7,6 +7,7 @@ import java.util.Map;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.connection.RedisStreamCommands.XAddOptions;
 import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -79,11 +80,15 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
 
         final MapRecord<String, String, String> record =
                 StreamRecords.mapBacked(fields).withStreamKey(cfg.getStreamKey());
+        final RecordId recordId;
         if (cfg.getMaxLen() > 0) {
-            redis.opsForStream().add(record,
+            recordId = redis.opsForStream().add(record,
                     XAddOptions.maxlen(cfg.getMaxLen()).approximateTrimming(true));
         } else {
-            redis.opsForStream().add(record);
+            recordId = redis.opsForStream().add(record);
+        }
+        if (recordId == null) {
+            throw new IllegalStateException("direct-STT transcript XADD returned no record id");
         }
     }
 
