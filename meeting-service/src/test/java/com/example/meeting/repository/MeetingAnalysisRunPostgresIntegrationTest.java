@@ -68,6 +68,8 @@ class MeetingAnalysisRunPostgresIntegrationTest {
     private JdbcTemplate jdbc;
     @Autowired
     private MeetingSessionErasureRepository erasureRepository;
+    @Autowired
+    private MeetingAnalysisRunRepository runRepository;
 
     @Test
     void expiredActiveErasureLeaseIsRecoveredAndCanBeReclaimed() {
@@ -104,6 +106,22 @@ class MeetingAnalysisRunPostgresIntegrationTest {
                 now, now.plusSeconds(30), "worker", claim, 1)).isEqualTo(1);
         assertThat(erasureRepository.findById(row.getSessionId()).orElseThrow().getStatus())
                 .isEqualTo(MeetingSessionErasureStatus.ACTIVE);
+    }
+
+    @Test
+    void erasureScopeDeletesOnlyTheRequestedTranscriptSession() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID requestedRun = UUID.randomUUID();
+        UUID otherRun = UUID.randomUUID();
+        insertRunForSession(requestedRun, meetingId, org, "session-requested", SHA_A, HASH_1);
+        insertRunForSession(otherRun, meetingId, org, "session-other", SHA_B, HASH_2);
+
+        assertThat(runRepository.deleteErasureScope(
+                meetingId, org, "session-requested")).isEqualTo(1);
+
+        assertThat(runRepository.findById(requestedRun)).isEmpty();
+        assertThat(runRepository.findById(otherRun)).isPresent();
     }
 
     // ----------------------------------------------------------------
@@ -621,14 +639,27 @@ class MeetingAnalysisRunPostgresIntegrationTest {
 
     private void insertRun(UUID runId, UUID meetingId, UUID org, String sha,
                            String payloadHash, UUID supersedes) {
+        insertRunForSession(runId, meetingId, org, "SES-1", sha, payloadHash, supersedes);
+    }
+
+    private void insertRunForSession(
+            UUID runId, UUID meetingId, UUID org, String transcriptSessionId,
+            String sha, String payloadHash) {
+        insertRunForSession(runId, meetingId, org, transcriptSessionId, sha, payloadHash, null);
+    }
+
+    private void insertRunForSession(
+            UUID runId, UUID meetingId, UUID org, String transcriptSessionId,
+            String sha, String payloadHash, UUID supersedes) {
         jdbc.update("""
                 INSERT INTO %s.meeting_analysis_runs
                   (analysis_run_id, meeting_id, tenant_id, org_id, transcript_session_id,
                    transcript_sha256, analyzer_contract_version, payload_hash,
                    supersedes_analysis_run_id, generated_at, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'SES-1', ?, '5-adr0043', ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, '5-adr0043', ?, ?, ?, ?, ?)
                 """.formatted(SCHEMA),
-                runId, meetingId, org, org, sha, payloadHash, supersedes, now(), now(), now());
+                runId, meetingId, org, org, transcriptSessionId, sha, payloadHash,
+                supersedes, now(), now(), now());
     }
 
     private void insertAiAction(UUID meetingId, UUID org, UUID runId, int ordinal) {

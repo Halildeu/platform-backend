@@ -57,6 +57,10 @@ class AnalysisJobCapabilityVerifierTest {
                 token(CAPABILITY_ID, TENANT_ID, MEETING_ID, SESSION_ID, 0L,
                         FINALIZED_AT, "a".repeat(64), RUN_ID, "analysis-v2",
                         NOW.minusSeconds(1), NOW.plusSeconds(299)));
+        assertInvalid(verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET),
+                token(CAPABILITY_ID, TENANT_ID, MEETING_ID, SESSION_ID, 4L,
+                        FINALIZED_AT.plusNanos(1), "a".repeat(64), RUN_ID, "analysis-v2",
+                        NOW.minusSeconds(1), NOW.plusSeconds(299)));
         assertInvalid(verifier(AnalysisJobCapabilityTestTokens.ENCODED_SECRET), "not-a-jwt");
     }
 

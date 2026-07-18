@@ -72,6 +72,10 @@ public class MeetingSessionErasureService {
     @Transactional
     public MeetingSessionErasureStatus request(
             AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
+        if (!properties.isEnabled() || !properties.isSchedulingEnabled()) {
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE, "SESSION_ERASURE_UNAVAILABLE");
+        }
         meetings.findVisibleToOrgAndIdForUpdate(tenant.tenantId(), meetingId)
                 .orElseThrow(() -> new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "Meeting not found."));

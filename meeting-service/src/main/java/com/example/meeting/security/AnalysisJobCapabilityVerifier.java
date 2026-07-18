@@ -9,6 +9,7 @@ import java.text.ParseException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -100,7 +101,7 @@ public class AnalysisJobCapabilityVerifier {
                     requiredUuid(claims.getStringClaim("meeting_id")),
                     requiredUuid(claims.getStringClaim("session_id")),
                     finalizationVersion,
-                    Instant.parse(claims.getStringClaim("finalized_at")),
+                    requiredCanonicalInstant(claims.getStringClaim("finalized_at")),
                     requiredHash(claims.getStringClaim("transcript_sha256")),
                     requiredUuid(claims.getStringClaim("analysis_run_id")),
                     requiredText(claims.getStringClaim("analysis_spec_version"), 64),
@@ -121,6 +122,14 @@ public class AnalysisJobCapabilityVerifier {
 
     private static UUID requiredUuid(String value) {
         return UUID.fromString(requiredText(value, 64));
+    }
+
+    private static Instant requiredCanonicalInstant(String value) {
+        Instant instant = Instant.parse(requiredText(value, 64));
+        if (!instant.equals(instant.truncatedTo(ChronoUnit.MICROS))) {
+            throw invalid();
+        }
+        return instant;
     }
 
     private static String requiredHash(String value) {

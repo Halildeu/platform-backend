@@ -1,6 +1,7 @@
 package com.example.meeting.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -31,6 +32,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.server.ResponseStatusException;
 
 @ExtendWith(MockitoExtension.class)
 class MeetingSessionErasureServiceTest {
@@ -49,13 +51,32 @@ class MeetingSessionErasureServiceTest {
     @Mock private MeetingAnalysisRunDestructionRecorder destructionRecorder;
 
     private MeetingSessionErasureService service;
+    private MeetingSessionErasureProperties properties;
 
     @BeforeEach
     void setUp() {
+        properties = new MeetingSessionErasureProperties();
+        properties.setEnabled(true);
         service = new MeetingSessionErasureService(
                 meetings, sessions, analysisRuns, erasures, audits, destructionRecorder,
-                new MeetingSessionErasureProperties(),
+                properties,
                 Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    void requestFailsBeforeDatabaseMutationWhenWorkerIsUnavailable() {
+        properties.setEnabled(false);
+
+        assertThatThrownBy(() -> service.request(
+                        new AdminTenantContext(TENANT, "subject", "subject"), MEETING, SESSION))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> {
+                            assertThat(error.getStatusCode().value()).isEqualTo(503);
+                            assertThat(error.getReason()).isEqualTo("SESSION_ERASURE_UNAVAILABLE");
+                        });
+
+        verify(meetings, never()).findVisibleToOrgAndIdForUpdate(any(), any());
+        verify(erasures, never()).saveAndFlush(any());
     }
 
     @Test

@@ -94,7 +94,7 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             select r from MeetingAnalysisRun r
             where r.meetingId = :meetingId
               and r.tenantId = :tenantId
-              and (r.transcriptSessionId = :sessionId or r.transcriptSessionId is null)
+              and r.transcriptSessionId = :sessionId
             """)
     List<MeetingAnalysisRun> findErasureScopeForUpdate(
             @Param("meetingId") UUID meetingId,
@@ -106,7 +106,7 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             delete from MeetingAnalysisRun r
             where r.meetingId = :meetingId
               and r.tenantId = :tenantId
-              and (r.transcriptSessionId = :sessionId or r.transcriptSessionId is null)
+              and r.transcriptSessionId = :sessionId
               and r.legalHold = false
             """)
     int deleteErasureScope(
@@ -119,7 +119,7 @@ public interface MeetingAnalysisRunRepository extends JpaRepository<MeetingAnaly
             from MeetingAnalysisRun r
             where r.meetingId = :meetingId
               and r.tenantId = :tenantId
-              and (r.transcriptSessionId = :sessionId or r.transcriptSessionId is null)
+              and r.transcriptSessionId = :sessionId
               and r.legalHold = true
             """)
     boolean existsLegalHoldForErasure(

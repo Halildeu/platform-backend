@@ -26,6 +26,8 @@ class AnalysisGeneratedAtPolicyTest {
     void rejectsGeneratedBeforeFinalizationAndBeyondServerSkewWithStableCode() {
         assertInvalid(NOW, NOW.minusMillis(1));
         assertInvalid(NOW, NOW.plusSeconds(121));
+        assertInvalid(NOW.plusNanos(1), NOW.plusSeconds(1));
+        assertInvalid(NOW, NOW.plusNanos(1));
     }
 
     @Test

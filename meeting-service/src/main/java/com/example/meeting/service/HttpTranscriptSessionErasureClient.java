@@ -22,12 +22,25 @@ public class HttpTranscriptSessionErasureClient implements TranscriptSessionEras
             MeetingSessionErasureProperties properties,
             MeetingServiceTokenProvider tokens,
             RestClient.Builder builder) {
+        this(properties, tokens, buildClient(properties, builder));
+    }
+
+    HttpTranscriptSessionErasureClient(
+            MeetingSessionErasureProperties properties,
+            MeetingServiceTokenProvider tokens,
+            RestClient restClient) {
         this.properties = properties;
         this.tokens = tokens;
+        this.restClient = restClient;
+    }
+
+    private static RestClient buildClient(
+            MeetingSessionErasureProperties properties,
+            RestClient.Builder builder) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(properties.getConnectTimeoutMillis());
         requestFactory.setReadTimeout(properties.getResponseTimeoutMillis());
-        this.restClient = builder.clone().requestFactory(requestFactory).build();
+        return builder.clone().requestFactory(requestFactory).build();
     }
 
     @Override

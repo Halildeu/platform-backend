@@ -3,6 +3,7 @@ package com.example.meeting.service;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -35,6 +36,8 @@ public class AnalysisGeneratedAtPolicy {
     public void validate(Instant finalizedAt, Instant generatedAt) {
         Instant now = clock.instant();
         if (finalizedAt == null || generatedAt == null
+                || !finalizedAt.equals(finalizedAt.truncatedTo(ChronoUnit.MICROS))
+                || !generatedAt.equals(generatedAt.truncatedTo(ChronoUnit.MICROS))
                 || generatedAt.isBefore(finalizedAt)
                 || generatedAt.isAfter(now.plus(futureSkew))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "ANALYSIS_GENERATED_AT_INVALID");

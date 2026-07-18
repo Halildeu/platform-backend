@@ -2,6 +2,7 @@ package com.example.meeting.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
@@ -78,6 +79,56 @@ class HttpCanonicalTranscriptClientTest {
                         .body("{\"error\":\"FINALIZATION_NOT_FOUND\"}"));
 
         assertFailure(CanonicalTranscriptClient.Failure.RETENTION_EXPIRED);
+        server.verify();
+    }
+
+    @Test
+    void erasedOccurrenceMapsToErasedWithoutReadingErrorBody() {
+        server.expect(once(), requestTo(URL))
+                .andRespond(withStatus(HttpStatus.GONE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":\"TRANSCRIPT_ERASED\"}"));
+
+        assertFailure(CanonicalTranscriptClient.Failure.ERASED);
+        server.verify();
+    }
+
+    @Test
+    void erasureInProgressMapsToPendingWithoutReadingErrorBody() {
+        server.expect(once(), requestTo(URL))
+                .andRespond(withStatus(HttpStatus.LOCKED)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":\"TRANSCRIPT_ERASURE_PENDING\"}"));
+
+        assertFailure(CanonicalTranscriptClient.Failure.ERASURE_PENDING);
+        server.verify();
+    }
+
+    @Test
+    void finalizationMismatchMapsToIntegrityConflictWithoutReadingErrorBody() {
+        server.expect(once(), requestTo(URL))
+                .andRespond(withStatus(HttpStatus.CONFLICT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":\"FINALIZATION_INTEGRITY_MISMATCH\"}"));
+
+        assertFailure(CanonicalTranscriptClient.Failure.INTEGRITY_CONFLICT);
+        server.verify();
+    }
+
+    @Test
+    void unauthorizedResponseInvalidatesTokenAndRetriesOnce() {
+        when(tokens.token()).thenReturn("expired-token", "refreshed-token");
+        server.expect(once(), requestTo(URL))
+                .andExpect(header("Authorization", "Bearer expired-token"))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        server.expect(once(), requestTo(URL))
+                .andExpect(header("Authorization", "Bearer refreshed-token"))
+                .andRespond(withSuccess(json(), MediaType.APPLICATION_JSON));
+
+        assertThat(client.read(TENANT, MEETING, SESSION, 7L).transcript())
+                .isEqualTo("canonical text");
+
+        verify(tokens).invalidate();
         server.verify();
     }
 

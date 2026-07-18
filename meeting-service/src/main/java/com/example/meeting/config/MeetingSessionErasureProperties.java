@@ -31,6 +31,10 @@ public class MeetingSessionErasureProperties {
                 || heldRetryDelay == null || heldRetryDelay.isNegative() || heldRetryDelay.isZero()) {
             throw new IllegalStateException("meeting session erasure timing and batch settings must be positive");
         }
+        if (enabled && !schedulingEnabled) {
+            throw new IllegalStateException(
+                    "meeting session erasure scheduling must be enabled when erasure is enabled");
+        }
         if (enabled && (isBlank(transcriptServiceBaseUrl) || isBlank(tokenUrl)
                 || isBlank(clientId) || isBlank(clientSecret))) {
             throw new IllegalStateException("meeting session erasure service credentials are required when enabled");
