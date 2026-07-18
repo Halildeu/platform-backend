@@ -109,7 +109,8 @@ audio:
         stream-url: ""               # ws(s)://live-stt.../ws/stream; required when enabled
         max-frame-bytes: 65535        # uint16 frame length bound; PCM16 only
         max-terminal-control-bytes: 64 # only strict {"type":"eof"} is accepted as client text
-        terminal-drain-timeout-ms: 10000 # bound while waiting for relayed drained event
+        ready-timeout-ms: 240000        # cold model load must complete before client audio is admitted
+        terminal-drain-timeout-ms: 90000 # negotiated terminal inference + durable handoff + margin
         source-history-max-bytes: 4194304 # bounded PCM history for exact final source ranges
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;

@@ -31,6 +31,12 @@ import reactor.core.publisher.Mono;
 
 class LiveSttWebSocketProxyHandlerTest {
 
+    private static final String READY_EVENT = "{\"type\":\"ready\",\"sample_rate\":16000,"
+            + "\"live_model\":\"fixture-live\",\"final_model\":\"fixture-final\","
+            + "\"partial_mode\":\"stable-v1\",\"protocol\":\"source-ranges-v1\","
+            + "\"capabilities\":[\"eof\",\"source-ranges-v1\"],\"supports_eof\":true,"
+            + "\"terminal_timeout_ms\":60000}";
+
     private AudioSessionRegistry sessions;
     private AudioGatewayAuditSink auditSink;
     private WebSocketClient upstreamClient;
@@ -125,8 +131,14 @@ class LiveSttWebSocketProxyHandlerTest {
         final WebSocketSession upstream = mock(WebSocketSession.class);
         when(sessions.get("session-1")).thenReturn(Optional.of(session(1L, 4L, SessionState.STARTED)));
         when(client.receive()).thenReturn(Flux.just(textMessage("invalid")));
-        when(client.send(any(Publisher.class))).thenReturn(Mono.never());
-        when(upstream.receive()).thenReturn(Flux.never());
+        when(client.textMessage(any(String.class))).thenAnswer(invocation ->
+                textMessage(invocation.getArgument(0)));
+        when(client.send(any(Publisher.class))).thenAnswer(invocation ->
+                Flux.from(invocation.<Publisher<org.springframework.web.reactive.socket.WebSocketMessage>>
+                                getArgument(0))
+                        .then());
+        when(upstream.receive()).thenReturn(
+                Flux.just(textMessage(READY_EVENT)).concatWith(Flux.never()));
         when(upstream.send(any(Publisher.class))).thenAnswer(invocation ->
                 Flux.from(invocation.<Publisher<org.springframework.web.reactive.socket.WebSocketMessage>>
                                 getArgument(0))

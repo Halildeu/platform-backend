@@ -254,15 +254,27 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
-    void liveStreamingRejectsTerminalDrainTimeoutAboveHardMinuteBound() {
+    void liveStreamingRejectsReadyTimeoutAboveColdLoadBound() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
         props.getDirectStt().getStreaming().setEnabled(true);
         props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
-        props.getDirectStt().getStreaming().setTerminalDrainTimeoutMs(60_001L);
+        props.getDirectStt().getStreaming().setReadyTimeoutMs(600_001L);
 
         assertThatThrownBy(props::validate)
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("terminal-drain-timeout-ms must be in [1,60000]");
+                .hasMessageContaining("ready-timeout-ms must be in [1,600000]");
+    }
+
+    @Test
+    void liveStreamingRejectsTerminalDrainTimeoutAboveFinalPersistenceBudget() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+        props.getDirectStt().getStreaming().setTerminalDrainTimeoutMs(180_001L);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("terminal-drain-timeout-ms must be in [1,180000]");
     }
 
     @Test

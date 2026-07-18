@@ -524,7 +524,8 @@ public class AudioGatewayProperties {
             private String streamUrl = "";
             private int maxFrameBytes = 65_535;
             private int maxTerminalControlBytes = 64;
-            private long terminalDrainTimeoutMs = 10_000L;
+            private long readyTimeoutMs = 240_000L;
+            private long terminalDrainTimeoutMs = 90_000L;
             private int sourceHistoryMaxBytes = 4_194_304;
 
             void validate(final boolean tlsEnabled) {
@@ -560,9 +561,13 @@ public class AudioGatewayProperties {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.streaming.max-terminal-control-bytes must be in [14,1024]");
                 }
-                if (terminalDrainTimeoutMs <= 0L || terminalDrainTimeoutMs > 60_000L) {
+                if (readyTimeoutMs <= 0L || readyTimeoutMs > 600_000L) {
                     throw new IllegalStateException(
-                            "audio.gateway.direct-stt.streaming.terminal-drain-timeout-ms must be in [1,60000]");
+                            "audio.gateway.direct-stt.streaming.ready-timeout-ms must be in [1,600000]");
+                }
+                if (terminalDrainTimeoutMs <= 0L || terminalDrainTimeoutMs > 180_000L) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.terminal-drain-timeout-ms must be in [1,180000]");
                 }
                 if (sourceHistoryMaxBytes < maxFrameBytes
                         || sourceHistoryMaxBytes > 16_777_216) {
@@ -602,6 +607,14 @@ public class AudioGatewayProperties {
 
             public void setMaxTerminalControlBytes(final int maxTerminalControlBytes) {
                 this.maxTerminalControlBytes = maxTerminalControlBytes;
+            }
+
+            public long getReadyTimeoutMs() {
+                return readyTimeoutMs;
+            }
+
+            public void setReadyTimeoutMs(final long readyTimeoutMs) {
+                this.readyTimeoutMs = readyTimeoutMs;
             }
 
             public long getTerminalDrainTimeoutMs() {

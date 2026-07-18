@@ -47,6 +47,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     static final String PATH_PREFIX = "/api/v1/audio-gateway/sessions/";
     static final String PATH_SUFFIX = "/stream";
     static final String UPSTREAM_PROTOCOL = "source-ranges-v1";
+    private static final long TERMINAL_TRANSPORT_MARGIN_MS = 1_000L;
 
     private static final Logger log = LoggerFactory.getLogger(LiveSttWebSocketProxyHandler.class);
 
@@ -185,10 +186,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final int maxFrameBytes = properties.getDirectStt().getStreaming().getMaxFrameBytes();
         final int maxControlBytes = properties.getDirectStt().getStreaming()
                 .getMaxTerminalControlBytes();
+        final Duration readyTimeout = Duration.ofMillis(properties.getDirectStt().getStreaming()
+                .getReadyTimeoutMs());
         final Duration drainTimeout = Duration.ofMillis(properties.getDirectStt().getStreaming()
                 .getTerminalDrainTimeoutMs());
+        final AtomicBoolean readyObserved = new AtomicBoolean();
         final AtomicBoolean eofSent = new AtomicBoolean();
         final AtomicBoolean drainedObserved = new AtomicBoolean();
+        final Sinks.One<Void> upstreamReady = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final LiveTranscriptWindowAccumulator transcriptWindow =
                 new LiveTranscriptWindowAccumulator(properties.getDirectStt().getStreaming()
@@ -269,7 +274,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 })
                 // EOF is terminal for the upload leg even when the client keeps its
                 // inbound socket open while waiting for final/drained events.
-                .takeUntil(message -> message.getType() == WebSocketMessage.Type.TEXT);
+                .takeUntil(message -> message.getType() == WebSocketMessage.Type.TEXT)
+                // The AI endpoint can spend minutes loading pinned models. Do not admit,
+                // account or forward any desktop audio until it proves the exact source
+                // range protocol is ready; otherwise early microphone frames are lost.
+                .delaySubscription(upstreamReady.asMono().timeout(readyTimeout));
 
         final Flux<RelayedEvent> relayedEvents = upstream.receive()
                 .limitRate(1)
@@ -282,6 +291,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         message,
                         record,
                         correlationId,
+                        readyObserved,
+                        upstreamReady,
                         eofSent,
                         drainedObserved,
                         transcriptWindow), 1)
@@ -314,12 +325,32 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final CopiedUpstreamMessage message,
             final SessionRecord record,
             final String correlationId,
+            final AtomicBoolean readyObserved,
+            final Sinks.One<Void> upstreamReady,
             final AtomicBoolean eofSent,
             final AtomicBoolean drainedObserved,
             final LiveTranscriptWindowAccumulator transcriptWindow) {
         if (message instanceof CopiedUpstreamMessage.Text textMessage) {
             final String event = textMessage.value();
             final UpstreamEvent parsed = parseUpstreamEvent(event);
+            if (parsed instanceof UpstreamEvent.Ready ready) {
+                if (!readyObserved.compareAndSet(false, true)) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT emitted duplicate ready event"));
+                }
+                final long persistenceTimeoutMs = properties.getDirectStt()
+                        .getTranscriptResultStream().getDeliveryTotalTimeoutMs();
+                final long requiredDrainMs = Math.addExact(
+                        Math.addExact(ready.terminalTimeoutMs(), persistenceTimeoutMs),
+                        TERMINAL_TRANSPORT_MARGIN_MS);
+                final long configuredDrainMs = properties.getDirectStt().getStreaming()
+                        .getTerminalDrainTimeoutMs();
+                if (configuredDrainMs < requiredDrainMs) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT terminal timeout exceeds gateway drain budget"));
+                }
+                upstreamReady.tryEmitEmpty();
+            }
             if (parsed instanceof UpstreamEvent.Final finalEvent) {
                 final LiveTranscriptWindowAccumulator.Window window =
                         transcriptWindow.take(
@@ -441,6 +472,27 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             throw new IllegalArgumentException("live STT event type is missing");
         }
         final String type = root.path("type").textValue();
+        if ("ready".equals(type)) {
+            final JsonNode capabilities = root.path("capabilities");
+            final boolean hasProtocolCapability = capabilities.isArray()
+                    && java.util.stream.StreamSupport.stream(capabilities.spliterator(), false)
+                            .anyMatch(item -> item.isTextual()
+                                    && UPSTREAM_PROTOCOL.equals(item.textValue()));
+            final JsonNode terminalTimeout = root.path("terminal_timeout_ms");
+            if (!UPSTREAM_PROTOCOL.equals(root.path("protocol").asText())
+                    || !"stable-v1".equals(root.path("partial_mode").asText())
+                    || !root.path("supports_eof").asBoolean(false)
+                    || root.path("sample_rate").asInt(-1) != 16_000
+                    || !hasProtocolCapability
+                    || !terminalTimeout.isIntegralNumber()
+                    || !terminalTimeout.canConvertToLong()
+                    || terminalTimeout.longValue() <= 0L
+                    || terminalTimeout.longValue() > 120_000L) {
+                throw new IllegalArgumentException(
+                        "live STT ready event does not satisfy source range protocol");
+            }
+            return new UpstreamEvent.Ready(terminalTimeout.longValue());
+        }
         if ("drained".equals(type)) {
             return new UpstreamEvent.Drained();
         }
@@ -587,6 +639,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     }
 
     private sealed interface UpstreamEvent {
+        record Ready(long terminalTimeoutMs) implements UpstreamEvent {
+        }
+
         record Final(
                 long sequence,
                 String text,
