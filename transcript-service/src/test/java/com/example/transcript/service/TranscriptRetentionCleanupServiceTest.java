@@ -200,10 +200,20 @@ class TranscriptRetentionCleanupServiceTest {
         assertThat(result.transcriptRecords().deletedCount()).isEqualTo(2);
         assertThat(lockCalls).hasValue(2);
         assertThat(completedTransactions).hasValue(2);
-        assertThat(destructionAuditRepository.findByLayerIdOrderByExecutedAtDesc(
-                TranscriptRetentionCleanupService.LAYER_TRANSCRIPT_RECORDS))
+        List<TranscriptRetentionDestructionAudit> auditRows = destructionAuditRepository
+                .findByLayerIdOrderByExecutedAtDesc(
+                        TranscriptRetentionCleanupService.LAYER_TRANSCRIPT_RECORDS);
+        assertThat(auditRows)
                 .extracting(TranscriptRetentionDestructionAudit::getDeletedCount)
                 .containsExactlyInAnyOrder(1L, 1L);
+        assertThat(result.transcriptRecords().auditIds())
+                .containsExactlyInAnyOrderElementsOf(
+                        auditRows.stream().map(TranscriptRetentionDestructionAudit::getId).toList());
+        assertThat(result.transcriptRecords().auditIds().stream()
+                .map(destructionAuditRepository::findById)
+                .map(optional -> optional.orElseThrow().getDeletedCount())
+                .mapToLong(Long::longValue)
+                .sum()).isEqualTo(result.transcriptRecords().deletedCount());
     }
 
     @Test

@@ -249,14 +249,32 @@ public class TranscriptSessionErasureService {
             }
             return null;
         }
-        TranscriptSessionAssociation source = associations.findSourceForUpdate(
-                        tenantId, meetingId, "DIRECT_STT", sourceSessionId)
-                .orElseThrow(() -> new ResponseStatusException(
-                        HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH"));
-        if (source.getStatus() != TranscriptSessionAssociationStatus.RESOLVED
-                || !sessionId.equals(source.getSessionId())
-                || (canonical.isPresent()
-                    && !canonical.get().getId().equals(source.getId()))) {
+        var source = associations.findSourceForUpdate(
+                tenantId, meetingId, "DIRECT_STT", sourceSessionId);
+        if (source.isEmpty()) {
+            if (canonical.isPresent()) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
+            }
+            return sourceSessionId;
+        }
+
+        TranscriptSessionAssociation sourceAssociation = source.get();
+        if (sourceAssociation.getStatus() == TranscriptSessionAssociationStatus.RESOLVED) {
+            if (!sessionId.equals(sourceAssociation.getSessionId())
+                    || (canonical.isPresent()
+                        && !canonical.get().getId().equals(sourceAssociation.getId()))) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
+            }
+            return sourceSessionId;
+        }
+
+        // The meeting-service canonical session and source alias are authoritative
+        // even when transcript ingestion never created or resolved its projection.
+        // A canonical association already bound to this session would make the
+        // unresolved alias ambiguous, so that case still fails closed.
+        if (sourceAssociation.getSessionId() != null || canonical.isPresent()) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
         }

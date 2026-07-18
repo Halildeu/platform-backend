@@ -18,6 +18,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -99,12 +100,11 @@ public class TranscriptRetentionCleanupService {
         LayerProgress segments = deleteExpiredTranscriptSegments(cutoff, now);
         LayerProgress finalizations = deleteExpiredFinalizations(cutoff, now);
         long deleted = segments.deletedCount() + finalizations.deletedCount();
-        UUID auditId = finalizations.lastAuditId() != null
-                ? finalizations.lastAuditId()
-                : segments.lastAuditId();
-        if (auditId == null) {
-            auditId = inBatchTransaction(() -> writeAudit(
-                    now, LAYER_TRANSCRIPT_RECORDS, JOB_TRANSCRIPT_RECORDS, cutoff, 0));
+        List<UUID> auditIds = new ArrayList<>(segments.auditIds());
+        auditIds.addAll(finalizations.auditIds());
+        if (auditIds.isEmpty()) {
+            auditIds.add(inBatchTransaction(() -> writeAudit(
+                    now, LAYER_TRANSCRIPT_RECORDS, JOB_TRANSCRIPT_RECORDS, cutoff, 0)));
         }
         LOGGER.info(
                 "transcript retention cleanup completed layer={} cutoff={} deletedCount={} jobId={}",
@@ -112,17 +112,17 @@ public class TranscriptRetentionCleanupService {
                 cutoff,
                 deleted,
                 JOB_TRANSCRIPT_RECORDS);
-        return new LayerCleanupResult(LAYER_TRANSCRIPT_RECORDS, cutoff, deleted, auditId);
+        return new LayerCleanupResult(LAYER_TRANSCRIPT_RECORDS, cutoff, deleted, auditIds);
     }
 
     private LayerCleanupResult cleanupAccessLog(Instant now) {
         Instant cutoff = now.minus(Duration.ofDays(accessAuditRetentionDays));
         LayerProgress progress = deleteExpiredAccessAuditRows(cutoff, now);
         long deleted = progress.deletedCount();
-        UUID auditId = progress.lastAuditId();
-        if (auditId == null) {
-            auditId = inBatchTransaction(() -> writeAudit(
-                    now, LAYER_KVKK_ACCESS_LOG, JOB_KVKK_ACCESS_LOG, cutoff, 0));
+        List<UUID> auditIds = new ArrayList<>(progress.auditIds());
+        if (auditIds.isEmpty()) {
+            auditIds.add(inBatchTransaction(() -> writeAudit(
+                    now, LAYER_KVKK_ACCESS_LOG, JOB_KVKK_ACCESS_LOG, cutoff, 0)));
         }
         LOGGER.info(
                 "transcript retention cleanup completed layer={} cutoff={} deletedCount={} jobId={}",
@@ -130,7 +130,7 @@ public class TranscriptRetentionCleanupService {
                 cutoff,
                 deleted,
                 JOB_KVKK_ACCESS_LOG);
-        return new LayerCleanupResult(LAYER_KVKK_ACCESS_LOG, cutoff, deleted, auditId);
+        return new LayerCleanupResult(LAYER_KVKK_ACCESS_LOG, cutoff, deleted, auditIds);
     }
 
     private LayerProgress deleteExpiredTranscriptSegments(Instant cutoff, Instant destroyedAt) {
@@ -295,8 +295,11 @@ public class TranscriptRetentionCleanupService {
             String layerId,
             Instant cutoffAt,
             long deletedCount,
-            UUID auditId
+            List<UUID> auditIds
     ) {
+        public LayerCleanupResult {
+            auditIds = List.copyOf(auditIds);
+        }
     }
 
     private record BatchResult(boolean processed, int deletedCount, UUID auditId) {
@@ -305,13 +308,16 @@ public class TranscriptRetentionCleanupService {
         }
     }
 
-    private record LayerProgress(long deletedCount, UUID lastAuditId) {
+    private record LayerProgress(long deletedCount, List<UUID> auditIds) {
         private static LayerProgress empty() {
-            return new LayerProgress(0, null);
+            return new LayerProgress(0, List.of());
         }
 
         private LayerProgress append(BatchResult result) {
-            return new LayerProgress(deletedCount + result.deletedCount(), result.auditId());
+            List<UUID> appended = new ArrayList<>(auditIds);
+            appended.add(result.auditId());
+            return new LayerProgress(
+                    deletedCount + result.deletedCount(), List.copyOf(appended));
         }
     }
 }

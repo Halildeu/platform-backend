@@ -206,6 +206,21 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Test
+    void erasureWithoutAssociationCreatesPermanentCanonicalAndSourceFence() {
+        assertErasureWithoutResolvedAssociation("SES-never-ingested", null);
+    }
+
+    @Test
+    void erasureWithPendingAssociationCreatesPermanentCanonicalAndSourceFence() {
+        assertErasureWithoutResolvedAssociation("SES-pending-erasure", "PENDING");
+    }
+
+    @Test
+    void erasureWithDeadAssociationCreatesPermanentCanonicalAndSourceFence() {
+        assertErasureWithoutResolvedAssociation("SES-dead-erasure", "DEAD");
+    }
+
+    @Test
     void erasureDeletesFinishedInboxAndRejectsDelayedFinishedEvent() {
         String sourceSession = "SES-finished-erased";
         String eventKey = "meeting.recording|" + SESSION + "|meeting.recording.finished|1";
@@ -716,6 +731,28 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     private void insertResolvedAssociation() {
         insertAssociation(UUID.randomUUID(), TENANT, MEETING, "SES-42", SESSION,
                 "RESOLVED", null, 0);
+    }
+
+    private void assertErasureWithoutResolvedAssociation(String sourceSession, String status) {
+        if (status != null) {
+            insertAssociation(UUID.randomUUID(), TENANT, MEETING, sourceSession, null,
+                    status, null, 0);
+        }
+
+        var erased = erasureService.erase(TENANT, MEETING, SESSION, sourceSession);
+
+        assertThat(erased.status())
+                .isEqualTo(com.example.transcript.model.TranscriptSessionErasureStatus.COMPLETE);
+        assertThat(erasureTombstones.existsByTenantIdAndMeetingIdAndSessionId(
+                TENANT, MEETING, SESSION)).isTrue();
+        assertThat(erasureTombstones.existsByTenantIdAndMeetingIdAndSourceSessionHash(
+                TENANT, MEETING, SessionErasureFence.sourceHash(sourceSession))).isTrue();
+        assertThat(associations.findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
+                TENANT, MEETING, DirectSttTranscriptResultEvent.SOURCE_SYSTEM, sourceSession))
+                .isEmpty();
+        assertThatThrownBy(() -> associationStore.ensurePending(
+                        UUID.randomUUID(), TENANT, MEETING, sourceSession, Instant.now()))
+                .isInstanceOf(SessionErasureFence.SessionErasedException.class);
     }
 
     private UUID insertQuiescingAssociation(boolean deadlineExpired) {
