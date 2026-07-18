@@ -61,6 +61,7 @@ import org.springframework.test.web.servlet.MvcResult;
         "security.service-mint.allowed-audiences=meeting-service",
         "security.service-mint.allowed-permissions=meeting:analysis-result:write,meeting:session:resolve,permissions:read",
         "security.service-mint.rate-limit-per-minute=100",
+        "security.service-mint.failed-auth-rate-limit-per-minute=1000",
         "auth.impersonation.keycloak-token-url=http://localhost:9999/token",
         "auth.impersonation.keycloak-broker-url=http://localhost:9999/broker",
         "spring.datasource.url=jdbc:h2:mem:maitok;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE",
@@ -125,19 +126,32 @@ class MeetingAiServiceTokenMintTest {
     }
 
     @Test
-    void servicePermissionsRemainClientLocalAcrossSharedAudience() throws Exception {
+    void transcriptService_wrongAudience_isRejected() throws Exception {
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("transcript-service", "transcript-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .content("grant_type=client_credentials&audience=not-allowed"
+                                + "&permissions=meeting:session:resolve"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_audience"));
+    }
+
+    @Test
+    void servicePermissionsRemainBoundToTheirExactClientAcrossSharedAudience() throws Exception {
         mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("transcript-service", "transcript-secret"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=meeting-service"
                                 + "&permissions=meeting:analysis-result:write"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_permission"));
         mockMvc.perform(post("/oauth2/token")
                         .header("Authorization", basic("meeting-ai", "test-secret"))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=meeting-service"
                                 + "&permissions=meeting:session:resolve"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_permission"));
     }
 
     @Test
@@ -192,13 +206,14 @@ class MeetingAiServiceTokenMintTest {
     }
 
     @Test
-    void blankPresentedSecret_isRejected() throws Exception {
+    void transcriptService_blankPresentedSecret_isRejected() throws Exception {
         mockMvc.perform(post("/oauth2/token")
-                        .header("Authorization", basic("meeting-ai", ""))
+                        .header("Authorization", basic("transcript-service", ""))
                         .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                         .content("grant_type=client_credentials&audience=meeting-service"
-                                + "&permissions=meeting:analysis-result:write"))
-                .andExpect(status().isUnauthorized());
+                                + "&permissions=meeting:session:resolve"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error").value("invalid_client"));
     }
 
     @Test

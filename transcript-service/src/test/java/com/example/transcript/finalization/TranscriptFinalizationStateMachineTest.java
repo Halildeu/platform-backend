@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.transcript.model.TranscriptFinalizationState;
 import com.example.transcript.model.TranscriptSessionAssociation;
+import java.time.Duration;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
@@ -14,7 +15,16 @@ class TranscriptFinalizationStateMachineTest {
             new TranscriptFinalizationStateMachine(new TranscriptFinalizationProperties());
 
     @Test
-    void recordingFinishedStartsBoundedCycleAfterObservedLateResultWindow() {
+    void defaultTimingContractIsExactlyPt6mPt1mPt15m() {
+        TranscriptFinalizationProperties properties = new TranscriptFinalizationProperties();
+
+        assertThat(properties.getTiming().getMinWait()).isEqualTo(Duration.ofMinutes(6));
+        assertThat(properties.getTiming().getQuiescence()).isEqualTo(Duration.ofMinutes(1));
+        assertThat(properties.getTiming().getMaxWait()).isEqualTo(Duration.ofMinutes(15));
+    }
+
+    @Test
+    void recordingFinishedStartsExactPt6mToPt15mBoundedCycle() {
         TranscriptSessionAssociation association = association(TranscriptFinalizationState.AWAITING_FINISH, 0, 0);
         Instant finishedAt = Instant.parse("2026-07-17T10:00:00.123456789Z");
         Instant observedAt = Instant.parse("2026-07-17T10:00:10.987654321Z");
@@ -28,22 +38,40 @@ class TranscriptFinalizationStateMachineTest {
         assertThat(association.getFinalizationState()).isEqualTo(TranscriptFinalizationState.QUIESCING);
         assertThat(association.getFinalizationCycleVersion()).isEqualTo(1);
         assertThat(association.getMinWaitAt())
-                .isEqualTo(Instant.parse("2026-07-17T10:06:10.987654Z"));
+                .isEqualTo(observedAt.truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+                        .plus(Duration.ofMinutes(6)));
         assertThat(association.getMaxWaitAt())
-                .isEqualTo(Instant.parse("2026-07-17T10:15:10.987654Z"));
+                .isEqualTo(observedAt.truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+                        .plus(Duration.ofMinutes(15)));
         assertThat(association.getQuiescenceDueAt()).isEqualTo(association.getMinWaitAt());
     }
 
     @Test
-    void distinctLateContentMovesDueButNeverBeyondCycleDeadline() {
+    void lateContentAfterMinWaitRequiresExactlyPt1mOfQuiescence() {
+        TranscriptSessionAssociation association = association(TranscriptFinalizationState.AWAITING_FINISH, 0, 0);
+        Instant observedAt = Instant.parse("2026-07-17T10:00:00Z");
+        stateMachine.observeRecordingFinished(association, observedAt, observedAt);
+        Instant lateContentAt = observedAt.plus(Duration.ofMinutes(7));
+
+        stateMachine.recordDistinctContent(association, lateContentAt);
+
+        assertThat(association.getMinWaitAt()).isEqualTo(observedAt.plus(Duration.ofMinutes(6)));
+        assertThat(association.getQuiescenceDueAt()).isEqualTo(lateContentAt.plus(Duration.ofMinutes(1)));
+        assertThat(association.getMaxWaitAt()).isEqualTo(observedAt.plus(Duration.ofMinutes(15)));
+    }
+
+    @Test
+    void lateContentCannotExtendTheExactPt15mCap() {
         TranscriptSessionAssociation association = association(TranscriptFinalizationState.AWAITING_FINISH, 0, 0);
         Instant observedAt = Instant.parse("2026-07-17T10:00:00Z");
         stateMachine.observeRecordingFinished(association, observedAt, observedAt);
 
-        stateMachine.recordDistinctContent(association, observedAt.plusSeconds(14 * 60 + 45));
+        Instant lateContentAt = observedAt.plus(Duration.ofMinutes(15)).plusNanos(1_000);
+        stateMachine.recordDistinctContent(association, lateContentAt);
 
-        assertThat(association.getLastContentChangedAt()).isEqualTo(observedAt.plusSeconds(14 * 60 + 45));
-        assertThat(association.getQuiescenceDueAt()).isEqualTo(observedAt.plusSeconds(15 * 60));
+        assertThat(association.getLastContentChangedAt()).isEqualTo(lateContentAt);
+        assertThat(association.getQuiescenceDueAt()).isEqualTo(observedAt.plus(Duration.ofMinutes(15)));
+        assertThat(association.getMaxWaitAt()).isEqualTo(observedAt.plus(Duration.ofMinutes(15)));
     }
 
     @Test
