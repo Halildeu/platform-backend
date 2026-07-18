@@ -1,5 +1,10 @@
 # k8s overlay — testai.acik.com + ai.acik.com Keycloak realm
 spring:
+  data:
+    redis:
+      # Uses the same bound as one transcript delivery attempt; the outer total
+      # deadline still owns retries and release of connection-local audio.
+      timeout: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_DELIVERY_ATTEMPT_TIMEOUT_MS:2000}ms
   security:
     oauth2:
       resourceserver:

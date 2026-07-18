@@ -86,7 +86,7 @@ class LiveSttWebSocketProxyHandlerTest {
         handler.handle(client).block();
 
         verify(upstreamClient).execute(
-                eq(URI.create("ws://live-stt:8200/ws/stream")),
+                eq(URI.create("ws://live-stt:8200/ws/stream?protocol=source-ranges-v1")),
                 any(WebSocketHandler.class));
         verify(client, never()).close(CloseStatus.POLICY_VIOLATION);
     }

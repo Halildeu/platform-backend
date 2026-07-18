@@ -4,6 +4,11 @@
 spring:
   application:
     name: audio-gateway-service
+  data:
+    redis:
+      # Keep blocking XADD/XREAD calls below the transcript delivery attempt
+      # deadline so a cancelled Reactor task cannot retain a native Redis call.
+      timeout: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_DELIVERY_ATTEMPT_TIMEOUT_MS:2000}ms
   threads:
     virtual:
       enabled: true

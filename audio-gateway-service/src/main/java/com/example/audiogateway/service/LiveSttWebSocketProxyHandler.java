@@ -24,24 +24,29 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.reactive.socket.client.WebSocketClient;
+import org.springframework.web.util.UriComponentsBuilder;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
+import reactor.util.retry.Retry;
 
 /**
  * Authenticated, bounded, in-flight-only gateway bridge to live-stt /ws/stream.
  */
-public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
+public class LiveSttWebSocketProxyHandler implements WebSocketHandler, DisposableBean {
 
     static final String PATH_PREFIX = "/api/v1/audio-gateway/sessions/";
     static final String PATH_SUFFIX = "/stream";
+    static final String UPSTREAM_PROTOCOL = "source-ranges-v1";
 
     private static final Logger log = LoggerFactory.getLogger(LiveSttWebSocketProxyHandler.class);
 
@@ -52,6 +57,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
     private final WebSocketClient upstreamClient;
     private final URI upstreamUri;
     private final ObjectMapper objectMapper;
+    private final Scheduler transcriptSinkScheduler;
     private final Set<String> activeSessions = ConcurrentHashMap.newKeySet();
     private final Counter acceptedFrames;
     private final Counter duplicateFrames;
@@ -73,8 +79,17 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
         this.auditSink = auditSink;
         this.transcriptResultSink = transcriptResultSink;
         this.upstreamClient = upstreamClient;
-        this.upstreamUri = URI.create(properties.getDirectStt().getStreaming().getStreamUrl());
+        this.upstreamUri = UriComponentsBuilder
+                .fromUriString(properties.getDirectStt().getStreaming().getStreamUrl())
+                .queryParam("protocol", UPSTREAM_PROTOCOL)
+                .build(true)
+                .toUri();
         this.objectMapper = objectMapper;
+        final int sinkConcurrency = Math.max(1, properties.getDirectStt().getMaxInFlight());
+        this.transcriptSinkScheduler = Schedulers.newBoundedElastic(
+                sinkConcurrency,
+                Math.max(6, sinkConcurrency * 6),
+                "live-stt-transcript-sink");
         this.acceptedFrames = meters.counter("audio_gateway_live_stream_frames_total", "outcome", "accepted");
         this.duplicateFrames = meters.counter("audio_gateway_live_stream_frames_total", "outcome", "duplicate");
         this.rejectedFrames = meters.counter("audio_gateway_live_stream_frames_total", "outcome", "rejected");
@@ -85,6 +100,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                 "audio_gateway_live_stream_transcript_results_total", "outcome", "failed");
         Gauge.builder("audio_gateway_live_stream_connections", activeSessions, Set::size)
                 .register(meters);
+    }
+
+    @Override
+    public void destroy() {
+        transcriptSinkScheduler.dispose();
     }
 
     @Override
@@ -318,8 +338,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                         null);
                 final DirectSttTranscriptResultContext context =
                         liveTranscriptContext(record, correlationId, finalEvent.reason(), window);
-                return Mono.fromRunnable(() -> transcriptResultSink.emit(result, context))
-                        .subscribeOn(Schedulers.boundedElastic())
+                return persistLiveTranscriptResult(result, context)
                         .doOnSuccess(ignored -> transcriptResultSuccess.increment())
                         .doOnError(error -> {
                             transcriptResultFailures.increment();
@@ -344,6 +363,25 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                     client.pingMessage(factory -> factory.wrap(ping.payload())), false));
         }
         return Mono.empty();
+    }
+
+    private Mono<Void> persistLiveTranscriptResult(
+            final TranscriptResult result,
+            final DirectSttTranscriptResultContext context) {
+        final var delivery = properties.getDirectStt().getTranscriptResultStream();
+        final Duration attemptTimeout = Duration.ofMillis(delivery.getDeliveryAttemptTimeoutMs());
+        final Duration totalTimeout = Duration.ofMillis(delivery.getDeliveryTotalTimeoutMs());
+        return Mono.defer(() -> Mono
+                        .fromRunnable(() -> transcriptResultSink.emit(result, context))
+                        .subscribeOn(transcriptSinkScheduler)
+                        .timeout(attemptTimeout))
+                .retryWhen(Retry.backoff(5, Duration.ofMillis(100))
+                        .maxBackoff(Duration.ofSeconds(2))
+                        .jitter(0.2d))
+                // Bounds retry backoff and releases the bridge's connection-local PCM history.
+                // The Redis client command timeout remains the lower-level blocking-call guard.
+                .timeout(totalTimeout)
+                .then();
     }
 
     private CopiedUpstreamMessage copyUpstreamMessage(final WebSocketMessage message) {

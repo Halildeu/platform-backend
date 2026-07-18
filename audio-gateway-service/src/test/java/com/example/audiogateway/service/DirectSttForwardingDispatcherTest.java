@@ -520,6 +520,7 @@ class DirectSttForwardingDispatcherTest {
                     .isInstanceOf(DispatchOutcome.Accepted.class);
             assertThat(enteredSink.await(2, TimeUnit.SECONDS)).isTrue();
             awaitCounter(meters, "transcript_delivery_failed", 1.0);
+            awaitInFlightDrained(meters, 1);
 
             server.enqueue(new MockResponse()
                     .setHeader("Content-Type", "application/json")
@@ -527,6 +528,10 @@ class DirectSttForwardingDispatcherTest {
             assertThat(dispatcher.dispatch(command(new byte[] {1, 2, 3, 4})))
                     .as("the first hung XADD must not retain the sole in-flight permit")
                     .isInstanceOf(DispatchOutcome.Accepted.class);
+            assertThat(server.takeRequest(5, TimeUnit.SECONDS))
+                    .as("the second forward must really cross the released permit")
+                    .isNotNull();
+            assertThat(counter(meters, "dropped_saturation")).isZero();
             assertThat(counter(meters, "success")).isZero();
             assertThat(counter(meters, "transcript_sink_success")).isZero();
         } finally {

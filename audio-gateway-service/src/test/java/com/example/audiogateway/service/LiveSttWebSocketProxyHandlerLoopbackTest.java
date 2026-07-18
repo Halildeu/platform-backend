@@ -27,7 +27,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -512,6 +514,89 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                         "audio_gateway_live_stream_transcript_results_total",
                         "outcome", "failed").count())
                 .isEqualTo(1.0d);
+    }
+
+    @Test
+    void transcriptPersistenceThatNeverReturnsClosesAtDeliveryDeadline() throws Exception {
+        upstreamServer = HttpServer.create()
+                .host("127.0.0.1")
+                .port(0)
+                .route(routes -> routes.ws("/ws/stream", (in, out) ->
+                        out.sendString(in.receiveFrames()
+                                .ofType(BinaryWebSocketFrame.class)
+                                .map(frame -> "{\"type\":\"final\",\"seq\":0,"
+                                        + "\"text\":\"must-not-leak\","
+                                        + "\"reason\":\"window\",\"elapsed_ms\":12,"
+                                        + "\"source_start_sample\":0,"
+                                        + "\"source_end_sample\":2}"))))
+                .bindNow();
+
+        final AudioGatewayProperties properties = new AudioGatewayProperties();
+        properties.getDirectStt().getStreaming().setEnabled(true);
+        properties.getDirectStt().getStreaming().setStreamUrl(
+                "ws://127.0.0.1:" + upstreamServer.port() + "/ws/stream");
+        properties.getDirectStt().getTranscriptResultStream().setDeliveryAttemptTimeoutMs(50L);
+        properties.getDirectStt().getTranscriptResultStream().setDeliveryTotalTimeoutMs(150L);
+        final CountDownLatch enteredSink = new CountDownLatch(1);
+        final CountDownLatch releaseSink = new CountDownLatch(1);
+        final DirectSttTranscriptResultSink hangingSink = (result, context) -> {
+            enteredSink.countDown();
+            try {
+                releaseSink.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        final LiveSttWebSocketProxyHandler handler = new LiveSttWebSocketProxyHandler(
+                sessions, properties, auditSink, hangingSink,
+                upstreamClient, new ObjectMapper(), meters);
+        when(sessions.get("session-1")).thenReturn(Optional.of(streamingSession(1L, 4L)));
+
+        final NettyDataBufferFactory clientFactory =
+                new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
+        final Sinks.Many<WebSocketMessage> clientInbound =
+                Sinks.many().unicast().onBackpressureBuffer();
+        final List<String> relayedText = new CopyOnWriteArrayList<>();
+        final AtomicReference<CloseStatus> closeStatus = new AtomicReference<>();
+        final WebSocketSession client = mock(WebSocketSession.class);
+        when(client.getHandshakeInfo()).thenReturn(new HandshakeInfo(
+                URI.create("ws://gateway/api/v1/audio-gateway/sessions/session-1/stream"),
+                new HttpHeaders(), Mono.just(ownerJwt()), null));
+        when(client.receive()).thenReturn(clientInbound.asFlux());
+        when(client.textMessage(anyString())).thenAnswer(invocation ->
+                textFrame(clientFactory, invocation.getArgument(0)));
+        when(client.send(any(Publisher.class))).thenAnswer(invocation ->
+                Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0))
+                        .doOnNext(message -> relayedText.add(message.getPayloadAsText()))
+                        .then());
+        when(client.close(any(CloseStatus.class))).thenAnswer(invocation -> {
+            closeStatus.set(invocation.getArgument(0));
+            return Mono.empty();
+        });
+
+        try {
+            handleSubscription = handler.handle(client).subscribe();
+            clientInbound.emitNext(binaryFrame(clientFactory, 0L), Sinks.EmitFailureHandler.FAIL_FAST);
+            assertThat(enteredSink.await(2, TimeUnit.SECONDS)).isTrue();
+
+            final Instant deadline = Instant.now().plusSeconds(2);
+            while (Instant.now().isBefore(deadline) && closeStatus.get() == null) {
+                sleepQuietly();
+            }
+
+            assertThat(closeStatus.get()).isEqualTo(CloseStatus.SERVER_ERROR);
+            assertThat(relayedText).isEmpty();
+            assertThat(meters.counter(
+                            "audio_gateway_live_stream_transcript_results_total",
+                            "outcome", "persisted").count())
+                    .isZero();
+            assertThat(meters.counter(
+                            "audio_gateway_live_stream_transcript_results_total",
+                            "outcome", "failed").count())
+                    .isEqualTo(1.0d);
+        } finally {
+            releaseSink.countDown();
+        }
     }
 
     @Test

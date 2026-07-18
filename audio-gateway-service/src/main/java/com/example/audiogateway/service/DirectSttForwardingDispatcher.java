@@ -139,11 +139,11 @@ public class DirectSttForwardingDispatcher
         // the real in-flight cap, this just hands work off the monitor thread.
         this.forwardScheduler = Schedulers.newBoundedElastic(
                 Math.max(1, cfg.getMaxInFlight()),
-                Integer.MAX_VALUE,
+                Math.max(1, cfg.getMaxInFlight()),
                 "direct-stt-forward");
         this.transcriptSinkScheduler = Schedulers.newBoundedElastic(
                 Math.max(1, cfg.getMaxInFlight()),
-                Integer.MAX_VALUE,
+                Math.max(6, cfg.getMaxInFlight() * 6),
                 "direct-stt-transcript-sink");
         // In-flight gauge from the semaphore (used permits = configured - available).
         meters.gauge(METRIC_PREFIX + "in_flight", this,
