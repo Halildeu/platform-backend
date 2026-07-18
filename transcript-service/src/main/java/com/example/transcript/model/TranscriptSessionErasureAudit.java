@@ -25,6 +25,8 @@ public class TranscriptSessionErasureAudit {
     private int finalizationDeletedCount;
     @Column(name = "association_deleted_count", nullable = false, updatable = false)
     private int associationDeletedCount;
+    @Column(name = "inbox_deleted_count", nullable = false, updatable = false)
+    private int inboxDeletedCount;
     @Column(name = "audit_payload", nullable = false, length = 32, updatable = false)
     private String auditPayload = "metadata-only";
     @Column(name = "executed_at", nullable = false, updatable = false)
@@ -42,6 +44,8 @@ public class TranscriptSessionErasureAudit {
     public void setFinalizationDeletedCount(int value) { this.finalizationDeletedCount = value; }
     public int getAssociationDeletedCount() { return associationDeletedCount; }
     public void setAssociationDeletedCount(int value) { this.associationDeletedCount = value; }
+    public int getInboxDeletedCount() { return inboxDeletedCount; }
+    public void setInboxDeletedCount(int value) { this.inboxDeletedCount = value; }
     public String getAuditPayload() { return auditPayload; }
     public void setAuditPayload(String auditPayload) { this.auditPayload = auditPayload; }
     public Instant getExecutedAt() { return executedAt; }

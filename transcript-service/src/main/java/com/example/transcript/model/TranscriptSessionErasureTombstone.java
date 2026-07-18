@@ -35,6 +35,8 @@ public class TranscriptSessionErasureTombstone {
     private int finalizationDeletedCount;
     @Column(name = "association_deleted_count", nullable = false)
     private int associationDeletedCount;
+    @Column(name = "inbox_deleted_count", nullable = false)
+    private int inboxDeletedCount;
     @Column(name = "requested_at", nullable = false, updatable = false)
     private Instant requestedAt;
     @Column(name = "completed_at")
@@ -65,6 +67,8 @@ public class TranscriptSessionErasureTombstone {
     public void setFinalizationDeletedCount(int value) { this.finalizationDeletedCount = value; }
     public int getAssociationDeletedCount() { return associationDeletedCount; }
     public void setAssociationDeletedCount(int value) { this.associationDeletedCount = value; }
+    public int getInboxDeletedCount() { return inboxDeletedCount; }
+    public void setInboxDeletedCount(int value) { this.inboxDeletedCount = value; }
     public Instant getRequestedAt() { return requestedAt; }
     public void setRequestedAt(Instant requestedAt) { this.requestedAt = requestedAt; }
     public Instant getCompletedAt() { return completedAt; }

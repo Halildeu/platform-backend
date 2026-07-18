@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -52,6 +53,8 @@ class TranscriptRetentionCleanupServiceTest {
     private TranscriptSourceRetentionFenceRepository sourceRetentionFenceRepository;
     @Autowired
     private EntityManager entityManager;
+    @MockitoBean
+    private SessionErasureFence advisoryLocks;
 
     @Test
     void cleanupDeletesExpiredTranscriptAndAccessRowsWithMetadataOnlyAudit() {
@@ -79,6 +82,8 @@ class TranscriptRetentionCleanupServiceTest {
                         freshSegment.getTenantId(), freshSegment.getMeetingId(),
                         SessionErasureFence.sourceHash(freshSegment.getSourceSessionId()), 1L))
                 .isFalse();
+        assertThat(sourceRetentionFenceRepository.findAll().getFirst().getRetainedAt())
+                .isEqualTo(NOW);
 
         List<TranscriptRetentionDestructionAudit> transcriptAudits = destructionAuditRepository
                 .findByLayerIdOrderByExecutedAtDesc(TranscriptRetentionCleanupService.LAYER_TRANSCRIPT_RECORDS);

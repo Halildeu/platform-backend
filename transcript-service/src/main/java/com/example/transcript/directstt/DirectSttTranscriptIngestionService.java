@@ -52,7 +52,7 @@ public class DirectSttTranscriptIngestionService {
                 SessionErasureFence.sourceKey(
                         event.tenantId(), event.meetingId(), event.sourceSessionId()));
         erasureFence.rejectErased(scope, event.sourceSessionId());
-        retentionFence.rejectRetained(
+        retentionFence.lockAndRejectRetained(
                 event.tenantId(), event.meetingId(), event.sourceSessionId(), event.windowSeq());
         TranscriptSessionAssociation association = associations.findSourceForUpdate(
                         event.tenantId(), event.meetingId(), DirectSttTranscriptResultEvent.SOURCE_SYSTEM,

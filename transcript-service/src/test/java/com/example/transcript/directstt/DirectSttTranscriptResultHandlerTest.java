@@ -6,9 +6,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doThrow;
 
 import java.util.Map;
 import java.util.UUID;
+import com.example.transcript.service.SourceWindowRetentionFence;
 import org.junit.jupiter.api.Test;
 
 class DirectSttTranscriptResultHandlerTest {
@@ -62,5 +64,19 @@ class DirectSttTranscriptResultHandlerTest {
         assertThat(outcome.reason()).contains("chunkSeq").doesNotContain("secret transcript phrase");
         verify(associationService, never()).resolve(any(DirectSttTranscriptResultEvent.class));
         verify(ingestionService, never()).upsert(any(), any());
+    }
+
+    @Test
+    void retainedReplayIsTerminalSoConsumerCanDlqAndAck() {
+        UUID canonicalSessionId = UUID.randomUUID();
+        when(associationService.resolve(any(DirectSttTranscriptResultEvent.class)))
+                .thenReturn(TranscriptSessionAssociationService.Outcome.resolved(canonicalSessionId));
+        doThrow(new SourceWindowRetentionFence.SourceWindowRetainedException())
+                .when(ingestionService).upsert(any(), org.mockito.ArgumentMatchers.eq(canonicalSessionId));
+
+        var outcome = handler.handle(DirectSttTranscriptResultEventTest.validFields(), "1-0");
+
+        assertThat(outcome.result()).isEqualTo(DirectSttTranscriptResultHandler.Result.DEAD);
+        assertThat(outcome.reason()).isEqualTo("SourceWindowRetainedException");
     }
 }

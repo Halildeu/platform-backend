@@ -14,6 +14,7 @@ import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.repository.TranscriptMeetingEventInboxRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -39,12 +40,14 @@ class RecordingFinishedEventProcessorTest {
             mock(TranscriptSessionAssociationRepository.class);
     private final TranscriptFinalizationStateMachine stateMachine =
             mock(TranscriptFinalizationStateMachine.class);
+    private final SessionErasureFence erasureFence = mock(SessionErasureFence.class);
     private RecordingFinishedEventProcessor processor;
 
     @BeforeEach
     void setUp() {
         processor = new RecordingFinishedEventProcessor(
-                inbox, associations, stateMachine, Clock.fixed(NOW, ZoneOffset.UTC));
+                inbox, associations, stateMachine, erasureFence,
+                Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     @Test

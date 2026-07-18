@@ -11,6 +11,7 @@ CREATE TABLE transcript_session_erasure_tombstones (
     segment_deleted_count   INTEGER      NOT NULL DEFAULT 0,
     finalization_deleted_count INTEGER   NOT NULL DEFAULT 0,
     association_deleted_count INTEGER    NOT NULL DEFAULT 0,
+    inbox_deleted_count       INTEGER    NOT NULL DEFAULT 0,
     requested_at            TIMESTAMPTZ  NOT NULL,
     completed_at            TIMESTAMPTZ,
     updated_at              TIMESTAMPTZ  NOT NULL,
@@ -23,7 +24,7 @@ CREATE TABLE transcript_session_erasure_tombstones (
         CHECK (status IN ('READY', 'HELD', 'COMPLETE')),
     CONSTRAINT transcript_erasure_tombstone_counts
         CHECK (segment_deleted_count >= 0 AND finalization_deleted_count >= 0
-            AND association_deleted_count >= 0),
+            AND association_deleted_count >= 0 AND inbox_deleted_count >= 0),
     CONSTRAINT transcript_erasure_tombstone_completion
         CHECK ((status = 'COMPLETE' AND completed_at IS NOT NULL)
             OR (status IN ('READY', 'HELD') AND completed_at IS NULL)),
@@ -42,13 +43,14 @@ CREATE TABLE transcript_session_erasure_audit (
     segment_deleted_count       INTEGER      NOT NULL DEFAULT 0,
     finalization_deleted_count  INTEGER      NOT NULL DEFAULT 0,
     association_deleted_count   INTEGER      NOT NULL DEFAULT 0,
+    inbox_deleted_count         INTEGER      NOT NULL DEFAULT 0,
     audit_payload               VARCHAR(32)  NOT NULL DEFAULT 'metadata-only',
     executed_at                 TIMESTAMPTZ  NOT NULL,
     CONSTRAINT transcript_session_erasure_audit_state
         CHECK (state IN ('READY', 'HELD', 'COMPLETE')),
     CONSTRAINT transcript_session_erasure_audit_counts
         CHECK (segment_deleted_count >= 0 AND finalization_deleted_count >= 0
-            AND association_deleted_count >= 0),
+            AND association_deleted_count >= 0 AND inbox_deleted_count >= 0),
     CONSTRAINT transcript_session_erasure_audit_payload
         CHECK (audit_payload = 'metadata-only')
 );

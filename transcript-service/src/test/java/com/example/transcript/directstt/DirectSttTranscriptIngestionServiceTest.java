@@ -113,7 +113,7 @@ class DirectSttTranscriptIngestionServiceTest {
     @Test
     void retentionFenceRejectsDestroyedWindowBeforeAssociationOrSegmentMutation() {
         doThrow(new SourceWindowRetentionFence.SourceWindowRetainedException())
-                .when(retentionFence).rejectRetained(TENANT, MEETING, "SES-abc", 2L);
+                .when(retentionFence).lockAndRejectRetained(TENANT, MEETING, "SES-abc", 2L);
 
         assertThatThrownBy(() -> service.upsert(
                 event("1-0", 2L, 3L, 5L, "draft"), SESSION))

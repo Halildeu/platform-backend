@@ -16,6 +16,7 @@ import com.example.transcript.model.TranscriptSessionErasureAudit;
 import com.example.transcript.model.TranscriptSessionErasureStatus;
 import com.example.transcript.model.TranscriptSessionErasureTombstone;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
+import com.example.transcript.repository.TranscriptMeetingEventInboxRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.repository.TranscriptSessionErasureAuditRepository;
@@ -46,6 +47,7 @@ class TranscriptSessionErasureServiceTest {
     @Mock private TranscriptSessionAssociationRepository associations;
     @Mock private TranscriptFinalizationRepository finalizations;
     @Mock private TranscriptSegmentRepository segments;
+    @Mock private TranscriptMeetingEventInboxRepository meetingEventInbox;
     @Mock private SessionErasureFence fence;
     @Mock private TranscriptSessionErasureTombstoneStore tombstoneStore;
 
@@ -55,7 +57,7 @@ class TranscriptSessionErasureServiceTest {
     @BeforeEach
     void setUp() {
         service = new TranscriptSessionErasureService(
-                tombstones, audits, associations, finalizations, segments,
+                tombstones, audits, associations, finalizations, segments, meetingEventInbox,
                 fence, tombstoneStore, Clock.fixed(NOW, ZoneOffset.UTC));
         tombstone = tombstone(TranscriptSessionErasureStatus.READY);
         lenient().when(tombstones.findSessionForUpdate(TENANT, MEETING, SESSION))
@@ -110,11 +112,13 @@ class TranscriptSessionErasureServiceTest {
         when(segments.deleteCanonicalErasureScope(TENANT, MEETING, SESSION)).thenReturn(2);
         when(segments.deleteLegacySourceErasureScope(TENANT, MEETING, "REC-42")).thenReturn(3);
         when(associations.deleteErasureScope(TENANT, MEETING, SESSION, "REC-42")).thenReturn(1);
+        when(meetingEventInbox.deleteErasureScope(TENANT, MEETING, SESSION, "REC-42"))
+                .thenReturn(1);
 
         var result = service.erase(TENANT, MEETING, SESSION, "REC-42");
 
         assertThat(result.status()).isEqualTo(TranscriptSessionErasureStatus.COMPLETE);
-        assertThat(result.deletedCount()).isEqualTo(7);
+        assertThat(result.deletedCount()).isEqualTo(8);
         assertThat(tombstone.getCompletedAt()).isEqualTo(NOW);
         verify(finalizations).existsLegalHoldForErasure(TENANT, MEETING, SESSION);
         verify(audits).save(any(TranscriptSessionErasureAudit.class));
@@ -127,16 +131,17 @@ class TranscriptSessionErasureServiceTest {
         tombstone.setCompletedAt(NOW.minusSeconds(1));
         when(tombstones.findSessionForUpdate(TENANT, MEETING, SESSION))
                 .thenReturn(Optional.of(tombstone));
-
         var result = service.erase(TENANT, MEETING, SESSION, "REC-42");
 
         assertThat(result.deletedCount()).isEqualTo(2);
         verify(finalizations, never()).findErasureScopeForUpdate(any(), any(), any());
         verify(segments, never()).deleteCanonicalErasureScope(any(), any(), any());
+        verify(meetingEventInbox, never()).deleteErasureScope(any(), any(), any(), any());
     }
 
     @Test
     void sourceAliasBoundToAnotherCanonicalSessionFailsBeforeAnyMutation() {
+        tombstone.setSourceSessionHash(SessionErasureFence.sourceHash("REC-WRONG"));
         TranscriptSessionAssociation wrong = mock(TranscriptSessionAssociation.class);
         when(wrong.getSessionId()).thenReturn(UUID.randomUUID());
         when(wrong.getStatus()).thenReturn(TranscriptSessionAssociationStatus.RESOLVED);
@@ -148,7 +153,6 @@ class TranscriptSessionErasureServiceTest {
                 .hasMessageContaining("ERASURE_SOURCE_SCOPE_MISMATCH");
 
         verify(tombstoneStore, never()).observe(any(), any());
-        verify(tombstones, never()).findSessionForUpdate(any(), any(), any());
         verify(finalizations, never()).deleteErasureScope(any(), any(), any());
         verify(segments, never()).deleteLegacySourceErasureScope(any(), any(), any());
     }

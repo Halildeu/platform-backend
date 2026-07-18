@@ -7,6 +7,7 @@ import com.example.transcript.model.TranscriptSessionErasureAudit;
 import com.example.transcript.model.TranscriptSessionErasureStatus;
 import com.example.transcript.model.TranscriptSessionErasureTombstone;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
+import com.example.transcript.repository.TranscriptMeetingEventInboxRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.repository.TranscriptSessionErasureAuditRepository;
@@ -32,6 +33,7 @@ public class TranscriptSessionErasureService {
     private final TranscriptSessionAssociationRepository associations;
     private final TranscriptFinalizationRepository finalizations;
     private final TranscriptSegmentRepository segments;
+    private final TranscriptMeetingEventInboxRepository meetingEventInbox;
     private final SessionErasureFence fence;
     private final TranscriptSessionErasureTombstoneStore tombstoneStore;
     private final Clock clock;
@@ -43,9 +45,10 @@ public class TranscriptSessionErasureService {
             TranscriptSessionAssociationRepository associations,
             TranscriptFinalizationRepository finalizations,
             TranscriptSegmentRepository segments,
+            TranscriptMeetingEventInboxRepository meetingEventInbox,
             SessionErasureFence fence,
             TranscriptSessionErasureTombstoneStore tombstoneStore) {
-        this(tombstones, audits, associations, finalizations, segments,
+        this(tombstones, audits, associations, finalizations, segments, meetingEventInbox,
                 fence, tombstoneStore, Clock.systemUTC());
     }
 
@@ -55,6 +58,7 @@ public class TranscriptSessionErasureService {
             TranscriptSessionAssociationRepository associations,
             TranscriptFinalizationRepository finalizations,
             TranscriptSegmentRepository segments,
+            TranscriptMeetingEventInboxRepository meetingEventInbox,
             SessionErasureFence fence,
             TranscriptSessionErasureTombstoneStore tombstoneStore,
             Clock clock) {
@@ -63,6 +67,7 @@ public class TranscriptSessionErasureService {
         this.associations = associations;
         this.finalizations = finalizations;
         this.segments = segments;
+        this.meetingEventInbox = meetingEventInbox;
         this.fence = fence;
         this.tombstoneStore = tombstoneStore;
         this.clock = clock;
@@ -114,12 +119,15 @@ public class TranscriptSessionErasureService {
         }
         int associationDeleted = associations.deleteErasureScope(
                 tenantId, meetingId, sessionId, resolvedSourceSessionId);
+        int inboxDeleted = meetingEventInbox.deleteErasureScope(
+                tenantId, meetingId, sessionId, resolvedSourceSessionId);
 
         Instant now = clock.instant();
         tombstone.setStatus(TranscriptSessionErasureStatus.COMPLETE);
         tombstone.setSegmentDeletedCount(segmentDeleted);
         tombstone.setFinalizationDeletedCount(finalizationDeleted);
         tombstone.setAssociationDeletedCount(associationDeleted);
+        tombstone.setInboxDeletedCount(inboxDeleted);
         tombstone.setCompletedAt(now);
         tombstone.setUpdatedAt(now);
         tombstones.saveAndFlush(tombstone);
@@ -135,6 +143,15 @@ public class TranscriptSessionErasureService {
         fence.lock(
                 SessionErasureFence.canonicalKey(scope),
                 SessionErasureFence.sourceKey(tenantId, meetingId, candidateSourceSessionId));
+
+        var existing = tombstones.findSessionForUpdate(tenantId, meetingId, sessionId);
+        if (existing.isPresent()) {
+            validateTombstoneSource(existing.get(), candidateSourceSessionId);
+            if (existing.get().getStatus() == TranscriptSessionErasureStatus.COMPLETE) {
+                return new PreparedScope(candidateSourceSessionId, existing.get());
+            }
+        }
+
         String resolvedSourceSessionId = validateLockedSourceScope(
                 tenantId, meetingId, sessionId, candidateSourceSessionId);
         tombstoneStore.observe(scope, resolvedSourceSessionId);
@@ -142,13 +159,20 @@ public class TranscriptSessionErasureService {
         TranscriptSessionErasureTombstone tombstone = tombstones.findSessionForUpdate(
                         tenantId, meetingId, sessionId)
                 .orElseThrow(() -> new IllegalStateException("committed erasure tombstone is missing"));
-        String requestedHash = SessionErasureFence.sourceHash(resolvedSourceSessionId);
-        if (tombstone.getSourceSessionHash() != null
-                && requestedHash != null
-                && !tombstone.getSourceSessionHash().equals(requestedHash)) {
+        validateTombstoneSource(tombstone, resolvedSourceSessionId);
+        return new PreparedScope(resolvedSourceSessionId, tombstone);
+    }
+
+    private void validateTombstoneSource(
+            TranscriptSessionErasureTombstone tombstone, String sourceSessionId) {
+        String requestedHash = SessionErasureFence.sourceHash(sourceSessionId);
+        if (requestedHash == null) {
+            return;
+        }
+        if (tombstone.getSourceSessionHash() == null
+                || !tombstone.getSourceSessionHash().equals(requestedHash)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
         }
-        return new PreparedScope(resolvedSourceSessionId, tombstone);
     }
 
     private Result markReady(TranscriptSessionErasureTombstone tombstone) {
@@ -182,6 +206,7 @@ public class TranscriptSessionErasureService {
         audit.setSegmentDeletedCount(tombstone.getSegmentDeletedCount());
         audit.setFinalizationDeletedCount(tombstone.getFinalizationDeletedCount());
         audit.setAssociationDeletedCount(tombstone.getAssociationDeletedCount());
+        audit.setInboxDeletedCount(tombstone.getInboxDeletedCount());
         audit.setExecutedAt(now);
         audits.save(audit);
     }
@@ -189,7 +214,8 @@ public class TranscriptSessionErasureService {
     private static Result result(TranscriptSessionErasureTombstone row) {
         int deleted = row.getSegmentDeletedCount()
                 + row.getFinalizationDeletedCount()
-                + row.getAssociationDeletedCount();
+                + row.getAssociationDeletedCount()
+                + row.getInboxDeletedCount();
         return new Result(
                 row.getTenantId(), row.getMeetingId(), row.getSessionId(),
                 row.getStatus(), deleted);

@@ -16,19 +16,38 @@ import org.springframework.stereotype.Component;
 public class SourceWindowRetentionFence {
 
     private final TranscriptSourceRetentionFenceRepository fences;
+    private final SessionErasureFence advisoryLocks;
 
-    public SourceWindowRetentionFence(TranscriptSourceRetentionFenceRepository fences) {
+    public SourceWindowRetentionFence(
+            TranscriptSourceRetentionFenceRepository fences,
+            SessionErasureFence advisoryLocks) {
         this.fences = fences;
+        this.advisoryLocks = advisoryLocks;
     }
 
-    public void rejectRetained(
+    public void lockAndRejectRetained(
             UUID tenantId, UUID meetingId, String sourceSessionId, long sourceWindowSeq) {
         String sourceHash = SessionErasureFence.sourceHash(sourceSessionId);
+        advisoryLocks.lock(windowKey(tenantId, meetingId, sourceHash, sourceWindowSeq));
         if (sourceHash != null
                 && fences.existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
                         tenantId, meetingId, sourceHash, sourceWindowSeq)) {
             throw new SourceWindowRetainedException();
         }
+    }
+
+    public void lockWindows(Collection<TranscriptSegment> segments) {
+        advisoryLocks.lock(segments.stream()
+                .filter(segment -> DirectSttTranscriptResultEvent.SOURCE_SYSTEM.equals(
+                        segment.getSourceSystem()))
+                .filter(segment -> segment.getSourceSessionId() != null
+                        && !segment.getSourceSessionId().isBlank()
+                        && segment.getSourceWindowSeq() != null)
+                .map(segment -> windowKey(
+                        segment.getTenantId(), segment.getMeetingId(),
+                        SessionErasureFence.sourceHash(segment.getSourceSessionId()),
+                        segment.getSourceWindowSeq()))
+                .toArray(String[]::new));
     }
 
     public int recordDestroyed(Collection<TranscriptSegment> segments, Instant retainedAt) {
@@ -73,6 +92,13 @@ public class SourceWindowRetentionFence {
 
     private record WindowKey(
             UUID tenantId, UUID meetingId, String sourceSessionHash, long sourceWindowSeq) {}
+
+    private static String windowKey(
+            UUID tenantId, UUID meetingId, String sourceHash, long sourceWindowSeq) {
+        return sourceHash == null ? null
+                : "retention-window|" + tenantId + "|" + meetingId + "|"
+                + sourceHash + "|" + sourceWindowSeq;
+    }
 
     public static class SourceWindowRetainedException extends IllegalStateException {
         public SourceWindowRetainedException() {

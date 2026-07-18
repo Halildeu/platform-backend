@@ -6,6 +6,8 @@ import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.repository.TranscriptMeetingEventInboxRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
+import com.example.transcript.service.SessionErasureFence.UUIDScope;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -21,22 +23,31 @@ public class RecordingFinishedEventProcessor {
     private final TranscriptMeetingEventInboxRepository inbox;
     private final TranscriptSessionAssociationRepository associations;
     private final TranscriptFinalizationStateMachine stateMachine;
+    private final SessionErasureFence erasureFence;
     private final Clock clock;
 
     public RecordingFinishedEventProcessor(
             TranscriptMeetingEventInboxRepository inbox,
             TranscriptSessionAssociationRepository associations,
             TranscriptFinalizationStateMachine stateMachine,
+            SessionErasureFence erasureFence,
             Clock transcriptFinalizationClock) {
         this.inbox = inbox;
         this.associations = associations;
         this.stateMachine = stateMachine;
+        this.erasureFence = erasureFence;
         this.clock = transcriptFinalizationClock;
     }
 
     @Transactional
     public ProcessResult process(RecordingFinishedEvent event) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        UUIDScope scope = new UUIDScope(event.tenantId(), event.meetingId(), event.recordingSessionId());
+        erasureFence.lock(
+                SessionErasureFence.canonicalKey(scope),
+                SessionErasureFence.sourceKey(
+                        event.tenantId(), event.meetingId(), event.externalSessionId()));
+        erasureFence.rejectErased(scope, event.externalSessionId());
         int inserted = inbox.insertIfAbsent(
                 deterministicId("inbox", event.eventKey()), event.eventKey(),
                 RecordingFinishedEventParser.EVENT_TYPE, event.payloadSha256(),

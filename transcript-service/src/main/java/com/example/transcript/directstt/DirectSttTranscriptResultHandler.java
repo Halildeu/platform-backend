@@ -4,6 +4,7 @@ import com.example.transcript.directstt.DirectSttTranscriptResultEvent.InvalidDi
 import com.example.transcript.directstt.DirectSttTranscriptIngestionService.SessionAssociationConflictException;
 import com.example.transcript.directstt.DirectSttTranscriptIngestionService.SessionAssociationNotResolvedException;
 import com.example.transcript.service.SessionErasureFence.SessionErasedException;
+import com.example.transcript.service.SourceWindowRetentionFence.SourceWindowRetainedException;
 import java.util.Map;
 import org.springframework.stereotype.Service;
 
@@ -41,7 +42,8 @@ public class DirectSttTranscriptResultHandler {
             return HandleOutcome.invalid(ex.getMessage());
         } catch (SessionAssociationConflictException
                  | SessionAssociationNotResolvedException
-                 | SessionErasedException ex) {
+                 | SessionErasedException
+                 | SourceWindowRetainedException ex) {
             return HandleOutcome.dead(ex.getClass().getSimpleName());
         }
     }

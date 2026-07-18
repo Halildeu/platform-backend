@@ -92,7 +92,8 @@ public class TranscriptRetentionCleanupService {
 
     private LayerCleanupResult cleanupTranscriptRecords(Instant now) {
         Instant cutoff = now.minus(Duration.ofDays(transcriptRetentionDays));
-        long deleted = deleteExpiredTranscriptSegments(cutoff) + deleteExpiredFinalizations(cutoff);
+        long deleted = deleteExpiredTranscriptSegments(cutoff, now)
+                + deleteExpiredFinalizations(cutoff);
         UUID auditId = writeAudit(now, LAYER_TRANSCRIPT_RECORDS, JOB_TRANSCRIPT_RECORDS, cutoff, deleted);
         LOGGER.info(
                 "transcript retention cleanup completed layer={} cutoff={} deletedCount={} jobId={}",
@@ -116,7 +117,7 @@ public class TranscriptRetentionCleanupService {
         return new LayerCleanupResult(LAYER_KVKK_ACCESS_LOG, cutoff, deleted, auditId);
     }
 
-    private long deleteExpiredTranscriptSegments(Instant cutoff) {
+    private long deleteExpiredTranscriptSegments(Instant cutoff, Instant destroyedAt) {
         long deleted = 0;
         for (int batch = 0; batch < cleanupMaxBatchesPerRun; batch++) {
             List<UUID> ids = segmentRepository.findExpiredIds(cutoff, PageRequest.of(0, cleanupBatchSize));
@@ -124,6 +125,7 @@ public class TranscriptRetentionCleanupService {
                 return deleted;
             }
             List<TranscriptSegment> candidates = segmentRepository.findAllById(ids);
+            sourceWindowRetentionFence.lockWindows(candidates);
             int batchDeleted = segmentRepository.deleteByIdIn(ids);
             if (batchDeleted <= 0) {
                 throw new IllegalStateException("transcript segment retention cleanup made no progress");
@@ -138,7 +140,7 @@ public class TranscriptRetentionCleanupService {
                 throw new IllegalStateException(
                         "transcript segment retention cleanup could not reconcile destroyed rows");
             }
-            sourceWindowRetentionFence.recordDestroyed(destroyed, cutoff);
+            sourceWindowRetentionFence.recordDestroyed(destroyed, destroyedAt);
             deleted += batchDeleted;
         }
         if (!segmentRepository.findExpiredIds(cutoff, PageRequest.of(0, 1)).isEmpty()) {
