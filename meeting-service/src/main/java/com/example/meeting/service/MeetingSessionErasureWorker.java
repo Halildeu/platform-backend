@@ -53,11 +53,17 @@ public class MeetingSessionErasureWorker {
     }
 
     private void process(MeetingSessionErasure row, UUID claimToken) {
-        MeetingSessionErasureService.LocalResult local = service.eraseLocal(row, claimToken);
-        if (local.status() != MeetingSessionErasureService.LocalResult.Status.READY) {
-            return;
-        }
         try {
+            TranscriptSessionErasureClient.Result preflight = transcriptClient.prepare(
+                    row.getTenantId(), row.getMeetingId(), row.getSessionId(), row.getSourceSessionId());
+            if (preflight.status() == TranscriptSessionErasureClient.Result.Status.HELD) {
+                service.markRemoteHeld(row.getSessionId(), claimToken);
+                return;
+            }
+            MeetingSessionErasureService.LocalResult local = service.eraseLocal(row, claimToken);
+            if (local.status() != MeetingSessionErasureService.LocalResult.Status.READY) {
+                return;
+            }
             TranscriptSessionErasureClient.Result result = transcriptClient.erase(
                     local.tenantId(), local.meetingId(), local.sessionId(), local.sourceSessionId());
             if (result.status() == TranscriptSessionErasureClient.Result.Status.HELD) {
@@ -66,9 +72,9 @@ public class MeetingSessionErasureWorker {
                 service.markComplete(local.sessionId(), claimToken, result.deletedCount());
             }
         } catch (HttpTranscriptSessionErasureClient.RemoteErasureException ex) {
-            service.markFailure(local.sessionId(), claimToken, ex.errorCode());
+            service.markFailure(row.getSessionId(), claimToken, ex.errorCode());
         } catch (RuntimeException ex) {
-            service.markFailure(local.sessionId(), claimToken, "REMOTE_FAILURE");
+            service.markFailure(row.getSessionId(), claimToken, "REMOTE_FAILURE");
         }
     }
 

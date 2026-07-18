@@ -9,14 +9,18 @@ import java.util.Map;
 import java.util.UUID;
 import com.example.meeting.model.MeetingSessionErasure;
 import com.example.meeting.model.MeetingSessionErasureStatus;
+import com.example.meeting.service.MeetingAnalysisRunDestructionRecorder;
+import com.example.meeting.service.MeetingRetentionCleanupService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -35,6 +39,13 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Import({MeetingRetentionCleanupService.class, MeetingAnalysisRunDestructionRecorder.class})
+@TestPropertySource(properties = {
+        "meeting.retention.meeting-intelligence-days=1",
+        "meeting.retention.result-access-audit-days=1",
+        "meeting.retention.cleanup-batch-size=100",
+        "meeting.retention.cleanup-max-batches-per-run=10"
+})
 class MeetingAnalysisRunPostgresIntegrationTest {
 
     private static final String SCHEMA = "meeting_service";
@@ -70,6 +81,47 @@ class MeetingAnalysisRunPostgresIntegrationTest {
     private MeetingSessionErasureRepository erasureRepository;
     @Autowired
     private MeetingAnalysisRunRepository runRepository;
+    @Autowired
+    private MeetingRetentionCleanupService retentionCleanupService;
+
+    @Test
+    void retentionCleanupCommitsAnalysisRunAuditAgainstTheRealFlywayConstraint() {
+        Instant cleanupAt = Instant.parse("2026-07-18T12:00:00Z");
+        Timestamp expiredAt = Timestamp.from(cleanupAt.minusSeconds(3 * 24 * 60 * 60));
+        UUID org = UUID.randomUUID();
+        UUID meetingId = insertMeeting(org);
+        UUID runId = UUID.randomUUID();
+        insertRunForSession(runId, meetingId, org, UUID.randomUUID().toString(), SHA_A, HASH_1);
+        insertAiAction(meetingId, org, runId, 0);
+        insertAiDecision(meetingId, org, runId, 0);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_analysis_runs "
+                + "SET generated_at = ?, created_at = ?, updated_at = ? WHERE analysis_run_id = ?",
+                expiredAt, expiredAt, expiredAt, runId);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_actions SET created_at = ?, updated_at = ? "
+                + "WHERE analysis_run_id = ?", expiredAt, expiredAt, runId);
+        jdbc.update("UPDATE " + SCHEMA + ".meeting_decisions SET created_at = ?, updated_at = ? "
+                + "WHERE analysis_run_id = ?", expiredAt, expiredAt, runId);
+
+        MeetingRetentionCleanupService.CleanupResult result = retentionCleanupService.cleanup(cleanupAt);
+
+        assertThat(result.analysisRunDeletedCount()).isEqualTo(1);
+        assertThat(runCount(meetingId)).isZero();
+        assertThat(actionCount(meetingId)).isZero();
+        assertThat(decisionCount(meetingId)).isZero();
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.meeting_retention_destruction_audit
+                WHERE layer_id = 'db.meeting-intelligence'
+                  AND deleted_count = 1
+                  AND action_deleted_count = 0
+                  AND decision_deleted_count = 0
+                  AND result_access_audit_deleted_count = 0
+                  AND analysis_run_deleted_count = 1
+                """.formatted(SCHEMA), Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("""
+                SELECT count(*) FROM %s.meeting_analysis_run_destruction_tombstone
+                WHERE analysis_run_id = ? AND reason = 'RETENTION'
+                """.formatted(SCHEMA), Integer.class, runId)).isEqualTo(1);
+    }
 
     @Test
     void expiredActiveErasureLeaseIsRecoveredAndCanBeReclaimed() {

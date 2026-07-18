@@ -37,6 +37,20 @@ public class TranscriptSessionErasureInternalController {
         return ResponseEntity.status(status).body(result);
     }
 
+    @PostMapping("/erasure/prepare")
+    @PreAuthorize("hasAuthority('SVC_transcript:session:erase')")
+    public ResponseEntity<TranscriptSessionErasureService.Result> prepare(
+            @PathVariable UUID tenantId,
+            @PathVariable UUID meetingId,
+            @PathVariable UUID sessionId,
+            @RequestBody(required = false) ErasureRequest request) {
+        var result = service.prepare(
+                tenantId, meetingId, sessionId, request == null ? null : request.sourceSessionId());
+        HttpStatus status = result.status() == TranscriptSessionErasureStatus.HELD
+                ? HttpStatus.LOCKED : HttpStatus.OK;
+        return ResponseEntity.status(status).body(result);
+    }
+
     public record ErasureRequest(String sourceSessionId) {
     }
 }

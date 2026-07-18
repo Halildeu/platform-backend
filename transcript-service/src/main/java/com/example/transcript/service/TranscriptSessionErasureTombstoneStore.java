@@ -14,36 +14,28 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-/** Commits the permanent admission fence before destructive erasure work starts. */
+/** Persists the permanent admission fence in the caller's locked transaction. */
 @Component
 public class TranscriptSessionErasureTombstoneStore {
 
     private final TranscriptSessionErasureTombstoneRepository tombstones;
-    private final SessionErasureFence fence;
     private final Clock clock;
 
     @Autowired
     public TranscriptSessionErasureTombstoneStore(
-            TranscriptSessionErasureTombstoneRepository tombstones,
-            SessionErasureFence fence) {
-        this(tombstones, fence, Clock.systemUTC());
+            TranscriptSessionErasureTombstoneRepository tombstones) {
+        this(tombstones, Clock.systemUTC());
     }
 
     TranscriptSessionErasureTombstoneStore(
             TranscriptSessionErasureTombstoneRepository tombstones,
-            SessionErasureFence fence,
             Clock clock) {
         this.tombstones = tombstones;
-        this.fence = fence;
         this.clock = clock;
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.MANDATORY)
     public void observe(UUIDScope scope, String sourceSessionId) {
-        fence.lock(
-                SessionErasureFence.canonicalKey(scope),
-                SessionErasureFence.sourceKey(
-                        scope.tenantId(), scope.meetingId(), sourceSessionId));
         TranscriptSessionErasureTombstone row = tombstones.findSessionForUpdate(
                         scope.tenantId(), scope.meetingId(), scope.sessionId())
                 .orElseGet(() -> create(scope, sourceSessionId));
@@ -63,7 +55,7 @@ public class TranscriptSessionErasureTombstoneStore {
         row.setMeetingId(scope.meetingId());
         row.setSessionId(scope.sessionId());
         row.setSourceSessionHash(SessionErasureFence.sourceHash(sourceSessionId));
-        row.setStatus(TranscriptSessionErasureStatus.HELD);
+        row.setStatus(TranscriptSessionErasureStatus.READY);
         row.setRequestedAt(now);
         row.setUpdatedAt(now);
         return tombstones.saveAndFlush(row);

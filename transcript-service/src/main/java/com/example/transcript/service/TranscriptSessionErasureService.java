@@ -2,6 +2,7 @@ package com.example.transcript.service;
 
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptSessionAssociation;
+import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.model.TranscriptSessionErasureAudit;
 import com.example.transcript.model.TranscriptSessionErasureStatus;
 import com.example.transcript.model.TranscriptSessionErasureTombstone;
@@ -68,48 +69,38 @@ public class TranscriptSessionErasureService {
     }
 
     @Transactional
+    public Result prepare(
+            UUID tenantId, UUID meetingId, UUID sessionId, String requestedSourceSessionId) {
+        PreparedScope prepared = prepareScope(
+                tenantId, meetingId, sessionId, requestedSourceSessionId);
+        if (prepared.tombstone().getStatus() == TranscriptSessionErasureStatus.COMPLETE) {
+            return result(prepared.tombstone());
+        }
+        List<TranscriptFinalization> heldScope = finalizations.findErasureScopeForUpdate(
+                tenantId, meetingId, sessionId);
+        if (heldScope.stream().anyMatch(TranscriptFinalization::isLegalHold)) {
+            return markHeld(prepared.tombstone());
+        }
+        return markReady(prepared.tombstone());
+    }
+
+    @Transactional
     public Result erase(
             UUID tenantId, UUID meetingId, UUID sessionId, String requestedSourceSessionId) {
-        String sourceSessionId = normalizeSource(requestedSourceSessionId);
-        if (sourceSessionId == null) {
-            sourceSessionId = associations.findByTenantIdAndMeetingIdAndSessionId(
-                            tenantId, meetingId, sessionId).stream()
-                    .map(TranscriptSessionAssociation::getSourceSessionId)
-                    .filter(value -> value != null && !value.isBlank())
-                    .sorted(Comparator.naturalOrder())
-                    .findFirst()
-                    .orElse(null);
-        }
-        final String resolvedSourceSessionId = sourceSessionId;
-        UUIDScope scope = new UUIDScope(tenantId, meetingId, sessionId);
-        tombstoneStore.observe(scope, resolvedSourceSessionId);
-        fence.lock(
-                SessionErasureFence.canonicalKey(scope),
-                SessionErasureFence.sourceKey(tenantId, meetingId, resolvedSourceSessionId));
-
-        TranscriptSessionErasureTombstone tombstone = tombstones.findSessionForUpdate(
-                        tenantId, meetingId, sessionId)
-                .orElseThrow(() -> new IllegalStateException("committed erasure tombstone is missing"));
-        String requestedHash = SessionErasureFence.sourceHash(resolvedSourceSessionId);
-        if (tombstone.getSourceSessionHash() != null
-                && requestedHash != null
-                && !tombstone.getSourceSessionHash().equals(requestedHash)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
-        }
+        PreparedScope prepared = prepareScope(
+                tenantId, meetingId, sessionId, requestedSourceSessionId);
+        String resolvedSourceSessionId = prepared.sourceSessionId();
+        TranscriptSessionErasureTombstone tombstone = prepared.tombstone();
         if (tombstone.getStatus() == TranscriptSessionErasureStatus.COMPLETE) {
             return result(tombstone);
         }
 
-        associations.findCanonicalForUpdate(tenantId, meetingId, sessionId);
-        if (resolvedSourceSessionId != null) {
-            associations.findSourceForUpdate(
-                    tenantId, meetingId, "DIRECT_STT", resolvedSourceSessionId);
-        }
         List<TranscriptFinalization> heldScope = finalizations.findErasureScopeForUpdate(
                 tenantId, meetingId, sessionId);
         if (heldScope.stream().anyMatch(TranscriptFinalization::isLegalHold)) {
             return markHeld(tombstone);
         }
+        markReady(tombstone);
 
         int finalizationDeleted = finalizations.deleteErasureScope(tenantId, meetingId, sessionId);
         // Delete-time predicate is authoritative if legal_hold changed after selection.
@@ -130,6 +121,43 @@ public class TranscriptSessionErasureService {
         tombstone.setFinalizationDeletedCount(finalizationDeleted);
         tombstone.setAssociationDeletedCount(associationDeleted);
         tombstone.setCompletedAt(now);
+        tombstone.setUpdatedAt(now);
+        tombstones.saveAndFlush(tombstone);
+        audit(tombstone, now);
+        return result(tombstone);
+    }
+
+    private PreparedScope prepareScope(
+            UUID tenantId, UUID meetingId, UUID sessionId, String requestedSourceSessionId) {
+        String candidateSourceSessionId = discoverSourceSessionId(
+                tenantId, meetingId, sessionId, requestedSourceSessionId);
+        UUIDScope scope = new UUIDScope(tenantId, meetingId, sessionId);
+        fence.lock(
+                SessionErasureFence.canonicalKey(scope),
+                SessionErasureFence.sourceKey(tenantId, meetingId, candidateSourceSessionId));
+        String resolvedSourceSessionId = validateLockedSourceScope(
+                tenantId, meetingId, sessionId, candidateSourceSessionId);
+        tombstoneStore.observe(scope, resolvedSourceSessionId);
+
+        TranscriptSessionErasureTombstone tombstone = tombstones.findSessionForUpdate(
+                        tenantId, meetingId, sessionId)
+                .orElseThrow(() -> new IllegalStateException("committed erasure tombstone is missing"));
+        String requestedHash = SessionErasureFence.sourceHash(resolvedSourceSessionId);
+        if (tombstone.getSourceSessionHash() != null
+                && requestedHash != null
+                && !tombstone.getSourceSessionHash().equals(requestedHash)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
+        }
+        return new PreparedScope(resolvedSourceSessionId, tombstone);
+    }
+
+    private Result markReady(TranscriptSessionErasureTombstone tombstone) {
+        if (tombstone.getStatus() == TranscriptSessionErasureStatus.READY) {
+            return result(tombstone);
+        }
+        Instant now = clock.instant();
+        tombstone.setStatus(TranscriptSessionErasureStatus.READY);
+        tombstone.setCompletedAt(null);
         tombstone.setUpdatedAt(now);
         tombstones.saveAndFlush(tombstone);
         audit(tombstone, now);
@@ -167,6 +195,48 @@ public class TranscriptSessionErasureService {
                 row.getStatus(), deleted);
     }
 
+    private String discoverSourceSessionId(
+            UUID tenantId, UUID meetingId, UUID sessionId, String requestedSourceSessionId) {
+        String requested = normalizeSource(requestedSourceSessionId);
+        if (requested != null) {
+            return requested;
+        }
+        return associations.findByTenantIdAndMeetingIdAndSessionId(
+                        tenantId, meetingId, sessionId).stream()
+                .filter(row -> row.getStatus() == TranscriptSessionAssociationStatus.RESOLVED)
+                .map(TranscriptSessionAssociation::getSourceSessionId)
+                .filter(value -> value != null && !value.isBlank())
+                .sorted(Comparator.naturalOrder())
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String validateLockedSourceScope(
+            UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId) {
+        var canonical = associations.findCanonicalForUpdate(tenantId, meetingId, sessionId);
+        if (sourceSessionId == null) {
+            if (canonical.isPresent()
+                    && canonical.get().getSourceSessionId() != null
+                    && !canonical.get().getSourceSessionId().isBlank()) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_RETRY");
+            }
+            return null;
+        }
+        TranscriptSessionAssociation source = associations.findSourceForUpdate(
+                        tenantId, meetingId, "DIRECT_STT", sourceSessionId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH"));
+        if (source.getStatus() != TranscriptSessionAssociationStatus.RESOLVED
+                || !sessionId.equals(source.getSessionId())
+                || (canonical.isPresent()
+                    && !canonical.get().getId().equals(source.getId()))) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT, "ERASURE_SOURCE_SCOPE_MISMATCH");
+        }
+        return sourceSessionId;
+    }
+
     private static String normalizeSource(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -183,5 +253,10 @@ public class TranscriptSessionErasureService {
             UUID sessionId,
             TranscriptSessionErasureStatus status,
             int deletedCount) {
+    }
+
+    private record PreparedScope(
+            String sourceSessionId,
+            TranscriptSessionErasureTombstone tombstone) {
     }
 }

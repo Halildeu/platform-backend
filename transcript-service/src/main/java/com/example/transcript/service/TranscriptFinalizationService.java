@@ -41,6 +41,7 @@ public class TranscriptFinalizationService {
     private final TranscriptFinalizationRepository finalizationRepository;
     private final TranscriptEventOutboxRepository outboxRepository;
     private final FinalizedTranscriptSnapshotCodec snapshotCodec;
+    private final SessionErasureFence erasureFence;
     private final Clock clock;
 
     @Autowired
@@ -49,9 +50,10 @@ public class TranscriptFinalizationService {
             TranscriptSegmentRepository segmentRepository,
             TranscriptFinalizationRepository finalizationRepository,
             TranscriptEventOutboxRepository outboxRepository,
-            FinalizedTranscriptSnapshotCodec snapshotCodec) {
+            FinalizedTranscriptSnapshotCodec snapshotCodec,
+            SessionErasureFence erasureFence) {
         this(associationRepository, segmentRepository, finalizationRepository,
-                outboxRepository, snapshotCodec, Clock.systemUTC());
+                outboxRepository, snapshotCodec, erasureFence, Clock.systemUTC());
     }
 
     TranscriptFinalizationService(
@@ -60,12 +62,14 @@ public class TranscriptFinalizationService {
             TranscriptFinalizationRepository finalizationRepository,
             TranscriptEventOutboxRepository outboxRepository,
             FinalizedTranscriptSnapshotCodec snapshotCodec,
+            SessionErasureFence erasureFence,
             Clock clock) {
         this.associationRepository = associationRepository;
         this.segmentRepository = segmentRepository;
         this.finalizationRepository = finalizationRepository;
         this.outboxRepository = outboxRepository;
         this.snapshotCodec = snapshotCodec;
+        this.erasureFence = erasureFence;
         this.clock = clock;
     }
 
@@ -85,10 +89,14 @@ public class TranscriptFinalizationService {
         }
 
         UUID tenantId = context.tenantId();
+        SessionErasureFence.UUIDScope erasureScope =
+                new SessionErasureFence.UUIDScope(tenantId, meetingId, sessionId);
+        erasureFence.lock(SessionErasureFence.canonicalKey(erasureScope));
         TranscriptSessionAssociation association = associationRepository
                 .findCanonicalForUpdate(tenantId, meetingId, sessionId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Canonical transcript session not found."));
+        erasureFence.rejectErased(erasureScope, association.getSourceSessionId());
 
         long currentVersion = association.getFinalizationVersion();
         if (requestedVersion == currentVersion) {

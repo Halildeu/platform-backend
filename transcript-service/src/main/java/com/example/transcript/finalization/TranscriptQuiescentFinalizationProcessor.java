@@ -13,6 +13,7 @@ import com.example.transcript.repository.TranscriptEventOutboxRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -38,6 +39,7 @@ public class TranscriptQuiescentFinalizationProcessor {
     private final TranscriptEventOutboxRepository outbox;
     private final TranscriptFinalizationStateMachine stateMachine;
     private final FinalizedTranscriptSnapshotCodec snapshotCodec;
+    private final SessionErasureFence erasureFence;
     private final Clock clock;
 
     public TranscriptQuiescentFinalizationProcessor(
@@ -47,6 +49,7 @@ public class TranscriptQuiescentFinalizationProcessor {
             TranscriptEventOutboxRepository outbox,
             TranscriptFinalizationStateMachine stateMachine,
             FinalizedTranscriptSnapshotCodec snapshotCodec,
+            SessionErasureFence erasureFence,
             Clock transcriptFinalizationClock) {
         this.associations = associations;
         this.segments = segments;
@@ -54,17 +57,26 @@ public class TranscriptQuiescentFinalizationProcessor {
         this.outbox = outbox;
         this.stateMachine = stateMachine;
         this.snapshotCodec = snapshotCodec;
+        this.erasureFence = erasureFence;
         this.clock = transcriptFinalizationClock;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Outcome process(UUID associationId) {
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
-        TranscriptSessionAssociation association = associations.findByIdForUpdate(associationId)
-                .orElse(null);
-        if (!isDue(association, now)) {
+        TranscriptSessionAssociation candidate = associations.findById(associationId).orElse(null);
+        if (candidate == null || candidate.getSessionId() == null) {
             return Outcome.NOT_DUE;
         }
+        SessionErasureFence.UUIDScope candidateScope = new SessionErasureFence.UUIDScope(
+                candidate.getTenantId(), candidate.getMeetingId(), candidate.getSessionId());
+        erasureFence.lock(SessionErasureFence.canonicalKey(candidateScope));
+        TranscriptSessionAssociation association = associations.findByIdForUpdate(associationId)
+                .orElse(null);
+        if (!isDue(association, now) || !sameScope(candidateScope, association)) {
+            return Outcome.NOT_DUE;
+        }
+        erasureFence.rejectErased(candidateScope, association.getSourceSessionId());
 
         List<TranscriptSegment> canonical = segments.findCanonicalSessionForUpdate(
                 association.getTenantId(), association.getMeetingId(), association.getSessionId());
@@ -91,6 +103,13 @@ public class TranscriptQuiescentFinalizationProcessor {
 
         emitReady(association, snapshot, now);
         return Outcome.READY;
+    }
+
+    private static boolean sameScope(
+            SessionErasureFence.UUIDScope expected, TranscriptSessionAssociation actual) {
+        return expected.tenantId().equals(actual.getTenantId())
+                && expected.meetingId().equals(actual.getMeetingId())
+                && expected.sessionId().equals(actual.getSessionId());
     }
 
     private boolean isDue(TranscriptSessionAssociation association, Instant now) {

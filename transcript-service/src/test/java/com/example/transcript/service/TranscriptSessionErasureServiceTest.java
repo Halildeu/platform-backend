@@ -1,12 +1,17 @@
 package com.example.transcript.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.transcript.model.TranscriptFinalization;
+import com.example.transcript.model.TranscriptSessionAssociation;
+import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.model.TranscriptSessionErasureAudit;
 import com.example.transcript.model.TranscriptSessionErasureStatus;
 import com.example.transcript.model.TranscriptSessionErasureTombstone;
@@ -26,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.server.ResponseStatusException;
 
 @ExtendWith(MockitoExtension.class)
 class TranscriptSessionErasureServiceTest {
@@ -51,9 +57,18 @@ class TranscriptSessionErasureServiceTest {
         service = new TranscriptSessionErasureService(
                 tombstones, audits, associations, finalizations, segments,
                 fence, tombstoneStore, Clock.fixed(NOW, ZoneOffset.UTC));
-        tombstone = tombstone(TranscriptSessionErasureStatus.HELD);
-        when(tombstones.findSessionForUpdate(TENANT, MEETING, SESSION))
+        tombstone = tombstone(TranscriptSessionErasureStatus.READY);
+        lenient().when(tombstones.findSessionForUpdate(TENANT, MEETING, SESSION))
                 .thenReturn(Optional.of(tombstone));
+        TranscriptSessionAssociation association = mock(TranscriptSessionAssociation.class);
+        lenient().when(association.getId()).thenReturn(UUID.randomUUID());
+        lenient().when(association.getSessionId()).thenReturn(SESSION);
+        lenient().when(association.getSourceSessionId()).thenReturn("REC-42");
+        lenient().when(association.getStatus()).thenReturn(TranscriptSessionAssociationStatus.RESOLVED);
+        lenient().when(associations.findSourceForUpdate(TENANT, MEETING, "DIRECT_STT", "REC-42"))
+                .thenReturn(Optional.of(association));
+        lenient().when(associations.findCanonicalForUpdate(TENANT, MEETING, SESSION))
+                .thenReturn(Optional.of(association));
     }
 
     @Test
@@ -71,6 +86,19 @@ class TranscriptSessionErasureServiceTest {
         verify(finalizations, never()).deleteErasureScope(any(), any(), any());
         verify(segments, never()).deleteCanonicalErasureScope(any(), any(), any());
         verify(audits).save(any(TranscriptSessionErasureAudit.class));
+    }
+
+    @Test
+    void prepareReturnsReadyAndDoesNotDeleteAnyContent() {
+        when(finalizations.findErasureScopeForUpdate(TENANT, MEETING, SESSION))
+                .thenReturn(List.of());
+
+        var result = service.prepare(TENANT, MEETING, SESSION, "REC-42");
+
+        assertThat(result.status()).isEqualTo(TranscriptSessionErasureStatus.READY);
+        verify(finalizations, never()).deleteErasureScope(any(), any(), any());
+        verify(segments, never()).deleteCanonicalErasureScope(any(), any(), any());
+        verify(associations, never()).deleteErasureScope(any(), any(), any(), any());
     }
 
     @Test
@@ -105,6 +133,24 @@ class TranscriptSessionErasureServiceTest {
         assertThat(result.deletedCount()).isEqualTo(2);
         verify(finalizations, never()).findErasureScopeForUpdate(any(), any(), any());
         verify(segments, never()).deleteCanonicalErasureScope(any(), any(), any());
+    }
+
+    @Test
+    void sourceAliasBoundToAnotherCanonicalSessionFailsBeforeAnyMutation() {
+        TranscriptSessionAssociation wrong = mock(TranscriptSessionAssociation.class);
+        when(wrong.getSessionId()).thenReturn(UUID.randomUUID());
+        when(wrong.getStatus()).thenReturn(TranscriptSessionAssociationStatus.RESOLVED);
+        when(associations.findSourceForUpdate(TENANT, MEETING, "DIRECT_STT", "REC-WRONG"))
+                .thenReturn(Optional.of(wrong));
+
+        assertThatThrownBy(() -> service.erase(TENANT, MEETING, SESSION, "REC-WRONG"))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("ERASURE_SOURCE_SCOPE_MISMATCH");
+
+        verify(tombstoneStore, never()).observe(any(), any());
+        verify(tombstones, never()).findSessionForUpdate(any(), any(), any());
+        verify(finalizations, never()).deleteErasureScope(any(), any(), any());
+        verify(segments, never()).deleteLegacySourceErasureScope(any(), any(), any());
     }
 
     private static TranscriptSessionErasureTombstone tombstone(

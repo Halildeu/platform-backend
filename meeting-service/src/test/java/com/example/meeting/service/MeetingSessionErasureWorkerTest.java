@@ -2,6 +2,7 @@ package com.example.meeting.service;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -40,11 +41,17 @@ class MeetingSessionErasureWorkerTest {
     void cycleClaimsErasesRemoteAndCompletesWithTheSameLeaseToken() {
         MeetingSessionErasure row = new MeetingSessionErasure();
         row.setSessionId(SESSION);
+        row.setTenantId(TENANT);
+        row.setMeetingId(MEETING);
+        row.setSourceSessionId("source-session");
         when(service.recoverStaleLeases()).thenReturn(0);
         when(service.claim(any(UUID.class), eq("test-worker"))).thenReturn(List.of(row));
         when(service.eraseLocal(eq(row), any(UUID.class))).thenReturn(
                 MeetingSessionErasureService.LocalResult.ready(
                         TENANT, MEETING, SESSION, "source-session"));
+        when(transcriptClient.prepare(TENANT, MEETING, SESSION, "source-session"))
+                .thenReturn(new TranscriptSessionErasureClient.Result(
+                        TranscriptSessionErasureClient.Result.Status.READY, 0));
         when(transcriptClient.erase(TENANT, MEETING, SESSION, "source-session"))
                 .thenReturn(new TranscriptSessionErasureClient.Result(
                         TranscriptSessionErasureClient.Result.Status.COMPLETE, 4));
@@ -58,19 +65,21 @@ class MeetingSessionErasureWorkerTest {
     }
 
     @Test
-    void remoteHoldMovesClaimToHeldInsteadOfCompleting() {
+    void remoteHoldMovesClaimToHeldBeforeLocalDeletion() {
         MeetingSessionErasure row = new MeetingSessionErasure();
         row.setSessionId(SESSION);
         when(service.claim(any(UUID.class), eq("test-worker"))).thenReturn(List.of(row));
-        when(service.eraseLocal(eq(row), any(UUID.class))).thenReturn(
-                MeetingSessionErasureService.LocalResult.ready(
-                        TENANT, MEETING, SESSION, "source-session"));
-        when(transcriptClient.erase(TENANT, MEETING, SESSION, "source-session"))
+        row.setTenantId(TENANT);
+        row.setMeetingId(MEETING);
+        row.setSourceSessionId("source-session");
+        when(transcriptClient.prepare(TENANT, MEETING, SESSION, "source-session"))
                 .thenReturn(new TranscriptSessionErasureClient.Result(
                         TranscriptSessionErasureClient.Result.Status.HELD, 0));
 
         worker.runCycle();
 
         verify(service).markRemoteHeld(eq(SESSION), any(UUID.class));
+        verify(service, never()).eraseLocal(any(), any());
+        verify(transcriptClient, never()).erase(any(), any(), any(), any());
     }
 }

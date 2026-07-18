@@ -28,6 +28,7 @@ import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.repository.TranscriptSessionErasureTombstoneRepository;
 import com.example.transcript.security.AdminTenantContext;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -43,6 +44,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -65,6 +67,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
         TranscriptSessionAssociationStore.class,
         DirectSttTranscriptIngestionService.class,
         SessionErasureFence.class,
+        SourceWindowRetentionFence.class,
         TranscriptSessionErasureTombstoneStore.class,
         TranscriptSessionErasureService.class,
         RecordingFinishedEventProcessor.class,
@@ -124,6 +127,7 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     void clean() {
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_audit");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_session_erasure_tombstones");
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_source_retention_fences");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_meeting_event_inbox");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_event_outbox");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_finalizations");
@@ -182,7 +186,9 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Test
-    void erasedSourceRejectsAbsentAssociationCreation() {
+    void erasedExactSourceRejectsAssociationRecreation() {
+        insertAssociation(UUID.randomUUID(), TENANT, MEETING, "SES-absent", SESSION,
+                "RESOLVED", null, 0);
         erasureService.erase(TENANT, MEETING, SESSION, "SES-absent");
 
         assertThatThrownBy(() -> associationStore.ensurePending(
@@ -191,6 +197,47 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         assertThat(associations.findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
                 TENANT, MEETING, DirectSttTranscriptResultEvent.SOURCE_SYSTEM,
                 "SES-absent")).isEmpty();
+    }
+
+    @Test
+    void erasurePrepareBlocksLateLegalHoldAndNewFinalization() {
+        insertResolvedAssociation();
+        saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L,
+                TranscriptSegmentStatus.FINALIZED, "final text");
+        Instant now = Instant.now();
+        UUID finalizationId = UUID.randomUUID();
+        jdbc.update("INSERT INTO " + SCHEMA + ".transcript_finalizations "
+                        + "(id,tenant_id,org_id,meeting_id,session_id,finalization_version,"
+                        + "segment_count,snapshot_sha256,finalized_at,created_at,legal_hold) "
+                        + "VALUES (?,?,?,?,?,1,1,?,?,?,false)",
+                finalizationId, TENANT, TENANT, MEETING, SESSION, "a".repeat(64),
+                Timestamp.from(now), Timestamp.from(now));
+
+        var prepared = erasureService.prepare(TENANT, MEETING, SESSION, "SES-42");
+        assertThat(prepared.status().name()).isEqualTo("READY");
+
+        assertThatThrownBy(() -> jdbc.update(
+                        "UPDATE " + SCHEMA
+                                + ".transcript_finalizations SET legal_hold=true WHERE id=?",
+                        finalizationId))
+                .isInstanceOf(DataAccessException.class)
+                .satisfies(error -> {
+                    Throwable root = error;
+                    while (root.getCause() != null) {
+                        root = root.getCause();
+                    }
+                    assertThat(root).isInstanceOf(SQLException.class);
+                    assertThat(((SQLException) root).getSQLState()).isEqualTo("23514");
+                });
+        assertThat(jdbc.queryForObject(
+                "SELECT legal_hold FROM " + SCHEMA + ".transcript_finalizations WHERE id=?",
+                Boolean.class, finalizationId)).isFalse();
+
+        assertThatThrownBy(() -> finalizationService.finalizeTranscript(
+                        context(TENANT), MEETING, SESSION, 2L))
+                .isInstanceOf(SessionErasureFence.SessionErasedException.class);
+        assertThat(finalizations.count()).isEqualTo(1L);
+        assertThat(outbox.count()).isZero();
     }
 
     @Test

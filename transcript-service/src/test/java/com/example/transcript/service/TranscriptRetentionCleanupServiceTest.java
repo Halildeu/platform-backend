@@ -12,6 +12,7 @@ import com.example.transcript.repository.TranscriptAccessAuditRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptRetentionDestructionAuditRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
+import com.example.transcript.repository.TranscriptSourceRetentionFenceRepository;
 import com.example.transcript.testsupport.IsolatedH2DataJpaTest;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
@@ -25,7 +26,7 @@ import java.util.List;
 import java.util.UUID;
 
 @IsolatedH2DataJpaTest
-@Import(TranscriptRetentionCleanupService.class)
+@Import({TranscriptRetentionCleanupService.class, SourceWindowRetentionFence.class})
 @TestPropertySource(properties = {
         "transcript.retention.cleanup-batch-size=1",
         "transcript.retention.cleanup-max-batches-per-run=1"
@@ -48,6 +49,8 @@ class TranscriptRetentionCleanupServiceTest {
     @Autowired
     private TranscriptRetentionDestructionAuditRepository destructionAuditRepository;
     @Autowired
+    private TranscriptSourceRetentionFenceRepository sourceRetentionFenceRepository;
+    @Autowired
     private EntityManager entityManager;
 
     @Test
@@ -66,6 +69,16 @@ class TranscriptRetentionCleanupServiceTest {
         assertThat(accessAuditRepository.findById(expiredAccess.getId())).isEmpty();
         assertThat(segmentRepository.findById(freshSegment.getId())).isPresent();
         assertThat(accessAuditRepository.findById(freshAccess.getId())).isPresent();
+        assertThat(sourceRetentionFenceRepository
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
+                        expiredSegment.getTenantId(), expiredSegment.getMeetingId(),
+                        SessionErasureFence.sourceHash(expiredSegment.getSourceSessionId()), 1L))
+                .isTrue();
+        assertThat(sourceRetentionFenceRepository
+                .existsByTenantIdAndMeetingIdAndSourceSessionHashAndSourceWindowSeq(
+                        freshSegment.getTenantId(), freshSegment.getMeetingId(),
+                        SessionErasureFence.sourceHash(freshSegment.getSourceSessionId()), 1L))
+                .isFalse();
 
         List<TranscriptRetentionDestructionAudit> transcriptAudits = destructionAuditRepository
                 .findByLayerIdOrderByExecutedAtDesc(TranscriptRetentionCleanupService.LAYER_TRANSCRIPT_RECORDS);
@@ -151,6 +164,12 @@ class TranscriptRetentionCleanupServiceTest {
         segment.setOrgId(org);
         segment.setMeetingId(UUID.randomUUID());
         segment.setSessionId(UUID.randomUUID());
+        segment.setSourceSystem("DIRECT_STT");
+        segment.setSourceSessionId("SES-" + UUID.randomUUID());
+        segment.setSourceWindowSeq(1L);
+        segment.setSourceFirstChunkSeq(1L);
+        segment.setSourceLastChunkSeq(1L);
+        segment.setSourceChunkSeq(1L);
         segment.setStartTime(0.0);
         segment.setEndTime(1.0);
         segment.setTextDraft(draft);

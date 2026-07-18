@@ -31,6 +31,7 @@ class HttpTranscriptSessionErasureClientTest {
     private static final UUID SESSION = UUID.fromString("33333333-3333-4333-8333-333333333333");
     private static final String URL = "http://transcript-service:8098/api/v1/internal/tenants/"
             + TENANT + "/meetings/" + MEETING + "/sessions/" + SESSION + "/erasure";
+    private static final String PREPARE_URL = URL + "/prepare";
 
     @Mock private MeetingServiceTokenProvider tokens;
     private MockRestServiceServer server;
@@ -57,6 +58,21 @@ class HttpTranscriptSessionErasureClientTest {
         assertThat(result.status()).isEqualTo(
                 TranscriptSessionErasureClient.Result.Status.COMPLETE);
         assertThat(result.deletedCount()).isEqualTo(3);
+        server.verify();
+    }
+
+    @Test
+    void prepareResponseMustBeReadyForTheExactRequestedScope() {
+        server.expect(once(), requestTo(PREPARE_URL))
+                .andExpect(request -> assertThat(request.getMethod()).isEqualTo(HttpMethod.POST))
+                .andExpect(header("Authorization", "Bearer erasure-token"))
+                .andRespond(withSuccess(readyJson(), MediaType.APPLICATION_JSON));
+
+        var result = client.prepare(TENANT, MEETING, SESSION, "source-session");
+
+        assertThat(result.status()).isEqualTo(
+                TranscriptSessionErasureClient.Result.Status.READY);
+        assertThat(result.deletedCount()).isZero();
         server.verify();
     }
 
@@ -106,5 +122,17 @@ class HttpTranscriptSessionErasureClientTest {
                   "deletedCount":3
                 }
                 """.formatted(TENANT, meetingId, SESSION);
+    }
+
+    private static String readyJson() {
+        return """
+                {
+                  "tenantId":"%s",
+                  "meetingId":"%s",
+                  "sessionId":"%s",
+                  "status":"READY",
+                  "deletedCount":0
+                }
+                """.formatted(TENANT, MEETING, SESSION);
     }
 }

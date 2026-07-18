@@ -17,6 +17,7 @@ import com.example.transcript.finalization.TranscriptFinalizationStateMachine;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.service.SessionErasureFence;
+import com.example.transcript.service.SourceWindowRetentionFence;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -40,11 +41,14 @@ class DirectSttTranscriptIngestionServiceTest {
     private final TranscriptFinalizationStateMachine finalizationStateMachine =
             mock(TranscriptFinalizationStateMachine.class);
     private final SessionErasureFence erasureFence = mock(SessionErasureFence.class);
+    private final SourceWindowRetentionFence retentionFence =
+            mock(SourceWindowRetentionFence.class);
     private final Clock clock = Clock.fixed(
             Instant.parse("2026-07-17T14:00:00Z"), ZoneOffset.UTC);
     private final DirectSttTranscriptIngestionService service =
             new DirectSttTranscriptIngestionService(
-                    segments, associations, finalizationStateMachine, erasureFence, clock);
+                    segments, associations, finalizationStateMachine,
+                    erasureFence, retentionFence, clock);
 
     @BeforeEach
     void resolvedAssociation() {
@@ -101,6 +105,19 @@ class DirectSttTranscriptIngestionServiceTest {
         assertThatThrownBy(() -> service.upsert(
                 event("1-0", 2L, 3L, 5L, "draft"), SESSION))
                 .isInstanceOf(SessionErasureFence.SessionErasedException.class);
+
+        verify(associations, never()).findSourceForUpdate(any(), any(), any(), any());
+        verify(segments, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void retentionFenceRejectsDestroyedWindowBeforeAssociationOrSegmentMutation() {
+        doThrow(new SourceWindowRetentionFence.SourceWindowRetainedException())
+                .when(retentionFence).rejectRetained(TENANT, MEETING, "SES-abc", 2L);
+
+        assertThatThrownBy(() -> service.upsert(
+                event("1-0", 2L, 3L, 5L, "draft"), SESSION))
+                .isInstanceOf(SourceWindowRetentionFence.SourceWindowRetainedException.class);
 
         verify(associations, never()).findSourceForUpdate(any(), any(), any(), any());
         verify(segments, never()).saveAndFlush(any());

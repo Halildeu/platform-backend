@@ -55,6 +55,7 @@ class TranscriptFinalizationServiceTest {
             mock(TranscriptFinalizationRepository.class);
     private final TranscriptEventOutboxRepository outbox = mock(TranscriptEventOutboxRepository.class);
     private final TranscriptSessionAssociation association = mock(TranscriptSessionAssociation.class);
+    private final SessionErasureFence erasureFence = mock(SessionErasureFence.class);
     private final AtomicLong currentVersion = new AtomicLong();
     private final AtomicLong currentCycleVersion = new AtomicLong();
     private final AtomicReference<TranscriptFinalizationState> currentState =
@@ -95,6 +96,7 @@ class TranscriptFinalizationServiceTest {
                 associations, segments, finalizations, outbox,
                 new FinalizedTranscriptSnapshotCodec(
                         new TranscriptSnapshotHasher(), new ObjectMapper()),
+                erasureFence,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

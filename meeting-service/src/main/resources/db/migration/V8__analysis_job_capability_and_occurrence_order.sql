@@ -51,5 +51,21 @@ COMMENT ON TABLE meeting_analysis_job_capability_uses IS
 ALTER TABLE meeting_retention_destruction_audit
     ADD COLUMN analysis_run_deleted_count BIGINT NOT NULL DEFAULT 0;
 
+ALTER TABLE meeting_retention_destruction_audit
+    DROP CONSTRAINT meeting_retention_audit_counts_ck;
+
+ALTER TABLE meeting_retention_destruction_audit
+    ADD CONSTRAINT meeting_retention_audit_counts_ck CHECK (
+        deleted_count >= 0
+        AND action_deleted_count >= 0
+        AND decision_deleted_count >= 0
+        AND result_access_audit_deleted_count >= 0
+        AND analysis_run_deleted_count >= 0
+        AND deleted_count = action_deleted_count
+            + decision_deleted_count
+            + result_access_audit_deleted_count
+            + analysis_run_deleted_count
+    );
+
 COMMENT ON COLUMN meeting_retention_destruction_audit.analysis_run_deleted_count IS
     'Metadata-only number of analysis-run parents destroyed; child content is deleted by cascade and never copied here.';

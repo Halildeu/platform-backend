@@ -10,6 +10,7 @@ import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.service.SessionErasureFence;
 import com.example.transcript.service.SessionErasureFence.UUIDScope;
+import com.example.transcript.service.SourceWindowRetentionFence;
 import java.time.Clock;
 import java.util.Objects;
 import java.util.UUID;
@@ -24,6 +25,7 @@ public class DirectSttTranscriptIngestionService {
     private final TranscriptSessionAssociationRepository associations;
     private final TranscriptFinalizationStateMachine finalizationStateMachine;
     private final SessionErasureFence erasureFence;
+    private final SourceWindowRetentionFence retentionFence;
     private final Clock clock;
 
     public DirectSttTranscriptIngestionService(
@@ -31,11 +33,13 @@ public class DirectSttTranscriptIngestionService {
             TranscriptSessionAssociationRepository associations,
             TranscriptFinalizationStateMachine finalizationStateMachine,
             SessionErasureFence erasureFence,
+            SourceWindowRetentionFence retentionFence,
             Clock transcriptFinalizationClock) {
         this.segments = segments;
         this.associations = associations;
         this.finalizationStateMachine = finalizationStateMachine;
         this.erasureFence = erasureFence;
+        this.retentionFence = retentionFence;
         this.clock = transcriptFinalizationClock;
     }
 
@@ -48,6 +52,8 @@ public class DirectSttTranscriptIngestionService {
                 SessionErasureFence.sourceKey(
                         event.tenantId(), event.meetingId(), event.sourceSessionId()));
         erasureFence.rejectErased(scope, event.sourceSessionId());
+        retentionFence.rejectRetained(
+                event.tenantId(), event.meetingId(), event.sourceSessionId(), event.windowSeq());
         TranscriptSessionAssociation association = associations.findSourceForUpdate(
                         event.tenantId(), event.meetingId(), DirectSttTranscriptResultEvent.SOURCE_SYSTEM,
                         event.sourceSessionId())

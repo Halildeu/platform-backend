@@ -20,13 +20,13 @@ CREATE TABLE transcript_session_erasure_tombstones (
     CONSTRAINT transcript_erasure_tombstone_hash
         CHECK (source_session_hash IS NULL OR source_session_hash ~ '^[0-9a-f]{64}$'),
     CONSTRAINT transcript_erasure_tombstone_status
-        CHECK (status IN ('HELD', 'COMPLETE')),
+        CHECK (status IN ('READY', 'HELD', 'COMPLETE')),
     CONSTRAINT transcript_erasure_tombstone_counts
         CHECK (segment_deleted_count >= 0 AND finalization_deleted_count >= 0
             AND association_deleted_count >= 0),
     CONSTRAINT transcript_erasure_tombstone_completion
         CHECK ((status = 'COMPLETE' AND completed_at IS NOT NULL)
-            OR (status = 'HELD' AND completed_at IS NULL)),
+            OR (status IN ('READY', 'HELD') AND completed_at IS NULL)),
     CONSTRAINT ux_transcript_erasure_tombstone_session
         UNIQUE (tenant_id, meeting_id, session_id)
 );
@@ -45,7 +45,7 @@ CREATE TABLE transcript_session_erasure_audit (
     audit_payload               VARCHAR(32)  NOT NULL DEFAULT 'metadata-only',
     executed_at                 TIMESTAMPTZ  NOT NULL,
     CONSTRAINT transcript_session_erasure_audit_state
-        CHECK (state IN ('HELD', 'COMPLETE')),
+        CHECK (state IN ('READY', 'HELD', 'COMPLETE')),
     CONSTRAINT transcript_session_erasure_audit_counts
         CHECK (segment_deleted_count >= 0 AND finalization_deleted_count >= 0
             AND association_deleted_count >= 0),
@@ -55,6 +55,37 @@ CREATE TABLE transcript_session_erasure_audit (
 
 CREATE INDEX idx_transcript_session_erasure_audit_tombstone
     ON transcript_session_erasure_audit(tombstone_id, executed_at DESC);
+
+CREATE FUNCTION reject_transcript_hold_after_erasure_prepare()
+RETURNS TRIGGER AS $$
+DECLARE
+    erasure_prepared BOOLEAN := FALSE;
+BEGIN
+    IF NEW.legal_hold = TRUE
+       AND OLD.legal_hold = FALSE THEN
+        EXECUTE format(
+            'SELECT EXISTS (' ||
+            'SELECT 1 FROM %I.transcript_session_erasure_tombstones t ' ||
+            'WHERE t.tenant_id = $1 AND t.meeting_id = $2 AND t.session_id = $3 ' ||
+            'AND t.status IN (''READY'', ''COMPLETE''))',
+            TG_TABLE_SCHEMA
+        )
+        INTO erasure_prepared
+        USING NEW.tenant_id, NEW.meeting_id, NEW.session_id;
+
+        IF erasure_prepared THEN
+            RAISE EXCEPTION 'TRANSCRIPT_ERASURE_ALREADY_PREPARED'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER transcript_hold_after_erasure_prepare_guard
+    BEFORE UPDATE OF legal_hold ON transcript_finalizations
+    FOR EACH ROW
+    EXECUTE FUNCTION reject_transcript_hold_after_erasure_prepare();
 
 COMMENT ON TABLE transcript_session_erasure_tombstones IS
     'Permanent canonical/source-session replay fence. Contains no transcript, raw source alias, token or free-form error.';

@@ -44,16 +44,27 @@ public class HttpTranscriptSessionErasureClient implements TranscriptSessionEras
     }
 
     @Override
+    public Result prepare(UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId) {
+        return invoke(tenantId, meetingId, sessionId, sourceSessionId, true);
+    }
+
+    @Override
     public Result erase(UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId) {
+        return invoke(tenantId, meetingId, sessionId, sourceSessionId, false);
+    }
+
+    private Result invoke(
+            UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId,
+            boolean prepare) {
         try {
-            return call(tenantId, meetingId, sessionId, sourceSessionId);
+            return call(tenantId, meetingId, sessionId, sourceSessionId, prepare);
         } catch (RemoteErasureException ex) {
             throw ex;
         } catch (RestClientResponseException ex) {
             if (ex.getStatusCode().value() == HttpStatus.UNAUTHORIZED.value()) {
                 tokens.invalidate();
                 try {
-                    return call(tenantId, meetingId, sessionId, sourceSessionId);
+                    return call(tenantId, meetingId, sessionId, sourceSessionId, prepare);
                 } catch (RemoteErasureException retryFailure) {
                     throw retryFailure;
                 } catch (RestClientException | IllegalStateException retryFailure) {
@@ -69,11 +80,14 @@ public class HttpTranscriptSessionErasureClient implements TranscriptSessionEras
         }
     }
 
-    private Result call(UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId) {
+    private Result call(
+            UUID tenantId, UUID meetingId, UUID sessionId, String sourceSessionId,
+            boolean prepare) {
         ErasureResponse response = restClient.post()
                 .uri(properties.getTranscriptServiceBaseUrl()
                                 + "/api/v1/internal/tenants/{tenantId}/meetings/{meetingId}"
-                                + "/sessions/{sessionId}/erasure",
+                                + "/sessions/{sessionId}/erasure"
+                                + (prepare ? "/prepare" : ""),
                         tenantId, meetingId, sessionId)
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + tokens.token())
                 .body(new ErasureRequest(sourceSessionId))
@@ -85,13 +99,14 @@ public class HttpTranscriptSessionErasureClient implements TranscriptSessionEras
         if (response.status() == Result.Status.HELD) {
             return new Result(Result.Status.HELD, 0);
         }
-        if (response.status() != Result.Status.COMPLETE
-                || !tenantId.equals(response.tenantId())
+        boolean acceptedStatus = response.status() == Result.Status.COMPLETE
+                || (prepare && response.status() == Result.Status.READY);
+        if (!acceptedStatus || !tenantId.equals(response.tenantId())
                 || !meetingId.equals(response.meetingId())
                 || !sessionId.equals(response.sessionId())) {
             throw new RemoteErasureException("REMOTE_SCOPE_MISMATCH");
         }
-        return new Result(Result.Status.COMPLETE, Math.max(0, response.deletedCount()));
+        return new Result(response.status(), Math.max(0, response.deletedCount()));
     }
 
     record ErasureRequest(String sourceSessionId) {

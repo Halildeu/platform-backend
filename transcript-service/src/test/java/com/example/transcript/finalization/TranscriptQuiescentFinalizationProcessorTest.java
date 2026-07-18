@@ -19,6 +19,7 @@ import com.example.transcript.repository.TranscriptEventOutboxRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import com.example.transcript.service.SessionErasureFence;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Duration;
@@ -46,6 +47,7 @@ class TranscriptQuiescentFinalizationProcessorTest {
     private final TranscriptSegmentRepository segments = mock(TranscriptSegmentRepository.class);
     private final TranscriptFinalizationRepository finalizations = mock(TranscriptFinalizationRepository.class);
     private final TranscriptEventOutboxRepository outbox = mock(TranscriptEventOutboxRepository.class);
+    private final SessionErasureFence erasureFence = mock(SessionErasureFence.class);
     private TranscriptQuiescentFinalizationProcessor processor;
 
     @BeforeEach
@@ -92,6 +94,7 @@ class TranscriptQuiescentFinalizationProcessorTest {
                 new TranscriptFinalizationStateMachine(properties),
                 new FinalizedTranscriptSnapshotCodec(
                         new TranscriptSnapshotHasher(), new ObjectMapper()),
+                erasureFence,
                 Clock.fixed(now, ZoneOffset.UTC));
     }
 
@@ -199,6 +202,7 @@ class TranscriptQuiescentFinalizationProcessorTest {
         association.setFinalizationCycleVersion(1);
         association.setQuiescenceDueAt(NOW);
         association.setMaxWaitAt(maxWaitAt);
+        when(associations.findById(ASSOCIATION_ID)).thenReturn(Optional.of(association));
         return association;
     }
 

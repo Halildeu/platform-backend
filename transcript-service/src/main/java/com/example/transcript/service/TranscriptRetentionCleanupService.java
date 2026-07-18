@@ -1,6 +1,7 @@
 package com.example.transcript.service;
 
 import com.example.transcript.model.TranscriptRetentionDestructionAudit;
+import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.repository.TranscriptAccessAuditRepository;
 import com.example.transcript.repository.TranscriptRetentionDestructionAuditRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
@@ -16,7 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Faz 24 #156 retention cleanup for transcript personal data and access logs.
@@ -38,6 +41,7 @@ public class TranscriptRetentionCleanupService {
     private final TranscriptAccessAuditRepository accessAuditRepository;
     private final TranscriptFinalizationRepository finalizationRepository;
     private final TranscriptRetentionDestructionAuditRepository destructionAuditRepository;
+    private final SourceWindowRetentionFence sourceWindowRetentionFence;
     private final int transcriptRetentionDays;
     private final int accessAuditRetentionDays;
     private final int cleanupBatchSize;
@@ -48,6 +52,7 @@ public class TranscriptRetentionCleanupService {
             TranscriptFinalizationRepository finalizationRepository,
             TranscriptAccessAuditRepository accessAuditRepository,
             TranscriptRetentionDestructionAuditRepository destructionAuditRepository,
+            SourceWindowRetentionFence sourceWindowRetentionFence,
             @Value("${transcript.retention.transcript-records-days:365}") int transcriptRetentionDays,
             @Value("${transcript.retention.access-audit-days:730}") int accessAuditRetentionDays,
             @Value("${transcript.retention.cleanup-batch-size:1000}") int cleanupBatchSize,
@@ -56,6 +61,7 @@ public class TranscriptRetentionCleanupService {
         this.finalizationRepository = finalizationRepository;
         this.accessAuditRepository = accessAuditRepository;
         this.destructionAuditRepository = destructionAuditRepository;
+        this.sourceWindowRetentionFence = sourceWindowRetentionFence;
         this.transcriptRetentionDays = transcriptRetentionDays;
         this.accessAuditRetentionDays = accessAuditRetentionDays;
         this.cleanupBatchSize = cleanupBatchSize;
@@ -117,10 +123,22 @@ public class TranscriptRetentionCleanupService {
             if (ids.isEmpty()) {
                 return deleted;
             }
+            List<TranscriptSegment> candidates = segmentRepository.findAllById(ids);
             int batchDeleted = segmentRepository.deleteByIdIn(ids);
             if (batchDeleted <= 0) {
                 throw new IllegalStateException("transcript segment retention cleanup made no progress");
             }
+            Set<UUID> survivors = segmentRepository.findAllById(ids).stream()
+                    .map(TranscriptSegment::getId)
+                    .collect(Collectors.toSet());
+            List<TranscriptSegment> destroyed = candidates.stream()
+                    .filter(candidate -> !survivors.contains(candidate.getId()))
+                    .toList();
+            if (destroyed.size() != batchDeleted) {
+                throw new IllegalStateException(
+                        "transcript segment retention cleanup could not reconcile destroyed rows");
+            }
+            sourceWindowRetentionFence.recordDestroyed(destroyed, cutoff);
             deleted += batchDeleted;
         }
         if (!segmentRepository.findExpiredIds(cutoff, PageRequest.of(0, 1)).isEmpty()) {
