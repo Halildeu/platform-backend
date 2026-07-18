@@ -1,0 +1,31 @@
+name: CI - Auth Token Evidence
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  auth-service-token-mint-evidence:
+    name: auth-service transcript token mint evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Pre-install reactor dependencies
+        run: ./mvnw -q -DskipTests install -pl auth-service -am
+
+      - name: Run exact auth-service token mint tests
+        run: ./mvnw -q -pl auth-service test -Dtest='MeetingAiServiceTokenMintTest,TranscriptServiceBlankSecretTokenMintTest' -Dsurefire.failIfNoSpecifiedTests=true
