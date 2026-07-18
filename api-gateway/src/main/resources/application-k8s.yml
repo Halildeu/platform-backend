@@ -88,6 +88,13 @@ spring:
           uri: ${MEETING_SERVICE_URL:http://meeting-service:8097}
           predicates:
             - Path=/api/v1/admin/meetings/**
+        # Faz 35 ES-007/ES-204: authenticated Etik Speak staff surface.
+        # Public reporter routes deliberately bypass the suite gateway and use
+        # ethics-service's disjoint public filter chain.
+        - id: ethics-service-staff
+          uri: ${ETHICS_SERVICE_URL:http://ethics-service:8099}
+          predicates:
+            - Path=/api/v1/ethics/**
         # Faz 22.1.1 H2 endpoint-admin gateway routes (Codex 019e4c3f AGREE):
         # Path-segment rewrite so the gateway-public URL surface stays
         # `/api/v1/endpoint-{agent,admin,status}/**` while the downstream

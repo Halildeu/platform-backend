@@ -34,6 +34,7 @@ on:
           - meeting-service
           - transcript-service
           - audit-event-consumer-service
+          - ethics-service
 
 permissions:
   contents: read
@@ -68,6 +69,7 @@ jobs:
           - meeting-service
           - transcript-service
           - audit-event-consumer-service
+          - ethics-service
 
     steps:
       - name: Checkout

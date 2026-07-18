@@ -34,5 +34,7 @@
         <module>audit-retention-worker</module>
         <!-- Faz 26 (ADR-0033) Governed Process & Work Platform — isolated product, separate store/board -->
         <module>gp-core-service</module>
+        <!-- Faz 35 Etik Speak — isolated public intake and staff case service -->
+        <module>ethics-service</module>
     </modules>
 </project>
