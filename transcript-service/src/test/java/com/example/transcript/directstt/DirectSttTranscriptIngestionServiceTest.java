@@ -12,8 +12,12 @@ import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
+import com.example.transcript.finalization.TranscriptFinalizationStateMachine;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,8 +35,13 @@ class DirectSttTranscriptIngestionServiceTest {
     private final TranscriptSessionAssociationRepository associations =
             mock(TranscriptSessionAssociationRepository.class);
     private final TranscriptSessionAssociation association = mock(TranscriptSessionAssociation.class);
+    private final TranscriptFinalizationStateMachine finalizationStateMachine =
+            mock(TranscriptFinalizationStateMachine.class);
+    private final Clock clock = Clock.fixed(
+            Instant.parse("2026-07-17T14:00:00Z"), ZoneOffset.UTC);
     private final DirectSttTranscriptIngestionService service =
-            new DirectSttTranscriptIngestionService(segments, associations);
+            new DirectSttTranscriptIngestionService(
+                    segments, associations, finalizationStateMachine, clock);
 
     @BeforeEach
     void resolvedAssociation() {
@@ -68,6 +77,9 @@ class DirectSttTranscriptIngestionServiceTest {
         assertThat(saved.getValue().getSourceChunkSeq()).isEqualTo(5L);
         assertThat(saved.getValue().getTextDraft()).isEqualTo("merhaba dunya");
         assertThat(saved.getValue().getStatus()).isEqualTo(TranscriptSegmentStatus.DRAFT);
+        verify(finalizationStateMachine).recordDistinctContent(
+                association, Instant.parse("2026-07-17T14:00:00Z"));
+        verify(associations).saveAndFlush(association);
     }
 
     @Test
@@ -90,6 +102,7 @@ class DirectSttTranscriptIngestionServiceTest {
 
         assertThat(result.textDraft()).isEqualTo("original");
         verify(segments, never()).saveAndFlush(any());
+        verify(finalizationStateMachine, never()).recordDistinctContent(any(), any());
     }
 
     @Test
@@ -139,15 +152,22 @@ class DirectSttTranscriptIngestionServiceTest {
     }
 
     @Test
-    void postFinalizationNewChunkIsRejected() {
+    void postFinalizationNewWindowIsPersistedAndStartsAnotherCycle() {
         when(association.getFinalizationVersion()).thenReturn(1L);
         when(segments.findDirectSttSourceWindow(TENANT, MEETING, "SES-abc", 3L))
                 .thenReturn(Optional.empty());
+        when(segments.saveAndFlush(any())).thenAnswer(invocation -> {
+            TranscriptSegment row = invocation.getArgument(0);
+            row.setId(SEGMENT);
+            return row;
+        });
 
-        assertThatThrownBy(() -> service.upsert(
-                event("2-0", 3L, 6L, 6L, "late window"), SESSION))
-                .isInstanceOf(DirectSttTranscriptIngestionService.TranscriptAlreadyFinalizedException.class);
-        verify(segments, never()).saveAndFlush(any());
+        var result = service.upsert(
+                event("2-0", 3L, 6L, 6L, "late window"), SESSION);
+
+        assertThat(result.textDraft()).isEqualTo("late window");
+        verify(finalizationStateMachine).recordDistinctContent(
+                association, Instant.parse("2026-07-17T14:00:00Z"));
     }
 
     private TranscriptSegment storedSegment(

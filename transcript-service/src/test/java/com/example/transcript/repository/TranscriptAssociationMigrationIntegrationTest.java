@@ -16,7 +16,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** Runs the V3 to V6 upgrade path against rows written by the old consumer. */
+/** Runs the V3 to latest upgrade path against rows written by the old consumer. */
 @Testcontainers
 class TranscriptAssociationMigrationIntegrationTest {
 
@@ -31,7 +31,7 @@ class TranscriptAssociationMigrationIntegrationTest {
                     .withPassword("test");
 
     @Test
-    void v6BackfillsWindowIdentityAndEnforcesMeetingScopedWindowUniqueness()
+    void latestMigrationBackfillsWindowIdentityAndAddsRestartSafeFinalizationState()
             throws Exception {
         migrateTo("3");
         UUID tenant = UUID.randomUUID();
@@ -51,6 +51,11 @@ class TranscriptAssociationMigrationIntegrationTest {
                     "SELECT status FROM " + SCHEMA + ".transcript_session_associations "
                             + "WHERE tenant_id = ? AND meeting_id = ? AND source_session_id = 'SES-legacy'",
                     tenant, meeting)).isEqualTo("PENDING");
+            assertThat(singleString(connection,
+                    "SELECT finalization_state || ':' || finalization_cycle_version FROM "
+                            + SCHEMA + ".transcript_session_associations "
+                            + "WHERE tenant_id = ? AND meeting_id = ? AND source_session_id = 'SES-legacy'",
+                    tenant, meeting)).isEqualTo("AWAITING_FINISH:0");
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM " + SCHEMA + ".transcript_segments "
                             + "WHERE tenant_id = ? AND meeting_id = ? AND session_id IS NULL",
@@ -107,6 +112,30 @@ class TranscriptAssociationMigrationIntegrationTest {
                     "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
                             + "AND indexname = 'ux_transcript_segments_direct_stt_window'",
                     SCHEMA)).isEqualTo(1L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.tables "
+                            + "WHERE table_schema = ? "
+                            + "AND table_name = 'transcript_meeting_event_inbox'",
+                    SCHEMA)).isEqualTo(1L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.columns "
+                            + "WHERE table_schema = ? "
+                            + "AND table_name = 'transcript_meeting_event_inbox' "
+                            + "AND column_name IN ('event_key','event_type','payload_sha256',"
+                            + "'tenant_id','org_id','meeting_id','session_id','source_session_id',"
+                            + "'received_at','processed_at')",
+                    SCHEMA)).isEqualTo(10L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.columns "
+                            + "WHERE table_schema = ? "
+                            + "AND table_name = 'transcript_meeting_event_inbox' "
+                            + "AND column_name IN ('payload','transcript','text_draft','text_final')",
+                    SCHEMA)).isZero();
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
+                            + "AND indexname IN ('idx_transcript_session_association_finalization_due',"
+                            + "'idx_transcript_meeting_event_inbox_scope')",
+                    SCHEMA)).isEqualTo(2L);
         }
     }
 

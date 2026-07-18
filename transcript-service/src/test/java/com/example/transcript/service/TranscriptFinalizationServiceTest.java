@@ -11,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.transcript.model.TranscriptEventOutbox;
+import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptFinalization;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
@@ -72,6 +73,7 @@ class TranscriptFinalizationServiceTest {
                 .thenReturn(List.of(finalSegment("approved transcript")));
         service = new TranscriptFinalizationService(
                 associations, segments, finalizations, outbox,
+                new TranscriptSnapshotHasher(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

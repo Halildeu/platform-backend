@@ -64,6 +64,34 @@ public class TranscriptSessionAssociation {
     @Column(name = "finalization_version", nullable = false)
     private long finalizationVersion;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "finalization_state", nullable = false, length = 24)
+    private TranscriptFinalizationState finalizationState;
+
+    @Column(name = "finalization_cycle_version", nullable = false)
+    private long finalizationCycleVersion;
+
+    @Column(name = "recording_finished_at")
+    private Instant recordingFinishedAt;
+
+    @Column(name = "finish_observed_at")
+    private Instant finishObservedAt;
+
+    @Column(name = "last_content_changed_at")
+    private Instant lastContentChangedAt;
+
+    @Column(name = "min_wait_at")
+    private Instant minWaitAt;
+
+    @Column(name = "quiescence_due_at")
+    private Instant quiescenceDueAt;
+
+    @Column(name = "max_wait_at")
+    private Instant maxWaitAt;
+
+    @Column(name = "finalization_error_code", length = 64)
+    private String finalizationErrorCode;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -133,6 +161,37 @@ public class TranscriptSessionAssociation {
     public void setFinalizationVersion(long finalizationVersion) {
         this.finalizationVersion = finalizationVersion;
     }
+
+    public TranscriptFinalizationState getFinalizationState() {
+        return finalizationState;
+    }
+
+    public void setFinalizationState(TranscriptFinalizationState finalizationState) {
+        this.finalizationState = finalizationState;
+    }
+
+    public long getFinalizationCycleVersion() {
+        return finalizationCycleVersion;
+    }
+
+    public void setFinalizationCycleVersion(long finalizationCycleVersion) {
+        this.finalizationCycleVersion = finalizationCycleVersion;
+    }
+
+    public Instant getRecordingFinishedAt() { return recordingFinishedAt; }
+    public void setRecordingFinishedAt(Instant value) { this.recordingFinishedAt = value; }
+    public Instant getFinishObservedAt() { return finishObservedAt; }
+    public void setFinishObservedAt(Instant value) { this.finishObservedAt = value; }
+    public Instant getLastContentChangedAt() { return lastContentChangedAt; }
+    public void setLastContentChangedAt(Instant value) { this.lastContentChangedAt = value; }
+    public Instant getMinWaitAt() { return minWaitAt; }
+    public void setMinWaitAt(Instant value) { this.minWaitAt = value; }
+    public Instant getQuiescenceDueAt() { return quiescenceDueAt; }
+    public void setQuiescenceDueAt(Instant value) { this.quiescenceDueAt = value; }
+    public Instant getMaxWaitAt() { return maxWaitAt; }
+    public void setMaxWaitAt(Instant value) { this.maxWaitAt = value; }
+    public String getFinalizationErrorCode() { return finalizationErrorCode; }
+    public void setFinalizationErrorCode(String value) { this.finalizationErrorCode = value; }
 
     public Instant getCreatedAt() {
         return createdAt;

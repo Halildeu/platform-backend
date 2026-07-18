@@ -1,12 +1,14 @@
 package com.example.transcript.directstt;
 
 import com.example.transcript.dto.TranscriptSegmentDto;
+import com.example.transcript.finalization.TranscriptFinalizationStateMachine;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
+import java.time.Clock;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -18,12 +20,18 @@ public class DirectSttTranscriptIngestionService {
 
     private final TranscriptSegmentRepository segments;
     private final TranscriptSessionAssociationRepository associations;
+    private final TranscriptFinalizationStateMachine finalizationStateMachine;
+    private final Clock clock;
 
     public DirectSttTranscriptIngestionService(
             TranscriptSegmentRepository segments,
-            TranscriptSessionAssociationRepository associations) {
+            TranscriptSessionAssociationRepository associations,
+            TranscriptFinalizationStateMachine finalizationStateMachine,
+            Clock transcriptFinalizationClock) {
         this.segments = segments;
         this.associations = associations;
+        this.finalizationStateMachine = finalizationStateMachine;
+        this.clock = transcriptFinalizationClock;
     }
 
     @Transactional
@@ -53,9 +61,6 @@ public class DirectSttTranscriptIngestionService {
             }
             return TranscriptSegmentDto.from(segment);
         } else {
-            if (association.getFinalizationVersion() > 0) {
-                throw new TranscriptAlreadyFinalizedException();
-            }
             segment = new TranscriptSegment();
             segment.setTenantId(event.tenantId());
             segment.setOrgId(event.tenantId());
@@ -80,7 +85,10 @@ public class DirectSttTranscriptIngestionService {
         segment.setSourceEventId(event.entryId());
         segment.setSourceSha256(event.sha256());
         segment.setSourceCorrelationId(event.correlationId());
-        return TranscriptSegmentDto.from(segments.saveAndFlush(segment));
+        TranscriptSegment saved = segments.saveAndFlush(segment);
+        finalizationStateMachine.recordDistinctContent(association, clock.instant());
+        associations.saveAndFlush(association);
+        return TranscriptSegmentDto.from(saved);
     }
 
     private boolean sameSourceContent(
@@ -127,9 +135,4 @@ public class DirectSttTranscriptIngestionService {
         }
     }
 
-    public static class TranscriptAlreadyFinalizedException extends IllegalStateException {
-        public TranscriptAlreadyFinalizedException() {
-            super("new source windows are rejected after transcript finalization");
-        }
-    }
 }

@@ -97,6 +97,21 @@ transcript:
       error-backoff-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_ERROR_BACKOFF_MILLIS:1000}
       claim-min-idle-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_CLAIM_MIN_IDLE_MILLIS:60000}
       claim-batch-size: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_CLAIM_BATCH_SIZE:32}
+  finalization:
+    recording-finished-consumer:
+      enabled: ${TRANSCRIPT_RECORDING_FINISHED_CONSUMER_ENABLED:false}
+      stream-key: ${TRANSCRIPT_RECORDING_FINISHED_STREAM_KEY:meeting:events}
+      dlq-stream-key: ${TRANSCRIPT_RECORDING_FINISHED_DLQ_STREAM_KEY:meeting:events:transcript-finalization:dlq}
+      group-name: ${TRANSCRIPT_RECORDING_FINISHED_GROUP_NAME:transcript-finalization-v1}
+      consumer-name: ${TRANSCRIPT_RECORDING_FINISHED_CONSUMER_NAME:${HOSTNAME:transcript-service-1}}
+    worker:
+      enabled: ${TRANSCRIPT_FINALIZATION_WORKER_ENABLED:false}
+      poll-delay-ms: ${TRANSCRIPT_FINALIZATION_WORKER_POLL_DELAY_MS:5000}
+      batch-size: ${TRANSCRIPT_FINALIZATION_WORKER_BATCH_SIZE:50}
+    timing:
+      quiescence: ${TRANSCRIPT_FINALIZATION_QUIESCENCE:PT1M}
+      min-wait: ${TRANSCRIPT_FINALIZATION_MIN_WAIT:PT6M}
+      max-wait: ${TRANSCRIPT_FINALIZATION_MAX_WAIT:PT15M}
 
 logging:
   level:

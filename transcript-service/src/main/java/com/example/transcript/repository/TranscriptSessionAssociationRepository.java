@@ -22,9 +22,10 @@ public interface TranscriptSessionAssociationRepository
         INSERT INTO {h-schema}transcript_session_associations
             (id, tenant_id, org_id, meeting_id, source_system, source_session_id,
              status, resolution_attempts, finalization_version,
+             finalization_state, finalization_cycle_version,
              created_at, updated_at, version)
         VALUES (:id, :tenantId, :tenantId, :meetingId, :sourceSystem, :sourceSessionId,
-                'PENDING', 0, 0, :now, :now, 0)
+                'PENDING', 0, 0, 'AWAITING_FINISH', 0, :now, :now, 0)
         ON CONFLICT (tenant_id, meeting_id, source_system, source_session_id) DO NOTHING
         """, nativeQuery = true)
     int insertPendingIfAbsent(
@@ -33,6 +34,40 @@ public interface TranscriptSessionAssociationRepository
             @Param("meetingId") UUID meetingId,
             @Param("sourceSystem") String sourceSystem,
             @Param("sourceSessionId") String sourceSessionId,
+            @Param("now") Instant now);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+        INSERT INTO {h-schema}transcript_session_associations
+            (id, tenant_id, org_id, meeting_id, source_system, source_session_id,
+             session_id, status, resolution_attempts, finalization_version,
+             finalization_state, finalization_cycle_version,
+             created_at, updated_at, version)
+        VALUES (:id, :tenantId, :tenantId, :meetingId, :sourceSystem, :sourceSessionId,
+                :sessionId, 'RESOLVED', 0, 0, 'AWAITING_FINISH', 0,
+                :now, :now, 0)
+        ON CONFLICT (tenant_id, meeting_id, source_system, source_session_id) DO NOTHING
+        """, nativeQuery = true)
+    int insertResolvedIfAbsent(
+            @Param("id") UUID id,
+            @Param("tenantId") UUID tenantId,
+            @Param("meetingId") UUID meetingId,
+            @Param("sourceSystem") String sourceSystem,
+            @Param("sourceSessionId") String sourceSessionId,
+            @Param("sessionId") UUID sessionId,
+            @Param("now") Instant now);
+
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+        UPDATE {h-schema}transcript_session_associations
+        SET status = 'RESOLVED', session_id = :sessionId,
+            claim_token = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+            last_error_code = NULL, updated_at = :now, version = version + 1
+        WHERE id = :id AND session_id IS NULL AND status IN ('PENDING', 'RESOLVING')
+        """, nativeQuery = true)
+    int bindResolvedFromFinishedEvent(
+            @Param("id") UUID id,
+            @Param("sessionId") UUID sessionId,
             @Param("now") Instant now);
 
     Optional<TranscriptSessionAssociation> findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
@@ -64,6 +99,19 @@ public interface TranscriptSessionAssociationRepository
             @Param("tenantId") UUID tenantId,
             @Param("meetingId") UUID meetingId,
             @Param("sessionId") UUID sessionId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from TranscriptSessionAssociation a where a.id = :id")
+    Optional<TranscriptSessionAssociation> findByIdForUpdate(@Param("id") UUID id);
+
+    @Query("""
+            select a.id from TranscriptSessionAssociation a
+            where a.status = com.example.transcript.model.TranscriptSessionAssociationStatus.RESOLVED
+              and a.finalizationState = com.example.transcript.model.TranscriptFinalizationState.QUIESCING
+              and a.quiescenceDueAt <= :now
+            order by a.quiescenceDueAt asc, a.id asc
+            """)
+    List<UUID> findDueFinalizationIds(@Param("now") Instant now, Pageable pageable);
 
     @Modifying(clearAutomatically = true)
     @Query(value = """
