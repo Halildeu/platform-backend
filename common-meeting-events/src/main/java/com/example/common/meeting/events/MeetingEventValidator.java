@@ -138,11 +138,34 @@ public final class MeetingEventValidator {
                             + " for " + p.eventType().wireValue());
                 }
             }
+            case MeetingEventPayload.TranscriptReady p -> {
+                requireNotNull(errors, p.transcriptSessionId(), "payload.transcriptSessionId");
+                if (p.finalizationVersion() < 1) {
+                    errors.add("payload.finalizationVersion must be >= 1 but was "
+                            + p.finalizationVersion());
+                }
+                if (p.segmentCount() < 1) {
+                    errors.add("payload.segmentCount must be >= 1 but was " + p.segmentCount());
+                }
+                if (envelope.aggregateId() != null
+                        && p.transcriptSessionId() != null
+                        && !envelope.aggregateId().equals(p.transcriptSessionId())) {
+                    errors.add("aggregateId " + envelope.aggregateId()
+                            + " must equal payload.transcriptSessionId " + p.transcriptSessionId()
+                            + " for " + p.eventType().wireValue());
+                }
+                if (envelope.aggregateRevision() != p.finalizationVersion()) {
+                    errors.add("aggregateRevision " + envelope.aggregateRevision()
+                            + " must equal payload.finalizationVersion " + p.finalizationVersion()
+                            + " for " + p.eventType().wireValue());
+                }
+            }
         }
 
         // Coherence: for the v1 analysis events the aggregate IS the run. If these ever
         // drift apart, the outbox row and its payload would describe different things.
         if (!(payload instanceof MeetingEventPayload.ConsentRevoked)
+                && !(payload instanceof MeetingEventPayload.TranscriptReady)
                 && envelope.aggregateId() != null
                 && payload.analysisRunId() != null
                 && !envelope.aggregateId().equals(payload.analysisRunId())) {

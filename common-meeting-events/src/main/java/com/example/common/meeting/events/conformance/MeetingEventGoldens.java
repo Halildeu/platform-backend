@@ -37,6 +37,9 @@ public final class MeetingEventGoldens {
     public static final UUID TENANT_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
     /** Fixture org id — the populated case; the null-holes fixtures leave it unset. */
     public static final UUID ORG_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
+    /** Fixture canonical meeting session id for transcript-ready. */
+    public static final UUID TRANSCRIPT_SESSION_ID =
+            UUID.fromString("55555555-5555-5555-5555-555555555555");
     /** Fixture {@code occurredAt} / v1 {@code generatedAt}. */
     public static final Instant GENERATED_AT = Instant.parse("2026-07-11T10:00:00Z");
     /** Fixture action due date. */
@@ -79,6 +82,11 @@ public final class MeetingEventGoldens {
     /** {@code meeting.action.assigned} with every nullable field null. */
     public static String actionAssignedNullHoles() {
         return read("action-assigned-null-holes.json");
+    }
+
+    /** Fully populated {@code meeting.transcript.ready}. */
+    public static String transcriptReady() {
+        return read("transcript-ready.json");
     }
 
     /** The frozen v1 event key for the fixture summary event. */

@@ -67,7 +67,7 @@ public final class MeetingEventV1Serializer {
     static Map<String, Object> fields(final MeetingEventEnvelope envelope) {
         final MeetingEventPayload payload = envelope.payload();
 
-        // The v1 envelope prefix, identical for both types.
+        // The v1 envelope prefix, identical for every event type.
         final Map<String, Object> json = new LinkedHashMap<>();
         json.put("schema", SCHEMA);
         json.put("eventType", envelope.eventType().wireValue());
@@ -99,6 +99,11 @@ public final class MeetingEventV1Serializer {
                 json.put("consentVersion", p.consentVersion());
                 json.put("consentRevision", p.consentRevision());
                 json.put("reasonCode", p.reasonCode());
+            }
+            case MeetingEventPayload.TranscriptReady p -> {
+                json.put("transcriptSessionId", text(p.transcriptSessionId()));
+                json.put("finalizationVersion", p.finalizationVersion());
+                json.put("segmentCount", p.segmentCount());
             }
         }
         return json;

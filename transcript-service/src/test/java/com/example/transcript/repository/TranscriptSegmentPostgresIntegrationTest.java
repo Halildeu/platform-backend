@@ -224,28 +224,46 @@ class TranscriptSegmentPostgresIntegrationTest {
     }
 
     @Test
-    void directSttSourceChunkUniqueIndex_rejectsDuplicateTenantSessionChunk() {
+    void directSttSourceWindowUniqueIndex_rejectsDuplicateWindowButNotDuplicateLastChunk() {
         UUID org = UUID.randomUUID();
         UUID meeting = UUID.randomUUID();
         Timestamp now = Timestamp.from(Instant.parse("2026-06-25T10:00:00Z"));
         jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
                         + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
-                        + " source_system, source_session_id, source_chunk_seq, "
+                        + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
+                        + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
                         + "VALUES (?, ?, ?, ?, 0.0, 1.0, 'first', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 5, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 5, 2, 3, 5, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now);
 
+        jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
+                        + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
+                        + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
+                        + " source_first_chunk_seq, source_last_chunk_seq, "
+                        + " created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, 2.0, 3.0, 'next window', 'DRAFT', "
+                        + " 'DIRECT_STT', 'SES-abc', 5, 3, 5, 5, ?, ?, 0)",
+                UUID.randomUUID(), org, org, meeting, now, now);
+
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM " + SCHEMA + ".transcript_segments "
+                        + "WHERE tenant_id = ? AND meeting_id = ? AND source_session_id = 'SES-abc'",
+                Long.class, org, meeting)).isEqualTo(2L);
+
+        // Keep the expected violation last: @DataJpaTest wraps the method in a
+        // transaction and PostgreSQL aborts that transaction after 23505.
         assertThatThrownBy(() -> jdbc.update("INSERT INTO " + SCHEMA + ".transcript_segments "
                         + "(id, tenant_id, org_id, meeting_id, start_time, end_time, text_draft, status, "
-                        + " source_system, source_session_id, source_chunk_seq, "
+                        + " source_system, source_session_id, source_chunk_seq, source_window_seq, "
+                        + " source_first_chunk_seq, source_last_chunk_seq, "
                         + " created_at, updated_at, version) "
                         + "VALUES (?, ?, ?, ?, 1.0, 2.0, 'duplicate', 'DRAFT', "
-                        + " 'DIRECT_STT', 'SES-abc', 5, ?, ?, 0)",
+                        + " 'DIRECT_STT', 'SES-abc', 6, 2, 6, 6, ?, ?, 0)",
                 UUID.randomUUID(), org, org, meeting, now, now))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(t -> assertThat(rootSqlState(t))
-                        .as("duplicate direct-STT source chunk must be unique_violation")
+                        .as("duplicate direct-STT source window must be unique_violation")
                         .isEqualTo("23505"));
     }
 

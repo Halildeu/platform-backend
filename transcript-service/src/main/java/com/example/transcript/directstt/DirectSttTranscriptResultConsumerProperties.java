@@ -16,6 +16,7 @@ public class DirectSttTranscriptResultConsumerProperties {
     private final Stream stream = new Stream();
     private final Group group = new Group();
     private final Poll poll = new Poll();
+    private final Mapping mapping = new Mapping();
 
     public boolean isEnabled() {
         return enabled;
@@ -43,6 +44,10 @@ public class DirectSttTranscriptResultConsumerProperties {
 
     public Poll getPoll() {
         return poll;
+    }
+
+    public Mapping getMapping() {
+        return mapping;
     }
 
     public static class Stream {
@@ -124,5 +129,49 @@ public class DirectSttTranscriptResultConsumerProperties {
         public void setClaimBatchSize(int claimBatchSize) {
             this.claimBatchSize = claimBatchSize;
         }
+    }
+
+    /** Canonical meeting-session resolver + bounded reconciliation controls. */
+    public static class Mapping {
+        private boolean enabled = false;
+        private String meetingServiceBaseUrl = "http://meeting-service:8097";
+        private String tokenUrl = "http://auth-service:8088/oauth2/token";
+        private String clientId = "transcript-service";
+        private String clientSecret = "";
+        private int connectTimeoutMillis = 2_000;
+        private int responseTimeoutMillis = 3_000;
+        private int maxAttempts = 8;
+        private long initialBackoffMillis = 5_000L;
+        private long maxBackoffMillis = 300_000L;
+        private long claimLeaseMillis = 30_000L;
+        private int reconciliationBatchSize = 50;
+        private long reconciliationPollMillis = 30_000L;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public String getMeetingServiceBaseUrl() { return meetingServiceBaseUrl; }
+        public void setMeetingServiceBaseUrl(String value) { this.meetingServiceBaseUrl = value; }
+        public String getTokenUrl() { return tokenUrl; }
+        public void setTokenUrl(String value) { this.tokenUrl = value; }
+        public String getClientId() { return clientId; }
+        public void setClientId(String value) { this.clientId = value; }
+        public String getClientSecret() { return clientSecret; }
+        public void setClientSecret(String value) { this.clientSecret = value; }
+        public int getConnectTimeoutMillis() { return connectTimeoutMillis; }
+        public void setConnectTimeoutMillis(int value) { this.connectTimeoutMillis = value; }
+        public int getResponseTimeoutMillis() { return responseTimeoutMillis; }
+        public void setResponseTimeoutMillis(int value) { this.responseTimeoutMillis = value; }
+        public int getMaxAttempts() { return maxAttempts; }
+        public void setMaxAttempts(int value) { this.maxAttempts = value; }
+        public long getInitialBackoffMillis() { return initialBackoffMillis; }
+        public void setInitialBackoffMillis(long value) { this.initialBackoffMillis = value; }
+        public long getMaxBackoffMillis() { return maxBackoffMillis; }
+        public void setMaxBackoffMillis(long value) { this.maxBackoffMillis = value; }
+        public long getClaimLeaseMillis() { return claimLeaseMillis; }
+        public void setClaimLeaseMillis(long value) { this.claimLeaseMillis = value; }
+        public int getReconciliationBatchSize() { return reconciliationBatchSize; }
+        public void setReconciliationBatchSize(int value) { this.reconciliationBatchSize = value; }
+        public long getReconciliationPollMillis() { return reconciliationPollMillis; }
+        public void setReconciliationPollMillis(long value) { this.reconciliationPollMillis = value; }
     }
 }

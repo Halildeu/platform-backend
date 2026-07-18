@@ -43,6 +43,10 @@ import org.springframework.test.web.servlet.MvcResult;
         "security.service-clients.clients.meeting-ai.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.meeting-ai.allowed-permissions[0]=meeting:analysis-result:write",
         "security.service-clients.clients.meeting-ai.require-explicit-permissions=true",
+        "security.service-clients.clients.transcript-service.secret=transcript-secret",
+        "security.service-clients.clients.transcript-service.allowed-audiences[0]=meeting-service",
+        "security.service-clients.clients.transcript-service.allowed-permissions[0]=meeting:session:resolve",
+        "security.service-clients.clients.transcript-service.require-explicit-permissions=true",
         "security.service-clients.clients.other-service.secret=test-secret-2",
         "security.service-clients.clients.other-service.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.other-service.allowed-permissions[0]=permissions:read",
@@ -55,7 +59,7 @@ import org.springframework.test.web.servlet.MvcResult;
         "security.service-clients.clients.unprovisioned-ai.allowed-audiences[0]=meeting-service",
         "security.service-clients.clients.unprovisioned-ai.allowed-permissions[0]=meeting:analysis-result:write",
         "security.service-mint.allowed-audiences=meeting-service",
-        "security.service-mint.allowed-permissions=meeting:analysis-result:write,permissions:read",
+        "security.service-mint.allowed-permissions=meeting:analysis-result:write,meeting:session:resolve,permissions:read",
         "security.service-mint.rate-limit-per-minute=100",
         "auth.impersonation.keycloak-token-url=http://localhost:9999/token",
         "auth.impersonation.keycloak-broker-url=http://localhost:9999/broker",
@@ -101,6 +105,39 @@ class MeetingAiServiceTokenMintTest {
         assertEquals("meeting-ai", claims.getStringClaim("svc"));
         assertEquals(java.util.List.of("meeting-service"), claims.getAudience());
         assertEquals(java.util.List.of("meeting:analysis-result:write"), claims.getStringListClaim("perm"));
+    }
+
+    @Test
+    void transcriptServiceMintsOnlySessionResolvePermission() throws Exception {
+        MvcResult result = mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("transcript-service", "transcript-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=meeting-service"
+                                + "&permissions=meeting:session:resolve"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").isNotEmpty())
+                .andReturn();
+
+        JWTClaimsSet claims = claims(result);
+        assertEquals("transcript-service", claims.getSubject());
+        assertEquals(java.util.List.of("meeting-service"), claims.getAudience());
+        assertEquals(java.util.List.of("meeting:session:resolve"), claims.getStringListClaim("perm"));
+    }
+
+    @Test
+    void servicePermissionsRemainClientLocalAcrossSharedAudience() throws Exception {
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("transcript-service", "transcript-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=meeting-service"
+                                + "&permissions=meeting:analysis-result:write"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/oauth2/token")
+                        .header("Authorization", basic("meeting-ai", "test-secret"))
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                        .content("grant_type=client_credentials&audience=meeting-service"
+                                + "&permissions=meeting:session:resolve"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

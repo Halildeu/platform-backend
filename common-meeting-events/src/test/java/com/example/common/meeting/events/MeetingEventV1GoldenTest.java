@@ -27,6 +27,12 @@ class MeetingEventV1GoldenTest {
     }
 
     @Test
+    void transcriptReady_rendersTheGoldenBytes() {
+        assertThat(MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.transcriptReady()))
+                .isEqualTo(MeetingEventGoldens.transcriptReady());
+    }
+
+    @Test
     void summaryReady_nullableFieldsRenderAsExplicitNulls_notOmitted() {
         String json = MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.summaryReadyNullHoles());
 
@@ -51,6 +57,9 @@ class MeetingEventV1GoldenTest {
         assertThat(MeetingEventTestEnvelopes.actionAssigned().eventKey())
                 .isEqualTo(MeetingEventGoldens.actionAssignedKey())
                 .isEqualTo(MeetingEventGoldens.RUN_ID + "|meeting.action.assigned|0");
+        assertThat(MeetingEventTestEnvelopes.transcriptReady().eventKey())
+                .isEqualTo("meeting.transcript|" + MeetingEventGoldens.TRANSCRIPT_SESSION_ID
+                        + "|meeting.transcript.ready|1");
     }
 
     @Test

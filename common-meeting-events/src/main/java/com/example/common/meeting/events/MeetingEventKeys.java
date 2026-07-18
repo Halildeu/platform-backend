@@ -109,6 +109,11 @@ public final class MeetingEventKeys {
                     p.captureId(),
                     MeetingEventType.CONSENT_REVOKED,
                     p.consentRevision());
+            case MeetingEventPayload.TranscriptReady p -> occurrenceKey(
+                    "meeting.transcript",
+                    p.transcriptSessionId(),
+                    MeetingEventType.TRANSCRIPT_READY,
+                    p.finalizationVersion());
         };
     }
 

@@ -83,6 +83,39 @@ transcript:
       error-backoff-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_ERROR_BACKOFF_MILLIS:1000}
       claim-min-idle-millis: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_CLAIM_MIN_IDLE_MILLIS:60000}
       claim-batch-size: ${TRANSCRIPT_DIRECT_STT_RESULT_CONSUMER_CLAIM_BATCH_SIZE:32}
+    mapping:
+      # Separate activation gate: enabling stream ingestion without a canonical
+      # resolver remains fail-closed and exhausts into the metadata-only DLQ.
+      enabled: ${TRANSCRIPT_MEETING_SESSION_RESOLVER_ENABLED:false}
+      meeting-service-base-url: ${TRANSCRIPT_MEETING_SERVICE_BASE_URL:http://meeting-service:8097}
+      token-url: ${TRANSCRIPT_MEETING_SERVICE_TOKEN_URL:http://auth-service:8088/oauth2/token}
+      client-id: ${TRANSCRIPT_MEETING_SERVICE_CLIENT_ID:transcript-service}
+      client-secret: ${TRANSCRIPT_MEETING_SERVICE_CLIENT_SECRET:}
+      connect-timeout-millis: ${TRANSCRIPT_MEETING_SESSION_CONNECT_TIMEOUT_MILLIS:2000}
+      response-timeout-millis: ${TRANSCRIPT_MEETING_SESSION_RESPONSE_TIMEOUT_MILLIS:3000}
+      max-attempts: ${TRANSCRIPT_MEETING_SESSION_MAX_ATTEMPTS:8}
+      initial-backoff-millis: ${TRANSCRIPT_MEETING_SESSION_INITIAL_BACKOFF_MILLIS:5000}
+      max-backoff-millis: ${TRANSCRIPT_MEETING_SESSION_MAX_BACKOFF_MILLIS:300000}
+      claim-lease-millis: ${TRANSCRIPT_MEETING_SESSION_CLAIM_LEASE_MILLIS:30000}
+      reconciliation-batch-size: ${TRANSCRIPT_MEETING_SESSION_RECONCILIATION_BATCH_SIZE:50}
+      reconciliation-poll-millis: ${TRANSCRIPT_MEETING_SESSION_RECONCILIATION_POLL_MILLIS:30000}
+  events:
+    redis:
+      # Producer outbox remains durable while transport is disabled. Enabling
+      # this and the poller is one coordinated runtime rollout gate. A mismatch
+      # fails application startup before the poller can consume retry budget.
+      enabled: ${TRANSCRIPT_MEETING_EVENTS_REDIS_ENABLED:false}
+      stream-key: ${TRANSCRIPT_MEETING_EVENTS_REDIS_STREAM_KEY:meeting:events}
+    outbox:
+      poller:
+        enabled: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_POLLER_ENABLED:false}
+      scheduling-enabled: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_SCHEDULING_ENABLED:true}
+      poll-delay-ms: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_POLL_DELAY_MS:5000}
+      batch-size: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_BATCH_SIZE:100}
+      lease-duration-ms: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_LEASE_DURATION_MS:60000}
+      max-attempts: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_MAX_ATTEMPTS:8}
+      retry-delay-ms: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_RETRY_DELAY_MS:5000}
+      owner: ${TRANSCRIPT_MEETING_EVENTS_OUTBOX_OWNER:}
 
 management:
   health:

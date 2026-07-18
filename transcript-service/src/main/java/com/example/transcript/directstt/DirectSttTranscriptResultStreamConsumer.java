@@ -2,6 +2,8 @@ package com.example.transcript.directstt;
 
 import com.example.transcript.directstt.DirectSttTranscriptResultHandler.HandleOutcome;
 import jakarta.annotation.PreDestroy;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Metrics;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.dao.DataAccessException;
@@ -40,17 +43,28 @@ public class DirectSttTranscriptResultStreamConsumer {
     private final StringRedisTemplate redis;
     private final DirectSttTranscriptResultHandler handler;
     private final DirectSttTranscriptResultConsumerProperties props;
+    private final MeterRegistry meters;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean groupReady = new AtomicBoolean(false);
     private volatile Thread loopThread;
 
+    @Autowired
     public DirectSttTranscriptResultStreamConsumer(
             StringRedisTemplate redis,
             DirectSttTranscriptResultHandler handler,
-            DirectSttTranscriptResultConsumerProperties props) {
+            DirectSttTranscriptResultConsumerProperties props,
+            MeterRegistry meters) {
         this.redis = redis;
         this.handler = handler;
         this.props = props;
+        this.meters = meters;
+    }
+
+    DirectSttTranscriptResultStreamConsumer(
+            StringRedisTemplate redis,
+            DirectSttTranscriptResultHandler handler,
+            DirectSttTranscriptResultConsumerProperties props) {
+        this(redis, handler, props, Metrics.globalRegistry);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -189,10 +203,29 @@ public class DirectSttTranscriptResultStreamConsumer {
         switch (outcome.result()) {
             case PROCESSED -> {
                 ack(record);
+                meters.counter("transcript_direct_stt_processed_total").increment();
                 log.debug("Direct-STT transcript routed entryId={} sessionId={} chunkSeq={}",
                         entryId, fields.get("sessionId"), fields.get("chunkSeq"));
             }
+            case PENDING -> {
+                meters.counter("transcript_direct_stt_pending_total", "reason", safeReason(outcome.reason()))
+                        .increment();
+                log.info("Direct-STT transcript pending canonical session mapping entryId={} sessionId={} reason={}",
+                        entryId, fields.get("sessionId"), safeReason(outcome.reason()));
+            }
+            case DEAD -> {
+                meters.counter("transcript_direct_stt_dead_total", "reason", safeReason(outcome.reason()))
+                        .increment();
+                if (writeMetadataOnlyDlq(fields, entryId, safeReason(outcome.reason()))) {
+                    ack(record);
+                } else {
+                    log.error("Direct-STT transcript dead mapping DLQ write failed; leaving entry unacked entryId={}",
+                            entryId);
+                }
+            }
             case INVALID -> {
+                meters.counter("transcript_direct_stt_invalid_total", "reason", safeReason(outcome.reason()))
+                        .increment();
                 if (writeMetadataOnlyDlq(fields, entryId, outcome.reason())) {
                     ack(record);
                 } else {
@@ -214,7 +247,6 @@ public class DirectSttTranscriptResultStreamConsumer {
             copyIfPresent(sourceFields, dlq, "eventType");
             copyIfPresent(sourceFields, dlq, "sessionId");
             copyIfPresent(sourceFields, dlq, "tenantId");
-            copyIfPresent(sourceFields, dlq, "userId");
             copyIfPresent(sourceFields, dlq, "meetingId");
             copyIfPresent(sourceFields, dlq, "chunkSeq");
             copyIfPresent(sourceFields, dlq, "chunkStartedAtMs");
@@ -243,6 +275,14 @@ public class DirectSttTranscriptResultStreamConsumer {
         if (value != null) {
             target.put(key, value);
         }
+    }
+
+    private static String safeReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "UNSPECIFIED";
+        }
+        String normalized = reason.replaceAll("[^A-Za-z0-9_]", "_");
+        return normalized.substring(0, Math.min(normalized.length(), 64));
     }
 
     private static Map<String, String> toStringFields(MapRecord<String, ?, ?> record) {

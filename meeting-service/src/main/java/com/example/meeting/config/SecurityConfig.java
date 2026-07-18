@@ -34,10 +34,9 @@ import org.springframework.util.StringUtils;
  * Resource-server security for meeting-service. Three ordered filter chains:
  *
  * <ol>
- *   <li>{@code @Order(1)} internal service-to-service chain — ai#244 BE-1b.
- *       {@code /api/v1/internal/meetings/**} gated on the
- *       {@code SVC_meeting:analysis-result:write} authority (auth-service
- *       SERVICE token only).</li>
+ *   <li>{@code @Order(1)} internal service-to-service chain — auth-service
+ *       SERVICE tokens only. Controllers enforce the exact analysis-write or
+ *       session-resolve permission for each route.</li>
  *   <li>{@code @Order(2)} admin chain — {@code /api/v1/admin/**} gated on the
  *       coarse admin authorities; {@code @RequireModule} OpenFGA is the
  *       fine-grained gate at the controllers.</li>
@@ -62,6 +61,7 @@ public class SecurityConfig {
      * issuer, so a Keycloak USER token can never obtain it.
      */
     static final String SVC_ANALYSIS_RESULT_WRITE = "SVC_meeting:analysis-result:write";
+    static final String SVC_SESSION_RESOLVE = "SVC_meeting:session:resolve";
 
     private final Environment environment;
 
@@ -78,10 +78,8 @@ public class SecurityConfig {
      * issuer is the service issuer, and the env-gated service decoder is the
      * ONLY decoder that will validate a service-issuer token.
      *
-     * <p>BE-1b mounts NO production controller under this path — the ingestion
-     * endpoint arrives in BE-1c. The chain is wired ahead of the surface so the
-     * security boundary exists before the endpoint does (chain-only production;
-     * the exercising controller is test-scoped).
+     * <p>Each production controller under this path adds a method-level exact
+     * authority check; admission to this chain alone is not route authorization.
      */
     @Bean
     @Order(1)
@@ -94,7 +92,11 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .anyRequest().hasAuthority(SVC_ANALYSIS_RESULT_WRITE))
+                        // Controllers apply the exact per-route authority as a second
+                        // gate. The chain admits only the two meeting-service service
+                        // permissions; unrelated authenticated service tokens stay out.
+                        .anyRequest().hasAnyAuthority(
+                                SVC_ANALYSIS_RESULT_WRITE, SVC_SESSION_RESOLVE))
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
                         .jwtAuthenticationConverter(jwtAuthenticationConverter)));
@@ -170,17 +172,14 @@ public class SecurityConfig {
         String serviceIssuer = resolveServiceIssuer();
         List<String> serviceAudiences = csvToList(firstNonBlank(
                 environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_AUDIENCE"),
-                environment.getProperty("meeting.internal.service-jwt.audience"),
-                "meeting-service"
+                environment.getProperty("meeting.internal.service-jwt.audience")
         ));
         List<String> serviceClientIds = csvToList(firstNonBlank(
+                environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS"),
+                environment.getProperty("meeting.internal.service-jwt.client-ids"),
                 environment.getProperty("MEETING_INTERNAL_SERVICE_JWT_CLIENT_ID"),
                 environment.getProperty("meeting.internal.service-jwt.client-id")
         ));
-        if (serviceClientIds.isEmpty()) {
-            throw new IllegalStateException(
-                    "internal service JWT client id is required when the service JWKS is enabled");
-        }
         JwtDecoder serviceDecoder = buildInternalServiceDecoder(
                 serviceJwkSetUri, serviceIssuer, serviceAudiences, serviceClientIds);
         return new FallbackJwtDecoder(List.of(keycloakDecoder, serviceDecoder));
@@ -242,16 +241,35 @@ public class SecurityConfig {
             String issuer,
             Collection<String> audiences,
             Collection<String> expectedClientIds) {
+        requireInternalServiceTrustConfig(issuer, audiences, expectedClientIds);
         List<OAuth2TokenValidator<Jwt>> validators = new ArrayList<>();
-        if (StringUtils.hasText(issuer)) {
-            validators.add(JwtValidators.createDefaultWithIssuer(issuer));
-        } else {
-            validators.add(JwtValidators.createDefault());
-        }
+        validators.add(JwtValidators.createDefaultWithIssuer(issuer));
         validators.add(new AudienceValidator(audiences));
         validators.add(new ExpectedServiceClientValidator(expectedClientIds));
         return new DelegatingOAuth2TokenValidator<>(
                 validators.toArray(new OAuth2TokenValidator[0]));
+    }
+
+    private static void requireInternalServiceTrustConfig(
+            String issuer,
+            Collection<String> audiences,
+            Collection<String> expectedClientIds) {
+        if (!StringUtils.hasText(issuer)) {
+            throw new IllegalArgumentException(
+                    "internal service JWT issuer is required when the service JWKS is enabled");
+        }
+        if (!containsText(audiences)) {
+            throw new IllegalArgumentException(
+                    "internal service JWT audience is required when the service JWKS is enabled");
+        }
+        if (!containsText(expectedClientIds)) {
+            throw new IllegalArgumentException(
+                    "internal service JWT client allowlist is required when the service JWKS is enabled");
+        }
+    }
+
+    private static boolean containsText(Collection<String> values) {
+        return values != null && values.stream().anyMatch(StringUtils::hasText);
     }
 
     @Bean

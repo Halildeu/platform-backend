@@ -10,9 +10,9 @@ import java.util.Optional;
  * {@code event_type} column. Producers persist the wire value (not the enum name) so
  * the store and every downstream consumer see the same canonical string.
  *
- * <p><b>Only shipped types live here.</b> {@code meeting.transcript.ready} remains a
- * later #802 slice. {@code meeting.consent.revoked} is public only after its producer
- * contract was fixed in slice 2.
+ * <p><b>Only shipped types live here.</b> A type is added together with its typed
+ * payload, validation, deterministic key and golden wire fixture; publishing a name
+ * alone would create a contract no producer can honour.
  */
 public enum MeetingEventType {
 
@@ -23,7 +23,10 @@ public enum MeetingEventType {
     ACTION_ASSIGNED("meeting.action.assigned"),
 
     /** A user withdrew recording consent for one capture occurrence. */
-    CONSENT_REVOKED("meeting.consent.revoked");
+    CONSENT_REVOKED("meeting.consent.revoked"),
+
+    /** A canonical transcript session was explicitly finalized and is ready to read. */
+    TRANSCRIPT_READY("meeting.transcript.ready");
 
     private final String wireValue;
 

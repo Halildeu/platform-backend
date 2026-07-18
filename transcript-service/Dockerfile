@@ -1,6 +1,6 @@
 ## Build Stage
 # Faz 24 transcript-service — multi-module build: common-auth + common-export +
-# transcript-service (mirrors endpoint-admin-service Dockerfile).
+# common-meeting-events + transcript-service (mirrors endpoint-admin-service Dockerfile).
 FROM maven:3.9-eclipse-temurin-21 AS build
 
 WORKDIR /app
@@ -13,14 +13,19 @@ COPY common-auth/src ./common-auth/src
 COPY common-export/pom.xml ./common-export/pom.xml
 COPY common-export/src ./common-export/src
 
+# common-meeting-events dependency (shared meeting.event.v1 contract): pom + src
+COPY common-meeting-events/pom.xml ./common-meeting-events/pom.xml
+COPY common-meeting-events/src ./common-meeting-events/src
+
 # transcript-service pom + src
 COPY transcript-service/pom.xml ./transcript-service/pom.xml
 COPY transcript-service/src ./transcript-service/src
 
-# common-auth + common-export are not on Maven Central — install them into the
-# local repo first so the clean Docker build can resolve them.
+# Reactor-local dependencies are not on Maven Central. Install them into the
+# image build's local repository before packaging transcript-service.
 RUN mvn -f common-auth/pom.xml clean install -Dmaven.test.skip=true -q
 RUN mvn -f common-export/pom.xml clean install -Dmaven.test.skip=true -q
+RUN mvn -f common-meeting-events/pom.xml clean install -Dmaven.test.skip=true -q
 
 # Then package transcript-service.
 RUN mvn -f transcript-service/pom.xml clean package -Dmaven.test.skip=true -q

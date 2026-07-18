@@ -16,6 +16,7 @@ import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.dto.MeetingRecordingAccessResponse;
+import com.example.meeting.dto.v1.internal.MeetingSessionResolutionResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingActionStatus;
@@ -246,6 +247,29 @@ public class MeetingService {
     public MeetingSessionResponse getSession(AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
         requireMeeting(tenant, meetingId);
         return toSessionResponse(requireSession(tenant, meetingId, sessionId));
+    }
+
+    /**
+     * Resolve the canonical session UUID for a recorder-owned external id.
+     *
+     * <p>This is intentionally not an {@link AdminTenantContext} path: the caller
+     * is a service principal, while the tenant scope comes from the accepted
+     * Direct-STT event and remains part of the repository predicate. Missing and
+     * cross-tenant associations both return 404.
+     */
+    @Transactional(readOnly = true)
+    public MeetingSessionResolutionResponse resolveSession(
+            UUID tenantId, UUID meetingId, String externalSessionId) {
+        MeetingSession session = sessionRepository.findByExternalSessionIdVisibleToOrg(
+                        meetingId, externalSessionId, tenantId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Meeting session association not found."));
+        return new MeetingSessionResolutionResponse(
+                session.getTenantId(),
+                session.getEffectiveOrgId(),
+                session.getMeetingId(),
+                session.getId(),
+                session.getExternalSessionId());
     }
 
     @Transactional
