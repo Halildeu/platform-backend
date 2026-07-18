@@ -441,9 +441,11 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
         UUID id = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO %s.meeting_event_outbox
-                  (id, event_type, aggregate_id, meeting_id, tenant_id, org_id,
+                  (id, event_type, aggregate_type, aggregate_id, aggregate_revision,
+                   meeting_id, tenant_id, org_id,
                    payload, event_key, status, attempts, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, 'PENDING', 0, ?, ?)
+                VALUES (?, ?, 'meeting.analysis.run', ?, 0, ?, ?, ?,
+                        CAST(? AS jsonb), ?, 'PENDING', 0, ?, ?)
                 """.formatted(SCHEMA),
                 id, eventType, seed.runId, seed.meetingId, seed.orgId, seed.orgId,
                 "{\"eventType\":\"" + eventType + "\"}", eventKey, now(), now());
@@ -455,10 +457,12 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
         Timestamp past = Timestamp.from(Instant.now().minusSeconds(120));
         jdbc.update("""
                 INSERT INTO %s.meeting_event_outbox
-                  (id, event_type, aggregate_id, meeting_id, tenant_id, org_id,
+                  (id, event_type, aggregate_type, aggregate_id, aggregate_revision,
+                   meeting_id, tenant_id, org_id,
                    payload, event_key, status, claim_token, processing_owner,
                    claimed_at, lease_expires_at, attempts, created_at, updated_at)
-                VALUES (?, 'meeting.summary.ready', ?, ?, ?, ?, CAST('{}' AS jsonb), ?, 'CLAIMED',
+                VALUES (?, 'meeting.summary.ready', 'meeting.analysis.run', ?, 0,
+                        ?, ?, ?, CAST('{}' AS jsonb), ?, 'CLAIMED',
                         ?, 'dead-pod', ?, ?, 0, ?, ?)
                 """.formatted(SCHEMA),
                 id, seed.runId, seed.meetingId, seed.orgId, seed.orgId, eventKey,
@@ -470,9 +474,11 @@ class MeetingEventOutboxPollerPostgresIntegrationTest {
             throws java.sql.SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO " + SCHEMA + ".meeting_event_outbox "
-                        + "(id, event_type, aggregate_id, meeting_id, tenant_id, org_id, payload, event_key, "
+                        + "(id, event_type, aggregate_type, aggregate_id, aggregate_revision, "
+                        + "meeting_id, tenant_id, org_id, payload, event_key, "
                         + " status, attempts, created_at, updated_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, 'PENDING', 0, ?, ?)")) {
+                        + "VALUES (?, ?, 'meeting.analysis.run', ?, 0, ?, ?, ?, "
+                        + "CAST(? AS jsonb), ?, 'PENDING', 0, ?, ?)")) {
             Timestamp now = now();
             ps.setObject(1, id);
             ps.setString(2, eventType);

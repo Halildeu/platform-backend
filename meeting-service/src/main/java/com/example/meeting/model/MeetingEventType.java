@@ -16,7 +16,10 @@ public enum MeetingEventType {
     SUMMARY_READY("meeting.summary.ready"),
 
     /** An AI-extracted action item has a real, non-blank assignee. */
-    ACTION_ASSIGNED("meeting.action.assigned");
+    ACTION_ASSIGNED("meeting.action.assigned"),
+
+    /** A recording session acquired its first immutable end timestamp. */
+    RECORDING_FINISHED("meeting.recording.finished");
 
     private final String wireValue;
 

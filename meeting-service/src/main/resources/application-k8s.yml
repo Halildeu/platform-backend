@@ -17,6 +17,14 @@ spring:
     hikari:
       maximum-pool-size: ${DB_POOL_MAX:10}
       connection-timeout: 30000
+  data:
+    redis:
+      host: ${MEETING_REDIS_HOST:redis}
+      port: ${MEETING_REDIS_PORT:6379}
+      username: ${MEETING_REDIS_USERNAME:}
+      password: ${MEETING_REDIS_PASSWORD:}
+      ssl:
+        enabled: ${MEETING_REDIS_SSL_ENABLED:false}
   jpa:
     hibernate:
       ddl-auto: ${SPRING_JPA_HIBERNATE_DDL_AUTO:validate}
@@ -72,6 +80,19 @@ meeting:
     analyze-path: ${MEETING_AI_ANALYZE_PATH:/analyze}
     request-timeout: ${MEETING_AI_REQUEST_TIMEOUT:30s}
     max-transcript-chars: ${MEETING_AI_MAX_TRANSCRIPT_CHARS:200000}
+  events:
+    redis:
+      enabled: ${MEETING_EVENTS_REDIS_ENABLED:false}
+      stream-key: ${MEETING_EVENTS_REDIS_STREAM_KEY:meeting:events}
+    outbox:
+      poller:
+        enabled: ${MEETING_EVENTS_OUTBOX_POLLER_ENABLED:false}
+      scheduling-enabled: ${MEETING_EVENTS_OUTBOX_SCHEDULING_ENABLED:true}
+      poll-delay-ms: ${MEETING_EVENTS_OUTBOX_POLL_DELAY_MS:5000}
+      batch-size: ${MEETING_EVENTS_OUTBOX_BATCH_SIZE:100}
+      lease-duration-ms: ${MEETING_EVENTS_OUTBOX_LEASE_DURATION_MS:60000}
+      max-attempts: ${MEETING_EVENTS_OUTBOX_MAX_ATTEMPTS:8}
+      owner: ${MEETING_EVENTS_OUTBOX_OWNER:}
   internal:
     # ai#244 BE-1b — auth-service SERVICE-token trust for the internal
     # analysis-result ingestion path (/api/v1/internal/meetings/**). A BLANK
@@ -91,6 +112,9 @@ server:
   port: ${SERVER_PORT:8097}
 
 management:
+  health:
+    redis:
+      enabled: ${MEETING_REDIS_HEALTH_ENABLED:false}
   server:
     port: ${MANAGEMENT_SERVER_PORT:8081}
   endpoints:

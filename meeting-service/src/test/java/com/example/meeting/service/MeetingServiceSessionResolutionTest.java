@@ -10,6 +10,7 @@ import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.model.MeetingSession;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
+import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingSessionRepository;
 import java.util.Optional;
@@ -36,7 +37,7 @@ class MeetingServiceSessionResolutionTest {
         service = new MeetingService(
                 mock(MeetingRepository.class), sessions,
                 mock(MeetingActionRepository.class), mock(MeetingDecisionRepository.class),
-                authz, false, false);
+                mock(MeetingEventOutboxRepository.class), authz, false, false);
     }
 
     @Test

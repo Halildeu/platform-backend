@@ -100,10 +100,20 @@ public final class MeetingEventV1Serializer {
                 json.put("consentRevision", p.consentRevision());
                 json.put("reasonCode", p.reasonCode());
             }
+            case MeetingEventPayload.RecordingFinished p -> {
+                json.put("recordingSessionId", text(p.recordingSessionId()));
+                json.put("externalSessionId", p.externalSessionId());
+                json.put("finishedAt", text(p.finishedAt()));
+            }
             case MeetingEventPayload.TranscriptReady p -> {
                 json.put("transcriptSessionId", text(p.transcriptSessionId()));
                 json.put("finalizationVersion", p.finalizationVersion());
                 json.put("segmentCount", p.segmentCount());
+            }
+            case MeetingEventPayload.TranscriptFailed p -> {
+                json.put("transcriptSessionId", text(p.transcriptSessionId()));
+                json.put("finalizationVersion", p.finalizationVersion());
+                json.put("reasonCode", p.reasonCode());
             }
         }
         return json;

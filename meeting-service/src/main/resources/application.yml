@@ -8,6 +8,14 @@ spring:
     url: ${SPRING_DATASOURCE_URL:${MEETING_DB_URL:jdbc:postgresql://localhost:5432/meeting}}
     username: ${SPRING_DATASOURCE_USERNAME:${MEETING_DB_USERNAME:postgres}}
     password: ${SPRING_DATASOURCE_PASSWORD:${MEETING_DB_PASSWORD:postgres}}
+  data:
+    redis:
+      host: ${MEETING_REDIS_HOST:localhost}
+      port: ${MEETING_REDIS_PORT:6379}
+      username: ${MEETING_REDIS_USERNAME:}
+      password: ${MEETING_REDIS_PASSWORD:}
+      ssl:
+        enabled: ${MEETING_REDIS_SSL_ENABLED:false}
   jpa:
     hibernate:
       ddl-auto: none
@@ -62,6 +70,21 @@ meeting:
     cleanup-cron: ${MEETING_RETENTION_CLEANUP_CRON:0 31 2 * * *}
     cleanup-batch-size: ${MEETING_RETENTION_CLEANUP_BATCH_SIZE:1000}
     cleanup-max-batches-per-run: ${MEETING_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN:100}
+  events:
+    redis:
+      # Publisher + poller form one rollout unit. Both are default-off and a
+      # mismatch fails startup before any retry budget can be consumed.
+      enabled: ${MEETING_EVENTS_REDIS_ENABLED:false}
+      stream-key: ${MEETING_EVENTS_REDIS_STREAM_KEY:meeting:events}
+    outbox:
+      poller:
+        enabled: ${MEETING_EVENTS_OUTBOX_POLLER_ENABLED:false}
+      scheduling-enabled: ${MEETING_EVENTS_OUTBOX_SCHEDULING_ENABLED:true}
+      poll-delay-ms: ${MEETING_EVENTS_OUTBOX_POLL_DELAY_MS:5000}
+      batch-size: ${MEETING_EVENTS_OUTBOX_BATCH_SIZE:100}
+      lease-duration-ms: ${MEETING_EVENTS_OUTBOX_LEASE_DURATION_MS:60000}
+      max-attempts: ${MEETING_EVENTS_OUTBOX_MAX_ATTEMPTS:8}
+      owner: ${MEETING_EVENTS_OUTBOX_OWNER:}
   internal:
     # ai#244 BE-1b — auth-service SERVICE-token trust for the internal
     # analysis-result ingestion path (/api/v1/internal/meetings/**). A BLANK
@@ -76,6 +99,9 @@ meeting:
       client-ids: ${MEETING_INTERNAL_SERVICE_JWT_CLIENT_IDS:}
 
 management:
+  health:
+    redis:
+      enabled: ${MEETING_REDIS_HEALTH_ENABLED:false}
   endpoints:
     web:
       exposure:

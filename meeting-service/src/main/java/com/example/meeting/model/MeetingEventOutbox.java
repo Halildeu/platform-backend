@@ -50,9 +50,17 @@ public class MeetingEventOutbox {
     @Column(name = "event_type", nullable = false, length = 64, updatable = false)
     private String eventType;
 
-    /** The producing analysis_run_id. */
+    /** Producer-owned aggregate scope (for example {@code meeting.recording}). */
+    @Column(name = "aggregate_type", nullable = false, length = 64, updatable = false)
+    private String aggregateType;
+
+    /** The producing analysis run or recording session id, scoped by {@link #aggregateType}. */
     @Column(name = "aggregate_id", nullable = false, updatable = false)
     private UUID aggregateId;
+
+    /** Stable occurrence revision used in the deterministic event key. */
+    @Column(name = "aggregate_revision", nullable = false, updatable = false)
+    private long aggregateRevision;
 
     @Column(name = "meeting_id", nullable = false, updatable = false)
     private UUID meetingId;
@@ -66,6 +74,10 @@ public class MeetingEventOutbox {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "payload", nullable = false, updatable = false)
     private String payload;
+
+    /** Canonical serializer output preserved outside JSONB normalization. */
+    @Column(name = "payload_raw", columnDefinition = "text", updatable = false)
+    private String payloadRaw;
 
     /** Deterministic idempotency key; UNIQUE. */
     @Column(name = "event_key", nullable = false, length = 200, updatable = false)
@@ -137,6 +149,22 @@ public class MeetingEventOutbox {
         return aggregateId;
     }
 
+    public String getAggregateType() {
+        return aggregateType;
+    }
+
+    public void setAggregateType(final String aggregateType) {
+        this.aggregateType = aggregateType;
+    }
+
+    public long getAggregateRevision() {
+        return aggregateRevision;
+    }
+
+    public void setAggregateRevision(final long aggregateRevision) {
+        this.aggregateRevision = aggregateRevision;
+    }
+
     public void setAggregateId(final UUID aggregateId) {
         this.aggregateId = aggregateId;
     }
@@ -171,6 +199,14 @@ public class MeetingEventOutbox {
 
     public void setPayload(final String payload) {
         this.payload = payload;
+    }
+
+    public String getPayloadRaw() {
+        return payloadRaw;
+    }
+
+    public void setPayloadRaw(final String payloadRaw) {
+        this.payloadRaw = payloadRaw;
     }
 
     public String getEventKey() {

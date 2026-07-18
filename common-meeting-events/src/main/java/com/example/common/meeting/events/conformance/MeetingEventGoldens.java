@@ -40,6 +40,11 @@ public final class MeetingEventGoldens {
     /** Fixture canonical meeting session id for transcript-ready. */
     public static final UUID TRANSCRIPT_SESSION_ID =
             UUID.fromString("55555555-5555-5555-5555-555555555555");
+    /** Fixture canonical meeting recording session id. */
+    public static final UUID RECORDING_SESSION_ID =
+            UUID.fromString("66666666-6666-4666-8666-666666666666");
+    /** Fixture stable audio-gateway session identity. */
+    public static final String EXTERNAL_SESSION_ID = "SES-42";
     /** Fixture {@code occurredAt} / v1 {@code generatedAt}. */
     public static final Instant GENERATED_AT = Instant.parse("2026-07-11T10:00:00Z");
     /** Fixture action due date. */
@@ -87,6 +92,21 @@ public final class MeetingEventGoldens {
     /** Fully populated {@code meeting.transcript.ready}. */
     public static String transcriptReady() {
         return read("transcript-ready.json");
+    }
+
+    /** Fully populated metadata-only {@code meeting.recording.finished}. */
+    public static String recordingFinished() {
+        return read("recording-finished.json");
+    }
+
+    /** Fully populated metadata-only {@code meeting.transcript.failed}. */
+    public static String transcriptFailed() {
+        return read("transcript-failed.json");
+    }
+
+    /** Invalid canonical segment variant of {@code meeting.transcript.failed}. */
+    public static String transcriptFailedInvalidCanonicalSegment() {
+        return read("transcript-failed-invalid-canonical-segment.json");
     }
 
     /** The frozen v1 event key for the fixture summary event. */

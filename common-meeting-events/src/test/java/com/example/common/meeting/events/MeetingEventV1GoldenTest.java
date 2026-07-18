@@ -33,6 +33,21 @@ class MeetingEventV1GoldenTest {
     }
 
     @Test
+    void recordingFinished_rendersTheGoldenBytes() {
+        assertThat(MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.recordingFinished()))
+                .isEqualTo(MeetingEventGoldens.recordingFinished());
+    }
+
+    @Test
+    void transcriptFailed_rendersTheGoldenBytes() {
+        assertThat(MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.transcriptFailed()))
+                .isEqualTo(MeetingEventGoldens.transcriptFailed());
+        assertThat(MeetingEventV1Serializer.toJson(
+                MeetingEventTestEnvelopes.transcriptFailedInvalidCanonicalSegment()))
+                .isEqualTo(MeetingEventGoldens.transcriptFailedInvalidCanonicalSegment());
+    }
+
+    @Test
     void summaryReady_nullableFieldsRenderAsExplicitNulls_notOmitted() {
         String json = MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.summaryReadyNullHoles());
 
@@ -60,6 +75,12 @@ class MeetingEventV1GoldenTest {
         assertThat(MeetingEventTestEnvelopes.transcriptReady().eventKey())
                 .isEqualTo("meeting.transcript|" + MeetingEventGoldens.TRANSCRIPT_SESSION_ID
                         + "|meeting.transcript.ready|1");
+        assertThat(MeetingEventTestEnvelopes.recordingFinished().eventKey())
+                .isEqualTo("meeting.recording|" + MeetingEventGoldens.RECORDING_SESSION_ID
+                        + "|meeting.recording.finished|1");
+        assertThat(MeetingEventTestEnvelopes.transcriptFailed().eventKey())
+                .isEqualTo("meeting.transcript|" + MeetingEventGoldens.TRANSCRIPT_SESSION_ID
+                        + "|meeting.transcript.failed|1");
     }
 
     @Test

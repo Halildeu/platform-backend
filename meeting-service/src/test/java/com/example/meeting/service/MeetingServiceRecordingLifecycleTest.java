@@ -10,14 +10,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.example.meeting.dto.v1.admin.MeetingSessionCreateRequest;
+import com.example.meeting.dto.v1.admin.MeetingSessionUpdateRequest;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingSession;
 import com.example.meeting.model.MeetingStatus;
+import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
+import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingSessionRepository;
 import com.example.meeting.security.AdminTenantContext;
@@ -31,6 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.beans.factory.ObjectProvider;
@@ -53,6 +58,7 @@ class MeetingServiceRecordingLifecycleTest {
     @Mock private MeetingSessionRepository sessionRepository;
     @Mock private MeetingActionRepository actionRepository;
     @Mock private MeetingDecisionRepository decisionRepository;
+    @Mock private MeetingEventOutboxRepository eventOutboxRepository;
     @Mock private ObjectProvider<OpenFgaAuthzService> authzProvider;
     @Mock private OpenFgaAuthzService authzService;
 
@@ -64,9 +70,9 @@ class MeetingServiceRecordingLifecycleTest {
     void setUp() {
         service = new MeetingService(
                 meetingRepository, sessionRepository, actionRepository, decisionRepository,
-                authzProvider, false, false);
+                eventOutboxRepository, authzProvider, false, false);
         meeting = meeting(MeetingStatus.SCHEDULED);
-        when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
+        lenient().when(meetingRepository.findVisibleToOrgAndIdForUpdate(TENANT_ID, MEETING_ID))
                 .thenReturn(Optional.of(meeting));
         lenient().when(authzProvider.getIfAvailable()).thenReturn(authzService);
         lenient().when(authzService.isEnabled()).thenReturn(true);
@@ -114,6 +120,16 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(finished.transcriptStatus()).isEqualTo(TranscriptStatus.PROCESSING);
         assertThat(finished.endedAt()).isEqualTo(ENDED_AT);
         assertThat(meeting.getScheduledEnd()).isNull();
+
+        ArgumentCaptor<MeetingEventOutbox> outbox = ArgumentCaptor.forClass(MeetingEventOutbox.class);
+        verify(eventOutboxRepository).saveAndFlush(outbox.capture());
+        assertThat(outbox.getValue().getEventKey()).isEqualTo(
+                "meeting.recording|" + SESSION_ID + "|meeting.recording.finished|1");
+        assertThat(outbox.getValue().getPayload())
+                .contains("\"recordingSessionId\":\"" + SESSION_ID + "\"")
+                .contains("\"externalSessionId\":\"SES-1\"")
+                .contains("\"finishedAt\":\"" + ENDED_AT + "\"")
+                .doesNotContain("recordingUri", "audio", "transcriptText");
     }
 
     @Test
@@ -135,6 +151,40 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(replayedFinish.endedAt()).isEqualTo(ENDED_AT);
         assertThat(session.getStartedAt()).isEqualTo(STARTED_AT);
         assertThat(session.getEndedAt()).isEqualTo(ENDED_AT);
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void genericSessionUpdateCannotCreateClearOrRetimeRecordingEnd() {
+        MeetingSession active = session(null);
+        MeetingSession finished = session(ENDED_AT);
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meeting));
+        when(sessionRepository.findByIdAndMeetingIdVisibleToOrg(SESSION_ID, MEETING_ID, TENANT_ID))
+                .thenReturn(Optional.of(active), Optional.of(finished), Optional.of(finished));
+
+        assertImmutableUpdateRejected(active, ENDED_AT);
+        assertImmutableUpdateRejected(finished, ENDED_AT.plusSeconds(30));
+        assertImmutableUpdateRejected(finished, null);
+
+        verify(sessionRepository, never()).save(any());
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void genericSessionCreateCannotBypassRecordingLifecycleWithEndedAt() {
+        when(meetingRepository.findVisibleToOrgAndId(TENANT_ID, MEETING_ID))
+                .thenReturn(Optional.of(meeting));
+
+        assertThatThrownBy(() -> service.createSession(
+                TENANT,
+                MEETING_ID,
+                new MeetingSessionCreateRequest("manual", STARTED_AT, ENDED_AT, null)))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
+
+        verify(sessionRepository, never()).save(any());
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
     }
 
     @Test
@@ -156,6 +206,7 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(session.getEndedAt()).isNull();
         verify(sessionRepository, never()).saveAndFlush(any());
         verify(meetingRepository, never()).saveAndFlush(any());
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
     }
 
     @Test
@@ -173,6 +224,7 @@ class MeetingServiceRecordingLifecycleTest {
         assertThat(response.meetingStatus()).isEqualTo(MeetingStatus.COMPLETED);
         verify(sessionRepository, never()).saveAndFlush(any());
         verify(meetingRepository, never()).saveAndFlush(any());
+        verify(eventOutboxRepository, never()).saveAndFlush(any());
     }
 
     @Test
@@ -322,5 +374,21 @@ class MeetingServiceRecordingLifecycleTest {
         value.setCreatedBySubject("stable-user");
         value.setLastUpdatedBySubject("stable-user");
         return value;
+    }
+
+    private void assertImmutableUpdateRejected(MeetingSession session, Instant requestedEndedAt) {
+        assertThatThrownBy(() -> service.updateSession(
+                TENANT,
+                MEETING_ID,
+                SESSION_ID,
+                new MeetingSessionUpdateRequest(
+                        session.getSessionLabel(),
+                        session.getStartedAt(),
+                        requestedEndedAt,
+                        session.getRecordingUri(),
+                        session.getTranscriptStatus(),
+                        null)))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getStatusCode()).isEqualTo(HttpStatus.CONFLICT));
     }
 }

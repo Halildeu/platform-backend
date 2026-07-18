@@ -138,6 +138,22 @@ public final class MeetingEventValidator {
                             + " for " + p.eventType().wireValue());
                 }
             }
+            case MeetingEventPayload.RecordingFinished p -> {
+                requireNotNull(errors, p.recordingSessionId(), "payload.recordingSessionId");
+                requireText(errors, p.externalSessionId(), "payload.externalSessionId");
+                requireNotNull(errors, p.finishedAt(), "payload.finishedAt");
+                if (p.externalSessionId() != null
+                        && !p.externalSessionId().matches("[A-Za-z0-9._:-]{1,128}")) {
+                    errors.add("payload.externalSessionId has invalid format");
+                }
+                requireOccurrenceScope(
+                        errors, envelope, p.recordingSessionId(), 1,
+                        "recordingSessionId", p.eventType());
+                if (!"meeting.recording".equals(envelope.aggregateType())) {
+                    errors.add("aggregateType must be meeting.recording for "
+                            + p.eventType().wireValue());
+                }
+            }
             case MeetingEventPayload.TranscriptReady p -> {
                 requireNotNull(errors, p.transcriptSessionId(), "payload.transcriptSessionId");
                 if (p.finalizationVersion() < 1) {
@@ -160,18 +176,61 @@ public final class MeetingEventValidator {
                             + " for " + p.eventType().wireValue());
                 }
             }
+            case MeetingEventPayload.TranscriptFailed p -> {
+                requireNotNull(errors, p.transcriptSessionId(), "payload.transcriptSessionId");
+                if (p.finalizationVersion() < 1) {
+                    errors.add("payload.finalizationVersion must be >= 1 but was "
+                            + p.finalizationVersion());
+                }
+                requireText(errors, p.reasonCode(), "payload.reasonCode");
+                if (!MeetingEventPayload.TranscriptFailed.ALLOWED_REASON_CODES
+                        .contains(p.reasonCode())) {
+                    errors.add("payload.reasonCode must be one of "
+                            + MeetingEventPayload.TranscriptFailed.ALLOWED_REASON_CODES);
+                }
+                requireOccurrenceScope(
+                        errors, envelope, p.transcriptSessionId(), p.finalizationVersion(),
+                        "transcriptSessionId", p.eventType());
+                if (!"meeting.transcript".equals(envelope.aggregateType())) {
+                    errors.add("aggregateType must be meeting.transcript for "
+                            + p.eventType().wireValue());
+                }
+            }
         }
 
         // Coherence: for the v1 analysis events the aggregate IS the run. If these ever
         // drift apart, the outbox row and its payload would describe different things.
         if (!(payload instanceof MeetingEventPayload.ConsentRevoked)
+                && !(payload instanceof MeetingEventPayload.RecordingFinished)
                 && !(payload instanceof MeetingEventPayload.TranscriptReady)
+                && !(payload instanceof MeetingEventPayload.TranscriptFailed)
                 && envelope.aggregateId() != null
                 && payload.analysisRunId() != null
                 && !envelope.aggregateId().equals(payload.analysisRunId())) {
             errors.add("aggregateId " + envelope.aggregateId()
                     + " must equal payload.analysisRunId " + payload.analysisRunId()
                     + " for " + payload.eventType().wireValue());
+        }
+    }
+
+    private static void requireOccurrenceScope(
+            final List<String> errors,
+            final MeetingEventEnvelope envelope,
+            final java.util.UUID payloadAggregateId,
+            final long payloadRevision,
+            final String payloadIdName,
+            final MeetingEventType eventType) {
+        if (envelope.aggregateId() != null
+                && payloadAggregateId != null
+                && !envelope.aggregateId().equals(payloadAggregateId)) {
+            errors.add("aggregateId " + envelope.aggregateId()
+                    + " must equal payload." + payloadIdName + " " + payloadAggregateId
+                    + " for " + eventType.wireValue());
+        }
+        if (envelope.aggregateRevision() != payloadRevision) {
+            errors.add("aggregateRevision " + envelope.aggregateRevision()
+                    + " must equal payload revision " + payloadRevision
+                    + " for " + eventType.wireValue());
         }
     }
 

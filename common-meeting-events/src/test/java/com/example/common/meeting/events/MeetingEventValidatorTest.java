@@ -25,6 +25,10 @@ class MeetingEventValidatorTest {
                 .contains(MeetingEventType.CONSENT_REVOKED);
         assertThat(MeetingEventType.find("meeting.transcript.ready"))
                 .contains(MeetingEventType.TRANSCRIPT_READY);
+        assertThat(MeetingEventType.find("meeting.recording.finished"))
+                .contains(MeetingEventType.RECORDING_FINISHED);
+        assertThat(MeetingEventType.find("meeting.transcript.failed"))
+                .contains(MeetingEventType.TRANSCRIPT_FAILED);
     }
 
     @Test
@@ -190,6 +194,53 @@ class MeetingEventValidatorTest {
                 "meeting.consent", MeetingEventGoldens.MEETING_ID, MeetingEventType.SUMMARY_READY, -1))
                 .isInstanceOf(MeetingEventValidationException.class)
                 .hasMessageContaining("aggregateRevision must be >= 0");
+    }
+
+    @Test
+    void recordingFinished_requiresCanonicalScopeRevisionAndMetadata() {
+        assertThat(MeetingEventValidator.validationErrors(
+                MeetingEventTestEnvelopes.recordingFinished())).isEmpty();
+
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.RECORDING_FINISHED)
+                .producer("meeting-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.transcript")
+                .aggregateId(MeetingEventGoldens.RECORDING_SESSION_ID)
+                .aggregateRevision(2)
+                .payload(new MeetingEventPayload.RecordingFinished(
+                        MeetingEventGoldens.RECORDING_SESSION_ID, "../unsafe", null))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("payload.externalSessionId has invalid format")
+                .hasMessageContaining("payload.finishedAt is required")
+                .hasMessageContaining("aggregateRevision 2")
+                .hasMessageContaining("aggregateType must be meeting.recording");
+    }
+
+    @Test
+    void transcriptFailed_acceptsOnlyTheTwoBoundedRecoveryReasons() {
+        assertThat(MeetingEventValidator.validationErrors(
+                MeetingEventTestEnvelopes.transcriptFailed())).isEmpty();
+        assertThat(MeetingEventValidator.validationErrors(
+                MeetingEventTestEnvelopes.transcriptFailedInvalidCanonicalSegment())).isEmpty();
+
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.TRANSCRIPT_FAILED)
+                .producer("transcript-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.transcript")
+                .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.TranscriptFailed(
+                        MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 1, "free text"))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("payload.reasonCode must be one of")
+                .hasMessageContaining("NO_VALID_SEGMENTS_BEFORE_DEADLINE")
+                .hasMessageContaining("INVALID_CANONICAL_SEGMENT");
     }
 
     @Test
