@@ -9,11 +9,13 @@ import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.MeetingEventType;
+import com.example.meeting.model.MeetingSession;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.time.Instant;
 
 /**
  * Builds the transactional-outbox rows for a persisted analysis run — Faz 24
@@ -67,6 +69,9 @@ public final class MeetingEventOutboxFactory {
      */
     private static final long AGGREGATE_REVISION = 0L;
 
+    public MeetingEventOutboxFactory() {
+    }
+
     /**
      * @param objectMapper unused since #802 — the v1 writer is owned by the shared
      *     serializer, so the wire format can no longer vary with a service's mapper
@@ -75,7 +80,7 @@ public final class MeetingEventOutboxFactory {
      */
     @SuppressWarnings("unused")
     public MeetingEventOutboxFactory(final ObjectMapper objectMapper) {
-        // Intentionally empty — see the parameter note above.
+        this();
     }
 
     /**
@@ -135,12 +140,52 @@ public final class MeetingEventOutboxFactory {
 
         final MeetingEventOutbox outbox = new MeetingEventOutbox();
         outbox.setEventType(type.wireValue());
+        outbox.setAggregateType(AGGREGATE_TYPE);
         outbox.setAggregateId(run.getAnalysisRunId());
+        outbox.setAggregateRevision(AGGREGATE_REVISION);
         outbox.setMeetingId(run.getMeetingId());
         outbox.setTenantId(run.getTenantId());
         outbox.setOrgId(run.getOrgId());
         outbox.setEventKey(envelope.eventKey());
-        outbox.setPayload(MeetingEventV1Serializer.toJson(envelope));
+        final String payloadJson = MeetingEventV1Serializer.toJson(envelope);
+        outbox.setPayload(payloadJson);
+        outbox.setPayloadRaw(payloadJson);
+        return outbox;
+    }
+
+    /** Build the metadata-only marker for the first FINISHED transition. */
+    public MeetingEventOutbox buildRecordingFinished(
+            final MeetingSession session,
+            final Instant finishedAt) {
+        final long revision = 1L;
+        final String aggregateType = "meeting.recording";
+        final MeetingEventPayload payload = new MeetingEventPayload.RecordingFinished(
+                session.getId(), session.getExternalSessionId(), finishedAt);
+        final MeetingEventEnvelope envelope = MeetingEventEnvelope.builder()
+                .eventType(com.example.common.meeting.events.MeetingEventType.RECORDING_FINISHED)
+                .producer(PRODUCER)
+                .meetingId(session.getMeetingId())
+                .tenantId(session.getTenantId())
+                .orgId(session.getOrgId())
+                .occurredAt(finishedAt)
+                .aggregateType(aggregateType)
+                .aggregateId(session.getId())
+                .aggregateRevision(revision)
+                .payload(payload)
+                .build();
+
+        final MeetingEventOutbox outbox = new MeetingEventOutbox();
+        outbox.setEventType(MeetingEventType.RECORDING_FINISHED.wireValue());
+        outbox.setAggregateType(aggregateType);
+        outbox.setAggregateId(session.getId());
+        outbox.setAggregateRevision(revision);
+        outbox.setMeetingId(session.getMeetingId());
+        outbox.setTenantId(session.getTenantId());
+        outbox.setOrgId(session.getOrgId());
+        outbox.setEventKey(envelope.eventKey());
+        final String payloadJson = MeetingEventV1Serializer.toJson(envelope);
+        outbox.setPayload(payloadJson);
+        outbox.setPayloadRaw(payloadJson);
         return outbox;
     }
 

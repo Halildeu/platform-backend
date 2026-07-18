@@ -120,6 +120,34 @@ class MeetingEventIsolationAndRedactionTest {
         assertThat(MeetingEventPayload.ActionAssigned.class.getRecordComponents())
                 .extracting(java.lang.reflect.RecordComponent::getName)
                 .containsExactly("analysisRunId", "ordinal", "assigneeSubject", "dueAt");
+
+        assertThat(MeetingEventPayload.RecordingFinished.class.getRecordComponents())
+                .extracting(java.lang.reflect.RecordComponent::getName)
+                .containsExactly("recordingSessionId", "externalSessionId", "finishedAt");
+
+        assertThat(MeetingEventPayload.TranscriptFailed.class.getRecordComponents())
+                .extracting(java.lang.reflect.RecordComponent::getName)
+                .containsExactly("transcriptSessionId", "finalizationVersion", "reasonCode");
+    }
+
+    @Test
+    void lifecycleEventsHaveClosedMetadataOnlyFieldSets() throws Exception {
+        JsonNode finished = mapper.readTree(
+                MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.recordingFinished()));
+        assertThat(finished.fieldNames()).toIterable().containsExactly(
+                "schema", "eventType", "analysisRunId", "meetingId", "tenantId",
+                "orgId", "generatedAt", "recordingSessionId", "externalSessionId", "finishedAt");
+
+        JsonNode failed = mapper.readTree(
+                MeetingEventV1Serializer.toJson(MeetingEventTestEnvelopes.transcriptFailed()));
+        assertThat(failed.fieldNames()).toIterable().containsExactly(
+                "schema", "eventType", "analysisRunId", "meetingId", "tenantId",
+                "orgId", "generatedAt", "transcriptSessionId", "finalizationVersion", "reasonCode");
+
+        for (JsonNode event : List.of(finished, failed)) {
+            assertThat(event.toString())
+                    .doesNotContain("audio", "text", "user", "recordingUri", "recordingURI", "uri");
+        }
     }
 
     @Test

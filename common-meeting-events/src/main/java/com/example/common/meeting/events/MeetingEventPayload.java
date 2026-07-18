@@ -20,7 +20,8 @@ import java.util.UUID;
  */
 public sealed interface MeetingEventPayload
         permits MeetingEventPayload.SummaryReady, MeetingEventPayload.ActionAssigned,
-        MeetingEventPayload.ConsentRevoked, MeetingEventPayload.TranscriptReady {
+        MeetingEventPayload.ConsentRevoked, MeetingEventPayload.RecordingFinished,
+        MeetingEventPayload.TranscriptReady, MeetingEventPayload.TranscriptFailed {
 
     /** The event type this payload belongs to — cross-checked against the envelope. */
     MeetingEventType eventType();
@@ -97,6 +98,33 @@ public sealed interface MeetingEventPayload
     }
 
     /**
+     * {@code meeting.recording.finished} — one recording session acquired its first
+     * immutable {@code endedAt} value in meeting-service.
+     *
+     * <p>The payload is intentionally metadata-only: no audio, transcript text,
+     * user identity, recording URI or other content-bearing field can be represented.
+     *
+     * @param recordingSessionId canonical {@code meeting_sessions.id}
+     * @param externalSessionId stable audio-gateway session identity
+     * @param finishedAt the first persisted recording end timestamp
+     */
+    record RecordingFinished(
+            UUID recordingSessionId,
+            String externalSessionId,
+            Instant finishedAt) implements MeetingEventPayload {
+
+        @Override
+        public MeetingEventType eventType() {
+            return MeetingEventType.RECORDING_FINISHED;
+        }
+
+        @Override
+        public UUID analysisRunId() {
+            return null;
+        }
+    }
+
+    /**
      * {@code meeting.transcript.ready} — one canonical transcript occurrence was
      * explicitly finalized in transcript-service.
      *
@@ -115,6 +143,41 @@ public sealed interface MeetingEventPayload
         @Override
         public MeetingEventType eventType() {
             return MeetingEventType.TRANSCRIPT_READY;
+        }
+
+        @Override
+        public UUID analysisRunId() {
+            return null;
+        }
+    }
+
+    /**
+     * {@code meeting.transcript.failed} — bounded finalization failed without
+     * producing a canonical transcript snapshot.
+     *
+     * <p>No segment, transcript or audio content is carried. The reason is a bounded
+     * machine code rather than free text so the event remains safe to retain/replay.
+     *
+     * @param transcriptSessionId canonical {@code meeting_sessions.id}
+     * @param finalizationVersion producer-owned occurrence counter; starts at one
+     * @param reasonCode bounded failure reason
+     */
+    record TranscriptFailed(
+            UUID transcriptSessionId,
+            long finalizationVersion,
+            String reasonCode) implements MeetingEventPayload {
+
+        public static final String NO_VALID_SEGMENTS_BEFORE_DEADLINE =
+                "NO_VALID_SEGMENTS_BEFORE_DEADLINE";
+        public static final String INVALID_CANONICAL_SEGMENT =
+                "INVALID_CANONICAL_SEGMENT";
+        public static final java.util.Set<String> ALLOWED_REASON_CODES = java.util.Set.of(
+                NO_VALID_SEGMENTS_BEFORE_DEADLINE,
+                INVALID_CANONICAL_SEGMENT);
+
+        @Override
+        public MeetingEventType eventType() {
+            return MeetingEventType.TRANSCRIPT_FAILED;
         }
 
         @Override

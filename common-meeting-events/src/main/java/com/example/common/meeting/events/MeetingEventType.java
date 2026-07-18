@@ -25,8 +25,14 @@ public enum MeetingEventType {
     /** A user withdrew recording consent for one capture occurrence. */
     CONSENT_REVOKED("meeting.consent.revoked"),
 
+    /** A canonical recording session made its first immutable transition to finished. */
+    RECORDING_FINISHED("meeting.recording.finished"),
+
     /** A canonical transcript session was explicitly finalized and is ready to read. */
-    TRANSCRIPT_READY("meeting.transcript.ready");
+    TRANSCRIPT_READY("meeting.transcript.ready"),
+
+    /** Canonical transcript finalization ended in a bounded metadata-only failure. */
+    TRANSCRIPT_FAILED("meeting.transcript.failed");
 
     private final String wireValue;
 

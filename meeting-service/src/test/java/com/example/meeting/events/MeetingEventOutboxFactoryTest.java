@@ -7,6 +7,7 @@ import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
 import com.example.meeting.model.MeetingEventOutbox;
 import com.example.meeting.model.MeetingEventType;
+import com.example.meeting.model.MeetingSession;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -45,10 +46,12 @@ class MeetingEventOutboxFactoryTest {
         assertThat(summary.getAggregateId()).isEqualTo(RUN);
         assertThat(summary.getMeetingId()).isEqualTo(MEETING);
         assertThat(summary.getTenantId()).isEqualTo(TENANT);
+        assertThat(summary.getPayloadRaw()).isEqualTo(summary.getPayload());
         // action.assigned — ONLY for the non-null-assignee action, keyed by its ordinal.
         MeetingEventOutbox action = rows.get(1);
         assertThat(action.getEventType()).isEqualTo(MeetingEventType.ACTION_ASSIGNED.wireValue());
         assertThat(action.getEventKey()).isEqualTo(RUN + "|meeting.action.assigned|0");
+        assertThat(action.getPayloadRaw()).isEqualTo(action.getPayload());
     }
 
     @Test
@@ -104,6 +107,33 @@ class MeetingEventOutboxFactoryTest {
         assertThat(action.get("ordinal").asInt()).isEqualTo(0);
         assertThat(action.get("assigneeSubject").asText()).isEqualTo("ali@example.com");
         assertThat(action.get("dueAt").asText()).isEqualTo("2026-07-20T09:00:00Z");
+    }
+
+    @Test
+    void recordingFinished_hasCanonicalScopeRevisionKeyAndMetadataOnlyPayload() throws Exception {
+        UUID sessionId = UUID.fromString("44444444-4444-4444-8444-444444444444");
+        MeetingSession session = new MeetingSession();
+        org.springframework.test.util.ReflectionTestUtils.setField(session, "id", sessionId);
+        session.setMeetingId(MEETING);
+        session.setTenantId(TENANT);
+        session.setOrgId(TENANT);
+        session.setExternalSessionId("SES-42");
+        Instant finishedAt = Instant.parse("2026-07-17T08:44:20Z");
+
+        MeetingEventOutbox row = factory.buildRecordingFinished(session, finishedAt);
+
+        assertThat(row.getEventType()).isEqualTo("meeting.recording.finished");
+        assertThat(row.getAggregateType()).isEqualTo("meeting.recording");
+        assertThat(row.getAggregateId()).isEqualTo(sessionId);
+        assertThat(row.getAggregateRevision()).isEqualTo(1);
+        assertThat(row.getEventKey()).isEqualTo(
+                "meeting.recording|" + sessionId + "|meeting.recording.finished|1");
+        JsonNode payload = objectMapper.readTree(row.getPayload());
+        assertThat(payload.get("recordingSessionId").asText()).isEqualTo(sessionId.toString());
+        assertThat(payload.get("externalSessionId").asText()).isEqualTo("SES-42");
+        assertThat(payload.get("finishedAt").asText()).isEqualTo(finishedAt.toString());
+        assertThat(payload.fieldNames()).toIterable().doesNotContain(
+                "audio", "text", "user", "recordingUri", "uri");
     }
 
     // ────────────────────────── helpers ──────────────────────────

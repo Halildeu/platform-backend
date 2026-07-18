@@ -16,6 +16,7 @@ import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleResponse;
 import com.example.meeting.dto.v1.admin.RecordingLifecycleSyncRequest;
 import com.example.meeting.dto.MeetingRecordingAccessResponse;
+import com.example.meeting.events.MeetingEventOutboxFactory;
 import com.example.meeting.dto.v1.internal.MeetingSessionResolutionResponse;
 import com.example.meeting.model.Meeting;
 import com.example.meeting.model.MeetingAction;
@@ -26,6 +27,7 @@ import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.model.TranscriptStatus;
 import com.example.meeting.repository.MeetingActionRepository;
 import com.example.meeting.repository.MeetingDecisionRepository;
+import com.example.meeting.repository.MeetingEventOutboxRepository;
 import com.example.meeting.repository.MeetingRepository;
 import com.example.meeting.repository.MeetingSessionRepository;
 import com.example.meeting.security.AdminTenantContext;
@@ -41,6 +43,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -76,6 +79,8 @@ public class MeetingService {
     private final MeetingSessionRepository sessionRepository;
     private final MeetingActionRepository actionRepository;
     private final MeetingDecisionRepository decisionRepository;
+    private final MeetingEventOutboxRepository eventOutboxRepository;
+    private final MeetingEventOutboxFactory eventOutboxFactory;
     private final ObjectProvider<OpenFgaAuthzService> authzServiceProvider;
     private final boolean legacyUserIdFallbackEnabled;
     private final boolean legacyUserIdDualWriteEnabled;
@@ -85,6 +90,7 @@ public class MeetingService {
             MeetingSessionRepository sessionRepository,
             MeetingActionRepository actionRepository,
             MeetingDecisionRepository decisionRepository,
+            MeetingEventOutboxRepository eventOutboxRepository,
             ObjectProvider<OpenFgaAuthzService> authzServiceProvider,
             @Value("${meeting.authz.object-principal.legacy-user-id-fallback-enabled:false}")
             boolean legacyUserIdFallbackEnabled,
@@ -94,6 +100,8 @@ public class MeetingService {
         this.sessionRepository = sessionRepository;
         this.actionRepository = actionRepository;
         this.decisionRepository = decisionRepository;
+        this.eventOutboxRepository = eventOutboxRepository;
+        this.eventOutboxFactory = new MeetingEventOutboxFactory();
         this.authzServiceProvider = authzServiceProvider;
         this.legacyUserIdFallbackEnabled = legacyUserIdFallbackEnabled;
         this.legacyUserIdDualWriteEnabled = legacyUserIdDualWriteEnabled;
@@ -276,13 +284,17 @@ public class MeetingService {
     public MeetingSessionResponse createSession(
             AdminTenantContext tenant, UUID meetingId, MeetingSessionCreateRequest request) {
         Meeting meeting = requireMeeting(tenant, meetingId);
+        if (request.endedAt() != null) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Recording end may only be set through the recording lifecycle endpoint.");
+        }
         MeetingSession session = new MeetingSession();
         session.setMeetingId(meeting.getId());
         session.setTenantId(tenant.tenantId());
         session.setOrgId(tenant.tenantId()); // canonical writer sets BOTH columns (trigger is backstop)
         session.setSessionLabel(request.sessionLabel());
         session.setStartedAt(request.startedAt());
-        session.setEndedAt(request.endedAt());
         session.setRecordingUri(request.recordingUri());
         session.setTranscriptStatus(TranscriptStatus.PENDING);
         session.setCreatedBySubject(tenant.subject());
@@ -296,9 +308,13 @@ public class MeetingService {
         requireMeeting(tenant, meetingId);
         MeetingSession session = requireSession(tenant, meetingId, sessionId);
         requireExpectedVersion(request.expectedVersion(), session.getVersion());
+        if (!Objects.equals(request.endedAt(), session.getEndedAt())) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Recording end is immutable; use the recording lifecycle endpoint.");
+        }
         session.setSessionLabel(request.sessionLabel());
         session.setStartedAt(request.startedAt());
-        session.setEndedAt(request.endedAt());
         session.setRecordingUri(request.recordingUri());
         session.setTranscriptStatus(request.transcriptStatus());
         session.setLastUpdatedBySubject(tenant.subject());
@@ -330,7 +346,8 @@ public class MeetingService {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "Recording end cannot precede the canonical start.");
         }
-        if (request.endedAt() != null && session.getEndedAt() == null) {
+        boolean firstFinishedTransition = request.endedAt() != null && session.getEndedAt() == null;
+        if (firstFinishedTransition) {
             session.setEndedAt(request.endedAt());
             sessionChanged = true;
         }
@@ -342,6 +359,10 @@ public class MeetingService {
         if (sessionChanged) {
             session.setLastUpdatedBySubject(tenant.subject());
             savedSession = sessionRepository.saveAndFlush(session);
+        }
+        if (firstFinishedTransition) {
+            eventOutboxRepository.saveAndFlush(
+                    eventOutboxFactory.buildRecordingFinished(savedSession, savedSession.getEndedAt()));
         }
 
         boolean currentSessionActive = savedSession.getEndedAt() == null;

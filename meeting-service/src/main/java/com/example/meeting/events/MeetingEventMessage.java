@@ -17,7 +17,9 @@ import java.util.UUID;
 public record MeetingEventMessage(
         String eventKey,
         String eventType,
+        String aggregateType,
         UUID aggregateId,
+        long aggregateRevision,
         UUID meetingId,
         UUID tenantId,
         UUID orgId,
@@ -27,10 +29,12 @@ public record MeetingEventMessage(
         return new MeetingEventMessage(
                 row.getEventKey(),
                 row.getEventType(),
+                row.getAggregateType(),
                 row.getAggregateId(),
+                row.getAggregateRevision(),
                 row.getMeetingId(),
                 row.getTenantId(),
                 row.getOrgId(),
-                row.getPayload());
+                row.getPayloadRaw() == null ? row.getPayload() : row.getPayloadRaw());
     }
 }

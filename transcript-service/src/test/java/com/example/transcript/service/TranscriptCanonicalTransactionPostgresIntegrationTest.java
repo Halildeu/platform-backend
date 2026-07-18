@@ -10,11 +10,17 @@ import com.example.common.meeting.events.MeetingEventV1Serializer;
 import com.example.transcript.directstt.DirectSttTranscriptResultEvent;
 import com.example.transcript.directstt.TranscriptSessionAssociationStore;
 import com.example.transcript.events.TranscriptMeetingEventMessage;
+import com.example.transcript.finalization.RecordingFinishedEvent;
+import com.example.transcript.finalization.RecordingFinishedEventProcessor;
+import com.example.transcript.finalization.TranscriptFinalizationStateMachine;
+import com.example.transcript.finalization.TranscriptQuiescentFinalizationProcessor;
+import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.model.TranscriptSessionAssociationStatus;
 import com.example.transcript.repository.TranscriptEventOutboxRepository;
 import com.example.transcript.repository.TranscriptFinalizationRepository;
+import com.example.transcript.repository.TranscriptMeetingEventInboxRepository;
 import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.example.transcript.security.AdminTenantContext;
@@ -49,7 +55,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @Testcontainers
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({TranscriptFinalizationService.class, TranscriptSessionAssociationStore.class})
+@Import({
+        TranscriptFinalizationService.class,
+        TranscriptSessionAssociationStore.class,
+        RecordingFinishedEventProcessor.class,
+        TranscriptQuiescentFinalizationProcessor.class,
+        TranscriptFinalizationStateMachine.class,
+        TranscriptSnapshotHasher.class,
+        com.example.transcript.config.TranscriptFinalizationConfig.class
+})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class TranscriptCanonicalTransactionPostgresIntegrationTest {
 
@@ -80,16 +94,20 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Autowired private TranscriptFinalizationService finalizationService;
+    @Autowired private RecordingFinishedEventProcessor recordingFinishedEventProcessor;
+    @Autowired private TranscriptQuiescentFinalizationProcessor quiescentFinalizationProcessor;
     @Autowired private TranscriptSessionAssociationStore associationStore;
     @Autowired private TranscriptSessionAssociationRepository associations;
     @Autowired private TranscriptSegmentRepository segments;
     @Autowired private TranscriptFinalizationRepository finalizations;
+    @Autowired private TranscriptMeetingEventInboxRepository meetingEventInbox;
     @Autowired private TranscriptEventOutboxRepository outbox;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PlatformTransactionManager transactionManager;
 
     @BeforeEach
     void clean() {
+        jdbc.update("DELETE FROM " + SCHEMA + ".transcript_meeting_event_inbox");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_event_outbox");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_finalizations");
         jdbc.update("DELETE FROM " + SCHEMA + ".transcript_segments");
@@ -136,6 +154,21 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         assertThat(duplicate).isEqualTo(first);
         assertThat(finalizations.count()).isEqualTo(1L);
         assertThat(outbox.count()).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT finalization_state FROM " + SCHEMA
+                        + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? "
+                        + "AND session_id=?",
+                String.class, TENANT, MEETING, SESSION)).isEqualTo("FINALIZED");
+        assertThat(jdbc.queryForObject(
+                "SELECT finalization_cycle_version FROM " + SCHEMA
+                        + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? "
+                        + "AND session_id=?",
+                Long.class, TENANT, MEETING, SESSION)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT quiescence_due_at IS NULL FROM " + SCHEMA
+                        + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? "
+                        + "AND session_id=?",
+                Boolean.class, TENANT, MEETING, SESSION)).isTrue();
         String expectedPayload = MeetingEventV1Serializer.toJson(MeetingEventEnvelope.builder()
                 .eventType(MeetingEventType.TRANSCRIPT_READY)
                 .producer("transcript-service")
@@ -162,6 +195,103 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
                 .containsExactly(expectedPayload.getBytes(StandardCharsets.UTF_8));
         assertThat(rehydrated.payloadJson())
                 .doesNotContain("private final transcript", "textDraft", "textFinal", "audio");
+    }
+
+    @Test
+    void quiescentMachineFinalizationIsIdempotentAcrossPostgresRoundTrip() {
+        UUID associationId = insertQuiescingAssociation(false);
+        saveSegment(TENANT, MEETING, SESSION, "SES-quiescent", 1L,
+                TranscriptSegmentStatus.DRAFT, null);
+
+        assertThat(quiescentFinalizationProcessor.process(associationId))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.READY);
+        assertThat(quiescentFinalizationProcessor.process(associationId))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.NOT_DUE);
+
+        assertThat(finalizations.count()).isEqualTo(1L);
+        assertThat(outbox.count()).isEqualTo(1L);
+        var finalization = finalizations.findAll().getFirst();
+        assertThat(finalization.getFinalizationVersion()).isEqualTo(1L);
+        assertThat(finalization.getSegmentCount()).isEqualTo(1);
+        assertThat(finalization.getSnapshotSha256()).matches("[0-9a-f]{64}");
+        var event = outbox.findAll().getFirst();
+        assertThat(event.getEventType()).isEqualTo("meeting.transcript.ready");
+        assertThat(event.getPayload())
+                .contains("\"segmentCount\":1")
+                .doesNotContain("draft", "textDraft", "textFinal");
+        var association = associations.findById(associationId).orElseThrow();
+        assertThat(association.getFinalizationState().name()).isEqualTo("FINALIZED");
+        assertThat(association.getFinalizationVersion()).isEqualTo(1L);
+    }
+
+    @Test
+    void recordingFinishedInboxEnrollmentIsAtomicAndReplayIdempotent() {
+        String sourceSession = "SES-finished-inbox";
+        String eventKey = "meeting.recording|" + SESSION + "|meeting.recording.finished|1";
+        RecordingFinishedEvent event = new RecordingFinishedEvent(
+                eventKey, "a".repeat(64), TENANT, MEETING, SESSION, sourceSession,
+                Instant.now().minusSeconds(1));
+
+        assertThat(recordingFinishedEventProcessor.process(event))
+                .isEqualTo(RecordingFinishedEventProcessor.ProcessResult.PROCESSED);
+        assertThat(recordingFinishedEventProcessor.process(event))
+                .isEqualTo(RecordingFinishedEventProcessor.ProcessResult.DUPLICATE);
+
+        assertThat(meetingEventInbox.count()).isEqualTo(1L);
+        var association = associations
+                .findByTenantIdAndMeetingIdAndSourceSystemAndSourceSessionId(
+                        TENANT, MEETING, DirectSttTranscriptResultEvent.SOURCE_SYSTEM, sourceSession)
+                .orElseThrow();
+        assertThat(association.getStatus()).isEqualTo(TranscriptSessionAssociationStatus.RESOLVED);
+        assertThat(association.getSessionId()).isEqualTo(SESSION);
+        assertThat(association.getFinalizationState().name()).isEqualTo("QUIESCING");
+        assertThat(association.getFinalizationCycleVersion()).isEqualTo(1L);
+        assertThat(association.getMinWaitAt()).isNotNull();
+        assertThat(association.getMaxWaitAt()).isAfter(association.getMinWaitAt());
+
+        RecordingFinishedEvent divergent = new RecordingFinishedEvent(
+                eventKey, "b".repeat(64), TENANT, MEETING, SESSION, sourceSession,
+                event.finishedAt());
+        assertThatThrownBy(() -> recordingFinishedEventProcessor.process(divergent))
+                .isInstanceOf(
+                        RecordingFinishedEventProcessor.RecordingFinishedEventConflictException.class)
+                .hasMessage("INBOX_KEY_DIVERGENCE");
+        assertThat(meetingEventInbox.count()).isEqualTo(1L);
+    }
+
+    @Test
+    void zeroSegmentDeadlineCreatesOnlyFailedEventAndDurableTimedOutState() {
+        UUID associationId = insertQuiescingAssociation(true);
+
+        assertThat(quiescentFinalizationProcessor.process(associationId))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.FAILED);
+
+        assertThat(finalizations.count()).isZero();
+        assertThat(outbox.count()).isEqualTo(1L);
+        assertThat(outbox.findAll().getFirst().getPayload())
+                .contains("NO_VALID_SEGMENTS_BEFORE_DEADLINE")
+                .doesNotContain("textDraft", "textFinal", "audio");
+        var association = associations.findById(associationId).orElseThrow();
+        assertThat(association.getFinalizationState().name()).isEqualTo("TIMED_OUT");
+        assertThat(association.getFinalizationErrorCode())
+                .isEqualTo("NO_VALID_SEGMENTS_BEFORE_DEADLINE");
+    }
+
+    @Test
+    void readyOutboxCollisionRollsBackMachineFinalizationAndStateAdvance() {
+        UUID associationId = insertQuiescingAssociation(false);
+        saveSegment(TENANT, MEETING, SESSION, "SES-quiescent", 1L,
+                TranscriptSegmentStatus.DRAFT, null);
+        insertOutboxCollision("meeting.transcript|" + SESSION + "|meeting.transcript.ready|1");
+
+        assertThatThrownBy(() -> quiescentFinalizationProcessor.process(associationId))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertThat(finalizations.count()).isZero();
+        assertThat(outbox.count()).isEqualTo(1L);
+        var association = associations.findById(associationId).orElseThrow();
+        assertThat(association.getFinalizationState().name()).isEqualTo("QUIESCING");
+        assertThat(association.getFinalizationVersion()).isZero();
     }
 
     @Test
@@ -369,6 +499,22 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     private void insertResolvedAssociation() {
         insertAssociation(UUID.randomUUID(), TENANT, MEETING, "SES-42", SESSION,
                 "RESOLVED", null, 0);
+    }
+
+    private UUID insertQuiescingAssociation(boolean deadlineExpired) {
+        UUID associationId = UUID.randomUUID();
+        insertAssociation(associationId, TENANT, MEETING, "SES-quiescent", SESSION,
+                "RESOLVED", null, 0);
+        Instant now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        Instant maxWaitAt = deadlineExpired ? now.minusSeconds(1) : now.plusSeconds(60);
+        jdbc.update("UPDATE " + SCHEMA + ".transcript_session_associations SET "
+                        + "finalization_state='QUIESCING', finalization_cycle_version=1, "
+                        + "recording_finished_at=?, finish_observed_at=?, last_content_changed_at=?, "
+                        + "min_wait_at=?, quiescence_due_at=?, max_wait_at=? WHERE id=?",
+                Timestamp.from(now.minusSeconds(600)), Timestamp.from(now.minusSeconds(590)),
+                Timestamp.from(now.minusSeconds(120)), Timestamp.from(now.minusSeconds(30)),
+                Timestamp.from(now.minusSeconds(1)), Timestamp.from(maxWaitAt), associationId);
+        return associationId;
     }
 
     private void insertAssociation(

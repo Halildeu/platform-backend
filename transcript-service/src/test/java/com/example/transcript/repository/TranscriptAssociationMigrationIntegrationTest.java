@@ -16,7 +16,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** Runs the V3 to V6 upgrade path against rows written by the old consumer. */
+/** Runs the V3 to latest upgrade path against rows written by the old consumer. */
 @Testcontainers
 class TranscriptAssociationMigrationIntegrationTest {
 
@@ -31,14 +31,20 @@ class TranscriptAssociationMigrationIntegrationTest {
                     .withPassword("test");
 
     @Test
-    void v6BackfillsWindowIdentityAndEnforcesMeetingScopedWindowUniqueness()
+    void latestMigrationBackfillsWindowIdentityAndAddsRestartSafeFinalizationState()
             throws Exception {
         migrateTo("3");
         UUID tenant = UUID.randomUUID();
         UUID meeting = UUID.randomUUID();
+        UUID finalizedMeeting = UUID.randomUUID();
+        UUID finalizedSession = UUID.randomUUID();
         insertLegacySegment(tenant, meeting, "SES-legacy", 5L);
         insertLegacySegment(tenant, meeting, "SES-legacy", 6L);
         insertLegacySegment(tenant, meeting, "legacy invalid id", 7L);
+
+        migrateTo("6");
+        insertLegacyFinalizedAssociation(
+                tenant, finalizedMeeting, finalizedSession, "SES-finalized", 2L);
 
         migrateTo(null);
 
@@ -51,6 +57,16 @@ class TranscriptAssociationMigrationIntegrationTest {
                     "SELECT status FROM " + SCHEMA + ".transcript_session_associations "
                             + "WHERE tenant_id = ? AND meeting_id = ? AND source_session_id = 'SES-legacy'",
                     tenant, meeting)).isEqualTo("PENDING");
+            assertThat(singleString(connection,
+                    "SELECT finalization_state || ':' || finalization_cycle_version FROM "
+                            + SCHEMA + ".transcript_session_associations "
+                            + "WHERE tenant_id = ? AND meeting_id = ? AND source_session_id = 'SES-legacy'",
+                    tenant, meeting)).isEqualTo("AWAITING_FINISH:0");
+            assertThat(singleString(connection,
+                    "SELECT finalization_state || ':' || finalization_cycle_version FROM "
+                            + SCHEMA + ".transcript_session_associations "
+                            + "WHERE tenant_id = ? AND meeting_id = ? AND session_id = ?",
+                    tenant, finalizedMeeting, finalizedSession)).isEqualTo("FINALIZED:2");
             assertThat(singleLong(connection,
                     "SELECT count(*) FROM " + SCHEMA + ".transcript_segments "
                             + "WHERE tenant_id = ? AND meeting_id = ? AND session_id IS NULL",
@@ -107,6 +123,30 @@ class TranscriptAssociationMigrationIntegrationTest {
                     "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
                             + "AND indexname = 'ux_transcript_segments_direct_stt_window'",
                     SCHEMA)).isEqualTo(1L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.tables "
+                            + "WHERE table_schema = ? "
+                            + "AND table_name = 'transcript_meeting_event_inbox'",
+                    SCHEMA)).isEqualTo(1L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.columns "
+                            + "WHERE table_schema = ? "
+                            + "AND table_name = 'transcript_meeting_event_inbox' "
+                            + "AND column_name IN ('event_key','event_type','payload_sha256',"
+                            + "'tenant_id','org_id','meeting_id','session_id','source_session_id',"
+                            + "'received_at','processed_at')",
+                    SCHEMA)).isEqualTo(10L);
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM information_schema.columns "
+                            + "WHERE table_schema = ? "
+                            + "AND table_name = 'transcript_meeting_event_inbox' "
+                            + "AND column_name IN ('payload','transcript','text_draft','text_final')",
+                    SCHEMA)).isZero();
+            assertThat(singleLong(connection,
+                    "SELECT count(*) FROM pg_indexes WHERE schemaname = ? "
+                            + "AND indexname IN ('idx_transcript_session_association_finalization_due',"
+                            + "'idx_transcript_meeting_event_inbox_scope')",
+                    SCHEMA)).isEqualTo(2L);
         }
     }
 
@@ -126,6 +166,33 @@ class TranscriptAssociationMigrationIntegrationTest {
             throws SQLException {
         try (Connection connection = connection()) {
             insertSegment(connection, tenant, meeting, sourceSession, chunk);
+        }
+    }
+
+    private void insertLegacyFinalizedAssociation(
+            UUID tenant,
+            UUID meeting,
+            UUID session,
+            String sourceSession,
+            long finalizationVersion) throws SQLException {
+        String sql = "INSERT INTO " + SCHEMA + ".transcript_session_associations "
+                + "(id,tenant_id,org_id,meeting_id,source_system,source_session_id,session_id,"
+                + "status,resolution_attempts,finalization_version,created_at,updated_at,version) "
+                + "VALUES (?,?,?,?,?,?,?,'RESOLVED',0,?,?,?,0)";
+        try (Connection connection = connection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setObject(2, tenant);
+            statement.setObject(3, tenant);
+            statement.setObject(4, meeting);
+            statement.setString(5, "DIRECT_STT");
+            statement.setString(6, sourceSession);
+            statement.setObject(7, session);
+            statement.setLong(8, finalizationVersion);
+            Timestamp now = Timestamp.from(Instant.now());
+            statement.setTimestamp(9, now);
+            statement.setTimestamp(10, now);
+            statement.executeUpdate();
         }
     }
 

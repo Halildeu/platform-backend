@@ -73,4 +73,48 @@ final class MeetingEventTestEnvelopes {
                         MeetingEventGoldens.TRANSCRIPT_SESSION_ID, 1, 2))
                 .build();
     }
+
+    static MeetingEventEnvelope recordingFinished() {
+        return MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.RECORDING_FINISHED)
+                .producer("meeting-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .orgId(MeetingEventGoldens.ORG_ID)
+                .occurredAt(MeetingEventGoldens.GENERATED_AT)
+                .aggregateType("meeting.recording")
+                .aggregateId(MeetingEventGoldens.RECORDING_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.RecordingFinished(
+                        MeetingEventGoldens.RECORDING_SESSION_ID,
+                        MeetingEventGoldens.EXTERNAL_SESSION_ID,
+                        MeetingEventGoldens.GENERATED_AT))
+                .build();
+    }
+
+    static MeetingEventEnvelope transcriptFailed() {
+        return transcriptFailed(MeetingEventPayload.TranscriptFailed.NO_VALID_SEGMENTS_BEFORE_DEADLINE);
+    }
+
+    static MeetingEventEnvelope transcriptFailedInvalidCanonicalSegment() {
+        return transcriptFailed(MeetingEventPayload.TranscriptFailed.INVALID_CANONICAL_SEGMENT);
+    }
+
+    private static MeetingEventEnvelope transcriptFailed(final String reasonCode) {
+        return MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.TRANSCRIPT_FAILED)
+                .producer("transcript-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .orgId(MeetingEventGoldens.ORG_ID)
+                .occurredAt(MeetingEventGoldens.GENERATED_AT)
+                .aggregateType("meeting.transcript")
+                .aggregateId(MeetingEventGoldens.TRANSCRIPT_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.TranscriptFailed(
+                        MeetingEventGoldens.TRANSCRIPT_SESSION_ID,
+                        1,
+                        reasonCode))
+                .build();
+    }
 }

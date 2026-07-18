@@ -18,7 +18,7 @@ import java.time.Instant;
 public record RecordingLifecycleSyncRequest(
         @NotBlank
         @Size(max = 128)
-        @Pattern(regexp = "^[A-Za-z0-9._:-]+$")
+        @Pattern(regexp = "^SES-[A-Za-z0-9._:-]{1,124}$")
         String externalSessionId,
         @NotNull Instant startedAt,
         Instant endedAt) {
