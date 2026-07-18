@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.example.transcript.model.TranscriptEventOutbox;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptFinalization;
+import com.example.transcript.model.TranscriptFinalizationState;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSegmentStatus;
 import com.example.transcript.model.TranscriptSessionAssociation;
@@ -49,6 +51,9 @@ class TranscriptFinalizationServiceTest {
     private final TranscriptEventOutboxRepository outbox = mock(TranscriptEventOutboxRepository.class);
     private final TranscriptSessionAssociation association = mock(TranscriptSessionAssociation.class);
     private final AtomicLong currentVersion = new AtomicLong();
+    private final AtomicLong currentCycleVersion = new AtomicLong();
+    private final AtomicReference<TranscriptFinalizationState> currentState =
+            new AtomicReference<>(TranscriptFinalizationState.AWAITING_FINISH);
     private final AtomicReference<TranscriptFinalization> storedFinalization = new AtomicReference<>();
     private TranscriptFinalizationService service;
 
@@ -57,10 +62,20 @@ class TranscriptFinalizationServiceTest {
         when(associations.findCanonicalForUpdate(TENANT, MEETING, SESSION))
                 .thenReturn(Optional.of(association));
         when(association.getFinalizationVersion()).thenAnswer(ignored -> currentVersion.get());
+        when(association.getFinalizationCycleVersion()).thenAnswer(ignored -> currentCycleVersion.get());
+        when(association.getFinalizationState()).thenAnswer(ignored -> currentState.get());
         doAnswer(invocation -> {
             currentVersion.set(invocation.getArgument(0));
             return null;
         }).when(association).setFinalizationVersion(any(Long.class));
+        doAnswer(invocation -> {
+            currentCycleVersion.set(invocation.getArgument(0));
+            return null;
+        }).when(association).setFinalizationCycleVersion(any(Long.class));
+        doAnswer(invocation -> {
+            currentState.set(invocation.getArgument(0));
+            return null;
+        }).when(association).setFinalizationState(any());
         when(finalizations.save(any())).thenAnswer(invocation -> {
             TranscriptFinalization row = invocation.getArgument(0);
             storedFinalization.set(row);
@@ -97,6 +112,9 @@ class TranscriptFinalizationServiceTest {
                 .contains("\"finalizationVersion\":1")
                 .contains("\"segmentCount\":1")
                 .doesNotContain("approved transcript", "textDraft", "textFinal", "audio");
+        verify(association).setFinalizationCycleVersion(1L);
+        verify(association).setFinalizationState(TranscriptFinalizationState.FINALIZED);
+        verify(association).setQuiescenceDueAt(null);
     }
 
     @Test
@@ -125,6 +143,19 @@ class TranscriptFinalizationServiceTest {
                 .satisfies(error -> assertThat(((ResponseStatusException) error).getStatusCode().value())
                         .isEqualTo(409));
         verify(outbox, times(1)).save(any());
+    }
+
+    @Test
+    void replayOfAnOlderOccurrenceDoesNotRetireANewerQuiescenceCycle() {
+        service.finalizeTranscript(context(), MEETING, SESSION, 1L);
+        clearInvocations(association);
+        when(association.getFinalizationCycleVersion()).thenReturn(2L);
+        when(association.getFinalizationState()).thenReturn(TranscriptFinalizationState.QUIESCING);
+
+        service.finalizeTranscript(context(), MEETING, SESSION, 1L);
+
+        verify(association, never()).setFinalizationState(any());
+        verify(association, never()).setFinalizationCycleVersion(any(Long.class));
     }
 
     @Test

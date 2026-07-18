@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.common.meeting.events.conformance.MeetingEventGoldens;
+import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -217,6 +218,21 @@ class MeetingEventValidatorTest {
                 .hasMessageContaining("payload.finishedAt is required")
                 .hasMessageContaining("aggregateRevision 2")
                 .hasMessageContaining("aggregateType must be meeting.recording");
+
+        assertThatThrownBy(() -> MeetingEventEnvelope.builder()
+                .eventType(MeetingEventType.RECORDING_FINISHED)
+                .producer("meeting-service")
+                .meetingId(MeetingEventGoldens.MEETING_ID)
+                .tenantId(MeetingEventGoldens.TENANT_ID)
+                .aggregateType("meeting.recording")
+                .aggregateId(MeetingEventGoldens.RECORDING_SESSION_ID)
+                .aggregateRevision(1)
+                .payload(new MeetingEventPayload.RecordingFinished(
+                        MeetingEventGoldens.RECORDING_SESSION_ID,
+                        "room-1", Instant.parse("2026-07-17T10:05:00Z")))
+                .build())
+                .isInstanceOf(MeetingEventValidationException.class)
+                .hasMessageContaining("payload.externalSessionId has invalid format");
     }
 
     @Test

@@ -8,6 +8,7 @@ import com.example.transcript.dto.TranscriptFinalizationDto;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
 import com.example.transcript.model.TranscriptEventOutbox;
 import com.example.transcript.model.TranscriptFinalization;
+import com.example.transcript.model.TranscriptFinalizationState;
 import com.example.transcript.model.TranscriptSegment;
 import com.example.transcript.model.TranscriptSessionAssociation;
 import com.example.transcript.repository.TranscriptEventOutboxRepository;
@@ -103,6 +104,7 @@ public class TranscriptFinalizationService {
                 throw new ResponseStatusException(HttpStatus.CONFLICT,
                         "Canonical transcript changed; use the next finalizationVersion.");
             }
+            reconcileExplicitFinalizationState(association, requestedVersion);
             return toDto(existing);
         }
         if (requestedVersion != currentVersion + 1) {
@@ -158,7 +160,7 @@ public class TranscriptFinalizationService {
         outbox.setEventKey(eventKey);
         outboxRepository.save(outbox);
 
-        association.setFinalizationVersion(requestedVersion);
+        markExplicitlyFinalized(association, requestedVersion);
         associationRepository.save(association);
 
         // Force all three writes inside this transaction; no caller can receive a
@@ -167,6 +169,37 @@ public class TranscriptFinalizationService {
         outboxRepository.flush();
         associationRepository.flush();
         return toDto(finalization, eventKey);
+    }
+
+    /**
+     * Explicit and automatic finalization share one occurrence/version ledger. An
+     * explicit occurrence must therefore also retire the matching quiescence cycle;
+     * otherwise the worker would repeatedly observe a due cycle that can no longer
+     * advance past the already-persisted version.
+     */
+    private void markExplicitlyFinalized(
+            TranscriptSessionAssociation association, long requestedVersion) {
+        if (association.getFinalizationCycleVersion() > requestedVersion) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "A newer automatic finalization cycle is already active.");
+        }
+        association.setFinalizationVersion(requestedVersion);
+        association.setFinalizationCycleVersion(requestedVersion);
+        association.setFinalizationState(TranscriptFinalizationState.FINALIZED);
+        association.setQuiescenceDueAt(null);
+        association.setFinalizationErrorCode(null);
+    }
+
+    private void reconcileExplicitFinalizationState(
+            TranscriptSessionAssociation association, long requestedVersion) {
+        if (association.getFinalizationCycleVersion() <= requestedVersion
+                && (association.getFinalizationState() != TranscriptFinalizationState.FINALIZED
+                    || association.getFinalizationCycleVersion() != requestedVersion
+                    || association.getQuiescenceDueAt() != null
+                    || association.getFinalizationErrorCode() != null)) {
+            markExplicitlyFinalized(association, requestedVersion);
+            associationRepository.saveAndFlush(association);
+        }
     }
 
     private TranscriptSnapshotHasher.Snapshot editorialSnapshot(List<TranscriptSegment> segments) {

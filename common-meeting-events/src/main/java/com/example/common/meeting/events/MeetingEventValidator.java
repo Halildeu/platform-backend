@@ -143,7 +143,7 @@ public final class MeetingEventValidator {
                 requireText(errors, p.externalSessionId(), "payload.externalSessionId");
                 requireNotNull(errors, p.finishedAt(), "payload.finishedAt");
                 if (p.externalSessionId() != null
-                        && !p.externalSessionId().matches("[A-Za-z0-9._:-]{1,128}")) {
+                        && !p.externalSessionId().matches("SES-[A-Za-z0-9._:-]{1,124}")) {
                     errors.add("payload.externalSessionId has invalid format");
                 }
                 requireOccurrenceScope(

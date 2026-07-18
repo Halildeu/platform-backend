@@ -154,6 +154,21 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
         assertThat(duplicate).isEqualTo(first);
         assertThat(finalizations.count()).isEqualTo(1L);
         assertThat(outbox.count()).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT finalization_state FROM " + SCHEMA
+                        + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? "
+                        + "AND session_id=?",
+                String.class, TENANT, MEETING, SESSION)).isEqualTo("FINALIZED");
+        assertThat(jdbc.queryForObject(
+                "SELECT finalization_cycle_version FROM " + SCHEMA
+                        + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? "
+                        + "AND session_id=?",
+                Long.class, TENANT, MEETING, SESSION)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject(
+                "SELECT quiescence_due_at IS NULL FROM " + SCHEMA
+                        + ".transcript_session_associations WHERE tenant_id=? AND meeting_id=? "
+                        + "AND session_id=?",
+                Boolean.class, TENANT, MEETING, SESSION)).isTrue();
         String expectedPayload = MeetingEventV1Serializer.toJson(MeetingEventEnvelope.builder()
                 .eventType(MeetingEventType.TRANSCRIPT_READY)
                 .producer("transcript-service")

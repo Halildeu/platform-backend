@@ -11,11 +11,22 @@ ALTER TABLE transcript_session_associations
     ADD COLUMN max_wait_at TIMESTAMPTZ,
     ADD COLUMN finalization_error_code VARCHAR(64);
 
+-- Explicit finalization existed before the quiescence state machine. Preserve
+-- those immutable occurrences as completed cycles instead of enrolling them a
+-- second time when a delayed recording-finished marker arrives.
+UPDATE transcript_session_associations
+SET finalization_state = 'FINALIZED',
+    finalization_cycle_version = finalization_version
+WHERE finalization_version > 0;
+
 ALTER TABLE transcript_session_associations
     ADD CONSTRAINT transcript_session_association_finalization_state
         CHECK (finalization_state IN ('AWAITING_FINISH', 'QUIESCING', 'FINALIZED', 'TIMED_OUT')),
     ADD CONSTRAINT transcript_session_association_cycle_version
-        CHECK (finalization_cycle_version >= 0),
+        CHECK (finalization_cycle_version >= finalization_version),
+    ADD CONSTRAINT transcript_session_association_finalized_cycle
+        CHECK (finalization_state <> 'FINALIZED'
+               OR finalization_cycle_version = finalization_version),
     ADD CONSTRAINT transcript_session_association_quiescence_shape
         CHECK ((finalization_state = 'QUIESCING'
                 AND recording_finished_at IS NOT NULL

@@ -62,6 +62,28 @@ class RecordingFinishedEventParserTest {
                 .hasMessage("PAYLOAD_TOO_LARGE");
     }
 
+    @Test
+    void rejectsAProducerValueOutsideTheSharedSesContract() {
+        Map<String, String> fields = validFields();
+        fields.put("payload", fields.get("payload")
+                .replace("SES-desktop-1", "room-1"));
+
+        assertThatThrownBy(() -> parser.parse(fields))
+                .isInstanceOf(RecordingFinishedEventParser.RecordingFinishedEventInvalidException.class)
+                .hasMessage("SOURCE_SESSION_FORMAT");
+    }
+
+    @Test
+    void rejectsUnsafeSourceSessionCharacters() {
+        Map<String, String> fields = validFields();
+        fields.put("payload", fields.get("payload")
+                .replace("SES-desktop-1", "../foreign"));
+
+        assertThatThrownBy(() -> parser.parse(fields))
+                .isInstanceOf(RecordingFinishedEventParser.RecordingFinishedEventInvalidException.class)
+                .hasMessage("SOURCE_SESSION_FORMAT");
+    }
+
     private Map<String, String> validFields() {
         String payload = "{"
                 + "\"schema\":\"meeting.event.v1\","
