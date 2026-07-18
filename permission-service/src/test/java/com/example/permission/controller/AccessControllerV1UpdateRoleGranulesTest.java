@@ -400,6 +400,66 @@ class AccessControllerV1UpdateRoleGranulesTest {
         verify(roleRepository, never()).save(any(Role.class));
     }
 
+    @Test
+    void updateRoleGranules_actionView_returns400WithoutMutatingRole() {
+        Long roleId = 19L;
+        Role role = new Role();
+        role.setId(roleId);
+        role.addRolePermission(new RolePermission(
+                role, PermissionType.MODULE, "ATS", GrantType.VIEW));
+        when(roleRepository.findByIdForUpdate(roleId)).thenReturn(Optional.of(role));
+
+        Map<String, List<RolePermissionItemDto>> body = Map.of("permissions", List.of(
+                new RolePermissionItemDto("MODULE", "ATS", "VIEW"),
+                new RolePermissionItemDto("ACTION", "ATS_JOB_MANAGE", "VIEW")
+        ));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.updateRoleGranules(roleId, body));
+
+        assertThat(ex.getStatusCode().value()).isEqualTo(400);
+        assertThat(ex.getReason())
+                .contains("ACTION")
+                .contains("ALLOW or DENY");
+        assertThat(role.getRolePermissions())
+                .as("validation must finish before aggregate clear")
+                .hasSize(1);
+        verify(roleRepository, never()).flush();
+        verify(roleRepository, never()).save(any(Role.class));
+        verify(eventPublisher, never()).publishEvent(any(RoleChangeEvent.class));
+    }
+
+    @Test
+    void updateRoleGranules_fullAtsModuleAndActionAllow_persistAsTypedGranules() {
+        Long roleId = 20L;
+        Role role = new Role();
+        role.setId(roleId);
+        when(roleRepository.findByIdForUpdate(roleId)).thenReturn(Optional.of(role));
+        when(roleRepository.save(any(Role.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Map<String, List<RolePermissionItemDto>> body = Map.of("permissions", List.of(
+                new RolePermissionItemDto("MODULE", "ATS", "VIEW"),
+                new RolePermissionItemDto("ACTION", "ATS_JOB_MANAGE", "ALLOW")
+        ));
+
+        ResponseEntity<Map<String, Object>> response = controller.updateRoleGranules(roleId, body);
+
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        ArgumentCaptor<Role> captor = ArgumentCaptor.forClass(Role.class);
+        verify(roleRepository).save(captor.capture());
+        assertThat(captor.getValue().getRolePermissions())
+                .extracting(RolePermission::getPermissionType,
+                        RolePermission::getPermissionKey,
+                        RolePermission::getGrantType)
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple(
+                                PermissionType.MODULE, "ATS", GrantType.VIEW),
+                        org.assertj.core.groups.Tuple.tuple(
+                                PermissionType.ACTION, "ATS_JOB_MANAGE", GrantType.ALLOW));
+    }
+
     private RolePermission makeFkRow(Role role, String code, GrantType grant) {
         Permission p = new Permission();
         p.setCode(code);

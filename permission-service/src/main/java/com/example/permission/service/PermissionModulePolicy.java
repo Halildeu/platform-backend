@@ -12,7 +12,7 @@ import java.util.Set;
 public final class PermissionModulePolicy {
 
     private static final Set<String> EXPLICIT_GRANT_ONLY_MODULES =
-            Set.of("INTERVIEW_EVIDENCE");
+            Set.of("INTERVIEW_EVIDENCE", "ATS");
 
     private PermissionModulePolicy() {
     }

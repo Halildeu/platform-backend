@@ -420,7 +420,12 @@ public class AccessControllerV1 {
             }
             if (!isValidGrantType(grantUp)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Unknown granule grant: " + grantUp + " (expected NONE/VIEW/MANAGE/ALLOW/DENY)");
+                        "Unknown granule grant: " + grantUp + " (expected VIEW/MANAGE/ALLOW/DENY)");
+            }
+            if (!isGrantCompatibleWithType(typeUp, grantUp)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Granule grant " + grantUp + " is not valid for type " + typeUp
+                                + " (ACTION requires ALLOW or DENY)");
             }
 
             String dedupKey = typeUp + "::" + key;
@@ -457,6 +462,18 @@ public class AccessControllerV1 {
             if (gt.name().equals(value)) return true;
         }
         return false;
+    }
+
+    /**
+     * The OpenFGA tuple writer intentionally maps ACTION grants only for
+     * ALLOW/DENY. Accepting VIEW or MANAGE here used to persist a role row that
+     * {@code TupleSyncService} silently skipped, while {@code /authz/me}
+     * projected the unusable raw value. The role editor then reported a saved
+     * permission that could never authorize the action. Reject that split-brain
+     * state before the aggregate is cleared or any mutation is persisted.
+     */
+    private static boolean isGrantCompatibleWithType(String type, String grant) {
+        return !"ACTION".equals(type) || "ALLOW".equals(grant) || "DENY".equals(grant);
     }
 
     @GetMapping("/users/{userId}/scopes")

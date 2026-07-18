@@ -1,6 +1,7 @@
 package com.example.permission.service;
 
 import com.example.permission.dto.v1.PermissionCatalogDto.ModuleCatalogItem;
+import com.example.permission.dto.v1.PermissionCatalogDto.ActionCatalogItem;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -98,6 +99,34 @@ class PermissionCatalogServiceModulesTest {
         assertThat(service.getModuleKeys())
                 .contains("INTERVIEW_EVIDENCE")
                 .doesNotContain("interview_evidence", "interview-evidence");
+    }
+
+    @Test
+    void catalogExposesFullAtsAsSeparateExactOptInModule() {
+        ModuleCatalogItem ats = module("ATS")
+                .orElseThrow(() -> new AssertionError("ATS module missing from catalog"));
+
+        assertThat(ats.label()).isEqualTo("Aday Takip Sistemi");
+        assertThat(ats.levels()).containsExactly("VIEW", "MANAGE");
+        assertThat(service.getModuleKeys())
+                .contains("ATS", "INTERVIEW_EVIDENCE")
+                .doesNotContain("ats", "FULL_ATS");
+    }
+
+    @Test
+    void catalogExposesFullAtsActionsWithoutCollapsingRetentionIntoManage() {
+        List<ActionCatalogItem> atsActions = service.getCatalog().actions().stream()
+                .filter(action -> "ATS".equals(action.module()))
+                .toList();
+
+        assertThat(atsActions).extracting(ActionCatalogItem::key)
+                .containsExactly(
+                        "ATS_JOB_MANAGE",
+                        "ATS_APPLICATION_MANAGE",
+                        "ATS_INTERVIEW_MANAGE",
+                        "ATS_OFFER_MANAGE",
+                        "ATS_RETENTION_EXECUTE");
+        assertThat(atsActions).allMatch(ActionCatalogItem::deniable);
     }
 
     @Test

@@ -69,7 +69,13 @@ public class PermissionCatalogService {
             // is sensitive, so this module is deliberately opt-in: unlike the
             // meeting/transcript admin surfaces it is NOT seeded onto ADMIN by
             // PermissionDataInitializer. Named roles receive an explicit grant.
-            new ModuleCatalogItem("INTERVIEW_EVIDENCE", "Mülakat Kanıtı", List.of("VIEW", "MANAGE"))
+            new ModuleCatalogItem("INTERVIEW_EVIDENCE", "Mülakat Kanıtı", List.of("VIEW", "MANAGE")),
+            // Faz 25 Full ATS: product-wide recruiting boundary. This is
+            // deliberately separate from INTERVIEW_EVIDENCE: a recruiter can
+            // manage jobs/applications without gaining access to sensitive
+            // recording/transcript evidence. Explicit-grant-only policy lives
+            // in PermissionModulePolicy.
+            new ModuleCatalogItem("ATS", "Aday Takip Sistemi", List.of("VIEW", "MANAGE"))
     );
 
     private static final List<ActionCatalogItem> ACTIONS = List.of(
@@ -78,7 +84,13 @@ public class PermissionCatalogService {
             new ActionCatalogItem("DELETE_PO", "Sipariş Sil", "PURCHASE", true),
             new ActionCatalogItem("RESET_PASSWORD", "Parola Sıfırla", "USER_MANAGEMENT", true),
             new ActionCatalogItem("DELETE_USER", "Kullanıcı Sil", "USER_MANAGEMENT", true),
-            new ActionCatalogItem("TOGGLE_STATUS", "Durum Değiştir", "USER_MANAGEMENT", true)
+            new ActionCatalogItem("TOGGLE_STATUS", "Durum Değiştir", "USER_MANAGEMENT", true),
+            new ActionCatalogItem("ATS_JOB_MANAGE", "İlan Yönetimi", "ATS", true),
+            new ActionCatalogItem("ATS_APPLICATION_MANAGE", "Başvuru ve Pipeline Yönetimi", "ATS", true),
+            new ActionCatalogItem("ATS_INTERVIEW_MANAGE", "Mülakat Yönetimi", "ATS", true),
+            new ActionCatalogItem("ATS_OFFER_MANAGE", "Teklif ve İşe Alım Yönetimi", "ATS", true),
+            // Destructive privacy operation: never implied by ATS:MANAGE.
+            new ActionCatalogItem("ATS_RETENTION_EXECUTE", "Saklama ve Silme İşlemi", "ATS", true)
     );
 
     // Codex 019dda1c iter-26: dashboard catalog sync (Plan C+ — statik manifest
