@@ -14,11 +14,13 @@ import com.example.commonauth.openfga.OpenFgaAuthzService;
 import com.example.meeting.config.MeetingWebMvcConfig;
 import com.example.meeting.config.SecurityConfig;
 import com.example.meeting.dto.v1.admin.MeetingResponse;
+import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
 import com.example.meeting.model.MeetingStatus;
 import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingService;
+import com.example.meeting.service.MeetingHistorySearchMetrics;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.data.domain.Page;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -68,6 +71,9 @@ class MeetingAdminAuthorizationSecurityTest {
     @MockitoBean
     private OpenFgaAuthzService authzService;
 
+    @MockitoBean
+    private MeetingHistorySearchMetrics searchMetrics;
+
     @BeforeEach
     void setUp() {
         when(authzService.isEnabled()).thenReturn(true);
@@ -93,6 +99,36 @@ class MeetingAdminAuthorizationSecurityTest {
                 .andExpect(status().isForbidden());
 
         verifyNoInteractions(meetingService, authzService);
+    }
+
+    @Test
+    void meetingViewerOpenFgaDenyBlocksSearchBeforeTenantQuery() throws Exception {
+        when(authzService.check(SUBJECT, MeetingAuthz.VIEWER, "module", MeetingAuthz.MODULE))
+                .thenReturn(false);
+
+        mockMvc.perform(get("/api/v1/admin/meetings")
+                        .param("title", "roadmap")
+                        .with(adminScopeJwt(SUBJECT)))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(meetingService, searchMetrics);
+    }
+
+    @Test
+    void meetingViewerOpenFgaAllowReachesTenantScopedSearch() throws Exception {
+        when(authzService.check(SUBJECT, MeetingAuthz.VIEWER, "module", MeetingAuthz.MODULE))
+                .thenReturn(true);
+        when(meetingService.listMeetings(
+                any(AdminTenantContext.class), any(MeetingSearchCriteria.class), any()))
+                .thenReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/admin/meetings")
+                        .param("title", "roadmap")
+                        .with(adminScopeJwt(SUBJECT)))
+                .andExpect(status().isOk());
+
+        org.mockito.Mockito.verify(meetingService).listMeetings(
+                any(AdminTenantContext.class), any(MeetingSearchCriteria.class), any());
     }
 
     @Test
@@ -165,6 +201,7 @@ class MeetingAdminAuthorizationSecurityTest {
         return new MeetingResponse(
                 MEETING_ID, TENANT_ID, "weekly sync", "desc",
                 MeetingStatus.SCHEDULED,
+                Instant.parse("2026-06-16T09:00:00Z"),
                 Instant.parse("2026-06-16T09:00:00Z"),
                 Instant.parse("2026-06-16T10:00:00Z"),
                 "organizer@example.com", "admin@example.com",

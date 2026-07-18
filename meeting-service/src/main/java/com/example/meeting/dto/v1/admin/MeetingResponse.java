@@ -15,6 +15,7 @@ public record MeetingResponse(
         String title,
         String description,
         MeetingStatus status,
+        Instant startedAt,
         Instant scheduledStart,
         Instant scheduledEnd,
         String organizerSubject,
