@@ -494,6 +494,47 @@ class DirectSttForwardingDispatcherTest {
     }
 
     @Test
+    void transcriptSinkThatNeverReturnsReleasesPermitAtTotalDeadline() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"merhaba dunya\",\"language\":\"tr\"}"));
+
+        final AudioGatewayProperties props = props(1);
+        props.getDirectStt().getTranscriptResultStream().setDeliveryAttemptTimeoutMs(50L);
+        props.getDirectStt().getTranscriptResultStream().setDeliveryTotalTimeoutMs(250L);
+        final CountDownLatch enteredSink = new CountDownLatch(1);
+        final CountDownLatch releaseSink = new CountDownLatch(1);
+        final DirectSttTranscriptResultSink hangingSink = (result, context) -> {
+            enteredSink.countDown();
+            try {
+                releaseSink.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink(), hangingSink);
+
+        try {
+            assertThat(dispatcher.dispatch(command(new byte[] {10, 20, 30, 40})))
+                    .isInstanceOf(DispatchOutcome.Accepted.class);
+            assertThat(enteredSink.await(2, TimeUnit.SECONDS)).isTrue();
+            awaitCounter(meters, "transcript_delivery_failed", 1.0);
+
+            server.enqueue(new MockResponse()
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"text\":\"ikinci\",\"language\":\"tr\"}"));
+            assertThat(dispatcher.dispatch(command(new byte[] {1, 2, 3, 4})))
+                    .as("the first hung XADD must not retain the sole in-flight permit")
+                    .isInstanceOf(DispatchOutcome.Accepted.class);
+            assertThat(counter(meters, "success")).isZero();
+            assertThat(counter(meters, "transcript_sink_success")).isZero();
+        } finally {
+            releaseSink.countDown();
+        }
+    }
+
+    @Test
     void emptyTranscriptSkipsResultSinkWhenEnabled() throws Exception {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "application/json")

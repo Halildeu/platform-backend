@@ -142,6 +142,28 @@ class AudioGatewayPropertiesTest {
     }
 
     @Test
+    void directSttTranscriptResultStreamRejectsNonPositiveAttemptTimeout() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getTranscriptResultStream().setDeliveryAttemptTimeoutMs(0L);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("delivery-attempt-timeout-ms must be in [1,30000]");
+    }
+
+    @Test
+    void directSttTranscriptResultStreamRejectsTotalTimeoutBelowAttemptTimeout() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getTranscriptResultStream().setDeliveryAttemptTimeoutMs(2_000L);
+        props.getDirectStt().getTranscriptResultStream().setDeliveryTotalTimeoutMs(1_999L);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "delivery-total-timeout-ms must be in [delivery-attempt-timeout-ms,60000]");
+    }
+
+    @Test
     void directSttAggregationRejectsWindowOutsideFiveToThirtySeconds() {
         final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
         props.getDirectStt().getAggregation().setWindowSeconds(4);
@@ -241,6 +263,20 @@ class AudioGatewayPropertiesTest {
         assertThatThrownBy(props::validate)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("terminal-drain-timeout-ms must be in [1,60000]");
+    }
+
+    @Test
+    void liveStreamingRequiresSourceHistoryToHoldAtLeastOneMaximumFrame() {
+        final AudioGatewayProperties props = directSttProps("http://localhost:8200/transcribe");
+        props.getDirectStt().getStreaming().setEnabled(true);
+        props.getDirectStt().getStreaming().setStreamUrl("ws://localhost:8200/ws/stream");
+        props.getDirectStt().getStreaming().setMaxFrameBytes(1_024);
+        props.getDirectStt().getStreaming().setSourceHistoryMaxBytes(1_023);
+
+        assertThatThrownBy(props::validate)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "source-history-max-bytes must be in [max-frame-bytes,16777216]");
     }
 
     private static AudioGatewayProperties directSttProps(final String transcribeUrl) {

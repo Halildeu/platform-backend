@@ -171,7 +171,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
         final AtomicBoolean drainedObserved = new AtomicBoolean();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final LiveTranscriptWindowAccumulator transcriptWindow =
-                new LiveTranscriptWindowAccumulator();
+                new LiveTranscriptWindowAccumulator(properties.getDirectStt().getStreaming()
+                        .getSourceHistoryMaxBytes());
 
         final Flux<WebSocketMessage> framesToUpstream = client.receive()
                 .limitRate(1)
@@ -301,7 +302,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
             final UpstreamEvent parsed = parseUpstreamEvent(event);
             if (parsed instanceof UpstreamEvent.Final finalEvent) {
                 final LiveTranscriptWindowAccumulator.Window window =
-                        transcriptWindow.take(finalEvent.sequence());
+                        transcriptWindow.take(
+                                finalEvent.sequence(),
+                                finalEvent.sourceStartSample(),
+                                finalEvent.sourceEndSample());
                 final TranscriptResult result = new TranscriptResult(
                         finalEvent.text(),
                         record.language(),
@@ -427,8 +431,17 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
                 && root.path("reason").textValue().matches("[A-Za-z0-9_.:-]{1,64}")
                 ? root.path("reason").textValue()
                 : "final";
+        final JsonNode sourceStart = root.path("source_start_sample");
+        final JsonNode sourceEnd = root.path("source_end_sample");
+        if (!sourceStart.isIntegralNumber() || !sourceStart.canConvertToLong()
+                || !sourceEnd.isIntegralNumber() || !sourceEnd.canConvertToLong()
+                || sourceStart.longValue() < 0L
+                || sourceEnd.longValue() <= sourceStart.longValue()) {
+            throw new IllegalArgumentException("live STT final source sample range is invalid");
+        }
         return new UpstreamEvent.Final(
-                sequence.longValue(), text.textValue(), reason, elapsedMs);
+                sequence.longValue(), text.textValue(), reason, elapsedMs,
+                sourceStart.longValue(), sourceEnd.longValue());
     }
 
     private void emitComputePlaneAudit(
@@ -536,7 +549,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler {
     }
 
     private sealed interface UpstreamEvent {
-        record Final(long sequence, String text, String reason, Double elapsedMs)
+        record Final(
+                long sequence,
+                String text,
+                String reason,
+                Double elapsedMs,
+                long sourceStartSample,
+                long sourceEndSample)
                 implements UpstreamEvent {
         }
 

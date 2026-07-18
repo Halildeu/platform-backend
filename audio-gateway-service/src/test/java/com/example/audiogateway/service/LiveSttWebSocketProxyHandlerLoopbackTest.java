@@ -348,7 +348,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                                 return Flux.just(
                                         "{\"type\":\"eof_ack\"}",
                                         "{\"type\":\"final\",\"seq\":7,\"text\":\"fixture\","
-                                                + "\"reason\":\"eof\",\"elapsed_ms\":42}",
+                                                + "\"reason\":\"eof\",\"elapsed_ms\":42,"
+                                                + "\"source_start_sample\":0,"
+                                                + "\"source_end_sample\":2}",
                                         "{\"type\":\"drained\"}");
                             }
                             return Flux.empty();
@@ -421,7 +423,8 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 "{\"type\":\"partial\"}",
                 "{\"type\":\"eof_ack\"}",
                 "{\"type\":\"final\",\"seq\":7,\"text\":\"fixture\","
-                        + "\"reason\":\"eof\",\"elapsed_ms\":42}",
+                        + "\"reason\":\"eof\",\"elapsed_ms\":42,"
+                        + "\"source_start_sample\":0,\"source_end_sample\":2}",
                 "{\"type\":\"drained\"}");
         assertThat(persistedResult.get()).isNotNull();
         assertThat(persistedResult.get().text()).isEqualTo("fixture");
@@ -450,7 +453,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                                 .ofType(BinaryWebSocketFrame.class)
                                 .map(frame -> "{\"type\":\"final\",\"seq\":0,"
                                         + "\"text\":\"must-not-leak\","
-                                        + "\"reason\":\"window\",\"elapsed_ms\":12}"))))
+                                        + "\"reason\":\"window\",\"elapsed_ms\":12,"
+                                        + "\"source_start_sample\":0,"
+                                        + "\"source_end_sample\":2}"))))
                 .bindNow();
 
         final AudioGatewayProperties properties = new AudioGatewayProperties();

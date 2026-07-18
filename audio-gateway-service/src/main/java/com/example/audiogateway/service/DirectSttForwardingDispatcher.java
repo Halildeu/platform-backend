@@ -609,14 +609,23 @@ public class DirectSttForwardingDispatcher
             return Mono.error(new TranscriptResultDeliveryException(
                     new IllegalStateException("direct-STT transcript result stream is disabled")));
         }
-        return Mono.fromRunnable(() -> transcriptResultSink.emit(result, transcriptContext(task)))
-                .subscribeOn(transcriptSinkScheduler)
+        final Duration attemptTimeout = Duration.ofMillis(
+                cfg.getTranscriptResultStream().getDeliveryAttemptTimeoutMs());
+        final Duration totalTimeout = Duration.ofMillis(
+                cfg.getTranscriptResultStream().getDeliveryTotalTimeoutMs());
+        return Mono.defer(() -> Mono
+                        .fromRunnable(() -> transcriptResultSink.emit(result, transcriptContext(task)))
+                        .subscribeOn(transcriptSinkScheduler)
+                        .timeout(attemptTimeout))
                 // XADD can be retried at-least-once: the downstream source-window identity
                 // makes an acknowledgement-loss duplicate idempotent, while a drop is not.
                 .retryWhen(Retry.backoff(5, Duration.ofMillis(100))
                         .maxBackoff(Duration.ofSeconds(2))
                         .jitter(0.2d)
                         .doBeforeRetry(signal -> counter("transcript_sink_retry").increment()))
+                // The outer deadline also bounds retry backoff and guarantees that admission
+                // permits/audio are released even if a blocking Redis command ignores cancel.
+                .timeout(totalTimeout)
                 .doOnSuccess(ignored -> {
                     counter("transcript_sink_success").increment();
                     log.info("Direct-STT transcript result routed {} textLen={} sttLang={} model={}",
