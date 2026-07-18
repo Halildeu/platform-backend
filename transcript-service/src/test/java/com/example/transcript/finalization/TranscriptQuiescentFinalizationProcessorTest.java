@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -20,7 +21,9 @@ import com.example.transcript.repository.TranscriptSegmentRepository;
 import com.example.transcript.repository.TranscriptSessionAssociationRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
@@ -47,13 +50,49 @@ class TranscriptQuiescentFinalizationProcessorTest {
 
     @BeforeEach
     void setUp() {
+        processor = processorAt(NOW);
+    }
+
+    @Test
+    void exactPt6mMinWaitBoundaryDoesNotPublishBeforeDueAndPublishesAtDue() {
+        Instant observedAt = NOW.minus(Duration.ofMinutes(6));
+        Instant minWaitAt = observedAt.plus(Duration.ofMinutes(6));
+        TranscriptSessionAssociation association = dueAssociation(observedAt.plus(Duration.ofMinutes(15)));
+        association.setMinWaitAt(minWaitAt);
+        association.setQuiescenceDueAt(minWaitAt);
+        when(associations.findByIdForUpdate(ASSOCIATION_ID)).thenReturn(Optional.of(association));
+        when(segments.findCanonicalSessionForUpdate(TENANT, MEETING, SESSION))
+                .thenReturn(List.of(draftSegment("canonical phrase")));
+
+        assertThat(association.getStatus()).isEqualTo(TranscriptSessionAssociationStatus.RESOLVED);
+        assertThat(association.getSessionId()).isEqualTo(SESSION);
+        assertThat(association.getFinalizationState()).isEqualTo(TranscriptFinalizationState.QUIESCING);
+        assertThat(association.getQuiescenceDueAt()).isEqualTo(minWaitAt);
+
+        assertThat(processorAt(minWaitAt.minus(1, ChronoUnit.MICROS)).process(ASSOCIATION_ID))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.NOT_DUE);
+        verify(outbox, never()).save(any());
+        verify(finalizations, never()).save(any());
+
+        assertThat(processorAt(minWaitAt).process(ASSOCIATION_ID))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.READY);
+        verify(outbox, times(1)).save(any());
+        verify(finalizations, times(1)).save(any());
+
+        assertThat(processorAt(minWaitAt).process(ASSOCIATION_ID))
+                .isEqualTo(TranscriptQuiescentFinalizationProcessor.Outcome.NOT_DUE);
+        verify(outbox, times(1)).save(any());
+        verify(finalizations, times(1)).save(any());
+    }
+
+    private TranscriptQuiescentFinalizationProcessor processorAt(Instant now) {
         TranscriptFinalizationProperties properties = new TranscriptFinalizationProperties();
-        processor = new TranscriptQuiescentFinalizationProcessor(
+        return new TranscriptQuiescentFinalizationProcessor(
                 associations, segments, finalizations, outbox,
                 new TranscriptFinalizationStateMachine(properties),
                 new FinalizedTranscriptSnapshotCodec(
                         new TranscriptSnapshotHasher(), new ObjectMapper()),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                Clock.fixed(now, ZoneOffset.UTC));
     }
 
     @Test

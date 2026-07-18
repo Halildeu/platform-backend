@@ -11,6 +11,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.transcript.model.TranscriptEventOutbox;
 import com.example.transcript.finalization.FinalizedTranscriptSnapshotCodec;
 import com.example.transcript.finalization.TranscriptSnapshotHasher;
@@ -28,6 +30,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -96,7 +99,7 @@ class TranscriptFinalizationServiceTest {
     }
 
     @Test
-    void duplicateOccurrenceCreatesOneThinOutboxEffect() {
+    void duplicateOccurrenceCreatesOneThinOutboxEffect() throws Exception {
         ArgumentCaptor<TranscriptEventOutbox> event =
                 ArgumentCaptor.forClass(TranscriptEventOutbox.class);
 
@@ -109,12 +112,21 @@ class TranscriptFinalizationServiceTest {
         verify(outbox, times(1)).save(event.capture());
         assertThat(event.getValue().getEventKey())
                 .isEqualTo("meeting.transcript|" + SESSION + "|meeting.transcript.ready|1");
-        assertThat(event.getValue().getPayload())
-                .contains("\"eventType\":\"meeting.transcript.ready\"")
-                .contains("\"transcriptSessionId\":\"" + SESSION + "\"")
-                .contains("\"finalizationVersion\":1")
-                .contains("\"segmentCount\":1")
-                .doesNotContain("approved transcript", "textDraft", "textFinal", "audio");
+        JsonNode payload = new ObjectMapper().readTree(event.getValue().getPayload());
+        List<String> fieldNames = new ArrayList<>();
+        payload.fieldNames().forEachRemaining(fieldNames::add);
+        assertThat(fieldNames).containsExactly(
+                "schema", "eventType", "analysisRunId", "meetingId", "tenantId", "orgId",
+                "generatedAt", "transcriptSessionId", "finalizationVersion", "segmentCount");
+        assertThat(payload.path("schema").asText()).isEqualTo("meeting.event.v1");
+        assertThat(payload.path("eventType").asText()).isEqualTo("meeting.transcript.ready");
+        assertThat(payload.path("meetingId").asText()).isEqualTo(MEETING.toString());
+        assertThat(payload.path("tenantId").asText()).isEqualTo(TENANT.toString());
+        assertThat(payload.path("orgId").asText()).isEqualTo(TENANT.toString());
+        assertThat(payload.path("transcriptSessionId").asText()).isEqualTo(SESSION.toString());
+        assertThat(payload.path("finalizationVersion").asLong()).isEqualTo(1L);
+        assertThat(payload.path("segmentCount").asInt()).isEqualTo(1);
+        payload.fields().forEachRemaining(field -> assertThat(field.getValue().isValueNode()).isTrue());
         verify(association).setFinalizationCycleVersion(1L);
         verify(association).setFinalizationState(TranscriptFinalizationState.FINALIZED);
         verify(association).setQuiescenceDueAt(null);
