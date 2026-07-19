@@ -56,6 +56,7 @@ class DirectSttConfigTlsTest {
 
             final AudioGatewayProperties props = new AudioGatewayProperties();
             props.getDirectStt().setEnabled(true);
+            props.getDirectStt().getTranscriptResultStream().setEnabled(true);
             props.getDirectStt().setTranscribeUrl(server.url("/transcribe").toString());
             props.getDirectStt().getTls().setEnabled(true);
             props.getDirectStt().getTls().setCaCertificatePath(caPath.toString());

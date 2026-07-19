@@ -36,6 +36,8 @@ public class CanonicalTranscriptInternalController {
             @PathVariable UUID sessionId,
             @PathVariable long finalizationVersion,
             @RequestHeader("X-Tenant-Id") UUID requestedTenantId,
+            @RequestHeader("X-Analysis-Run-Id") UUID analysisRunId,
+            @RequestHeader("X-Analysis-Spec-Version") String analysisSpecVersion,
             Authentication authentication) {
         CanonicalTranscriptSnapshotDto snapshot = service.read(
                 tenantId,
@@ -43,6 +45,8 @@ public class CanonicalTranscriptInternalController {
                 sessionId,
                 finalizationVersion,
                 requestedTenantId,
+                analysisRunId,
+                analysisSpecVersion,
                 authentication.getName());
         HttpHeaders headers = new HttpHeaders();
         headers.setCacheControl("no-store");

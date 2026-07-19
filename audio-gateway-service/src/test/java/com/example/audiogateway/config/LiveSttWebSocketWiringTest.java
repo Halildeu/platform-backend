@@ -46,12 +46,14 @@ class LiveSttWebSocketWiringTest {
             "audio.gateway.direct-stt.streaming.enabled=true";
     private static final String STREAM_URL =
             "audio.gateway.direct-stt.streaming.stream-url=ws://live-stt:8200/ws/stream";
+    private static final String RESULT_STREAM_ENABLED =
+            "audio.gateway.direct-stt.transcript-result-stream.enabled=true";
 
     /** Streaming ON: context must start, and the WebSocketClient type must stay unambiguous. */
     @Nested
     @SpringBootTest
     @TestPropertySource(properties = {ISSUER, DIRECT_STT_ENABLED, TRANSCRIBE_URL,
-            STREAMING_ENABLED, STREAM_URL})
+            STREAMING_ENABLED, STREAM_URL, RESULT_STREAM_ENABLED})
     class StreamingEnabled {
 
         @Autowired
@@ -123,7 +125,8 @@ class LiveSttWebSocketWiringTest {
     /** Streaming OFF (default): bridge beans absent, context still healthy. */
     @Nested
     @SpringBootTest
-    @TestPropertySource(properties = {ISSUER, DIRECT_STT_ENABLED, TRANSCRIBE_URL})
+    @TestPropertySource(properties = {
+            ISSUER, DIRECT_STT_ENABLED, TRANSCRIBE_URL, RESULT_STREAM_ENABLED})
     class StreamingDisabled {
 
         @Autowired

@@ -63,6 +63,8 @@ public class CanonicalTranscriptReadService {
             UUID sessionId,
             long finalizationVersion,
             UUID requestedTenantId,
+            UUID analysisRunId,
+            String analysisSpecVersion,
             String serviceSubject) {
         if (finalizationVersion < 1) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "FINALIZATION_VERSION_INVALID");
@@ -70,6 +72,7 @@ public class CanonicalTranscriptReadService {
         if (!tenantId.equals(requestedTenantId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "TENANT_SCOPE_MISMATCH");
         }
+        analysisSpecVersionPolicy.requireAllowed(analysisSpecVersion);
         SessionErasureFence.UUIDScope scope =
                 new SessionErasureFence.UUIDScope(tenantId, meetingId, sessionId);
         erasureFence.lock(SessionErasureFence.canonicalKey(scope));
@@ -80,7 +83,8 @@ public class CanonicalTranscriptReadService {
             throw new ResponseStatusException(HttpStatus.GONE, "TRANSCRIPT_ERASED");
         }
         TranscriptFinalization finalization = finalizationRepository
-                .findVisibleOccurrence(tenantId, meetingId, sessionId, finalizationVersion)
+                .findVisibleAnalysisOccurrence(
+                        tenantId, meetingId, sessionId, finalizationVersion, analysisRunId)
                 .orElseThrow(() -> tombstone.isPresent()
                         ? new ResponseStatusException(HttpStatus.LOCKED, "TRANSCRIPT_ERASURE_PENDING")
                         : new ResponseStatusException(HttpStatus.NOT_FOUND, "FINALIZATION_NOT_FOUND"));
