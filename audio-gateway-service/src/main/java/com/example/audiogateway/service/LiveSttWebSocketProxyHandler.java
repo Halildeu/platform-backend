@@ -194,6 +194,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final AtomicBoolean eofSent = new AtomicBoolean();
         final AtomicBoolean eofAckObserved = new AtomicBoolean();
         final AtomicBoolean drainedObserved = new AtomicBoolean();
+        final AtomicBoolean errorObserved = new AtomicBoolean();
         final Sinks.One<Void> upstreamReady = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
         final LiveTranscriptWindowAccumulator transcriptWindow =
@@ -297,8 +298,9 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         eofSent,
                         eofAckObserved,
                         drainedObserved,
+                        errorObserved,
                         transcriptWindow), 1)
-                .takeUntil(RelayedEvent::drained);
+                .takeUntil(RelayedEvent::terminal);
 
         final Mono<Void> upload = upstream.send(framesToUpstream)
                 .then(Mono.defer(() -> eofSent.get()
@@ -313,9 +315,14 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         drainedRelayed.tryEmitEmpty();
                     }
                 })
-                .then(Mono.defer(() -> eofSent.get() && !drainedObserved.get()
-                        ? Mono.error(new TerminalDrainException())
-                        : Mono.empty()));
+                .then(Mono.defer(() -> {
+                    if (errorObserved.get()) {
+                        return Mono.error(new UpstreamTerminalException());
+                    }
+                    return eofSent.get() && !drainedObserved.get()
+                            ? Mono.error(new TerminalDrainException())
+                            : Mono.empty();
+                }));
         // Terminal EOF is a two-leg contract. The upload leg above cannot win after drained,
         // so the download completes only after the terminal event reached the desktop. For a
         // non-EOF disconnect, either leg may still terminate the bridge promptly.
@@ -332,14 +339,23 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final AtomicBoolean eofSent,
             final AtomicBoolean eofAckObserved,
             final AtomicBoolean drainedObserved,
+            final AtomicBoolean errorObserved,
             final LiveTranscriptWindowAccumulator transcriptWindow) {
         if (message instanceof CopiedUpstreamMessage.Text textMessage) {
             final String event = textMessage.value();
             final UpstreamEvent parsed = parseUpstreamEvent(event);
-            if (parsed instanceof UpstreamEvent.Ready ready) {
-                if (!readyObserved.compareAndSet(false, true)) {
+            if (parsed instanceof UpstreamEvent.Loading) {
+                if (readyObserved.get() || eofSent.get() || eofAckObserved.get()
+                        || drainedObserved.get() || errorObserved.get()) {
                     return Mono.error(new IllegalArgumentException(
-                            "live STT emitted duplicate ready event"));
+                            "live STT loading event violates stream order"));
+                }
+            }
+            if (parsed instanceof UpstreamEvent.Ready ready) {
+                if (eofSent.get() || eofAckObserved.get() || drainedObserved.get()
+                        || errorObserved.get() || !readyObserved.compareAndSet(false, true)) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT ready event violates stream order"));
                 }
                 final long persistenceTimeoutMs = properties.getDirectStt()
                         .getTranscriptResultStream().getDeliveryTotalTimeoutMs();
@@ -355,16 +371,37 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 upstreamReady.tryEmitEmpty();
             }
             if (parsed instanceof UpstreamEvent.EofAck) {
-                if (!eofSent.get() || !eofAckObserved.compareAndSet(false, true)) {
+                if (!readyObserved.get() || !eofSent.get() || drainedObserved.get()
+                        || errorObserved.get() || !eofAckObserved.compareAndSet(false, true)) {
                     return Mono.error(new IllegalArgumentException(
                             "live STT eof_ack violates terminal event order"));
                 }
             }
-            if (parsed instanceof UpstreamEvent.Partial && eofAckObserved.get()) {
-                return Mono.error(new IllegalArgumentException(
-                        "live STT partial arrived after eof_ack"));
+            if (parsed instanceof UpstreamEvent.Partial) {
+                if (!readyObserved.get() || eofAckObserved.get() || drainedObserved.get()
+                        || errorObserved.get()) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT partial violates stream order"));
+                }
+            }
+            if (parsed instanceof UpstreamEvent.Debug) {
+                if (!readyObserved.get() || drainedObserved.get() || errorObserved.get()) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT debug event violates stream order"));
+                }
+            }
+            if (parsed instanceof UpstreamEvent.Error) {
+                if (drainedObserved.get() || !errorObserved.compareAndSet(false, true)) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT error event violates terminal order"));
+                }
+                return Mono.just(new RelayedEvent(client.textMessage(event), false, true));
             }
             if (parsed instanceof UpstreamEvent.Final finalEvent) {
+                if (!readyObserved.get() || drainedObserved.get() || errorObserved.get()) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT final violates stream order"));
+                }
                 final LiveTranscriptWindowAccumulator.Window window =
                         transcriptWindow.take(
                                 finalEvent.sequence(),
@@ -394,7 +431,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                     window.windowSeq(),
                                     correlationId);
                         })
-                        .thenReturn(new RelayedEvent(client.textMessage(event), false));
+                        .thenReturn(new RelayedEvent(client.textMessage(event), false, false));
             }
             final boolean drained = parsed instanceof UpstreamEvent.Drained;
             if (drained) {
@@ -404,11 +441,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             "live STT drained violates terminal event order"));
                 }
             }
-            return Mono.just(new RelayedEvent(client.textMessage(event), drained));
+            return Mono.just(new RelayedEvent(client.textMessage(event), drained, false));
         }
         if (message instanceof CopiedUpstreamMessage.Ping ping) {
             return Mono.just(new RelayedEvent(
-                    client.pingMessage(factory -> factory.wrap(ping.payload())), false));
+                    client.pingMessage(factory -> factory.wrap(ping.payload())), false, false));
         }
         return Mono.empty();
     }
@@ -490,20 +527,28 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
         final String type = root.path("type").textValue();
         if ("ready".equals(type)) {
+            requireExactFields(root, Set.of(
+                    "type", "sample_rate", "live_model", "final_model", "partial_mode",
+                    "protocol", "capabilities", "supports_eof", "terminal_timeout_ms"));
             final JsonNode capabilities = root.path("capabilities");
-            final boolean hasProtocolCapability = capabilities.isArray()
-                    && java.util.stream.StreamSupport.stream(capabilities.spliterator(), false)
-                            .anyMatch(item -> item.isTextual()
-                                    && UPSTREAM_PROTOCOL.equals(item.textValue()));
             final JsonNode terminalTimeout = root.path("terminal_timeout_ms");
             if (!UPSTREAM_PROTOCOL.equals(root.path("protocol").asText())
                     || !"stable-v1".equals(root.path("partial_mode").asText())
-                    || !root.path("supports_eof").asBoolean(false)
-                    || root.path("sample_rate").asInt(-1) != 16_000
-                    || !hasProtocolCapability
+                    || !root.path("supports_eof").isBoolean()
+                    || !root.path("supports_eof").booleanValue()
+                    || !root.path("sample_rate").isIntegralNumber()
+                    || root.path("sample_rate").longValue() != 16_000L
+                    || !root.path("live_model").isTextual()
+                    || root.path("live_model").textValue().isBlank()
+                    || !root.path("final_model").isTextual()
+                    || root.path("final_model").textValue().isBlank()
+                    || !capabilities.isArray()
+                    || capabilities.size() != 2
+                    || !"eof".equals(capabilities.path(0).asText())
+                    || !UPSTREAM_PROTOCOL.equals(capabilities.path(1).asText())
                     || !terminalTimeout.isIntegralNumber()
                     || !terminalTimeout.canConvertToLong()
-                    || terminalTimeout.longValue() <= 0L
+                    || terminalTimeout.longValue() < 1_000L
                     || terminalTimeout.longValue() > 120_000L) {
                 throw new IllegalArgumentException(
                         "live STT ready event does not satisfy source range protocol");
@@ -511,36 +556,59 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             return new UpstreamEvent.Ready(terminalTimeout.longValue());
         }
         if ("drained".equals(type)) {
+            requireExactFields(root, Set.of("type"));
             return new UpstreamEvent.Drained();
         }
         if ("eof_ack".equals(type)) {
+            requireExactFields(root, Set.of("type"));
             return new UpstreamEvent.EofAck();
         }
         if ("partial".equals(type)) {
+            requireExactFields(root, Set.of(
+                    "type", "seq", "confirmed", "tentative", "elapsed_ms", "rms", "source"));
+            final JsonNode sequence = root.path("seq");
+            final JsonNode elapsed = root.path("elapsed_ms");
+            final JsonNode rms = root.path("rms");
+            if (!sequence.isIntegralNumber() || !sequence.canConvertToLong()
+                    || sequence.longValue() < 0L
+                    || !root.path("confirmed").isTextual()
+                    || !root.path("tentative").isTextual()
+                    || !root.path("source").isTextual()
+                    || root.path("source").textValue().isBlank()
+                    || !elapsed.isIntegralNumber() || !elapsed.canConvertToLong()
+                    || elapsed.longValue() < 0L
+                    || !isNonNegativeFiniteNumber(rms)) {
+                throw new IllegalArgumentException("live STT partial event is invalid");
+            }
             return new UpstreamEvent.Partial();
         }
         if ("loading".equals(type)) {
+            requireExactFields(root, Set.of("type", "stage"));
             final String stage = root.path("stage").asText("");
             if (!("live_model".equals(stage) || "final_model".equals(stage))) {
                 throw new IllegalArgumentException("live STT loading event is invalid");
             }
-            return new UpstreamEvent.PassThrough();
+            return new UpstreamEvent.Loading();
         }
         if ("error".equals(type)) {
-            if (!root.path("msg").isTextual()) {
+            requireExactFields(root, Set.of("type", "msg"));
+            if (!root.path("msg").isTextual() || root.path("msg").textValue().isBlank()) {
                 throw new IllegalArgumentException("live STT error event is invalid");
             }
-            return new UpstreamEvent.PassThrough();
+            return new UpstreamEvent.Error();
         }
         if ("debug".equals(type)) {
-            if (!root.path("event").isTextual()) {
+            if (!root.path("event").isTextual() || root.path("event").textValue().isBlank()) {
                 throw new IllegalArgumentException("live STT debug event is invalid");
             }
-            return new UpstreamEvent.PassThrough();
+            return new UpstreamEvent.Debug();
         }
         if (!"final".equals(type)) {
             throw new IllegalArgumentException("live STT emitted unknown event type");
         }
+        requireExactFields(root, Set.of(
+                "type", "seq", "text", "reason", "elapsed_ms", "rms",
+                "source_start_sample", "source_end_sample"));
         final JsonNode sequence = root.path("seq");
         final JsonNode text = root.path("text");
         if (!sequence.isIntegralNumber() || !sequence.canConvertToLong()
@@ -549,20 +617,19 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             throw new IllegalArgumentException("live STT final event is incomplete");
         }
         final JsonNode elapsed = root.path("elapsed_ms");
-        final Double elapsedMs;
-        if (elapsed.isMissingNode() || elapsed.isNull()) {
-            elapsedMs = null;
-        } else if (!elapsed.isNumber()
-                || !Double.isFinite(elapsed.doubleValue())
-                || elapsed.doubleValue() < 0.0d) {
+        if (!elapsed.isIntegralNumber() || !elapsed.canConvertToLong()
+                || elapsed.longValue() < 0L) {
             throw new IllegalArgumentException("live STT final elapsed_ms is invalid");
-        } else {
-            elapsedMs = elapsed.doubleValue();
         }
-        final String reason = root.path("reason").isTextual()
-                && root.path("reason").textValue().matches("[A-Za-z0-9_.:-]{1,64}")
-                ? root.path("reason").textValue()
-                : "final";
+        final JsonNode rms = root.path("rms");
+        if (!isNonNegativeFiniteNumber(rms)) {
+            throw new IllegalArgumentException("live STT final rms is invalid");
+        }
+        if (!root.path("reason").isTextual()
+                || !root.path("reason").textValue().matches("[A-Za-z0-9_.:-]{1,64}")) {
+            throw new IllegalArgumentException("live STT final reason is invalid");
+        }
+        final String reason = root.path("reason").textValue();
         final JsonNode sourceStart = root.path("source_start_sample");
         final JsonNode sourceEnd = root.path("source_end_sample");
         if (!sourceStart.isIntegralNumber() || !sourceStart.canConvertToLong()
@@ -572,8 +639,26 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             throw new IllegalArgumentException("live STT final source sample range is invalid");
         }
         return new UpstreamEvent.Final(
-                sequence.longValue(), text.textValue(), reason, elapsedMs,
+                sequence.longValue(), text.textValue(), reason, elapsed.doubleValue(),
                 sourceStart.longValue(), sourceEnd.longValue());
+    }
+
+    private static void requireExactFields(final JsonNode root, final Set<String> expected) {
+        if (root.size() != expected.size()) {
+            throw new IllegalArgumentException("live STT event fields do not match contract");
+        }
+        final var fields = root.fieldNames();
+        while (fields.hasNext()) {
+            if (!expected.contains(fields.next())) {
+                throw new IllegalArgumentException("live STT event fields do not match contract");
+            }
+        }
+    }
+
+    private static boolean isNonNegativeFiniteNumber(final JsonNode value) {
+        return value.isNumber()
+                && Double.isFinite(value.doubleValue())
+                && value.doubleValue() >= 0.0d;
     }
 
     private void emitComputePlaneAudit(
@@ -666,7 +751,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
     }
 
-    private record RelayedEvent(WebSocketMessage message, boolean drained) {
+    private static final class UpstreamTerminalException extends RuntimeException {
+        private UpstreamTerminalException() {
+            super("live STT emitted a terminal error");
+        }
+    }
+
+    private record RelayedEvent(WebSocketMessage message, boolean drained, boolean failed) {
+        private boolean terminal() {
+            return drained || failed;
+        }
     }
 
     private sealed interface CopiedUpstreamMessage {
@@ -703,7 +797,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         record Partial() implements UpstreamEvent {
         }
 
-        record PassThrough() implements UpstreamEvent {
+        record Loading() implements UpstreamEvent {
+        }
+
+        record Error() implements UpstreamEvent {
+        }
+
+        record Debug() implements UpstreamEvent {
         }
     }
 }
