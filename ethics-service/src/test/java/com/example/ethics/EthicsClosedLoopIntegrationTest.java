@@ -44,11 +44,23 @@ class EthicsClosedLoopIntegrationTest {
     private static final String CLIENT_SECRET="0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef";
     @Autowired MockMvc mvc; @Autowired ObjectMapper mapper;
     @MockitoBean com.example.ethics.security.EthicsAuthorization authorization;
+    @MockitoBean com.example.ethics.security.EthicsEntitlementVerifier entitlements;
 
     @BeforeEach
     void allowTestStaffObjects() {
         when(authorization.can(any(), anyString(), any())).thenReturn(true);
         org.mockito.Mockito.doNothing().when(authorization).require(any(), anyString(), any());
+        when(entitlements.hasManageEntitlement(anyString())).thenReturn(true);
+    }
+
+    @Test
+    void validSameOrgJwtAndOpenFgaAllowStillDenyWithoutCurrentEthicEntitlement() throws Exception {
+        when(entitlements.hasManageEntitlement(anyString())).thenReturn(false);
+        mvc.perform(get("/api/v1/ethics/cases")
+                        .with(jwt().jwt(j -> j.subject("same-org-revoked")
+                                        .claim("org_id", ORG.toString()))
+                                .authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"))))
+                .andExpect(status().isForbidden());
     }
 
     @TestConfiguration

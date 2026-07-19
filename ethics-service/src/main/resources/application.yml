@@ -40,6 +40,8 @@ ethics:
   secret-iterations: ${ETHICS_SECRET_ITERATIONS:210000}
   staff-audience: ${ETHICS_STAFF_AUDIENCE:ethics-manager}
   staff-role: ${ETHICS_STAFF_ROLE:ethics-manager}
+  permission-service-base-url: ${ETHICS_PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}
+  permission-service-timeout: ${ETHICS_PERMISSION_SERVICE_TIMEOUT:PT3S}
   # Public mutations are accepted only after ingress-nginx overwrites the
   # transport proof header. The NetworkPolicy admits only that namespace.
   secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}
