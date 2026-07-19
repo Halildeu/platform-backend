@@ -17,8 +17,11 @@ import org.springframework.security.oauth2.jwt.JwtClaimValidator;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
+import java.util.Collection;
+import java.util.Map;
 
 @Configuration
 @EnableConfigurationProperties(EthicsProperties.class)
@@ -63,10 +66,19 @@ public class SecurityConfig {
             @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}") String jwkSetUri,
             EthicsProperties properties) {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwkSetUri).build();
+        decoder.setJwtValidator(staffJwtValidator(issuer, properties));
+        return decoder;
+    }
+
+    static OAuth2TokenValidator<Jwt> staffJwtValidator(String issuer, EthicsProperties properties) {
         var audience = new JwtClaimValidator<java.util.List<String>>("aud",
                 values -> values != null && values.contains(properties.staffAudience()));
-        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<Jwt>(
-                JwtValidators.createDefaultWithIssuer(issuer), audience));
-        return decoder;
+        var role = new JwtClaimValidator<Map<String, Object>>("realm_access", realmAccess -> {
+            if (realmAccess == null) return false;
+            Object rawRoles = realmAccess.get("roles");
+            return rawRoles instanceof Collection<?> roles && roles.contains(properties.staffRole());
+        });
+        return new DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefaultWithIssuer(issuer), audience, role);
     }
 }

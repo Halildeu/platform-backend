@@ -19,6 +19,7 @@ class PublicCredentialBoundaryFilterTest {
                     Duration.ofMinutes(15),
                     210_000,
                     "ethics-manager",
+                    "ethics-manager",
                     true));
 
     @Test

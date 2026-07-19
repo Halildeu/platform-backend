@@ -39,6 +39,7 @@ ethics:
   mailbox-session-ttl: ${ETHICS_MAILBOX_SESSION_TTL:15m}
   secret-iterations: ${ETHICS_SECRET_ITERATIONS:210000}
   staff-audience: ${ETHICS_STAFF_AUDIENCE:ethics-manager}
+  staff-role: ${ETHICS_STAFF_ROLE:ethics-manager}
   # Public mutations are accepted only after ingress-nginx overwrites the
   # transport proof header. The NetworkPolicy admits only that namespace.
   secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}

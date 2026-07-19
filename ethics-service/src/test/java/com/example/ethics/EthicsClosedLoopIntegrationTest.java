@@ -97,6 +97,19 @@ class EthicsClosedLoopIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(1))).andExpect(jsonPath("$[0].body").value("Sentetik yetkili yanıtı"));
         mvc.perform(post("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox).header("Idempotency-Key","reporter-reply-1").contentType(MediaType.APPLICATION_JSON).content("{\"body\":\"Sentetik reporter yanıtı\"}"))
                 .andExpect(status().isCreated());
+
+        var staff=jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"));
+        mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(staff)
+                        .header("Idempotency-Key","closed-staff-reply").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"body\":\"Kapanmış vakaya yazılmamalı\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("CASE_CLOSED"));
+        mvc.perform(post("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox)
+                        .header("Idempotency-Key","closed-reporter-reply").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"body\":\"Kapanmış vakaya yazılmamalı\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("CASE_CLOSED"));
     }
 
     @Test

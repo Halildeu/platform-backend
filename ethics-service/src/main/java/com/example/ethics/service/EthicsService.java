@@ -26,6 +26,7 @@ public class EthicsService {
     private final IntakeIdempotencyRepository idempotency;
     private final EthicsAuthorization authorization;
     private final TransactionKeyLock transactionLocks;
+    private final String dummyMailboxHash;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
@@ -35,6 +36,10 @@ public class EthicsService {
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
         this.transactionLocks=transactionLocks;
+        // Missing receipts, wrong channels and locked grants must spend the
+        // same PBKDF work as a wrong secret. This process-local value is never
+        // persisted or exposed and exists solely to close the timing oracle.
+        this.dummyMailboxHash=secrets.hash(secrets.newSecret(),properties.secretIterations());
     }
 
     @Transactional
@@ -63,11 +68,13 @@ public class EthicsService {
     @Transactional(noRollbackFor=ResponseStatusException.class)
     public SessionGrant openMailbox(String channel, MailboxLoginRequest request) {
         String normalizedChannel=normalizeChannel(channel);
-        ReporterAccessGrant grant=grants.findLockedByReceiptId(request.receiptId()).orElseThrow(EthicsService::genericMailboxDeny);
+        ReporterAccessGrant grant=grants.findLockedByReceiptId(request.receiptId()).orElse(null);
         Instant now=Instant.now();
+        boolean secretMatches=secrets.verify(request.accessSecret(),grant==null?dummyMailboxHash:grant.getSecretHash());
+        if(grant==null) throw genericMailboxDeny();
         if(!grant.getChannel().equals(normalizedChannel)) throw genericMailboxDeny();
         if (grant.getLockedUntil()!=null && grant.getLockedUntil().isAfter(now)) throw genericMailboxDeny();
-        if (!secrets.verify(request.accessSecret(),grant.getSecretHash())) { grant.failed(now); throw genericMailboxDeny(); }
+        if (!secretMatches) { grant.failed(now); throw genericMailboxDeny(); }
         grant.verified(); String token=secrets.newSecret(); Instant expires=now.plus(properties.mailboxSessionTtl());
         sessions.save(new MailboxSession(secrets.sha256(token),grant.getCaseId(),normalizedChannel,expires,now));
         return new SessionGrant(token,expires);
@@ -83,6 +90,7 @@ public class EthicsService {
     @Transactional
     public MessageResponse reporterReply(String channel,String token,String key,MessageRequest request) {
         UUID caseId=caseForSession(channel,token);
+        ensureOpen(cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny));
         return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId(),"reporter");
     }
 
@@ -122,7 +130,7 @@ public class EthicsService {
 
     @Transactional
     public MessageResponse staffReply(StaffContext staff,UUID caseId,String key,MessageRequest request,boolean internal) {
-        requireCase(staff,caseId,"case_handler");
+        ensureOpen(requireCase(staff,caseId,"case_handler"));
         return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()));
     }
 
@@ -150,6 +158,11 @@ public class EthicsService {
         EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."));
         authorization.require(staff,relation,caseId);
         return item;
+    }
+    private static void ensureOpen(EthicsCase item){
+        if("CLOSED".equals(item.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,"CASE_CLOSED");
+        }
     }
     private static ResponseStatusException genericMailboxDeny(){return new ResponseStatusException(HttpStatus.NOT_FOUND,"Mailbox could not be opened.");}
     private static CaseSummary summary(EthicsCase c){return new CaseSummary(c.getId(),c.getStatus(),c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt());}
