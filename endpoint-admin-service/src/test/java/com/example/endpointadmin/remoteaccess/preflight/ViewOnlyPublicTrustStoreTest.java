@@ -129,6 +129,49 @@ class ViewOnlyPublicTrustStoreTest {
     }
 
     @Test
+    void rejectsBackdatedDsseAfterItsKeyIsRevokedAtVerificationTime() throws Exception {
+        ObjectNode revocationsPayload = canonicalizer.mapper().createObjectNode();
+        revocationsPayload.put("schemaVersion", "acik.cross-ai-deployment-revocations.v1");
+        revocationsPayload.put("revocationSetId", "123e4567-e89b-42d3-a456-426614174012");
+        revocationsPayload.put("issuedAt", NOW.minusSeconds(30).toString());
+        revocationsPayload.put("nextUpdate", NOW.plusSeconds(3500).toString());
+        revocationsPayload.putArray("entries").addObject()
+                .put("type", "key")
+                .put("id", keyId("coordinator"))
+                .put("effectiveAt", NOW.minusSeconds(10).toString())
+                .put("reasonCode", "compromised");
+        Files.write(Path.of(properties.getCrossAiRevocationsFile()), canonicalizer.canonicalBytes(envelope(
+                "application/vnd.acik.cross-ai-deployment-revocations.v1+json",
+                revocationsPayload, "revocation", crossKeys.get("revocation"))));
+        ObjectNode crossPayload = canonicalizer.mapper().createObjectNode()
+                .put("issuedAt", NOW.minusSeconds(20).toString());
+
+        assertThatThrownBy(() -> store().verifyCrossAi(
+                envelope(CROSS_PAYLOAD_TYPE, crossPayload, "coordinator", crossKeys.get("coordinator")),
+                CROSS_PAYLOAD_TYPE, "coordinator", NOW.minusSeconds(20)))
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessageContaining("verification time");
+
+        ObjectNode runtimeRoot = runtimeRoot();
+        runtimeRoot.withArray("revocations").addObject()
+                .put("keyId", keyId("runtime-attestor"))
+                .put("revokedAt", NOW.minusSeconds(10).toString())
+                .put("reasonCode", "compromised");
+        Files.write(Path.of(properties.getRuntimeTrustRootFile()), canonicalizer.canonicalBytes(runtimeRoot));
+        properties.setRuntimeTrustRootSha256(new ViewOnlyDigest(canonicalizer).domainDigest(
+                "faz22.6/view-only/runtime-trust-root/v1", "trustRoot", runtimeRoot));
+        ObjectNode runtimePayload = canonicalizer.mapper().createObjectNode()
+                .put("issuedAt", NOW.minusSeconds(20).toString());
+
+        assertThatThrownBy(() -> store().verifyRuntime(
+                envelope(RUNTIME_PAYLOAD_TYPE, runtimePayload, "runtime-attestor",
+                        runtimeKeys.get("runtime-attestor")),
+                RUNTIME_PAYLOAD_TYPE, "runtime-attestor", NOW.minusSeconds(20)))
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessageContaining("verification time");
+    }
+
+    @Test
     void rejectsSemanticallyBroadenedProviderRootEvenWithMatchingFilePin() throws Exception {
         ObjectNode broadened = crossRoot();
         ObjectNode provider = (ObjectNode) java.util.stream.StreamSupport.stream(

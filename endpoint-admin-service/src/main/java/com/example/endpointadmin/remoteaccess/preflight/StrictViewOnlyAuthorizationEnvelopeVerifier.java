@@ -95,8 +95,12 @@ public final class StrictViewOnlyAuthorizationEnvelopeVerifier
         Instant expiresAt = instant(grant, "expiresAt");
         if (!grantStart.isBefore(expiresAt)
                 || Duration.between(grantStart, expiresAt).compareTo(Duration.ofMinutes(120)) > 0
-                || grantStart.isAfter(now.plusSeconds(30)) || !now.minusSeconds(30).isBefore(expiresAt)) {
+                || grantStart.isAfter(now.plusSeconds(30))) {
             throw invalid("v3 grant is not active inside the 120-minute bound");
+        }
+        if (!now.minusSeconds(30).isBefore(expiresAt)) {
+            throw new ViewOnlyAuthorityException(
+                    ViewOnlyAuthorityError.AUTHORIZATION_EXPIRED, "v3 authorization grant expired");
         }
         String requestId = text(grant, "requestId");
         requireText(subject, "intentRef", "refs/tags/cross-ai-intent/" + requestId);

@@ -111,8 +111,9 @@ public final class ViewOnlyPublicTrustStore {
         VerifiedDsse verified = verify(
                 envelope, expectedPayloadType, expectedRole, issuedAt,
                 material.keys(), material.revocations());
-        if (isRevoked(material.revocations(), "key", verified.keyId(), issuedAt)) {
-            throw invalid("Cross-AI DSSE signing key is revoked");
+        TrustKey key = material.keys().get(verified.keyId());
+        if (key == null || !currentlyActive(key, material.revocations(), clock.instant())) {
+            throw invalid("Cross-AI DSSE signing key is not active at verification time");
         }
         return verified;
     }
@@ -122,8 +123,13 @@ public final class ViewOnlyPublicTrustStore {
                                       String expectedRole,
                                       Instant issuedAt) {
         RuntimeMaterial material = loadRuntime();
-        return verify(envelope, expectedPayloadType, expectedRole, issuedAt,
+        VerifiedDsse verified = verify(envelope, expectedPayloadType, expectedRole, issuedAt,
                 material.keys(), material.revocations());
+        TrustKey key = material.keys().get(verified.keyId());
+        if (key == null || !currentlyActive(key, material.revocations(), clock.instant())) {
+            throw invalid("runtime DSSE signing key is not active at verification time");
+        }
+        return verified;
     }
 
     public boolean isCrossAiRevoked(String type, String id, Instant at) {

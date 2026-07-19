@@ -99,6 +99,20 @@ class StrictViewOnlyAuthorizationEnvelopeVerifierTest {
                 .hasMessageContaining("transaction stage fields");
     }
 
+    @Test
+    void mapsAnExpiredGrantToTheDedicatedAuthorizationExpiredReason() {
+        Fixture fixture = fixture();
+        ObjectNode bundle = (ObjectNode) decode(fixture.outerEnvelope());
+        ((ObjectNode) bundle.get("grant")).put("expiresAt", NOW.minusSeconds(31).toString());
+        ObjectNode expired = fakeEnvelope(VerifiedViewOnlyAuthorization.PAYLOAD_TYPE, bundle, COORDINATOR);
+        register(expired, bundle, COORDINATOR);
+
+        assertThatThrownBy(() -> verifier().verify(expired, fixture.binding(), NOW))
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .extracting(error -> ((ViewOnlyAuthorityException) error).reason())
+                .isEqualTo(ViewOnlyAuthorityError.AUTHORIZATION_EXPIRED);
+    }
+
     private StrictViewOnlyAuthorizationEnvelopeVerifier verifier() {
         return new StrictViewOnlyAuthorizationEnvelopeVerifier(trust, canonicalizer);
     }
