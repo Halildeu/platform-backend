@@ -26,6 +26,7 @@ public final class EthicsDtos {
     public record MailboxSessionResponse(Instant expiresAt) {}
     public record MessageRequest(@NotBlank @Size(max=16000) String body) {}
     public record MessageResponse(UUID id, String authorType, String visibility, String body, Instant createdAt) {}
+    public record MailboxViewResponse(String status, List<MessageResponse> messages) {}
     public record CaseSummary(UUID id, String status, String assignedTo, long version, Instant createdAt, Instant updatedAt) {}
     public record CaseDetail(UUID id, String status, String assignedTo, long version, String mode, String category, String subject, String description, List<MessageResponse> messages) {}
     public record UpdateCaseRequest(@Size(max=40) String status, @Size(max=200) String assignedTo) {}

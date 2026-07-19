@@ -7,7 +7,6 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
-import java.util.List;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 
@@ -33,7 +32,10 @@ public class PublicEthicsController {
     }
 
     @GetMapping("/mailbox/messages")
-    List<MessageResponse> list(HttpServletRequest request){return service.reporterMessages(request.getServerName(),mailboxToken(request));}
+    ResponseEntity<MailboxViewResponse> list(HttpServletRequest request){
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(service.reporterMailbox(request.getServerName(),mailboxToken(request)));
+    }
 
     @PostMapping("/mailbox/messages")
     ResponseEntity<MessageResponse> reply(HttpServletRequest request,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(service.reporterReply(request.getServerName(),mailboxToken(request),key,body));}

@@ -97,7 +97,14 @@ class EthicsClosedLoopIntegrationTest {
         String cookieHeader=login.getResponse().getHeader("Set-Cookie"); String token=cookieHeader.substring(cookieHeader.indexOf('=')+1,cookieHeader.indexOf(';'));
         Cookie mailbox=new Cookie(PublicCredentialBoundaryFilter.MAILBOX_COOKIE,token);
         mvc.perform(get("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox))
-                .andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(1))).andExpect(jsonPath("$[0].body").value("Sentetik yetkili yanıtı"));
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control",containsString("no-store")))
+                .andExpect(jsonPath("$.status").value("NEW"))
+                .andExpect(jsonPath("$.messages",hasSize(1)))
+                .andExpect(jsonPath("$.messages[0].body").value("Sentetik yetkili yanıtı"))
+                .andExpect(jsonPath("$.caseId").doesNotExist())
+                .andExpect(jsonPath("$.orgId").doesNotExist())
+                .andExpect(jsonPath("$.assignedTo").doesNotExist());
         MvcResult reporterReplyResult=mvc.perform(post("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox).header("Idempotency-Key","reporter-reply-1").contentType(MediaType.APPLICATION_JSON).content("{\"body\":\"Sentetik reporter yanıtı\"}"))
                 .andExpect(status().isCreated()).andReturn();
         String reporterMessageId=mapper.readTree(reporterReplyResult.getResponse().getContentAsString()).get("id").asText();
@@ -106,6 +113,12 @@ class EthicsClosedLoopIntegrationTest {
         mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CLOSED"))
+                .andExpect(jsonPath("$.messages",hasSize(2)))
+                .andExpect(jsonPath("$.caseId").doesNotExist())
+                .andExpect(jsonPath("$.assignedTo").doesNotExist());
         mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(staff)
                         .header("Idempotency-Key","staff-reply-1").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"body\":\"Sentetik yetkili yanıtı\"}"))

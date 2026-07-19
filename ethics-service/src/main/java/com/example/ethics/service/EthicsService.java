@@ -93,10 +93,12 @@ public class EthicsService {
     }
 
     @Transactional(readOnly=true)
-    public List<MessageResponse> reporterMessages(String channel,String token) {
+    public MailboxViewResponse reporterMailbox(String channel,String token) {
         UUID caseId=caseForSession(channel,token);
-        return messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE"))
+        EthicsCase item=cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny);
+        List<MessageResponse> visible=messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE"))
                 .stream().map(EthicsService::messageResponse).toList();
+        return new MailboxViewResponse(reporterVisibleStatus(item.getStatus()),visible);
     }
 
     @Transactional
@@ -182,6 +184,12 @@ public class EthicsService {
     private static ResponseStatusException genericMailboxDeny(){return new ResponseStatusException(HttpStatus.NOT_FOUND,"Mailbox could not be opened.");}
     private static CaseSummary summary(EthicsCase c){return new CaseSummary(c.getId(),c.getStatus(),c.getAssignedTo(),c.getVersion(),c.getCreatedAt(),c.getUpdatedAt());}
     private static MessageResponse messageResponse(EthicsMessage m){return new MessageResponse(m.getId(),m.getAuthorType(),m.getVisibility(),m.getBody(),m.getCreatedAt());}
+    private static String reporterVisibleStatus(String status){
+        return switch(status){
+            case "NEW", "IN_REVIEW", "CLOSED" -> status;
+            default -> throw new IllegalStateException("Unsupported reporter-visible case status");
+        };
+    }
     private static long parseVersion(String ifMatch){
         try { return Long.parseLong(ifMatch.replace("\"","").trim()); }
         catch (RuntimeException error) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"IF_MATCH_INVALID"); }
