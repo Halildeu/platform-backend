@@ -19,14 +19,14 @@ class EthicsAuthorizationTest {
 
     @Test
     void denyAndUnavailableBothFailClosed() {
-        when(openFga.check(anyString(), anyString(), anyString(), anyString())).thenReturn(false);
+        when(openFga.checkNoCache(anyString(), anyString(), anyString(), anyString())).thenReturn(false);
         assertThat(authorization.can(staff, "case_viewer", UUID.randomUUID())).isFalse();
-        verify(openFga).check(
+        verify(openFga).checkNoCache(
                 staff.subject(),
                 "case_viewer",
                 EthicsAuthorization.PRODUCT_OBJECT,
                 staff.orgId().toString());
-        when(openFga.check(anyString(), anyString(), anyString(), anyString()))
+        when(openFga.checkNoCache(anyString(), anyString(), anyString(), anyString()))
                 .thenThrow(new IllegalStateException("synthetic outage"));
         assertThat(authorization.can(staff, "case_viewer", UUID.randomUUID())).isFalse();
     }
@@ -34,18 +34,18 @@ class EthicsAuthorizationTest {
     @Test
     void conflictAndRecusalOverrideProductAccessWithoutAnExistenceSignal() {
         UUID caseId = UUID.randomUUID();
-        when(openFga.check(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
+        when(openFga.checkNoCache(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
                 .thenReturn(true);
-        when(openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
+        when(openFga.checkNoCache(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
                 .thenReturn(true);
         assertThat(authorization.can(staff, "case_viewer", caseId)).isFalse();
 
         reset(openFga);
-        when(openFga.check(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
+        when(openFga.checkNoCache(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
                 .thenReturn(true);
-        when(openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
+        when(openFga.checkNoCache(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
                 .thenReturn(false);
-        when(openFga.check(staff.subject(), "recused", "ethics_case", caseId.toString()))
+        when(openFga.checkNoCache(staff.subject(), "recused", "ethics_case", caseId.toString()))
                 .thenReturn(true);
         assertThat(authorization.can(staff, "case_viewer", caseId)).isFalse();
     }
@@ -53,11 +53,11 @@ class EthicsAuthorizationTest {
     @Test
     void productAccessWithoutConflictOrRecusalAllowsTheCase() {
         UUID caseId = UUID.randomUUID();
-        when(openFga.check(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
+        when(openFga.checkNoCache(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
                 .thenReturn(true);
-        when(openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
+        when(openFga.checkNoCache(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
                 .thenReturn(false);
-        when(openFga.check(staff.subject(), "recused", "ethics_case", caseId.toString()))
+        when(openFga.checkNoCache(staff.subject(), "recused", "ethics_case", caseId.toString()))
                 .thenReturn(false);
         assertThat(authorization.can(staff, "case_viewer", caseId)).isTrue();
     }

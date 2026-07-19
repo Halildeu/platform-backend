@@ -25,11 +25,17 @@ public class EthicsAuthorization {
             // Product entitlement and the DB org predicate are necessary but
             // not sufficient: a conflicted/recused actor must disappear at the
             // object boundary without receiving a case-existence signal.
-            if (!openFga.check(staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString())) {
+            // Ethics case content is a confidentiality boundary. A cached allow
+            // must never survive a newly-added conflict/recusal tuple or an
+            // OpenFGA outage, so every component of this decision bypasses the
+            // generic TTL cache and fails closed on the first request.
+            if (!openFga.checkNoCache(staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString())) {
                 return false;
             }
-            boolean conflicted = openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString());
-            boolean recused = openFga.check(staff.subject(), "recused", "ethics_case", caseId.toString());
+            boolean conflicted = openFga.checkNoCache(
+                    staff.subject(), "conflicted", "ethics_case", caseId.toString());
+            boolean recused = openFga.checkNoCache(
+                    staff.subject(), "recused", "ethics_case", caseId.toString());
             return !conflicted && !recused;
         } catch (RuntimeException unavailable) {
             return false;
