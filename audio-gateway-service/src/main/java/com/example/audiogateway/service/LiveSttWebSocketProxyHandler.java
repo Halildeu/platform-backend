@@ -192,6 +192,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 .getTerminalDrainTimeoutMs());
         final AtomicBoolean readyObserved = new AtomicBoolean();
         final AtomicBoolean eofSent = new AtomicBoolean();
+        final AtomicBoolean eofAckObserved = new AtomicBoolean();
         final AtomicBoolean drainedObserved = new AtomicBoolean();
         final Sinks.One<Void> upstreamReady = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
@@ -294,6 +295,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         readyObserved,
                         upstreamReady,
                         eofSent,
+                        eofAckObserved,
                         drainedObserved,
                         transcriptWindow), 1)
                 .takeUntil(RelayedEvent::drained);
@@ -328,6 +330,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
             final AtomicBoolean readyObserved,
             final Sinks.One<Void> upstreamReady,
             final AtomicBoolean eofSent,
+            final AtomicBoolean eofAckObserved,
             final AtomicBoolean drainedObserved,
             final LiveTranscriptWindowAccumulator transcriptWindow) {
         if (message instanceof CopiedUpstreamMessage.Text textMessage) {
@@ -350,6 +353,16 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             "live STT terminal timeout exceeds gateway drain budget"));
                 }
                 upstreamReady.tryEmitEmpty();
+            }
+            if (parsed instanceof UpstreamEvent.EofAck) {
+                if (!eofSent.get() || !eofAckObserved.compareAndSet(false, true)) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT eof_ack violates terminal event order"));
+                }
+            }
+            if (parsed instanceof UpstreamEvent.Partial && eofAckObserved.get()) {
+                return Mono.error(new IllegalArgumentException(
+                        "live STT partial arrived after eof_ack"));
             }
             if (parsed instanceof UpstreamEvent.Final finalEvent) {
                 final LiveTranscriptWindowAccumulator.Window window =
@@ -383,9 +396,13 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         })
                         .thenReturn(new RelayedEvent(client.textMessage(event), false));
             }
-            final boolean drained = eofSent.get() && parsed instanceof UpstreamEvent.Drained;
+            final boolean drained = parsed instanceof UpstreamEvent.Drained;
             if (drained) {
-                drainedObserved.set(true);
+                if (!eofSent.get() || !eofAckObserved.get()
+                        || !drainedObserved.compareAndSet(false, true)) {
+                    return Mono.error(new IllegalArgumentException(
+                            "live STT drained violates terminal event order"));
+                }
             }
             return Mono.just(new RelayedEvent(client.textMessage(event), drained));
         }
@@ -495,6 +512,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
         if ("drained".equals(type)) {
             return new UpstreamEvent.Drained();
+        }
+        if ("eof_ack".equals(type)) {
+            return new UpstreamEvent.EofAck();
+        }
+        if ("partial".equals(type)) {
+            return new UpstreamEvent.Partial();
         }
         if (!"final".equals(type)) {
             return new UpstreamEvent.Other();
@@ -653,6 +676,12 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
 
         record Drained() implements UpstreamEvent {
+        }
+
+        record EofAck() implements UpstreamEvent {
+        }
+
+        record Partial() implements UpstreamEvent {
         }
 
         record Other() implements UpstreamEvent {
