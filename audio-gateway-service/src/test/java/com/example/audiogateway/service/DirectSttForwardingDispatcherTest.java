@@ -73,6 +73,7 @@ class DirectSttForwardingDispatcherTest {
         p.getDirectStt().setResponseTimeoutMs(5_000);
         p.getDirectStt().setMaxResponseBytes(262_144);
         p.getDirectStt().getAggregation().setEnabled(false);
+        p.getDirectStt().getTranscriptResultStream().setEnabled(true);
         return p;
     }
 
@@ -204,7 +205,7 @@ class DirectSttForwardingDispatcherTest {
 
         // (3) Success metric increments (await the async callback), no transcript text leaked.
         awaitCounter(meters, "success", 1.0);
-        awaitCounter(meters, "transcript_sink_skipped_disabled", 1.0);
+        awaitCounter(meters, "transcript_sink_success", 1.0);
         assertThat(counter(meters, "attempted")).isEqualTo(1.0);
         assertThat(counter(meters, "http_error")).isZero();
         assertThat(counter(meters, "exception")).isZero();
@@ -467,7 +468,7 @@ class DirectSttForwardingDispatcherTest {
     }
 
     @Test
-    void transcriptSinkFailureIsMetricOnlyAndAdmissionStaysAccepted() throws Exception {
+    void transcriptSinkFailureRetriesAndNeverReportsTranscriptSuccess() throws Exception {
         server.enqueue(new MockResponse()
                 .setHeader("Content-Type", "application/json")
                 .setBody("{\"text\":\"merhaba dunya\",\"language\":\"tr\"}"));
@@ -484,9 +485,58 @@ class DirectSttForwardingDispatcherTest {
 
         assertThat(out).isInstanceOf(DispatchOutcome.Accepted.class);
         assertThat(server.takeRequest(5, TimeUnit.SECONDS)).isNotNull();
-        awaitCounter(meters, "success", 1.0);
         awaitCounter(meters, "transcript_sink_error", 1.0);
+        assertThat(counter(meters, "transcript_sink_retry")).isEqualTo(5.0);
+        assertThat(counter(meters, "transcript_delivery_failed")).isEqualTo(1.0);
+        assertThat(counter(meters, "timeout")).isZero();
+        assertThat(counter(meters, "success")).isZero();
         assertThat(counter(meters, "transcript_sink_success")).isZero();
+    }
+
+    @Test
+    void transcriptSinkThatNeverReturnsReleasesPermitAtTotalDeadline() throws Exception {
+        server.enqueue(new MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody("{\"text\":\"merhaba dunya\",\"language\":\"tr\"}"));
+
+        final AudioGatewayProperties props = props(1);
+        props.getDirectStt().getTranscriptResultStream().setDeliveryAttemptTimeoutMs(50L);
+        props.getDirectStt().getTranscriptResultStream().setDeliveryTotalTimeoutMs(250L);
+        final CountDownLatch enteredSink = new CountDownLatch(1);
+        final CountDownLatch releaseSink = new CountDownLatch(1);
+        final DirectSttTranscriptResultSink hangingSink = (result, context) -> {
+            enteredSink.countDown();
+            try {
+                releaseSink.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        final DirectSttForwardingDispatcher dispatcher = dispatcher(
+                acceptDelegate(), webClient, props, meters, recordingAuditSink(), hangingSink);
+
+        try {
+            assertThat(dispatcher.dispatch(command(new byte[] {10, 20, 30, 40})))
+                    .isInstanceOf(DispatchOutcome.Accepted.class);
+            assertThat(enteredSink.await(2, TimeUnit.SECONDS)).isTrue();
+            awaitCounter(meters, "transcript_delivery_failed", 1.0);
+            awaitInFlightDrained(meters, 1);
+
+            server.enqueue(new MockResponse()
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("{\"text\":\"ikinci\",\"language\":\"tr\"}"));
+            assertThat(dispatcher.dispatch(command(new byte[] {1, 2, 3, 4})))
+                    .as("the first hung XADD must not retain the sole in-flight permit")
+                    .isInstanceOf(DispatchOutcome.Accepted.class);
+            assertThat(server.takeRequest(5, TimeUnit.SECONDS))
+                    .as("the second forward must really cross the released permit")
+                    .isNotNull();
+            assertThat(counter(meters, "dropped_saturation")).isZero();
+            assertThat(counter(meters, "success")).isZero();
+            assertThat(counter(meters, "transcript_sink_success")).isZero();
+        } finally {
+            releaseSink.countDown();
+        }
     }
 
     @Test

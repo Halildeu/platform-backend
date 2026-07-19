@@ -82,12 +82,13 @@ class CanonicalTranscriptReadServiceTest {
                 segment("Merhaba", 0.0, 1.2),
                 segment("Dünya", 1.3, 2.0));
         TranscriptFinalization finalization = finalization(segments, false, true);
-        when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
                 .thenReturn(Optional.of(finalization));
 
         var result = service.read(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-ai");
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1", "meeting-ai");
 
         assertThat(result.tenantId()).isEqualTo(TENANT_ID);
         assertThat(result.meetingId()).isEqualTo(MEETING_ID);
@@ -145,17 +146,18 @@ class CanonicalTranscriptReadServiceTest {
                 tombstone(TranscriptSessionErasureStatus.HELD);
         when(erasureTombstones.findByTenantIdAndMeetingIdAndSessionId(
                 TENANT_ID, MEETING_ID, SESSION_ID)).thenReturn(Optional.of(tombstone));
-        when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L)).thenReturn(Optional.of(finalization));
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID)).thenReturn(Optional.of(finalization));
 
         var held = service.read(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-service");
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1", "meeting-service");
         assertThat(held.state()).isEqualTo("LEGAL_HOLD");
 
         finalization.setLegalHold(false);
         assertThatThrownBy(() -> service.read(
                         TENANT_ID, MEETING_ID, SESSION_ID, 3L,
-                        TENANT_ID, "meeting-service"))
+                        TENANT_ID, RUN_ID, "meeting-intelligence-v1", "meeting-service"))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(423);
                     assertThat(ex.getReason()).isEqualTo("TRANSCRIPT_ERASURE_PENDING");
@@ -170,7 +172,7 @@ class CanonicalTranscriptReadServiceTest {
 
         assertThatThrownBy(() -> service.read(
                         TENANT_ID, MEETING_ID, SESSION_ID, 3L,
-                        TENANT_ID, "meeting-service"))
+                        TENANT_ID, RUN_ID, "meeting-intelligence-v1", "meeting-service"))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(410);
                     assertThat(ex.getReason()).isEqualTo("TRANSCRIPT_ERASED");
@@ -181,8 +183,6 @@ class CanonicalTranscriptReadServiceTest {
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(410));
 
-        verify(finalizationRepository, never()).findVisibleOccurrence(
-                any(), any(), any(), org.mockito.ArgumentMatchers.anyLong());
         verify(finalizationRepository, never()).findVisibleAnalysisOccurrence(
                 any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any());
         verify(capabilityIssuer, never()).issue(any());
@@ -192,16 +192,16 @@ class CanonicalTranscriptReadServiceTest {
     void read_wrongTenantOrMissingExactVersion_failsWithoutIssuingCapability() {
         assertThatThrownBy(() -> service.read(
                         TENANT_ID, MEETING_ID, SESSION_ID, 3L,
-                        UUID.randomUUID(), "meeting-ai"))
+                        UUID.randomUUID(), RUN_ID, "meeting-intelligence-v1", "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(403));
 
-        when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 9L))
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 9L, RUN_ID))
                 .thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.read(
                         TENANT_ID, MEETING_ID, SESSION_ID, 9L,
-                        TENANT_ID, "meeting-ai"))
+                        TENANT_ID, RUN_ID, "meeting-intelligence-v1", "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         ex -> assertThat(ex.getStatusCode().value()).isEqualTo(404));
 
@@ -231,15 +231,15 @@ class CanonicalTranscriptReadServiceTest {
         List<TranscriptSegment> original = List.of(segment("orijinal", 0.0, 1.0));
         TranscriptFinalization finalization = finalization(original, false, false);
         List<TranscriptSegment> mutated = List.of(segment("değişmiş", 0.0, 1.0));
-        when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
                 .thenReturn(Optional.of(finalization));
         when(segmentRepository.findCanonicalFinalizedSession(
                 TENANT_ID, MEETING_ID, SESSION_ID)).thenReturn(mutated);
 
         assertThatThrownBy(() -> service.read(
                         TENANT_ID, MEETING_ID, SESSION_ID, 3L,
-                        TENANT_ID, "meeting-ai"))
+                        TENANT_ID, RUN_ID, "meeting-intelligence-v1", "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(409);
                     assertThat(ex.getReason()).isEqualTo("FINALIZATION_INTEGRITY_MISMATCH");
@@ -257,13 +257,14 @@ class CanonicalTranscriptReadServiceTest {
         List<TranscriptSegment> segments = List.of(draft);
         TranscriptFinalization finalization = finalization(segments, false, false);
         finalization.setSnapshotSha256(snapshotHasher.machineSnapshot(segments).sha256());
-        when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
                 .thenReturn(Optional.of(finalization));
         when(segmentRepository.findCanonicalFinalizedSession(
                 TENANT_ID, MEETING_ID, SESSION_ID)).thenReturn(segments);
         var result = service.read(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-ai");
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                "meeting-intelligence-v1", "meeting-ai");
 
         assertThat(result.transcript()).isEqualTo("makine anlık görüntüsü");
         assertThat(result.segments()).extracting("text")
@@ -275,12 +276,13 @@ class CanonicalTranscriptReadServiceTest {
         List<TranscriptSegment> segments = List.of(segment("orijinal", 0.0, 1.0));
         TranscriptFinalization finalization = finalization(segments, false, true);
         finalization.setCanonicalTranscript("değiştirilmiş");
-        when(finalizationRepository.findVisibleOccurrence(
-                TENANT_ID, MEETING_ID, SESSION_ID, 3L))
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, RUN_ID))
                 .thenReturn(Optional.of(finalization));
 
         assertThatThrownBy(() -> service.read(
-                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, "meeting-ai"))
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                        "meeting-intelligence-v1", "meeting-ai"))
                 .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
                     assertThat(ex.getStatusCode().value()).isEqualTo(409);
                     assertThat(ex.getReason()).isEqualTo("FINALIZATION_INTEGRITY_MISMATCH");
@@ -303,6 +305,39 @@ class CanonicalTranscriptReadServiceTest {
 
         verify(finalizationRepository, never()).findVisibleAnalysisOccurrence(
                 any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any());
+        verify(capabilityIssuer, never()).issue(any());
+        verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void read_unapprovedSpec_failsBeforeRepositoryContentAndAudit() {
+        assertThatThrownBy(() -> service.read(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, RUN_ID,
+                        "analysis-v2", "meeting-ai"))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex -> {
+                    assertThat(ex.getStatusCode().value()).isEqualTo(403);
+                    assertThat(ex.getReason()).isEqualTo("ANALYSIS_SPEC_VERSION_NOT_ALLOWED");
+                });
+
+        verify(finalizationRepository, never()).findVisibleAnalysisOccurrence(
+                any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(), any());
+        verify(capabilityIssuer, never()).issue(any());
+        verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void read_wrongProducerRunFailsWithoutDisclosingAnotherRunSnapshot() {
+        final UUID wrongRunId = UUID.randomUUID();
+        when(finalizationRepository.findVisibleAnalysisOccurrence(
+                TENANT_ID, MEETING_ID, SESSION_ID, 3L, wrongRunId))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.read(
+                        TENANT_ID, MEETING_ID, SESSION_ID, 3L, TENANT_ID, wrongRunId,
+                        "meeting-intelligence-v1", "meeting-ai"))
+                .isInstanceOfSatisfying(ResponseStatusException.class, ex ->
+                        assertThat(ex.getStatusCode().value()).isEqualTo(404));
+
         verify(capabilityIssuer, never()).issue(any());
         verify(accessAuditService, never()).recordList(any(), any(), any(), anyInt());
     }

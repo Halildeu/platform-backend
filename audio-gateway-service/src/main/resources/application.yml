@@ -4,6 +4,11 @@
 spring:
   application:
     name: audio-gateway-service
+  data:
+    redis:
+      # Keep blocking XADD/XREAD calls below the transcript delivery attempt
+      # deadline so a cancelled Reactor task cannot retain a native Redis call.
+      timeout: ${AUDIO_GATEWAY_DIRECT_STT_TRANSCRIPT_RESULT_STREAM_DELIVERY_ATTEMPT_TIMEOUT_MS:2000}ms
   threads:
     virtual:
       enabled: true
@@ -97,12 +102,16 @@ audio:
         read-max-scan: 500           # max Redis entries scanned to skip unrelated sessions
         poll-interval-ms: 1000       # SSE bridge poll cadence
         heartbeat-interval-ms: 15000 # SSE keepalive cadence
+        delivery-attempt-timeout-ms: 2000 # bound one blocking XADD attempt
+        delivery-total-timeout-ms: 15000  # release audio/in-flight permits after retry budget
       streaming:
         enabled: false               # #184 default-off authenticated gateway WebSocket bridge
         stream-url: ""               # ws(s)://live-stt.../ws/stream; required when enabled
         max-frame-bytes: 65535        # uint16 frame length bound; PCM16 only
         max-terminal-control-bytes: 64 # only strict {"type":"eof"} is accepted as client text
-        terminal-drain-timeout-ms: 10000 # bound while waiting for relayed drained event
+        ready-timeout-ms: 240000        # cold model load must complete before client audio is admitted
+        terminal-drain-timeout-ms: 90000 # negotiated terminal inference + durable handoff + margin
+        source-history-max-bytes: 4194304 # bounded PCM history for exact final source ranges
     jwt:
       # 3-AI mutabakat Codex 019e8846 iter-1: tenant/user claim adı configurable;
       # backend canonical pattern (common-auth/AuthenticatedUserLookupService) "companyId" + "userId".

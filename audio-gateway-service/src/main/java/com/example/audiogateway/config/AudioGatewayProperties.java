@@ -387,9 +387,9 @@ public class AudioGatewayProperties {
         private final Tls tls = new Tls();
 
         /**
-         * Optional transcript-result stream handoff. This is transcript content, not
-         * raw audio; it is config-gated so source can ship before a live evidence run
-         * flips the result stream path.
+         * Durable transcript-result stream handoff. This is transcript content, not raw
+         * audio. It may remain off while direct-STT is off, but startup fails closed when
+         * direct-STT is enabled without this handoff.
          */
         private final TranscriptResultStream transcriptResultStream = new TranscriptResultStream();
 
@@ -448,6 +448,11 @@ public class AudioGatewayProperties {
             aggregation.validate();
             transcriptResultStream.validate();
             streaming.validate(tls.isEnabled());
+            if (!transcriptResultStream.isEnabled()) {
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.transcript-result-stream.enabled must be true "
+                                + "when direct-stt is enabled");
+            }
         }
 
         public boolean isEnabled() {
@@ -519,7 +524,9 @@ public class AudioGatewayProperties {
             private String streamUrl = "";
             private int maxFrameBytes = 65_535;
             private int maxTerminalControlBytes = 64;
-            private long terminalDrainTimeoutMs = 10_000L;
+            private long readyTimeoutMs = 240_000L;
+            private long terminalDrainTimeoutMs = 90_000L;
+            private int sourceHistoryMaxBytes = 4_194_304;
 
             void validate(final boolean tlsEnabled) {
                 if (!enabled) {
@@ -554,9 +561,19 @@ public class AudioGatewayProperties {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.streaming.max-terminal-control-bytes must be in [14,1024]");
                 }
-                if (terminalDrainTimeoutMs <= 0L || terminalDrainTimeoutMs > 60_000L) {
+                if (readyTimeoutMs <= 0L || readyTimeoutMs > 600_000L) {
                     throw new IllegalStateException(
-                            "audio.gateway.direct-stt.streaming.terminal-drain-timeout-ms must be in [1,60000]");
+                            "audio.gateway.direct-stt.streaming.ready-timeout-ms must be in [1,600000]");
+                }
+                if (terminalDrainTimeoutMs <= 0L || terminalDrainTimeoutMs > 180_000L) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.terminal-drain-timeout-ms must be in [1,180000]");
+                }
+                if (sourceHistoryMaxBytes < maxFrameBytes
+                        || sourceHistoryMaxBytes > 16_777_216) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.streaming.source-history-max-bytes "
+                                    + "must be in [max-frame-bytes,16777216]");
                 }
             }
 
@@ -592,12 +609,28 @@ public class AudioGatewayProperties {
                 this.maxTerminalControlBytes = maxTerminalControlBytes;
             }
 
+            public long getReadyTimeoutMs() {
+                return readyTimeoutMs;
+            }
+
+            public void setReadyTimeoutMs(final long readyTimeoutMs) {
+                this.readyTimeoutMs = readyTimeoutMs;
+            }
+
             public long getTerminalDrainTimeoutMs() {
                 return terminalDrainTimeoutMs;
             }
 
             public void setTerminalDrainTimeoutMs(final long terminalDrainTimeoutMs) {
                 this.terminalDrainTimeoutMs = terminalDrainTimeoutMs;
+            }
+
+            public int getSourceHistoryMaxBytes() {
+                return sourceHistoryMaxBytes;
+            }
+
+            public void setSourceHistoryMaxBytes(final int sourceHistoryMaxBytes) {
+                this.sourceHistoryMaxBytes = sourceHistoryMaxBytes;
             }
         }
 
@@ -716,7 +749,7 @@ public class AudioGatewayProperties {
         }
 
         public static class TranscriptResultStream {
-            /** DEFAULT-OFF — emits parsed transcript text to a Redis result stream when true. */
+            /** Required when direct-STT is enabled; emits parsed transcript text to Redis. */
             private boolean enabled = false;
 
             /** Redis stream key for direct-STT transcript result handoff. */
@@ -736,6 +769,8 @@ public class AudioGatewayProperties {
 
             /** SSE keepalive cadence; must stay below edge/proxy read timeout. */
             private long heartbeatIntervalMs = 15_000L;
+            private long deliveryAttemptTimeoutMs = 2_000L;
+            private long deliveryTotalTimeoutMs = 15_000L;
 
             void validate() {
                 if (!enabled) {
@@ -761,6 +796,17 @@ public class AudioGatewayProperties {
                 if (pollIntervalMs <= 0 || heartbeatIntervalMs <= 0) {
                     throw new IllegalStateException(
                             "audio.gateway.direct-stt.transcript-result-stream SSE intervals must be positive");
+                }
+                if (deliveryAttemptTimeoutMs <= 0L || deliveryAttemptTimeoutMs > 30_000L) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream.delivery-attempt-timeout-ms "
+                                    + "must be in [1,30000]");
+                }
+                if (deliveryTotalTimeoutMs < deliveryAttemptTimeoutMs
+                        || deliveryTotalTimeoutMs > 60_000L) {
+                    throw new IllegalStateException(
+                            "audio.gateway.direct-stt.transcript-result-stream.delivery-total-timeout-ms "
+                                    + "must be in [delivery-attempt-timeout-ms,60000]");
                 }
             }
 
@@ -818,6 +864,22 @@ public class AudioGatewayProperties {
 
             public void setHeartbeatIntervalMs(final long heartbeatIntervalMs) {
                 this.heartbeatIntervalMs = heartbeatIntervalMs;
+            }
+
+            public long getDeliveryAttemptTimeoutMs() {
+                return deliveryAttemptTimeoutMs;
+            }
+
+            public void setDeliveryAttemptTimeoutMs(final long deliveryAttemptTimeoutMs) {
+                this.deliveryAttemptTimeoutMs = deliveryAttemptTimeoutMs;
+            }
+
+            public long getDeliveryTotalTimeoutMs() {
+                return deliveryTotalTimeoutMs;
+            }
+
+            public void setDeliveryTotalTimeoutMs(final long deliveryTotalTimeoutMs) {
+                this.deliveryTotalTimeoutMs = deliveryTotalTimeoutMs;
             }
         }
     }
