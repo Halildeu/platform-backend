@@ -33,11 +33,19 @@ public final class ViewOnlyGithubOidcValidator implements OAuth2TokenValidator<J
     private final ViewOnlyGithubOidcProfile profile;
     private final Clock clock;
     private final Duration maximumSkew;
+    private final String trustedWorkflowCommitSha;
 
-    public ViewOnlyGithubOidcValidator(ViewOnlyGithubOidcProfile profile, Clock clock, Duration maximumSkew) {
+    public ViewOnlyGithubOidcValidator(ViewOnlyGithubOidcProfile profile,
+                                       Clock clock,
+                                       Duration maximumSkew,
+                                       String trustedWorkflowCommitSha) {
         this.profile = profile;
         this.clock = clock;
         this.maximumSkew = maximumSkew;
+        if (trustedWorkflowCommitSha == null || !GIT_SHA.matcher(trustedWorkflowCommitSha).matches()) {
+            throw new IllegalArgumentException("trusted workflow commit SHA is required");
+        }
+        this.trustedWorkflowCommitSha = trustedWorkflowCommitSha;
     }
 
     @Override
@@ -71,6 +79,7 @@ public final class ViewOnlyGithubOidcValidator implements OAuth2TokenValidator<J
         String sha = text(token, "sha");
         require(INTENT_REF.matcher(ref).matches());
         require(GIT_SHA.matcher(sha).matches());
+        require(trustedWorkflowCommitSha.equals(sha));
         require(sha.equals(text(token, "workflow_sha")));
         require((REPOSITORY + "/" + WORKFLOW_PATH + "@" + ref).equals(text(token, "workflow_ref")));
 

@@ -4,6 +4,7 @@ import com.example.endpointadmin.remoteaccess.policy.RemoteViewJsonCanonicalizer
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.ResultSet;
@@ -109,7 +110,7 @@ public final class JdbcViewOnlyCheckpointCas {
             return copyRequired(response);
         } catch (ViewOnlyAuthorityException known) {
             throw known;
-        } catch (DataAccessException databaseError) {
+        } catch (DataAccessException | TransactionException databaseError) {
             throw unavailable("lease redemption store failed", databaseError);
         }
     }
@@ -315,7 +316,7 @@ public final class JdbcViewOnlyCheckpointCas {
             return copyRequired(response);
         } catch (ViewOnlyAuthorityException known) {
             throw known;
-        } catch (DataAccessException databaseError) {
+        } catch (DataAccessException | TransactionException databaseError) {
             throw unavailable("checkpoint CAS store failed", databaseError);
         }
     }

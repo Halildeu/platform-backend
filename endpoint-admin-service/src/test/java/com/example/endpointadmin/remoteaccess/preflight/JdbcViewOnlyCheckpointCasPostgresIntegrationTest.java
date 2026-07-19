@@ -252,12 +252,7 @@ class JdbcViewOnlyCheckpointCasPostgresIntegrationTest {
     }
 
     private ObjectNode binding() {
-        return canonicalizer.mapper().createObjectNode()
-                .put("triggeringActorId", 186576227L)
-                .put("runId", 29678094664L)
-                .put("runAttempt", 1)
-                .put("intentRef", REF)
-                .put("headSha", SHA);
+        return ViewOnlyTestFixtures.binding(canonicalizer, 186576227L, 29678094664L);
     }
 
     private ViewOnlyCheckpointCommand command(int sequence,

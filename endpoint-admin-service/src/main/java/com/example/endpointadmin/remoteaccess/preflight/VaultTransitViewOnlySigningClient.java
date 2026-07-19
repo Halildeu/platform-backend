@@ -13,8 +13,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.channels.Channels;
+import java.nio.channels.SeekableByteChannel;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
@@ -22,6 +27,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import java.util.Set;
 
 /**
  * Bounded, redirect-free and pinned-CA Vault Transit Ed25519 client.
@@ -37,6 +43,7 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
     private final int keyVersion;
     private final Duration requestTimeout;
     private final int maximumResponseBytes;
+    private final String expectedPublicKeySha256;
     private final ViewOnlyVaultTokenSource tokenSource;
     private final HttpClient http;
     private final ObjectMapper mapper;
@@ -57,6 +64,7 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
         this.keyVersion = properties.getVaultTransitKeyVersion();
         this.requestTimeout = Duration.ofSeconds(properties.getVaultRequestTimeoutSeconds());
         this.maximumResponseBytes = properties.getVaultMaximumResponseBytes();
+        this.expectedPublicKeySha256 = properties.getVaultTransitPublicKeySha256();
         this.signUri = signUri(properties.getVaultAddress(), properties.getVaultTransitMount(),
                 properties.getVaultTransitKey());
         this.keyMetadataUri = keyMetadataUri(properties.getVaultAddress(), properties.getVaultTransitMount(),
@@ -81,8 +89,25 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
             if (!"ed25519".equals(data.path("type").asText())
                     || !pinnedKey.isObject()
                     || !pinnedKey.path("public_key").isTextual()
-                    || pinnedKey.path("public_key").asText().isBlank()) {
+                    || !data.path("supports_signing").asBoolean(false)
+                    || data.path("latest_version").asInt(-1) < keyVersion
+                    || minimumVersion(data, "min_available_version") > keyVersion
+                    || minimumVersion(data, "min_encryption_version") > keyVersion) {
                 throw unavailable("Vault Transit key type or pinned version is unavailable", null);
+            }
+            byte[] publicKey;
+            try {
+                publicKey = Base64.getDecoder().decode(pinnedKey.path("public_key").textValue());
+            } catch (IllegalArgumentException invalidBase64) {
+                throw unavailable("Vault Transit public key metadata is not strict base64", invalidBase64);
+            }
+            try {
+                if (publicKey.length != 32
+                        || !expectedPublicKeySha256.equals(sha256(publicKey))) {
+                    throw unavailable("Vault Transit public key does not match the exact Ed25519 pin", null);
+                }
+            } finally {
+                Arrays.fill(publicKey, (byte) 0);
             }
         } finally {
             Arrays.fill(token, '\0');
@@ -194,14 +219,19 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
     }
 
     static SSLContext pinnedCaSslContext(Path certificateFile) {
+        byte[] pem = null;
         try {
-            byte[] pem = Files.readAllBytes(certificateFile.toAbsolutePath().normalize());
+            Path normalized = certificateFile.toAbsolutePath().normalize();
+            try (SeekableByteChannel channel = Files.newByteChannel(
+                    normalized, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
+                 InputStream input = Channels.newInputStream(channel)) {
+                pem = input.readNBytes(131_073);
+            }
             if (pem.length == 0 || pem.length > 131_072) {
                 throw new IllegalStateException("Vault CA certificate is absent or outside its hard size bound");
             }
             CertificateFactory factory = CertificateFactory.getInstance("X.509");
             X509Certificate certificate = (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(pem));
-            Arrays.fill(pem, (byte) 0);
             KeyStore store = KeyStore.getInstance(KeyStore.getDefaultType());
             store.load(null, null);
             store.setCertificateEntry("view-only-vault-ca", certificate);
@@ -212,6 +242,24 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
             return context;
         } catch (Exception failure) {
             throw new IllegalStateException("VIEW_ONLY authority activation denied: pinned Vault CA is invalid", failure);
+        } finally {
+            if (pem != null) {
+                Arrays.fill(pem, (byte) 0);
+            }
+        }
+    }
+
+    private static int minimumVersion(JsonNode data, String field) {
+        JsonNode value = data.path(field);
+        return value.isIntegralNumber() ? value.asInt() : 0;
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return "sha256:" + java.util.HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (Exception impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }
     }
 

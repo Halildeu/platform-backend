@@ -22,6 +22,7 @@ public final class ViewOnlyAuthorityHttpErrorMapper {
                     new Mapping(409, "CHECKPOINT_PREVIOUS_DIGEST_MISMATCH", false);
             case STATE_TRANSITION_DENIED, TERMINAL_FLAG_INVALID ->
                     new Mapping(409, "CHECKPOINT_STATE_INVALID", false);
+            case PREFLIGHT_UNAVAILABLE -> new Mapping(503, "PREFLIGHT_CHECK_FAILED", true);
             case SIGNING_UNAVAILABLE -> new Mapping(503, "SIGNING_UNAVAILABLE", true);
             case CHECKPOINT_STORE_UNAVAILABLE ->
                     new Mapping(503, "CHECKPOINT_STORE_UNAVAILABLE", true);

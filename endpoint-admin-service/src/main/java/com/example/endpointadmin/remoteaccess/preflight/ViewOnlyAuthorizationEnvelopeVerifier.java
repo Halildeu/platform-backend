@@ -7,5 +7,5 @@ import java.time.Instant;
 /** Verifies the #2502 v3 authority envelope, grant, transaction binding and revocation state. */
 @FunctionalInterface
 public interface ViewOnlyAuthorizationEnvelopeVerifier {
-    VerifiedViewOnlyAuthorization verify(JsonNode envelope, Instant now);
+    VerifiedViewOnlyAuthorization verify(JsonNode envelope, JsonNode binding, Instant now);
 }

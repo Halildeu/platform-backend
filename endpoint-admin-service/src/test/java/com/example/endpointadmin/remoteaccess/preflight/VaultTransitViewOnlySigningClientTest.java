@@ -25,8 +25,10 @@ class VaultTransitViewOnlySigningClientTest {
     void readinessProbeRequiresPinnedEd25519PublicKeyMetadataAndClearsToken() throws Exception {
         HttpClient http = mock(HttpClient.class);
         HttpResponse<InputStream> response = mock(HttpResponse.class);
-        String json = "{\"data\":{\"type\":\"ed25519\",\"keys\":{\"1\":"
-                + "{\"public_key\":\"base64-public-key\"}}}}";
+        String json = "{\"data\":{\"type\":\"ed25519\",\"supports_signing\":true,"
+                + "\"latest_version\":1,\"min_available_version\":1,\"min_encryption_version\":1,"
+                + "\"keys\":{\"1\":{\"public_key\":"
+                + "\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}}}}";
         when(response.statusCode()).thenReturn(200);
         when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
@@ -50,6 +52,27 @@ class VaultTransitViewOnlySigningClientTest {
         HttpClient http = mock(HttpClient.class);
         HttpResponse<InputStream> response = mock(HttpResponse.class);
         String json = "{\"data\":{\"type\":\"ed25519\",\"keys\":{\"1\":{}}}}";
+        when(response.statusCode()).thenReturn(200);
+        when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
+        VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
+                ViewOnlyAuthorityPropertiesTest.enabledProperties(),
+                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper());
+
+        assertThatThrownBy(client::probeReady)
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .extracting(error -> ((ViewOnlyAuthorityException) error).reason())
+                .isEqualTo(ViewOnlyAuthorityError.SIGNING_UNAVAILABLE);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void readinessProbeRejectsWrongPublicKeyFingerprintAndUnsignableVersion() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        String json = "{\"data\":{\"type\":\"ed25519\",\"supports_signing\":false,"
+                + "\"latest_version\":1,\"keys\":{\"1\":{\"public_key\":"
+                + "\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}}}}";
         when(response.statusCode()).thenReturn(200);
         when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);

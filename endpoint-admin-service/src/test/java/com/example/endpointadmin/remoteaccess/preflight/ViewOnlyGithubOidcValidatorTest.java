@@ -51,6 +51,12 @@ class ViewOnlyGithubOidcValidatorTest {
                 .claim("workflow_sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
                 .build();
         assertThat(validate(ViewOnlyGithubOidcProfile.EXECUTOR, wrongWorkflow)).isFalse();
+
+        Jwt untrustedCommit = builder(ViewOnlyGithubOidcProfile.EXECUTOR)
+                .claim("sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .claim("workflow_sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .build();
+        assertThat(validate(ViewOnlyGithubOidcProfile.EXECUTOR, untrustedCommit)).isFalse();
     }
 
     @Test
@@ -99,7 +105,7 @@ class ViewOnlyGithubOidcValidatorTest {
     }
 
     private static boolean validate(ViewOnlyGithubOidcProfile profile, Jwt token) {
-        return !new ViewOnlyGithubOidcValidator(profile, CLOCK, Duration.ofSeconds(30))
+        return !new ViewOnlyGithubOidcValidator(profile, CLOCK, Duration.ofSeconds(30), SHA)
                 .validate(token).hasErrors();
     }
 

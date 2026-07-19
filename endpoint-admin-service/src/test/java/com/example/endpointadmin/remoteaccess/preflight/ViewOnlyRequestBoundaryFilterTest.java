@@ -2,6 +2,7 @@ package com.example.endpointadmin.remoteaccess.preflight;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.endpointadmin.config.ViewOnlyAuthoritySecurityConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +57,26 @@ class ViewOnlyRequestBoundaryFilterTest {
 
         assertThat(chain.getRequest()).isSameAs(request);
         assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    @Test
+    void neverInterceptsAnUnrelatedProductPostRoute() throws Exception {
+        MockHttpServletRequest request = request(
+                "/api/v1/endpoint-admin/devices/commands", "application/json", new byte[]{1});
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(chain.getRequest()).isSameAs(request);
+        assertThat(response.getContentAsByteArray()).isEmpty();
+    }
+
+    @Test
+    void servletContainerAutoRegistrationIsDisabled() {
+        ViewOnlyAuthoritySecurityConfig security = new ViewOnlyAuthoritySecurityConfig();
+
+        assertThat(security.viewOnlyRequestBoundaryFilterRegistration(filter).isEnabled()).isFalse();
     }
 
     private static MockHttpServletRequest request(String uri, String contentType, byte[] body) {

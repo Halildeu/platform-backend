@@ -10,6 +10,8 @@ import java.util.regex.Pattern;
 public class ViewOnlyAuthorityProperties {
     private static final Pattern TRANSIT_KEY_ID =
             Pattern.compile("vault-transit://[a-z0-9/_-]+#v[1-9][0-9]*");
+    private static final Pattern SHA256 = Pattern.compile("sha256:[a-f0-9]{64}");
+    private static final Pattern GIT_SHA = Pattern.compile("[a-f0-9]{40}");
     public static final String CANONICAL_CHECKPOINT_CREATE_IDEMPOTENCY_DOMAIN =
             "faz22.6/view-only/checkpoint-create-idempotency/v1";
     public static final String CANONICAL_OIDC_JTI_DIGEST_DOMAIN =
@@ -22,11 +24,21 @@ public class ViewOnlyAuthorityProperties {
     private String jtiDigestDomain = CANONICAL_OIDC_JTI_DIGEST_DOMAIN;
     private String checkpointCreateIdempotencyDomain = CANONICAL_CHECKPOINT_CREATE_IDEMPOTENCY_DOMAIN;
     private int maximumClockSkewSeconds = 30;
+    private String trustedWorkflowCommitSha;
+    private String crossAiTrustRootFile;
+    private String crossAiTrustRootSha256;
+    private String crossAiRevocationsFile;
+    private String runtimeTrustRootFile;
+    private String runtimeTrustRootSha256;
+    private String fixedPreflightExecutableFile;
+    private String fixedPreflightExecutableSha256;
+    private int fixedPreflightTimeoutSeconds = 120;
     private String vaultAddress;
     private String vaultTransitMount = "transit";
     private String vaultTransitKey;
     private int vaultTransitKeyVersion = 1;
     private String vaultTransitKeyId;
+    private String vaultTransitPublicKeySha256;
     private String vaultTokenFile;
     private String vaultCaCertificateFile;
     private int vaultConnectTimeoutSeconds = 5;
@@ -52,6 +64,17 @@ public class ViewOnlyAuthorityProperties {
         }
         if (maximumClockSkewSeconds < 0 || maximumClockSkewSeconds > 30) {
             throw invalid("OIDC clock skew must be between zero and 30 seconds");
+        }
+        if (trustedWorkflowCommitSha == null || !GIT_SHA.matcher(trustedWorkflowCommitSha).matches()) {
+            throw invalid("trusted workflow commit SHA must pin one immutable authority commit");
+        }
+        requiredFilePin(crossAiTrustRootFile, crossAiTrustRootSha256, "Cross-AI trust root");
+        required(crossAiRevocationsFile, "Cross-AI signed revocations file");
+        requiredFilePin(runtimeTrustRootFile, runtimeTrustRootSha256, "runtime trust root");
+        requiredFilePin(fixedPreflightExecutableFile, fixedPreflightExecutableSha256,
+                "fixed preflight executable");
+        if (fixedPreflightTimeoutSeconds < 5 || fixedPreflightTimeoutSeconds > 300) {
+            throw invalid("fixed preflight timeout must be between 5 and 300 seconds");
         }
         requireVaultConfiguration();
     }
@@ -112,6 +135,78 @@ public class ViewOnlyAuthorityProperties {
         this.maximumClockSkewSeconds = maximumClockSkewSeconds;
     }
 
+    public String getTrustedWorkflowCommitSha() {
+        return trustedWorkflowCommitSha;
+    }
+
+    public void setTrustedWorkflowCommitSha(String trustedWorkflowCommitSha) {
+        this.trustedWorkflowCommitSha = trustedWorkflowCommitSha;
+    }
+
+    public String getCrossAiTrustRootFile() {
+        return crossAiTrustRootFile;
+    }
+
+    public void setCrossAiTrustRootFile(String crossAiTrustRootFile) {
+        this.crossAiTrustRootFile = crossAiTrustRootFile;
+    }
+
+    public String getCrossAiTrustRootSha256() {
+        return crossAiTrustRootSha256;
+    }
+
+    public void setCrossAiTrustRootSha256(String crossAiTrustRootSha256) {
+        this.crossAiTrustRootSha256 = crossAiTrustRootSha256;
+    }
+
+    public String getCrossAiRevocationsFile() {
+        return crossAiRevocationsFile;
+    }
+
+    public void setCrossAiRevocationsFile(String crossAiRevocationsFile) {
+        this.crossAiRevocationsFile = crossAiRevocationsFile;
+    }
+
+    public String getRuntimeTrustRootFile() {
+        return runtimeTrustRootFile;
+    }
+
+    public void setRuntimeTrustRootFile(String runtimeTrustRootFile) {
+        this.runtimeTrustRootFile = runtimeTrustRootFile;
+    }
+
+    public String getRuntimeTrustRootSha256() {
+        return runtimeTrustRootSha256;
+    }
+
+    public void setRuntimeTrustRootSha256(String runtimeTrustRootSha256) {
+        this.runtimeTrustRootSha256 = runtimeTrustRootSha256;
+    }
+
+    public String getFixedPreflightExecutableFile() {
+        return fixedPreflightExecutableFile;
+    }
+
+    public void setFixedPreflightExecutableFile(String fixedPreflightExecutableFile) {
+        this.fixedPreflightExecutableFile = fixedPreflightExecutableFile;
+    }
+
+    public String getFixedPreflightExecutableSha256() {
+        return fixedPreflightExecutableSha256;
+    }
+
+    public void setFixedPreflightExecutableSha256(String fixedPreflightExecutableSha256) {
+        this.fixedPreflightExecutableSha256 = fixedPreflightExecutableSha256;
+    }
+
+    public int getFixedPreflightTimeoutSeconds() {
+        return fixedPreflightTimeoutSeconds;
+    }
+
+    public void setFixedPreflightTimeoutSeconds(int fixedPreflightTimeoutSeconds) {
+        this.fixedPreflightTimeoutSeconds = fixedPreflightTimeoutSeconds;
+    }
+
     public String getVaultAddress() {
         return vaultAddress;
     }
@@ -150,6 +245,14 @@ public class ViewOnlyAuthorityProperties {
 
     public void setVaultTransitKeyId(String vaultTransitKeyId) {
         this.vaultTransitKeyId = vaultTransitKeyId;
+    }
+
+    public String getVaultTransitPublicKeySha256() {
+        return vaultTransitPublicKeySha256;
+    }
+
+    public void setVaultTransitPublicKeySha256(String vaultTransitPublicKeySha256) {
+        this.vaultTransitPublicKeySha256 = vaultTransitPublicKeySha256;
     }
 
     public String getVaultTokenFile() {
@@ -214,6 +317,10 @@ public class ViewOnlyAuthorityProperties {
                 || !vaultTransitKeyId.endsWith("#v" + vaultTransitKeyVersion)) {
             throw invalid("Vault Transit key ID must pin the configured key version");
         }
+        if (vaultTransitPublicKeySha256 == null
+                || !SHA256.matcher(vaultTransitPublicKeySha256).matches()) {
+            throw invalid("Vault Transit public key fingerprint must be an exact SHA-256 pin");
+        }
         required(vaultTokenFile, "Vault token sink file");
         required(vaultCaCertificateFile, "Vault CA certificate file");
         if (vaultConnectTimeoutSeconds < 1 || vaultConnectTimeoutSeconds > 30
@@ -228,6 +335,13 @@ public class ViewOnlyAuthorityProperties {
             throw invalid(label + " is required");
         }
         return value;
+    }
+
+    private static void requiredFilePin(String file, String digest, String label) {
+        required(file, label + " file");
+        if (digest == null || !SHA256.matcher(digest).matches()) {
+            throw invalid(label + " SHA-256 pin is required");
+        }
     }
 
     private static IllegalStateException invalid(String message) {

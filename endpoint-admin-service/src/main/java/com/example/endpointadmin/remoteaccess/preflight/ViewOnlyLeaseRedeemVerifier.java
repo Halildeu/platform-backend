@@ -63,7 +63,7 @@ public final class ViewOnlyLeaseRedeemVerifier {
         VerifiedViewOnlyPreflightReceipt evaluation = preflightVerifier.verifyEvaluation(
                 object(request, "evaluationPreflightReceiptEnvelope"), now);
         VerifiedViewOnlyAuthorization authorization = authorizationVerifier.verify(
-                object(request, "authorizationEnvelope"), now);
+                object(request, "authorizationEnvelope"), binding, now);
         requireReceiptBinding(evaluation.bindingSha256(), evaluation.transactionIdSha256(),
                 bindingSha256, transactionIdSha256, "evaluation preflight");
         requireReceiptBinding(authorization.bindingSha256(), authorization.transactionIdSha256(),

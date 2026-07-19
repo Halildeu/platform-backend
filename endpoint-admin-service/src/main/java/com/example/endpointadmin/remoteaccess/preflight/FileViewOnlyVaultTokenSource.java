@@ -41,11 +41,34 @@ public final class FileViewOnlyVaultTokenSource implements ViewOnlyVaultTokenSou
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .decode(ByteBuffer.wrap(bytes));
-            String token = decoded.toString().strip();
-            if (token.isEmpty() || token.length() > 4_096 || token.chars().anyMatch(Character::isWhitespace)) {
-                throw unavailable("Vault token sink content is invalid", null);
+            try {
+                int start = 0;
+                int end = decoded.length();
+                while (start < end && Character.isWhitespace(decoded.charAt(start))) {
+                    start++;
+                }
+                while (end > start && Character.isWhitespace(decoded.charAt(end - 1))) {
+                    end--;
+                }
+                int length = end - start;
+                if (length < 1 || length > 4_096) {
+                    throw unavailable("Vault token sink content is invalid", null);
+                }
+                char[] token = new char[length];
+                for (int index = 0; index < length; index++) {
+                    char value = decoded.charAt(start + index);
+                    if (Character.isWhitespace(value)) {
+                        Arrays.fill(token, '\0');
+                        throw unavailable("Vault token sink content is invalid", null);
+                    }
+                    token[index] = value;
+                }
+                return token;
+            } finally {
+                for (int index = 0; index < decoded.length(); index++) {
+                    decoded.put(index, '\0');
+                }
             }
-            return token.toCharArray();
         } catch (ViewOnlyAuthorityException known) {
             throw known;
         } catch (Exception failure) {

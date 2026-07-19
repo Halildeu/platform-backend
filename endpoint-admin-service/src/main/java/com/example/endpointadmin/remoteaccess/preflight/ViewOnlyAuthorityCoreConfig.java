@@ -35,6 +35,62 @@ public class ViewOnlyAuthorityCoreConfig {
     }
 
     @Bean
+    public ViewOnlyPublicTrustStore viewOnlyPublicTrustStore(
+            @Qualifier("viewOnlyJsonCanonicalizer") RemoteViewJsonCanonicalizer canonicalizer,
+            Clock clock,
+            ViewOnlyAuthorityProperties properties) {
+        ViewOnlyPublicTrustStore trust = new ViewOnlyPublicTrustStore(canonicalizer, clock, properties);
+        trust.probeReady();
+        return trust;
+    }
+
+    @Bean
+    public StrictViewOnlyBindingHandoffVerifier strictViewOnlyBindingHandoffVerifier(
+            ViewOnlyPublicTrustStore trust,
+            @Qualifier("viewOnlyJsonCanonicalizer") RemoteViewJsonCanonicalizer canonicalizer) {
+        return new StrictViewOnlyBindingHandoffVerifier(trust, canonicalizer);
+    }
+
+    @Bean
+    public ViewOnlyPreflightEnvelopeVerifier viewOnlyPreflightEnvelopeVerifier(
+            ViewOnlyPublicTrustStore trust,
+            @Qualifier("viewOnlyJsonCanonicalizer") RemoteViewJsonCanonicalizer canonicalizer) {
+        return new StrictViewOnlyPreflightEnvelopeVerifier(trust, canonicalizer);
+    }
+
+    @Bean
+    public ViewOnlyAuthorizationEnvelopeVerifier viewOnlyAuthorizationEnvelopeVerifier(
+            ViewOnlyPublicTrustStore trust,
+            @Qualifier("viewOnlyJsonCanonicalizer") RemoteViewJsonCanonicalizer canonicalizer) {
+        return new StrictViewOnlyAuthorizationEnvelopeVerifier(trust, canonicalizer);
+    }
+
+    @Bean
+    public ViewOnlyLeaseEnvelopeVerifier viewOnlyLeaseEnvelopeVerifier(
+            ViewOnlyPublicTrustStore trust,
+            @Qualifier("viewOnlyJsonCanonicalizer") RemoteViewJsonCanonicalizer canonicalizer) {
+        return new StrictViewOnlyLeaseEnvelopeVerifier(trust, canonicalizer);
+    }
+
+    @Bean
+    public FixedProcessViewOnlyLivePreflight fixedProcessViewOnlyLivePreflight(
+            ViewOnlyAuthorityProperties properties,
+            @Qualifier("viewOnlyJsonCanonicalizer") RemoteViewJsonCanonicalizer canonicalizer,
+            StrictViewOnlyBindingHandoffVerifier bindingVerifier,
+            ViewOnlyPreflightEnvelopeVerifier preflightEnvelopeVerifier,
+            ViewOnlyOidcCallerFactory callerFactory,
+            Clock clock) {
+        if (!(preflightEnvelopeVerifier instanceof StrictViewOnlyPreflightEnvelopeVerifier strictVerifier)) {
+            throw new IllegalStateException(
+                    "VIEW_ONLY authority activation denied: concrete preflight verifier is required");
+        }
+        FixedProcessViewOnlyLivePreflight preflight = new FixedProcessViewOnlyLivePreflight(
+                properties, canonicalizer, bindingVerifier, strictVerifier, callerFactory, clock);
+        preflight.probeReady();
+        return preflight;
+    }
+
+    @Bean
     public ViewOnlyVaultTokenSource viewOnlyVaultTokenSource(ViewOnlyAuthorityProperties properties) {
         return new FileViewOnlyVaultTokenSource(Path.of(properties.getVaultTokenFile()));
     }

@@ -31,12 +31,7 @@ class ViewOnlyLeaseRedeemVerifierTest {
     @BeforeEach
     void setUp() {
         canonicalizer = new RemoteViewJsonCanonicalizer();
-        binding = canonicalizer.mapper().createObjectNode()
-                .put("triggeringActorId", 186576227L)
-                .put("runId", 29678094664L)
-                .put("runAttempt", 1)
-                .put("intentRef", REF)
-                .put("headSha", SHA);
+        binding = ViewOnlyTestFixtures.binding(canonicalizer, 186576227L, 29678094664L);
         ViewOnlyDigest digest = new ViewOnlyDigest(canonicalizer);
         bindingDigest = digest.domainDigest(
                 "faz22.6/view-only/transaction-binding/v1", "binding", binding);
@@ -140,7 +135,7 @@ class ViewOnlyLeaseRedeemVerifierTest {
     private ViewOnlyLeaseRedeemVerifier verifier(VerifiedViewOnlyPreflightReceipt preflight,
                                                  VerifiedViewOnlyAuthorization auth) {
         return new ViewOnlyLeaseRedeemVerifier(
-                canonicalizer, (envelope, now) -> preflight, (envelope, now) -> auth,
+                canonicalizer, (envelope, now) -> preflight, (envelope, binding, now) -> auth,
                 new ViewOnlyOidcCallerFactory(
                         canonicalizer, ViewOnlyAuthorityProperties.CANONICAL_OIDC_JTI_DIGEST_DOMAIN),
                 CLOCK);

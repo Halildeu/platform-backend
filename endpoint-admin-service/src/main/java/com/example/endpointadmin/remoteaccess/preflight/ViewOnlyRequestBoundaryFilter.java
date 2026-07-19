@@ -20,16 +20,17 @@ public final class ViewOnlyRequestBoundaryFilter extends OncePerRequestFilter {
     }
 
     @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        return !"POST".equals(request.getMethod()) || maximumFor(request.getRequestURI()) < 0;
+    }
+
+    @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
-        if (!"POST".equals(request.getMethod())) {
-            chain.doFilter(request, response);
-            return;
-        }
         long maximum = maximumFor(request.getRequestURI());
         long contentLength = request.getContentLengthLong();
-        if (maximum < 0 || contentLength < 1 || contentLength > maximum) {
+        if (contentLength < 1 || contentLength > maximum) {
             writeFailure(response, "authority request body length is absent or outside its exact bound");
             return;
         }

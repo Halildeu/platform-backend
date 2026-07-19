@@ -29,12 +29,7 @@ class ViewOnlyReceiptPayloadFactoryTest {
     void setUp() {
         canonicalizer = new RemoteViewJsonCanonicalizer();
         factory = new ViewOnlyReceiptPayloadFactory(canonicalizer);
-        binding = canonicalizer.mapper().createObjectNode()
-                .put("triggeringActorId", 1)
-                .put("runId", 1)
-                .put("runAttempt", 1)
-                .put("intentRef", "refs/tags/cross-ai-intent/123e4567-e89b-42d3-a456-426614174000")
-                .put("headSha", "0".repeat(40));
+        binding = ViewOnlyTestFixtures.binding(canonicalizer, 1, 1);
         caller = new ViewOnlyOidcCaller(
                 "authorization", "https://token.actions.githubusercontent.com",
                 "repo:Halildeu/platform-k8s-gitops:environment:faz22-view-only-pilot",

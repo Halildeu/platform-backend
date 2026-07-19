@@ -35,12 +35,8 @@ class ViewOnlyCheckpointCreateVerifierTest {
     void setUp() {
         canonicalizer = new RemoteViewJsonCanonicalizer();
         callerFactory = new ViewOnlyOidcCallerFactory(canonicalizer, "test/jti/v1");
-        ObjectNode binding = canonicalizer.mapper().createObjectNode()
-                .put("triggeringActorId", 186576227L)
-                .put("runId", 29678094664L)
-                .put("runAttempt", 1)
-                .put("intentRef", REF)
-                .put("headSha", SHA);
+        ObjectNode binding = ViewOnlyTestFixtures.binding(
+                canonicalizer, 186576227L, 29678094664L);
         lease = new VerifiedViewOnlyLeaseEnvelope(
                 LEASE_ID, DIGEST_A, DIGEST_B, DIGEST_C, binding,
                 new ViewOnlyOidcBinding(186576227L, 29678094664L, 1, REF, SHA),

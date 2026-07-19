@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -41,6 +42,20 @@ public class ViewOnlyAuthoritySecurityConfig {
     @Bean
     public ViewOnlyRequestBoundaryFilter viewOnlyRequestBoundaryFilter(ObjectMapper mapper) {
         return new ViewOnlyRequestBoundaryFilter(mapper);
+    }
+
+    /**
+     * A Filter bean is otherwise auto-registered by Spring Boot for every
+     * servlet route. The authority filter must exist only inside the three
+     * dedicated OIDC chains.
+     */
+    @Bean
+    public FilterRegistrationBean<ViewOnlyRequestBoundaryFilter> viewOnlyRequestBoundaryFilterRegistration(
+            ViewOnlyRequestBoundaryFilter filter) {
+        FilterRegistrationBean<ViewOnlyRequestBoundaryFilter> registration =
+                new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean
@@ -106,7 +121,8 @@ public class ViewOnlyAuthoritySecurityConfig {
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<Jwt>(
                 JwtValidators.createDefaultWithIssuer(properties.getIssuer()),
                 new ViewOnlyGithubOidcValidator(
-                        profile, clock, Duration.ofSeconds(properties.getMaximumClockSkewSeconds()))));
+                        profile, clock, Duration.ofSeconds(properties.getMaximumClockSkewSeconds()),
+                        properties.getTrustedWorkflowCommitSha())));
         return decoder;
     }
 }
