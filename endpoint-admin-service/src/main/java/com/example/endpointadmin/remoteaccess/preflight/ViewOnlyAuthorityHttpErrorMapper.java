@@ -10,6 +10,7 @@ public final class ViewOnlyAuthorityHttpErrorMapper {
             case CONTRACT_INVALID -> new Mapping(400, "REQUEST_SCHEMA_INVALID", false);
             case IDEMPOTENCY_CONFLICT -> new Mapping(409, "CHECKPOINT_IDEMPOTENCY_CONFLICT", false);
             case AUTHORITY_CONSUMED -> new Mapping(409, "AUTHORIZATION_REPLAYED", false);
+            case AUTHORIZATION_EXPIRED -> new Mapping(410, "AUTHORIZATION_EXPIRED", false);
             case LEASE_NOT_FOUND -> new Mapping(403, "LEASE_BINDING_MISMATCH", false);
             case CHECKPOINT_NOT_FOUND -> new Mapping(404, "CHECKPOINT_NOT_FOUND", false);
             case LEASE_EXPIRED -> new Mapping(410, "CHECKPOINT_LEASE_EXPIRED", false);

@@ -55,8 +55,9 @@ class ViewOnlyGithubOidcValidatorTest {
 
     @Test
     void callerFactoryBindsExactRunAndProducesOnlyHashedJti() {
+        RemoteViewJsonCanonicalizer canonicalizer = new RemoteViewJsonCanonicalizer();
         ViewOnlyOidcCallerFactory factory = new ViewOnlyOidcCallerFactory(
-                new RemoteViewJsonCanonicalizer(), "test-only-jti-domain/v1");
+                canonicalizer, ViewOnlyAuthorityProperties.CANONICAL_OIDC_JTI_DIGEST_DOMAIN);
         ViewOnlyOidcCaller caller = factory.create(
                 token(ViewOnlyGithubOidcProfile.EXECUTOR),
                 ViewOnlyGithubOidcProfile.EXECUTOR,
@@ -65,6 +66,16 @@ class ViewOnlyGithubOidcValidatorTest {
         assertThat(caller.profile()).isEqualTo("executor");
         assertThat(caller.tokenJtiSha256()).matches("sha256:[0-9a-f]{64}");
         assertThat(caller.tokenJtiSha256()).doesNotContain("jti-raw");
+        var exactProjection = canonicalizer.mapper().createObjectNode();
+        exactProjection.put("domain", ViewOnlyAuthorityProperties.CANONICAL_OIDC_JTI_DIGEST_DOMAIN);
+        exactProjection.put("issuer", "https://token.actions.githubusercontent.com");
+        exactProjection.put("audience", ViewOnlyGithubOidcProfile.EXECUTOR.audience());
+        exactProjection.put("subject", "repo:" + ViewOnlyGithubOidcValidator.REPOSITORY + ":ref:" + REF);
+        exactProjection.put("jti", "jti-raw-never-persisted");
+        assertThat(caller.tokenJtiSha256()).isEqualTo(canonicalizer.digest(exactProjection));
+        assertThat(caller.receiptProjection(canonicalizer).toString())
+                .doesNotContain("jti-raw-never-persisted");
+
         ViewOnlyOidcCaller otherDomainCaller = new ViewOnlyOidcCallerFactory(
                 new RemoteViewJsonCanonicalizer(), "test-only-jti-domain/v2").create(
                 token(ViewOnlyGithubOidcProfile.EXECUTOR),
@@ -79,6 +90,12 @@ class ViewOnlyGithubOidcValidatorTest {
                 .isInstanceOf(ViewOnlyAuthorityException.class)
                 .extracting(error -> ((ViewOnlyAuthorityException) error).reason())
                 .isEqualTo(ViewOnlyAuthorityError.LEASE_BINDING_MISMATCH);
+
+        ViewOnlyOidcCaller wrongProfileProjection = factory.create(
+                token(ViewOnlyGithubOidcProfile.PREFLIGHT),
+                ViewOnlyGithubOidcProfile.PREFLIGHT,
+                new ViewOnlyOidcBinding(186576227L, 29678094664L, 1, REF, SHA));
+        assertThat(wrongProfileProjection.tokenJtiSha256()).isNotEqualTo(caller.tokenJtiSha256());
     }
 
     private static boolean validate(ViewOnlyGithubOidcProfile profile, Jwt token) {

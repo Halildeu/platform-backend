@@ -39,4 +39,21 @@ class FileViewOnlyVaultTokenSourceTest {
                 .isInstanceOf(ViewOnlyAuthorityException.class)
                 .hasMessage("Vault token sink content is invalid");
     }
+
+    @Test
+    void rejectsOversizedAndSymlinkedTokenSinks() throws Exception {
+        Path oversized = directory.resolve("oversized-token");
+        Files.write(oversized, new byte[8_193]);
+        assertThatThrownBy(new FileViewOnlyVaultTokenSource(oversized)::readToken)
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessageContaining("hard size bound");
+
+        Path target = directory.resolve("real-token");
+        Files.writeString(target, "hvs.real-token\n");
+        Path symlink = directory.resolve("token-link");
+        Files.createSymbolicLink(symlink, target);
+        assertThatThrownBy(new FileViewOnlyVaultTokenSource(symlink)::readToken)
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessage("Vault token sink could not be read");
+    }
 }

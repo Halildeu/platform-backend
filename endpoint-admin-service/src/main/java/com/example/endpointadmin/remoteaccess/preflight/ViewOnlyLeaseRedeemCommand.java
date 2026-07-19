@@ -17,4 +17,14 @@ public record ViewOnlyLeaseRedeemCommand(
         VerifiedViewOnlyAuthorization authorization,
         int requestedTtlSeconds,
         int requestedMaxWrites) {
+
+    public ViewOnlyLeaseRedeemCommand {
+        ViewOnlyOidcBinding.fromJson(binding);
+        binding = binding.deepCopy();
+    }
+
+    @Override
+    public JsonNode binding() {
+        return binding.deepCopy();
+    }
 }

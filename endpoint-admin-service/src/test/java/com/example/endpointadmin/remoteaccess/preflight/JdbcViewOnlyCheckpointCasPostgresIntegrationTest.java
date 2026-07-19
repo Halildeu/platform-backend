@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -138,7 +139,7 @@ class JdbcViewOnlyCheckpointCasPostgresIntegrationTest {
                 UUID.fromString("123e4567-e89b-42d3-a456-426614174099"), LEASE_ID, D5, D3, D4,
                 0, null, ViewOnlyCheckpointState.DECISION_AUTHORIZED, "decision-authorized",
                 D1, D2, null, D2, D6, D2, caller.stableIdentitySha256(canonicalizer), false, NOW);
-        assertReason(ViewOnlyAuthorityError.IDEMPOTENCY_CONFLICT,
+        assertReason(ViewOnlyAuthorityError.SEQUENCE_CONFLICT,
                 () -> cas.createCheckpoint(sequenceConflict, caller, input -> bytes("other")));
 
         ViewOnlyOidcCaller foreign = new ViewOnlyOidcCaller(
@@ -174,6 +175,65 @@ class JdbcViewOnlyCheckpointCasPostgresIntegrationTest {
                 5, ViewOnlyCheckpointState.FAILED_CLEAN, ViewOnlyCheckpointState.COMPLETED, D5, D6, true);
         assertReason(ViewOnlyAuthorityError.LEASE_CLOSED,
                 () -> cas.createCheckpoint(afterClose, caller, input -> bytes("never")));
+    }
+
+    @Test
+    void committedLeaseAndCheckpointRemainRecoverableAfterExpiry() {
+        byte[] leaseBytes = cas.registerLease(lease(D1, "lease"));
+        ViewOnlyCheckpointCommand initial = command(
+                0, null, ViewOnlyCheckpointState.DECISION_AUTHORIZED, null, D1, false);
+        byte[] checkpointBytes = cas.createCheckpoint(initial, caller, input -> bytes("checkpoint"));
+        JdbcViewOnlyCheckpointCas afterExpiry = new JdbcViewOnlyCheckpointCas(
+                jdbc, transactionManager, canonicalizer,
+                Clock.fixed(NOW.plusSeconds(901), ZoneOffset.UTC), SCHEMA);
+
+        assertThat(afterExpiry.findLeaseRetry(
+                REDEEM_ID, D1, D1, D2, D3, D3))
+                .hasValueSatisfying(bytes -> assertThat(bytes).isEqualTo(leaseBytes));
+        assertThat(afterExpiry.findCheckpointRetry(new ViewOnlyCheckpointRetryCandidate(
+                initial.requestId(), initial.idempotencyKeySha256(), initial.requestBodySha256(),
+                initial.executorIdentitySha256(), initial.leaseEnvelopeSha256(),
+                initial.transactionIdSha256(), initial.sequence(), initial.storedObjectSha256())))
+                .hasValueSatisfying(bytes -> assertThat(bytes).isEqualTo(checkpointBytes));
+        assertThat(afterExpiry.readCheckpoint(D3, 0, caller)).isEqualTo(checkpointBytes);
+    }
+
+    @Test
+    void checkpointEvidenceIsDatabaseEnforcedWorm() {
+        cas.registerLease(lease(D1, "lease"));
+        cas.createCheckpoint(command(
+                        0, null, ViewOnlyCheckpointState.DECISION_AUTHORIZED, null, D1, false),
+                caller, input -> bytes("checkpoint"));
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE " + SCHEMA + ".view_only_external_checkpoints SET reason_code = ?",
+                "rewritten"))
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("append-only");
+    }
+
+    @Test
+    void leaseAuthorityProjectionCannotBeRewritten() {
+        cas.registerLease(lease(D1, "lease"));
+
+        assertThatThrownBy(() -> jdbc.update(
+                "UPDATE " + SCHEMA + ".view_only_checkpoint_leases SET binding_sha256 = ? WHERE lease_id = ?",
+                D6, LEASE_ID))
+                .isInstanceOf(DataAccessException.class)
+                .hasMessageContaining("authority columns are immutable");
+    }
+
+    @Test
+    void checkpointForeignKeyPinsTheCompleteLeaseAuthorityProjection() {
+        String definition = jdbc.queryForObject(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+                        + " WHERE conname = 'fk_vo_checkpoint_exact_lease_authority'"
+                        + " AND connamespace = ?::regnamespace",
+                String.class, SCHEMA);
+
+        assertThat(definition)
+                .contains("lease_id, transaction_id_sha256, binding_sha256, lease_envelope_sha256")
+                .contains("expires_at, executor_identity_sha256");
     }
 
     private void append(int sequence,

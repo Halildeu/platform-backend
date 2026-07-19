@@ -39,7 +39,12 @@ class ViewOnlyLeaseRedemptionServiceTest {
         revalidator = mock(ViewOnlyLivePreflightRevalidator.class);
         signer = mock(ViewOnlyLeaseReceiptSigner.class);
         canonicalizer = new RemoteViewJsonCanonicalizer();
-        ObjectNode binding = canonicalizer.mapper().createObjectNode().put("headSha", "0".repeat(40));
+        ObjectNode binding = canonicalizer.mapper().createObjectNode()
+                .put("triggeringActorId", 1)
+                .put("runId", 1)
+                .put("runAttempt", 1)
+                .put("intentRef", "refs/tags/cross-ai-intent/123e4567-e89b-42d3-a456-426614174000")
+                .put("headSha", "0".repeat(40));
         VerifiedViewOnlyPreflightReceipt evaluation = new VerifiedViewOnlyPreflightReceipt(
                 D1, D2, D3, NOW.minusSeconds(600), NOW.minusSeconds(300), 0, false);
         VerifiedViewOnlyAuthorization authorization = new VerifiedViewOnlyAuthorization(

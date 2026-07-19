@@ -15,4 +15,14 @@ public record ViewOnlyCheckpointSigningInput(
         String authorizationEnvelopeSha256,
         ViewOnlyOidcCaller executorCaller,
         Instant expiresAt) {
+
+    public ViewOnlyCheckpointSigningInput {
+        ViewOnlyOidcBinding.fromJson(binding);
+        binding = binding.deepCopy();
+    }
+
+    @Override
+    public JsonNode binding() {
+        return binding.deepCopy();
+    }
 }

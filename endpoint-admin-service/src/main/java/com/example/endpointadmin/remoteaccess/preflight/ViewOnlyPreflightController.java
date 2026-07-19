@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Optional;
+
 /** GitHub-OIDC-only fixed-function authority routes. */
 @RestController
 @Profile("!local & !dev")
@@ -53,12 +55,25 @@ public final class ViewOnlyPreflightController {
     @PostMapping(value = "/checkpoint-leases/redeem", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<byte[]> redeemLease(@RequestBody byte[] body, @AuthenticationPrincipal Jwt jwt) {
+        Optional<byte[]> committed = leaseService.recoverCommitted(leaseVerifier.retryCandidate(body, jwt));
+        if (committed.isPresent()) {
+            return signed(committed.get());
+        }
         return signed(leaseService.redeem(leaseVerifier.verify(body, jwt)));
     }
 
     @PostMapping(value = "/checkpoints", consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<byte[]> createCheckpoint(@RequestBody byte[] body, @AuthenticationPrincipal Jwt jwt) {
+        String transactionId = checkpointVerifier.transactionIdForRetry(body);
+        Optional<ViewOnlyOidcBinding> durableBinding = checkpointCas.findOidcBindingForRetry(transactionId);
+        if (durableBinding.isPresent()) {
+            Optional<byte[]> committed = checkpointCas.findCheckpointRetry(
+                    checkpointVerifier.retryCandidate(body, jwt, durableBinding.get()));
+            if (committed.isPresent()) {
+                return signed(committed.get());
+            }
+        }
         VerifiedViewOnlyCheckpointCreate verified = checkpointVerifier.verify(body, jwt);
         return signed(checkpointCas.createCheckpoint(
                 verified.command(), verified.caller(), checkpointSigner));

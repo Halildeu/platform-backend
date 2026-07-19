@@ -68,13 +68,19 @@ public final class JdbcViewOnlyCheckpointCas {
         Objects.requireNonNull(lease, "lease");
         try {
             byte[] response = transactions.execute(status -> {
-                advisoryLock("lease:" + lease.authorizationEnvelopeSha256());
+                advisoryLockAll(List.of(
+                        "lease:authorization:" + lease.authorizationEnvelopeSha256(),
+                        "lease:transaction:" + lease.transactionIdSha256(),
+                        "lease:request:" + lease.redeemRequestId(),
+                        "lease:idempotency:" + lease.idempotencyKeySha256()));
                 LeaseRow byIdempotency = findLeaseBy("idempotency_key_sha256", lease.idempotencyKeySha256());
                 if (byIdempotency != null) {
                     return exactLeaseRetry(byIdempotency, lease);
                 }
-                if (findLeaseBy("redeem_request_id", lease.redeemRequestId()) != null
-                        || findLeaseBy("authorization_envelope_sha256", lease.authorizationEnvelopeSha256()) != null
+                if (findLeaseBy("redeem_request_id", lease.redeemRequestId()) != null) {
+                    throw conflict("lease request ID is already bound to different material");
+                }
+                if (findLeaseBy("authorization_envelope_sha256", lease.authorizationEnvelopeSha256()) != null
                         || findLeaseBy("transaction_id_sha256", lease.transactionIdSha256()) != null) {
                     throw new ViewOnlyAuthorityException(
                             ViewOnlyAuthorityError.AUTHORITY_CONSUMED,
@@ -137,8 +143,10 @@ public final class JdbcViewOnlyCheckpointCas {
                 }
                 return Optional.of(copyRequired(byKey.responseEnvelope()));
             }
-            if (findLeaseBy("redeem_request_id", redeemRequestId) != null
-                    || findLeaseBy("authorization_envelope_sha256", authorizationEnvelopeSha256) != null
+            if (findLeaseBy("redeem_request_id", redeemRequestId) != null) {
+                throw conflict("lease request ID is already bound to different material");
+            }
+            if (findLeaseBy("authorization_envelope_sha256", authorizationEnvelopeSha256) != null
                     || findLeaseBy("transaction_id_sha256", transactionIdSha256) != null) {
                 throw new ViewOnlyAuthorityException(
                         ViewOnlyAuthorityError.AUTHORITY_CONSUMED,
@@ -149,6 +157,63 @@ public final class JdbcViewOnlyCheckpointCas {
             throw known;
         } catch (DataAccessException databaseError) {
             throw unavailable("lease retry lookup failed", databaseError);
+        }
+    }
+
+    /** Finds a durable exact binding without treating absence as a read failure. */
+    public Optional<ViewOnlyOidcBinding> findOidcBindingForRetry(String transactionIdSha256) {
+        ViewOnlyDigest.requireSha256(transactionIdSha256, "transactionIdSha256");
+        try {
+            List<String> rows = jdbc.queryForList(
+                    "SELECT binding_canonical_json FROM " + leaseTable
+                            + " WHERE transaction_id_sha256 = ?",
+                    String.class, transactionIdSha256);
+            return rows.isEmpty()
+                    ? Optional.empty()
+                    : Optional.of(ViewOnlyOidcBinding.fromJson(canonicalizer.strictParse(rows.get(0))));
+        } catch (ViewOnlyAuthorityException known) {
+            throw known;
+        } catch (DataAccessException databaseError) {
+            throw unavailable("checkpoint retry binding lookup failed", databaseError);
+        }
+    }
+
+    /**
+     * Returns only a byte-identical committed checkpoint whose complete
+     * request/body/identity/lease/transaction projection matches. Expiry and
+     * closed state deliberately do not suppress recovery of already committed
+     * public evidence.
+     */
+    public Optional<byte[]> findCheckpointRetry(ViewOnlyCheckpointRetryCandidate requested) {
+        Objects.requireNonNull(requested, "requested");
+        try {
+            CheckpointRow byKey = findCheckpointBy(
+                    "idempotency_key_sha256", requested.idempotencyKeySha256());
+            if (byKey != null) {
+                if (!byKey.requestId().equals(requested.requestId())
+                        || !byKey.requestBodySha256().equals(requested.requestBodySha256())
+                        || !byKey.executorIdentitySha256().equals(requested.executorIdentitySha256())
+                        || !byKey.leaseEnvelopeSha256().equals(requested.leaseEnvelopeSha256())
+                        || !byKey.transactionIdSha256().equals(requested.transactionIdSha256())
+                        || byKey.sequence() != requested.sequence()
+                        || !byKey.storedObjectSha256().equals(requested.storedObjectSha256())) {
+                    throw conflict("checkpoint retry key is bound to different verified request material");
+                }
+                return Optional.of(copyRequired(byKey.responseEnvelope()));
+            }
+            if (findCheckpointBy("request_id", requested.requestId()) != null) {
+                throw conflict("checkpoint request ID is already bound to different material");
+            }
+            if (findCheckpoint(requested.transactionIdSha256(), requested.sequence()) != null) {
+                throw new ViewOnlyAuthorityException(
+                        ViewOnlyAuthorityError.SEQUENCE_CONFLICT,
+                        "checkpoint transaction sequence is already bound to different material");
+            }
+            return Optional.empty();
+        } catch (ViewOnlyAuthorityException known) {
+            throw known;
+        } catch (DataAccessException databaseError) {
+            throw unavailable("checkpoint retry lookup failed", databaseError);
         }
     }
 
@@ -184,9 +249,13 @@ public final class JdbcViewOnlyCheckpointCas {
                 if (priorByKey != null) {
                     return exactCheckpointRetry(priorByKey, command);
                 }
-                if (findCheckpointBy("request_id", command.requestId()) != null
-                        || findCheckpoint(command.transactionIdSha256(), command.sequence()) != null) {
-                    throw conflict("request ID or transaction sequence is already bound to different material");
+                if (findCheckpointBy("request_id", command.requestId()) != null) {
+                    throw conflict("checkpoint request ID is already bound to different material");
+                }
+                if (findCheckpoint(command.transactionIdSha256(), command.sequence()) != null) {
+                    throw new ViewOnlyAuthorityException(
+                            ViewOnlyAuthorityError.SEQUENCE_CONFLICT,
+                            "checkpoint transaction sequence is already bound to different material");
                 }
 
                 Instant now = clock.instant();
@@ -282,21 +351,17 @@ public final class JdbcViewOnlyCheckpointCas {
                     ViewOnlyAuthorityError.CONTRACT_INVALID, "checkpoint read contract is invalid");
         }
         try {
-            List<ReadRow> rows = jdbc.query("SELECT c.signed_receipt_envelope, l.expires_at,"
+            List<ReadRow> rows = jdbc.query("SELECT c.signed_receipt_envelope,"
                             + " l.executor_identity_sha256 FROM " + checkpointTable + " c JOIN " + leaseTable
                             + " l ON l.lease_id = c.lease_id WHERE c.transaction_id_sha256 = ?"
                             + " AND c.sequence = ?",
-                    (rs, rowNum) -> new ReadRow(
-                            rs.getBytes(1), rs.getTimestamp(2).toInstant(), rs.getString(3)),
+                    (rs, rowNum) -> new ReadRow(rs.getBytes(1), rs.getString(2)),
                     transactionIdSha256, sequence);
             if (rows.isEmpty()) {
                 throw new ViewOnlyAuthorityException(
                         ViewOnlyAuthorityError.CHECKPOINT_NOT_FOUND, "checkpoint not found");
             }
             ReadRow row = rows.get(0);
-            if (!clock.instant().isBefore(row.expiresAt())) {
-                throw new ViewOnlyAuthorityException(ViewOnlyAuthorityError.LEASE_EXPIRED, "checkpoint lease expired");
-            }
             if (!caller.stableIdentitySha256(canonicalizer).equals(row.executorIdentitySha256())) {
                 throw new ViewOnlyAuthorityException(
                         ViewOnlyAuthorityError.EXECUTOR_IDENTITY_MISMATCH, "checkpoint read executor mismatch");
@@ -324,6 +389,7 @@ public final class JdbcViewOnlyCheckpointCas {
         if (!stored.requestId().equals(requested.requestId())
                 || !stored.requestBodySha256().equals(requested.requestBodySha256())
                 || !stored.executorIdentitySha256().equals(requested.executorIdentitySha256())
+                || !stored.leaseEnvelopeSha256().equals(requested.leaseEnvelopeSha256())
                 || !stored.transactionIdSha256().equals(requested.transactionIdSha256())
                 || stored.sequence() != requested.sequence()
                 || !stored.storedObjectSha256().equals(requested.storedObjectSha256())) {
@@ -412,7 +478,8 @@ public final class JdbcViewOnlyCheckpointCas {
 
     private CheckpointRow latestCheckpoint(String transactionIdSha256) {
         List<CheckpointRow> rows = jdbc.query("SELECT transaction_id_sha256, sequence, request_id,"
-                        + " idempotency_key_sha256, request_body_sha256, executor_identity_sha256, state,"
+                        + " idempotency_key_sha256, request_body_sha256, executor_identity_sha256,"
+                        + " lease_envelope_sha256, state,"
                         + " stored_object_sha256, signed_receipt_envelope FROM " + checkpointTable
                         + " WHERE transaction_id_sha256 = ? ORDER BY sequence DESC LIMIT 1",
                 (rs, rowNum) -> mapCheckpoint(rs), transactionIdSha256);
@@ -421,7 +488,8 @@ public final class JdbcViewOnlyCheckpointCas {
 
     private CheckpointRow findCheckpoint(String transactionIdSha256, int sequence) {
         List<CheckpointRow> rows = jdbc.query("SELECT transaction_id_sha256, sequence, request_id,"
-                        + " idempotency_key_sha256, request_body_sha256, executor_identity_sha256, state,"
+                        + " idempotency_key_sha256, request_body_sha256, executor_identity_sha256,"
+                        + " lease_envelope_sha256, state,"
                         + " stored_object_sha256, signed_receipt_envelope FROM " + checkpointTable
                         + " WHERE transaction_id_sha256 = ? AND sequence = ?",
                 (rs, rowNum) -> mapCheckpoint(rs), transactionIdSha256, sequence);
@@ -433,7 +501,8 @@ public final class JdbcViewOnlyCheckpointCas {
             throw new IllegalArgumentException("unsupported checkpoint lookup");
         }
         List<CheckpointRow> rows = jdbc.query("SELECT transaction_id_sha256, sequence, request_id,"
-                        + " idempotency_key_sha256, request_body_sha256, executor_identity_sha256, state,"
+                        + " idempotency_key_sha256, request_body_sha256, executor_identity_sha256,"
+                        + " lease_envelope_sha256, state,"
                         + " stored_object_sha256, signed_receipt_envelope FROM " + checkpointTable
                         + " WHERE " + column + " = ?",
                 (rs, rowNum) -> mapCheckpoint(rs), value);
@@ -442,6 +511,10 @@ public final class JdbcViewOnlyCheckpointCas {
 
     private void advisoryLock(String value) {
         jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))::text", String.class, value);
+    }
+
+    private void advisoryLockAll(List<String> values) {
+        values.stream().distinct().sorted().forEach(this::advisoryLock);
     }
 
     private static LeaseRow mapLease(ResultSet rs) throws SQLException {
@@ -456,7 +529,8 @@ public final class JdbcViewOnlyCheckpointCas {
     private static CheckpointRow mapCheckpoint(ResultSet rs) throws SQLException {
         return new CheckpointRow(
                 rs.getString(1), rs.getInt(2), rs.getObject(3, UUID.class), rs.getString(4), rs.getString(5),
-                rs.getString(6), ViewOnlyCheckpointState.valueOf(rs.getString(7)), rs.getString(8), rs.getBytes(9));
+                rs.getString(6), rs.getString(7), ViewOnlyCheckpointState.valueOf(rs.getString(8)),
+                rs.getString(9), rs.getBytes(10));
     }
 
     private static void requireEnvelope(byte[] envelope, int maximum, String label) {
@@ -511,11 +585,12 @@ public final class JdbcViewOnlyCheckpointCas {
             String idempotencyKeySha256,
             String requestBodySha256,
             String executorIdentitySha256,
+            String leaseEnvelopeSha256,
             ViewOnlyCheckpointState state,
             String storedObjectSha256,
             byte[] responseEnvelope) {
     }
 
-    private record ReadRow(byte[] responseEnvelope, Instant expiresAt, String executorIdentitySha256) {
+    private record ReadRow(byte[] responseEnvelope, String executorIdentitySha256) {
     }
 }

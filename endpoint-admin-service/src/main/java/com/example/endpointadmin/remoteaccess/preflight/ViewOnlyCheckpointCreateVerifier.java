@@ -20,6 +20,7 @@ public final class ViewOnlyCheckpointCreateVerifier {
     public static final int MAX_REQUEST_BYTES = 524_288;
     private static final String SCHEMA_VERSION = "faz22.6.viewOnlyExternalCheckpointCreate.v1";
     private static final String STORED_OBJECT_DOMAIN = "faz22.6/view-only/checkpoint-stored-object/v1";
+    private static final String DSSE_ENVELOPE_DOMAIN = "faz22.6/view-only/dsse-envelope/v1";
     private static final Set<String> EXACT_FIELDS = Set.of(
             "schemaVersion", "requestId", "leaseEnvelope", "transactionIdSha256", "bindingSha256",
             "sequence", "previousState", "state", "reasonCode", "localCheckpointSha256",
@@ -52,7 +53,7 @@ public final class ViewOnlyCheckpointCreateVerifier {
         if (rawRequest == null || rawRequest.length == 0 || rawRequest.length > MAX_REQUEST_BYTES) {
             throw invalid("checkpoint request body is empty or exceeds 512 KiB");
         }
-        JsonNode request = canonicalizer.strictParse(decodeUtf8(rawRequest));
+        JsonNode request = strictParse(decodeUtf8(rawRequest));
         requireObjectWithExactFields(request);
         requireText(request, "schemaVersion", SCHEMA_VERSION);
 
@@ -99,6 +100,67 @@ public final class ViewOnlyCheckpointCreateVerifier {
                 previousStored, storedObjectSha256, idempotencyKeySha256, requestBodySha256,
                 callerIdentitySha256, terminal, clock.instant());
         return new VerifiedViewOnlyCheckpointCreate(command, caller);
+    }
+
+    /**
+     * Builds a committed-response lookup key from strict request bytes, a
+     * durable stored transaction binding and current GitHub OIDC identity.
+     * It does not apply current lease expiry/revocation; those remain required
+     * for every new mutation in {@link #verify(byte[], Jwt)}.
+     */
+    public ViewOnlyCheckpointRetryCandidate retryCandidate(
+            byte[] rawRequest, Jwt jwt, ViewOnlyOidcBinding durableBinding) {
+        if (rawRequest == null || rawRequest.length == 0 || rawRequest.length > MAX_REQUEST_BYTES) {
+            throw invalid("checkpoint request body is empty or exceeds 512 KiB");
+        }
+        JsonNode request = strictParse(decodeUtf8(rawRequest));
+        requireObjectWithExactFields(request);
+        requireText(request, "schemaVersion", SCHEMA_VERSION);
+        UUID requestId = uuid(request, "requestId");
+        String transactionIdSha256 = digestText(request, "transactionIdSha256");
+        int sequence = integer(request, "sequence", 0, 63);
+        ViewOnlyOidcCaller caller = callerFactory.create(
+                jwt, ViewOnlyGithubOidcProfile.EXECUTOR, durableBinding);
+        String callerIdentitySha256 = caller.stableIdentitySha256(canonicalizer);
+
+        ObjectNode withoutIdempotency = ((ObjectNode) request).deepCopy();
+        withoutIdempotency.remove("idempotencyKeySha256");
+        String requestBodySha256 = digest.bodyDigest(withoutIdempotency);
+        ObjectNode idempotencyProjection = canonicalizer.mapper().createObjectNode();
+        idempotencyProjection.put("domain", checkpointCreateIdempotencyDomain);
+        idempotencyProjection.put("requestId", requestId.toString());
+        idempotencyProjection.put("bodySha256", requestBodySha256);
+        idempotencyProjection.set("identity", caller.stableIdentityProjection(canonicalizer));
+        String idempotencyKeySha256 = canonicalizer.digest(idempotencyProjection);
+        requireText(request, "idempotencyKeySha256", idempotencyKeySha256);
+
+        ObjectNode storedProjection = ((ObjectNode) request).deepCopy();
+        storedProjection.remove("leaseEnvelope");
+        String storedObjectSha256 = digest.domainDigest(
+                STORED_OBJECT_DOMAIN, "request", storedProjection);
+        String leaseEnvelopeSha256 = digest.domainDigest(
+                DSSE_ENVELOPE_DOMAIN, "envelope", requiredObject(request, "leaseEnvelope"));
+        return new ViewOnlyCheckpointRetryCandidate(
+                requestId, idempotencyKeySha256, requestBodySha256, callerIdentitySha256,
+                leaseEnvelopeSha256, transactionIdSha256, sequence, storedObjectSha256);
+    }
+
+    public String transactionIdForRetry(byte[] rawRequest) {
+        if (rawRequest == null || rawRequest.length == 0 || rawRequest.length > MAX_REQUEST_BYTES) {
+            throw invalid("checkpoint request body is empty or exceeds 512 KiB");
+        }
+        JsonNode request = strictParse(decodeUtf8(rawRequest));
+        requireObjectWithExactFields(request);
+        requireText(request, "schemaVersion", SCHEMA_VERSION);
+        return digestText(request, "transactionIdSha256");
+    }
+
+    private JsonNode strictParse(String raw) {
+        try {
+            return canonicalizer.strictParse(raw);
+        } catch (com.example.endpointadmin.remoteaccess.policy.RemoteViewPolicyException invalidJson) {
+            throw invalid("checkpoint request is not strict canonical JSON");
+        }
     }
 
     private static String decodeUtf8(byte[] raw) {

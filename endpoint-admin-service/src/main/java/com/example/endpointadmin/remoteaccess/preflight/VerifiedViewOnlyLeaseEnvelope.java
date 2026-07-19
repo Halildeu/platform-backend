@@ -26,6 +26,11 @@ public record VerifiedViewOnlyLeaseEnvelope(
         if (leaseId == null || binding == null || oidcBinding == null || expiresAt == null) {
             throw invalid("verified lease identity, binding and expiry are required");
         }
+        ViewOnlyOidcBinding parsedBinding = ViewOnlyOidcBinding.fromJson(binding);
+        if (!parsedBinding.equals(oidcBinding)) {
+            throw invalid("verified lease OIDC binding projection does not match exact binding");
+        }
+        binding = binding.deepCopy();
         ViewOnlyDigest.requireSha256(leaseEnvelopeSha256, "leaseEnvelopeSha256");
         ViewOnlyDigest.requireSha256(transactionIdSha256, "transactionIdSha256");
         ViewOnlyDigest.requireSha256(bindingSha256, "bindingSha256");
@@ -35,6 +40,11 @@ public record VerifiedViewOnlyLeaseEnvelope(
         if (sequenceMinimumInclusive != 0 || sequenceMaximumInclusive != 63 || maxWrites != 64) {
             throw invalid("verified lease must authorize exact sequence 0..63 and maxWrites=64");
         }
+    }
+
+    @Override
+    public JsonNode binding() {
+        return binding.deepCopy();
     }
 
     private static ViewOnlyAuthorityException invalid(String message) {

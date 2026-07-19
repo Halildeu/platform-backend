@@ -3,6 +3,7 @@ package com.example.endpointadmin.config;
 import com.example.endpointadmin.remoteaccess.preflight.ViewOnlyAuthorityProperties;
 import com.example.endpointadmin.remoteaccess.preflight.ViewOnlyGithubOidcProfile;
 import com.example.endpointadmin.remoteaccess.preflight.ViewOnlyGithubOidcValidator;
+import com.example.endpointadmin.remoteaccess.preflight.ViewOnlyRequestBoundaryFilter;
 import com.example.endpointadmin.remoteaccess.preflight.ViewOnlySecurityErrorWriter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
@@ -21,6 +22,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 
 /** Dedicated GitHub OIDC chains; never falls through to the product Keycloak decoder. */
@@ -37,12 +39,19 @@ public class ViewOnlyAuthoritySecurityConfig {
     }
 
     @Bean
+    public ViewOnlyRequestBoundaryFilter viewOnlyRequestBoundaryFilter(ObjectMapper mapper) {
+        return new ViewOnlyRequestBoundaryFilter(mapper);
+    }
+
+    @Bean
     @Order(-30)
     public SecurityFilterChain viewOnlyPreflightOidcChain(HttpSecurity http,
                                                           ViewOnlyAuthorityProperties properties,
                                                           Clock clock,
-                                                          ViewOnlySecurityErrorWriter errors) throws Exception {
-        return chain(http, ROOT + "/attest", ViewOnlyGithubOidcProfile.PREFLIGHT, properties, clock, errors);
+                                                          ViewOnlySecurityErrorWriter errors,
+                                                          ViewOnlyRequestBoundaryFilter boundary) throws Exception {
+        return chain(http, ROOT + "/attest", ViewOnlyGithubOidcProfile.PREFLIGHT,
+                properties, clock, errors, boundary);
     }
 
     @Bean
@@ -50,9 +59,10 @@ public class ViewOnlyAuthoritySecurityConfig {
     public SecurityFilterChain viewOnlyLeaseOidcChain(HttpSecurity http,
                                                       ViewOnlyAuthorityProperties properties,
                                                       Clock clock,
-                                                      ViewOnlySecurityErrorWriter errors) throws Exception {
+                                                      ViewOnlySecurityErrorWriter errors,
+                                                      ViewOnlyRequestBoundaryFilter boundary) throws Exception {
         return chain(http, ROOT + "/checkpoint-leases/redeem",
-                ViewOnlyGithubOidcProfile.AUTHORIZATION, properties, clock, errors);
+                ViewOnlyGithubOidcProfile.AUTHORIZATION, properties, clock, errors, boundary);
     }
 
     @Bean
@@ -60,8 +70,10 @@ public class ViewOnlyAuthoritySecurityConfig {
     public SecurityFilterChain viewOnlyCheckpointOidcChain(HttpSecurity http,
                                                            ViewOnlyAuthorityProperties properties,
                                                            Clock clock,
-                                                           ViewOnlySecurityErrorWriter errors) throws Exception {
-        return chain(http, ROOT + "/checkpoints/**", ViewOnlyGithubOidcProfile.EXECUTOR, properties, clock, errors);
+                                                           ViewOnlySecurityErrorWriter errors,
+                                                           ViewOnlyRequestBoundaryFilter boundary) throws Exception {
+        return chain(http, ROOT + "/checkpoints/**", ViewOnlyGithubOidcProfile.EXECUTOR,
+                properties, clock, errors, boundary);
     }
 
     private SecurityFilterChain chain(HttpSecurity http,
@@ -69,7 +81,8 @@ public class ViewOnlyAuthoritySecurityConfig {
                                       ViewOnlyGithubOidcProfile profile,
                                       ViewOnlyAuthorityProperties properties,
                                       Clock clock,
-                                      ViewOnlySecurityErrorWriter errors) throws Exception {
+                                      ViewOnlySecurityErrorWriter errors,
+                                      ViewOnlyRequestBoundaryFilter boundary) throws Exception {
         properties.validateActivation();
         http.securityMatcher(matcher)
                 .csrf(AbstractHttpConfigurer::disable)
@@ -81,7 +94,8 @@ public class ViewOnlyAuthoritySecurityConfig {
                 .oauth2ResourceServer(oauth -> oauth
                         .authenticationEntryPoint(errors)
                         .accessDeniedHandler(errors)
-                        .jwt(jwt -> jwt.decoder(decoder(profile, properties, clock))));
+                        .jwt(jwt -> jwt.decoder(decoder(profile, properties, clock))))
+                .addFilterBefore(boundary, BearerTokenAuthenticationFilter.class);
         return http.build();
     }
 

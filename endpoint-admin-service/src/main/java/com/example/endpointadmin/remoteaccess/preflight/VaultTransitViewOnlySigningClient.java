@@ -33,6 +33,7 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
     private static final int MAX_INPUT_BYTES = 262_144;
 
     private final URI signUri;
+    private final URI keyMetadataUri;
     private final int keyVersion;
     private final Duration requestTimeout;
     private final int maximumResponseBytes;
@@ -58,6 +59,34 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
         this.maximumResponseBytes = properties.getVaultMaximumResponseBytes();
         this.signUri = signUri(properties.getVaultAddress(), properties.getVaultTransitMount(),
                 properties.getVaultTransitKey());
+        this.keyMetadataUri = keyMetadataUri(properties.getVaultAddress(), properties.getVaultTransitMount(),
+                properties.getVaultTransitKey());
+    }
+
+    @Override
+    public void probeReady() {
+        char[] token = tokenSource.readToken();
+        if (token == null || token.length == 0) {
+            throw unavailable("Vault token source returned no credential", null);
+        }
+        try {
+            HttpRequest request = HttpRequest.newBuilder(keyMetadataUri)
+                    .timeout(requestTimeout)
+                    .header("X-Vault-Token", new String(token))
+                    .GET()
+                    .build();
+            JsonNode root = readSuccessJson(send(request, "metadata probe"), "metadata probe");
+            JsonNode data = root.path("data");
+            JsonNode pinnedKey = data.path("keys").path(Integer.toString(keyVersion));
+            if (!"ed25519".equals(data.path("type").asText())
+                    || !pinnedKey.isObject()
+                    || !pinnedKey.path("public_key").isTextual()
+                    || pinnedKey.path("public_key").asText().isBlank()) {
+                throw unavailable("Vault Transit key type or pinned version is unavailable", null);
+            }
+        } finally {
+            Arrays.fill(token, '\0');
+        }
     }
 
     @Override
@@ -81,20 +110,7 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
                     .header("X-Vault-Token", new String(token))
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<InputStream> response;
-            try {
-                response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw unavailable("Vault Transit transport was interrupted", interrupted);
-            } catch (Exception transportFailure) {
-                throw unavailable("Vault Transit transport failed closed", transportFailure);
-            }
-            if (response.statusCode() / 100 != 2) {
-                closeQuietly(response.body());
-                throw unavailable("Vault Transit signing returned HTTP " + response.statusCode(), null);
-            }
-            JsonNode root = readBounded(response.body());
+            JsonNode root = readSuccessJson(send(request, "signing"), "signing");
             JsonNode signatureNode = root.path("data").path("signature");
             if (!signatureNode.isTextual()) {
                 throw unavailable("Vault Transit response is missing data.signature", null);
@@ -118,6 +134,25 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
         } finally {
             Arrays.fill(token, '\0');
         }
+    }
+
+    private HttpResponse<InputStream> send(HttpRequest request, String operation) {
+        try {
+            return http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw unavailable("Vault Transit " + operation + " was interrupted", interrupted);
+        } catch (Exception transportFailure) {
+            throw unavailable("Vault Transit " + operation + " transport failed closed", transportFailure);
+        }
+    }
+
+    private JsonNode readSuccessJson(HttpResponse<InputStream> response, String operation) {
+        if (response.statusCode() / 100 != 2) {
+            closeQuietly(response.body());
+            throw unavailable("Vault Transit " + operation + " returned HTTP " + response.statusCode(), null);
+        }
+        return readBounded(response.body());
     }
 
     private JsonNode readBounded(InputStream body) {
@@ -148,6 +183,14 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
         }
         String normalized = address.endsWith("/") ? address.substring(0, address.length() - 1) : address;
         return URI.create(normalized + "/v1/" + mount + "/sign/" + key);
+    }
+
+    private static URI keyMetadataUri(String address, String mount, String key) {
+        if (!NAME.matcher(mount).matches() || !NAME.matcher(key).matches()) {
+            throw new IllegalStateException("VIEW_ONLY authority activation denied: invalid Transit mount or key name");
+        }
+        String normalized = address.endsWith("/") ? address.substring(0, address.length() - 1) : address;
+        return URI.create(normalized + "/v1/" + mount + "/keys/" + key);
     }
 
     static SSLContext pinnedCaSslContext(Path certificateFile) {

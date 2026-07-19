@@ -43,7 +43,9 @@ public class ViewOnlyAuthorityCoreConfig {
     public ViewOnlyTransitSigningClient viewOnlyTransitSigningClient(
             ViewOnlyAuthorityProperties properties,
             ViewOnlyVaultTokenSource tokenSource) {
-        return new VaultTransitViewOnlySigningClient(properties, tokenSource);
+        ViewOnlyTransitSigningClient transit = new VaultTransitViewOnlySigningClient(properties, tokenSource);
+        transit.probeReady();
+        return transit;
     }
 
     @Bean

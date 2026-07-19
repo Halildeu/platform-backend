@@ -16,7 +16,7 @@ public class ViewOnlyAuthorityProperties {
             "faz22.6/view-only/oidc-jti/v1";
 
     private boolean enabled;
-    private String schema = "public";
+    private String schema = "endpoint_admin_service";
     private String issuer = "https://token.actions.githubusercontent.com";
     private String jwksUri = "https://token.actions.githubusercontent.com/.well-known/jwks";
     private String jtiDigestDomain = CANONICAL_OIDC_JTI_DIGEST_DOMAIN;
@@ -37,8 +37,8 @@ public class ViewOnlyAuthorityProperties {
         if (!enabled) {
             return;
         }
-        if (schema == null || !schema.matches("[a-z_][a-z0-9_]*")) {
-            throw invalid("database schema is invalid");
+        if (!"endpoint_admin_service".equals(schema)) {
+            throw invalid("database schema must match the canonical Flyway authority schema");
         }
         if (!"https://token.actions.githubusercontent.com".equals(issuer)
                 || !"https://token.actions.githubusercontent.com/.well-known/jwks".equals(jwksUri)) {

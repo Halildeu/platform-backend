@@ -22,6 +22,49 @@ class VaultTransitViewOnlySigningClientTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void readinessProbeRequiresPinnedEd25519PublicKeyMetadataAndClearsToken() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        String json = "{\"data\":{\"type\":\"ed25519\",\"keys\":{\"1\":"
+                + "{\"public_key\":\"base64-public-key\"}}}}";
+        when(response.statusCode()).thenReturn(200);
+        when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
+        char[] token = "hvs.unit-test".toCharArray();
+        VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
+                ViewOnlyAuthorityPropertiesTest.enabledProperties(), () -> token, http, new ObjectMapper());
+
+        client.probeReady();
+
+        ArgumentCaptor<HttpRequest> request = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(http).send(request.capture(), any(HttpResponse.BodyHandler.class));
+        assertThat(request.getValue().method()).isEqualTo("GET");
+        assertThat(request.getValue().uri().toString())
+                .isEqualTo("https://vault.testai.acik.com/v1/transit/keys/view-only-checkpoint");
+        assertThat(token).containsOnly('\0');
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void readinessProbeRejectsMissingPinnedPublicKey() throws Exception {
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        String json = "{\"data\":{\"type\":\"ed25519\",\"keys\":{\"1\":{}}}}";
+        when(response.statusCode()).thenReturn(200);
+        when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
+        VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
+                ViewOnlyAuthorityPropertiesTest.enabledProperties(),
+                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper());
+
+        assertThatThrownBy(client::probeReady)
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .extracting(error -> ((ViewOnlyAuthorityException) error).reason())
+                .isEqualTo(ViewOnlyAuthorityError.SIGNING_UNAVAILABLE);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void sendsBoundedTransitRequestAndAcceptsOnlyPinnedVersionEd25519Signature() throws Exception {
         HttpClient http = mock(HttpClient.class);
         HttpResponse<InputStream> response = mock(HttpResponse.class);

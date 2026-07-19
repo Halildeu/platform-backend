@@ -35,7 +35,12 @@ class ViewOnlyCheckpointCreateVerifierTest {
     void setUp() {
         canonicalizer = new RemoteViewJsonCanonicalizer();
         callerFactory = new ViewOnlyOidcCallerFactory(canonicalizer, "test/jti/v1");
-        ObjectNode binding = canonicalizer.mapper().createObjectNode().put("headSha", SHA);
+        ObjectNode binding = canonicalizer.mapper().createObjectNode()
+                .put("triggeringActorId", 186576227L)
+                .put("runId", 29678094664L)
+                .put("runAttempt", 1)
+                .put("intentRef", REF)
+                .put("headSha", SHA);
         lease = new VerifiedViewOnlyLeaseEnvelope(
                 LEASE_ID, DIGEST_A, DIGEST_B, DIGEST_C, binding,
                 new ViewOnlyOidcBinding(186576227L, 29678094664L, 1, REF, SHA),
@@ -84,7 +89,7 @@ class ViewOnlyCheckpointCreateVerifierTest {
     void rejectsExpiredOrClosedVerifiedLease() {
         VerifiedViewOnlyLeaseEnvelope expired = new VerifiedViewOnlyLeaseEnvelope(
                 LEASE_ID, DIGEST_A, DIGEST_B, DIGEST_C,
-                canonicalizer.mapper().createObjectNode(), lease.oidcBinding(),
+                lease.binding(), lease.oidcBinding(),
                 DIGEST_A, DIGEST_B, DIGEST_C, NOW.minusSeconds(1), false, 0, 63, 64);
         ViewOnlyCheckpointCreateVerifier expiredVerifier = new ViewOnlyCheckpointCreateVerifier(
                 canonicalizer, (envelope, now) -> expired, callerFactory, CLOCK, DOMAIN);
@@ -92,6 +97,25 @@ class ViewOnlyCheckpointCreateVerifierTest {
         setCorrectIdempotency(request);
         assertReason(ViewOnlyAuthorityError.LEASE_EXPIRED,
                 () -> expiredVerifier.verify(canonicalizer.canonicalBytes(request), executorJwt()));
+    }
+
+    @Test
+    void retryCandidateUsesDurableBindingWithoutReverifyingExpiredLease() {
+        ViewOnlyCheckpointCreateVerifier retryVerifier = new ViewOnlyCheckpointCreateVerifier(
+                canonicalizer,
+                (envelope, now) -> {
+                    throw new AssertionError("committed-response recovery must not reverify lease freshness");
+                },
+                callerFactory, CLOCK, DOMAIN);
+        ObjectNode request = initialRequest();
+        setCorrectIdempotency(request);
+
+        ViewOnlyCheckpointRetryCandidate candidate = retryVerifier.retryCandidate(
+                canonicalizer.canonicalBytes(request), executorJwt(), lease.oidcBinding());
+
+        assertThat(candidate.transactionIdSha256()).isEqualTo(DIGEST_B);
+        assertThat(candidate.sequence()).isZero();
+        assertThat(candidate.executorIdentitySha256()).matches("sha256:[0-9a-f]{64}");
     }
 
     @Test

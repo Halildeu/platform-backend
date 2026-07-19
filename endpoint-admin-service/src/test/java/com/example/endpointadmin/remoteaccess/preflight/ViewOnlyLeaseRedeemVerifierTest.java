@@ -45,8 +45,12 @@ class ViewOnlyLeaseRedeemVerifierTest {
         evaluation = new VerifiedViewOnlyPreflightReceipt(
                 D1, bindingDigest, transactionDigest,
                 NOW.minusSeconds(600), NOW.minusSeconds(300), 0, false);
+        ObjectNode authorizationEnvelope = canonicalizer.mapper().createObjectNode().put("kind", "a");
+        String authorizationEnvelopeDigest = digest.domainDigest(
+                "faz22.6/view-only/dsse-envelope/v1", "envelope", authorizationEnvelope);
         authorization = new VerifiedViewOnlyAuthorization(
-                D1, VerifiedViewOnlyAuthorization.PAYLOAD_TYPE, bindingDigest, transactionDigest,
+                authorizationEnvelopeDigest, VerifiedViewOnlyAuthorization.PAYLOAD_TYPE,
+                bindingDigest, transactionDigest,
                 NOW.minusSeconds(60), NOW.plusSeconds(1800), false);
         verifier = verifier(evaluation, authorization);
     }
@@ -95,6 +99,42 @@ class ViewOnlyLeaseRedeemVerifierTest {
         Jwt wrongRun = authorizationJwt("29678094665");
         assertReason(ViewOnlyAuthorityError.LEASE_BINDING_MISMATCH,
                 () -> verifier.verify(canonicalizer.canonicalBytes(correct), wrongRun));
+    }
+
+    @Test
+    void retryCandidateDoesNotReapplyExpiredAuthorityAfterExactRequestVerification() {
+        VerifiedViewOnlyAuthorization expired = new VerifiedViewOnlyAuthorization(
+                authorization.envelopeSha256(), VerifiedViewOnlyAuthorization.PAYLOAD_TYPE,
+                bindingDigest, transactionDigest, NOW.minusSeconds(1800), NOW.minusSeconds(1), false);
+        ObjectNode request = request();
+        setIdempotency(request);
+
+        ViewOnlyLeaseRetryCandidate candidate = verifier(evaluation, expired).retryCandidate(
+                canonicalizer.canonicalBytes(request), authorizationJwt());
+
+        assertThat(candidate.requestId().toString())
+                .isEqualTo("123e4567-e89b-42d3-a456-426614174002");
+        assertThat(candidate.authorizationEnvelopeSha256()).isEqualTo(authorization.envelopeSha256());
+        assertReason(ViewOnlyAuthorityError.AUTHORIZATION_EXPIRED,
+                () -> verifier(evaluation, expired).verify(
+                        canonicalizer.canonicalBytes(request), authorizationJwt()));
+    }
+
+    @Test
+    void rejectsUnknownOrCredentialLikeBindingFields() {
+        ObjectNode request = request();
+        ObjectNode unsafeBinding = ((ObjectNode) request.get("binding")).deepCopy();
+        unsafeBinding.put("credential", "must-never-cross-authority-boundary");
+        request.set("binding", unsafeBinding);
+        ViewOnlyDigest digest = new ViewOnlyDigest(canonicalizer);
+        request.put("bindingSha256", digest.domainDigest(
+                "faz22.6/view-only/transaction-binding/v1", "binding", unsafeBinding));
+        request.put("transactionIdSha256", digest.domainDigest(
+                "faz22.6/view-only/transaction-id/v1", "binding", unsafeBinding));
+        setIdempotency(request);
+
+        assertReason(ViewOnlyAuthorityError.CONTRACT_INVALID,
+                () -> verifier.verify(canonicalizer.canonicalBytes(request), authorizationJwt()));
     }
 
     private ViewOnlyLeaseRedeemVerifier verifier(VerifiedViewOnlyPreflightReceipt preflight,

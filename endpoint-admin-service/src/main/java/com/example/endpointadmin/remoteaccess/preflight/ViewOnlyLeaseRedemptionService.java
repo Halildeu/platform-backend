@@ -78,6 +78,13 @@ public final class ViewOnlyLeaseRedemptionService {
                 issuedAt, expiresAt, command.requestedMaxWrites()));
     }
 
+    public Optional<byte[]> recoverCommitted(ViewOnlyLeaseRetryCandidate retry) {
+        return cas.findLeaseRetry(
+                retry.requestId(), retry.idempotencyKeySha256(), retry.requestBodySha256(),
+                retry.callerIdentitySha256(), retry.authorizationEnvelopeSha256(),
+                retry.transactionIdSha256());
+    }
+
     private void requireRefreshedReceipt(ViewOnlyLeaseRedeemCommand command,
                                          VerifiedViewOnlyPreflightReceipt refreshed) {
         Instant now = clock.instant();

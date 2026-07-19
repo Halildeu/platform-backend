@@ -25,6 +25,7 @@ public final class ViewOnlyLeaseRedeemVerifier {
             "faz22.6/view-only/checkpoint-lease-redeem-idempotency/v1";
     private static final String BINDING_DOMAIN = "faz22.6/view-only/transaction-binding/v1";
     private static final String TRANSACTION_DOMAIN = "faz22.6/view-only/transaction-id/v1";
+    private static final String DSSE_ENVELOPE_DOMAIN = "faz22.6/view-only/dsse-envelope/v1";
     private static final Set<String> EXACT_FIELDS = Set.of(
             "schemaVersion", "requestId", "idempotencyKeySha256", "binding", "bindingSha256",
             "transactionIdSha256", "evaluationPreflightReceiptEnvelope", "authorizationEnvelope",
@@ -51,19 +52,12 @@ public final class ViewOnlyLeaseRedeemVerifier {
     }
 
     public VerifiedViewOnlyLeaseRedeem verify(byte[] rawRequest, Jwt jwt) {
-        if (rawRequest == null || rawRequest.length == 0 || rawRequest.length > MAX_REQUEST_BYTES) {
-            throw invalid("lease redemption body is empty or exceeds 1 MiB");
-        }
-        JsonNode request = canonicalizer.strictParse(decodeUtf8(rawRequest));
-        requireExactFields(request);
-        requireText(request, "schemaVersion", SCHEMA_VERSION);
-        requireText(request, "authorizationPayloadType", VerifiedViewOnlyAuthorization.PAYLOAD_TYPE);
-        UUID requestId = uuid(request, "requestId");
-        JsonNode binding = object(request, "binding");
-        String bindingSha256 = digest.domainDigest(BINDING_DOMAIN, "binding", binding);
-        String transactionIdSha256 = digest.domainDigest(TRANSACTION_DOMAIN, "binding", binding);
-        requireText(request, "bindingSha256", bindingSha256);
-        requireText(request, "transactionIdSha256", transactionIdSha256);
+        ParsedRequest parsed = parseRequest(rawRequest, jwt);
+        JsonNode request = parsed.request();
+        UUID requestId = parsed.requestId();
+        JsonNode binding = parsed.binding();
+        String bindingSha256 = parsed.bindingSha256();
+        String transactionIdSha256 = parsed.transactionIdSha256();
 
         Instant now = clock.instant();
         VerifiedViewOnlyPreflightReceipt evaluation = preflightVerifier.verifyEvaluation(
@@ -74,6 +68,9 @@ public final class ViewOnlyLeaseRedeemVerifier {
                 bindingSha256, transactionIdSha256, "evaluation preflight");
         requireReceiptBinding(authorization.bindingSha256(), authorization.transactionIdSha256(),
                 bindingSha256, transactionIdSha256, "authorization");
+        if (!authorization.envelopeSha256().equals(parsed.authorizationEnvelopeSha256())) {
+            throw invalid("authorization envelope digest does not match verified authority");
+        }
         if (evaluation.issuedAt().isAfter(now)
                 || Duration.between(evaluation.issuedAt(), now).compareTo(Duration.ofSeconds(7200)) > 0) {
             throw new ViewOnlyAuthorityException(
@@ -82,8 +79,47 @@ public final class ViewOnlyLeaseRedeemVerifier {
         }
         if (!now.isBefore(authorization.expiresAt())) {
             throw new ViewOnlyAuthorityException(
-                    ViewOnlyAuthorityError.AUTHORITY_CONSUMED, "authorization envelope expired");
+                    ViewOnlyAuthorityError.AUTHORIZATION_EXPIRED, "authorization envelope expired");
         }
+
+        int requestedTtl = integer(request, "requestedTtlSeconds", 900, 7200);
+        int requestedMaxWrites = integer(request, "requestedMaxWrites", 64, 64);
+        return new VerifiedViewOnlyLeaseRedeem(
+                new ViewOnlyLeaseRedeemCommand(
+                        requestId, parsed.idempotencyKeySha256(), parsed.requestBodySha256(),
+                        parsed.callerIdentitySha256(), binding, bindingSha256, transactionIdSha256,
+                        evaluation, authorization, requestedTtl, requestedMaxWrites),
+                parsed.caller());
+    }
+
+    /**
+     * Verifies only strict body shape, exact non-secret binding, body/idempotency
+     * digests and live GitHub OIDC identity. It deliberately does not apply
+     * current DSSE expiry/revocation so a previously committed response can be
+     * recovered byte-for-byte after response loss.
+     */
+    public ViewOnlyLeaseRetryCandidate retryCandidate(byte[] rawRequest, Jwt jwt) {
+        ParsedRequest parsed = parseRequest(rawRequest, jwt);
+        return new ViewOnlyLeaseRetryCandidate(
+                parsed.requestId(), parsed.idempotencyKeySha256(), parsed.requestBodySha256(),
+                parsed.callerIdentitySha256(), parsed.authorizationEnvelopeSha256(),
+                parsed.transactionIdSha256());
+    }
+
+    private ParsedRequest parseRequest(byte[] rawRequest, Jwt jwt) {
+        if (rawRequest == null || rawRequest.length == 0 || rawRequest.length > MAX_REQUEST_BYTES) {
+            throw invalid("lease redemption body is empty or exceeds 1 MiB");
+        }
+        JsonNode request = strictParse(decodeUtf8(rawRequest));
+        requireExactFields(request);
+        requireText(request, "schemaVersion", SCHEMA_VERSION);
+        requireText(request, "authorizationPayloadType", VerifiedViewOnlyAuthorization.PAYLOAD_TYPE);
+        UUID requestId = uuid(request, "requestId");
+        JsonNode binding = object(request, "binding");
+        String bindingSha256 = digest.domainDigest(BINDING_DOMAIN, "binding", binding);
+        String transactionIdSha256 = digest.domainDigest(TRANSACTION_DOMAIN, "binding", binding);
+        requireText(request, "bindingSha256", bindingSha256);
+        requireText(request, "transactionIdSha256", transactionIdSha256);
 
         ViewOnlyOidcBinding oidcBinding = ViewOnlyOidcBinding.fromJson(binding);
         ViewOnlyOidcCaller caller = callerFactory.create(
@@ -99,15 +135,19 @@ public final class ViewOnlyLeaseRedeemVerifier {
         idempotency.set("identity", caller.stableIdentityProjection(canonicalizer));
         String idempotencyKey = canonicalizer.digest(idempotency);
         requireText(request, "idempotencyKeySha256", idempotencyKey);
+        String authorizationEnvelopeSha256 = digest.domainDigest(
+                DSSE_ENVELOPE_DOMAIN, "envelope", object(request, "authorizationEnvelope"));
+        return new ParsedRequest(
+                request.deepCopy(), requestId, binding.deepCopy(), bindingSha256, transactionIdSha256,
+                idempotencyKey, requestBodySha256, callerIdentity, authorizationEnvelopeSha256, caller);
+    }
 
-        int requestedTtl = integer(request, "requestedTtlSeconds", 900, 7200);
-        int requestedMaxWrites = integer(request, "requestedMaxWrites", 64, 64);
-        return new VerifiedViewOnlyLeaseRedeem(
-                new ViewOnlyLeaseRedeemCommand(
-                        requestId, idempotencyKey, requestBodySha256, callerIdentity, binding,
-                        bindingSha256, transactionIdSha256, evaluation, authorization,
-                        requestedTtl, requestedMaxWrites),
-                caller);
+    private JsonNode strictParse(String raw) {
+        try {
+            return canonicalizer.strictParse(raw);
+        } catch (com.example.endpointadmin.remoteaccess.policy.RemoteViewPolicyException invalidJson) {
+            throw invalid("lease redemption is not strict canonical JSON");
+        }
     }
 
     private static void requireReceiptBinding(String receiptBinding,
@@ -185,5 +225,18 @@ public final class ViewOnlyLeaseRedeemVerifier {
 
     private static ViewOnlyAuthorityException invalid(String message) {
         return new ViewOnlyAuthorityException(ViewOnlyAuthorityError.CONTRACT_INVALID, message);
+    }
+
+    private record ParsedRequest(
+            JsonNode request,
+            UUID requestId,
+            JsonNode binding,
+            String bindingSha256,
+            String transactionIdSha256,
+            String idempotencyKeySha256,
+            String requestBodySha256,
+            String callerIdentitySha256,
+            String authorizationEnvelopeSha256,
+            ViewOnlyOidcCaller caller) {
     }
 }

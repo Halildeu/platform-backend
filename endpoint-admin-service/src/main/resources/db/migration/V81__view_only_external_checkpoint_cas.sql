@@ -41,7 +41,10 @@ CREATE TABLE view_only_checkpoint_leases (
     CONSTRAINT ck_vo_lease_response_bound CHECK (octet_length(signed_lease_envelope) BETWEEN 1 AND 1048576),
     CONSTRAINT ck_vo_lease_lifetime CHECK (issued_at < expires_at),
     CONSTRAINT ck_vo_lease_write_bound CHECK (max_writes = 64 AND write_count BETWEEN 0 AND max_writes),
-    CONSTRAINT ck_vo_lease_closed_consistency CHECK (NOT closed OR write_count > 0)
+    CONSTRAINT ck_vo_lease_closed_consistency CHECK (NOT closed OR write_count > 0),
+    CONSTRAINT uq_vo_lease_authority_projection UNIQUE (
+        lease_id, transaction_id_sha256, binding_sha256, lease_envelope_sha256,
+        expires_at, executor_identity_sha256)
 );
 
 CREATE INDEX idx_vo_checkpoint_lease_expiry
@@ -72,6 +75,12 @@ CREATE TABLE view_only_external_checkpoints (
     PRIMARY KEY (transaction_id_sha256, sequence),
     CONSTRAINT fk_vo_checkpoint_lease FOREIGN KEY (lease_id)
         REFERENCES view_only_checkpoint_leases(lease_id),
+    CONSTRAINT fk_vo_checkpoint_exact_lease_authority FOREIGN KEY (
+        lease_id, transaction_id_sha256, binding_sha256, lease_envelope_sha256,
+        expires_at, executor_identity_sha256)
+        REFERENCES view_only_checkpoint_leases (
+            lease_id, transaction_id_sha256, binding_sha256, lease_envelope_sha256,
+            expires_at, executor_identity_sha256),
     CONSTRAINT ck_vo_checkpoint_sequence CHECK (sequence BETWEEN 0 AND 63),
     CONSTRAINT ck_vo_checkpoint_digest_format CHECK (
         transaction_id_sha256 ~ '^sha256:[0-9a-f]{64}$'
@@ -111,3 +120,78 @@ CREATE TABLE view_only_external_checkpoints (
 
 CREATE INDEX idx_vo_checkpoint_lease_sequence
     ON view_only_external_checkpoints (lease_id, sequence DESC);
+
+-- The application owner may legitimately bind one executor and monotonically
+-- consume the lease, but every authority field is immutable. This is enforced
+-- in PostgreSQL so another application code path cannot rewrite signed truth.
+CREATE OR REPLACE FUNCTION view_only_lease_guard() RETURNS trigger AS $$
+DECLARE
+    bind_only boolean;
+    consume_only boolean;
+BEGIN
+    IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
+        RAISE EXCEPTION 'view_only_checkpoint_leases is durable authority: % is not permitted', TG_OP;
+    END IF;
+
+    IF NEW.lease_id IS DISTINCT FROM OLD.lease_id
+        OR NEW.redeem_request_id IS DISTINCT FROM OLD.redeem_request_id
+        OR NEW.idempotency_key_sha256 IS DISTINCT FROM OLD.idempotency_key_sha256
+        OR NEW.request_body_sha256 IS DISTINCT FROM OLD.request_body_sha256
+        OR NEW.authorization_caller_identity_sha256 IS DISTINCT FROM OLD.authorization_caller_identity_sha256
+        OR NEW.transaction_id_sha256 IS DISTINCT FROM OLD.transaction_id_sha256
+        OR NEW.binding_sha256 IS DISTINCT FROM OLD.binding_sha256
+        OR NEW.binding_canonical_json IS DISTINCT FROM OLD.binding_canonical_json
+        OR NEW.lease_envelope_sha256 IS DISTINCT FROM OLD.lease_envelope_sha256
+        OR NEW.evaluation_preflight_envelope_sha256 IS DISTINCT FROM OLD.evaluation_preflight_envelope_sha256
+        OR NEW.redemption_preflight_envelope_sha256 IS DISTINCT FROM OLD.redemption_preflight_envelope_sha256
+        OR NEW.authorization_envelope_sha256 IS DISTINCT FROM OLD.authorization_envelope_sha256
+        OR NEW.signed_lease_envelope IS DISTINCT FROM OLD.signed_lease_envelope
+        OR NEW.issued_at IS DISTINCT FROM OLD.issued_at
+        OR NEW.expires_at IS DISTINCT FROM OLD.expires_at
+        OR NEW.max_writes IS DISTINCT FROM OLD.max_writes
+        OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+        RAISE EXCEPTION 'view_only_checkpoint_leases authority columns are immutable';
+    END IF;
+
+    bind_only := OLD.executor_identity_sha256 IS NULL
+        AND NEW.executor_identity_sha256 IS NOT NULL
+        AND NEW.write_count = OLD.write_count
+        AND NEW.closed = OLD.closed;
+    consume_only := OLD.executor_identity_sha256 IS NOT NULL
+        AND NEW.executor_identity_sha256 = OLD.executor_identity_sha256
+        AND NOT OLD.closed
+        AND NEW.write_count = OLD.write_count + 1
+        AND (NEW.closed = OLD.closed OR NEW.closed);
+    IF NOT bind_only AND NOT consume_only THEN
+        RAISE EXCEPTION 'view_only_checkpoint_leases permits only one executor bind or one monotonic consume';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_vo_lease_guard
+    BEFORE UPDATE OR DELETE ON view_only_checkpoint_leases
+    FOR EACH ROW EXECUTE FUNCTION view_only_lease_guard();
+
+CREATE TRIGGER trg_vo_lease_no_truncate
+    BEFORE TRUNCATE ON view_only_checkpoint_leases
+    FOR EACH STATEMENT EXECUTE FUNCTION view_only_lease_guard();
+
+-- External checkpoint evidence is WORM. Its sequence/state/digest projection
+-- is used for later authorization decisions, so mutation is never a convention.
+CREATE OR REPLACE FUNCTION view_only_checkpoint_no_mutate() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'view_only_external_checkpoints is append-only: % is not permitted', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_vo_checkpoint_worm
+    BEFORE UPDATE OR DELETE ON view_only_external_checkpoints
+    FOR EACH ROW EXECUTE FUNCTION view_only_checkpoint_no_mutate();
+
+CREATE TRIGGER trg_vo_checkpoint_no_truncate
+    BEFORE TRUNCATE ON view_only_external_checkpoints
+    FOR EACH STATEMENT EXECUTE FUNCTION view_only_checkpoint_no_mutate();
+
+REVOKE UPDATE, DELETE, TRUNCATE ON view_only_external_checkpoints FROM PUBLIC;
+REVOKE DELETE, TRUNCATE ON view_only_checkpoint_leases FROM PUBLIC;

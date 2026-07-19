@@ -28,6 +28,8 @@ public record ViewOnlyLeaseRecord(
         if (leaseId == null || redeemRequestId == null || binding == null || issuedAt == null || expiresAt == null) {
             throw invalid("lease identity, binding and lifetime are required");
         }
+        ViewOnlyOidcBinding.fromJson(binding);
+        binding = binding.deepCopy();
         ViewOnlyDigest.requireSha256(idempotencyKeySha256, "idempotencyKeySha256");
         ViewOnlyDigest.requireSha256(requestBodySha256, "requestBodySha256");
         ViewOnlyDigest.requireSha256(callerIdentitySha256, "callerIdentitySha256");
@@ -49,6 +51,11 @@ public record ViewOnlyLeaseRecord(
     @Override
     public byte[] signedLeaseEnvelope() {
         return signedLeaseEnvelope.clone();
+    }
+
+    @Override
+    public JsonNode binding() {
+        return binding.deepCopy();
     }
 
     private static ViewOnlyAuthorityException invalid(String message) {
