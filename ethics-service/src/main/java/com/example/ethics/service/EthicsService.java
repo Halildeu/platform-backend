@@ -40,52 +40,50 @@ public class EthicsService {
     @Transactional
     public CreateReportResponse createReport(String channel, String key, CreateReportRequest request) {
         if (key == null || key.isBlank() || key.length() > 200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key is required.");
-        String normalizedChannel = switch (channel == null ? "" : channel.toLowerCase(Locale.ROOT)) {
-            case "etik.acik.com", "speakup.acik.com" -> channel.toLowerCase(Locale.ROOT);
-            default -> throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Public channel is invalid.");
-        };
+        String normalizedChannel = normalizeChannel(channel);
         UUID orgId = properties.publicOrgId();
         if (request.mode()!=ReportMode.ANONYMOUS) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"REPORT_MODE_NOT_ENABLED");
         transactionLocks.lock("intake\n"+orgId+"\n"+normalizedChannel+"\n"+key);
-        String requestHash = secrets.sha256(request.mode()+"\n"+request.category()+"\n"+request.subject()+"\n"+request.description()+"\n"+request.locale());
+        String requestHash = secrets.sha256(request.mode()+"\n"+request.category()+"\n"+request.subject()+"\n"+request.description()+"\n"+request.locale()+"\n"+request.noticeVersion()+"\n"+secrets.sha256(request.accessSecret()));
         Optional<IntakeIdempotency> prior = idempotency.findByOrgIdAndChannelAndIdempotencyKey(orgId, normalizedChannel, key);
         if (prior.isPresent()) {
             if (!prior.get().getRequestHash().equals(requestHash)) throw new ResponseStatusException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT");
             // A replay never re-discloses the raw access secret. The user must retain the original receipt.
-            return new CreateReportResponse(prior.get().getReceiptId(), null, Instant.now(), "/mailbox", true);
+            return new CreateReportResponse(prior.get().getReceiptId(), prior.get().getCreatedAt(), "/mailbox", true);
         }
         Instant now=Instant.now(); UUID caseId=UUID.randomUUID(); UUID reportId=UUID.randomUUID(); UUID receiptId=UUID.randomUUID();
-        String rawSecret=secrets.newSecret();
         cases.save(new EthicsCase(caseId,orgId,now));
-        reports.save(new EthicsReport(reportId,caseId,request.mode().name(),request.category(),request.subject(),request.description(),request.locale(),now));
-        grants.save(new ReporterAccessGrant(receiptId,caseId,secrets.hash(rawSecret,properties.secretIterations()),now));
-        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.report.created","{\"mode\":\""+request.mode().name()+"\",\"category\":\""+safeToken(request.category())+"\"}",now));
+        reports.save(new EthicsReport(reportId,caseId,request.mode().name(),request.category().name(),request.subject(),request.description(),request.locale(),request.noticeVersion(),now));
+        grants.save(new ReporterAccessGrant(receiptId,caseId,normalizedChannel,secrets.hash(request.accessSecret(),properties.secretIterations()),now));
+        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.report.created","{\"mode\":\""+request.mode().name()+"\",\"category\":\""+request.category().name()+"\",\"channel\":\""+normalizedChannel+"\",\"noticeVersion\":\""+request.noticeVersion()+"\"}",now));
         idempotency.save(new IntakeIdempotency(UUID.randomUUID(),orgId,normalizedChannel,key,requestHash,receiptId,now));
-        return new CreateReportResponse(receiptId,rawSecret,now,"/mailbox",false);
+        return new CreateReportResponse(receiptId,now,"/mailbox",false);
     }
 
     @Transactional(noRollbackFor=ResponseStatusException.class)
-    public SessionGrant openMailbox(MailboxLoginRequest request) {
-        ReporterAccessGrant grant=grants.findById(request.receiptId()).orElseThrow(EthicsService::genericMailboxDeny);
+    public SessionGrant openMailbox(String channel, MailboxLoginRequest request) {
+        String normalizedChannel=normalizeChannel(channel);
+        ReporterAccessGrant grant=grants.findLockedByReceiptId(request.receiptId()).orElseThrow(EthicsService::genericMailboxDeny);
         Instant now=Instant.now();
+        if(!grant.getChannel().equals(normalizedChannel)) throw genericMailboxDeny();
         if (grant.getLockedUntil()!=null && grant.getLockedUntil().isAfter(now)) throw genericMailboxDeny();
         if (!secrets.verify(request.accessSecret(),grant.getSecretHash())) { grant.failed(now); throw genericMailboxDeny(); }
         grant.verified(); String token=secrets.newSecret(); Instant expires=now.plus(properties.mailboxSessionTtl());
-        sessions.save(new MailboxSession(secrets.sha256(token),grant.getCaseId(),expires,now));
+        sessions.save(new MailboxSession(secrets.sha256(token),grant.getCaseId(),normalizedChannel,expires,now));
         return new SessionGrant(token,expires);
     }
 
     @Transactional(readOnly=true)
-    public List<MessageResponse> reporterMessages(String token) {
-        UUID caseId=caseForSession(token);
+    public List<MessageResponse> reporterMessages(String channel,String token) {
+        UUID caseId=caseForSession(channel,token);
         return messages.findAllByCaseIdAndVisibilityInOrderByCreatedAtAsc(caseId,List.of("REPORTER_VISIBLE"))
                 .stream().map(EthicsService::messageResponse).toList();
     }
 
     @Transactional
-    public MessageResponse reporterReply(String token,String key,MessageRequest request) {
-        UUID caseId=caseForSession(token);
-        return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId());
+    public MessageResponse reporterReply(String channel,String token,String key,MessageRequest request) {
+        UUID caseId=caseForSession(channel,token);
+        return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId(),"reporter");
     }
 
     @Transactional(readOnly=true)
@@ -105,8 +103,10 @@ public class EthicsService {
 
     @Transactional
     public CaseSummary updateCase(StaffContext staff,UUID caseId,String ifMatch,UpdateCaseRequest request) {
-        String relation=request.assignedTo()!=null?"case_triager":"case_handler";
-        EthicsCase item=requireCase(staff,caseId,relation);
+        EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."));
+        if(request.status()!=null) authorization.require(staff,"case_handler",caseId);
+        if(request.assignedTo()!=null) authorization.require(staff,"case_triager",caseId);
+        if(request.status()==null&&request.assignedTo()==null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"CASE_UPDATE_EMPTY");
         long expected=parseVersion(ifMatch);
         if(item.getVersion()!=expected) throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,"CASE_VERSION_MISMATCH");
         if(request.status()!=null&&!request.status().isBlank()) {
@@ -115,30 +115,36 @@ public class EthicsService {
             item.setStatus(status);
         }
         if(request.assignedTo()!=null) item.setAssignedTo(request.assignedTo().isBlank()?null:request.assignedTo());
-        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.updated","{}",Instant.now()));
+        cases.saveAndFlush(item);
+        audit.save(new AuditOutbox(UUID.randomUUID(),staff.orgId(),caseId,"ethics.case.updated","{\"status\":\""+item.getStatus()+"\",\"assigned\":"+(item.getAssignedTo()!=null)+",\"actorHash\":\""+secrets.sha256(staff.subject())+"\"}",Instant.now()));
         return summary(item);
     }
 
     @Transactional
     public MessageResponse staffReply(StaffContext staff,UUID caseId,String key,MessageRequest request,boolean internal) {
         requireCase(staff,caseId,"case_handler");
-        return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId());
+        return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()));
     }
 
-    private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId){
+    private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash){
         if(key==null||key.isBlank()||key.length()>200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Idempotency-Key is required.");
         transactionLocks.lock("message\n"+caseId+"\n"+author+"\n"+key);
         Optional<EthicsMessage> prior=messages.findByCaseIdAndAuthorTypeAndIdempotencyKey(caseId,author,key);
         if(prior.isPresent()) { if(!prior.get().getBody().equals(body)||!prior.get().getVisibility().equals(visibility)) throw new ResponseStatusException(HttpStatus.CONFLICT,"IDEMPOTENCY_CONFLICT"); return messageResponse(prior.get()); }
         EthicsMessage message=new EthicsMessage(UUID.randomUUID(),caseId,author,visibility,body,key,Instant.now()); messages.save(message);
-        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.mailbox.message.created","{\"visibility\":\""+visibility+"\"}",Instant.now()));
+        audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.mailbox.message.created","{\"visibility\":\""+visibility+"\",\"actorHash\":\""+actorHash+"\"}",Instant.now()));
         return messageResponse(message);
     }
 
-    private UUID caseForSession(String token){
+    private UUID caseForSession(String channel,String token){
         if(token==null||token.isBlank()) throw genericMailboxDeny();
         MailboxSession session=sessions.findById(secrets.sha256(token)).orElseThrow(EthicsService::genericMailboxDeny);
-        if(session.getExpiresAt().isBefore(Instant.now())) throw genericMailboxDeny(); return session.getCaseId();
+        if(session.getExpiresAt().isBefore(Instant.now())||!session.getChannel().equals(normalizeChannel(channel))) throw genericMailboxDeny(); return session.getCaseId();
+    }
+    @Transactional
+    public void revokeMailbox(String channel,String token){
+        caseForSession(channel,token);
+        sessions.deleteById(secrets.sha256(token));
     }
     private EthicsCase requireCase(StaffContext staff,UUID caseId,String relation){
         EthicsCase item=cases.findByIdAndOrgId(caseId,staff.orgId()).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."));
@@ -152,6 +158,10 @@ public class EthicsService {
         try { return Long.parseLong(ifMatch.replace("\"","").trim()); }
         catch (RuntimeException error) { throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"IF_MATCH_INVALID"); }
     }
-    private static String safeToken(String value){return value.replaceAll("[^A-Za-z0-9_-]","_").substring(0,Math.min(80,value.length()));}
+    private static String normalizeChannel(String channel){
+        String value=channel==null?"":channel.toLowerCase(Locale.ROOT);
+        if(!Set.of("etik.acik.com","speakup.acik.com").contains(value)) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"PUBLIC_CHANNEL_INVALID");
+        return value;
+    }
     public record SessionGrant(String token,Instant expiresAt){}
 }

@@ -15,5 +15,5 @@ public class IntakeIdempotency {
     @Column(name="created_at", nullable=false) private Instant createdAt;
     protected IntakeIdempotency() {}
     public IntakeIdempotency(UUID id, UUID orgId, String channel, String idempotencyKey, String requestHash, UUID receiptId, Instant now){this.id=id;this.orgId=orgId;this.channel=channel;this.idempotencyKey=idempotencyKey;this.requestHash=requestHash;this.receiptId=receiptId;this.createdAt=now;}
-    public String getRequestHash(){return requestHash;} public UUID getReceiptId(){return receiptId;}
+    public String getRequestHash(){return requestHash;} public UUID getReceiptId(){return receiptId;} public Instant getCreatedAt(){return createdAt;}
 }

@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -33,7 +34,7 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
         boolean hasForeignCookie = false;
         if (request.getCookies() != null) {
             for (Cookie cookie : request.getCookies()) {
-                if (!MAILBOX_COOKIE.equals(cookie.getName())) {
+                if (!MAILBOX_COOKIE.equals(cookie.getName()) && isSuiteCredential(cookie.getName())) {
                     hasForeignCookie = true;
                     break;
                 }
@@ -48,5 +49,11 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    private static boolean isSuiteCredential(String name) {
+        String normalized=name==null?"":name.toUpperCase(java.util.Locale.ROOT);
+        return Set.of("JSESSIONID","SESSION","KEYCLOAK_IDENTITY","KEYCLOAK_SESSION","AUTH_SESSION_ID").contains(normalized)
+                || normalized.startsWith("KC_") || normalized.startsWith("SUITE_");
     }
 }

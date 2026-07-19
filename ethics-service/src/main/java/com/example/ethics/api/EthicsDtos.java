@@ -2,6 +2,7 @@ package com.example.ethics.api;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
 import java.util.List;
@@ -12,12 +13,15 @@ public final class EthicsDtos {
 
     public record CreateReportRequest(
             @NotNull ReportMode mode,
-            @NotBlank @Size(max=80) String category,
+            @NotNull ReportCategory category,
             @NotBlank @Size(max=240) String subject,
             @NotBlank @Size(max=16000) String description,
-            @NotBlank @Size(max=12) String locale) {}
+            @NotBlank @Size(max=12) String locale,
+            @NotBlank @Size(min=43,max=128) @Pattern(regexp="[A-Za-z0-9_-]+") String accessSecret,
+            @NotBlank @Size(max=80) @Pattern(regexp="[A-Za-z0-9._-]+") String noticeVersion) {}
     public enum ReportMode { ANONYMOUS, CONFIDENTIAL, NAMED }
-    public record CreateReportResponse(UUID receiptId, String accessSecret, Instant createdAt, String mailboxPath, boolean idempotentReplay) {}
+    public enum ReportCategory { WORKPLACE_CONDUCT, FRAUD_CORRUPTION, HARASSMENT_DISCRIMINATION, OTHER }
+    public record CreateReportResponse(UUID receiptId, Instant createdAt, String mailboxPath, boolean idempotentReplay) {}
     public record MailboxLoginRequest(@NotNull UUID receiptId, @NotBlank @Size(max=512) String accessSecret) {}
     public record MailboxSessionResponse(Instant expiresAt) {}
     public record MessageRequest(@NotBlank @Size(max=16000) String body) {}

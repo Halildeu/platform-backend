@@ -7,7 +7,8 @@ CREATE TABLE ethics_cases (
     version BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    CONSTRAINT ck_ethics_product CHECK (product_id = 'etik-speak')
+    CONSTRAINT ck_ethics_product CHECK (product_id = 'etik-speak'),
+    CONSTRAINT ck_ethics_case_status CHECK (status IN ('NEW','IN_REVIEW','CLOSED'))
 );
 CREATE INDEX ix_ethics_cases_org_updated ON ethics_cases(org_id, updated_at DESC);
 
@@ -19,6 +20,7 @@ CREATE TABLE ethics_reports (
     subject VARCHAR(240) NOT NULL,
     narrative VARCHAR(16000) NOT NULL,
     locale VARCHAR(12) NOT NULL,
+    notice_version VARCHAR(80) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT ck_ethics_report_mode CHECK (mode IN ('ANONYMOUS','CONFIDENTIAL','NAMED'))
 );
@@ -26,15 +28,18 @@ CREATE TABLE ethics_reports (
 CREATE TABLE reporter_access_grants (
     receipt_id UUID PRIMARY KEY,
     case_id UUID NOT NULL UNIQUE REFERENCES ethics_cases(id),
+    channel VARCHAR(80) NOT NULL,
     secret_hash VARCHAR(512) NOT NULL,
     failed_attempts INTEGER NOT NULL DEFAULT 0,
     locked_until TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    version BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE TABLE mailbox_sessions (
     token_hash VARCHAR(64) PRIMARY KEY,
     case_id UUID NOT NULL REFERENCES ethics_cases(id),
+    channel VARCHAR(80) NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL
 );
@@ -49,7 +54,8 @@ CREATE TABLE ethics_messages (
     idempotency_key VARCHAR(200) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT uq_ethics_message_idempotency UNIQUE(case_id, author_type, idempotency_key),
-    CONSTRAINT ck_ethics_message_visibility CHECK (visibility IN ('REPORTER_VISIBLE','INTERNAL'))
+    CONSTRAINT ck_ethics_message_visibility CHECK (visibility IN ('REPORTER_VISIBLE','INTERNAL')),
+    CONSTRAINT ck_ethics_message_author CHECK (author_type IN ('REPORTER','STAFF'))
 );
 CREATE INDEX ix_ethics_messages_case_time ON ethics_messages(case_id, created_at);
 

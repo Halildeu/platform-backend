@@ -8,9 +8,10 @@ import java.util.UUID;
 public class MailboxSession {
     @Id @Column(name="token_hash", length=64) private String tokenHash;
     @Column(name="case_id", nullable=false) private UUID caseId;
+    @Column(nullable=false, length=80) private String channel;
     @Column(name="expires_at", nullable=false) private Instant expiresAt;
     @Column(name="created_at", nullable=false) private Instant createdAt;
     protected MailboxSession() {}
-    public MailboxSession(String tokenHash, UUID caseId, Instant expiresAt, Instant createdAt){this.tokenHash=tokenHash;this.caseId=caseId;this.expiresAt=expiresAt;this.createdAt=createdAt;}
-    public UUID getCaseId(){return caseId;} public Instant getExpiresAt(){return expiresAt;}
+    public MailboxSession(String tokenHash, UUID caseId, String channel, Instant expiresAt, Instant createdAt){this.tokenHash=tokenHash;this.caseId=caseId;this.channel=channel;this.expiresAt=expiresAt;this.createdAt=createdAt;}
+    public UUID getCaseId(){return caseId;} public String getChannel(){return channel;} public Instant getExpiresAt(){return expiresAt;}
 }

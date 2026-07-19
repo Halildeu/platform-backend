@@ -29,13 +29,16 @@ spring:
 
 server:
   port: ${SERVER_PORT:8099}
-  forward-headers-strategy: framework
+  # Public channel is derived from the ingress-routed Host value. Forwarded
+  # client headers are deliberately ignored so X-Forwarded-Host cannot select it.
+  forward-headers-strategy: none
+  max-http-request-header-size: 16KB
 
 ethics:
   public-org-id: ${ETHICS_PUBLIC_ORG_ID:00000000-0000-0000-0000-000000000035}
   mailbox-session-ttl: ${ETHICS_MAILBOX_SESSION_TTL:15m}
   secret-iterations: ${ETHICS_SECRET_ITERATIONS:210000}
-  authz-test-bypass: false
+  staff-audience: ${ETHICS_STAFF_AUDIENCE:ethics-manager}
 
 erp:
   openfga:
