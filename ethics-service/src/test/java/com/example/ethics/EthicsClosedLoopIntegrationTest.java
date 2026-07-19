@@ -82,9 +82,10 @@ class EthicsClosedLoopIntegrationTest {
         MvcResult list=mvc.perform(get("/api/v1/ethics/cases").with(jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$",not(empty()))).andReturn();
         String caseId=mapper.readTree(list.getResponse().getContentAsString()).get(0).get("id").asText();
-        mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage")))
+        MvcResult staffReplyResult=mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage")))
                         .header("Idempotency-Key","staff-reply-1").contentType(MediaType.APPLICATION_JSON).content("{\"body\":\"Sentetik yetkili yanıtı\"}"))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated()).andReturn();
+        String staffMessageId=mapper.readTree(staffReplyResult.getResponse().getContentAsString()).get("id").asText();
         mvc.perform(post("/api/v1/ethics/cases/{id}/internal-notes",caseId).with(jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage")))
                         .header("Idempotency-Key","staff-note-1").contentType(MediaType.APPLICATION_JSON).content("{\"body\":\"Reporter görmemeli\"}"))
                 .andExpect(status().isCreated());
@@ -95,13 +96,22 @@ class EthicsClosedLoopIntegrationTest {
         Cookie mailbox=new Cookie(PublicCredentialBoundaryFilter.MAILBOX_COOKIE,token);
         mvc.perform(get("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox))
                 .andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(1))).andExpect(jsonPath("$[0].body").value("Sentetik yetkili yanıtı"));
-        mvc.perform(post("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox).header("Idempotency-Key","reporter-reply-1").contentType(MediaType.APPLICATION_JSON).content("{\"body\":\"Sentetik reporter yanıtı\"}"))
-                .andExpect(status().isCreated());
+        MvcResult reporterReplyResult=mvc.perform(post("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox).header("Idempotency-Key","reporter-reply-1").contentType(MediaType.APPLICATION_JSON).content("{\"body\":\"Sentetik reporter yanıtı\"}"))
+                .andExpect(status().isCreated()).andReturn();
+        String reporterMessageId=mapper.readTree(reporterReplyResult.getResponse().getContentAsString()).get("id").asText();
 
         var staff=jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"));
         mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(staff)
+                        .header("Idempotency-Key","staff-reply-1").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"body\":\"Sentetik yetkili yanıtı\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value(staffMessageId));
+        mvc.perform(post("/api/v1/public/ethics/mailbox/messages").header("Host","etik.acik.com").cookie(mailbox)
+                        .header("Idempotency-Key","reporter-reply-1").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"body\":\"Sentetik reporter yanıtı\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.id").value(reporterMessageId));
         mvc.perform(post("/api/v1/ethics/cases/{id}/messages",caseId).with(staff)
                         .header("Idempotency-Key","closed-staff-reply").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"body\":\"Kapanmış vakaya yazılmamalı\"}"))

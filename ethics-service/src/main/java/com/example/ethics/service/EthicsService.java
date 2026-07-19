@@ -90,8 +90,8 @@ public class EthicsService {
     @Transactional
     public MessageResponse reporterReply(String channel,String token,String key,MessageRequest request) {
         UUID caseId=caseForSession(channel,token);
-        ensureOpen(cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny));
-        return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId(),"reporter");
+        return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId(),"reporter",
+                () -> ensureOpen(cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny)));
     }
 
     @Transactional(readOnly=true)
@@ -130,15 +130,18 @@ public class EthicsService {
 
     @Transactional
     public MessageResponse staffReply(StaffContext staff,UUID caseId,String key,MessageRequest request,boolean internal) {
-        ensureOpen(requireCase(staff,caseId,"case_handler"));
-        return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()));
+        requireCase(staff,caseId,"case_handler");
+        return createMessage(caseId,"STAFF",internal?"INTERNAL":"REPORTER_VISIBLE",key,request.body(),staff.orgId(),secrets.sha256(staff.subject()),
+                () -> ensureOpen(cases.findByIdAndOrgId(caseId,staff.orgId())
+                        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,"Case not found."))));
     }
 
-    private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash){
+    private MessageResponse createMessage(UUID caseId,String author,String visibility,String key,String body,UUID orgId,String actorHash,Runnable beforeCreate){
         if(key==null||key.isBlank()||key.length()>200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Idempotency-Key is required.");
         transactionLocks.lock("message\n"+caseId+"\n"+author+"\n"+key);
         Optional<EthicsMessage> prior=messages.findByCaseIdAndAuthorTypeAndIdempotencyKey(caseId,author,key);
         if(prior.isPresent()) { if(!prior.get().getBody().equals(body)||!prior.get().getVisibility().equals(visibility)) throw new ResponseStatusException(HttpStatus.CONFLICT,"IDEMPOTENCY_CONFLICT"); return messageResponse(prior.get()); }
+        beforeCreate.run();
         EthicsMessage message=new EthicsMessage(UUID.randomUUID(),caseId,author,visibility,body,key,Instant.now()); messages.save(message);
         audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.mailbox.message.created","{\"visibility\":\""+visibility+"\",\"actorHash\":\""+actorHash+"\"}",Instant.now()));
         return messageResponse(message);
