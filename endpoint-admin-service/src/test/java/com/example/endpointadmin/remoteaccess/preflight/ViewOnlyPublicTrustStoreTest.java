@@ -158,6 +158,58 @@ class ViewOnlyPublicTrustStoreTest {
                 .hasMessageContaining("runtime trust key");
     }
 
+    @Test
+    void readinessRejectsExpiredProviderAndFutureRuntimeSignerKeys() throws Exception {
+        ObjectNode expiredProviderRoot = crossRoot();
+        ObjectNode provider = (ObjectNode) java.util.stream.StreamSupport.stream(
+                        expiredProviderRoot.withArray("keys").spliterator(), false)
+                .filter(key -> "provider-review".equals(key.get("role").textValue()))
+                .findFirst().orElseThrow();
+        provider.put("notBefore", NOW.minusSeconds(7200).toString());
+        provider.put("notAfter", NOW.minusSeconds(1).toString());
+        Files.write(Path.of(properties.getCrossAiTrustRootFile()),
+                canonicalizer.canonicalBytes(expiredProviderRoot));
+        properties.setCrossAiTrustRootSha256(canonicalizer.digest(expiredProviderRoot));
+
+        assertThatThrownBy(() -> store().probeReady())
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessageContaining("currently active provider-review");
+
+        ObjectNode activeCrossRoot = crossRoot();
+        Files.write(Path.of(properties.getCrossAiTrustRootFile()), canonicalizer.canonicalBytes(activeCrossRoot));
+        properties.setCrossAiTrustRootSha256(canonicalizer.digest(activeCrossRoot));
+        ObjectNode futureRuntimeRoot = runtimeRoot();
+        ObjectNode checkpoint = (ObjectNode) java.util.stream.StreamSupport.stream(
+                        futureRuntimeRoot.withArray("keys").spliterator(), false)
+                .filter(key -> "checkpoint-signer".equals(key.get("role").textValue()))
+                .findFirst().orElseThrow();
+        checkpoint.put("notBefore", NOW.plusSeconds(1).toString());
+        checkpoint.put("notAfter", NOW.plusSeconds(7200).toString());
+        Files.write(Path.of(properties.getRuntimeTrustRootFile()),
+                canonicalizer.canonicalBytes(futureRuntimeRoot));
+        properties.setRuntimeTrustRootSha256(new ViewOnlyDigest(canonicalizer).domainDigest(
+                "faz22.6/view-only/runtime-trust-root/v1", "trustRoot", futureRuntimeRoot));
+
+        assertThatThrownBy(() -> store().probeReady())
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessageContaining("currently active checkpoint-signer");
+    }
+
+    @Test
+    void exposesOnlyTheExactActiveRuntimeCheckpointSignerAuthority() {
+        ViewOnlyPublicTrustStore.RuntimeSignerAuthority authority = store().checkpointSignerAuthority(
+                "vault-transit://endpoint-admin/view-only-checkpoint#v1");
+
+        assertThat(authority.keyId())
+                .isEqualTo("vault-transit://endpoint-admin/view-only-checkpoint#v1");
+        assertThat(authority.publicKeySha256()).matches("sha256:[0-9a-f]{64}");
+        assertThat(authority.publicKey()).hasSize(32);
+        assertThatThrownBy(() -> store().checkpointSignerAuthority(
+                "vault-transit://endpoint-admin/foreign#v1"))
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .hasMessageContaining("active runtime checkpoint authority");
+    }
+
     private ViewOnlyPublicTrustStore store() {
         return new ViewOnlyPublicTrustStore(
                 canonicalizer, Clock.fixed(NOW, ZoneOffset.UTC), properties);

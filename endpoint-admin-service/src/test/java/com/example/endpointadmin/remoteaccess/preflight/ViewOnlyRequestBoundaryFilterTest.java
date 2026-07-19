@@ -28,7 +28,7 @@ class ViewOnlyRequestBoundaryFilterTest {
         filter.doFilter(request, response, chain);
 
         assertThat(chain.getRequest()).isNull();
-        assertExactFailure(response);
+        assertExactFailure(response, 411, "CONTENT_LENGTH_REQUIRED");
     }
 
     @Test
@@ -38,12 +38,12 @@ class ViewOnlyRequestBoundaryFilterTest {
                 new byte[ViewOnlyCheckpointCreateVerifier.MAX_REQUEST_BYTES + 1]);
         MockHttpServletResponse oversizedResponse = new MockHttpServletResponse();
         filter.doFilter(oversized, oversizedResponse, new MockFilterChain());
-        assertExactFailure(oversizedResponse);
+        assertExactFailure(oversizedResponse, 413, "REQUEST_BODY_TOO_LARGE");
 
         MockHttpServletRequest wrongType = request(ROOT + "/attest", "text/plain", new byte[]{1});
         MockHttpServletResponse wrongTypeResponse = new MockHttpServletResponse();
         filter.doFilter(wrongType, wrongTypeResponse, new MockFilterChain());
-        assertExactFailure(wrongTypeResponse);
+        assertExactFailure(wrongTypeResponse, 415, "CONTENT_TYPE_UNSUPPORTED");
     }
 
     @Test
@@ -90,8 +90,9 @@ class ViewOnlyRequestBoundaryFilterTest {
         return request;
     }
 
-    private void assertExactFailure(MockHttpServletResponse response) throws Exception {
-        assertThat(response.getStatus()).isEqualTo(400);
+    private void assertExactFailure(
+            MockHttpServletResponse response, int expectedStatus, String expectedCode) throws Exception {
+        assertThat(response.getStatus()).isEqualTo(expectedStatus);
         assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
         JsonNode body = mapper.readTree(response.getContentAsByteArray());
         Set<String> fields = StreamSupport.stream(
@@ -100,7 +101,7 @@ class ViewOnlyRequestBoundaryFilterTest {
         assertThat(fields).containsExactlyInAnyOrder(
                 "schemaVersion", "errorId", "code", "message", "retryable",
                 "mutationCount", "credentialMaterialIncluded");
-        assertThat(body.get("code").textValue()).isEqualTo("REQUEST_SCHEMA_INVALID");
+        assertThat(body.get("code").textValue()).isEqualTo(expectedCode);
         assertThat(body.get("mutationCount").intValue()).isZero();
         assertThat(body.get("credentialMaterialIncluded").booleanValue()).isFalse();
     }

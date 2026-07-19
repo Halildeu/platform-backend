@@ -34,7 +34,7 @@ public class ViewOnlyAuthorityProperties {
     private String fixedPreflightExecutableSha256;
     private int fixedPreflightTimeoutSeconds = 120;
     private String vaultAddress;
-    private String vaultTransitMount = "transit";
+    private String vaultTransitMount = "endpoint-admin";
     private String vaultTransitKey;
     private int vaultTransitKeyVersion = 1;
     private String vaultTransitKeyId;
@@ -313,9 +313,11 @@ public class ViewOnlyAuthorityProperties {
         if (vaultTransitKeyVersion < 1 || vaultTransitKeyVersion > 1_000_000) {
             throw invalid("Vault Transit key version is outside its hard bound");
         }
+        String exactKeyId = "vault-transit://" + vaultTransitMount + "/"
+                + vaultTransitKey + "#v" + vaultTransitKeyVersion;
         if (vaultTransitKeyId == null || !TRANSIT_KEY_ID.matcher(vaultTransitKeyId).matches()
-                || !vaultTransitKeyId.endsWith("#v" + vaultTransitKeyVersion)) {
-            throw invalid("Vault Transit key ID must pin the configured key version");
+                || !vaultTransitKeyId.equals(exactKeyId)) {
+            throw invalid("Vault Transit key ID must exactly bind the configured mount, key and version");
         }
         if (vaultTransitPublicKeySha256 == null
                 || !SHA256.matcher(vaultTransitPublicKeySha256).matches()) {

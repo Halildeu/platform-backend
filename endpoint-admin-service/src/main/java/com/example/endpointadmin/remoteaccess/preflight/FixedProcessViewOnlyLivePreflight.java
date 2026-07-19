@@ -136,6 +136,8 @@ public final class FixedProcessViewOnlyLivePreflight
         requireText(payload, "idempotencyKeySha256", text(request, "idempotencyKeySha256"));
         requireText(payload, "bindingHandoffEnvelopeSha256", handoff.envelopeSha256());
         requireText(payload, "requestId", requestId.toString());
+        requireText(object(payload, "caller"), "tokenJtiSha256", caller.tokenJtiSha256());
+        requireText(payload, "replayIdentitySha256", caller.stableIdentitySha256(canonicalizer));
         return signedEnvelope;
     }
 

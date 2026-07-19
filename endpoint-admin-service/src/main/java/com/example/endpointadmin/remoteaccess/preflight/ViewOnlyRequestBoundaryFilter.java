@@ -30,18 +30,31 @@ public final class ViewOnlyRequestBoundaryFilter extends OncePerRequestFilter {
                                     FilterChain chain) throws ServletException, IOException {
         long maximum = maximumFor(request.getRequestURI());
         long contentLength = request.getContentLengthLong();
-        if (contentLength < 1 || contentLength > maximum) {
-            writeFailure(response, "authority request body length is absent or outside its exact bound");
+        if (contentLength < 0) {
+            writeFailure(response, 411, "CONTENT_LENGTH_REQUIRED",
+                    "authority request Content-Length is required");
+            return;
+        }
+        if (contentLength == 0) {
+            writeFailure(response, 400, "REQUEST_SCHEMA_INVALID",
+                    "authority request body must not be empty");
+            return;
+        }
+        if (contentLength > maximum) {
+            writeFailure(response, 413, "REQUEST_BODY_TOO_LARGE",
+                    "authority request body exceeds its exact bound");
             return;
         }
         try {
             MediaType contentType = MediaType.parseMediaType(request.getContentType());
             if (!MediaType.APPLICATION_JSON.isCompatibleWith(contentType)) {
-                writeFailure(response, "authority request content type must be application/json");
+                writeFailure(response, 415, "CONTENT_TYPE_UNSUPPORTED",
+                        "authority request content type must be application/json");
                 return;
             }
         } catch (RuntimeException invalidContentType) {
-            writeFailure(response, "authority request content type is invalid");
+            writeFailure(response, 415, "CONTENT_TYPE_UNSUPPORTED",
+                    "authority request content type is invalid");
             return;
         }
         chain.doFilter(request, response);
@@ -60,12 +73,13 @@ public final class ViewOnlyRequestBoundaryFilter extends OncePerRequestFilter {
         return -1;
     }
 
-    private void writeFailure(HttpServletResponse response, String message) throws IOException {
-        response.setStatus(400);
+    private void writeFailure(HttpServletResponse response, int status, String code, String message)
+            throws IOException {
+        response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setHeader("Cache-Control", "no-store");
         mapper.writeValue(response.getOutputStream(), new ViewOnlyAuthorityErrorResponse(
                 "faz22.6.viewOnlyPreflightError.v1", UUID.randomUUID(),
-                "REQUEST_SCHEMA_INVALID", message, false, 0, false));
+                code, message, false, 0, false));
     }
 }

@@ -14,7 +14,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
+import java.security.Signature;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -22,28 +28,53 @@ class VaultTransitViewOnlySigningClientTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void readinessProbeRequiresPinnedEd25519PublicKeyMetadataAndClearsToken() throws Exception {
+    void readinessProbeRequiresMetadataSignAclAndRuntimeRootVerifiableSignature() throws Exception {
+        KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        byte[] publicKey = Arrays.copyOfRange(
+                pair.getPublic().getEncoded(), pair.getPublic().getEncoded().length - 32,
+                pair.getPublic().getEncoded().length);
+        byte[] readinessPae = ViewOnlyDsseSigner.pae(
+                "application/vnd.acik.faz22-6-view-only-signing-readiness.v1+json",
+                "{}".getBytes(StandardCharsets.UTF_8));
+        Signature signer = Signature.getInstance("Ed25519");
+        signer.initSign(pair.getPrivate());
+        signer.update(readinessPae);
+        byte[] readinessSignature = signer.sign();
+
         HttpClient http = mock(HttpClient.class);
-        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        HttpResponse<InputStream> metadataResponse = mock(HttpResponse.class);
+        HttpResponse<InputStream> signingResponse = mock(HttpResponse.class);
         String json = "{\"data\":{\"type\":\"ed25519\",\"supports_signing\":true,"
                 + "\"latest_version\":1,\"min_available_version\":1,\"min_encryption_version\":1,"
                 + "\"keys\":{\"1\":{\"public_key\":"
-                + "\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\"}}}}";
-        when(response.statusCode()).thenReturn(200);
-        when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
-        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
-        char[] token = "hvs.unit-test".toCharArray();
+                + "\"" + Base64.getEncoder().encodeToString(publicKey) + "\"}}}}";
+        String signed = "{\"data\":{\"signature\":\"vault:v1:"
+                + Base64.getEncoder().encodeToString(readinessSignature) + "\"}}";
+        when(metadataResponse.statusCode()).thenReturn(200);
+        when(metadataResponse.body()).thenReturn(
+                new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
+        when(signingResponse.statusCode()).thenReturn(200);
+        when(signingResponse.body()).thenReturn(
+                new ByteArrayInputStream(signed.getBytes(StandardCharsets.UTF_8)));
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenReturn(metadataResponse, signingResponse);
+        ViewOnlyAuthorityProperties properties = ViewOnlyAuthorityPropertiesTest.enabledProperties();
+        properties.setVaultTransitPublicKeySha256(fingerprint(publicKey));
         VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
-                ViewOnlyAuthorityPropertiesTest.enabledProperties(), () -> token, http, new ObjectMapper());
+                properties, () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper(), publicKey);
 
         client.probeReady();
 
         ArgumentCaptor<HttpRequest> request = ArgumentCaptor.forClass(HttpRequest.class);
-        verify(http).send(request.capture(), any(HttpResponse.BodyHandler.class));
-        assertThat(request.getValue().method()).isEqualTo("GET");
-        assertThat(request.getValue().uri().toString())
-                .isEqualTo("https://vault.testai.acik.com/v1/transit/keys/view-only-checkpoint");
-        assertThat(token).containsOnly('\0');
+        verify(http, org.mockito.Mockito.times(2))
+                .send(request.capture(), any(HttpResponse.BodyHandler.class));
+        List<HttpRequest> requests = request.getAllValues();
+        assertThat(requests.get(0).method()).isEqualTo("GET");
+        assertThat(requests.get(0).uri().toString())
+                .isEqualTo("https://vault.testai.acik.com/v1/endpoint-admin/keys/view-only-checkpoint");
+        assertThat(requests.get(1).method()).isEqualTo("POST");
+        assertThat(requests.get(1).uri().toString())
+                .isEqualTo("https://vault.testai.acik.com/v1/endpoint-admin/sign/view-only-checkpoint");
     }
 
     @Test
@@ -57,7 +88,7 @@ class VaultTransitViewOnlySigningClientTest {
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
         VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
                 ViewOnlyAuthorityPropertiesTest.enabledProperties(),
-                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper());
+                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper(), new byte[32]);
 
         assertThatThrownBy(client::probeReady)
                 .isInstanceOf(ViewOnlyAuthorityException.class)
@@ -78,7 +109,7 @@ class VaultTransitViewOnlySigningClientTest {
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
         VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
                 ViewOnlyAuthorityPropertiesTest.enabledProperties(),
-                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper());
+                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper(), new byte[32]);
 
         assertThatThrownBy(client::probeReady)
                 .isInstanceOf(ViewOnlyAuthorityException.class)
@@ -100,14 +131,15 @@ class VaultTransitViewOnlySigningClientTest {
         char[] token = "hvs.unit-test".toCharArray();
         ViewOnlyVaultTokenSource tokenSource = () -> token;
         VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
-                ViewOnlyAuthorityPropertiesTest.enabledProperties(), tokenSource, http, new ObjectMapper());
+                ViewOnlyAuthorityPropertiesTest.enabledProperties(), tokenSource, http, new ObjectMapper(),
+                new byte[32]);
 
         assertThat(client.sign("DSSEv1 payload".getBytes(StandardCharsets.UTF_8))).isEqualTo(expected);
 
         ArgumentCaptor<HttpRequest> request = ArgumentCaptor.forClass(HttpRequest.class);
         verify(http).send(request.capture(), any(HttpResponse.BodyHandler.class));
         assertThat(request.getValue().uri().toString())
-                .isEqualTo("https://vault.testai.acik.com/v1/transit/sign/view-only-checkpoint");
+                .isEqualTo("https://vault.testai.acik.com/v1/endpoint-admin/sign/view-only-checkpoint");
         assertThat(request.getValue().headers().firstValue("X-Vault-Token")).contains("hvs.unit-test");
         assertThat(token).containsOnly('\0');
     }
@@ -124,11 +156,16 @@ class VaultTransitViewOnlySigningClientTest {
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
         VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
                 ViewOnlyAuthorityPropertiesTest.enabledProperties(),
-                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper());
+                () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper(), new byte[32]);
 
         assertThatThrownBy(() -> client.sign(new byte[]{1}))
                 .isInstanceOf(ViewOnlyAuthorityException.class)
                 .extracting(error -> ((ViewOnlyAuthorityException) error).reason())
                 .isEqualTo(ViewOnlyAuthorityError.SIGNING_UNAVAILABLE);
+    }
+
+    private static String fingerprint(byte[] value) throws Exception {
+        return "sha256:" + java.util.HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(value));
     }
 }

@@ -37,6 +37,19 @@ class ViewOnlyAuthorityHttpErrorMapperTest {
     }
 
     @Test
+    void unavailableServerOwnedAuthorityMaterialIsRetryableAndNeverAClientSchemaError() {
+        ViewOnlyAuthorityHttpErrorMapper.MappedError mapped = mapper.map(
+                new ViewOnlyAuthorityException(
+                        ViewOnlyAuthorityError.AUTHORITY_MATERIAL_UNAVAILABLE,
+                        "runtime trust root projection unavailable"));
+
+        assertThat(mapped.httpStatus()).isEqualTo(503);
+        assertThat(mapped.body().code()).isEqualTo("AUTHORITY_MATERIAL_UNAVAILABLE");
+        assertThat(mapped.body().code()).isNotEqualTo("REQUEST_SCHEMA_INVALID");
+        assertThat(mapped.body().retryable()).isTrue();
+    }
+
+    @Test
     void serializedErrorHasExactNonSecretShape() {
         ViewOnlyAuthorityErrorResponse body = mapper.map(
                 new ViewOnlyAuthorityException(

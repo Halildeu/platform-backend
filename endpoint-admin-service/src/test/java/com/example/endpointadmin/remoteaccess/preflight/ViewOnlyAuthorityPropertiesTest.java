@@ -60,7 +60,7 @@ class ViewOnlyAuthorityPropertiesTest {
         properties.setFixedPreflightExecutableSha256(
                 "sha256:" + "3".repeat(64));
         properties.setVaultAddress("https://vault.testai.acik.com");
-        properties.setVaultTransitMount("transit");
+        properties.setVaultTransitMount("endpoint-admin");
         properties.setVaultTransitKey("view-only-checkpoint");
         properties.setVaultTransitKeyVersion(1);
         properties.setVaultTransitKeyId("vault-transit://endpoint-admin/view-only-checkpoint#v1");

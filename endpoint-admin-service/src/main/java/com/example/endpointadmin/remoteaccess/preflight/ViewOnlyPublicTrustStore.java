@@ -3,16 +3,10 @@ package com.example.endpointadmin.remoteaccess.preflight;
 import com.example.endpointadmin.remoteaccess.policy.RemoteViewJsonCanonicalizer;
 import com.fasterxml.jackson.databind.JsonNode;
 
-import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.nio.channels.Channels;
-import java.nio.channels.SeekableByteChannel;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.Signature;
@@ -36,8 +30,9 @@ import java.util.UUID;
  * Reloading, public-only trust boundary for Cross-AI and runtime DSSE.
  *
  * <p>Trust roots and revocations are public evidence, never credentials. Every
- * verification reloads the no-follow bounded files so an atomic ConfigMap
- * rotation is observed without accepting stale process-start state. There is
+ * verification reloads a confined immutable projected-volume target so an
+ * atomic ConfigMap rotation is observed without accepting a symlink escape or
+ * stale process-start state. There is
  * no local key, unsigned or provider fallback.</p>
  */
 public final class ViewOnlyPublicTrustStore {
@@ -80,10 +75,32 @@ public final class ViewOnlyPublicTrustStore {
                 Set.of("provider-review", "coordinator", "revocation", "runner-management"))) {
             throw invalid("Cross-AI trust root is missing a mandatory role");
         }
+        requireCurrentlyActiveRoles(
+                crossAi.keysByRole(), crossAi.revocations(),
+                Set.of("provider-review", "coordinator", "revocation", "runner-management"),
+                "Cross-AI");
         RuntimeMaterial runtime = loadRuntime();
         if (!runtime.keysByRole().keySet().containsAll(Set.of("runtime-attestor", "checkpoint-signer"))) {
             throw invalid("runtime trust root is missing an attestor or checkpoint signer");
         }
+        requireCurrentlyActiveRoles(
+                runtime.keysByRole(), runtime.revocations(),
+                Set.of("runtime-attestor", "checkpoint-signer"), "runtime");
+    }
+
+    /** Returns the currently usable public checkpoint signer pinned by exact key ID. */
+    public RuntimeSignerAuthority checkpointSignerAuthority(String expectedKeyId) {
+        RuntimeMaterial runtime = loadRuntime();
+        Instant now = clock.instant();
+        List<TrustKey> candidates = runtime.keysByRole().getOrDefault("checkpoint-signer", List.of());
+        TrustKey selected = candidates.stream()
+                .filter(key -> key.keyId().equals(expectedKeyId))
+                .filter(key -> currentlyActive(key, runtime.revocations(), now))
+                .findFirst()
+                .orElseThrow(() -> invalid(
+                        "configured Transit signer is not the active runtime checkpoint authority"));
+        return new RuntimeSignerAuthority(
+                selected.keyId(), selected.publicKey(), sha256(selected.publicKey()));
     }
 
     public VerifiedDsse verifyCrossAi(JsonNode envelope,
@@ -415,16 +432,30 @@ public final class ViewOnlyPublicTrustStore {
         return List.copyOf(parsed);
     }
 
+    private void requireCurrentlyActiveRoles(Map<String, List<TrustKey>> keysByRole,
+                                             List<Revocation> revocations,
+                                             Set<String> roles,
+                                             String label) {
+        Instant now = clock.instant();
+        for (String role : roles) {
+            if (keysByRole.getOrDefault(role, List.of()).stream()
+                    .noneMatch(key -> currentlyActive(key, revocations, now))) {
+                throw invalid(label + " trust root has no currently active " + role + " key");
+            }
+        }
+    }
+
+    private static boolean currentlyActive(TrustKey key, List<Revocation> revocations, Instant at) {
+        return !at.isBefore(key.notBefore()) && at.isBefore(key.notAfter())
+                && !isRevoked(revocations, "key", key.keyId(), at);
+    }
+
     private JsonNode readObject(Path path, String label) {
         byte[] bytes = null;
         try {
-            try (SeekableByteChannel channel = Files.newByteChannel(
-                    path, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS));
-                 InputStream input = Channels.newInputStream(channel)) {
-                bytes = input.readNBytes(MAX_PUBLIC_FILE_BYTES + 1);
-            }
+            bytes = ViewOnlySecureProjectedFileReader.read(path, MAX_PUBLIC_FILE_BYTES);
             if (bytes.length == 0 || bytes.length > MAX_PUBLIC_FILE_BYTES) {
-                throw invalid(label + " is absent or outside its hard size bound");
+                throw materialUnavailable(label + " is absent or outside its hard size bound", null);
             }
             String raw = StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
@@ -437,6 +468,8 @@ public final class ViewOnlyPublicTrustStore {
             return value;
         } catch (ViewOnlyAuthorityException known) {
             throw known;
+        } catch (java.io.IOException readFailure) {
+            throw materialUnavailable(label + " could not be read from its confined projection", readFailure);
         } catch (Exception failure) {
             throw invalid(label + " could not be read or verified", failure);
         } finally {
@@ -583,6 +616,20 @@ public final class ViewOnlyPublicTrustStore {
         return new ViewOnlyAuthorityException(ViewOnlyAuthorityError.CONTRACT_INVALID, message, cause);
     }
 
+    private static ViewOnlyAuthorityException materialUnavailable(String message, Throwable cause) {
+        return new ViewOnlyAuthorityException(
+                ViewOnlyAuthorityError.AUTHORITY_MATERIAL_UNAVAILABLE, message, cause);
+    }
+
+    private static String sha256(byte[] value) {
+        try {
+            return "sha256:" + java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(value));
+        } catch (Exception impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
     public record VerifiedDsse(JsonNode payload, String envelopeSha256, String keyId) {
         public VerifiedDsse {
             payload = payload.deepCopy();
@@ -592,6 +639,18 @@ public final class ViewOnlyPublicTrustStore {
         @Override
         public JsonNode payload() {
             return payload.deepCopy();
+        }
+    }
+
+    public record RuntimeSignerAuthority(String keyId, byte[] publicKey, String publicKeySha256) {
+        public RuntimeSignerAuthority {
+            publicKey = publicKey.clone();
+            ViewOnlyDigest.requireSha256(publicKeySha256, "runtime signer publicKeySha256");
+        }
+
+        @Override
+        public byte[] publicKey() {
+            return publicKey.clone();
         }
     }
 

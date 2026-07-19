@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 /** Concrete runtime-attestor DSSE, schema, freshness and zero-mutation verifier. */
@@ -24,6 +25,19 @@ public final class StrictViewOnlyPreflightEnvelopeVerifier implements ViewOnlyPr
             "targetIdentity", "pkceAuthorizationCode", "tokenRefresh", "routeApi", "browserConsole",
             "replayIsolation", "clusterContext", "portsTunnels", "imageDigests", "policyMask",
             "runnerCapacity", "watchdogRollback");
+    private static final Map<String, String> CHECK_SOURCES = Map.ofEntries(
+            Map.entry("targetIdentity", "attestor-runtime"),
+            Map.entry("pkceAuthorizationCode", "browser-fixed-function"),
+            Map.entry("tokenRefresh", "browser-fixed-function"),
+            Map.entry("routeApi", "browser-fixed-function"),
+            Map.entry("browserConsole", "browser-fixed-function"),
+            Map.entry("replayIsolation", "browser-fixed-function"),
+            Map.entry("clusterContext", "kubernetes-readonly"),
+            Map.entry("portsTunnels", "attestor-runtime"),
+            Map.entry("imageDigests", "kubernetes-readonly"),
+            Map.entry("policyMask", "policy-bundle"),
+            Map.entry("runnerCapacity", "github-api"),
+            Map.entry("watchdogRollback", "remote-bridge-device-channel"));
 
     private final ViewOnlyPublicTrustStore trust;
     private final RemoteViewJsonCanonicalizer canonicalizer;
@@ -132,14 +146,9 @@ public final class StrictViewOnlyPreflightEnvelopeVerifier implements ViewOnlyPr
             exactFields(check, Set.of(
                     "checkVersion", "status", "source", "evidenceSha256", "observedAt", "expiresAt"),
                     "preflight check " + name);
-            if (!text(check, "checkVersion").matches("v[1-9][0-9]*")) {
-                throw invalid("preflight check version is invalid");
-            }
+            requireText(check, "checkVersion", "v1");
             requireText(check, "status", "PASS");
-            if (!Set.of("attestor-runtime", "browser-fixed-function", "github-api", "kubernetes-readonly",
-                    "remote-bridge-device-channel", "policy-bundle").contains(text(check, "source"))) {
-                throw invalid("preflight check source is not fixed-function");
-            }
+            requireText(check, "source", requiredSourceForCheck(name));
             ViewOnlyDigest.requireSha256(text(check, "evidenceSha256"), "check.evidenceSha256");
             Instant observed = instant(check, "observedAt");
             Instant expires = instant(check, "expiresAt");
@@ -147,6 +156,14 @@ public final class StrictViewOnlyPreflightEnvelopeVerifier implements ViewOnlyPr
                 throw invalid("preflight check evidence is stale for the receipt lifetime");
             }
         }
+    }
+
+    static String requiredSourceForCheck(String name) {
+        String source = CHECK_SOURCES.get(name);
+        if (source == null) {
+            throw invalid("preflight check name has no source authority");
+        }
+        return source;
     }
 
     private static void exactFields(JsonNode object, Set<String> expected, String label) {

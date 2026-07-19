@@ -98,8 +98,16 @@ public class ViewOnlyAuthorityCoreConfig {
     @Bean
     public ViewOnlyTransitSigningClient viewOnlyTransitSigningClient(
             ViewOnlyAuthorityProperties properties,
-            ViewOnlyVaultTokenSource tokenSource) {
-        ViewOnlyTransitSigningClient transit = new VaultTransitViewOnlySigningClient(properties, tokenSource);
+            ViewOnlyVaultTokenSource tokenSource,
+            ViewOnlyPublicTrustStore trustStore) {
+        ViewOnlyPublicTrustStore.RuntimeSignerAuthority signerAuthority =
+                trustStore.checkpointSignerAuthority(properties.getVaultTransitKeyId());
+        if (!properties.getVaultTransitPublicKeySha256().equals(signerAuthority.publicKeySha256())) {
+            throw new IllegalStateException(
+                    "VIEW_ONLY authority activation denied: Vault signer pin differs from runtime trust root");
+        }
+        ViewOnlyTransitSigningClient transit = new VaultTransitViewOnlySigningClient(
+                properties, tokenSource, signerAuthority.publicKey());
         transit.probeReady();
         return transit;
     }
