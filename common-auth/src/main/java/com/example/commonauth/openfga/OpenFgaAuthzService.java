@@ -763,14 +763,28 @@ public class OpenFgaAuthzService {
      * cached {@link #check}).
      */
     public boolean checkNoCache(String userId, String relation, String objectType, String objectId) {
+        return checkNoCacheResult(userId, relation, objectType, objectId).allowed();
+    }
+
+    /**
+     * Cache-bypassing check with an explicit unavailable state.
+     *
+     * <p>The boolean {@link #checkNoCache} contract intentionally collapses an
+     * unavailable policy engine into {@code false} for positive authorization
+     * checks. Callers that query a negative relation (for example conflict or
+     * recusal) must not interpret that fail-closed {@code false} as "relation
+     * absent". They use this result-bearing form and reject {@code unavailable}.
+     */
+    public CheckResult checkNoCacheResult(
+            String userId, String relation, String objectType, String objectId) {
         if (!enabled) {
-            return true;
+            return new CheckResult(true, "granted");
         }
         if (!circuitBreaker.allowRequest()) {
             if (denyCounter != null) denyCounter.increment();
             log.warn("OpenFGA circuit OPEN — denying access (no-cache): user:{} {} {}:{}",
                     userId, relation, objectType, objectId);
-            return false;
+            return new CheckResult(false, "unavailable");
         }
         try {
             var request = new ClientCheckRequest()
@@ -784,13 +798,13 @@ public class OpenFgaAuthzService {
             if (!allowed && denyCounter != null) denyCounter.increment();
             log.debug("OpenFGA checkNoCache: user:{} {} {}:{} -> {}",
                     userId, relation, objectType, objectId, allowed);
-            return allowed;
+            return new CheckResult(allowed, allowed ? "granted" : "no_relation");
         } catch (Exception e) {
             circuitBreaker.recordFailure();
             if (denyCounter != null) denyCounter.increment();
             log.error("OpenFGA checkNoCache failed, denying access: user:{} {} {}:{}",
                     userId, relation, objectType, objectId, e);
-            return false;
+            return new CheckResult(false, "unavailable");
         }
     }
 

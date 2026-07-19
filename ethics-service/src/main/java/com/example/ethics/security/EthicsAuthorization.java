@@ -11,6 +11,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Component
 public class EthicsAuthorization {
     public static final String PRODUCT_OBJECT = "ethics_product";
+    public static final String CASE_OBJECT = "ethics_case";
     private final OpenFgaAuthzService openFga;
     private final OpenFgaProperties properties;
 
@@ -22,24 +23,30 @@ public class EthicsAuthorization {
     public boolean can(StaffContext staff, String relation, UUID caseId) {
         if (!properties.isEnabled() || caseId == null) return false;
         try {
-            // Product entitlement and the DB org predicate are necessary but
-            // not sufficient: a conflicted/recused actor must disappear at the
-            // object boundary without receiving a case-existence signal.
-            // Ethics case content is a confidentiality boundary. A cached allow
-            // must never survive a newly-added conflict/recusal tuple or an
-            // OpenFGA outage, so every component of this decision bypasses the
-            // generic TTL cache and fails closed on the first request.
-            if (!openFga.checkNoCache(staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString())) {
-                return false;
-            }
-            boolean conflicted = openFga.checkNoCache(
-                    staff.subject(), "conflicted", "ethics_case", caseId.toString());
-            boolean recused = openFga.checkNoCache(
-                    staff.subject(), "recused", "ethics_case", caseId.toString());
-            return !conflicted && !recused;
+            // The first slice authorizes product membership while database
+            // predicates bind the case to the staff tenant. Conflict and recusal
+            // are negative case relations. Their result must preserve the
+            // difference between "relation absent" and OpenFGA unavailable;
+            // checkNoCacheResult provides that third state without consulting the
+            // generic TTL cache.
+            var product = openFga.checkNoCacheResult(
+                    staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString());
+            if (!product.allowed()) return false;
+
+            var conflicted = openFga.checkNoCacheResult(
+                    staff.subject(), "conflicted", CASE_OBJECT, caseId.toString());
+            if (!isHealthyAbsence(conflicted)) return false;
+
+            var recused = openFga.checkNoCacheResult(
+                    staff.subject(), "recused", CASE_OBJECT, caseId.toString());
+            return isHealthyAbsence(recused);
         } catch (RuntimeException unavailable) {
             return false;
         }
+    }
+
+    private boolean isHealthyAbsence(OpenFgaAuthzService.CheckResult result) {
+        return !result.allowed() && "no_relation".equals(result.reason());
     }
 
     public void require(StaffContext staff, String relation, UUID caseId) {
