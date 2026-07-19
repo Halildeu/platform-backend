@@ -24,6 +24,7 @@ ethics:
   public-org-id: 00000000-0000-0000-0000-000000000035
   secret-iterations: 120000
   staff-audience: ethics-manager
+  secure-transport-required: false
 erp:
   openfga:
     enabled: false

@@ -1,5 +1,6 @@
 package com.example.ethics.security;
 
+import com.example.ethics.config.EthicsProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -16,10 +17,13 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     public static final String MAILBOX_COOKIE = "__Host-etik_mailbox";
+    public static final String TRANSPORT_HEADER = "X-Etik-Speak-Transport";
     private final ObjectMapper mapper;
+    private final EthicsProperties properties;
 
-    public PublicCredentialBoundaryFilter(ObjectMapper mapper) {
+    public PublicCredentialBoundaryFilter(ObjectMapper mapper, EthicsProperties properties) {
         this.mapper = mapper;
+        this.properties = properties;
     }
 
     @Override
@@ -30,6 +34,12 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        if (Boolean.TRUE.equals(properties.secureTransportRequired())
+                && !"https".equals(request.getHeader(TRANSPORT_HEADER))) {
+            writeBoundaryError(request, response, "SECURE_TRANSPORT_REQUIRED",
+                    "Bu public işlem yalnız doğrulanmış HTTPS ingress üzerinden kullanılabilir.");
+            return;
+        }
         boolean hasAuthorization = request.getHeader("Authorization") != null;
         boolean hasForeignCookie = false;
         if (request.getCookies() != null) {
@@ -41,16 +51,23 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
             }
         }
         if (hasAuthorization || hasForeignCookie) {
-            response.setStatus(400);
-            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-            Object requestId = request.getAttribute(SensitiveResponseHeadersFilter.REQUEST_ID_ATTRIBUTE);
-            mapper.writeValue(response.getOutputStream(), Map.of("error", Map.of(
-                    "code", "CREDENTIAL_CONFUSION",
-                    "message", "Bu public işlem için suite kimlik bilgisi kullanılamaz.",
-                    "requestId", requestId == null ? "unavailable" : requestId.toString())));
+            writeBoundaryError(request, response, "CREDENTIAL_CONFUSION",
+                    "Bu public işlem için suite kimlik bilgisi kullanılamaz.");
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    private void writeBoundaryError(
+            HttpServletRequest request, HttpServletResponse response, String code, String message)
+            throws IOException {
+        response.setStatus(400);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        Object requestId = request.getAttribute(SensitiveResponseHeadersFilter.REQUEST_ID_ATTRIBUTE);
+        mapper.writeValue(response.getOutputStream(), Map.of("error", Map.of(
+                "code", code,
+                "message", message,
+                "requestId", requestId == null ? "unavailable" : requestId.toString())));
     }
 
     private static boolean isSuiteCredential(String name) {
