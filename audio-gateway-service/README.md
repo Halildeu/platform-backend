@@ -79,9 +79,14 @@ platform-ai.
 - The registry keeps reconnect-stable `lastRelayedLiveSeq` separately from durable
   REST `lastAcceptedChunkSeq`. A REST-accepted sequence above the current live
   watermark is relayed on its first WebSocket delivery and suppressed on repeat.
-  Reconnects may jump across sequences already covered by the durable REST baseline;
-  lower skipped sequences then stay stale and are not replayed. Gaps beyond the
-  durable baseline remain fail-closed.
+  The gateway returns `{"type":"audio_ack","chunk_seq":N}` after an accepted frame
+  enters the upstream send path and also for a suppressed duplicate. Desktop keeps a
+  bounded, ordered copy of REST-accepted frames until this ACK arrives and replays only
+  unacknowledged frames after reconnect. This makes a lost ACK converge without a
+  second upstream delivery. If the client cannot retain the bounded replay window,
+  canonical REST recording remains authoritative and live delivery is reported as
+  degraded; later live frames are not allowed to conceal that loss. Gaps beyond the
+  durable REST baseline remain fail-closed.
 - Client text is fail-closed except for a bounded JSON object containing only
   `{"type":"eof"}`. The gateway canonicalizes and relays EOF upstream, then keeps the
   download leg open until live-stt `eof_ack`, `final`, and terminal `drained` events have

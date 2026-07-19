@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -48,6 +49,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
     static final String PATH_SUFFIX = "/stream";
     static final String UPSTREAM_PROTOCOL = "source-ranges-v1";
     private static final long TERMINAL_TRANSPORT_MARGIN_MS = 1_000L;
+    private static final int CLIENT_CONTROL_EVENT_BUFFER_SIZE = 64;
 
     private static final Logger log = LoggerFactory.getLogger(LiveSttWebSocketProxyHandler.class);
 
@@ -197,6 +199,10 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         final AtomicBoolean errorObserved = new AtomicBoolean();
         final Sinks.One<Void> upstreamReady = Sinks.one();
         final Sinks.One<Void> drainedRelayed = Sinks.one();
+        final Sinks.Many<RelayedEvent> clientControlEvents = Sinks.many()
+                .unicast()
+                .onBackpressureBuffer(new ArrayBlockingQueue<>(
+                        CLIENT_CONTROL_EVENT_BUFFER_SIZE));
         final LiveTranscriptWindowAccumulator transcriptWindow =
                 new LiveTranscriptWindowAccumulator(properties.getDirectStt().getStreaming()
                         .getSourceHistoryMaxBytes());
@@ -261,6 +267,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             current -> emitComputePlaneAudit(current, frame, correlationId));
                     if (outcome instanceof LiveFrameOutcome.Duplicate) {
                         duplicateFrames.increment();
+                        emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                         return;
                     }
                     if (!(outcome instanceof LiveFrameOutcome.Accepted)) {
@@ -273,16 +280,18 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     transcriptWindow.append(frame, record.sampleRateHz(), record.channels());
                     sink.next(upstream.binaryMessage(factory ->
                             factory.wrap(frame.toFloat32LittleEndian())));
+                    emitAudioAcknowledgement(clientControlEvents, client, frame.chunkSeq());
                 })
                 // EOF is terminal for the upload leg even when the client keeps its
                 // inbound socket open while waiting for final/drained events.
                 .takeUntil(message -> message.getType() == WebSocketMessage.Type.TEXT)
+                .doFinally(signal -> clientControlEvents.tryEmitComplete())
                 // The AI endpoint can spend minutes loading pinned models. Do not admit,
                 // account or forward any desktop audio until it proves the exact source
                 // range protocol is ready; otherwise early microphone frames are lost.
                 .delaySubscription(upstreamReady.asMono().timeout(readyTimeout));
 
-        final Flux<RelayedEvent> relayedEvents = upstream.receive()
+        final Flux<RelayedEvent> upstreamRelayedEvents = upstream.receive()
                 .limitRate(1)
                 // Detach from reactor-netty's frame before the asynchronous persistence
                 // boundary. Keeping even a reference to the framework-owned message inside
@@ -294,12 +303,29 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                         record,
                         correlationId,
                         readyObserved,
-                        upstreamReady,
                         eofSent,
                         eofAckObserved,
                         drainedObserved,
                         errorObserved,
                         transcriptWindow), 1)
+                .takeUntil(RelayedEvent::terminal)
+                // Admit desktop audio only after the validated ready event has entered
+                // the client's outbound WebSocket publisher. Emitting the gate while
+                // parsing ready lets a concurrently produced audio_ack overtake ready.
+                .concatMap(event -> event.ready()
+                        ? Flux.concat(
+                                Mono.just(event),
+                                Mono.defer(() -> {
+                                    upstreamReady.tryEmitEmpty();
+                                    return Mono.empty();
+                                }))
+                        : Mono.just(event), 1);
+        // Spring permits one send publisher per session. Merge gateway-owned control
+        // acknowledgements into the same outbound publisher as upstream STT events.
+        // The post-merge terminal guard also cancels the acknowledgement source when
+        // an upstream error/drained event ends the connection.
+        final Flux<RelayedEvent> relayedEvents = Flux
+                .merge(clientControlEvents.asFlux(), upstreamRelayedEvents)
                 .takeUntil(RelayedEvent::terminal);
 
         final Mono<Void> upload = upstream.send(framesToUpstream)
@@ -329,13 +355,26 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         return Mono.firstWithSignal(upload, download).then();
     }
 
+    private void emitAudioAcknowledgement(
+            final Sinks.Many<RelayedEvent> clientControlEvents,
+            final WebSocketSession client,
+            final long chunkSeq) {
+        final WebSocketMessage acknowledgement = client.textMessage(
+                "{\"type\":\"audio_ack\",\"chunk_seq\":" + chunkSeq + "}");
+        final Sinks.EmitResult result = clientControlEvents.tryEmitNext(
+                new RelayedEvent(acknowledgement, false, false, false));
+        if (result.isFailure()) {
+            throw new ClientFrameException(
+                    "live audio acknowledgement buffer is unavailable");
+        }
+    }
+
     private Mono<RelayedEvent> relayUpstreamMessage(
             final WebSocketSession client,
             final CopiedUpstreamMessage message,
             final SessionRecord record,
             final String correlationId,
             final AtomicBoolean readyObserved,
-            final Sinks.One<Void> upstreamReady,
             final AtomicBoolean eofSent,
             final AtomicBoolean eofAckObserved,
             final AtomicBoolean drainedObserved,
@@ -368,7 +407,6 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     return Mono.error(new IllegalArgumentException(
                             "live STT terminal timeout exceeds gateway drain budget"));
                 }
-                upstreamReady.tryEmitEmpty();
             }
             if (parsed instanceof UpstreamEvent.EofAck) {
                 if (!readyObserved.get() || !eofSent.get() || drainedObserved.get()
@@ -395,7 +433,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                     return Mono.error(new IllegalArgumentException(
                             "live STT error event violates terminal order"));
                 }
-                return Mono.just(new RelayedEvent(client.textMessage(event), false, true));
+                return Mono.just(new RelayedEvent(client.textMessage(event), false, false, true));
             }
             if (parsed instanceof UpstreamEvent.Final finalEvent) {
                 if (!readyObserved.get() || drainedObserved.get() || errorObserved.get()) {
@@ -431,7 +469,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                                     window.windowSeq(),
                                     correlationId);
                         })
-                        .thenReturn(new RelayedEvent(client.textMessage(event), false, false));
+                        .thenReturn(new RelayedEvent(
+                                client.textMessage(event), false, false, false));
             }
             final boolean drained = parsed instanceof UpstreamEvent.Drained;
             if (drained) {
@@ -441,11 +480,15 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                             "live STT drained violates terminal event order"));
                 }
             }
-            return Mono.just(new RelayedEvent(client.textMessage(event), drained, false));
+            return Mono.just(new RelayedEvent(
+                    client.textMessage(event), drained, parsed instanceof UpstreamEvent.Ready, false));
         }
         if (message instanceof CopiedUpstreamMessage.Ping ping) {
             return Mono.just(new RelayedEvent(
-                    client.pingMessage(factory -> factory.wrap(ping.payload())), false, false));
+                    client.pingMessage(factory -> factory.wrap(ping.payload())),
+                    false,
+                    false,
+                    false));
         }
         return Mono.empty();
     }
@@ -757,7 +800,11 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         }
     }
 
-    private record RelayedEvent(WebSocketMessage message, boolean drained, boolean failed) {
+    private record RelayedEvent(
+            WebSocketMessage message,
+            boolean drained,
+            boolean ready,
+            boolean failed) {
         private boolean terminal() {
             return drained || failed;
         }
