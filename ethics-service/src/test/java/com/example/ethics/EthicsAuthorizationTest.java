@@ -21,6 +21,11 @@ class EthicsAuthorizationTest {
     void denyAndUnavailableBothFailClosed() {
         when(openFga.check(anyString(), anyString(), anyString(), anyString())).thenReturn(false);
         assertThat(authorization.can(staff, "case_viewer", UUID.randomUUID())).isFalse();
+        verify(openFga).check(
+                staff.subject(),
+                "case_viewer",
+                EthicsAuthorization.PRODUCT_OBJECT,
+                staff.orgId().toString());
         when(openFga.check(anyString(), anyString(), anyString(), anyString()))
                 .thenThrow(new IllegalStateException("synthetic outage"));
         assertThat(authorization.can(staff, "case_viewer", UUID.randomUUID())).isFalse();

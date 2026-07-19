@@ -10,7 +10,7 @@ import org.springframework.web.server.ResponseStatusException;
 /** Object authorization boundary. A deny and an unavailable policy engine are indistinguishable. */
 @Component
 public class EthicsAuthorization {
-    public static final String CASE_OBJECT = "ethics_case";
+    public static final String PRODUCT_OBJECT = "ethics_product";
     private final OpenFgaAuthzService openFga;
     private final OpenFgaProperties properties;
 
@@ -22,7 +22,10 @@ public class EthicsAuthorization {
     public boolean can(StaffContext staff, String relation, UUID caseId) {
         if (!properties.isEnabled()) return false;
         try {
-            return openFga.check(staff.subject(), relation, CASE_OBJECT, caseId.toString());
+            // The first deployable slice grants staff at the org-owned product
+            // object. Database queries still constrain every case by org_id.
+            // Per-case conflict and recusal tuples are a later, explicit gate.
+            return openFga.check(staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString());
         } catch (RuntimeException unavailable) {
             return false;
         }
