@@ -519,8 +519,27 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         if ("partial".equals(type)) {
             return new UpstreamEvent.Partial();
         }
+        if ("loading".equals(type)) {
+            final String stage = root.path("stage").asText("");
+            if (!("live_model".equals(stage) || "final_model".equals(stage))) {
+                throw new IllegalArgumentException("live STT loading event is invalid");
+            }
+            return new UpstreamEvent.PassThrough();
+        }
+        if ("error".equals(type)) {
+            if (!root.path("msg").isTextual()) {
+                throw new IllegalArgumentException("live STT error event is invalid");
+            }
+            return new UpstreamEvent.PassThrough();
+        }
+        if ("debug".equals(type)) {
+            if (!root.path("event").isTextual()) {
+                throw new IllegalArgumentException("live STT debug event is invalid");
+            }
+            return new UpstreamEvent.PassThrough();
+        }
         if (!"final".equals(type)) {
-            return new UpstreamEvent.Other();
+            throw new IllegalArgumentException("live STT emitted unknown event type");
         }
         final JsonNode sequence = root.path("seq");
         final JsonNode text = root.path("text");
@@ -684,7 +703,7 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
         record Partial() implements UpstreamEvent {
         }
 
-        record Other() implements UpstreamEvent {
+        record PassThrough() implements UpstreamEvent {
         }
     }
 }

@@ -25,6 +25,7 @@ final class LiveTranscriptWindowAccumulator {
     private int sampleRateHz;
     private int channels;
     private long lastWindowSeq = -1L;
+    private long lastSourceEndSample = -1L;
 
     LiveTranscriptWindowAccumulator(final int maxHistoryBytes) {
         if (maxHistoryBytes <= 0) {
@@ -63,6 +64,9 @@ final class LiveTranscriptWindowAccumulator {
             final long sourceEndSample) {
         if (windowSeq <= lastWindowSeq) {
             throw new IllegalStateException("live STT final sequence is not strictly increasing");
+        }
+        if (sourceEndSample <= lastSourceEndSample) {
+            throw new IllegalStateException("live STT final source range made no forward progress");
         }
         if (sourceStartSample < 0L || sourceEndSample <= sourceStartSample
                 || sourceEndSample > nextSample) {
@@ -116,6 +120,7 @@ final class LiveTranscriptWindowAccumulator {
                 (sourceEndSample - sourceStartSample) * 1000.0d
                         / ((long) sampleRateHz * channels)));
         lastWindowSeq = windowSeq;
+        lastSourceEndSample = sourceEndSample;
         return new Window(
                 windowSeq,
                 firstChunkSeq,

@@ -55,6 +55,20 @@ class LiveTranscriptWindowAccumulatorTest {
         assertThat(accumulator.take(0, 4, 8).sha256()).isEqualTo(sha256(5, 6, 7, 8));
     }
 
+    @Test
+    void rejectsOverlappingFinalWithoutSourceProgress() {
+        final LiveTranscriptWindowAccumulator accumulator =
+                new LiveTranscriptWindowAccumulator(16);
+        accumulator.append(frame(0, 1_000L, 1, 2, 3, 4), 1_000, 1);
+        accumulator.append(frame(1, 1_004L, 5, 6, 7, 8), 1_000, 1);
+
+        accumulator.take(0, 0, 8);
+
+        assertThatThrownBy(() -> accumulator.take(1, 4, 8))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("no forward progress");
+    }
+
     private static LiveAudioStreamFrame frame(
             final long chunkSeq, final long capturedAtMs, final int... samples) {
         return new LiveAudioStreamFrame(
