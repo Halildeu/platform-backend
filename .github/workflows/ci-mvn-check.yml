@@ -218,7 +218,7 @@ jobs:
           java-version: '21'
           cache: 'maven'
       - name: Run ethics-service tests
-        run: ./mvnw -pl ethics-service test
+        run: ./mvnw -pl ethics-service -am test
 
   transcript-service-test:
     name: transcript-service unit + Testcontainers PG test (Faz 24 #411 KVKK m.12 audit)

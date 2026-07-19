@@ -49,7 +49,13 @@ public class EthicsService {
         UUID orgId = properties.publicOrgId();
         if (request.mode()!=ReportMode.ANONYMOUS) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"REPORT_MODE_NOT_ENABLED");
         transactionLocks.lock("intake\n"+orgId+"\n"+normalizedChannel+"\n"+key);
-        String requestHash = secrets.sha256(request.mode()+"\n"+request.category()+"\n"+request.subject()+"\n"+request.description()+"\n"+request.locale()+"\n"+request.noticeVersion()+"\n"+secrets.sha256(request.accessSecret()));
+        String requestHash = secrets.sha256(canonicalField(request.mode().name())
+                +canonicalField(request.category().name())
+                +canonicalField(request.subject())
+                +canonicalField(request.description())
+                +canonicalField(request.locale())
+                +canonicalField(request.noticeVersion())
+                +canonicalField(secrets.sha256(request.accessSecret())));
         Optional<IntakeIdempotency> prior = idempotency.findByOrgIdAndChannelAndIdempotencyKey(orgId, normalizedChannel, key);
         if (prior.isPresent()) {
             if (!prior.get().getRequestHash().equals(requestHash)) throw new ResponseStatusException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT");
@@ -63,6 +69,12 @@ public class EthicsService {
         audit.save(new AuditOutbox(UUID.randomUUID(),orgId,caseId,"ethics.report.created","{\"mode\":\""+request.mode().name()+"\",\"category\":\""+request.category().name()+"\",\"channel\":\""+normalizedChannel+"\",\"noticeVersion\":\""+request.noticeVersion()+"\"}",now));
         idempotency.save(new IntakeIdempotency(UUID.randomUUID(),orgId,normalizedChannel,key,requestHash,receiptId,now));
         return new CreateReportResponse(receiptId,now,"/mailbox",false);
+    }
+
+    private static String canonicalField(String value) {
+        // A decimal byte/character count plus ':' is unambiguous even when a
+        // user-controlled field contains newlines or delimiter text.
+        return value.length()+":"+value;
     }
 
     @Transactional(noRollbackFor=ResponseStatusException.class)

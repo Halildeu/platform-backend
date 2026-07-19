@@ -12,6 +12,8 @@ import com.example.ethics.security.PublicCredentialBoundaryFilter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.List;
 import java.util.concurrent.*;
@@ -120,6 +122,25 @@ class EthicsClosedLoopIntegrationTest {
                         .header("Idempotency-Key","closed-reporter-reply").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"body\":\"Kapanmış vakaya yazılmamalı\"}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("CASE_CLOSED"));
+    }
+
+    @Test
+    void intakeIdempotencyCanonicalizationDistinguishesNewlineBoundaries() throws Exception {
+        Map<String,Object> first=new LinkedHashMap<>();
+        first.put("mode","ANONYMOUS"); first.put("category","WORKPLACE_CONDUCT");
+        first.put("subject","a\nb"); first.put("description","c"); first.put("locale","tr");
+        first.put("accessSecret",CLIENT_SECRET); first.put("noticeVersion","tr-test-pilot-v1");
+        Map<String,Object> second=new LinkedHashMap<>(first);
+        second.put("subject","a"); second.put("description","b\nc");
+
+        mvc.perform(post("/api/v1/public/ethics/reports")
+                        .header("Host","etik.acik.com").header("Idempotency-Key","newline-boundary")
+                        .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsBytes(first)))
+                .andExpect(status().isCreated());
+        mvc.perform(post("/api/v1/public/ethics/reports")
+                        .header("Host","etik.acik.com").header("Idempotency-Key","newline-boundary")
+                        .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsBytes(second)))
+                .andExpect(status().isConflict());
     }
 
     @Test
