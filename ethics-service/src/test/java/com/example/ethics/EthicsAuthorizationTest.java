@@ -31,6 +31,37 @@ class EthicsAuthorizationTest {
         assertThat(authorization.can(staff, "case_viewer", UUID.randomUUID())).isFalse();
     }
 
+    @Test
+    void conflictAndRecusalOverrideProductAccessWithoutAnExistenceSignal() {
+        UUID caseId = UUID.randomUUID();
+        when(openFga.check(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
+                .thenReturn(true);
+        when(openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
+                .thenReturn(true);
+        assertThat(authorization.can(staff, "case_viewer", caseId)).isFalse();
+
+        reset(openFga);
+        when(openFga.check(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
+                .thenReturn(true);
+        when(openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
+                .thenReturn(false);
+        when(openFga.check(staff.subject(), "recused", "ethics_case", caseId.toString()))
+                .thenReturn(true);
+        assertThat(authorization.can(staff, "case_viewer", caseId)).isFalse();
+    }
+
+    @Test
+    void productAccessWithoutConflictOrRecusalAllowsTheCase() {
+        UUID caseId = UUID.randomUUID();
+        when(openFga.check(staff.subject(), "case_viewer", EthicsAuthorization.PRODUCT_OBJECT, staff.orgId().toString()))
+                .thenReturn(true);
+        when(openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString()))
+                .thenReturn(false);
+        when(openFga.check(staff.subject(), "recused", "ethics_case", caseId.toString()))
+                .thenReturn(false);
+        assertThat(authorization.can(staff, "case_viewer", caseId)).isTrue();
+    }
+
     private static OpenFgaProperties enabledProperties() {
         var value = new OpenFgaProperties();
         value.setEnabled(true);

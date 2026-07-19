@@ -20,12 +20,17 @@ public class EthicsAuthorization {
     }
 
     public boolean can(StaffContext staff, String relation, UUID caseId) {
-        if (!properties.isEnabled()) return false;
+        if (!properties.isEnabled() || caseId == null) return false;
         try {
-            // The first deployable slice grants staff at the org-owned product
-            // object. Database queries still constrain every case by org_id.
-            // Per-case conflict and recusal tuples are a later, explicit gate.
-            return openFga.check(staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString());
+            // Product entitlement and the DB org predicate are necessary but
+            // not sufficient: a conflicted/recused actor must disappear at the
+            // object boundary without receiving a case-existence signal.
+            if (!openFga.check(staff.subject(), relation, PRODUCT_OBJECT, staff.orgId().toString())) {
+                return false;
+            }
+            boolean conflicted = openFga.check(staff.subject(), "conflicted", "ethics_case", caseId.toString());
+            boolean recused = openFga.check(staff.subject(), "recused", "ethics_case", caseId.toString());
+            return !conflicted && !recused;
         } catch (RuntimeException unavailable) {
             return false;
         }

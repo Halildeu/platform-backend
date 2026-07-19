@@ -43,9 +43,11 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
         if (hasAuthorization || hasForeignCookie) {
             response.setStatus(400);
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            Object requestId = request.getAttribute(SensitiveResponseHeadersFilter.REQUEST_ID_ATTRIBUTE);
             mapper.writeValue(response.getOutputStream(), Map.of("error", Map.of(
                     "code", "CREDENTIAL_CONFUSION",
-                    "message", "Bu public işlem için suite kimlik bilgisi kullanılamaz.")));
+                    "message", "Bu public işlem için suite kimlik bilgisi kullanılamaz.",
+                    "requestId", requestId == null ? "unavailable" : requestId.toString())));
             return;
         }
         chain.doFilter(request, response);

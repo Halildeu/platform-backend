@@ -102,7 +102,9 @@ class EthicsClosedLoopIntegrationTest {
     @Test
     void credentialAndOrganizationBoundariesFailClosed() throws Exception {
         mvc.perform(post("/api/v1/public/ethics/reports").header("Authorization","Bearer suite-token").header("Host","speakup.acik.com").header("Idempotency-Key","deny-1").contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("CREDENTIAL_CONFUSION"));
+                .andExpect(status().isBadRequest()).andExpect(header().exists("X-Request-Id"))
+                .andExpect(jsonPath("$.error.code").value("CREDENTIAL_CONFUSION"))
+                .andExpect(jsonPath("$.error.requestId", not(emptyString())));
         mvc.perform(get("/api/v1/ethics/cases")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/v1/ethics/cases").with(jwt().jwt(j->j.subject("staff-1").claim("org_id",UUID.randomUUID().toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$",hasSize(0)));
@@ -149,7 +151,8 @@ class EthicsClosedLoopIntegrationTest {
         String caseId=mapper.readTree(list.getResponse().getContentAsString()).get(0).get("id").asText();
         var staff=jwt().jwt(j->j.subject("staff-1").claim("org_id",ORG.toString())).authorities(new SimpleGrantedAuthority("SCOPE_ethics:case:manage"));
         mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"").contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"IN_REVIEW\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.version").value(1));
+                .andExpect(status().isOk()).andExpect(header().string("ETag","\"1\""))
+                .andExpect(jsonPath("$.version").value(1));
         mvc.perform(patch("/api/v1/ethics/cases/{id}",caseId).with(staff).header("If-Match","\"0\"").contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CLOSED\"}"))
                 .andExpect(status().isPreconditionFailed()).andExpect(jsonPath("$.error.code").value("CASE_VERSION_MISMATCH"));
     }
