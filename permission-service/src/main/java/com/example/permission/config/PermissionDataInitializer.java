@@ -172,6 +172,16 @@ public class PermissionDataInitializer implements CommandLineRunner {
     private static final GranuleSeed TRANSCRIPT_ADMIN_GRANULE = new GranuleSeed(
             PermissionType.MODULE, "TRANSCRIPT", GrantType.MANAGE);
 
+    /**
+     * Endpoint Admin is a platform-admin surface. Keep the legacy lowercase
+     * object id because endpoint-admin-service checks
+     * {@code module:endpoint-admin}; TupleSyncService writes the key verbatim.
+     * The dedicated ENDPOINT_ADMIN_VIEWER role remains the least-privilege
+     * delegation path for non-admin users.
+     */
+    private static final GranuleSeed ENDPOINT_ADMIN_ADMIN_GRANULE = new GranuleSeed(
+            PermissionType.MODULE, "endpoint-admin", GrantType.MANAGE);
+
     private static final Map<String, List<GranuleSeed>> DEFAULT_ROLE_GRANULES = Map.ofEntries(
             Map.entry("ADMIN",           buildAdminGranules()),
             Map.entry("REPORT_MANAGER",  combine(
@@ -206,7 +216,8 @@ public class PermissionDataInitializer implements CommandLineRunner {
      * ADMIN granule seed list = dashboard MANAGE (HR + Finans) + report_group
      * MANAGE (R16 PR-B-2) + dedicated IMPERSONATION_AUDIT MANAGE module
      * grant (PR-D2) + SUGGESTIONS / ETHIC MANAGE module grants + Faz 24
-     * MEETING / TRANSCRIPT MANAGE module grants (ADR-0041 §5).
+     * MEETING / TRANSCRIPT MANAGE module grants (ADR-0041 §5) + the
+     * endpoint-admin MANAGE platform-admin grant.
      */
     private static List<GranuleSeed> buildAdminGranules() {
         List<GranuleSeed> out = new ArrayList<>(buildDashboardGranules(
@@ -220,6 +231,7 @@ public class PermissionDataInitializer implements CommandLineRunner {
         // meeting-service (#410) + transcript-service (#411).
         out.add(MEETING_ADMIN_GRANULE);
         out.add(TRANSCRIPT_ADMIN_GRANULE);
+        out.add(ENDPOINT_ADMIN_ADMIN_GRANULE);
         // Defense in depth: an explicit-grant-only module must not become an
         // ADMIN seed merely because a future catalog/admin list is broadened.
         return out.stream()
