@@ -106,6 +106,10 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 + "\"elapsed_ms\":12,\"rms\":0.02,\"source\":\"fixture-live\"}";
     }
 
+    private static String audioAcknowledgement(final long sequence) {
+        return "{\"type\":\"audio_ack\",\"chunk_seq\":" + sequence + "}";
+    }
+
     private AudioSessionRegistry sessions;
     private AudioGatewayAuditSink auditSink;
     private SimpleMeterRegistry meters;
@@ -235,7 +239,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         // Settle: success = all frames relayed; failure = the bridge closed the client.
         final Instant deadline = Instant.now().plus(TEST_TIMEOUT);
         while (Instant.now().isBefore(deadline)
-                && relayedToClient.size() < frameCount + 1
+                && relayedToClient.size() < (frameCount * 2) + 1
                 && closeStatus.get() == null) {
             sleepQuietly();
         }
@@ -266,7 +270,16 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         // (d) Every upstream event was relayed back to the client.
         assertThat(relayedToClient)
                 .as("events relayed to the client (bridge warns: %s)", warnMessages())
-                .hasSize(frameCount + 1);
+                .hasSize((frameCount * 2) + 1);
+        assertThat(relayedToClient.stream()
+                        .map(WebSocketMessage::getPayloadAsText)
+                        .toList())
+                .contains(
+                        READY_EVENT,
+                        audioAcknowledgement(0L),
+                        audioAcknowledgement(1L),
+                        audioAcknowledgement(2L));
+        assertThat(relayedToClient.getFirst().getPayloadAsText()).isEqualTo(READY_EVENT);
     }
 
     @Test
@@ -313,6 +326,7 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 new NettyDataBufferFactory(UnpooledByteBufAllocator.DEFAULT);
         final Sinks.Many<WebSocketMessage> clientInbound =
                 Sinks.many().unicast().onBackpressureBuffer();
+        final List<String> relayedText = new CopyOnWriteArrayList<>();
         final AtomicReference<CloseStatus> closeStatus = new AtomicReference<>();
         final WebSocketSession client = mock(WebSocketSession.class);
         when(client.getHandshakeInfo()).thenReturn(new HandshakeInfo(
@@ -323,7 +337,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         when(client.textMessage(anyString())).thenAnswer(invocation ->
                 textFrame(clientFactory, invocation.getArgument(0)));
         when(client.send(any(Publisher.class))).thenAnswer(invocation ->
-                Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0)).then());
+                Flux.from(invocation.<Publisher<WebSocketMessage>>getArgument(0))
+                        .doOnNext(message -> relayedText.add(message.getPayloadAsText()))
+                        .then());
         when(client.close(any(CloseStatus.class))).thenAnswer(invocation -> {
             closeStatus.set(invocation.getArgument(0));
             return Mono.empty();
@@ -339,7 +355,10 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 || meters.counter(
                         "audio_gateway_live_stream_frames_total", "outcome", "accepted").count() < 1
                 || meters.counter(
-                        "audio_gateway_live_stream_frames_total", "outcome", "duplicate").count() < 1)
+                        "audio_gateway_live_stream_frames_total", "outcome", "duplicate").count() < 1
+                || relayedText.stream()
+                        .filter(audioAcknowledgement(0L)::equals)
+                        .count() < 2)
                 && closeStatus.get() == null) {
             sleepQuietly();
         }
@@ -353,6 +372,10 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
                 .isEqualTo(1.0d);
         assertThat(realRegistry.get(session.sessionId()).orElseThrow().lastAcceptedChunkSeq())
                 .isEqualTo(0L);
+        assertThat(relayedText)
+                .filteredOn(audioAcknowledgement(0L)::equals)
+                .as("accepted and duplicate deliveries both acknowledge the canonical frame")
+                .hasSize(2);
         assertThat(closeStatus.get()).isNull();
     }
 
@@ -503,7 +526,10 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         }
 
         assertThat(eofReceived).isTrue();
-        assertThat(relayedText).containsExactly(
+        assertThat(relayedText).contains(audioAcknowledgement(0L));
+        assertThat(relayedText)
+                .filteredOn(event -> !event.equals(audioAcknowledgement(0L)))
+                .containsExactly(
                 READY_EVENT,
                 partialEvent(0L),
                 "{\"type\":\"eof_ack\"}",
@@ -795,7 +821,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
         assertThat(closeStatus.get()).isEqualTo(CloseStatus.SERVER_ERROR);
         assertThat(relayedText)
                 .as("an unpersisted final must never be shown to the desktop client")
-                .containsExactly(READY_EVENT);
+                .contains(READY_EVENT, audioAcknowledgement(0L));
+        assertThat(relayedText)
+                .noneMatch(event -> event.contains("\"type\":\"final\""));
         assertThat(meters.counter(
                         "audio_gateway_live_stream_transcript_results_total",
                         "outcome", "persisted").count())
@@ -877,7 +905,9 @@ class LiveSttWebSocketProxyHandlerLoopbackTest {
             }
 
             assertThat(closeStatus.get()).isEqualTo(CloseStatus.SERVER_ERROR);
-            assertThat(relayedText).containsExactly(READY_EVENT);
+            assertThat(relayedText).contains(READY_EVENT, audioAcknowledgement(0L));
+            assertThat(relayedText)
+                    .noneMatch(event -> event.contains("\"type\":\"final\""));
             assertThat(meters.counter(
                             "audio_gateway_live_stream_transcript_results_total",
                             "outcome", "persisted").count())
