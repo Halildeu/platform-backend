@@ -120,9 +120,17 @@ class VaultTransitViewOnlySigningClientTest {
     @Test
     @SuppressWarnings("unchecked")
     void sendsBoundedTransitRequestAndAcceptsOnlyPinnedVersionEd25519Signature() throws Exception {
+        KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        byte[] publicKey = Arrays.copyOfRange(
+                pair.getPublic().getEncoded(), pair.getPublic().getEncoded().length - 32,
+                pair.getPublic().getEncoded().length);
+        byte[] pae = "DSSEv1 payload".getBytes(StandardCharsets.UTF_8);
+        Signature signer = Signature.getInstance("Ed25519");
+        signer.initSign(pair.getPrivate());
+        signer.update(pae);
+        byte[] expected = signer.sign();
         HttpClient http = mock(HttpClient.class);
         HttpResponse<InputStream> response = mock(HttpResponse.class);
-        byte[] expected = new byte[64];
         String json = "{\"data\":{\"signature\":\"vault:v1:"
                 + Base64.getEncoder().encodeToString(expected) + "\"}}";
         when(response.statusCode()).thenReturn(200);
@@ -130,11 +138,12 @@ class VaultTransitViewOnlySigningClientTest {
         when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
         char[] token = "hvs.unit-test".toCharArray();
         ViewOnlyVaultTokenSource tokenSource = () -> token;
+        ViewOnlyAuthorityProperties properties = ViewOnlyAuthorityPropertiesTest.enabledProperties();
+        properties.setVaultTransitPublicKeySha256(fingerprint(publicKey));
         VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
-                ViewOnlyAuthorityPropertiesTest.enabledProperties(), tokenSource, http, new ObjectMapper(),
-                new byte[32]);
+                properties, tokenSource, http, new ObjectMapper(), publicKey);
 
-        assertThat(client.sign("DSSEv1 payload".getBytes(StandardCharsets.UTF_8))).isEqualTo(expected);
+        assertThat(client.sign(pae)).isEqualTo(expected);
 
         ArgumentCaptor<HttpRequest> request = ArgumentCaptor.forClass(HttpRequest.class);
         verify(http).send(request.capture(), any(HttpResponse.BodyHandler.class));
@@ -142,6 +151,31 @@ class VaultTransitViewOnlySigningClientTest {
                 .isEqualTo("https://vault.testai.acik.com/v1/endpoint-admin/sign/view-only-checkpoint");
         assertThat(request.getValue().headers().firstValue("X-Vault-Token")).contains("hvs.unit-test");
         assertThat(token).containsOnly('\0');
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void rejectsPinnedVersionSignatureThatDoesNotVerifyAgainstRuntimeRoot() throws Exception {
+        KeyPair pair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        byte[] publicKey = Arrays.copyOfRange(
+                pair.getPublic().getEncoded(), pair.getPublic().getEncoded().length - 32,
+                pair.getPublic().getEncoded().length);
+        HttpClient http = mock(HttpClient.class);
+        HttpResponse<InputStream> response = mock(HttpResponse.class);
+        String json = "{\"data\":{\"signature\":\"vault:v1:"
+                + Base64.getEncoder().encodeToString(new byte[64]) + "\"}}";
+        when(response.statusCode()).thenReturn(200);
+        when(response.body()).thenReturn(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class))).thenReturn(response);
+        ViewOnlyAuthorityProperties properties = ViewOnlyAuthorityPropertiesTest.enabledProperties();
+        properties.setVaultTransitPublicKeySha256(fingerprint(publicKey));
+        VaultTransitViewOnlySigningClient client = new VaultTransitViewOnlySigningClient(
+                properties, () -> "hvs.unit-test".toCharArray(), http, new ObjectMapper(), publicKey);
+
+        assertThatThrownBy(() -> client.sign("DSSEv1 payload".getBytes(StandardCharsets.UTF_8)))
+                .isInstanceOf(ViewOnlyAuthorityException.class)
+                .extracting(error -> ((ViewOnlyAuthorityException) error).reason())
+                .isEqualTo(ViewOnlyAuthorityError.SIGNING_UNAVAILABLE);
     }
 
     @Test

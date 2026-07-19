@@ -17,6 +17,7 @@ import java.util.regex.Pattern;
 public final class ViewOnlyGithubOidcValidator implements OAuth2TokenValidator<Jwt> {
     static final String REPOSITORY = "Halildeu/platform-k8s-gitops";
     static final String REPOSITORY_ID = "1211415632";
+    static final long REPOSITORY_ID_NUMBER = 1_211_415_632L;
     static final String OWNER = "Halildeu";
     static final String OWNER_ID = "186576227";
     static final String WORKFLOW_PATH = ".github/workflows/faz22-6-view-only-viewer-transaction.yml";

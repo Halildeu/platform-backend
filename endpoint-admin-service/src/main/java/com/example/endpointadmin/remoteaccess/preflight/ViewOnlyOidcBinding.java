@@ -6,6 +6,7 @@ import java.util.regex.Pattern;
 
 /** Exact signed binding fields that a verified GitHub OIDC token must equal. */
 public record ViewOnlyOidcBinding(
+        long repositoryId,
         long triggeringActorId,
         long runId,
         int runAttempt,
@@ -17,7 +18,8 @@ public record ViewOnlyOidcBinding(
                     + "[89ab][0-9a-f]{3}-[0-9a-f]{12}");
 
     public ViewOnlyOidcBinding {
-        if (triggeringActorId < 1 || runId < 1 || runAttempt != 1
+        if (repositoryId != ViewOnlyGithubOidcValidator.REPOSITORY_ID_NUMBER
+                || triggeringActorId < 1 || runId < 1 || runAttempt != 1
                 || intentRef == null || !INTENT_REF.matcher(intentRef).matches()
                 || headSha == null || !headSha.matches("[0-9a-f]{40}")) {
             throw new ViewOnlyAuthorityException(
@@ -28,11 +30,13 @@ public record ViewOnlyOidcBinding(
     public static ViewOnlyOidcBinding fromJson(JsonNode binding) {
         ViewOnlyTransactionBinding.requireExact(binding);
         JsonNode actor = binding.get("triggeringActorId");
+        JsonNode repository = binding.get("repositoryId");
         JsonNode run = binding.get("runId");
         JsonNode attempt = binding.get("runAttempt");
         JsonNode intentRef = binding.get("intentRef");
         JsonNode headSha = binding.get("headSha");
-        if (actor == null || !actor.isIntegralNumber() || !actor.canConvertToLong()
+        if (repository == null || !repository.isIntegralNumber() || !repository.canConvertToLong()
+                || actor == null || !actor.isIntegralNumber() || !actor.canConvertToLong()
                 || run == null || !run.isIntegralNumber() || !run.canConvertToLong()
                 || attempt == null || !attempt.isIntegralNumber() || !attempt.canConvertToInt()
                 || intentRef == null || !intentRef.isTextual()
@@ -40,7 +44,7 @@ public record ViewOnlyOidcBinding(
             throw invalid();
         }
         return new ViewOnlyOidcBinding(
-                actor.longValue(), run.longValue(), attempt.intValue(),
+                repository.longValue(), actor.longValue(), run.longValue(), attempt.intValue(),
                 intentRef.textValue(), headSha.textValue());
     }
 

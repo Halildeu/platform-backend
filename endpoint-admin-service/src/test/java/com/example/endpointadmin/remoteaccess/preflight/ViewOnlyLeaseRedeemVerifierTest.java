@@ -164,7 +164,7 @@ class ViewOnlyLeaseRedeemVerifierTest {
         ViewOnlyOidcCaller caller = new ViewOnlyOidcCallerFactory(
                 canonicalizer, ViewOnlyAuthorityProperties.CANONICAL_OIDC_JTI_DIGEST_DOMAIN).create(
                 authorizationJwt(), ViewOnlyGithubOidcProfile.AUTHORIZATION,
-                new ViewOnlyOidcBinding(186576227L, 29678094664L, 1, REF, SHA));
+                new ViewOnlyOidcBinding(1211415632L, 186576227L, 29678094664L, 1, REF, SHA));
         ObjectNode projection = canonicalizer.mapper().createObjectNode();
         projection.put("domain", "faz22.6/view-only/checkpoint-lease-redeem-idempotency/v1");
         projection.put("requestId", request.get("requestId").textValue());

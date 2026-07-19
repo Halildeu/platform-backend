@@ -39,7 +39,7 @@ class ViewOnlyCheckpointCreateVerifierTest {
                 canonicalizer, 186576227L, 29678094664L);
         lease = new VerifiedViewOnlyLeaseEnvelope(
                 LEASE_ID, DIGEST_A, DIGEST_B, DIGEST_C, binding,
-                new ViewOnlyOidcBinding(186576227L, 29678094664L, 1, REF, SHA),
+                new ViewOnlyOidcBinding(1211415632L, 186576227L, 29678094664L, 1, REF, SHA),
                 DIGEST_A, DIGEST_B, DIGEST_C, NOW.plusSeconds(900), false, 0, 63, 64);
         verifier = new ViewOnlyCheckpointCreateVerifier(
                 canonicalizer, (envelope, now) -> lease, callerFactory, CLOCK, DOMAIN);

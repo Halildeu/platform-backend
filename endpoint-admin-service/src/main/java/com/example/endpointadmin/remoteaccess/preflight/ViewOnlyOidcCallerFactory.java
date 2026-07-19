@@ -26,7 +26,8 @@ public final class ViewOnlyOidcCallerFactory {
         int runAttempt = Math.toIntExact(positiveLong(jwt, "run_attempt"));
         String ref = text(jwt, "ref");
         String headSha = text(jwt, "sha");
-        if (actorId != binding.triggeringActorId()
+        if (repositoryId != binding.repositoryId()
+                || actorId != binding.triggeringActorId()
                 || runId != binding.runId()
                 || runAttempt != binding.runAttempt()
                 || !ref.equals(binding.intentRef())

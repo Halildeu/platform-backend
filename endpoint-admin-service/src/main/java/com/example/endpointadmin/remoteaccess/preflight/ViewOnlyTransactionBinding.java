@@ -45,7 +45,8 @@ public final class ViewOnlyTransactionBinding {
         if (!fields.equals(EXACT_FIELDS)) {
             throw invalid("transaction binding fields do not match the exact v3 contract");
         }
-        requireLong(binding, "repositoryId", 1, 9_007_199_254_740_991L);
+        requireLong(binding, "repositoryId", ViewOnlyGithubOidcValidator.REPOSITORY_ID_NUMBER,
+                ViewOnlyGithubOidcValidator.REPOSITORY_ID_NUMBER);
         requireLong(binding, "runId", 1, 9_007_199_254_740_991L);
         requireLong(binding, "triggeringActorId", 1, 9_007_199_254_740_991L);
         requireInteger(binding, "runAttempt", 1, 1);

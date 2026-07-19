@@ -173,9 +173,11 @@ public final class VaultTransitViewOnlySigningClient implements ViewOnlyTransitS
             } catch (IllegalArgumentException invalidBase64) {
                 throw unavailable("Vault Transit signature is not valid base64", invalidBase64);
             }
-            if (signature.length != 64) {
+            if (signature.length != 64
+                    || !verifyEd25519(expectedPublicKey, preAuthenticationEncoding, signature)) {
                 Arrays.fill(signature, (byte) 0);
-                throw unavailable("Vault Transit did not return one 64-byte Ed25519 signature", null);
+                throw unavailable(
+                        "Vault Transit signature is not verifiable by the runtime trust root", null);
             }
             return signature;
         } finally {
