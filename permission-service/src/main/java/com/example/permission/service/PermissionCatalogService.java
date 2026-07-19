@@ -39,9 +39,9 @@ public class PermissionCatalogService {
             // Faz 22.5 GA (gitops#1440): endpoint-admin module joins the catalog so
             // the access UI role drawer can grant it (until now grants required an
             // out-of-band OpenFGA tuple seed — RB-22-1-1) and /authz/me resolves it
-            // for tuple-holders. Deliberately NOT seeded into the ADMIN role by
-            // PermissionDataInitializer: owner decision (2026-06-10) keeps device
-            // management opt-in per user/role, not blanket-admin.
+            // for tuple-holders. ADMIN receives MANAGE through the initializer so
+            // the platform-wide ADMIN contract is durable; ENDPOINT_ADMIN_VIEWER
+            // remains the least-privilege read-only delegation path.
             new ModuleCatalogItem("ENDPOINT_ADMIN", "Cihaz Kayıt Yönetimi", List.of("VIEW", "MANAGE")),
             // Faz 24 Meeting Intelligence (ADR-0041 §5 prod-promotion gate): meeting-service
             // (#410) + transcript-service (#411) admin endpoints are @RequireModule-gated on

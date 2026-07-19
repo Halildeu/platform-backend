@@ -159,6 +159,8 @@ class PermissionDataInitializerImpersonationAdminSeedTest {
                 admin, PermissionType.MODULE, "MEETING", GrantType.MANAGE));
         admin.addRolePermission(new RolePermission(
                 admin, PermissionType.MODULE, "TRANSCRIPT", GrantType.MANAGE));
+        admin.addRolePermission(new RolePermission(
+                admin, PermissionType.MODULE, "endpoint-admin", GrantType.MANAGE));
         when(roleRepository.findAll()).thenReturn(List.of(admin));
 
         initializer.run();
@@ -261,6 +263,31 @@ class PermissionDataInitializerImpersonationAdminSeedTest {
                     .as("granule shortcut row must have permission_id NULL")
                     .isNull();
         }
+    }
+
+    @Test
+    void run_freshAdminRole_seedsEndpointAdminManageAndPublishesPropagationEvent() throws Exception {
+        Role admin = adminRoleWithGranuleMarker(99L);
+        when(roleRepository.findAll()).thenReturn(List.of(admin));
+
+        initializer.run();
+
+        ArgumentCaptor<RolePermission> rpCaptor = ArgumentCaptor.forClass(RolePermission.class);
+        verify(rolePermissionRepository, atLeastOnce()).save(rpCaptor.capture());
+        RolePermission endpointAdminGrant = rpCaptor.getAllValues().stream()
+                .filter(rp -> rp.getPermissionType() == PermissionType.MODULE
+                        && "endpoint-admin".equals(rp.getPermissionKey()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "ADMIN must get MODULE:endpoint-admin:MANAGE granule"));
+
+        assertThat(endpointAdminGrant.getGrantType()).isEqualTo(GrantType.MANAGE);
+        assertThat(endpointAdminGrant.getRole()).isSameAs(admin);
+        assertThat(endpointAdminGrant.getPermission()).isNull();
+        verify(eventPublisher).publishEvent(argThat((Object event) ->
+                event instanceof RoleChangeEvent rce
+                        && rce.roleId() != null
+                        && rce.roleId() == 99L));
     }
 
     @Test
