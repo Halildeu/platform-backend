@@ -1,0 +1,21 @@
+package com.example.endpointadmin.remoteaccess.preflight;
+
+/** Stable, non-secret reason codes returned by the fixed-function authority. */
+public enum ViewOnlyAuthorityError {
+    CONTRACT_INVALID,
+    IDEMPOTENCY_CONFLICT,
+    AUTHORITY_CONSUMED,
+    LEASE_NOT_FOUND,
+    CHECKPOINT_NOT_FOUND,
+    LEASE_EXPIRED,
+    LEASE_CLOSED,
+    LEASE_BINDING_MISMATCH,
+    EXECUTOR_IDENTITY_MISMATCH,
+    SEQUENCE_CONFLICT,
+    PREVIOUS_CHECKPOINT_MISMATCH,
+    STATE_TRANSITION_DENIED,
+    TERMINAL_FLAG_INVALID,
+    WRITE_LIMIT_EXCEEDED,
+    SIGNING_UNAVAILABLE,
+    CHECKPOINT_STORE_UNAVAILABLE
+}
