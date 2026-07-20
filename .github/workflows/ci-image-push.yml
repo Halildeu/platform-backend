@@ -37,6 +37,8 @@ on:
           - ethics-service
 
 permissions:
+  id-token: write
+  attestations: write
   contents: read
   packages: write
 
@@ -116,6 +118,14 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
           provenance: false
+
+      - name: Sign GitHub artifact provenance
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
       - name: Summary — digest (19.9 pin için kanıt)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
