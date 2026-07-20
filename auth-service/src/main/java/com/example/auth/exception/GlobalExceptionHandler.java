@@ -11,9 +11,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -95,6 +98,34 @@ public class GlobalExceptionHandler {
                     .body(response.getBody());
         }
         return response;
+    }
+
+    // #2555 Slice-D-parity — malformed JSON body (e.g. POST /auth/login
+    // with truncated payload) previously fell through Exception.class →
+    // 500. Client-side error → 400.
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleUnreadable(HttpMessageNotReadableException ex) {
+        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "İstek gövdesi okunamadı (geçersiz JSON).");
+    }
+
+    // #2555 Slice-D-parity — path variable or query param type mismatch.
+    // Instead of a generic 500, return 400 with the offending field name
+    // and expected type so callers can correct their request.
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        String expected = ex.getRequiredType() == null ? "unknown" : ex.getRequiredType().getSimpleName();
+        FieldError fe = new FieldError(ex.getName(),
+                "Geçersiz tip: " + ex.getValue() + " (beklenen: " + expected + ")");
+        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Geçersiz parametre tipi.", List.of(fe));
+    }
+
+    // #2555 Slice-D-parity — required query/header parameter missing.
+    // 400 + fieldErrors[].field naming the missing parameter.
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParameter(MissingServletRequestParameterException ex) {
+        FieldError fe = new FieldError(ex.getParameterName(),
+                "Zorunlu parametre eksik (tip: " + ex.getParameterType() + ")");
+        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "Zorunlu parametre eksik.", List.of(fe));
     }
 
     @ExceptionHandler(Exception.class)
