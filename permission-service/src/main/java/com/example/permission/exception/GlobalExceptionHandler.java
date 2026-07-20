@@ -12,8 +12,10 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
@@ -55,6 +57,36 @@ public class GlobalExceptionHandler {
                 .map(error -> new FieldError(error.getField(), error.getDefaultMessage()))
                 .toList();
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
+    }
+
+    // #2555 Slice C — Spring @RequestParam bind failures must surface as 400,
+    // not the generic Exception.class catch-all 500. Same pattern already used
+    // in transcript-service / endpoint-admin-service GlobalExceptionHandler.
+    // Reported via GET /api/v1/access/scope: invalid UUID / Long or missing
+    // required param produced INTERNAL_ERROR 500 in prior behavior; each is
+    // a user-input error and belongs at 4xx.
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleArgumentTypeMismatch(
+            MethodArgumentTypeMismatchException ex) {
+        String paramName = ex.getName();
+        String requiredType = ex.getRequiredType() != null
+                ? ex.getRequiredType().getSimpleName()
+                : "?";
+        String message = "Invalid value for parameter '" + paramName
+                + "' (expected " + requiredType + ").";
+        List<FieldError> fieldErrors = List.of(new FieldError(paramName, message));
+        return build(HttpStatus.BAD_REQUEST, "INVALID_PARAMETER", message, fieldErrors);
+    }
+
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingRequestParam(
+            MissingServletRequestParameterException ex) {
+        String paramName = ex.getParameterName();
+        String paramType = ex.getParameterType();
+        String message = "Missing required parameter '" + paramName
+                + "' (" + paramType + ").";
+        List<FieldError> fieldErrors = List.of(new FieldError(paramName, message));
+        return build(HttpStatus.BAD_REQUEST, "MISSING_PARAMETER", message, fieldErrors);
     }
 
     @ExceptionHandler(Exception.class)
