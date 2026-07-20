@@ -4,6 +4,8 @@ import com.example.audiogateway.service.AudioChunkDispatcher;
 import com.example.audiogateway.service.AudioGatewayAuditSink;
 import com.example.audiogateway.service.DirectSttForwardingDispatcher;
 import com.example.audiogateway.service.DirectSttTranscriptResultSink;
+import com.example.audiogateway.service.LiveAnalyzeTrigger;
+import com.example.audiogateway.service.LiveAnalyzeTriggerSink;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 
@@ -132,6 +134,83 @@ public class DirectSttConfig {
     @ConditionalOnMissingBean(DirectSttTranscriptResultSink.class)
     public DirectSttTranscriptResultSink noOpDirectSttTranscriptResultSink() {
         return DirectSttTranscriptResultSink.noop();
+    }
+
+    /**
+     * Faz 24 İ4 — WebClient dedicated to the meeting-ai {@code /analyze/live}
+     * hop. Bounded connect + response timeout so a slow meeting-ai never
+     * back-pressures the STT forwarding path. NOT the audio WebClient: this
+     * is a JSON POST to a different host and belongs on its own bean.
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.live-analyze",
+            name = "enabled",
+            havingValue = "true")
+    public WebClient meetingAiLiveAnalyzeWebClient(final AudioGatewayProperties props) {
+        final AudioGatewayProperties.DirectStt.LiveAnalyze cfg =
+                props.getDirectStt().getLiveAnalyze();
+        cfg.validate();
+        final HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, cfg.getTimeoutMs())
+                .responseTimeout(Duration.ofMillis(cfg.getTimeoutMs()));
+        return WebClient.builder()
+                .baseUrl(cfg.getBaseUrl().trim().replaceAll("/+$", ""))
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .defaultHeader("Content-Type", "application/json")
+                .build();
+    }
+
+    /**
+     * Faz 24 İ4 — the aggregator that turns per-meeting transcript results into
+     * cadenced {@code /analyze/live} POSTs. Bean present only when the config
+     * enables live-analyze; otherwise the sink chain is unchanged.
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.live-analyze",
+            name = "enabled",
+            havingValue = "true")
+    public LiveAnalyzeTrigger liveAnalyzeTrigger(
+            final AudioGatewayProperties props,
+            @org.springframework.beans.factory.annotation.Qualifier("meetingAiLiveAnalyzeWebClient")
+            final WebClient meetingAiLiveAnalyzeWebClient,
+            final MeterRegistry meters) {
+        final AudioGatewayProperties.DirectStt.LiveAnalyze cfg =
+                props.getDirectStt().getLiveAnalyze();
+        return new LiveAnalyzeTrigger(
+                meetingAiLiveAnalyzeWebClient,
+                cfg.getSegmentWindow(),
+                cfg.getBearerToken(),
+                Duration.ofMillis(cfg.getTimeoutMs()),
+                meters);
+    }
+
+    /**
+     * Faz 24 İ4 — decorator sink: forwards to the base durable sink first
+     * (Redis stream), then feeds the live-analyze aggregator best-effort.
+     *
+     * <p>{@code @Primary} so it wins DI resolution over the base
+     * {@link DirectSttTranscriptResultSink}. The base is looked up via an
+     * {@link ObjectProvider} filter so we do not inject the decorator into
+     * itself (Spring footgun mirror of the {@code AudioChunkDispatcher}
+     * decorator above).
+     */
+    @Bean
+    @Primary
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.live-analyze",
+            name = "enabled",
+            havingValue = "true")
+    public DirectSttTranscriptResultSink liveAnalyzeTriggerSink(
+            final ObjectProvider<DirectSttTranscriptResultSink> sinkProvider,
+            final LiveAnalyzeTrigger trigger) {
+        final DirectSttTranscriptResultSink base = sinkProvider
+                .orderedStream()
+                .filter(s -> !(s instanceof LiveAnalyzeTriggerSink))
+                .findFirst()
+                .orElse(DirectSttTranscriptResultSink.noop());
+        return new LiveAnalyzeTriggerSink(base, trigger);
     }
 
     /**
