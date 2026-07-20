@@ -78,6 +78,21 @@ class OpenFgaAuthzServiceNoCacheTest {
         when(client.check(any(ClientCheckRequest.class)))
                 .thenReturn(CompletableFuture.failedFuture(new RuntimeException("connection refused")));
         assertFalse(service.checkNoCache("u1", "viewer", "control_instance", "1"));
+        var result = service.checkNoCacheResult("u1", "viewer", "control_instance", "1");
+        assertFalse(result.allowed());
+        assertEquals("unavailable", result.reason());
+    }
+
+    @Test
+    void checkNoCacheResult_distinguishesHealthyDenyFromUnavailable() throws Exception {
+        var denied = mock(ClientCheckResponse.class);
+        when(denied.getAllowed()).thenReturn(false);
+        when(client.check(any(ClientCheckRequest.class)))
+                .thenReturn(CompletableFuture.completedFuture(denied));
+
+        var result = service.checkNoCacheResult("u1", "conflicted", "ethics_case", "case-1");
+        assertFalse(result.allowed());
+        assertEquals("no_relation", result.reason());
     }
 
     @Test

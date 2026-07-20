@@ -1,0 +1,31 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:ethics-${random.uuid};MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        default_schema: public
+  flyway:
+    enabled: true
+    default-schema: public
+    schemas: public
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://issuer.example.test
+          jwk-set-uri: http://issuer.example.test/jwks
+ethics:
+  public-org-id: 00000000-0000-0000-0000-000000000035
+  secret-iterations: 120000
+  staff-audience: ethics-manager
+  staff-role: ethics-manager
+  secure-transport-required: false
+erp:
+  openfga:
+    enabled: false

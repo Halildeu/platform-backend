@@ -34,8 +34,11 @@ on:
           - meeting-service
           - transcript-service
           - audit-event-consumer-service
+          - ethics-service
 
 permissions:
+  id-token: write
+  attestations: write
   contents: read
   packages: write
 
@@ -68,19 +71,20 @@ jobs:
           - meeting-service
           - transcript-service
           - audit-event-consumer-service
+          - ethics-service
 
     steps:
       - name: Checkout
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Docker Buildx
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GHCR
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -89,31 +93,50 @@ jobs:
       - name: Derive short SHA
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
         id: sha
-        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "short=${SOURCE_SHA:0:7}"
+            echo 'tags<<EOF'
+            echo "${REGISTRY}/${IMAGE_OWNER}/platform-backend-${{ matrix.service }}:sha-${SOURCE_SHA:0:7}"
+            if [[ "${GITHUB_EVENT_NAME}" == push && "${GITHUB_REF}" == refs/heads/main ]]; then
+              echo "${REGISTRY}/${IMAGE_OWNER}/platform-backend-${{ matrix.service }}:latest"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build + Push image
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.service }}/Dockerfile
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:latest
+          tags: ${{ steps.sha.outputs.tags }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
           provenance: false
 
+      - name: Sign GitHub artifact provenance
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
       - name: Summary — digest (19.9 pin için kanıt)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.service }}
         run: |
-          echo "### ${{ matrix.service }} image push" >> $GITHUB_STEP_SUMMARY
-          echo "- **Tag**: \`sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Digest**: \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Pinnable**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}@${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "### ${{ matrix.service }} image push"
+            echo "- **Tag**: \`sha-${{ steps.sha.outputs.short }}\`"
+            echo "- **Digest**: \`${{ steps.build.outputs.digest }}\`"
+            echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}:sha-${{ steps.sha.outputs.short }}\`"
+            echo "- **Pinnable**: \`${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/platform-backend-${{ matrix.service }}@${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Faz 25 #832 / ADR-0023: image build+push intentionally ends here.
       # A platform-backend main push must never dispatch the legacy

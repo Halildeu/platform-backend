@@ -1,0 +1,66 @@
+spring:
+  application:
+    name: ethics-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${ETHICS_DB_URL:jdbc:postgresql://localhost:5432/ethics}
+    username: ${ETHICS_DB_USERNAME:ethics}
+    password: ${ETHICS_DB_PASSWORD:}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: ${ETHICS_DB_SCHEMA:ethics_service}
+  flyway:
+    enabled: true
+    default-schema: ${ETHICS_DB_SCHEMA:ethics_service}
+    schemas: ${ETHICS_DB_SCHEMA:ethics_service}
+    table: ethics_flyway_history
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${SECURITY_JWT_ISSUER:http://localhost:8081/realms/serban}
+          jwk-set-uri: ${SECURITY_JWT_JWK_SET_URI:http://localhost:8081/realms/serban/protocol/openid-connect/certs}
+
+server:
+  port: ${SERVER_PORT:8099}
+  # Public channel is derived from the ingress-routed Host value. Forwarded
+  # client headers are deliberately ignored so X-Forwarded-Host cannot select it.
+  forward-headers-strategy: none
+  max-http-request-header-size: 16KB
+
+ethics:
+  public-org-id: ${ETHICS_PUBLIC_ORG_ID:00000000-0000-0000-0000-000000000035}
+  mailbox-session-ttl: ${ETHICS_MAILBOX_SESSION_TTL:15m}
+  secret-iterations: ${ETHICS_SECRET_ITERATIONS:210000}
+  staff-audience: ${ETHICS_STAFF_AUDIENCE:ethics-manager}
+  staff-role: ${ETHICS_STAFF_ROLE:ethics-manager}
+  permission-service-base-url: ${ETHICS_PERMISSION_SERVICE_BASE_URL:http://permission-service:8090}
+  permission-service-timeout: ${ETHICS_PERMISSION_SERVICE_TIMEOUT:PT3S}
+  # Public mutations are accepted only after ingress-nginx overwrites the
+  # transport proof header. The NetworkPolicy admits only that namespace.
+  secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}
+
+erp:
+  openfga:
+    enabled: ${ERP_OPENFGA_ENABLED:true}
+    api-url: ${ERP_OPENFGA_API_URL:http://openfga:8080}
+    store-id: ${ERP_OPENFGA_STORE_ID:}
+    model-id: ${ERP_OPENFGA_MODEL_ID:}
+    check-cache-ttl-seconds: 5
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+logging:
+  level:
+    org.springframework.security: INFO
+    org.springframework.web: INFO
