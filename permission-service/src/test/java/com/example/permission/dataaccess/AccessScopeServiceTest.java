@@ -147,7 +147,12 @@ class AccessScopeServiceTest {
     }
 
     @Test
-    void grant_lineageViolation_throwsScopeValidation_andSkipsOutboxInsert() {
+    void grant_invalidScopeRefViaDataIntegrityViolation_throwsReferenceInvalid_andSkipsOutbox() {
+        // #2555 Slice B — P0001 raise_exception surfacing through
+        // DataIntegrityViolationException (the historical path when the
+        // Spring translator classifies P0001 as an integrity violation).
+        // Now classified as user-input error → 400 via
+        // ScopeReferenceInvalidException, not lineage guard 422.
         var sqlEx = new java.sql.SQLException(
                 "ERROR: data_access.scope: invalid scope_ref 9999 ... validate_scope_ref",
                 "P0001");
@@ -158,8 +163,39 @@ class AccessScopeServiceTest {
 
         assertThatThrownBy(() -> service.grant(
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", GRANTED_BY))
-                .isInstanceOf(AccessScopeException.ScopeValidationException.class)
-                .hasMessageContaining("lineage guard");
+                .isInstanceOfSatisfying(AccessScopeException.ScopeReferenceInvalidException.class, ex -> {
+                    org.assertj.core.api.Assertions.assertThat(ex.getScopeRef()).isEqualTo("[\"99\"]");
+                    org.assertj.core.api.Assertions.assertThat(ex.getErrorCode())
+                            .isEqualTo("ScopeReferenceInvalid");
+                });
+
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    void grant_invalidScopeRefViaJpaSystemException_throwsReferenceInvalid_andSkipsOutbox() {
+        // #2555 Slice B — the reported live k3d-test symptom: P0001 wrapped
+        // as JpaSystemException (Spring uncategorized) instead of
+        // DataIntegrityViolationException, which the previous single-catch
+        // dropped to the global handler → HTTP 500. The widened catch must
+        // now recognise this path.
+        var sqlEx = new java.sql.SQLException(
+                "ERROR: data_access.scope: invalid scope_ref 1204 for kind project"
+                        + " / source_table PRO_PROJECTS / org_id 1",
+                "P0001");
+        var jdbcEx = new org.hibernate.exception.GenericJDBCException("could not execute statement", sqlEx);
+        var jpaEx = new org.springframework.orm.jpa.JpaSystemException(jdbcEx);
+        when(repository.saveAndFlush(any(DataAccessScope.class))).thenThrow(jpaEx);
+
+        assertThatThrownBy(() -> service.grant(
+                        USER, 1L, DataAccessScope.ScopeKind.PROJECT, "1204", GRANTED_BY))
+                .isInstanceOfSatisfying(AccessScopeException.ScopeReferenceInvalidException.class, ex -> {
+                    org.assertj.core.api.Assertions.assertThat(ex.getScopeRef()).isEqualTo("1204");
+                    org.assertj.core.api.Assertions.assertThat(ex.getMessage())
+                            .contains("PROJECT")
+                            .contains("PRO_PROJECTS")
+                            .contains("1204");
+                });
 
         verify(outboxRepository, never()).save(any());
     }
@@ -255,7 +291,11 @@ class AccessScopeServiceTest {
     }
 
     @Test
-    void grant_pgTriggerRaiseException_throwsScopeValidation_viaMessageFallback() {
+    void grant_pgTriggerRaiseException_throwsReferenceInvalid_viaMessageFallback() {
+        // #2555 Slice B — even when the driver drops SQLState, the trigger
+        // message ("invalid scope_ref" / "validate_scope_ref") is
+        // recognised and classified as user-input error (400). Kept as a
+        // separate test to lock the fallback path.
         var sqlEx = new java.sql.SQLException(
                 "ERROR: invalid scope_ref called from validate_scope_ref()", (String) null);
         var hcve = new org.hibernate.exception.ConstraintViolationException(
@@ -265,7 +305,7 @@ class AccessScopeServiceTest {
 
         assertThatThrownBy(() -> service.grant(
                         USER, 1L, DataAccessScope.ScopeKind.COMPANY, "[\"99\"]", GRANTED_BY))
-                .isInstanceOf(AccessScopeException.ScopeValidationException.class);
+                .isInstanceOf(AccessScopeException.ScopeReferenceInvalidException.class);
 
         verify(outboxRepository, never()).save(any());
     }

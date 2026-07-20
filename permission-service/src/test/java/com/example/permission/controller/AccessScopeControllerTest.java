@@ -114,9 +114,12 @@ class AccessScopeControllerTest {
 
     @Test
     void postGrant_422_lineageViolation() throws Exception {
+        // 422 path is now the narrower 23514 / scope_kind_source_table_consistent
+        // CHECK constraint (code bug — mismatched kind↔source_table). The
+        // P0001 trigger rejection moved to 400 (see next test).
         when(accessScopeService.grant(any(), any(), any(), any(), any()))
                 .thenThrow(new AccessScopeException.ScopeValidationException(
-                        "Scope reference rejected by data_access lineage guard: invalid scope_ref",
+                        "Scope reference rejected by data_access lineage guard: check violation",
                         new RuntimeException()));
 
         mockMvc.perform(post("/api/v1/access/scope")
@@ -131,6 +134,37 @@ class AccessScopeControllerTest {
                                 """.formatted(USER)))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.error").value("ScopeValidation"));
+    }
+
+    @Test
+    void postGrant_400_scopeReferenceInvalid_returnsFieldErrors() throws Exception {
+        // #2555 Slice B — user supplied a scope_ref that does not exist in
+        // the source table. Body carries fieldErrors[] so the admin UI can
+        // highlight the offending input instead of showing a generic 500.
+        when(accessScopeService.grant(any(), any(), any(), any(), any()))
+                .thenThrow(new AccessScopeException.ScopeReferenceInvalidException(
+                        "1204",
+                        "scope_ref '1204' is not a valid PROJECT reference "
+                                + "(source_table=PRO_PROJECTS, org_id=1)",
+                        new RuntimeException()));
+
+        mockMvc.perform(post("/api/v1/access/scope")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "userId": "%s",
+                                  "orgId": 1,
+                                  "scopeKind": "PROJECT",
+                                  "scopeRef": "1204"
+                                }
+                                """.formatted(USER)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("ScopeReferenceInvalid"))
+                .andExpect(jsonPath("$.fieldErrors").isArray())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("scopeRef"))
+                .andExpect(jsonPath("$.fieldErrors[0].rejectedValue").value("1204"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value(
+                        org.hamcrest.Matchers.containsString("PROJECT")));
     }
 
     @Test

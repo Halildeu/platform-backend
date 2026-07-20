@@ -15,6 +15,9 @@ import java.time.Instant;
  *   <li>{@link ScopeAlreadyGrantedException} → 409 (active duplicate)</li>
  *   <li>{@link ScopeValidationException} → 422 (lineage / source-table mismatch
  *       caught by the V19 trigger)</li>
+ *   <li>{@link ScopeReferenceInvalidException} → 400 (P0001 {@code validate_scope_ref}
+ *       — the user supplied a scope_ref that does not exist in the source
+ *       table for the given kind)</li>
  * </ul>
  */
 public class AccessScopeException extends RuntimeException {
@@ -77,6 +80,19 @@ public class AccessScopeException extends RuntimeException {
     public static class ScopeValidationException extends AccessScopeException {
         public ScopeValidationException(String message, Throwable cause) {
             super("ScopeValidation", message, cause);
+        }
+    }
+
+    public static class ScopeReferenceInvalidException extends AccessScopeException {
+        private final String scopeRef;
+
+        public ScopeReferenceInvalidException(String scopeRef, String message, Throwable cause) {
+            super("ScopeReferenceInvalid", message, cause);
+            this.scopeRef = scopeRef;
+        }
+
+        public String getScopeRef() {
+            return scopeRef;
         }
     }
 }
