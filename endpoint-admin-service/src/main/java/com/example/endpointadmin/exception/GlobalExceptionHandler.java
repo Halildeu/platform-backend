@@ -15,9 +15,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindingResult;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -54,6 +56,26 @@ public class GlobalExceptionHandler {
                 .toList();
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
     }
+    // Slice E (#2555) — Spring 6.1+ splits validation cascade errors on
+    // @Valid @RequestParam / @PathVariable into HandlerMethodValidationException
+    // instead of MethodArgumentNotValidException. Without an explicit
+    // handler these fall through Exception.class → 500 even though they
+    // are client-side input violations. Sektör standardı: 400 + fieldErrors.
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
+        List<FieldError> fieldErrors = ex.getAllValidationResults().stream()
+                .flatMap(result -> {
+                    String rawField = result.getMethodParameter().getParameterName();
+                    if (rawField == null) rawField = "arg" + result.getMethodParameter().getParameterIndex();
+                    final String field = rawField;
+                    return result.getResolvableErrors().stream()
+                            .map(MessageSourceResolvable::getDefaultMessage)
+                            .map(msg -> new FieldError(field, msg == null ? "invalid" : msg));
+                })
+                .toList();
+        return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
+    }
+
 
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<ErrorResponse> handleNotFound(NoResourceFoundException ex) {

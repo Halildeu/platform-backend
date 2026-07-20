@@ -11,10 +11,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindingResult;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -58,6 +60,26 @@ public class GlobalExceptionHandler {
                 .toList();
         return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
     }
+    // Slice E (#2555) — Spring 6.1+ splits validation cascade errors on
+    // @Valid @RequestParam / @PathVariable into HandlerMethodValidationException
+    // instead of MethodArgumentNotValidException. Without an explicit
+    // handler these fall through Exception.class → 500 even though they
+    // are client-side input violations. Sektör standardı: 400 + fieldErrors.
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
+        List<FieldError> fieldErrors = ex.getAllValidationResults().stream()
+                .flatMap(result -> {
+                    String rawField = result.getMethodParameter().getParameterName();
+                    if (rawField == null) rawField = "arg" + result.getMethodParameter().getParameterIndex();
+                    final String field = rawField;
+                    return result.getResolvableErrors().stream()
+                            .map(MessageSourceResolvable::getDefaultMessage)
+                            .map(msg -> new FieldError(field, msg == null ? "invalid" : msg));
+                })
+                .toList();
+        return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
+    }
+
 
     // #2555 Slice C — Spring @RequestParam bind failures must surface as 400,
     // not the generic Exception.class catch-all 500. Same pattern already used
