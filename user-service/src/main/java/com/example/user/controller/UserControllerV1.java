@@ -261,7 +261,21 @@ public class UserControllerV1 {
         }
     }
 
-    @GetMapping("/{id}")
+    // /me routes handled explicitly BEFORE the numeric /{id} path — a client hitting
+    // /api/v1/users/me previously fell through into `getUser(@PathVariable Long id)`
+    // and produced 500 NumberFormatException("me") because Spring parsed the segment
+    // as the id. Same defect for stray callers like /api/v1/users/profile. Board #2555.
+    @GetMapping("/me")
+    public ResponseEntity<UserDetailDto> getCurrentUser() {
+        User currentUser = requireCurrentUser();
+        return ResponseEntity.ok(UserDtoMapper.toDetail(currentUser));
+    }
+
+    // Numeric-only path constraint on /{id}. Any non-numeric segment (e.g. "profile",
+    // typos, path traversals) now returns 404 from the framework instead of surfacing
+    // as 500. The constraint is on the mapping, not on business logic — legitimate
+    // numeric ids keep their existing behaviour, so this is safe on all callers.
+    @GetMapping("/{id:\\d+}")
     public ResponseEntity<UserDetailDto> getUser(@PathVariable Long id) {
         // Resolve the caller first — applies the 401/403 gate, including the
         // ACCOUNT_DISABLED activation gate, so a passive (enabled=false)
@@ -282,7 +296,7 @@ public class UserControllerV1 {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    @PutMapping("/{id}/activation")
+    @PutMapping("/{id:\\d+}/activation")
     public ResponseEntity<UserMutationAckDto> updateActivation(@PathVariable Long id,
                                                                @Valid @RequestBody UserActivationRequestDto request) {
         User currentUser = requireCurrentUser();
@@ -522,7 +536,7 @@ public class UserControllerV1 {
         return ResponseEntity.status(result.isConflict() ? HttpStatus.CONFLICT : HttpStatus.OK).body(response);
     }
 
-    @PutMapping("/{id}")
+    @PutMapping("/{id:\\d+}")
     public ResponseEntity<UserDetailDto> updateUser(@PathVariable Long id,
                                                     @RequestHeader(value = "X-Company-Id", required = false) Long companyId,
                                                     @Valid @RequestBody UpdateUserRequest request) {
@@ -542,7 +556,7 @@ public class UserControllerV1 {
      * Requires {@code user-delete} (MANAGE_USERS) within company scope and
      * refuses self-deletion ({@code 400 CANNOT_DELETE_SELF}).
      */
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{id:\\d+}")
     public ResponseEntity<UserMutationAckDto> deleteUser(@PathVariable Long id,
                                                          @RequestHeader(value = "X-Company-Id", required = false) Long companyId) {
         User currentUser = requireCurrentUser();
@@ -561,7 +575,7 @@ public class UserControllerV1 {
      * within company scope. {@code 409 USER_NOT_DELETED} when the target is
      * not a tombstone.
      */
-    @PostMapping("/{id}/restore")
+    @PostMapping("/{id:\\d+}/restore")
     public ResponseEntity<UserMutationAckDto> restoreUser(@PathVariable Long id,
                                                           @RequestHeader(value = "X-Company-Id", required = false) Long companyId) {
         User currentUser = requireCurrentUser();
