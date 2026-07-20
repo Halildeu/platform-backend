@@ -133,6 +133,49 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isOk());
     }
 
+    // #2555 Slice-D-parity — malformed JSON body → 400 BAD_REQUEST.
+    @Test
+    void handleUnreadable_returns400() {
+        org.springframework.http.converter.HttpMessageNotReadableException ex =
+                new org.springframework.http.converter.HttpMessageNotReadableException("truncated");
+        ResponseEntity<ErrorResponse> resp = handler.handleUnreadable(ex);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("BAD_REQUEST");
+    }
+
+    // #2555 Slice-D-parity — path variable type mismatch → 400 + fieldErrors.
+    @Test
+    void handleTypeMismatch_returns400WithFieldName() throws NoSuchMethodException {
+        org.springframework.core.MethodParameter param = new org.springframework.core.MethodParameter(
+                GlobalExceptionHandlerTest.class.getDeclaredMethod("dummyLongParam", Long.class), 0);
+        org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex =
+                new org.springframework.web.method.annotation.MethodArgumentTypeMismatchException(
+                        "abc", Long.class, "id", param, new IllegalArgumentException("parse fail"));
+        ResponseEntity<ErrorResponse> resp = handler.handleTypeMismatch(ex);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("BAD_REQUEST");
+        assertThat(resp.getBody().getFieldErrors()).hasSize(1);
+        assertThat(resp.getBody().getFieldErrors().get(0).getField()).isEqualTo("id");
+    }
+
+    // #2555 Slice-D-parity — missing required parameter → 400 + fieldErrors.
+    @Test
+    void handleMissingParameter_returns400WithFieldName() {
+        org.springframework.web.bind.MissingServletRequestParameterException ex =
+                new org.springframework.web.bind.MissingServletRequestParameterException("q", "String");
+        ResponseEntity<ErrorResponse> resp = handler.handleMissingParameter(ex);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().getError()).isEqualTo("BAD_REQUEST");
+        assertThat(resp.getBody().getFieldErrors()).hasSize(1);
+        assertThat(resp.getBody().getFieldErrors().get(0).getField()).isEqualTo("q");
+    }
+
+    @SuppressWarnings("unused")
+    private void dummyLongParam(Long id) {}
+
     @RestController
     @RequestMapping("/fixture/post-only")
     static class PostOnlyFixtureController {
