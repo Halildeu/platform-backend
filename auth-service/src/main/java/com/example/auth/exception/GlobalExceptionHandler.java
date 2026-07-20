@@ -11,11 +11,13 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.BindingResult;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -106,6 +108,26 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ErrorResponse> handleUnreadable(HttpMessageNotReadableException ex) {
         return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", "İstek gövdesi okunamadı (geçersiz JSON).");
+    }
+
+    // Slice E (#2555) — Spring 6.1+ splits validation cascade errors on
+    // @Valid @RequestParam / @PathVariable into HandlerMethodValidationException
+    // instead of MethodArgumentNotValidException. Without an explicit
+    // handler these fall through Exception.class → 500 even though they
+    // are client-side input violations. Sektör standardı: 400 + fieldErrors.
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ErrorResponse> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
+        List<FieldError> fieldErrors = ex.getAllValidationResults().stream()
+                .flatMap(result -> {
+                    String field = result.getMethodParameter().getParameterName();
+                    if (field == null) field = "arg" + result.getMethodParameter().getParameterIndex();
+                    final String fieldName = field;
+                    return result.getResolvableErrors().stream()
+                            .map(MessageSourceResolvable::getDefaultMessage)
+                            .map(msg -> new FieldError(fieldName, msg == null ? "invalid" : msg));
+                })
+                .toList();
+        return build(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Validation failed", fieldErrors);
     }
 
     // #2555 Slice-D-parity — path variable or query param type mismatch.

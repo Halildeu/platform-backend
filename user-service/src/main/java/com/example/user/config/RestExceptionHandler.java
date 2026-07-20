@@ -4,6 +4,7 @@ import com.example.user.dto.ApiErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -41,6 +43,32 @@ public class RestExceptionHandler {
                 .map(err -> Map.of(
                         "field", err.getField(),
                         "message", err.getDefaultMessage() == null ? "invalid" : err.getDefaultMessage()))
+                .toList();
+        meta.put("fieldErrors", fieldErrors);
+        ApiErrorResponse body = new ApiErrorResponse("ERR_VALIDATION", "Validation failed", meta);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    // Slice E (#2555) — Spring 6.1+ @Valid @RequestParam / @PathVariable
+    // cascade validation → HandlerMethodValidationException, not
+    // MethodArgumentNotValidException. Without this branch these fall
+    // through Exception.class → 500. Client-side violation → 400.
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleHandlerMethodValidation(HandlerMethodValidationException ex) {
+        log.info("cascade validation failed: {}", ex.getMessage());
+        Map<String, Object> meta = new HashMap<>(ApiErrorResponse.of(
+                "ERR_VALIDATION", "Validation failed", MDC.get("traceId")).meta());
+        List<Map<String, String>> fieldErrors = ex.getAllValidationResults().stream()
+                .flatMap(result -> {
+                    String rawField = result.getMethodParameter().getParameterName();
+                    if (rawField == null) rawField = "arg" + result.getMethodParameter().getParameterIndex();
+                    final String field = rawField;
+                    return result.getResolvableErrors().stream()
+                            .map(MessageSourceResolvable::getDefaultMessage)
+                            .map(msg -> Map.of(
+                                    "field", field,
+                                    "message", msg == null ? "invalid" : msg));
+                })
                 .toList();
         meta.put("fieldErrors", fieldErrors);
         ApiErrorResponse body = new ApiErrorResponse("ERR_VALIDATION", "Validation failed", meta);
