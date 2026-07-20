@@ -4,6 +4,7 @@ import com.example.permission.dataaccess.AccessScopeException;
 import com.example.permission.dataaccess.AccessScopeService;
 import com.example.permission.dataaccess.DataAccessScope;
 import com.example.permission.dataaccess.DataAccessScopeOutboxEntry;
+import com.example.permission.exception.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -30,7 +31,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(controllers = AccessScopeController.class)
 @AutoConfigureMockMvc(addFilters = false)
-@Import(AccessScopeExceptionHandler.class)
+@Import({AccessScopeExceptionHandler.class, GlobalExceptionHandler.class})
 @WithMockUser(roles = "ADMIN")
 class AccessScopeControllerTest {
 
@@ -218,6 +219,53 @@ class AccessScopeControllerTest {
                 .andExpect(jsonPath("$[0].scopeKind").value("COMPANY"))
                 .andExpect(jsonPath("$[1].scopeKind").value("PROJECT"))
                 .andExpect(jsonPath("$[0].active").value(true));
+    }
+
+    // #2555 Slice C — Spring @RequestParam bind failures must surface as 400,
+    // not the generic Exception.class catch-all 500. Live reproduction (k3d-test,
+    // 2026-07-21) with d35-admin JWT: invalid UUID / invalid Long / missing
+    // required param each returned INTERNAL_ERROR 500. These three tests pin the
+    // corrected behavior (400 + typed error code + fieldErrors[]) so a regression
+    // in GlobalExceptionHandler cannot re-introduce the 500 hijyeni bug.
+
+    @Test
+    void getList_400_invalidUserId_returnsInvalidParameter() throws Exception {
+        mockMvc.perform(get("/api/v1/access/scope")
+                        .param("userId", "not-a-uuid")
+                        .param("orgId", "1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_PARAMETER"))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("userId")))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("UUID")))
+                .andExpect(jsonPath("$.fieldErrors").isArray())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("userId"));
+    }
+
+    @Test
+    void getList_400_invalidOrgId_returnsInvalidParameter() throws Exception {
+        mockMvc.perform(get("/api/v1/access/scope")
+                        .param("userId", USER.toString())
+                        .param("orgId", "notanumber"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("INVALID_PARAMETER"))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("orgId")))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("Long")))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("orgId"));
+    }
+
+    @Test
+    void getList_400_missingOrgId_returnsMissingParameter() throws Exception {
+        mockMvc.perform(get("/api/v1/access/scope")
+                        .param("userId", USER.toString()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("MISSING_PARAMETER"))
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("orgId")))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("orgId"));
     }
 
     @Test
