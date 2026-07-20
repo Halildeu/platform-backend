@@ -11,13 +11,14 @@ import io.netty.channel.ChannelOption;
 import java.time.Duration;
 import java.util.Map;
 import javax.net.ssl.SSLException;
-import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
 import org.springframework.web.reactive.HandlerMapping;
 import org.springframework.web.reactive.handler.SimpleUrlHandlerMapping;
 import org.springframework.web.reactive.socket.WebSocketHandler;
@@ -33,11 +34,13 @@ import reactor.netty.http.server.WebsocketServerSpec;
 /**
  * Default-off #184 gateway-to-live-stt WebSocket bridge wiring.
  *
- * <p>Emits a single INFO line on init so operators can prove the bridge really came up.
- * A default-off feature that goes missing on the runtime is otherwise invisible: startup
- * stays clean and the failure surfaces only at the client as an opaque handshake reject,
- * as it did on the 2026-07-20 attended smoke where the bridge was believed live but was
- * not observably wired.
+ * <p>Emits a single structured INFO line on {@link ApplicationReadyEvent} so operators can
+ * confirm this configuration was instantiated (i.e. the condition matched and the beans
+ * were registered) — not that any client handshake has succeeded. A default-off feature
+ * that goes missing on the runtime is otherwise invisible: startup stays clean and the
+ * failure surfaces only at the client as an opaque handshake reject, as it did on the
+ * 2026-07-20 attended smoke where the bridge was believed live but was not observably
+ * wired.
  */
 @Configuration
 @ConditionalOnProperty(
@@ -47,11 +50,18 @@ public class LiveSttWebSocketConfig {
 
     private static final Logger log = LoggerFactory.getLogger(LiveSttWebSocketConfig.class);
 
-    @PostConstruct
+    /**
+     * Single source of truth for the bridge route pattern. Referenced from
+     * {@link #liveSttWebSocketHandlerMapping(LiveSttWebSocketProxyHandler)} <em>and</em> the
+     * ready-event log below so the log line cannot silently drift from the mapping.
+     */
+    static final String BRIDGE_ROUTE_PATTERN = "/api/v1/audio-gateway/sessions/*/stream";
+
+    @EventListener(ApplicationReadyEvent.class)
     public void announceWiring() {
         log.info(
-                "LiveSttWebSocketConfig ACTIVE — bridge path=/api/v1/audio-gateway/sessions/*/stream"
-                        + " streaming.enabled=true");
+                "event=live_stt_ws_config_ready active=true path={} streaming_enabled=true",
+                BRIDGE_ROUTE_PATTERN);
     }
 
     /**
@@ -110,7 +120,7 @@ public class LiveSttWebSocketConfig {
     public HandlerMapping liveSttWebSocketHandlerMapping(
             final LiveSttWebSocketProxyHandler handler) {
         final Map<String, WebSocketHandler> mappings = Map.of(
-                "/api/v1/audio-gateway/sessions/*/stream", handler);
+                BRIDGE_ROUTE_PATTERN, handler);
         final SimpleUrlHandlerMapping mapping = new SimpleUrlHandlerMapping();
         mapping.setOrder(-2);
         mapping.setUrlMap(mappings);

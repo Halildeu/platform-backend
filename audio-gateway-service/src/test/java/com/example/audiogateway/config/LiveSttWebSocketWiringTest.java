@@ -90,6 +90,24 @@ class LiveSttWebSocketWiringTest {
                     .isNotNull();
         }
 
+        /**
+         * Codex 2026-07-20 REVISE: the ready-event log line advertises a path that MUST
+         * match what {@link org.springframework.web.reactive.handler.SimpleUrlHandlerMapping}
+         * actually registers. If the two ever diverge, operators would see a log for one
+         * route while the WebSocket handler answers another — an observability lie. Pin
+         * the single-source-of-truth constant against the live registration.
+         */
+        @Test
+        void announcedRoutePatternIsTheOneActuallyMappedInHandlerMapping() {
+            final org.springframework.web.reactive.handler.SimpleUrlHandlerMapping mapping =
+                    (org.springframework.web.reactive.handler.SimpleUrlHandlerMapping)
+                            ctx.getBean("liveSttWebSocketHandlerMapping", HandlerMapping.class);
+
+            assertThat(mapping.getUrlMap().keySet())
+                    .as("bridge route must be registered under the shared constant")
+                    .containsExactly(LiveSttWebSocketConfig.BRIDGE_ROUTE_PATTERN);
+        }
+
         @Test
         void bridgeHandlerAdapterOutranksTheFrameworkOneSoFrameBoundsActuallyApply() {
             // No startup ambiguity here (DispatcherHandler collects ALL HandlerAdapter beans
