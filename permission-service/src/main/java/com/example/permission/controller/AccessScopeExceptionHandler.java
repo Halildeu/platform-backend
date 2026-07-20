@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -53,6 +54,23 @@ public class AccessScopeExceptionHandler {
             AccessScopeException.ScopeValidationException ex) {
         log.warn("scope validation failed: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(baseBody(ex));
+    }
+
+    // #2555 Slice B — user-supplied scope_ref does not exist in the source
+    // table (trigger validate_scope_ref, SQLState P0001). Returns 400 with
+    // a fieldErrors array so the admin UI can highlight the offending
+    // input instead of showing a generic 500.
+    @ExceptionHandler(AccessScopeException.ScopeReferenceInvalidException.class)
+    public ResponseEntity<Map<String, Object>> handleReferenceInvalid(
+            AccessScopeException.ScopeReferenceInvalidException ex) {
+        log.info("scope_ref invalid: {}", ex.getMessage());
+        Map<String, Object> body = baseBody(ex);
+        Map<String, Object> fieldError = new LinkedHashMap<>();
+        fieldError.put("field", "scopeRef");
+        fieldError.put("rejectedValue", ex.getScopeRef());
+        fieldError.put("message", ex.getMessage());
+        body.put("fieldErrors", List.of(fieldError));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
     private static Map<String, Object> baseBody(AccessScopeException ex) {

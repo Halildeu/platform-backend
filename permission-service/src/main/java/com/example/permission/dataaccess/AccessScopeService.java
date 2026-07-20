@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.UncategorizedSQLException;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -97,7 +99,15 @@ public class AccessScopeService {
             // fires inside this try-block (default save() defers SQL to
             // commit time, where the exception would escape this handler).
             repository.saveAndFlush(scope);
-        } catch (DataIntegrityViolationException ex) {
+        } catch (DataIntegrityViolationException | JpaSystemException | UncategorizedSQLException ex) {
+            // #2555 Slice B: P0001 (PostgreSQL raise_exception from
+            // validate_scope_ref) is translated by Spring to
+            // JpaSystemException, not DataIntegrityViolationException — the
+            // previous single-catch dropped it to the global handler
+            // (HTTP 500). Widening the catch to all three sibling
+            // NonTransientDataAccessException subtypes lets us classify by
+            // SQLState / constraint name uniformly and rethrow anything we
+            // do not recognise.
             DbErrorContext db = extractDbContext(ex);
             if ("23505".equals(db.sqlState())
                     || "uq_scope_active_assignment".equals(db.constraintName())) {
@@ -107,10 +117,27 @@ public class AccessScopeService {
                                 + ", ref=" + scopeRef + ")",
                         ex);
             }
-            if ("P0001".equals(db.sqlState())
-                    || "23514".equals(db.sqlState())
-                    || "scope_kind_source_table_consistent".equals(db.constraintName())
-                    || (db.message() != null && db.message().contains("validate_scope_ref"))) {
+            // P0001 (or the trigger's raise_exception surfacing through a
+            // driver that dropped the SQLState) ⇒ user-input error (400).
+            // The trigger rejects a scope_ref that does not exist in the
+            // source table for the supplied kind; the admin needs to see
+            // which field is wrong, not a generic 500.
+            boolean triggerRejection = "P0001".equals(db.sqlState())
+                    || (db.message() != null
+                            && (db.message().contains("invalid scope_ref")
+                                    || db.message().contains("validate_scope_ref")));
+            if (triggerRejection) {
+                throw new AccessScopeException.ScopeReferenceInvalidException(
+                        scopeRef,
+                        "scope_ref '" + scopeRef + "' is not a valid "
+                                + scopeKind + " reference (source_table="
+                                + expectedSourceTable(scopeKind) + ", org_id=" + orgId + ")",
+                        ex);
+            }
+            // 23514 CHECK / scope_kind_source_table_consistent ⇒ code bug
+            // (mismatched kind↔source_table mapping) — keep as 422.
+            if ("23514".equals(db.sqlState())
+                    || "scope_kind_source_table_consistent".equals(db.constraintName())) {
                 throw new AccessScopeException.ScopeValidationException(
                         "Scope reference rejected by data_access lineage guard: " + db.message(),
                         ex);
@@ -213,7 +240,10 @@ public class AccessScopeService {
     /** Codex 019dcee1 iter-1 MAJOR-2 — structural DB error extractor. */
     private record DbErrorContext(String sqlState, String constraintName, String message) {}
 
-    private static DbErrorContext extractDbContext(DataIntegrityViolationException ex) {
+    // #2555 Slice B — signature widened from DataIntegrityViolationException
+    // to Throwable so JpaSystemException / UncategorizedSQLException also
+    // flow through the same cause-chain walker.
+    private static DbErrorContext extractDbContext(Throwable ex) {
         String sqlState = null;
         String constraintName = null;
         String message = ex.getMessage();
