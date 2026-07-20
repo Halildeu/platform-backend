@@ -397,6 +397,31 @@ class UserControllerV1Test {
                 .andExpect(jsonPath("$.email").value("profile-me@example.com"));
     }
 
+    // Board #2555 — /api/v1/users/me previously fell through to /{id} and produced 500
+    // NumberFormatException("me"). The explicit /me mapping must resolve the caller directly
+    // and return the same UserDetailDto as /me/profile.
+    @Test
+    void getCurrentUser_returnsDetailDtoForMeAlias() throws Exception {
+        User saved = ensureUserExists("me-alias@example.com");
+        saved.setName("Me Alias Owner");
+        User persisted = userRepository.save(saved);
+        String token = issueToken(persisted.getEmail());
+
+        mockMvc.perform(get("/api/v1/users/me")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(persisted.getId()))
+                .andExpect(jsonPath("$.name").value("Me Alias Owner"))
+                .andExpect(jsonPath("$.email").value("me-alias@example.com"));
+    }
+
+    // Board #2555 also lists a 500-vs-4xx contract gap on unmapped/non-numeric paths, but
+    // that side of the issue needs a global exception mapper change (a wrapping handler
+    // currently converts the framework's no-match into 500). That is a separate slice —
+    // this PR only fixes the /me alias. Numeric-only constraint on the @GetMapping is kept
+    // as defence-in-depth so the controller never sees a non-numeric input, even if the
+    // wrapping handler is later corrected.
+
     @Test
     void updateCurrentUserProfile_updatesDisplayNameWithoutUserUpdatePermission() throws Exception {
         User saved = ensureUserExists("self-update@example.com");
