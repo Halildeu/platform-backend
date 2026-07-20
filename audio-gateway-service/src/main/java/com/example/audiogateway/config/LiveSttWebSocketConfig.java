@@ -11,6 +11,9 @@ import io.netty.channel.ChannelOption;
 import java.time.Duration;
 import java.util.Map;
 import javax.net.ssl.SSLException;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -29,12 +32,27 @@ import reactor.netty.http.server.WebsocketServerSpec;
 
 /**
  * Default-off #184 gateway-to-live-stt WebSocket bridge wiring.
+ *
+ * <p>Emits a single INFO line on init so operators can prove the bridge really came up.
+ * A default-off feature that goes missing on the runtime is otherwise invisible: startup
+ * stays clean and the failure surfaces only at the client as an opaque handshake reject,
+ * as it did on the 2026-07-20 attended smoke where the bridge was believed live but was
+ * not observably wired.
  */
 @Configuration
 @ConditionalOnProperty(
         name = "audio.gateway.direct-stt.streaming.enabled",
         havingValue = "true")
 public class LiveSttWebSocketConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(LiveSttWebSocketConfig.class);
+
+    @PostConstruct
+    public void announceWiring() {
+        log.info(
+                "LiveSttWebSocketConfig ACTIVE — bridge path=/api/v1/audio-gateway/sessions/*/stream"
+                        + " streaming.enabled=true");
+    }
 
     /**
      * Upstream client for the gateway-to-live-stt bridge.
