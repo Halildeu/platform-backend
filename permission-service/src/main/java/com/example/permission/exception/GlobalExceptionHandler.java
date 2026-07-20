@@ -13,6 +13,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindingResult;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -109,6 +110,17 @@ public class GlobalExceptionHandler {
                 + "' (" + paramType + ").";
         List<FieldError> fieldErrors = List.of(new FieldError(paramName, message));
         return build(HttpStatus.BAD_REQUEST, "MISSING_PARAMETER", message, fieldErrors);
+    }
+
+    // Slice D-parity (#2555) — sister services already map malformed
+    // JSON body to 400; permission-service was missing the handler and
+    // would surface truncated/invalid POST bodies as generic 500 via the
+    // catch-all. Client-side error → 400.
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException ex) {
+        return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST",
+                "İstek gövdesi okunamadı (geçersiz JSON).");
     }
 
     @ExceptionHandler(Exception.class)
