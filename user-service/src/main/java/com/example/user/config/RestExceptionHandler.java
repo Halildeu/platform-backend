@@ -10,7 +10,10 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -48,6 +51,59 @@ public class RestExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleHttpMessageNotReadableException(HttpMessageNotReadableException ex) {
         log.warn("Geçersiz JSON/gövde: {}", ex.getMessage());
         ApiErrorResponse body = ApiErrorResponse.of("ERR_BAD_REQUEST", "Invalid request body", MDC.get("traceId"));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    // Slice D (#2721) — unmapped path 500→404. Spring 6+ artık Whitelabel yerine
+    // NoResourceFoundException fırlatıyor; hiç handle etmezsek Exception.class
+    // catch-all'a düşüyor ve kullanıcı generic 500 görüyor. Yeni giriş yapan
+    // kullanıcı yanlış URL'ye tıkladığında "hesabınız yok mu?" belirsizliğine
+    // düşüyordu — açıkça 404.
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleNoResourceFound(NoResourceFoundException ex) {
+        log.info("Unmapped path: {}", ex.getResourcePath());
+        ApiErrorResponse body = ApiErrorResponse.of(
+                "NOT_FOUND",
+                "Kaynak bulunamadı: " + ex.getResourcePath(),
+                MDC.get("traceId"));
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
+    }
+
+    // Slice D — path variable veya query param type mismatch. Örn.
+    // GET /api/v1/users/abc (Long parse fail) → şu an 500. Kullanıcının
+    // düzeltmesi mümkün bir input hatası → 400 + hangi alanın yanlış olduğu.
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        log.info("Type mismatch: name={} value={} required={}",
+                ex.getName(), ex.getValue(),
+                ex.getRequiredType() == null ? null : ex.getRequiredType().getSimpleName());
+        Map<String, Object> meta = new HashMap<>(ApiErrorResponse.of(
+                "ERR_BAD_REQUEST", "Geçersiz parametre tipi", MDC.get("traceId")).meta());
+        Map<String, Object> fieldError = new HashMap<>();
+        fieldError.put("field", ex.getName());
+        fieldError.put("rejectedValue", ex.getValue());
+        fieldError.put("expectedType",
+                ex.getRequiredType() == null ? null : ex.getRequiredType().getSimpleName());
+        meta.put("fieldErrors", List.of(fieldError));
+        ApiErrorResponse body = new ApiErrorResponse(
+                "ERR_BAD_REQUEST", "Geçersiz parametre tipi", meta);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    // Slice D — required query/header param eksik. Örn.
+    // GET /api/v1/users/search (query eksik) → şu an 500. 400 + eksik alan adı.
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiErrorResponse> handleMissingParameter(MissingServletRequestParameterException ex) {
+        log.info("Missing parameter: name={} type={}", ex.getParameterName(), ex.getParameterType());
+        Map<String, Object> meta = new HashMap<>(ApiErrorResponse.of(
+                "ERR_BAD_REQUEST", "Zorunlu parametre eksik", MDC.get("traceId")).meta());
+        Map<String, Object> fieldError = new HashMap<>();
+        fieldError.put("field", ex.getParameterName());
+        fieldError.put("expectedType", ex.getParameterType());
+        fieldError.put("message", "required");
+        meta.put("fieldErrors", List.of(fieldError));
+        ApiErrorResponse body = new ApiErrorResponse(
+                "ERR_BAD_REQUEST", "Zorunlu parametre eksik", meta);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
