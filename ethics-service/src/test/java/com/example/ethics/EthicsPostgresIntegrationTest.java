@@ -5,7 +5,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.ethics.api.EthicsDtos.CreateReportRequest;
 import com.example.ethics.api.EthicsDtos.ReportCategory;
 import com.example.ethics.api.EthicsDtos.ReportMode;
+import com.example.ethics.model.AuditOutbox;
+import com.example.ethics.repository.AuditOutboxRepository;
 import com.example.ethics.service.EthicsService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -26,6 +30,32 @@ class EthicsPostgresIntegrationTest {
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired EthicsService service;
+    @Autowired AuditOutboxRepository auditOutbox;
+    @Autowired ObjectMapper objectMapper;
+
+    @Test
+    void auditOutboxPayloadIsValidJsonEvenWhenInputContainsQuotesAndBackslashes() throws Exception {
+        // Faz 35 ES-306 residual — hand-rolled string concatenation used to
+        // corrupt AuditOutbox.payload when a reporter subject/description
+        // contained embedded quotes or backslashes. Switching to Jackson
+        // guarantees a well-formed JSON document for downstream consumers
+        // (audit-event-consumer-service, WORM archive).
+        var hostileRequest = new CreateReportRequest(
+                ReportMode.ANONYMOUS,
+                ReportCategory.OTHER,
+                "SQL\" OR 1=1;--  \\ escaped subject",
+                "Body with a \"quote\" and back\\slash",
+                "tr-TR",
+                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_hosti",
+                "v1.0.0");
+        service.createReport("etik.acik.com", "audit-json-safety-" + java.util.UUID.randomUUID(), hostileRequest);
+        List<AuditOutbox> rows = auditOutbox.findAll();
+        assertThat(rows).isNotEmpty();
+        for (AuditOutbox row : rows) {
+            JsonNode parsed = objectMapper.readTree(row.getPayload());
+            assertThat(parsed.isObject()).isTrue();
+        }
+    }
 
     @Test
     void concurrentIntakeUsesOnePostgresCommitAndOneReceipt() throws Exception {
