@@ -75,7 +75,15 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
         // Segment JSON intentionally stays out of the stream for the first #182 handoff:
         // it carries transcript content plus per-word timing and can be added later under
         // an explicit schema bump if downstream assembly needs that fidelity.
-        fields.put("status", "DRAFT");
+        final DirectSttTranscriptResultContext.Assembly assembly = context.assembly();
+        // A raw committed chunk stays DRAFT. An assembled line is a distinct status so a
+        // client can render the readable line without also rendering the fragments it
+        // was folded from — both remain on the stream, nothing is replaced.
+        fields.put("status", assembly == null ? "DRAFT" : "UTTERANCE");
+        if (assembly != null) {
+            fields.put("assemblyReason", nullSafe(assembly.reason()));
+            fields.put("sourceEventIds", String.join(",", assembly.sourceEventIds()));
+        }
         fields.put("receivedAtMs", Long.toString(System.currentTimeMillis()));
 
         final MapRecord<String, String, String> record =

@@ -4,6 +4,7 @@ import com.example.audiogateway.config.AudioGatewayProperties;
 import com.example.audiogateway.dto.TranscriptEventResponse;
 import com.example.audiogateway.dto.TranscriptEventsResponse;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -130,7 +131,20 @@ public class DirectSttTranscriptEventReader {
                 parseLong(fields.get("receivedAtMs")),
                 blankToNull(fields.get("sttLanguage")),
                 parseDouble(fields.get("durationSeconds")),
-                blankToNull(fields.get("correlationId")));
+                blankToNull(fields.get("correlationId")),
+                blankToNull(fields.get("assemblyReason")),
+                splitIds(fields.get("sourceEventIds")));
+    }
+
+    /** Comma-joined source ids of an assembled line; empty for a raw chunk. */
+    private static List<String> splitIds(final String joined) {
+        if (joined == null || joined.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(joined.split(","))
+                .map(String::strip)
+                .filter(id -> !id.isEmpty())
+                .toList();
     }
 
     private static long defaultLong(final Long value, final long fallback) {

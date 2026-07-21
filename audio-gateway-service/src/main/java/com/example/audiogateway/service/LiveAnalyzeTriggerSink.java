@@ -28,6 +28,11 @@ public final class LiveAnalyzeTriggerSink implements DirectSttTranscriptResultSi
     public void emit(
             final TranscriptResult result, final DirectSttTranscriptResultContext context) {
         delegate.emit(result, context);
+        if (context != null && context.assembly() != null) {
+            // An assembled line repeats text the raw chunks already contributed.
+            // Accumulating both would send meeting-ai every sentence twice.
+            return;
+        }
         try {
             trigger.offer(context == null ? null : context.meetingId(), result);
         } catch (final RuntimeException ex) {

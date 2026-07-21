@@ -10,6 +10,8 @@ import com.example.audiogateway.service.LiveTranscriptBroadcastSink;
 import com.example.audiogateway.service.LiveTranscriptStreamHub;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
+import com.example.audiogateway.service.SentenceAssemblingSink;
+import com.example.audiogateway.service.SentenceAssemblyPolicy;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.ChannelOption;
@@ -17,6 +19,7 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import java.io.File;
 import java.time.Duration;
+import java.util.List;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLParameters;
 
@@ -256,6 +259,50 @@ public class DirectSttConfig {
                 .findFirst()
                 .orElse(DirectSttTranscriptResultSink.noop());
         return new LiveTranscriptBroadcastSink(base, hub);
+    }
+
+    /**
+     * Faz 24 — sentence assembly, the OUTERMOST decorator.
+     *
+     * <p>Order in the chain (outer → inner): assembly → broadcast → live-analyze →
+     * durable (Redis). Outermost is the only position that works: an assembled line has
+     * to reach both the durable stream (so the desktop's event reader sees it) and the
+     * broadcast hub (so web viewers see it), and only the outer delegate covers both.
+     *
+     * <p>{@link com.example.audiogateway.service.LiveAnalyzeTriggerSink} ignores
+     * assembled lines, so meeting-ai still receives each sentence once.
+     *
+     * <p>The base is resolved by explicit preference rather than stream order: whichever
+     * decorators are enabled, this one must wrap the outermost of them, and relying on
+     * {@code orderedStream()} to happen to return that one first would be a coin flip.
+     */
+    @Bean
+    @Primary
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.sentence-assembly",
+            name = "enabled",
+            havingValue = "true")
+    public DirectSttTranscriptResultSink sentenceAssemblingSink(
+            final ObjectProvider<DirectSttTranscriptResultSink> sinkProvider,
+            final AudioGatewayProperties props,
+            final MeterRegistry meters) {
+        final List<DirectSttTranscriptResultSink> candidates = sinkProvider
+                .orderedStream()
+                .filter(s -> !(s instanceof SentenceAssemblingSink))
+                .toList();
+        final DirectSttTranscriptResultSink base = candidates.stream()
+                .filter(LiveTranscriptBroadcastSink.class::isInstance)
+                .findFirst()
+                .or(() -> candidates.stream().filter(LiveAnalyzeTriggerSink.class::isInstance).findFirst())
+                .or(() -> candidates.stream().findFirst())
+                .orElse(DirectSttTranscriptResultSink.noop());
+
+        final AudioGatewayProperties.DirectStt.SentenceAssembly cfg =
+                props.getDirectStt().getSentenceAssembly();
+        return new SentenceAssemblingSink(
+                base,
+                new SentenceAssemblyPolicy(cfg.getMaxSpeechMs(), cfg.getMaxChars(), cfg.getIdleMs()),
+                meters);
     }
 
     /**
