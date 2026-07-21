@@ -199,6 +199,9 @@ public final class SentenceAssembler {
     private void append(final Fragment fragment, final String text) {
         if (buffer.length() == 0) {
             bufferStartedAtMs = fragment.startedAtMs();
+            // A new line starts its own receipt window; carrying the previous line's
+            // (possibly much later) receipt time would delay its idle close.
+            lastReceiptAtMs = fragment.receiptAtMs();
         } else {
             buffer.append(' ');
         }
@@ -207,7 +210,12 @@ public final class SentenceAssembler {
         bufferEndedAtMs = fragment.endedAtMs();
         // Two clocks, never compared against each other: the receipt clock bounds how
         // long a trailing line waits, the source clock detects a pause in the speech.
-        lastReceiptAtMs = fragment.receiptAtMs();
+        //
+        // The receipt clock must never go BACKWARDS within a line. Reordering releases a
+        // held batch in source order, so an earlier sequence can be folded after a later
+        // one that arrived first; assigning its (older) receipt time would make a line
+        // that is seconds old look idle and close it on the next sweep.
+        lastReceiptAtMs = Math.max(lastReceiptAtMs, fragment.receiptAtMs());
         lastSpeechEndMs = Math.max(fragment.endedAtMs(), fragment.startedAtMs());
         bufferSpeechMs += speechMsOf(fragment);
     }

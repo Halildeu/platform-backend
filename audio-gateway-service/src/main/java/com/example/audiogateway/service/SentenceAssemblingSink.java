@@ -113,7 +113,13 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         private ChunkReorderBuffer<Envelope> reorder =
                 new ChunkReorderBuffer<>(REORDER_CAPACITY, REORDER_WINDOW_MS);
         private DirectSttTranscriptResultContext.Transport transport;
-        private Envelope lastEnvelope;
+        /**
+         * The most recent envelope actually folded IN SOURCE ORDER. A close that is not
+         * triggered by a specific fragment (idle, session end, transport switch) is
+         * carried by this one — using the last ARRIVAL instead would stamp the line with
+         * an out-of-order fragment's metadata whenever a reordered batch was released.
+         */
+        private Envelope lastFoldedEnvelope;
         private long touchedAtMs;
 
         private SessionState(final long nowMs) {
@@ -187,7 +193,6 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                                 receiptMs),
                         context,
                         result);
-        state.lastEnvelope = envelope;
         pending.addAll(
                 foldOrdered(state, state.reorder.offer(context.windowSeq(), receiptMs, envelope)));
         return pending;
@@ -276,6 +281,7 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                 standaloneLateLine(envelope).ifPresent(pending::add);
                 continue;
             }
+            state.lastFoldedEnvelope = envelope;
             for (final AssembledUtterance utterance : state.assembler.offer(envelope.fragment())) {
                 pending.add(new Pending(utterance, envelope));
             }
@@ -303,9 +309,12 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                         envelope));
     }
 
-    /** The line's carrier is the envelope that closed it, snapshotted under the lock. */
+    /**
+     * Carrier for a close that no single fragment triggered (idle, session end, transport
+     * switch): the last envelope folded in SOURCE order. Snapshotted under the lock.
+     */
     private Pending pendingOf(final SessionState state, final AssembledUtterance utterance) {
-        return new Pending(utterance, state.lastEnvelope);
+        return new Pending(utterance, state.lastFoldedEnvelope);
     }
 
     private void emitAssembled(final Pending pending) {
@@ -365,6 +374,8 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
      * id (which is assigned later). This is the namespace {@code sourceEventIds} uses.
      */
     private static String eventIdOf(final DirectSttTranscriptResultContext context) {
-        return context.windowSeq() + ":" + context.chunkSeq();
+        // Window sequences restart per transport, so the transport has to be part of the
+        // identity or a fallback's "0:0" would be indistinguishable from the socket's.
+        return context.transport().name() + ":" + context.windowSeq() + ":" + context.chunkSeq();
     }
 }

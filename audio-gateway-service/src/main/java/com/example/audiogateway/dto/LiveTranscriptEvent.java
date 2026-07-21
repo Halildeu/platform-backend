@@ -17,7 +17,10 @@ import java.util.List;
  * {@code UTTERANCE} and treat {@code DRAFT} as volatile.
  *
  * <p><b>Backward compatible.</b> Every field a viewer already read keeps its name and
- * meaning; {@code status}, {@code assemblyReason} and {@code sourceEventIds} are additions,
+ * meaning — including {@code segments}, which the broadcast carried before this wrapper
+ * existed. That matters even with assembly disabled: the broadcast uses this type either
+ * way, so dropping a field here would be a silent contract regression on a default-off
+ * feature. {@code status}, {@code assemblyReason} and {@code sourceEventIds} are additions,
  * and the latter two are omitted entirely for a raw chunk.
  *
  * <p>Carries transcript text — never raw audio, bearer data, or the chunk hash.
@@ -32,6 +35,8 @@ public record LiveTranscriptEvent(
         String model,
         @JsonProperty("compute_type") String computeType,
         String device,
+        /** Per-segment detail exactly as live-stt returned it; {@code null} when absent. */
+        com.fasterxml.jackson.databind.JsonNode segments,
         /** {@code DRAFT} for a raw committed chunk, {@code UTTERANCE} for an assembled line. */
         String status,
         /** Why the assembled line closed; {@code null} for a raw chunk. */
@@ -63,6 +68,7 @@ public record LiveTranscriptEvent(
                 result == null ? null : result.model(),
                 result == null ? null : result.computeType(),
                 result == null ? null : result.device(),
+                result == null ? null : result.segments(),
                 assembly == null ? STATUS_DRAFT : STATUS_UTTERANCE,
                 assembly == null ? null : assembly.reason(),
                 assembly == null ? List.of() : assembly.sourceEventIds());

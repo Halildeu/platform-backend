@@ -14,7 +14,7 @@ class LiveTranscriptStreamHubTest {
 
     private static LiveTranscriptEvent result(final String text) {
         return new LiveTranscriptEvent(
-                text, "tr", 0.99, 1.0, 100.0, "m", "int8", "cpu",
+                text, "tr", 0.99, 1.0, 100.0, "m", "int8", "cpu", null,
                 LiveTranscriptEvent.STATUS_DRAFT, null, java.util.List.of());
     }
 

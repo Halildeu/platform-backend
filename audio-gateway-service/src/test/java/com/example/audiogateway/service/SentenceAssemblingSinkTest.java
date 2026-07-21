@@ -122,7 +122,7 @@ class SentenceAssemblingSinkTest {
         assertThat(assembled.context().assembly()).isNotNull();
         assertThat(assembled.context().assembly().reason())
                 .isEqualTo(SentenceAssembler.REASON_PUNCTUATION);
-        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("0:0", "1:1");
+        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("REST:0:0", "REST:1:1");
         assertThat(assembled.context().windowStartedAtMs()).isZero();
         assertThat(assembled.context().windowEndedAtMs()).isEqualTo(3_100);
     }
@@ -280,7 +280,7 @@ class SentenceAssemblingSinkTest {
         assertThat(assembled.get(0).result().text())
                 .isEqualTo("Bugün toplantıda bütçeyi konuşacağız.");
         assertThat(assembled.get(0).context().assembly().sourceEventIds())
-                .containsExactly("0:0", "1:1");
+                .containsExactly("REST:0:0", "REST:1:1");
     }
 
     @Test
@@ -429,6 +429,68 @@ class SentenceAssemblingSinkTest {
         assertThat(assembled.get(0).result().text()).isEqualTo("İlk yarısı ikinci yarısı.");
         // The line closed on window 1's fragment, so it carries window 1's model.
         assertThat(assembled.get(0).result().model()).isEqualTo("late-model");
+    }
+
+    @Test
+    void a_reordered_batch_does_not_make_the_line_look_idle() {
+        // Regression: folding a held batch in source order assigned each fragment's own
+        // receipt time, so an earlier sequence folded later pushed the line's clock
+        // BACKWARDS and the next sweep closed a line that was seconds old.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        // Window 1 arrives first at t=10_000, window 0 completes at t=11_000.
+        offerAt(sink, "ikinci parça", 1, 1_600, 1_500, 10_000);
+        offerAt(sink, "ilk parça", 0, 0, 1_500, 11_000);
+        emissions.clear();
+
+        // Only 500 ms after the LATEST receipt — the line must still be open.
+        now.set(11_500);
+        sink.sweep();
+
+        assertThat(emissions).isEmpty();
+    }
+
+    @Test
+    void an_idle_close_is_carried_by_the_last_source_ordered_fragment() {
+        // Regression: idle/session-end closes used the last ARRIVAL, so a reordered
+        // batch stamped the line with an out-of-order fragment's metadata.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        now.set(10_000);
+        sink.emit(
+                new TranscriptResult(
+                        "ikinci parça", "tr", 0.9d, 2.0d, 50.0d, "win1-model", "int8", "cpu", null),
+                context(1, 1_600, 1_500));
+        now.set(10_100);
+        sink.emit(
+                new TranscriptResult(
+                        "ilk parça", "tr", 0.9d, 2.0d, 50.0d, "win0-model", "int8", "cpu", null),
+                context(0, 0, 1_500));
+        emissions.clear();
+
+        now.set(13_000);
+        sink.sweep();
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled).hasSize(1);
+        assertThat(assembled.get(0).result().text()).isEqualTo("ilk parça ikinci parça");
+        // Source order ends at window 1, so that is the carrier — not window 0, which
+        // merely arrived last.
+        assertThat(assembled.get(0).result().model()).isEqualTo("win1-model");
+    }
+
+    @Test
+    void provenance_ids_do_not_collide_across_transports() {
+        // Both legs restart windows at 0, so a bare "0:0" would be ambiguous.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+                "canlı cümle.", 0, 0, 1_000, 1_000);
+
+        final Emission assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).findFirst().orElseThrow();
+        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("WEBSOCKET:0:0");
     }
 
     @Test

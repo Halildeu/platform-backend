@@ -116,6 +116,26 @@ class ChunkReorderBufferTest {
     }
 
     @Test
+    void a_very_old_abandoned_sequence_is_still_released_after_many_gaps() {
+        // Regression: the abandoned-set used to be bounded, so after enough gaps an old
+        // abandoned sequence rolled out of memory and was silently reclassified as a
+        // duplicate — losing speech while still claiming losslessness.
+        offer(0, 0);
+        // Abandon sequence 1, then churn far past any bounded window.
+        offer(2, 10);
+        buffer.sweep(5_000);
+        for (long seq = 3; seq < 400; seq++) {
+            offer(seq, 5_000 + seq);
+        }
+
+        final List<Release<String>> released = buffer.offer(1, 900_000, payload(1));
+
+        assertThat(idsOf(released)).containsExactly("e1");
+        assertThat(released.get(0).lateAfterGap()).isTrue();
+        assertThat(released.get(0).unknownOld()).isFalse();
+    }
+
+    @Test
     void a_replayed_sequence_is_rejected_as_a_duplicate() {
         offer(0, 0);
         offer(1, 100);

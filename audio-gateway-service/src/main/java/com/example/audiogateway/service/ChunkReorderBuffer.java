@@ -1,9 +1,8 @@
 package com.example.audiogateway.service;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.BitSet;
 import java.util.List;
-import java.util.SequencedSet;
 import java.util.TreeMap;
 
 /**
@@ -30,8 +29,14 @@ import java.util.TreeMap;
  *
  * <p>A sequence already released is dropped as a duplicate (a retry) — the one case where
  * releasing again would corrupt the transcript. Sequences whose gap was abandoned are
- * remembered explicitly, so a very late arrival is never mistaken for a duplicate once the
- * bounded released-set forgets it.
+ * remembered explicitly, so a very late arrival is never mistaken for a duplicate.
+ *
+ * <p>That memory is EXACT, not bounded: a bounded set silently turns "abandoned, may still
+ * arrive" into "already released, drop it" once it rolls over, which loses speech while
+ * still claiming losslessness. Sequences are session-scoped and start at 0, so a
+ * {@link BitSet} tracks every one for the price of one bit — a ten-hour meeting is under a
+ * kilobyte. Past {@link #TRACKING_LIMIT} the buffer stops guessing and reports
+ * {@link Release#unknownOld()} rather than dropping quietly.
  *
  * <h2>Threading</h2>
  * Not thread-safe — one instance per session, guarded by the owning sink's per-session
@@ -48,7 +53,7 @@ public final class ChunkReorderBuffer<T> {
      * @param lateAfterGap true when this arrived after its gap was abandoned, so it is out
      *     of order relative to what the caller has already seen
      */
-    public record Release<T>(T payload, boolean lateAfterGap) {}
+    public record Release<T>(T payload, boolean lateAfterGap, boolean unknownOld) {}
 
     private record Held<T>(T payload, long receiptAtMs) {}
 
@@ -56,11 +61,11 @@ public final class ChunkReorderBuffer<T> {
     private final long reorderWindowMs;
     private final TreeMap<Long, Held<T>> pending = new TreeMap<>();
 
-    /** Bounded set of released sequences, newest last, for duplicate rejection. */
-    private final SequencedSet<Long> released = new LinkedHashSet<>();
+    /** Exactly which sequences have been released — duplicate rejection. */
+    private final BitSet released = new BitSet();
 
-    /** Sequences skipped when a gap was abandoned — expected to arrive late, if at all. */
-    private final SequencedSet<Long> abandoned = new LinkedHashSet<>();
+    /** Exactly which sequences were skipped when a gap was abandoned. */
+    private final BitSet abandoned = new BitSet();
 
     /**
      * The next sequence expected at the front. Starts at 0 because
@@ -89,9 +94,12 @@ public final class ChunkReorderBuffer<T> {
         this.reorderWindowMs = reorderWindowMs;
     }
 
-    private int memory() {
-        return Math.max(64, capacity * 4);
-    }
+    /**
+     * Upper bound on exact tracking. One window is ~5 s of audio, so this covers far more
+     * than any real session; beyond it a stale arrival is reported as
+     * {@link Release#unknownOld()} instead of being classified on a guess.
+     */
+    static final long TRACKING_LIMIT = 1_000_000L;
 
     /**
      * Offer a payload at {@code seq}.
@@ -105,13 +113,20 @@ public final class ChunkReorderBuffer<T> {
         }
 
         if (seq < nextExpectedSeq) {
-            if (abandoned.remove(seq)) {
+            if (!trackable(seq)) {
+                // Outside exact tracking: it cannot be told apart from a retry, so it is
+                // surfaced as unknown rather than dropped on a guess.
+                return List.of(new Release<>(payload, true, true));
+            }
+            final int index = (int) seq;
+            if (abandoned.get(index)) {
                 // Its hole was given up on; releasing it in place would misorder the
                 // transcript, so the caller is told it is late.
-                remember(seq);
-                return List.of(new Release<>(payload, true));
+                abandoned.clear(index);
+                released.set(index);
+                return List.of(new Release<>(payload, true, false));
             }
-            // Already released, or so old the memory has rolled over — either way a retry.
+            // Already released — a retry. Releasing it again would duplicate the line.
             return List.of();
         }
 
@@ -151,7 +166,7 @@ public final class ChunkReorderBuffer<T> {
         pending.forEach(
                 (seq, held) -> {
                     remember(seq);
-                    out.add(new Release<>(held.payload(), false));
+                    out.add(new Release<>(held.payload(), false, false));
                 });
         pending.clear();
         return out;
@@ -165,12 +180,15 @@ public final class ChunkReorderBuffer<T> {
     /** Skip the hole in front of {@code resumeAt}, recording what was given up on. */
     private void abandonUpTo(final long resumeAt) {
         for (long seq = nextExpectedSeq; seq < resumeAt; seq++) {
-            abandoned.add(seq);
-            while (abandoned.size() > memory()) {
-                abandoned.removeFirst();
+            if (trackable(seq)) {
+                abandoned.set((int) seq);
             }
         }
         nextExpectedSeq = resumeAt;
+    }
+
+    private static boolean trackable(final long seq) {
+        return seq >= 0 && seq < TRACKING_LIMIT;
     }
 
     private List<Release<T>> drainReady() {
@@ -180,7 +198,7 @@ public final class ChunkReorderBuffer<T> {
             final Held<T> held = pending.remove(seq);
             remember(seq);
             nextExpectedSeq = seq + 1;
-            out.add(new Release<>(held.payload(), false));
+            out.add(new Release<>(held.payload(), false, false));
         }
         if (!pending.isEmpty()) {
             oldestPendingReceiptMs = pending.firstEntry().getValue().receiptAtMs();
@@ -189,9 +207,9 @@ public final class ChunkReorderBuffer<T> {
     }
 
     private void remember(final long seq) {
-        released.add(seq);
-        while (released.size() > memory()) {
-            released.removeFirst();
+        if (trackable(seq)) {
+            released.set((int) seq);
+            abandoned.clear((int) seq);
         }
         if (seq >= nextExpectedSeq) {
             nextExpectedSeq = seq + 1;
