@@ -397,6 +397,16 @@ public class AudioGatewayProperties {
         private final Streaming streaming = new Streaming();
 
         /**
+         * Faz 24 İ4 — cadenced trigger of meeting-ai {@code /analyze/live} over
+         * accumulated transcript segments. DEFAULT-OFF so existing deployments
+         * do not silently start posting to a service that may not yet be
+         * reachable; enabling requires {@code base-url} to be a valid absolute
+         * URL. Content is transcript text (already PII-guarded by meeting-ai's
+         * redactor); no raw audio ever leaves this hop.
+         */
+        private final LiveAnalyze liveAnalyze = new LiveAnalyze();
+
+        /**
          * Fail-closed validation (Codex {@code 019eeb5f} REVISE point 10): when enabled,
          * a missing/blank/non-http(s) {@code transcribe-url} or a non-positive bound is a
          * startup error — silent fallback that hides misconfiguration is YASAK.
@@ -517,6 +527,103 @@ public class AudioGatewayProperties {
 
         public Streaming getStreaming() {
             return streaming;
+        }
+
+        public LiveAnalyze getLiveAnalyze() {
+            return liveAnalyze;
+        }
+
+        /**
+         * Faz 24 İ4 — live-analysis trigger config.
+         *
+         * <p>Aggregates transcript segments per meeting; on every {@code segmentWindow}
+         * results the accumulator sends the joined transcript to meeting-ai
+         * {@code POST /analyze/live} with a monotonically increasing
+         * {@code segment_seq}. Errors are swallowed (logged + metered): a broken
+         * live-analyze relay MUST NOT slow or fail the STT forwarding path.
+         *
+         * <p>Time-window fallback (a periodic flush even when the segment count
+         * is below the window) is intentionally deferred to a follow-up slice;
+         * segment-count is the simpler primary trigger and covers the desktop
+         * viewer use case.
+         */
+        public static class LiveAnalyze {
+            private boolean enabled = false;
+            /** Absolute meeting-ai base URL (e.g. https://ai.acik.com). No trailing slash. */
+            private String baseUrl = "";
+            /** Every N transcript results per meeting trigger a POST. */
+            private int segmentWindow = 5;
+            /** WebClient connect + read timeout in ms (default 5s). */
+            private int timeoutMs = 5_000;
+            /** Optional bearer token; when empty the request goes unauthenticated. */
+            private String bearerToken = "";
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public String getBaseUrl() {
+                return baseUrl;
+            }
+
+            public void setBaseUrl(String baseUrl) {
+                this.baseUrl = baseUrl;
+            }
+
+            public int getSegmentWindow() {
+                return segmentWindow;
+            }
+
+            public void setSegmentWindow(int segmentWindow) {
+                this.segmentWindow = segmentWindow;
+            }
+
+            public int getTimeoutMs() {
+                return timeoutMs;
+            }
+
+            public void setTimeoutMs(int timeoutMs) {
+                this.timeoutMs = timeoutMs;
+            }
+
+            public String getBearerToken() {
+                return bearerToken;
+            }
+
+            public void setBearerToken(String bearerToken) {
+                this.bearerToken = bearerToken;
+            }
+
+            public void validate() {
+                if (!enabled) return;
+                if (baseUrl == null || baseUrl.isBlank()) {
+                    throw new IllegalStateException(
+                        "audio.gateway.direct-stt.live-analyze.base-url must be set when live-analyze is enabled");
+                }
+                try {
+                    final java.net.URI uri = java.net.URI.create(baseUrl.trim());
+                    final String scheme = uri.getScheme();
+                    if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                        throw new IllegalStateException(
+                            "audio.gateway.direct-stt.live-analyze.base-url must be http(s), got: " + scheme);
+                    }
+                } catch (final IllegalArgumentException ex) {
+                    throw new IllegalStateException(
+                        "audio.gateway.direct-stt.live-analyze.base-url is not a valid URI", ex);
+                }
+                if (segmentWindow < 1) {
+                    throw new IllegalStateException(
+                        "audio.gateway.direct-stt.live-analyze.segment-window must be >= 1");
+                }
+                if (timeoutMs < 100) {
+                    throw new IllegalStateException(
+                        "audio.gateway.direct-stt.live-analyze.timeout-ms must be >= 100");
+                }
+            }
         }
 
         public static class Streaming {
