@@ -3,6 +3,7 @@ package com.example.report.execution;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Optional;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
@@ -71,10 +72,18 @@ public class RemoteRequestNormalizer {
 
     private final ObjectMapper objectMapper;
 
+    // Silent-bug fix (Faz 22 audit-scan hijyeni, 2026-07-21) — this class is
+    // @Component with two constructors. Without @Autowired Spring cannot
+    // disambiguate and falls back to the no-arg ctor, which silently
+    // instantiates a fresh ObjectMapper instead of the Spring-managed bean.
+    // No visible failure, but the injected mapper wiring intent is lost.
+    // Annotate the production ctor so Spring binds the shared ObjectMapper
+    // bean; the no-arg ctor stays for test-time direct construction.
     public RemoteRequestNormalizer() {
         this.objectMapper = new ObjectMapper();
     }
 
+    @Autowired
     public RemoteRequestNormalizer(ObjectMapper objectMapper) {
         this.objectMapper = (objectMapper == null) ? new ObjectMapper() : objectMapper;
     }
