@@ -3,6 +3,8 @@ package com.example.meeting.config;
 import com.example.meeting.security.AudienceValidator;
 import com.example.meeting.security.ExpectedServiceClientValidator;
 import com.example.meeting.security.FallbackJwtDecoder;
+import com.example.meeting.security.StructuredAuthErrorEntryPoint;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -82,11 +84,17 @@ public class SecurityConfig {
      * authority check; admission to this chain alone is not route authorization.
      */
     @Bean
+    public StructuredAuthErrorEntryPoint structuredAuthErrorEntryPoint(ObjectMapper objectMapper) {
+        return new StructuredAuthErrorEntryPoint(objectMapper);
+    }
+
+    @Bean
     @Order(1)
     public SecurityFilterChain internalServiceSecurityFilterChain(
             HttpSecurity http,
             JwtDecoder jwtDecoder,
-            JwtAuthenticationConverter jwtAuthenticationConverter) throws Exception {
+            JwtAuthenticationConverter jwtAuthenticationConverter,
+            StructuredAuthErrorEntryPoint structuredAuthErrorEntryPoint) throws Exception {
         http
                 .securityMatcher("/api/v1/internal/meetings/**")
                 .csrf(AbstractHttpConfigurer::disable)
@@ -99,7 +107,15 @@ public class SecurityConfig {
                                 SVC_ANALYSIS_RESULT_WRITE, SVC_SESSION_RESOLVE))
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt -> jwt
                         .decoder(jwtDecoder)
-                        .jwtAuthenticationConverter(jwtAuthenticationConverter)));
+                        .jwtAuthenticationConverter(jwtAuthenticationConverter)))
+                // Faz 24 #818: replace Spring Boot's empty-body 401/403 default
+                // with the redacted, machine-readable envelope defined in
+                // StructuredAuthErrorEntryPoint. Only wired on the internal
+                // ingestion chain — the admin/default chains keep their
+                // existing (non-empty-body) exception handling.
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint(structuredAuthErrorEntryPoint)
+                        .accessDeniedHandler(structuredAuthErrorEntryPoint));
         return http.build();
     }
 
