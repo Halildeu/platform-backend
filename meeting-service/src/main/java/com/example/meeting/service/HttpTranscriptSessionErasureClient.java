@@ -2,6 +2,7 @@ package com.example.meeting.service;
 
 import com.example.meeting.config.MeetingSessionErasureProperties;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -18,6 +19,7 @@ public class HttpTranscriptSessionErasureClient implements TranscriptSessionEras
     private final MeetingServiceTokenProvider tokens;
     private final RestClient restClient;
 
+    @Autowired
     public HttpTranscriptSessionErasureClient(
             MeetingSessionErasureProperties properties,
             MeetingServiceTokenProvider tokens,
