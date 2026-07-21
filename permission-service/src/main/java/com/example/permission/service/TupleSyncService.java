@@ -1,6 +1,7 @@
 package com.example.permission.service;
 
 import com.example.commonauth.openfga.OpenFgaAuthzService;
+import com.example.commonauth.openfga.ScopeObjectIdCodec;
 import com.example.commonauth.scope.ScopeContextCache;
 import dev.openfga.sdk.api.client.model.ClientTupleKeyWithoutCondition;
 import com.example.permission.model.GrantType;
@@ -338,11 +339,31 @@ public class TupleSyncService {
 
     // --- Private helpers ---
 
-    /** @return true if write succeeded, false on failure */
+    /**
+     * @return true if write succeeded, false on failure
+     *
+     * <p>Board #2542: emits the ADR-0008 <em>canonical</em> object id
+     * ({@code project:wc-project-1204}) via {@link ScopeObjectIdCodec#encode}, not the historical
+     * bare numeric ({@code project:1204}). Before this change permission-service had two scope
+     * writers on two encodings — {@code DataAccessScopeTupleEncoder} (canonical) and this one
+     * (numeric) — which is the writer half of the #2530 principal/object contract drift.
+     *
+     * <p><b>Why this is access-safe on the way in.</b> {@code OpenFgaAuthzService.listObjectIds}
+     * decodes canonical AND legacy numeric to the same {@code long} and collects into a
+     * {@code LinkedHashSet<Long>} (#2531), so a user who holds both encodings for entity 1204
+     * resolves to a single scope id — no duplicate, no gap. Existing numeric tuples keep granting
+     * access until the backfill/cleanup slice removes them.
+     *
+     * <p><b>Deliberately fail-loud on an unsupported type.</b> {@code encode} throws for an object
+     * type with no ADR-0008 encoding. The four callers below are all encodable; a future fifth
+     * scope type must be added to the codec rather than silently written in a non-canonical shape
+     * that the reader would then have to guess at.
+     */
     private boolean writeScopeTuplesSafe(String userId, String relation, String objectType, List<Long> ids) {
         if (ids == null || ids.isEmpty()) return true;
         var tuples = ids.stream()
-                .map(id -> OpenFgaAuthzService.writeTupleKey(userId, relation, objectType, String.valueOf(id)))
+                .map(id -> OpenFgaAuthzService.writeTupleKey(
+                        userId, relation, objectType, ScopeObjectIdCodec.encode(objectType, id)))
                 .toList();
         try {
             authzService.writeTuples(tuples);
