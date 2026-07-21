@@ -240,16 +240,20 @@ class MeetingServiceRecordingLifecycleTest {
         Instant scheduledFallback = STARTED_AT.minusSeconds(3600);
         meeting.setScheduledStart(scheduledFallback);
         meeting.setStartedAt(STARTED_AT);
-        when(sessionRepository.findByIdAndMeetingIdVisibleToOrg(SESSION_ID, MEETING_ID, TENANT_ID))
-                .thenReturn(Optional.of(active));
+        // PR #870 merge landed sessionErasureService.request(...) as the
+        // delete-session pathway (soft-erasure model), not the direct
+        // sessionRepository.delete(...) the initial test assumed. Route the
+        // savedSession → null side effect through the erasure service so
+        // history-start recompute sees the session gone as expected.
         doAnswer(invocation -> {
             savedSession.set(null);
             return null;
-        }).when(sessionRepository).delete(active);
+        }).when(sessionErasureService).request(TENANT, MEETING_ID, SESSION_ID);
 
         service.deleteSession(TENANT, MEETING_ID, SESSION_ID);
 
         assertThat(meeting.getStartedAt()).isEqualTo(scheduledFallback);
+        verify(sessionErasureService).request(TENANT, MEETING_ID, SESSION_ID);
         verify(sessionRepository).flush();
         verify(meetingRepository).saveAndFlush(meeting);
     }
