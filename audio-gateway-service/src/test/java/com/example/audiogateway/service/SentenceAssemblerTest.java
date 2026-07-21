@@ -23,9 +23,14 @@ class SentenceAssemblerTest {
 
     private final SentenceAssembler assembler = new SentenceAssembler(POLICY);
 
+    /**
+     * Source window [startMs, startMs+durationMs] with the gateway receipt clock at
+     * startMs. The two clocks are deliberately separable: source timestamps drive
+     * speech-gap detection, the receipt clock drives the trailing-line bound.
+     */
     private static Fragment fragment(
             final String id, final String text, final long startMs, final int durationMs) {
-        return new Fragment(id, text, startMs, startMs + durationMs, durationMs);
+        return new Fragment(id, text, startMs, startMs + durationMs, durationMs, startMs);
     }
 
     @Test
@@ -88,8 +93,9 @@ class SentenceAssemblerTest {
 
     @Test
     void a_long_fragment_is_not_mistaken_for_a_pause() {
-        // Idle is measured from when speech ENDED. A single 5 s fragment followed
-        // immediately by the next must not look like a 5 s gap.
+        // A speech gap is measured between the END of one window and the START of the
+        // next. A fragment holding 5 s of speech takes 5 s to arrive without the speaker
+        // pausing at all — measuring elapsed time instead would split this sentence.
         assembler.offer(fragment("e1", "uzun bir cümlenin ilk yarısı", 0, 5_000));
 
         final List<AssembledUtterance> closed =
@@ -174,8 +180,8 @@ class SentenceAssemblerTest {
     void periodic_idle_flush_closes_a_trailing_line_without_a_new_fragment() {
         assembler.offer(fragment("e1", "son söz", 0, 1_000));
 
-        assertThat(assembler.flushIfIdle(2_000)).isEmpty();
-        assertThat(assembler.flushIfIdle(3_500)).isPresent();
+        assertThat(assembler.flushIfIdle(1_999)).isEmpty();
+        assertThat(assembler.flushIfIdle(2_000)).isPresent();
         assertThat(assembler.hasBufferedText()).isFalse();
     }
 
@@ -187,7 +193,7 @@ class SentenceAssemblerTest {
     @Test
     void fragments_without_a_duration_fall_back_to_the_window_length() {
         final SentenceAssembler a = new SentenceAssembler(POLICY);
-        a.offer(new Fragment("e1", "süresiz parça", 1_000, 4_000, 0));
+        a.offer(new Fragment("e1", "süresiz parça", 1_000, 4_000, 0, 1_000));
 
         final AssembledUtterance line = a.closeSession().orElseThrow();
 

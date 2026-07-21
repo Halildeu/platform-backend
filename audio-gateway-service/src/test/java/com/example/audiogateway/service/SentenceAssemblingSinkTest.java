@@ -58,6 +58,18 @@ class SentenceAssemblingSinkTest {
         sink.emit(result(text), context(windowSeq, startedAtMs, durationMs));
     }
 
+    /** Emit with the receipt clock decoupled from the source window. */
+    private void offerAt(
+            final SentenceAssemblingSink sink,
+            final String text,
+            final long windowSeq,
+            final long startedAtMs,
+            final int durationMs,
+            final long receiptAtMs) {
+        now.set(receiptAtMs);
+        sink.emit(result(text), context(windowSeq, startedAtMs, durationMs));
+    }
+
     @Test
     void raw_chunks_are_forwarded_first_and_unchanged() {
         final SentenceAssemblingSink sink = sink(recorder);
@@ -222,6 +234,81 @@ class SentenceAssemblingSinkTest {
         assertThat(
                         meters.counter(
                                         "audio_gateway_direct_stt_assembled_lines_total",
+                                        "reason",
+                                        SentenceAssembler.REASON_PUNCTUATION)
+                                .count())
+                .isEqualTo(1.0d);
+    }
+
+    @Test
+    void out_of_order_forwards_are_folded_in_source_order() {
+        // The forward to live-stt completes out of order; folding by arrival would
+        // splice the sentence backwards ("konuşacağız. Bugün toplantıda").
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        offer(sink, "bütçeyi konuşacağız.", 1, 1_600, 1_500);
+        offer(sink, "Bugün toplantıda", 0, 0, 1_500);
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled).hasSize(1);
+        assertThat(assembled.get(0).result().text())
+                .isEqualTo("Bugün toplantıda bütçeyi konuşacağız.");
+        assertThat(assembled.get(0).context().assembly().sourceEventIds())
+                .containsExactly("0:0", "1:1");
+    }
+
+    @Test
+    void a_stalled_reorder_gap_is_released_by_the_sweep() {
+        final SentenceAssemblingSink sink = sink(recorder);
+        offer(sink, "ilk parça", 0, 0, 1_000);
+        // Window 1 never arrives; window 2 waits behind the hole.
+        offer(sink, "geç gelen parça.", 2, 2_000, 1_000);
+        emissions.clear();
+
+        now.set(2_000 + SentenceAssemblingSink.REORDER_WINDOW_MS);
+        sink.sweep();
+
+        assertThat(emissions).hasSize(1);
+        assertThat(emissions.get(0).result().text()).isEqualTo("ilk parça geç gelen parça.");
+    }
+
+    @Test
+    void a_fresh_line_is_not_flushed_by_a_stale_source_timestamp() {
+        // The contract allows a source window timestamp to be 0 or an arbitrary past
+        // value. Comparing one against wall-clock time would close a line that just
+        // opened, on the very first sweep.
+        final SentenceAssemblingSink sink = sink(recorder);
+        offerAt(sink, "yeni açılmış satır", 0, 0, 1_000, 1_000_000L);
+        emissions.clear();
+
+        now.set(1_000_500L);
+        sink.sweep();
+
+        assertThat(emissions).isEmpty();
+
+        now.set(1_003_000L);
+        sink.sweep();
+        assertThat(emissions).hasSize(1);
+        assertThat(emissions.get(0).context().assembly().reason())
+                .isEqualTo(SentenceAssembler.REASON_IDLE);
+    }
+
+    @Test
+    void a_failed_assembled_emission_is_metered_not_silent() {
+        final SentenceAssemblingSink sink =
+                sink(
+                        (result, context) -> {
+                            if (context != null && context.assembly() != null) {
+                                throw new IllegalStateException("stream write refused");
+                            }
+                        });
+
+        offer(sink, "Tamam.", 0, 0, 1_000);
+
+        assertThat(
+                        meters.counter(
+                                        "audio_gateway_direct_stt_assembled_line_failures_total",
                                         "reason",
                                         SentenceAssembler.REASON_PUNCTUATION)
                                 .count())

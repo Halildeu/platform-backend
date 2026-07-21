@@ -18,11 +18,12 @@ import java.util.Optional;
  * linguistic boundary ({@link SentenceBoundary}) instead of an acoustic one. This is a
  * pure text-domain transform: no model, no GPU, no rewriting.
  *
- * <h2>Losslessness</h2>
- * Every fragment offered is emitted in exactly one line, in arrival order, with its text
- * unmodified apart from a single separating space. This layer never deletes a repeat,
- * corrects a word, invents punctuation, or calls an LLM. That keeps the assembled line
- * usable as the verbatim record.
+ * <h2>Losslessness (whitespace-normalised)</h2>
+ * Every fragment offered is emitted in exactly one line, in source order. The only edits
+ * are whitespace ones: leading and trailing whitespace is stripped and fragments are
+ * joined with a single space. No word is dropped, reordered, corrected or invented, no
+ * repeat is deleted, no punctuation is added, and no LLM is involved — so the assembled
+ * line remains usable as the verbatim record.
  *
  * <h2>Bounded buffering</h2>
  * A line always closes, even when the speaker never produces a terminator: on speech
@@ -57,7 +58,10 @@ public final class SentenceAssembler {
 
     private long bufferStartedAtMs;
     private long bufferEndedAtMs;
-    private long lastFragmentAtMs;
+    /** Gateway receipt clock of the last folded fragment — bounds the trailing line. */
+    private long lastReceiptAtMs;
+    /** Source-audio end of the last folded fragment — detects a pause by the speaker. */
+    private long lastSpeechEndMs;
     private int bufferSpeechMs;
 
     public SentenceAssembler(final SentenceAssemblyPolicy policy) {
@@ -65,20 +69,32 @@ public final class SentenceAssembler {
     }
 
     /**
-     * A committed transcript fragment.
+     * A committed transcript fragment, already reordered into source sequence.
      *
      * @param eventId id of the committed event this fragment came from
      * @param text committed transcript text; blank fragments are ignored entirely
-     * @param startedAtMs window start
-     * @param endedAtMs window end
+     * @param startedAtMs window start — provenance only (may be 0 or an arbitrary past
+     *     value per the gateway contract), never used for idle timing
+     * @param endedAtMs window end — provenance only
      * @param speechDurationMs audio duration of this fragment; non-positive values fall
      *     back to the wall-clock window length
+     * @param receiptAtMs gateway wall-clock when the fragment was received. This is the
+     *     ONLY clock idle timing uses, so the sweep's {@code now} and a fragment's
+     *     timestamp are always in the same time base — the source window timestamps are
+     *     not trustworthy for elapsed time and mixing the two would flush a fresh line
+     *     on the first sweep.
      */
     public record Fragment(
-            String eventId, String text, long startedAtMs, long endedAtMs, int speechDurationMs) {}
+            String eventId,
+            String text,
+            long startedAtMs,
+            long endedAtMs,
+            int speechDurationMs,
+            long receiptAtMs) {}
 
     /**
-     * Offer a committed fragment.
+     * Offer a committed fragment. The caller must offer fragments in source order (see
+     * {@link ChunkReorderBuffer}); the assembler folds in the order it receives them.
      *
      * @return the lines that closed as a result — usually empty (still buffering), one
      *     when this fragment completed a line, or two when an idle gap closed the
@@ -96,9 +112,12 @@ public final class SentenceAssembler {
         }
 
         final List<AssembledUtterance> closed = new ArrayList<>(2);
-        // An idle gap closes what came before it: the pause belongs between the lines,
-        // not inside the new one.
-        flushIfIdle(fragment.startedAtMs()).ifPresent(closed::add);
+        // A pause the SPEAKER made closes what came before it: the silence belongs
+        // between the lines, not inside the new one. That is a source-audio question,
+        // so it is measured on source timestamps — and only when they are usable.
+        if (isSpeechGap(fragment)) {
+            closed.add(close(REASON_IDLE));
+        }
 
         append(fragment, text);
 
@@ -113,20 +132,44 @@ public final class SentenceAssembler {
     }
 
     /**
-     * Close the buffer if no fragment has arrived for {@link SentenceAssemblyPolicy#idleMs()}.
+     * Close the buffer when no fragment has been RECEIVED for
+     * {@link SentenceAssemblyPolicy#idleMs()} — the speaker has stopped and a trailing
+     * line should not wait for a fragment that will never come.
      *
-     * <p>Callers that only invoke this from {@link #offer} get idle detection between
-     * fragments; a periodic caller additionally bounds how long a trailing line waits
-     * after the speaker stops.
+     * <p>{@code nowMs} and the timestamp it is compared against are both on the gateway
+     * receipt clock. Source window timestamps are never mixed in: the contract allows
+     * them to be zero or arbitrary, and comparing one against wall-clock time would flush
+     * a freshly-opened line on the very first sweep.
+     *
+     * @param nowMs gateway receipt clock
      */
     public Optional<AssembledUtterance> flushIfIdle(final long nowMs) {
         if (buffer.length() == 0) {
             return Optional.empty();
         }
-        if (nowMs - lastFragmentAtMs < policy.idleMs()) {
+        if (nowMs - lastReceiptAtMs < policy.idleMs()) {
             return Optional.empty();
         }
         return Optional.of(close(REASON_IDLE));
+    }
+
+    /**
+     * Whether the speaker paused between the buffered text and this fragment.
+     *
+     * <p>Measured on source audio timestamps, because it asks about silence in the
+     * recording rather than elapsed processing time — a fragment holding 5 s of speech
+     * takes 5 s of wall clock to arrive without the speaker having paused at all.
+     *
+     * <p>Returns false whenever the timestamps are not usable (zero, non-monotonic, or
+     * no previous fragment), so an unreliable source clock degrades to "no split" rather
+     * than to spurious splits. The receipt-clock idle in {@link #flushIfIdle} still
+     * bounds the line.
+     */
+    private boolean isSpeechGap(final Fragment fragment) {
+        if (buffer.length() == 0 || lastSpeechEndMs <= 0 || fragment.startedAtMs() <= 0) {
+            return false;
+        }
+        return fragment.startedAtMs() - lastSpeechEndMs >= policy.idleMs();
     }
 
     /**
@@ -155,10 +198,10 @@ public final class SentenceAssembler {
         buffer.append(text);
         bufferedEventIds.add(fragment.eventId());
         bufferEndedAtMs = fragment.endedAtMs();
-        // Idle is measured from when committed speech last ENDED. Measuring from the
-        // start would make any fragment longer than the idle threshold look like a
-        // pause and split the sentence it was supposed to hold together.
-        lastFragmentAtMs = Math.max(fragment.endedAtMs(), fragment.startedAtMs());
+        // Two clocks, never compared against each other: the receipt clock bounds how
+        // long a trailing line waits, the source clock detects a pause in the speech.
+        lastReceiptAtMs = fragment.receiptAtMs();
+        lastSpeechEndMs = Math.max(fragment.endedAtMs(), fragment.startedAtMs());
         bufferSpeechMs += speechMsOf(fragment);
     }
 

@@ -12,6 +12,8 @@ import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 import com.example.audiogateway.service.SentenceAssemblingSink;
 import com.example.audiogateway.service.SentenceAssemblyPolicy;
+import com.example.audiogateway.service.SentenceAssemblySweeper;
+import com.example.audiogateway.service.RedisStreamDirectSttTranscriptResultSink;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.netty.channel.ChannelOption;
@@ -19,7 +21,6 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import java.io.File;
 import java.time.Duration;
-import java.util.List;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLParameters;
 
@@ -27,7 +28,6 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -135,10 +135,76 @@ public class DirectSttConfig {
                 }));
     }
 
+    /**
+     * The ONE {@code @Primary DirectSttTranscriptResultSink} — the head of the decorator
+     * chain, composed explicitly here.
+     *
+     * <p><b>Why a single factory (Codex {@code 019f869d} post-impl REVISE point 4).</b>
+     * Each decorator used to be its own {@code @Bean @Primary}, resolving its delegate by
+     * filtering an {@link ObjectProvider}. With more than one feature flag on, Spring saw
+     * several primary candidates for one injection point and the context failed to start
+     * with {@code NoUniqueBeanDefinitionException}. Composing the chain in one place makes
+     * the order explicit, removes the self-injection filtering entirely, and leaves
+     * exactly one primary regardless of which flags are set.
+     *
+     * <p>Order (outer → inner): <b>assembly → broadcast → live-analyze → durable</b>.
+     * Assembly is outermost because an assembled line must reach both the durable stream
+     * (the desktop's event reader) and the broadcast hub (web viewers), and only the
+     * outer delegate covers both. Broadcast sits outside live-analyze so a publish
+     * happens after the durable write, and a relay failure never masks a committed one.
+     */
     @Bean
-    @ConditionalOnMissingBean(DirectSttTranscriptResultSink.class)
-    public DirectSttTranscriptResultSink noOpDirectSttTranscriptResultSink() {
-        return DirectSttTranscriptResultSink.noop();
+    @Primary
+    public DirectSttTranscriptResultSink directSttTranscriptResultSink(
+            final ObjectProvider<RedisStreamDirectSttTranscriptResultSink> durableProvider,
+            final ObjectProvider<LiveAnalyzeTrigger> triggerProvider,
+            final ObjectProvider<LiveTranscriptStreamHub> hubProvider,
+            final AudioGatewayProperties props,
+            final MeterRegistry meters) {
+        final RedisStreamDirectSttTranscriptResultSink durable = durableProvider.getIfAvailable();
+        DirectSttTranscriptResultSink chain =
+                durable == null ? DirectSttTranscriptResultSink.noop() : durable;
+
+        final LiveAnalyzeTrigger trigger = triggerProvider.getIfAvailable();
+        if (trigger != null) {
+            chain = new LiveAnalyzeTriggerSink(chain, trigger);
+        }
+        final LiveTranscriptStreamHub hub = hubProvider.getIfAvailable();
+        if (hub != null) {
+            chain = new LiveTranscriptBroadcastSink(chain, hub);
+        }
+        final AudioGatewayProperties.DirectStt.SentenceAssembly assembly =
+                props.getDirectStt().getSentenceAssembly();
+        if (assembly.isEnabled()) {
+            chain =
+                    new SentenceAssemblingSink(
+                            chain,
+                            new SentenceAssemblyPolicy(
+                                    assembly.getMaxSpeechMs(),
+                                    assembly.getMaxChars(),
+                                    assembly.getIdleMs()),
+                            meters);
+        }
+        return chain;
+    }
+
+    /**
+     * Drives {@link SentenceAssemblingSink#sweep()} — closing lines whose speaker stopped
+     * and releasing stalled reorder gaps.
+     *
+     * <p>The assembling sink is constructed inside the chain factory rather than being a
+     * bean of its own (so there is only one primary), which means its own
+     * {@code @Scheduled} would never be discovered. This bean is the scheduling seam: it
+     * takes the chain head and sweeps it when assembly is the outermost layer.
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.sentence-assembly",
+            name = "enabled",
+            havingValue = "true")
+    public SentenceAssemblySweeper sentenceAssemblySweeper(
+            final DirectSttTranscriptResultSink chainHead) {
+        return new SentenceAssemblySweeper(chainHead);
     }
 
     /**
@@ -192,34 +258,6 @@ public class DirectSttConfig {
     }
 
     /**
-     * Faz 24 İ4 — decorator sink: forwards to the base durable sink first
-     * (Redis stream), then feeds the live-analyze aggregator best-effort.
-     *
-     * <p>{@code @Primary} so it wins DI resolution over the base
-     * {@link DirectSttTranscriptResultSink}. The base is looked up via an
-     * {@link ObjectProvider} filter so we do not inject the decorator into
-     * itself (Spring footgun mirror of the {@code AudioChunkDispatcher}
-     * decorator above).
-     */
-    @Bean
-    @Primary
-    @ConditionalOnProperty(
-            prefix = "audio.gateway.direct-stt.live-analyze",
-            name = "enabled",
-            havingValue = "true")
-    public DirectSttTranscriptResultSink liveAnalyzeTriggerSink(
-            final ObjectProvider<DirectSttTranscriptResultSink> sinkProvider,
-            final LiveAnalyzeTrigger trigger) {
-        final DirectSttTranscriptResultSink base = sinkProvider
-                .orderedStream()
-                .filter(s -> !(s instanceof LiveAnalyzeTriggerSink))
-                .filter(s -> !(s instanceof LiveTranscriptBroadcastSink))
-                .findFirst()
-                .orElse(DirectSttTranscriptResultSink.noop());
-        return new LiveAnalyzeTriggerSink(base, trigger);
-    }
-
-    /**
      * Faz 24 İ2-T — live transcript SSE broadcast hub. Multi-viewer pub/sub
      * across web clients, ephemeral, drop-oldest under back-pressure.
      */
@@ -230,79 +268,6 @@ public class DirectSttConfig {
             havingValue = "true")
     public LiveTranscriptStreamHub liveTranscriptStreamHub() {
         return new LiveTranscriptStreamHub();
-    }
-
-    /**
-     * Faz 24 İ2-T — broadcast decorator, sits at the OUTSIDE of the sink chain
-     * so publish happens after durable + live-analyze have executed.
-     *
-     * <p>Order in the chain (outer → inner): broadcast → live-analyze → durable
-     * (Redis). A broadcast failure never masks the already-committed durable
-     * emission; a durable failure is surfaced to the recorder untouched.
-     *
-     * <p>{@code @Primary} so it wins DI resolution. The base is looked up via an
-     * {@link ObjectProvider} filter so we never inject the decorator into
-     * itself and never inject the outer decorator into an inner decorator.
-     */
-    @Bean
-    @Primary
-    @ConditionalOnProperty(
-            prefix = "audio.gateway.direct-stt.live-transcript",
-            name = "broadcast-enabled",
-            havingValue = "true")
-    public DirectSttTranscriptResultSink liveTranscriptBroadcastSink(
-            final ObjectProvider<DirectSttTranscriptResultSink> sinkProvider,
-            final LiveTranscriptStreamHub hub) {
-        final DirectSttTranscriptResultSink base = sinkProvider
-                .orderedStream()
-                .filter(s -> !(s instanceof LiveTranscriptBroadcastSink))
-                .findFirst()
-                .orElse(DirectSttTranscriptResultSink.noop());
-        return new LiveTranscriptBroadcastSink(base, hub);
-    }
-
-    /**
-     * Faz 24 — sentence assembly, the OUTERMOST decorator.
-     *
-     * <p>Order in the chain (outer → inner): assembly → broadcast → live-analyze →
-     * durable (Redis). Outermost is the only position that works: an assembled line has
-     * to reach both the durable stream (so the desktop's event reader sees it) and the
-     * broadcast hub (so web viewers see it), and only the outer delegate covers both.
-     *
-     * <p>{@link com.example.audiogateway.service.LiveAnalyzeTriggerSink} ignores
-     * assembled lines, so meeting-ai still receives each sentence once.
-     *
-     * <p>The base is resolved by explicit preference rather than stream order: whichever
-     * decorators are enabled, this one must wrap the outermost of them, and relying on
-     * {@code orderedStream()} to happen to return that one first would be a coin flip.
-     */
-    @Bean
-    @Primary
-    @ConditionalOnProperty(
-            prefix = "audio.gateway.direct-stt.sentence-assembly",
-            name = "enabled",
-            havingValue = "true")
-    public DirectSttTranscriptResultSink sentenceAssemblingSink(
-            final ObjectProvider<DirectSttTranscriptResultSink> sinkProvider,
-            final AudioGatewayProperties props,
-            final MeterRegistry meters) {
-        final List<DirectSttTranscriptResultSink> candidates = sinkProvider
-                .orderedStream()
-                .filter(s -> !(s instanceof SentenceAssemblingSink))
-                .toList();
-        final DirectSttTranscriptResultSink base = candidates.stream()
-                .filter(LiveTranscriptBroadcastSink.class::isInstance)
-                .findFirst()
-                .or(() -> candidates.stream().filter(LiveAnalyzeTriggerSink.class::isInstance).findFirst())
-                .or(() -> candidates.stream().findFirst())
-                .orElse(DirectSttTranscriptResultSink.noop());
-
-        final AudioGatewayProperties.DirectStt.SentenceAssembly cfg =
-                props.getDirectStt().getSentenceAssembly();
-        return new SentenceAssemblingSink(
-                base,
-                new SentenceAssemblyPolicy(cfg.getMaxSpeechMs(), cfg.getMaxChars(), cfg.getIdleMs()),
-                meters);
     }
 
     /**

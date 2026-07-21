@@ -11,8 +11,9 @@ import java.util.List;
  * committed events it came from and a later revision can bind to the same sources
  * instead of silently mutating the line.
  *
- * @param text concatenated fragment text, separated by a single space and otherwise
- *     unmodified — no punctuation is invented, no word is corrected, nothing is dropped
+ * @param text the fragments' text joined with a single space; whitespace-normalised and
+ *     otherwise unmodified — no punctuation is invented, no word is corrected, nothing is
+ *     dropped or reordered
  * @param sourceEventIds ids of the committed fragments folded into this line, in order
  * @param startedAtMs window start of the first fragment
  * @param endedAtMs window end of the last fragment
