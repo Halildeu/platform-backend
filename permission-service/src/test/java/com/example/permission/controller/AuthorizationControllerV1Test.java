@@ -1,5 +1,7 @@
 package com.example.permission.controller;
 
+import com.example.commonauth.identity.AuthenticatedPrincipalResolver;
+import com.example.commonauth.identity.ResolvedUserIdentity;
 import com.example.permission.dto.v1.AuthzMeResponseDto;
 import com.example.permission.repository.RolePermissionRepository;
 import com.example.permission.repository.UserRoleAssignmentRepository;
@@ -41,6 +43,9 @@ class AuthorizationControllerV1Test {
     private AuthenticatedUserLookupService authenticatedUserLookupService;
 
     @Mock
+    private AuthenticatedPrincipalResolver principalResolver;
+
+    @Mock
     private PermissionService permissionService;
 
     @Mock
@@ -64,6 +69,23 @@ class AuthorizationControllerV1Test {
     @InjectMocks
     private AuthorizationControllerV1 controller;
 
+    // Helper: canonical resolved principal for the given numeric id and subject/email.
+    // subjectMatched=false because the adapter this test suite exercises resolves via the email
+    // fallback path (kc_subject not consulted yet). enabled=true/deleted=false keep behaviour
+    // aligned with the pre-wire lookup semantics; the follow-up PR that migrates the transport
+    // to the canonical /resolve endpoint tightens these gates.
+    private static AuthenticatedPrincipalResolver.Resolution resolved(
+            long userId, String subject, String email) {
+        return new AuthenticatedPrincipalResolver.Resolution(
+                AuthenticatedPrincipalResolver.Outcome.RESOLVED,
+                new ResolvedUserIdentity(userId, subject, email, false, true, false, null));
+    }
+
+    private static AuthenticatedPrincipalResolver.Resolution failed(
+            AuthenticatedPrincipalResolver.Outcome outcome) {
+        return new AuthenticatedPrincipalResolver.Resolution(outcome, null);
+    }
+
     @Test
     void getMe_usesResolvedNumericUserIdForScopeSummary() {
         Jwt jwt = Jwt.withTokenValue("token")
@@ -73,8 +95,8 @@ class AuthorizationControllerV1Test {
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "admin@example.com"));
+        when(principalResolver.resolve(jwt))
+                .thenReturn(resolved(15L, jwt.getSubject(), "admin@example.com"));
         // board #2531: /authz/me artık numeric id'nin YANINDA doğrulanmış KC sub'ı da alias
         // olarak geçiriyor — canonical /access/scope grant'leri user:<sub> altında saklanıyor.
         when(authorizationQueryService.getUserScopeSummary(
@@ -102,8 +124,14 @@ class AuthorizationControllerV1Test {
         assertEquals(11L, body.getAllowedScopes().get(0).scopeRefId());
     }
 
+    // board #2532 wire step: the pre-wire behaviour rebuilt JWT permissions onto a
+    // "PROFILE_MISSING" principal, so an unresolved user still got their JWT permissions
+    // echoed back. That is precisely the "claim as authority" pattern umbrella #2530 removes:
+    // if user-service does not know this principal, /authz/me carries an empty, non-privileged
+    // snapshot rather than trusting the token to describe itself. FE contract (200 body shape)
+    // is preserved — only the permissions/modules/scopes surfaces are empty.
     @Test
-    void getMe_returnsPermissionsOnlyWhenNumericUserCannotBeResolved() {
+    void getMe_profileMissing_failsClosedWithEmptySnapshot() {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
                 .subject("2fd0e4f7-c9da-4622-b4b6-b90adab28dd4")
@@ -111,30 +139,27 @@ class AuthorizationControllerV1Test {
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(null, "2fd0e4f7-c9da-4622-b4b6-b90adab28dd4", null));
+        when(principalResolver.resolve(jwt))
+                .thenReturn(failed(AuthenticatedPrincipalResolver.Outcome.PROFILE_MISSING));
 
         ResponseEntity<AuthzMeResponseDto> response = controller.getMe(jwt);
 
         assertEquals(200, response.getStatusCode().value());
         AuthzMeResponseDto body = response.getBody();
         assertNotNull(body);
-        assertEquals("2fd0e4f7-c9da-4622-b4b6-b90adab28dd4", body.getUserId());
-        // Faz 23.5 hardening — UUID fallback path leaves subscriberId
-        // null so the alias does not silently leak the drift it was
-        // created to fix (Codex thread 019e0316 iter-3 absorb).
-        assertNull(body.getSubscriberId());
-        assertEquals(Set.of("VIEW_USERS"), body.getPermissions());
-        assertEquals(List.of(), body.getAllowedScopes());
-        assertEquals(List.of(), body.getScopes());
+        assertNull(body.getSubscriberId(),
+                "PROFILE_MISSING must NOT project a subscriberId — the alias exists to catch drift");
+        assertTrue(body.getPermissions().isEmpty(),
+                "PROFILE_MISSING must NOT echo JWT permissions — that is the claim-as-authority bug");
+        assertTrue(body.getAllowedModules().isEmpty());
+        assertFalse(body.isSuperAdmin());
     }
 
     @Test
-    void getMe_distrustedClaimUnresolved_failsClosedIgnoringJwtPermissions() {
-        // Slice 2b (#727, Codex 019ef3ca REVISE): a DISTRUSTED numeric claim
-        // that resolves to no verified id must NOT have authz rebuilt from JWT
-        // permissions/roles — even an "admin" permissions claim yields an empty,
-        // non-privileged /authz/me snapshot keyed to the verified subject.
+    void getMe_identityMismatch_failsClosedIgnoringJwtPermissions() {
+        // Slice 2b (#727, Codex 019ef3ca REVISE) generalised: a userId/uid claim that
+        // contradicts the canonical row must NOT have authz rebuilt from JWT permissions/roles —
+        // even an "admin" permissions claim yields an empty, non-privileged snapshot.
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
                 .subject("kc-uuid-not-numeric")
@@ -144,20 +169,80 @@ class AuthorizationControllerV1Test {
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                        null, "kc-uuid-not-numeric", "ghost@example.com", true));
+        when(principalResolver.resolve(jwt))
+                .thenReturn(failed(AuthenticatedPrincipalResolver.Outcome.IDENTITY_MISMATCH));
 
         ResponseEntity<AuthzMeResponseDto> response = controller.getMe(jwt);
 
         assertEquals(200, response.getStatusCode().value());
         AuthzMeResponseDto body = response.getBody();
         assertNotNull(body);
-        assertEquals("kc-uuid-not-numeric", body.getUserId());
         assertNull(body.getSubscriberId());
         assertTrue(body.getPermissions().isEmpty());
         assertTrue(body.getAllowedModules().isEmpty());
         assertFalse(body.isSuperAdmin());
+    }
+
+    @Test
+    void getMe_directoryUnavailable_returns503() {
+        // The point of the DIRECTORY_UNAVAILABLE outcome is that an outage in user-service
+        // must NOT silently degrade to a deny/allow decision built from unverified claims.
+        // /authz/me surfaces this as 503 AUTHZ_DEGRADED (contract: 5xx ⇒ non-empty JSON error).
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("15")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        when(principalResolver.resolve(jwt))
+                .thenReturn(failed(AuthenticatedPrincipalResolver.Outcome.DIRECTORY_UNAVAILABLE));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.getMe(jwt));
+        assertEquals(503, ex.getStatusCode().value());
+        assertNotNull(ex.getReason());
+        assertTrue(ex.getReason().contains("AUTHZ_DEGRADED"),
+                "503 reason must carry AUTHZ_DEGRADED so the FE can classify the failure");
+    }
+
+    @Test
+    void getMe_accountDisabled_returns403() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("15")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        when(principalResolver.resolve(jwt))
+                .thenReturn(failed(AuthenticatedPrincipalResolver.Outcome.ACCOUNT_DISABLED));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.getMe(jwt));
+        assertEquals(403, ex.getStatusCode().value());
+        assertTrue(ex.getReason() != null && ex.getReason().contains("ACCOUNT_DISABLED"));
+    }
+
+    @Test
+    void getMe_userDeleted_returns404() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .subject("15")
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        when(principalResolver.resolve(jwt))
+                .thenReturn(failed(AuthenticatedPrincipalResolver.Outcome.USER_DELETED));
+
+        org.springframework.web.server.ResponseStatusException ex =
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        org.springframework.web.server.ResponseStatusException.class,
+                        () -> controller.getMe(jwt));
+        assertEquals(404, ex.getStatusCode().value());
+        assertTrue(ex.getReason() != null && ex.getReason().contains("USER_DELETED"));
     }
 
     @Test
@@ -170,8 +255,8 @@ class AuthorizationControllerV1Test {
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
 
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "user3@example.com"));
+        when(principalResolver.resolve(jwt))
+                .thenReturn(resolved(15L, jwt.getSubject(), "user3@example.com"));
         when(authorizationQueryService.getUserScopeSummary(eq(15L), any())).thenReturn(Map.of());
         when(catalogService.getModuleKeys()).thenReturn(List.of("ACCESS", "AUDIT", "REPORT", "THEME"));
         when(authzService.check("15", "can_manage", "module", "ACCESS")).thenReturn(false);
@@ -209,10 +294,9 @@ class AuthorizationControllerV1Test {
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
 
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                        2501L, "2501", "p5-readiness-viewer@localtest.me"));
-        when(authorizationQueryService.getUserScopeSummary(2501L)).thenReturn(Map.of());
+        when(principalResolver.resolve(jwt))
+                .thenReturn(resolved(2501L, jwt.getSubject(), "p5-readiness-viewer@localtest.me"));
+        when(authorizationQueryService.getUserScopeSummary(eq(2501L), any())).thenReturn(Map.of());
         when(catalogService.getModuleKeys()).thenReturn(List.of("INTERVIEW_EVIDENCE"));
         when(authzService.check("2501", "admin", "organization", "default")).thenReturn(false);
         when(authzService.check("2501", "can_manage", "module", "INTERVIEW_EVIDENCE"))
@@ -261,10 +345,9 @@ class AuthorizationControllerV1Test {
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
 
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                        2502L, "2502", "catalog-admin-without-p5-grant@localtest.me"));
-        when(authorizationQueryService.getUserScopeSummary(2502L)).thenReturn(Map.of());
+        when(principalResolver.resolve(jwt))
+                .thenReturn(resolved(2502L, jwt.getSubject(), "catalog-admin-without-p5-grant@localtest.me"));
+        when(authorizationQueryService.getUserScopeSummary(eq(2502L), any())).thenReturn(Map.of());
         when(catalogService.getModuleKeys())
                 .thenReturn(List.of("USER_MANAGEMENT", "INTERVIEW_EVIDENCE"));
         when(authzService.check("2502", "admin", "organization", "default")).thenReturn(false);
@@ -319,8 +402,8 @@ class AuthorizationControllerV1Test {
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(300))
                 .build();
-        when(authenticatedUserLookupService.resolve(jwt))
-                .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(15L, "15", "u@example.com"));
+        when(principalResolver.resolve(jwt))
+                .thenReturn(resolved(15L, jwt.getSubject(), "u@example.com"));
         // doGetMe wraps most downstream calls in *Safely helpers; the
         // remaining unguarded path is authzVersionService.getCurrentVersion
         // which fires unconditionally and surfaces RuntimeException to the
@@ -577,9 +660,8 @@ class AuthorizationControllerV1Test {
         @org.junit.jupiter.api.DisplayName("positive REPORT grant surfaces modules.REPORT=VIEW + permissions REPORT_VIEW even when no MODULE:REPORT granule exists")
         void reportGrant_surfacesModuleAndPermission() {
             Jwt token = jwt("1205");
-            when(authenticatedUserLookupService.resolve(token))
-                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                            1205L, "1205", "d35-granted@example.com"));
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1205L, token.getSubject(), "d35-granted@example.com"));
             when(authorizationQueryService.getUserScopeSummary(eq(1205L), any())).thenReturn(Map.of());
             // resolvePermissions: USER_MANAGEMENT module tuple resolved; the DB
             // legacy permissions deliberately omit REPORT_VIEW so the assertion
@@ -617,9 +699,8 @@ class AuthorizationControllerV1Test {
         @org.junit.jupiter.api.DisplayName("MANAGE REPORT grant surfaces modules.REPORT=MANAGE + REPORT_EXPORT/REPORT_MANAGE")
         void reportManageGrant_surfacesManage() {
             Jwt token = jwt("1206");
-            when(authenticatedUserLookupService.resolve(token))
-                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                            1206L, "1206", "report-mgr@example.com"));
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1206L, token.getSubject(), "report-mgr@example.com"));
             when(authorizationQueryService.getUserScopeSummary(eq(1206L), any())).thenReturn(Map.of());
             when(catalogService.getModuleKeys()).thenReturn(List.of());
             when(permissionService.getAssignments(1206L, null, null, null)).thenReturn(List.of());
@@ -645,9 +726,8 @@ class AuthorizationControllerV1Test {
         @org.junit.jupiter.api.DisplayName("explicit MODULE:REPORT DENY granule wins — module stays DENY, REPORT_VIEW not injected")
         void reportModuleDeny_winsOverReportGrant() {
             Jwt token = jwt("1207");
-            when(authenticatedUserLookupService.resolve(token))
-                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                            1207L, "1207", "report-denied@example.com"));
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1207L, token.getSubject(), "report-denied@example.com"));
             when(authorizationQueryService.getUserScopeSummary(eq(1207L), any())).thenReturn(Map.of());
             when(catalogService.getModuleKeys()).thenReturn(List.of());
             PermissionResponse dbAssignment = new PermissionResponse();
@@ -679,9 +759,8 @@ class AuthorizationControllerV1Test {
         @org.junit.jupiter.api.DisplayName("resolvePermissions merges OpenFGA module grants with legacy DB permissions instead of short-circuiting")
         void resolvePermissions_mergesOpenFgaAndDbPermissions() {
             Jwt token = jwt("1208");
-            when(authenticatedUserLookupService.resolve(token))
-                    .thenReturn(new AuthenticatedUserLookupService.ResolvedAuthenticatedUser(
-                            1208L, "1208", "merge@example.com"));
+            when(principalResolver.resolve(token))
+                    .thenReturn(resolved(1208L, token.getSubject(), "merge@example.com"));
             when(authorizationQueryService.getUserScopeSummary(eq(1208L), any())).thenReturn(Map.of());
             when(catalogService.getModuleKeys()).thenReturn(List.of("USER_MANAGEMENT"));
             when(authzService.check("1208", "can_manage", "module", "USER_MANAGEMENT")).thenReturn(false);
