@@ -70,7 +70,7 @@ class TranscriptSegmentServiceTest {
 
     private TranscriptSegmentService service;
 
-    private final AdminTenantContext context = new AdminTenantContext(TENANT, "admin@example.com");
+    private final AdminTenantContext context = new AdminTenantContext(TENANT, "admin@example.com", "admin@example.com");
 
     @BeforeEach
     void setUp() {

@@ -103,7 +103,7 @@ class CanonicalTranscriptReadServiceTest {
                 .containsExactly("Merhaba", "Dünya");
         verify(capabilityIssuer, never()).issue(any());
         verify(accessAuditService).recordList(
-                new AdminTenantContext(TENANT_ID, "meeting-ai"), MEETING_ID, SESSION_ID, 2);
+                new AdminTenantContext(TENANT_ID, "meeting-ai", "meeting-ai"), MEETING_ID, SESSION_ID, 2);
         verify(segmentRepository, never()).findCanonicalFinalizedSession(
                 TENANT_ID, MEETING_ID, SESSION_ID);
     }

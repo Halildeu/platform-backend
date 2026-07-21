@@ -54,7 +54,7 @@ class TranscriptExportServiceTest {
     @Mock
     private TranscriptAccessAuditService accessAuditService;
 
-    private final AdminTenantContext context = new AdminTenantContext(TENANT, "admin@example.com");
+    private final AdminTenantContext context = new AdminTenantContext(TENANT, "admin@example.com", "admin@example.com");
 
     /** exportMaxRows = 2 so cap+1 = 3 trips the guard with small fixtures. */
     private TranscriptExportService service() {

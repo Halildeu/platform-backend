@@ -43,7 +43,7 @@ class TranscriptFinalizationControllerTest {
 
     @BeforeEach
     void setUp() {
-        when(tenants.resolveRequired()).thenReturn(new AdminTenantContext(TENANT, "admin"));
+        when(tenants.resolveRequired()).thenReturn(new AdminTenantContext(TENANT, "admin", "admin"));
     }
 
     @Test

@@ -16,17 +16,22 @@ import java.util.UUID;
 import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 
 /**
- * Resolves the {@link AdminTenantContext} (tenant scope + authz principal) from
- * the authenticated JWT principal.
+ * Resolves the {@link AdminTenantContext} (tenant scope + subject + authz
+ * principal) from the authenticated JWT principal.
  *
- * <p>The resolved {@code subject} is the CANONICAL authz principal:
- * {@code userId} claim if present, else {@code sub}. This is intentionally the
- * SAME precedence the {@code @RequireModule} OpenFGA interceptor uses
- * ({@code TranscriptRequireModuleInterceptor#extractUserId}) so the principal
- * that the authz gate checks is exactly the principal the KVKK m.12 access
- * audit records as {@code accessor_subject}. (endpoint-admin's resolver fell
- * back to email/preferred_username, which can DIVERGE from the gate principal;
- * transcript-service deliberately keeps them identical.)
+ * <p>Faz 24 issue #824 splits {@code subject} and {@code authzPrincipal}:
+ *
+ * <ul>
+ *   <li>{@code subject} — the STABLE OIDC {@code sub}. Written to audit columns
+ *       ({@code accessor_subject}, {@code created_by_subject}) and used for
+ *       cross-service audit correlation. If the JWT lacks {@code sub}, the
+ *       request FAILS CLOSED (401) — email/username is not accepted as a
+ *       durable identity, because those can change during a user's lifetime.
+ *   <li>{@code authzPrincipal} — the {@code userId} claim if present, else
+ *       {@code sub}. Used by the existing {@code @RequireModule} OpenFGA gate
+ *       ({@code TranscriptRequireModuleInterceptor#extractUserId}). Kept for
+ *       live-tuple compatibility until module authz is migrated to stable-sub.
+ * </ul>
  */
 @Component
 public class JwtTenantContextResolver implements TenantContextResolver {
@@ -70,17 +75,28 @@ public class JwtTenantContextResolver implements TenantContextResolver {
         }
         if (authentication.getPrincipal() instanceof Jwt jwt) {
             UUID tenantId = resolveTenantId(jwt);
-            String subject = resolveAuthzPrincipal(jwt);
-            if (tenantId != null && subject != null && !subject.isBlank()) {
-                return new AdminTenantContext(tenantId, subject);
+            String subject = jwt.getSubject();
+            String authzPrincipal = resolveAuthzPrincipal(jwt);
+            if (tenantId == null || subject == null || subject.isBlank()) {
+                // Faz 24 #824: no stable OIDC sub → fail closed. email /
+                // preferred_username are never accepted as durable identity.
+                return localContextOrReject();
             }
+            String effectiveAuthzPrincipal =
+                    (authzPrincipal == null || authzPrincipal.isBlank()) ? subject : authzPrincipal;
+            return new AdminTenantContext(tenantId, subject, effectiveAuthzPrincipal);
         }
         return localContextOrReject();
     }
 
     /**
-     * Canonical authz principal: {@code userId} claim if present, else
-     * {@code sub}. MUST match {@code TranscriptRequireModuleInterceptor}.
+     * Module-gate authz principal (unchanged from previous behavior):
+     * {@code userId} claim if present, else {@code sub}. MUST match
+     * {@code TranscriptRequireModuleInterceptor#extractUserId}.
+     *
+     * <p>This value goes into {@link AdminTenantContext#authzPrincipal()} —
+     * the audit boundary now uses {@link Jwt#getSubject()} directly and is
+     * NEVER derived from userId.
      */
     private String resolveAuthzPrincipal(Jwt jwt) {
         Object userIdClaim = jwt.getClaim("userId");
@@ -155,7 +171,7 @@ public class JwtTenantContextResolver implements TenantContextResolver {
 
     private AdminTenantContext localContextOrReject() {
         if (isLocalLikeProfile() && localDefaultTenantId != null) {
-            return new AdminTenantContext(localDefaultTenantId, "local-dev");
+            return new AdminTenantContext(localDefaultTenantId, "local-dev", "local-dev");
         }
         throw new ResponseStatusException(UNAUTHORIZED, "Tenant context could not be resolved from authenticated principal.");
     }

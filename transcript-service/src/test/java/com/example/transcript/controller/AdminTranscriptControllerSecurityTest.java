@@ -76,7 +76,7 @@ class AdminTranscriptControllerSecurityTest {
     void setUp() {
         when(authzService.isEnabled()).thenReturn(true);
         when(tenantContextResolver.resolveRequired())
-                .thenReturn(new AdminTenantContext(TENANT, "admin@example.com"));
+                .thenReturn(new AdminTenantContext(TENANT, "admin@example.com", "admin@example.com"));
     }
 
     @Test
