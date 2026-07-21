@@ -52,6 +52,13 @@ public final class SentenceAssembler {
     /** Closed because the recording ended — the buffer is never carried past the session. */
     public static final String REASON_SESSION_END = "session_end";
 
+    /**
+     * Emitted on its own because it arrived after its place in the sequence was given up
+     * on. The text is preserved, but it is out of order relative to the lines around it —
+     * folding it into the open line would hide that.
+     */
+    public static final String REASON_LATE_AFTER_GAP = "late_after_gap";
+
     private final SentenceAssemblyPolicy policy;
     private final List<String> bufferedEventIds = new ArrayList<>();
     private final StringBuilder buffer = new StringBuilder();

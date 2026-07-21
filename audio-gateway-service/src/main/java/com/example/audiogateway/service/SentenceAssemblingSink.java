@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Scheduled;
 
 /**
  * Decorator {@link DirectSttTranscriptResultSink} that folds consecutive committed
@@ -23,26 +22,34 @@ import org.springframework.scheduling.annotation.Scheduled;
  * <h2>Order is reconciled before assembly</h2>
  * The forward to live-stt completes out of order, so each session runs a
  * {@link ChunkReorderBuffer} keyed by {@code windowSeq} in front of its
- * {@link SentenceAssembler}. The assembler only ever sees fragments in source order.
+ * {@link SentenceAssembler}. The assembler only ever sees fragments in source order, and
+ * each one still carries the context and result it arrived with — a reordered fragment
+ * must not be stamped with a later fragment's metadata.
+ *
+ * <h2>Transport switch is an epoch boundary</h2>
+ * The two legs number their windows independently, each from 0. When a session falls back
+ * from the live socket to REST, continuing to reorder against the old sequence space
+ * would reject fresh speech as a duplicate. A transport change therefore flushes and
+ * resets the session's reorder buffer, and closes the open line, before the new leg's
+ * first fragment is folded.
  *
  * <h2>Additive, never destructive</h2>
- * The raw chunk is forwarded to the delegate first and unchanged, exactly as before.
- * The assembled line is emitted <i>in addition</i>, carrying
- * {@link DirectSttTranscriptResultContext.Assembly} so a consumer can tell the two apart
- * and trace a line back to its fragments. Nothing is replaced or dropped, so a client
- * that has not been taught about the new status keeps working — which is why the feature
- * is also default-off until both clients render it.
+ * The raw chunk is forwarded to the delegate first and unchanged. The assembled line is
+ * emitted <i>in addition</i>, carrying {@link DirectSttTranscriptResultContext.Assembly}
+ * so a consumer can tell the two apart and trace a line back to its fragments. Nothing is
+ * replaced or dropped, so a client that has not been taught about the new status keeps
+ * working — which is why the feature is also default-off until both clients render it.
  *
- * <h2>One clock</h2>
- * Idle timing runs entirely on the gateway receipt clock ({@link #clock}). Source window
- * timestamps are provenance only — the contract allows them to be zero or arbitrary — so
- * they are never compared against wall-clock time.
+ * <h2>One clock per question</h2>
+ * A pause by the speaker is a source-audio gap; how long a trailing line has waited is a
+ * gateway receipt-clock question. The two are never compared against each other, because
+ * the contract allows source window timestamps to be zero or arbitrary.
  *
  * <h2>Per-session serialisation</h2>
- * All access to a session's reorder buffer and assembler is under that session's monitor,
- * and the map entry is created and removed atomically. A concurrent emit, sweep, and
- * close therefore cannot interleave on the same buffer or emit an assembled line stamped
- * with another fragment's metadata.
+ * Every read and mutation of a session's state — including creation, eviction and close —
+ * happens inside {@link ConcurrentHashMap#compute} on that session's key, so a concurrent
+ * emit, sweep and close cannot interleave, resurrect a removed buffer, or emit a line
+ * stamped with another fragment's metadata.
  *
  * <h2>Emission failures are contained</h2>
  * An assembled emission that throws is logged, metered, and swallowed: the raw chunk has
@@ -92,23 +99,26 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         this.clock = clock;
     }
 
+    /** A fragment together with the exact context and result it arrived with. */
+    private record Envelope(
+            SentenceAssembler.Fragment fragment,
+            DirectSttTranscriptResultContext context,
+            TranscriptResult result) {}
+
+    /** An assembled line paired with the envelope that closed it. */
+    private record Pending(AssembledUtterance utterance, Envelope source) {}
+
     private final class SessionState {
-        private final ChunkReorderBuffer reorder =
-                new ChunkReorderBuffer(REORDER_CAPACITY, REORDER_WINDOW_MS);
         private final SentenceAssembler assembler = new SentenceAssembler(policy);
-        private DirectSttTranscriptResultContext lastContext;
-        private TranscriptResult lastResult;
+        private ChunkReorderBuffer<Envelope> reorder =
+                new ChunkReorderBuffer<>(REORDER_CAPACITY, REORDER_WINDOW_MS);
+        private DirectSttTranscriptResultContext.Transport transport;
+        private Envelope lastEnvelope;
         private long touchedAtMs;
 
         private SessionState(final long nowMs) {
             this.touchedAtMs = nowMs;
         }
-
-        /** An assembled line paired with the context/result that should carry it. */
-        private record Pending(
-                AssembledUtterance utterance,
-                DirectSttTranscriptResultContext context,
-                TranscriptResult result) {}
     }
 
     @Override
@@ -126,29 +136,17 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             return;
         }
 
-        final List<SessionState.Pending> toEmit;
+        final List<Pending> toEmit = new ArrayList<>();
         try {
-            final SessionState state =
-                    sessions.computeIfAbsent(context.sessionId(), id -> new SessionState(clock.getAsLong()));
-            synchronized (state) {
-                final long receiptMs = clock.getAsLong();
-                state.lastContext = context;
-                state.lastResult = result;
-                state.touchedAtMs = receiptMs;
-                final SentenceAssembler.Fragment fragment =
-                        new SentenceAssembler.Fragment(
-                                eventIdOf(context),
-                                result == null ? null : result.text(),
-                                context.windowStartedAtMs(),
-                                context.windowEndedAtMs(),
-                                context.audioDurationMs(),
-                                receiptMs);
-                final List<SentenceAssembler.Fragment> ordered =
-                        reorderKeyOf(context) < 0
-                                ? List.of(fragment)
-                                : state.reorder.offer(reorderKeyOf(context), fragment);
-                toEmit = foldAll(state, ordered);
-            }
+            sessions.compute(
+                    context.sessionId(),
+                    (id, existing) -> {
+                        final long receiptMs = clock.getAsLong();
+                        final SessionState state =
+                                existing == null ? new SessionState(receiptMs) : existing;
+                        toEmit.addAll(accept(state, result, context, receiptMs));
+                        return state;
+                    });
         } catch (final RuntimeException ex) {
             log.warn(
                     "sentence assembly skipped sessionId={} reason={}",
@@ -159,30 +157,67 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         toEmit.forEach(this::emitAssembled);
     }
 
+    /** Fold one arrival into the session. Runs under the map's per-key lock. */
+    private List<Pending> accept(
+            final SessionState state,
+            final TranscriptResult result,
+            final DirectSttTranscriptResultContext context,
+            final long receiptMs) {
+        final List<Pending> pending = new ArrayList<>();
+        state.touchedAtMs = receiptMs;
+
+        // A transport switch restarts the window numbering, so the old sequence space
+        // must be closed out before the new leg's first fragment is folded.
+        if (state.transport != null && state.transport != context.transport()) {
+            pending.addAll(foldOrdered(state, state.reorder.flushAll()));
+            state.assembler.closeSession().ifPresent(u -> pending.add(pendingOf(state, u)));
+            state.reorder = new ChunkReorderBuffer<>(REORDER_CAPACITY, REORDER_WINDOW_MS);
+            count("assembly_transport_switch_total", context.transport().name());
+        }
+        state.transport = context.transport();
+
+        final Envelope envelope =
+                new Envelope(
+                        new SentenceAssembler.Fragment(
+                                eventIdOf(context),
+                                result == null ? null : result.text(),
+                                context.windowStartedAtMs(),
+                                context.windowEndedAtMs(),
+                                context.audioDurationMs(),
+                                receiptMs),
+                        context,
+                        result);
+        state.lastEnvelope = envelope;
+        pending.addAll(
+                foldOrdered(state, state.reorder.offer(context.windowSeq(), receiptMs, envelope)));
+        return pending;
+    }
+
     /**
      * Close a session's buffers and emit whatever is left — the recording ended.
      *
-     * <p>Safe to call for an unknown session and safe to call twice; the trailing line
-     * is emitted at most once. Callers should invoke this only after the last outstanding
-     * STT result for the session has reached the sink (WS {@code drained} / REST terminal
+     * <p>Safe to call for an unknown session and safe to call twice; the trailing line is
+     * emitted at most once. Callers should invoke this only after the last outstanding STT
+     * result for the session has reached the sink (WS {@code drained} / REST terminal
      * completion), so no fragment is stranded in the reorder buffer.
      */
     public void closeSession(final String sessionId) {
         if (sessionId == null) {
             return;
         }
-        final SessionState state = sessions.remove(sessionId);
-        if (state == null) {
-            return;
-        }
-        final List<SessionState.Pending> toEmit;
-        synchronized (state) {
-            final List<SessionState.Pending> pending = new ArrayList<>(foldAll(state, state.reorder.flushAll()));
-            state.assembler
-                    .closeSession()
-                    .ifPresent(u -> pending.add(pendingOf(state, u)));
-            toEmit = pending;
-        }
+        final List<Pending> toEmit = new ArrayList<>();
+        // Remove and drain atomically: a concurrent emit either runs before this and is
+        // included, or after it and rebuilds a fresh state — never appends to a buffer
+        // that has already been dropped from the map.
+        sessions.computeIfPresent(
+                sessionId,
+                (id, state) -> {
+                    toEmit.addAll(foldOrdered(state, state.reorder.flushAll()));
+                    state.assembler
+                            .closeSession()
+                            .ifPresent(u -> toEmit.add(pendingOf(state, u)));
+                    return null;
+                });
         toEmit.forEach(this::emitAssembled);
     }
 
@@ -190,35 +225,28 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
      * Release stalled reorder gaps, close lines whose speaker has stopped, and drop
      * long-idle session state.
      *
-     * <p>Without this a trailing line would wait for the next fragment — which never
-     * comes once the speaker stops talking.
+     * <p>Without this a trailing line would wait for the next fragment — which never comes
+     * once the speaker stops talking.
      */
-    @Scheduled(
-            fixedDelayString =
-                    "${audio.gateway.direct-stt.sentence-assembly.sweep-interval-ms:1000}")
     public void sweep() {
         final long now = clock.getAsLong();
-        sessions.forEach(
-                (sessionId, state) -> {
-                    final List<SessionState.Pending> toEmit;
-                    final boolean evict;
-                    synchronized (state) {
-                        final List<SessionState.Pending> pending =
-                                new ArrayList<>(foldAll(state, state.reorder.sweep(now)));
+        final List<Pending> toEmit = new ArrayList<>();
+        for (final String sessionId : List.copyOf(sessions.keySet())) {
+            sessions.computeIfPresent(
+                    sessionId,
+                    (id, state) -> {
+                        toEmit.addAll(foldOrdered(state, state.reorder.sweep(now)));
                         state.assembler
                                 .flushIfIdle(now)
-                                .ifPresent(u -> pending.add(pendingOf(state, u)));
-                        toEmit = pending;
-                        evict =
+                                .ifPresent(u -> toEmit.add(pendingOf(state, u)));
+                        final boolean evict =
                                 !state.assembler.hasBufferedText()
                                         && !state.reorder.hasPending()
                                         && now - state.touchedAtMs >= SESSION_EVICT_AFTER_MS;
-                    }
-                    toEmit.forEach(this::emitAssembled);
-                    if (evict) {
-                        sessions.remove(sessionId, state);
-                    }
-                });
+                        return evict ? null : state;
+                    });
+        }
+        toEmit.forEach(this::emitAssembled);
     }
 
     /** Test/observability helper — sessions currently holding assembler state. */
@@ -226,37 +254,73 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         return sessions.size();
     }
 
-    /** Fold every ordered fragment through the assembler; must hold the session monitor. */
-    private List<SessionState.Pending> foldAll(
-            final SessionState state, final List<SentenceAssembler.Fragment> ordered) {
-        if (ordered.isEmpty()) {
+    /**
+     * Fold released envelopes through the assembler, in source order.
+     *
+     * <p>A payload flagged {@link ChunkReorderBuffer.Release#lateAfterGap()} arrived after
+     * its hole was abandoned. Appending it to whatever line is open now would silently
+     * produce "2 3 1", so it is emitted as its own line instead — the text survives and
+     * the misordering is visible in the provenance rather than hidden inside a sentence.
+     *
+     * <p>Must hold the session's per-key lock.
+     */
+    private List<Pending> foldOrdered(
+            final SessionState state, final List<ChunkReorderBuffer.Release<Envelope>> released) {
+        if (released.isEmpty()) {
             return List.of();
         }
-        final List<SessionState.Pending> pending = new ArrayList<>();
-        for (final SentenceAssembler.Fragment fragment : ordered) {
-            for (final AssembledUtterance utterance : state.assembler.offer(fragment)) {
-                pending.add(pendingOf(state, utterance));
+        final List<Pending> pending = new ArrayList<>();
+        for (final ChunkReorderBuffer.Release<Envelope> release : released) {
+            final Envelope envelope = release.payload();
+            if (release.lateAfterGap()) {
+                standaloneLateLine(envelope).ifPresent(pending::add);
+                continue;
+            }
+            for (final AssembledUtterance utterance : state.assembler.offer(envelope.fragment())) {
+                pending.add(new Pending(utterance, envelope));
             }
         }
         return pending;
     }
 
-    /** Snapshot the current session context/result for an assembled line, under the monitor. */
-    private SessionState.Pending pendingOf(
-            final SessionState state, final AssembledUtterance utterance) {
-        return new SessionState.Pending(utterance, state.lastContext, state.lastResult);
+    /** The out-of-order arrival as a line of its own, marked as such. */
+    private java.util.Optional<Pending> standaloneLateLine(final Envelope envelope) {
+        final String text =
+                envelope.fragment().text() == null ? "" : envelope.fragment().text().strip();
+        if (text.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        count("assembled_lines_total", SentenceAssembler.REASON_LATE_AFTER_GAP);
+        return java.util.Optional.of(
+                new Pending(
+                        new AssembledUtterance(
+                                text,
+                                List.of(envelope.fragment().eventId()),
+                                envelope.fragment().startedAtMs(),
+                                envelope.fragment().endedAtMs(),
+                                envelope.fragment().speechDurationMs(),
+                                SentenceAssembler.REASON_LATE_AFTER_GAP),
+                        envelope));
     }
 
-    private void emitAssembled(final SessionState.Pending pending) {
-        final DirectSttTranscriptResultContext context = pending.context();
-        if (context == null) {
+    /** The line's carrier is the envelope that closed it, snapshotted under the lock. */
+    private Pending pendingOf(final SessionState state, final AssembledUtterance utterance) {
+        return new Pending(utterance, state.lastEnvelope);
+    }
+
+    private void emitAssembled(final Pending pending) {
+        final Envelope source = pending.source();
+        if (source == null || source.context() == null) {
             return;
         }
         final AssembledUtterance utterance = pending.utterance();
         try {
             delegate.emit(
-                    assembledResult(utterance, pending.result()), context.withAssembly(utterance));
-            count("assembled_lines_total", utterance.flushReason());
+                    assembledResult(utterance, source.result()),
+                    source.context().withAssembly(utterance));
+            if (!SentenceAssembler.REASON_LATE_AFTER_GAP.equals(utterance.flushReason())) {
+                count("assembled_lines_total", utterance.flushReason());
+            }
         } catch (final RuntimeException ex) {
             // The fragments this line was folded from are already delivered; losing the
             // convenience line must not fail the session — but it IS a delivery gap, so
@@ -264,15 +328,15 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             count("assembled_line_failures_total", utterance.flushReason());
             log.warn(
                     "assembled line emit failed sessionId={} reason={} error={}",
-                    context.sessionId(),
+                    source.context().sessionId(),
                     utterance.flushReason(),
                     ex.getClass().getSimpleName());
         }
     }
 
-    private void count(final String name, final String reason) {
+    private void count(final String name, final String tag) {
         if (meters != null) {
-            meters.counter(METRIC_PREFIX + name, "reason", reason).increment();
+            meters.counter(METRIC_PREFIX + name, "reason", tag).increment();
         }
     }
 
@@ -293,15 +357,6 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                 source == null ? null : source.computeType(),
                 source == null ? null : source.device(),
                 null);
-    }
-
-    /**
-     * Source-order key for reordering. {@code windowSeq} is the gateway's own sequence of
-     * committed windows; a negative value (unset) disables reordering for that fragment
-     * so it passes straight through.
-     */
-    private static long reorderKeyOf(final DirectSttTranscriptResultContext context) {
-        return context.windowSeq();
     }
 
     /**

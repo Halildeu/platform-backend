@@ -63,7 +63,8 @@ class RedisStreamDirectSttTranscriptResultSinkTest {
                 1,
                 "corr-direct-stt",
                 "deadbeefcafe0000sha",
-                512);
+                512,
+                DirectSttTranscriptResultContext.Transport.REST);
     }
 
     private static TranscriptResult result() {

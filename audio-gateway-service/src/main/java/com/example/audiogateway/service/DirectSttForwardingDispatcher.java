@@ -662,7 +662,8 @@ public class DirectSttForwardingDispatcher
                 task.channels(),
                 task.correlationId(),
                 task.sha256(),
-                task.length());
+                task.length(),
+                DirectSttTranscriptResultContext.Transport.REST);
     }
 
     private void releaseOnce(final AtomicBoolean released) {

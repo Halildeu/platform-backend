@@ -45,7 +45,31 @@ class SentenceAssemblingSinkTest {
         return new DirectSttTranscriptResultContext(
                 SESSION, 1L, 2L, windowSeq, startedAtMs, windowSeq, windowSeq, windowSeq,
                 startedAtMs, startedAtMs + durationMs, durationMs, "chunk", "meet-1", "dev-1",
-                "tr", "wav", 16_000, 1, "corr-1", "sha", 100);
+                "tr", "wav", 16_000, 1, "corr-1", "sha", 100,
+                DirectSttTranscriptResultContext.Transport.REST);
+    }
+
+    private static DirectSttTranscriptResultContext context(
+            final long windowSeq,
+            final long startedAtMs,
+            final int durationMs,
+            final DirectSttTranscriptResultContext.Transport transport) {
+        return new DirectSttTranscriptResultContext(
+                SESSION, 1L, 2L, windowSeq, startedAtMs, windowSeq, windowSeq, windowSeq,
+                startedAtMs, startedAtMs + durationMs, durationMs, "chunk", "meet-1", "dev-1",
+                "tr", "wav", 16_000, 1, "corr-1", "sha", 100, transport);
+    }
+
+    private void offerVia(
+            final SentenceAssemblingSink sink,
+            final DirectSttTranscriptResultContext.Transport transport,
+            final String text,
+            final long windowSeq,
+            final long startedAtMs,
+            final int durationMs,
+            final long receiptAtMs) {
+        now.set(receiptAtMs);
+        sink.emit(result(text), context(windowSeq, startedAtMs, durationMs, transport));
     }
 
     private void offer(
@@ -217,7 +241,8 @@ class SentenceAssemblingSinkTest {
         final DirectSttTranscriptResultContext noSession =
                 new DirectSttTranscriptResultContext(
                         "  ", 1L, 2L, 0, 0, 0, 0, 0, 0, 1_000, 1_000, "chunk", "meet-1", "dev-1",
-                        "tr", "wav", 16_000, 1, "corr-1", "sha", 100);
+                        "tr", "wav", 16_000, 1, "corr-1", "sha", 100,
+                        DirectSttTranscriptResultContext.Transport.REST);
 
         sink.emit(result("Tamam."), noSession);
 
@@ -313,6 +338,97 @@ class SentenceAssemblingSinkTest {
                                         SentenceAssembler.REASON_PUNCTUATION)
                                 .count())
                 .isEqualTo(1.0d);
+    }
+
+    @Test
+    void a_transport_switch_does_not_let_the_new_leg_be_rejected_as_duplicate() {
+        // The live socket and the REST fallback number their windows independently, each
+        // from 0. Reordering the fallback against the socket's sequence space would drop
+        // real speech as a "duplicate" — exactly what a mid-recording fallback does.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+                "canlı kanaldan gelen", 0, 0, 1_000, 1_000);
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+                "ikinci pencere", 1, 1_100, 1_000, 2_100);
+        emissions.clear();
+
+        // Socket drops; REST resumes at window 0 again.
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST,
+                "yedek kanaldan gelen.", 0, 2_200, 1_000, 3_200);
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        // The fallback text must appear, not be swallowed as a replayed sequence.
+        assertThat(assembled).isNotEmpty();
+        assertThat(assembled)
+                .anySatisfy(e -> assertThat(e.result().text()).contains("yedek kanaldan gelen."));
+    }
+
+    @Test
+    void a_transport_switch_closes_the_previous_legs_open_line() {
+        final SentenceAssemblingSink sink = sink(recorder);
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+                "yarım kalan canlı cümle", 0, 0, 1_000, 1_000);
+        emissions.clear();
+
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST,
+                "yeni kanal", 0, 1_100, 1_000, 2_100);
+
+        // The socket's unfinished line is closed on its own rather than being merged
+        // into the fallback's first fragment.
+        assertThat(emissions)
+                .anySatisfy(
+                        e -> {
+                            assertThat(e.context().assembly()).isNotNull();
+                            assertThat(e.result().text()).isEqualTo("yarım kalan canlı cümle");
+                        });
+    }
+
+    @Test
+    void a_fragment_arriving_after_its_gap_was_abandoned_becomes_its_own_line() {
+        // Appending it to whatever line is open now would silently produce "2 3 1".
+        final SentenceAssemblingSink sink = sink(recorder);
+        offer(sink, "ilk parça", 0, 0, 1_000);
+        offer(sink, "üçüncü parça", 2, 2_000, 1_000);
+        now.set(2_000 + SentenceAssemblingSink.REORDER_WINDOW_MS);
+        sink.sweep();
+        emissions.clear();
+
+        // Window 1 finally lands, long after its place was given up on.
+        offerAt(sink, "geç kalan parça", 1, 1_000, 1_000, 20_000);
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled).hasSize(1);
+        assertThat(assembled.get(0).result().text()).isEqualTo("geç kalan parça");
+        assertThat(assembled.get(0).context().assembly().reason())
+                .isEqualTo(SentenceAssembler.REASON_LATE_AFTER_GAP);
+    }
+
+    @Test
+    void reordered_fragments_keep_their_own_context_not_the_latest_one() {
+        // Out-of-order arrival must not stamp the assembled line with a later
+        // fragment's metadata.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        now.set(100);
+        sink.emit(
+                new TranscriptResult(
+                        "ikinci yarısı.", "tr", 0.9d, 2.0d, 50.0d, "late-model", "int8", "cpu", null),
+                context(1, 1_600, 1_500));
+        now.set(200);
+        sink.emit(
+                new TranscriptResult(
+                        "İlk yarısı", "tr", 0.9d, 2.0d, 50.0d, "first-model", "int8", "cpu", null),
+                context(0, 0, 1_500));
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled).hasSize(1);
+        assertThat(assembled.get(0).result().text()).isEqualTo("İlk yarısı ikinci yarısı.");
+        // The line closed on window 1's fragment, so it carries window 1's model.
+        assertThat(assembled.get(0).result().model()).isEqualTo("late-model");
     }
 
     @Test
