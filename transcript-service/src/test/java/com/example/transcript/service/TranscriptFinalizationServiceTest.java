@@ -193,7 +193,7 @@ class TranscriptFinalizationServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.finalizeTranscript(
-                new AdminTenantContext(foreign, "foreign"), MEETING, SESSION, 1L))
+                new AdminTenantContext(foreign, "foreign", "foreign"), MEETING, SESSION, 1L))
                 .isInstanceOf(ResponseStatusException.class)
                 .satisfies(error -> assertThat(((ResponseStatusException) error).getStatusCode().value())
                         .isEqualTo(404));
@@ -215,6 +215,6 @@ class TranscriptFinalizationServiceTest {
     }
 
     private AdminTenantContext context() {
-        return new AdminTenantContext(TENANT, "admin");
+        return new AdminTenantContext(TENANT, "admin", "admin");
     }
 }

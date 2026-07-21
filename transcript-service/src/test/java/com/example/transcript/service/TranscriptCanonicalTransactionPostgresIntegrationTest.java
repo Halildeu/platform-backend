@@ -829,6 +829,6 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     private AdminTenantContext context(UUID tenant) {
-        return new AdminTenantContext(tenant, "admin");
+        return new AdminTenantContext(tenant, "admin", "admin");
     }
 }
