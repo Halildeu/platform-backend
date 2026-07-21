@@ -6,6 +6,8 @@ import com.example.audiogateway.service.DirectSttForwardingDispatcher;
 import com.example.audiogateway.service.DirectSttTranscriptResultSink;
 import com.example.audiogateway.service.LiveAnalyzeTrigger;
 import com.example.audiogateway.service.LiveAnalyzeTriggerSink;
+import com.example.audiogateway.service.LiveTranscriptBroadcastSink;
+import com.example.audiogateway.service.LiveTranscriptStreamHub;
 import com.example.audiogateway.service.NoOpAudioChunkDispatcher;
 import com.example.audiogateway.service.RedisStreamsAudioChunkDispatcher;
 
@@ -208,9 +210,52 @@ public class DirectSttConfig {
         final DirectSttTranscriptResultSink base = sinkProvider
                 .orderedStream()
                 .filter(s -> !(s instanceof LiveAnalyzeTriggerSink))
+                .filter(s -> !(s instanceof LiveTranscriptBroadcastSink))
                 .findFirst()
                 .orElse(DirectSttTranscriptResultSink.noop());
         return new LiveAnalyzeTriggerSink(base, trigger);
+    }
+
+    /**
+     * Faz 24 İ2-T — live transcript SSE broadcast hub. Multi-viewer pub/sub
+     * across web clients, ephemeral, drop-oldest under back-pressure.
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.live-transcript",
+            name = "broadcast-enabled",
+            havingValue = "true")
+    public LiveTranscriptStreamHub liveTranscriptStreamHub() {
+        return new LiveTranscriptStreamHub();
+    }
+
+    /**
+     * Faz 24 İ2-T — broadcast decorator, sits at the OUTSIDE of the sink chain
+     * so publish happens after durable + live-analyze have executed.
+     *
+     * <p>Order in the chain (outer → inner): broadcast → live-analyze → durable
+     * (Redis). A broadcast failure never masks the already-committed durable
+     * emission; a durable failure is surfaced to the recorder untouched.
+     *
+     * <p>{@code @Primary} so it wins DI resolution. The base is looked up via an
+     * {@link ObjectProvider} filter so we never inject the decorator into
+     * itself and never inject the outer decorator into an inner decorator.
+     */
+    @Bean
+    @Primary
+    @ConditionalOnProperty(
+            prefix = "audio.gateway.direct-stt.live-transcript",
+            name = "broadcast-enabled",
+            havingValue = "true")
+    public DirectSttTranscriptResultSink liveTranscriptBroadcastSink(
+            final ObjectProvider<DirectSttTranscriptResultSink> sinkProvider,
+            final LiveTranscriptStreamHub hub) {
+        final DirectSttTranscriptResultSink base = sinkProvider
+                .orderedStream()
+                .filter(s -> !(s instanceof LiveTranscriptBroadcastSink))
+                .findFirst()
+                .orElse(DirectSttTranscriptResultSink.noop());
+        return new LiveTranscriptBroadcastSink(base, hub);
     }
 
     /**
