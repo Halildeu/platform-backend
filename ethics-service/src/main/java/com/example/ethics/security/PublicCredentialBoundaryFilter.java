@@ -34,13 +34,27 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        // Faz 35 ES-306 hardening — secure-transport gate ingress-nginx
+        // `X-Etik-Speak-Transport: https` header'ını ya da standard
+        // `X-Forwarded-Proto: https` (ingress-nginx `use-forwarded-headers`
+        // altında otomatik set eder) header'ını kabul eder. Bu ikinci yol
+        // ingress-nginx v1.9+ `proxy-set-headers` ConfigMap içindeki custom
+        // header'ları render etmeyen (alfabetik-first-only) quirk için canonical
+        // workaround; ayrıca sektör-standardı (nginx reverse-proxy defaults +
+        // Spring Boot server.forward-headers-strategy=NATIVE) uyumludur.
         if (Boolean.TRUE.equals(properties.secureTransportRequired())
-                && !"https".equals(request.getHeader(TRANSPORT_HEADER))) {
+                && !isSecureTransport(request)) {
             writeBoundaryError(request, response, "SECURE_TRANSPORT_REQUIRED",
                     "Bu public işlem yalnız doğrulanmış HTTPS ingress üzerinden kullanılabilir.");
             return;
         }
-        boolean hasAuthorization = request.getHeader("Authorization") != null;
+        // Faz 35 ES-306 hardening — ingress-nginx `Authorization: ""` empty-set
+        // rendering'i (basic-auth remove sonrası boş string) backend'e null
+        // değil empty header olarak gelir. `getHeader() != null` check bu
+        // durumu foreign-credential olarak yorumlar + CREDENTIAL_CONFUSION
+        // reject. Fix: null + isBlank() birlikte kontrol (defense-in-depth).
+        String authorization = request.getHeader("Authorization");
+        boolean hasAuthorization = authorization != null && !authorization.isBlank();
         boolean hasForeignCookie = false;
         if (request.getCookies() != null) {
             for (Cookie cookie : request.getCookies()) {
@@ -56,6 +70,23 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    /**
+     * Verifies the request arrived over HTTPS. Accepts either the Faz 35
+     * dedicated transport proof header ({@code X-Etik-Speak-Transport: https})
+     * or the standard {@code X-Forwarded-Proto: https} reverse-proxy header.
+     * Both must be set by a trusted ingress; direct client control is
+     * prevented by the boundary NetworkPolicy (application only accepts
+     * traffic from the ingress-nginx namespace).
+     */
+    private boolean isSecureTransport(HttpServletRequest request) {
+        String etikTransport = request.getHeader(TRANSPORT_HEADER);
+        if ("https".equalsIgnoreCase(etikTransport)) {
+            return true;
+        }
+        String forwardedProto = request.getHeader("X-Forwarded-Proto");
+        return "https".equalsIgnoreCase(forwardedProto);
     }
 
     private void writeBoundaryError(
