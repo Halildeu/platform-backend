@@ -21,4 +21,5 @@ public class EthicsReport {
     }
     public UUID getCaseId(){return caseId;} public String getMode(){return mode;} public String getCategory(){return category;}
     public String getSubject(){return subject;} public String getNarrative(){return narrative;} public Instant getCreatedAt(){return createdAt;}
+    public String getLocale(){return locale;} public String getNoticeVersion(){return noticeVersion;}
 }
