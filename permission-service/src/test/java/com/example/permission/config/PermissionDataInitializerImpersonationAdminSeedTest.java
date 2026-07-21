@@ -161,6 +161,11 @@ class PermissionDataInitializerImpersonationAdminSeedTest {
                 admin, PermissionType.MODULE, "TRANSCRIPT", GrantType.MANAGE));
         admin.addRolePermission(new RolePermission(
                 admin, PermissionType.MODULE, "endpoint-admin", GrantType.MANAGE));
+        // Slice F (#2555 body-D): ACCESS MODULE MANAGE granule seeded onto
+        // ADMIN by buildAdminGranules() — pre-seed here so the idempotency
+        // pass stays a true no-op.
+        admin.addRolePermission(new RolePermission(
+                admin, PermissionType.MODULE, "ACCESS", GrantType.MANAGE));
         when(roleRepository.findAll()).thenReturn(List.of(admin));
 
         initializer.run();

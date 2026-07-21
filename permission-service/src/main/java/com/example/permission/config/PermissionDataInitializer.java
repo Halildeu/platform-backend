@@ -182,6 +182,25 @@ public class PermissionDataInitializer implements CommandLineRunner {
     private static final GranuleSeed ENDPOINT_ADMIN_ADMIN_GRANULE = new GranuleSeed(
             PermissionType.MODULE, "endpoint-admin", GrantType.MANAGE);
 
+    /**
+     * Slice F (#2555 body-D long-term fix) — data_access.scope grant/revoke
+     * surface. {@code AccessScopeController} uses
+     * {@code @RequireModule("ACCESS", "can_manage")}, so every admin needs
+     * a {@code module:ACCESS can_manage user:<adminId>} FGA tuple to reach
+     * the endpoint. Prior state: no bootstrap seed → every admin persona
+     * needed a manual `UPDATE ... role='ADMIN'` + explicit grant, and the
+     * canonical d35-admin persona could not open the "grant module access"
+     * flow in the admin UI. Same "ADMIN has every core platform module"
+     * contract as IMPERSONATION_AUDIT / MEETING / TRANSCRIPT / endpoint-admin.
+     *
+     * <p>ACCESS is deliberately NOT in {@link PermissionModulePolicy}'s
+     * EXPLICIT_GRANT_ONLY_MODULES set — the module is a platform-admin
+     * surface, not a sensitive tenant-owned granule like INTERVIEW_EVIDENCE
+     * or ATS. Implicit ADMIN expansion is safe here.
+     */
+    private static final GranuleSeed ACCESS_ADMIN_GRANULE = new GranuleSeed(
+            PermissionType.MODULE, "ACCESS", GrantType.MANAGE);
+
     private static final Map<String, List<GranuleSeed>> DEFAULT_ROLE_GRANULES = Map.ofEntries(
             Map.entry("ADMIN",           buildAdminGranules()),
             Map.entry("REPORT_MANAGER",  combine(
@@ -232,6 +251,10 @@ public class PermissionDataInitializer implements CommandLineRunner {
         out.add(MEETING_ADMIN_GRANULE);
         out.add(TRANSCRIPT_ADMIN_GRANULE);
         out.add(ENDPOINT_ADMIN_ADMIN_GRANULE);
+        // Slice F (#2555 body-D long-term fix): data_access.scope surface —
+        // AccessScopeController requires module:ACCESS can_manage; without
+        // this seed every admin needed a manual FGA tuple write.
+        out.add(ACCESS_ADMIN_GRANULE);
         // Defense in depth: an explicit-grant-only module must not become an
         // ADMIN seed merely because a future catalog/admin list is broadened.
         return out.stream()
