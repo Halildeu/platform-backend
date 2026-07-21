@@ -15,4 +15,6 @@ public class AuditOutbox {
     @Column(name="created_at", nullable=false) private Instant createdAt;
     protected AuditOutbox() {}
     public AuditOutbox(UUID id, UUID orgId, UUID aggregateId, String eventType, String payload, Instant now){this.id=id;this.orgId=orgId;this.aggregateId=aggregateId;this.eventType=eventType;this.payload=payload;this.status="PENDING";this.createdAt=now;}
+    public String getPayload() { return payload; }
+    public String getEventType() { return eventType; }
 }

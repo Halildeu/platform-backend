@@ -18,7 +18,8 @@ class SecurityConfigTest {
             210_000,
             "ethics-manager",
             "ethics-manager",
-            true);
+            true,
+            30);
 
     @Test
     void acceptsOnlyTokenWithIssuerAudienceAndPersonaRole() {
