@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Instant;
 
 /**
  * Repository for {@link MeetingSession} — Faz 24 (#410).
@@ -27,6 +28,15 @@ public interface MeetingSessionRepository extends JpaRepository<MeetingSession, 
             order by s.createdAt asc
             """)
     List<MeetingSession> findByMeetingIdVisibleToOrg(
+            @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
+
+    @Query("""
+            select min(s.startedAt)
+            from MeetingSession s
+            where s.meetingId = :meetingId
+              and (s.orgId = :orgId or (s.orgId is null and s.tenantId = :orgId))
+            """)
+    Optional<Instant> findEarliestStartedAtVisibleToOrg(
             @Param("meetingId") UUID meetingId, @Param("orgId") UUID orgId);
 
     @Query("""

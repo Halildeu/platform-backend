@@ -9,6 +9,7 @@ import com.example.meeting.dto.v1.admin.MeetingDecisionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingDecisionResponse;
 import com.example.meeting.dto.v1.admin.MeetingDecisionUpdateRequest;
 import com.example.meeting.dto.v1.admin.MeetingResponse;
+import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
 import com.example.meeting.dto.v1.admin.MeetingSessionCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingSessionResponse;
 import com.example.meeting.dto.v1.admin.MeetingSessionUpdateRequest;
@@ -43,6 +44,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -117,10 +119,20 @@ public class MeetingService {
     // ───────────────────────────── Meeting CRUD ─────────────────────────────
 
     @Transactional(readOnly = true)
-    public Page<MeetingResponse> listMeetings(AdminTenantContext tenant, MeetingStatus status, Pageable pageable) {
-        Page<Meeting> page = (status == null)
-                ? meetingRepository.findAllVisibleToOrg(tenant.tenantId(), pageable)
-                : meetingRepository.findAllVisibleToOrgByStatus(tenant.tenantId(), status, pageable);
+    public Page<MeetingResponse> listMeetings(
+            AdminTenantContext tenant, MeetingSearchCriteria criteria, Pageable pageable) {
+        Page<Meeting> page = meetingRepository.searchVisibleToOrg(
+                tenant.tenantId(),
+                criteria.status() != null,
+                criteria.status(),
+                criteria.title() != null,
+                criteria.title(),
+                criteria.meetingId() != null,
+                criteria.meetingId(),
+                criteria.dateFrom() != null,
+                criteria.dateFrom(),
+                criteria.dateTo(),
+                pageable);
         return page.map(this::toMeetingResponse);
     }
 
@@ -193,6 +205,7 @@ public class MeetingService {
         meeting.setStatus(MeetingStatus.SCHEDULED);
         meeting.setScheduledStart(request.scheduledStart());
         meeting.setScheduledEnd(request.scheduledEnd());
+        meeting.setStartedAt(request.scheduledStart());
         meeting.setOrganizerSubject(
                 isBlank(request.organizerSubject()) ? tenant.subject() : request.organizerSubject().trim());
         meeting.setCreatedBySubject(tenant.subject());
@@ -220,7 +233,7 @@ public class MeetingService {
 
     @Transactional
     public MeetingResponse updateMeeting(AdminTenantContext tenant, UUID id, MeetingUpdateRequest request) {
-        Meeting meeting = requireMeeting(tenant, id);
+        Meeting meeting = requireMeetingForUpdate(tenant, id);
         requireExpectedVersion(request.expectedVersion(), meeting.getVersion());
         meeting.setTitle(request.title());
         meeting.setDescription(request.description());
@@ -230,6 +243,7 @@ public class MeetingService {
         }
         meeting.setScheduledStart(request.scheduledStart());
         meeting.setScheduledEnd(request.scheduledEnd());
+        synchronizeMeetingHistoryStartedAt(tenant, meeting);
         meeting.setLastUpdatedBySubject(tenant.subject());
         return toMeetingResponse(meetingRepository.save(meeting));
     }
@@ -291,7 +305,7 @@ public class MeetingService {
     @Transactional
     public MeetingSessionResponse createSession(
             AdminTenantContext tenant, UUID meetingId, MeetingSessionCreateRequest request) {
-        Meeting meeting = requireMeeting(tenant, meetingId);
+        Meeting meeting = requireMeetingForUpdate(tenant, meetingId);
         if (request.endedAt() != null) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
@@ -307,13 +321,15 @@ public class MeetingService {
         session.setTranscriptStatus(TranscriptStatus.PENDING);
         session.setCreatedBySubject(tenant.subject());
         session.setLastUpdatedBySubject(tenant.subject());
-        return toSessionResponse(sessionRepository.save(session));
+        MeetingSession savedSession = sessionRepository.saveAndFlush(session);
+        saveMeetingHistoryStartIfChanged(tenant, meeting);
+        return toSessionResponse(savedSession);
     }
 
     @Transactional
     public MeetingSessionResponse updateSession(
             AdminTenantContext tenant, UUID meetingId, UUID sessionId, MeetingSessionUpdateRequest request) {
-        requireMeeting(tenant, meetingId);
+        Meeting meeting = requireMeetingForUpdate(tenant, meetingId);
         MeetingSession session = requireSession(tenant, meetingId, sessionId);
         requireExpectedVersion(request.expectedVersion(), session.getVersion());
         if (!Objects.equals(request.endedAt(), session.getEndedAt())) {
@@ -326,7 +342,9 @@ public class MeetingService {
         session.setRecordingUri(request.recordingUri());
         session.setTranscriptStatus(request.transcriptStatus());
         session.setLastUpdatedBySubject(tenant.subject());
-        return toSessionResponse(sessionRepository.save(session));
+        MeetingSession savedSession = sessionRepository.saveAndFlush(session);
+        saveMeetingHistoryStartIfChanged(tenant, meeting);
+        return toSessionResponse(savedSession);
     }
 
     @Transactional
@@ -389,9 +407,13 @@ public class MeetingService {
                             && candidate.getEndedAt() == null);
             desiredMeetingStatus = anotherSessionActive ? MeetingStatus.IN_PROGRESS : MeetingStatus.COMPLETED;
         }
+        boolean meetingChanged = synchronizeMeetingHistoryStartedAt(tenant, meeting);
         Meeting savedMeeting = meeting;
         if (meeting.getStatus() != desiredMeetingStatus) {
             meeting.setStatus(desiredMeetingStatus);
+            meetingChanged = true;
+        }
+        if (meetingChanged) {
             meeting.setLastUpdatedBySubject(tenant.subject());
             savedMeeting = meetingRepository.saveAndFlush(meeting);
         }
@@ -423,7 +445,10 @@ public class MeetingService {
 
     @Transactional
     public void deleteSession(AdminTenantContext tenant, UUID meetingId, UUID sessionId) {
+        Meeting meeting = requireMeetingForUpdate(tenant, meetingId);
         sessionErasureService.request(tenant, meetingId, sessionId);
+        sessionRepository.flush();
+        saveMeetingHistoryStartIfChanged(tenant, meeting);
     }
 
     // ──────────────────────────── Actions ────────────────────────────
@@ -547,6 +572,27 @@ public class MeetingService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting session not found."));
     }
 
+    private void saveMeetingHistoryStartIfChanged(AdminTenantContext tenant, Meeting meeting) {
+        if (synchronizeMeetingHistoryStartedAt(tenant, meeting)) {
+            meeting.setLastUpdatedBySubject(tenant.subject());
+            meetingRepository.saveAndFlush(meeting);
+        }
+    }
+
+    private boolean synchronizeMeetingHistoryStartedAt(
+            AdminTenantContext tenant, Meeting meeting) {
+        Instant canonicalStartedAt = sessionRepository
+                .findEarliestStartedAtVisibleToOrg(meeting.getId(), tenant.tenantId())
+                .orElseGet(() -> meeting.getScheduledStart() != null
+                        ? meeting.getScheduledStart()
+                        : meeting.getCreatedAt());
+        if (Objects.equals(meeting.getStartedAt(), canonicalStartedAt)) {
+            return false;
+        }
+        meeting.setStartedAt(canonicalStartedAt);
+        return true;
+    }
+
     private MeetingAction requireAction(AdminTenantContext tenant, UUID meetingId, UUID actionId) {
         return actionRepository.findByIdAndMeetingIdVisibleToOrg(actionId, meetingId, tenant.tenantId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Meeting action not found."));
@@ -617,6 +663,7 @@ public class MeetingService {
                 m.getTitle(),
                 m.getDescription(),
                 m.getStatus(),
+                m.getStartedAt(),
                 m.getScheduledStart(),
                 m.getScheduledEnd(),
                 m.getOrganizerSubject(),

@@ -12,6 +12,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
 import java.util.UUID;
+import java.time.Instant;
 
 /**
  * Repository for {@link Meeting} — Faz 24 (#410).
@@ -49,23 +50,34 @@ public interface MeetingRepository extends JpaRepository<Meeting, UUID> {
     Optional<Meeting> findVisibleToOrgAndIdForUpdate(
             @Param("orgId") UUID orgId, @Param("id") UUID id);
 
-    @Query("""
+    @Query(value = """
             select m
             from Meeting m
             where (m.orgId = :orgId or (m.orgId is null and m.tenantId = :orgId))
-            order by m.updatedAt desc
-            """)
-    Page<Meeting> findAllVisibleToOrg(@Param("orgId") UUID orgId, Pageable pageable);
-
-    @Query("""
-            select m
+              and (:statusFilter = false or m.status = :status)
+              and (:meetingIdFilter = false or m.id = :meetingId)
+              and (:titleFilter = false or locate(lower(:title), lower(m.title)) > 0)
+              and (:dateFilter = false or (m.startedAt >= :dateFrom and m.startedAt < :dateTo))
+            order by m.startedAt desc, m.id desc
+            """, countQuery = """
+            select count(m)
             from Meeting m
             where (m.orgId = :orgId or (m.orgId is null and m.tenantId = :orgId))
-              and m.status = :status
-            order by m.updatedAt desc
+              and (:statusFilter = false or m.status = :status)
+              and (:meetingIdFilter = false or m.id = :meetingId)
+              and (:titleFilter = false or locate(lower(:title), lower(m.title)) > 0)
+              and (:dateFilter = false or (m.startedAt >= :dateFrom and m.startedAt < :dateTo))
             """)
-    Page<Meeting> findAllVisibleToOrgByStatus(
+    Page<Meeting> searchVisibleToOrg(
             @Param("orgId") UUID orgId,
+            @Param("statusFilter") boolean statusFilter,
             @Param("status") MeetingStatus status,
+            @Param("titleFilter") boolean titleFilter,
+            @Param("title") String title,
+            @Param("meetingIdFilter") boolean meetingIdFilter,
+            @Param("meetingId") UUID meetingId,
+            @Param("dateFilter") boolean dateFilter,
+            @Param("dateFrom") Instant dateFrom,
+            @Param("dateTo") Instant dateTo,
             Pageable pageable);
 }

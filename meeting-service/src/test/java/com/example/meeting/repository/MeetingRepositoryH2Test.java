@@ -3,6 +3,7 @@ package com.example.meeting.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.meeting.model.Meeting;
+import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
 import com.example.meeting.model.MeetingAction;
 import com.example.meeting.model.MeetingAnalysisRun;
 import com.example.meeting.model.MeetingDecision;
@@ -16,6 +17,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -79,7 +81,8 @@ class MeetingRepositoryH2Test {
         meetingRepository.save(newMeeting(org, "m2", MeetingStatus.COMPLETED));
         meetingRepository.save(newMeeting(otherOrg, "other", MeetingStatus.SCHEDULED));
 
-        Page<Meeting> page = meetingRepository.findAllVisibleToOrg(org, PageRequest.of(0, 10));
+        Page<Meeting> page = search(
+                org, MeetingSearchCriteria.from(null, null, null, null, null), 0, 10);
         assertThat(page.getTotalElements()).isEqualTo(2);
         assertThat(page.getContent()).allSatisfy(m -> assertThat(m.getEffectiveOrgId()).isEqualTo(org));
     }
@@ -91,11 +94,107 @@ class MeetingRepositoryH2Test {
         meetingRepository.save(newMeeting(org, "completed-1", MeetingStatus.COMPLETED));
         meetingRepository.save(newMeeting(org, "completed-2", MeetingStatus.COMPLETED));
 
-        Page<Meeting> completed = meetingRepository.findAllVisibleToOrgByStatus(
-                org, MeetingStatus.COMPLETED, PageRequest.of(0, 10));
+        Page<Meeting> completed = search(
+                org,
+                MeetingSearchCriteria.from(MeetingStatus.COMPLETED, null, null, null, null),
+                0,
+                10);
         assertThat(completed.getTotalElements()).isEqualTo(2);
         assertThat(completed.getContent()).allSatisfy(
                 m -> assertThat(m.getStatus()).isEqualTo(MeetingStatus.COMPLETED));
+    }
+
+    @Test
+    void historySearchFindsBeyondFirstPageAndKeepsStableStartedAtIdOrder() {
+        UUID org = UUID.randomUUID();
+        UUID otherOrg = UUID.randomUUID();
+        Instant newerStartedAt = Instant.parse("2026-07-18T10:00:00Z");
+        Instant targetStartedAt = Instant.parse("2026-06-15T09:00:00Z");
+        List<UUID> newerIds = IntStream.rangeClosed(1, 54)
+                .mapToObj(this::stableUuid)
+                .toList();
+        newerIds.forEach(id -> insertSearchMeeting(
+                id, org, "Ordinary meeting " + id, newerStartedAt, MeetingStatus.COMPLETED));
+        UUID targetId = stableUuid(0);
+        insertSearchMeeting(
+                targetId, org, "Quarterly Roadmap Review", targetStartedAt, MeetingStatus.COMPLETED);
+        insertSearchMeeting(
+                stableUuid(99), otherOrg, "Quarterly Roadmap Review", targetStartedAt,
+                MeetingStatus.COMPLETED);
+        entityManager.clear();
+
+        MeetingSearchCriteria all = MeetingSearchCriteria.from(null, null, null, null, null);
+        Page<Meeting> firstPage = search(org, all, 0, 50);
+        assertThat(firstPage.getTotalElements()).isEqualTo(55);
+        assertThat(firstPage.getContent())
+                .extracting(Meeting::getId)
+                .doesNotContain(targetId);
+
+        MeetingSearchCriteria byTitle = MeetingSearchCriteria.from(
+                null, "roadmap", null, null, null);
+        assertThat(search(org, byTitle, 0, 25).getContent())
+                .extracting(Meeting::getId)
+                .containsExactly(targetId);
+
+        MeetingSearchCriteria byId = MeetingSearchCriteria.from(
+                null, null, targetId, null, null);
+        assertThat(search(org, byId, 0, 25).getContent())
+                .extracting(Meeting::getId)
+                .containsExactly(targetId);
+
+        MeetingSearchCriteria byDate = MeetingSearchCriteria.from(
+                null,
+                null,
+                null,
+                "2026-06-15T00:00:00Z",
+                "2026-06-16T00:00:00Z");
+        assertThat(search(org, byDate, 0, 25).getContent())
+                .extracting(Meeting::getId)
+                .containsExactly(targetId);
+
+        List<UUID> expectedOrder = IntStream.iterate(54, value -> value - 1)
+                .limit(55)
+                .mapToObj(this::stableUuid)
+                .toList();
+        List<UUID> actualOrder = IntStream.range(0, 3)
+                .mapToObj(page -> search(org, all, page, 20).getContent())
+                .flatMap(List::stream)
+                .map(Meeting::getId)
+                .toList();
+        assertThat(actualOrder)
+                .containsExactlyElementsOf(expectedOrder)
+                .doesNotHaveDuplicates();
+        assertThat(search(org, all, 1, 20).getContent())
+                .extracting(Meeting::getId)
+                .containsExactlyElementsOf(expectedOrder.subList(20, 40));
+    }
+
+    @Test
+    void historySearchIntersectsFiltersInsideEffectiveOrgScope() {
+        UUID org = UUID.randomUUID();
+        UUID otherOrg = UUID.randomUUID();
+        Meeting matching = newMeeting(org, "Customer Review", MeetingStatus.COMPLETED);
+        matching.setStartedAt(Instant.parse("2026-07-10T09:00:00Z"));
+        Meeting wrongStatus = newMeeting(org, "Customer Review", MeetingStatus.SCHEDULED);
+        wrongStatus.setStartedAt(Instant.parse("2026-07-10T09:00:00Z"));
+        Meeting foreign = newMeeting(otherOrg, "Customer Review", MeetingStatus.COMPLETED);
+        foreign.setStartedAt(Instant.parse("2026-07-10T09:00:00Z"));
+        meetingRepository.saveAllAndFlush(List.of(matching, wrongStatus, foreign));
+
+        MeetingSearchCriteria criteria = MeetingSearchCriteria.from(
+                MeetingStatus.COMPLETED,
+                "customer",
+                matching.getId(),
+                "2026-07-10T00:00:00Z",
+                "2026-07-11T00:00:00Z");
+
+        assertThat(search(org, criteria, 0, 25).getContent())
+                .extracting(Meeting::getId)
+                .containsExactly(matching.getId());
+        assertThat(search(otherOrg, MeetingSearchCriteria.from(
+                null, null, matching.getId(), null, null), 0, 25).getContent())
+                .as("a meeting id must not bypass the effective-org predicate")
+                .isEmpty();
     }
 
     @Test
@@ -212,10 +311,52 @@ class MeetingRepositoryH2Test {
         m.setOrgId(org); // canonical write path (trigger-equivalent)
         m.setTitle(title);
         m.setStatus(status);
+        m.setStartedAt(Instant.parse("2026-06-16T10:00:00Z"));
         m.setOrganizerSubject("organizer@example.com");
         m.setCreatedBySubject("creator@example.com");
         m.setLastUpdatedBySubject("creator@example.com");
         return m;
+    }
+
+    private Page<Meeting> search(
+            UUID org, MeetingSearchCriteria criteria, int page, int size) {
+        return meetingRepository.searchVisibleToOrg(
+                org,
+                criteria.status() != null,
+                criteria.status(),
+                criteria.title() != null,
+                criteria.title(),
+                criteria.meetingId() != null,
+                criteria.meetingId(),
+                criteria.dateFrom() != null,
+                criteria.dateFrom(),
+                criteria.dateTo(),
+                PageRequest.of(page, size));
+    }
+
+    private UUID stableUuid(int suffix) {
+        return UUID.fromString("00000000-0000-4000-8000-%012d".formatted(suffix));
+    }
+
+    private void insertSearchMeeting(
+            UUID id, UUID org, String title, Instant startedAt, MeetingStatus status) {
+        Timestamp timestamp = Timestamp.from(startedAt);
+        jdbcTemplate.update("""
+                insert into meetings
+                    (id, tenant_id, org_id, title, status, scheduled_start, started_at,
+                     organizer_subject, created_by_subject, last_updated_by_subject,
+                     created_at, updated_at, version)
+                values (?, ?, ?, ?, ?, ?, ?, 'organizer', 'creator', 'creator', ?, ?, 0)
+                """,
+                id,
+                org,
+                org,
+                title,
+                status.name(),
+                timestamp,
+                timestamp,
+                timestamp,
+                timestamp);
     }
 
     private static MeetingSession newSession(UUID meetingId, UUID org) {

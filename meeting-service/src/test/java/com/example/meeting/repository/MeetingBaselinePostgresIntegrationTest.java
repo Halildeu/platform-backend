@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.meeting.model.Meeting;
+import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
+import com.example.meeting.model.MeetingStatus;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
@@ -20,6 +22,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
@@ -109,6 +113,77 @@ class MeetingBaselinePostgresIntegrationTest {
                 "SELECT tenant_id, org_id FROM " + SCHEMA + ".meetings WHERE id = ?", meetingId);
         assertThat(row.get("org_id")).isEqualTo(org);
         assertThat(row.get("tenant_id")).isEqualTo(org);
+    }
+
+    @Test
+    void startedAtBackstopUsesScheduledStartAndSearchIndexesExist() {
+        UUID org = UUID.randomUUID();
+        UUID meetingId = UUID.randomUUID();
+        Instant scheduledStart = Instant.parse("2026-07-18T09:15:00Z");
+        jdbc.update("INSERT INTO " + SCHEMA + ".meetings "
+                        + "(id, tenant_id, org_id, title, status, scheduled_start, organizer_subject, "
+                        + " created_by_subject, last_updated_by_subject, created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, 'search-backstop', 'SCHEDULED', ?, 'o@e.com', "
+                        + " 'c@e.com', 'c@e.com', ?, ?, 0)",
+                meetingId,
+                org,
+                org,
+                Timestamp.from(scheduledStart),
+                NOW,
+                NOW);
+
+        Timestamp startedAt = jdbc.queryForObject(
+                "SELECT started_at FROM " + SCHEMA + ".meetings WHERE id = ?",
+                Timestamp.class,
+                meetingId);
+        assertThat(startedAt).isNotNull();
+        assertThat(startedAt.toInstant()).isEqualTo(scheduledStart);
+
+        List<String> indexNames = jdbc.queryForList(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = ? AND tablename = 'meetings'",
+                String.class,
+                SCHEMA);
+        assertThat(indexNames).contains(
+                "idx_meetings_org_started_id",
+                "idx_meetings_legacy_tenant_started_id");
+    }
+
+    @Test
+    void postgresHistorySearchIsTenantScopedFilteredAndDeterministic() {
+        UUID org = UUID.randomUUID();
+        UUID otherOrg = UUID.randomUUID();
+        UUID lowerId = UUID.fromString("00000000-0000-4000-8000-000000000001");
+        UUID higherId = UUID.fromString("00000000-0000-4000-8000-000000000002");
+        UUID foreignId = UUID.fromString("00000000-0000-4000-8000-000000000003");
+        Instant startedAt = Instant.parse("2026-07-18T09:15:00Z");
+        insertSearchMeeting(lowerId, org, "Roadmap Review", startedAt);
+        insertSearchMeeting(higherId, org, "Roadmap Review", startedAt);
+        insertSearchMeeting(foreignId, otherOrg, "Roadmap Review", startedAt);
+
+        MeetingSearchCriteria criteria = MeetingSearchCriteria.from(
+                MeetingStatus.COMPLETED,
+                "roadmap",
+                null,
+                "2026-07-18T09:00:00Z",
+                "2026-07-18T10:00:00Z");
+        Page<Meeting> result = meetingRepository.searchVisibleToOrg(
+                org,
+                true,
+                criteria.status(),
+                true,
+                criteria.title(),
+                false,
+                criteria.meetingId(),
+                true,
+                criteria.dateFrom(),
+                criteria.dateTo(),
+                PageRequest.of(0, 25));
+
+        assertThat(result.getTotalElements()).isEqualTo(2);
+        assertThat(result.getContent())
+                .extracting(Meeting::getId)
+                .containsExactly(higherId, lowerId)
+                .doesNotContain(foreignId);
     }
 
     @Test
@@ -299,9 +374,20 @@ class MeetingBaselinePostgresIntegrationTest {
     private void insertMeetingNullOrg(UUID id, UUID tenant, String title) {
         jdbc.update("INSERT INTO " + SCHEMA + ".meetings "
                         + "(id, tenant_id, org_id, title, status, organizer_subject, created_by_subject, "
-                        + " last_updated_by_subject, created_at, updated_at, version) "
-                        + "VALUES (?, ?, NULL, ?, 'SCHEDULED', 'o@e.com', 'c@e.com', 'c@e.com', ?, ?, 0)",
-                id, tenant, title, NOW, NOW);
+                        + " last_updated_by_subject, started_at, created_at, updated_at, version) "
+                        + "VALUES (?, ?, NULL, ?, 'SCHEDULED', 'o@e.com', 'c@e.com', 'c@e.com', ?, ?, ?, 0)",
+                id, tenant, title, NOW, NOW, NOW);
+    }
+
+    private void insertSearchMeeting(UUID id, UUID org, String title, Instant startedAt) {
+        Timestamp timestamp = Timestamp.from(startedAt);
+        jdbc.update("INSERT INTO " + SCHEMA + ".meetings "
+                        + "(id, tenant_id, org_id, title, status, scheduled_start, started_at, "
+                        + " organizer_subject, created_by_subject, last_updated_by_subject, "
+                        + " created_at, updated_at, version) "
+                        + "VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, 'o@e.com', 'c@e.com', "
+                        + " 'c@e.com', ?, ?, 0)",
+                id, org, org, title, timestamp, timestamp, timestamp, timestamp);
     }
 
     private void insertSession(UUID id, UUID meetingId, UUID org) {

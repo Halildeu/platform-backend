@@ -3,6 +3,7 @@ package com.example.meeting.controller;
 import com.example.commonauth.openfga.RequireModule;
 import com.example.meeting.dto.v1.admin.MeetingCreateRequest;
 import com.example.meeting.dto.v1.admin.MeetingResponse;
+import com.example.meeting.dto.v1.admin.MeetingSearchCriteria;
 import com.example.meeting.dto.v1.admin.MeetingUpdateRequest;
 import com.example.meeting.dto.v1.admin.PagedResponse;
 import com.example.meeting.model.MeetingStatus;
@@ -10,11 +11,11 @@ import com.example.meeting.security.AdminTenantContext;
 import com.example.meeting.security.MeetingAuthz;
 import com.example.meeting.security.TenantContextResolver;
 import com.example.meeting.service.MeetingService;
+import com.example.meeting.service.MeetingHistorySearchMetrics;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -33,7 +34,8 @@ import java.util.UUID;
  * Meeting CRUD admin REST surface — Faz 24 (#410).
  *
  * <pre>
- * GET    /api/v1/admin/meetings?page=&amp;size=&amp;status=  — list (can_view)
+ * GET    /api/v1/admin/meetings?page=&amp;size=&amp;status=&amp;title=&amp;meetingId=&amp;dateFrom=&amp;dateTo=
+ *                                                          — search/list (can_view)
  * GET    /api/v1/admin/meetings/{id}                  — single (can_view)
  * POST   /api/v1/admin/meetings                       — create (can_manage)
  * PUT    /api/v1/admin/meetings/{id}                  — update (can_manage)
@@ -54,23 +56,39 @@ public class MeetingAdminController {
 
     private final MeetingService meetingService;
     private final TenantContextResolver tenantContextResolver;
+    private final MeetingHistorySearchMetrics searchMetrics;
 
     public MeetingAdminController(
             MeetingService meetingService,
-            TenantContextResolver tenantContextResolver) {
+            TenantContextResolver tenantContextResolver,
+            MeetingHistorySearchMetrics searchMetrics) {
         this.meetingService = meetingService;
         this.tenantContextResolver = tenantContextResolver;
+        this.searchMetrics = searchMetrics;
     }
 
     @GetMapping
     @RequireModule(value = MeetingAuthz.MODULE, relation = MeetingAuthz.VIEWER)
     public PagedResponse<MeetingResponse> list(
             @RequestParam(required = false) MeetingStatus status,
+            @RequestParam(required = false) String title,
+            @RequestParam(required = false) UUID meetingId,
+            @RequestParam(required = false) String dateFrom,
+            @RequestParam(required = false) String dateTo,
             @RequestParam(required = false, defaultValue = "0") int page,
             @RequestParam(required = false, defaultValue = "" + DEFAULT_PAGE_SIZE) int size) {
         AdminTenantContext tenant = tenantContextResolver.resolveRequired();
-        Pageable pageable = clampPageable(page, size, Sort.by(Sort.Direction.DESC, "updatedAt"));
-        Page<MeetingResponse> result = meetingService.listMeetings(tenant, status, pageable);
+        MeetingSearchCriteria criteria;
+        Pageable pageable;
+        try {
+            criteria = MeetingSearchCriteria.from(status, title, meetingId, dateFrom, dateTo);
+            pageable = boundedPageable(page, size);
+        } catch (IllegalArgumentException error) {
+            searchMetrics.recordValidationDenied();
+            throw error;
+        }
+        Page<MeetingResponse> result = meetingService.listMeetings(tenant, criteria, pageable);
+        searchMetrics.recordSuccess(criteria);
         return new PagedResponse<>(
                 result.getContent(), result.getNumber(), result.getSize(),
                 result.getTotalElements(), result.getTotalPages());
@@ -108,15 +126,13 @@ public class MeetingAdminController {
         return ResponseEntity.noContent().build();
     }
 
-    static Pageable clampPageable(int page, int size, Sort sort) {
+    static Pageable boundedPageable(int page, int size) {
         if (page < 0) {
-            page = 0;
+            throw new IllegalArgumentException("page must be zero or greater.");
         }
         if (size < 1) {
-            size = 1;
-        } else if (size > MAX_PAGE_SIZE) {
-            size = MAX_PAGE_SIZE;
+            throw new IllegalArgumentException("size must be at least 1.");
         }
-        return PageRequest.of(page, size, sort);
+        return PageRequest.of(page, Math.min(size, MAX_PAGE_SIZE));
     }
 }
