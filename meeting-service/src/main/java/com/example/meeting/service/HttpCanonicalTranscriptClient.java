@@ -2,6 +2,7 @@ package com.example.meeting.service;
 
 import com.example.meeting.config.MeetingTranscriptReadProperties;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -23,6 +24,7 @@ public class HttpCanonicalTranscriptClient implements CanonicalTranscriptClient 
     private final MeetingTranscriptReadTokenProvider tokens;
     private final RestClient restClient;
 
+    @Autowired
     public HttpCanonicalTranscriptClient(
             MeetingTranscriptReadProperties properties,
             MeetingTranscriptReadTokenProvider tokens,
