@@ -60,6 +60,32 @@ management:
       exposure:
         include: health,info,prometheus
 
+# Public intake fail-fast backpressure. ingress-nginx already limits by IP,
+# but a burst can still overshoot the pod. These caps back the ingress limit
+# with an in-process semaphore and rate window so 30 concurrent POST bursts
+# get 429 immediately instead of piling on the PG pool and returning 503/504.
+resilience4j:
+  ratelimiter:
+    instances:
+      publicIntake:
+        limit-for-period: ${ETHICS_PUBLIC_INTAKE_RPS:5}
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+      publicMailbox:
+        limit-for-period: ${ETHICS_PUBLIC_MAILBOX_RPS:10}
+        limit-refresh-period: 1s
+        timeout-duration: 0
+        register-health-indicator: true
+  bulkhead:
+    instances:
+      publicIntake:
+        max-concurrent-calls: ${ETHICS_PUBLIC_INTAKE_MAX_CONCURRENT:8}
+        max-wait-duration: 0
+      publicMailbox:
+        max-concurrent-calls: ${ETHICS_PUBLIC_MAILBOX_MAX_CONCURRENT:12}
+        max-wait-duration: 0
+
 logging:
   level:
     org.springframework.security: INFO

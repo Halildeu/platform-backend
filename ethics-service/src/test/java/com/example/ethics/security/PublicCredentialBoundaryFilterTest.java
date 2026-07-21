@@ -58,6 +58,68 @@ class PublicCredentialBoundaryFilterTest {
         assertThat(response.getContentAsString()).contains("CREDENTIAL_CONFUSION");
     }
 
+    @Test
+    void publicApiAcceptsForwardedProtoHttpsFallback() throws Exception {
+        var request = publicRequest();
+        request.addHeader(PublicCredentialBoundaryFilter.FORWARDED_PROTO_HEADER, "https");
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEmpty();
+    }
+
+    @Test
+    void publicApiRejectsForwardedProtoHttpFallback() throws Exception {
+        var request = publicRequest();
+        request.addHeader(PublicCredentialBoundaryFilter.FORWARDED_PROTO_HEADER, "http");
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(400);
+        assertThat(response.getContentAsString()).contains("SECURE_TRANSPORT_REQUIRED");
+    }
+
+    @Test
+    void publicApiAcceptsMixedCaseHttpsTransportHeader() throws Exception {
+        var request = publicRequest();
+        request.addHeader(PublicCredentialBoundaryFilter.TRANSPORT_HEADER, "HTTPS");
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEmpty();
+    }
+
+    @Test
+    void blankAuthorizationHeaderIsNotTreatedAsCredentialConfusion() throws Exception {
+        var request = publicRequest();
+        request.addHeader(PublicCredentialBoundaryFilter.TRANSPORT_HEADER, "https");
+        request.addHeader("Authorization", "");
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEmpty();
+    }
+
+    @Test
+    void whitespaceOnlyAuthorizationHeaderIsNotTreatedAsCredentialConfusion() throws Exception {
+        var request = publicRequest();
+        request.addHeader(PublicCredentialBoundaryFilter.TRANSPORT_HEADER, "https");
+        request.addHeader("Authorization", "   ");
+        var response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(response.getContentAsString()).isEmpty();
+    }
+
     private static MockHttpServletRequest publicRequest() {
         var request = new MockHttpServletRequest("POST", "/api/v1/public/ethics/reports");
         request.setRequestURI("/api/v1/public/ethics/reports");

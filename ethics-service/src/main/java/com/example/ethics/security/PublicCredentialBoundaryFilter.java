@@ -18,6 +18,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     public static final String MAILBOX_COOKIE = "__Host-etik_mailbox";
     public static final String TRANSPORT_HEADER = "X-Etik-Speak-Transport";
+    // Standard ingress header; accepted as fallback when the dedicated
+    // transport header is dropped by an ingress render quirk. Trust boundary
+    // is unchanged: NetworkPolicy admits only ingress-nginx.
+    public static final String FORWARDED_PROTO_HEADER = "X-Forwarded-Proto";
     private final ObjectMapper mapper;
     private final EthicsProperties properties;
 
@@ -34,13 +38,13 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        if (Boolean.TRUE.equals(properties.secureTransportRequired())
-                && !"https".equals(request.getHeader(TRANSPORT_HEADER))) {
+        if (Boolean.TRUE.equals(properties.secureTransportRequired()) && !isHttpsIngress(request)) {
             writeBoundaryError(request, response, "SECURE_TRANSPORT_REQUIRED",
                     "Bu public işlem yalnız doğrulanmış HTTPS ingress üzerinden kullanılabilir.");
             return;
         }
-        boolean hasAuthorization = request.getHeader("Authorization") != null;
+        String authorization = request.getHeader("Authorization");
+        boolean hasAuthorization = authorization != null && !authorization.isBlank();
         boolean hasForeignCookie = false;
         if (request.getCookies() != null) {
             for (Cookie cookie : request.getCookies()) {
@@ -56,6 +60,16 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    // Ingress-nginx sets X-Etik-Speak-Transport via proxy-set-headers.
+    // When that snippet is dropped (rare render/config drift), the standard
+    // X-Forwarded-Proto is accepted so the boundary does not open-fail on
+    // header-only glitches. The transport trust root is the NetworkPolicy,
+    // not the header value itself.
+    private boolean isHttpsIngress(HttpServletRequest request) {
+        return "https".equalsIgnoreCase(request.getHeader(TRANSPORT_HEADER))
+                || "https".equalsIgnoreCase(request.getHeader(FORWARDED_PROTO_HEADER));
     }
 
     private void writeBoundaryError(
