@@ -3,7 +3,7 @@ package com.example.audiogateway.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
-import com.example.audiogateway.dto.TranscriptResult;
+import com.example.audiogateway.dto.LiveTranscriptEvent;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -12,8 +12,10 @@ import reactor.core.Disposable;
 
 class LiveTranscriptStreamHubTest {
 
-    private static TranscriptResult result(final String text) {
-        return new TranscriptResult(text, "tr", 0.99, 1.0, 100.0, "m", "int8", "cpu", null);
+    private static LiveTranscriptEvent result(final String text) {
+        return new LiveTranscriptEvent(
+                text, "tr", 0.99, 1.0, 100.0, "m", "int8", "cpu", null,
+                LiveTranscriptEvent.STATUS_DRAFT, null, java.util.List.of(), 1L, 0L);
     }
 
     @Test

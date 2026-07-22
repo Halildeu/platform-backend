@@ -16,6 +16,14 @@ import java.util.HexFormat;
  */
 final class LiveTranscriptWindowAccumulator {
 
+    /** This accumulator owns one sequence space; a reconnect creates a new one. */
+    private final long epoch = SequenceEpochs.next();
+
+    long epoch() {
+        return epoch;
+    }
+
+
     private static final int PCM16_SAMPLE_BYTES = Short.BYTES;
 
     private final int maxHistoryBytes;
@@ -122,6 +130,7 @@ final class LiveTranscriptWindowAccumulator {
         lastWindowSeq = windowSeq;
         lastSourceEndSample = sourceEndSample;
         return new Window(
+                epoch,
                 windowSeq,
                 firstChunkSeq,
                 lastChunkSeq,
@@ -161,6 +170,8 @@ final class LiveTranscriptWindowAccumulator {
     }
 
     record Window(
+            /** Sequence space this window's {@code windowSeq} belongs to. */
+            long epoch,
             long windowSeq,
             long firstChunkSeq,
             long lastChunkSeq,

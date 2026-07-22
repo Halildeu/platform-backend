@@ -1,6 +1,6 @@
 package com.example.audiogateway.service;
 
-import com.example.audiogateway.dto.TranscriptResult;
+import com.example.audiogateway.dto.LiveTranscriptEvent;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -10,7 +10,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
 /**
- * In-memory pub/sub of {@link TranscriptResult} entries per {@code meetingId}
+ * In-memory pub/sub of {@link LiveTranscriptEvent} entries per {@code meetingId}
  * so that clients other than the recording desktop can subscribe to live
  * transcript increments over SSE (the "desktop → web live view" seam).
  *
@@ -44,18 +44,18 @@ public class LiveTranscriptStreamHub {
      */
     static final int BUFFER_CAPACITY = 128;
 
-    private final ConcurrentMap<String, Sinks.Many<TranscriptResult>> sinks =
+    private final ConcurrentMap<String, Sinks.Many<LiveTranscriptEvent>> sinks =
             new ConcurrentHashMap<>();
 
     /**
      * Publish {@code result} to whoever is subscribed to {@code meetingId}.
      * If nobody is subscribed the call is a cheap no-op. Never throws.
      */
-    public void publish(final String meetingId, final TranscriptResult result) {
+    public void publish(final String meetingId, final LiveTranscriptEvent result) {
         if (meetingId == null || meetingId.isBlank() || result == null) {
             return;
         }
-        final Sinks.Many<TranscriptResult> sink = sinks.get(meetingId);
+        final Sinks.Many<LiveTranscriptEvent> sink = sinks.get(meetingId);
         if (sink == null) {
             // Nobody is watching — do NOT allocate a sink just to drop events.
             return;
@@ -78,9 +78,9 @@ public class LiveTranscriptStreamHub {
      * live-only (no replay); it completes when the meeting sink is torn down
      * by an operator restart, and is cancellable at the transport layer.
      */
-    public Flux<TranscriptResult> subscribe(final String meetingId) {
+    public Flux<LiveTranscriptEvent> subscribe(final String meetingId) {
         Objects.requireNonNull(meetingId, "meetingId");
-        final Sinks.Many<TranscriptResult> sink =
+        final Sinks.Many<LiveTranscriptEvent> sink =
                 sinks.computeIfAbsent(
                         meetingId,
                         k ->

@@ -1,5 +1,6 @@
 package com.example.audiogateway.service;
 
+import com.example.audiogateway.dto.LiveTranscriptEvent;
 import com.example.audiogateway.dto.TranscriptResult;
 
 /**
@@ -32,7 +33,9 @@ public final class LiveTranscriptBroadcastSink implements DirectSttTranscriptRes
             final TranscriptResult result, final DirectSttTranscriptResultContext context) {
         delegate.emit(result, context);
         try {
-            hub.publish(context == null ? null : context.meetingId(), result);
+            hub.publish(
+                    context == null ? null : context.meetingId(),
+                    LiveTranscriptEvent.of(result, context));
         } catch (final RuntimeException ex) {
             // Broadcast is best-effort. Never mask the (already-committed)
             // durable emission with a relay error.

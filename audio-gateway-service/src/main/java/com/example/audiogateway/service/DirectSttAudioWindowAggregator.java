@@ -127,6 +127,7 @@ final class DirectSttAudioWindowAggregator {
 
     record AudioWindow(
             byte[] audio,
+            long epoch,
             String sessionId,
             Long tenantId,
             Long userId,
@@ -146,6 +147,8 @@ final class DirectSttAudioWindowAggregator {
     }
 
     private static final class SessionBuffer {
+        /** This buffer owns one sequence space; window numbering restarts here. */
+        private final long epoch = SequenceEpochs.next();
         private final String sessionId;
         private final Long tenantId;
         private final Long userId;
@@ -245,6 +248,7 @@ final class DirectSttAudioWindowAggregator {
             final byte[] audio = Arrays.copyOf(data, size);
             final AudioWindow window = new AudioWindow(
                     audio,
+                    epoch,
                     sessionId,
                     tenantId,
                     userId,

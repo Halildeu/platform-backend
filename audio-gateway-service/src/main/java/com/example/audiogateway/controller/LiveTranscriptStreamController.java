@@ -1,6 +1,6 @@
 package com.example.audiogateway.controller;
 
-import com.example.audiogateway.dto.TranscriptResult;
+import com.example.audiogateway.dto.LiveTranscriptEvent;
 import com.example.audiogateway.service.LiveTranscriptStreamHub;
 import com.example.audiogateway.service.MeetingAccessValidator;
 import java.time.Duration;
@@ -26,7 +26,7 @@ import reactor.core.publisher.Mono;
  * Faz 24 İ2-T — live transcript SSE broadcast endpoint.
  *
  * <p>Any authenticated user with {@code meeting:{id}#can_view} may subscribe
- * to the SSE stream. Transcript {@link TranscriptResult} increments produced
+ * to the SSE stream. Transcript {@link LiveTranscriptEvent} increments produced
  * by the recorder's WS handshake are fanned out through
  * {@link LiveTranscriptStreamHub} so multiple web viewers see the same live
  * feed the desktop is producing.
@@ -89,19 +89,19 @@ public class LiveTranscriptStreamController {
                                         corrId);
                                 return ResponseEntity.status(decision.status()).build();
                             }
-                            final Flux<ServerSentEvent<TranscriptResult>> events =
+                            final Flux<ServerSentEvent<LiveTranscriptEvent>> events =
                                     hub.subscribe(meetingId)
                                             .map(
                                                     result ->
-                                                            ServerSentEvent.<TranscriptResult>builder(result)
+                                                            ServerSentEvent.<LiveTranscriptEvent>builder(result)
                                                                     .event("transcript-chunk")
                                                                     .build())
                                             .onBackpressureDrop();
-                            final Flux<ServerSentEvent<TranscriptResult>> heartbeat =
+                            final Flux<ServerSentEvent<LiveTranscriptEvent>> heartbeat =
                                     Flux.interval(Duration.ZERO, HEARTBEAT_INTERVAL)
                                             .map(
                                                     tick ->
-                                                            ServerSentEvent.<TranscriptResult>builder()
+                                                            ServerSentEvent.<LiveTranscriptEvent>builder()
                                                                     .comment("heartbeat")
                                                                     .build())
                                             .onBackpressureDrop();
