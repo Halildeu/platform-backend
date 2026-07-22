@@ -41,8 +41,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -1162,52 +1160,26 @@ public class EndpointAdminCommandService {
      */
     private String resolveInstallIdempotencyKey(UUID deviceId, UUID catalogUuid, String requestedKey) {
         // Canonical key shape: `admin-install:{deviceId(36)}:{catalogUuid(36)}:{body}`.
-        // Fixed prefix = 88 chars; body MUST fit in 40 chars so the canonical
-        // string stays ≤ 128 (endpoint_commands.idempotency_key VARCHAR(128)).
-        // CreateInstallRequest @Size(max=40) enforces this on caller input;
-        // the > 40 fall-through here covers programmatic callers
-        // (Codex iter-4 P1-2).
-        String key = trimToNull(requestedKey);
-        if (key == null) {
-            key = UUID.randomUUID().toString();
-        } else if (key.length() > 40) {
-            key = sha256Prefix(key);
-        }
-        return "admin-install:" + deviceId + ":" + catalogUuid + ":" + key;
+        // CreateInstallRequest @Size(max=40) enforces the body cap on caller
+        // input; the > 40 fall-through covers programmatic callers (Codex
+        // iter-4 P1-2). CommandIdempotencyKeys additionally guarantees the
+        // assembled key fits VARCHAR(128) — see platform-backend#921.
+        return CommandIdempotencyKeys.build(
+                "admin-install:" + deviceId + ":" + catalogUuid + ":", requestedKey, 40);
     }
 
     private String resolveAgentUpdateIdempotencyKey(UUID deviceId, UUID releaseUuid, String requestedKey) {
-        String key = trimToNull(requestedKey);
-        if (key == null) {
-            key = UUID.randomUUID().toString();
-        } else if (key.length() > 31) {
-            key = sha256Prefix(key);
-        }
-        return "admin-update-agent:" + deviceId + ":" + releaseUuid + ":" + key;
+        // platform-backend#921: this prefix is 93 chars, so the generated
+        // 36-char UUID fallback used to assemble a 129-char key and every
+        // UI-driven dispatch died on `value too long for type character
+        // varying(128)`. The column bound is now enforced by the builder.
+        return CommandIdempotencyKeys.build(
+                "admin-update-agent:" + deviceId + ":" + releaseUuid + ":", requestedKey, 31);
     }
 
     private String resolveLocalPasswordIdempotencyKey(UUID deviceId, String requestedKey) {
-        String key = trimToNull(requestedKey);
-        if (key == null) {
-            key = UUID.randomUUID().toString();
-        } else if (key.length() > 40) {
-            key = sha256Prefix(key);
-        }
-        return "admin-local-password:" + deviceId + ":" + key;
-    }
-
-    private static String sha256Prefix(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(16);
-            for (int i = 0; i < 8; i++) {
-                sb.append(String.format("%02x", bytes[i]));
-            }
-            return sb.toString();
-        } catch (NoSuchAlgorithmException ex) {
-            return Integer.toHexString(value.hashCode());
-        }
+        return CommandIdempotencyKeys.build(
+                "admin-local-password:" + deviceId + ":", requestedKey, 40);
     }
 
     private static UUID parseUuid(Object node) {
@@ -1482,9 +1454,13 @@ public class EndpointAdminCommandService {
     private String resolveIdempotencyKey(UUID deviceId, CreateEndpointCommandRequest request) {
         String requested = trimToNull(request.idempotencyKey());
         if (requested != null) {
-            return requested;
+            // Caller keys are honoured verbatim on this path; bound them so an
+            // over-long one is a deterministic digest instead of a runtime 500
+            // (platform-backend#921).
+            return CommandIdempotencyKeys.bound(requested);
         }
-        return "admin:" + deviceId + ":" + request.type().name() + ":" + UUID.randomUUID();
+        return CommandIdempotencyKeys.build(
+                "admin:" + deviceId + ":" + request.type().name() + ":", null, 0);
     }
 
     private String resolveSubject(AdminTenantContext context) {
