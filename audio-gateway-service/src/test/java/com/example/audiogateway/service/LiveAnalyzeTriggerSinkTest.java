@@ -89,6 +89,6 @@ class LiveAnalyzeTriggerSinkTest {
                 "corr-x", // correlationId
                 "0".repeat(64), // sha256
                 0, // byteLength
-                DirectSttTranscriptResultContext.Transport.REST);
+                DirectSttTranscriptResultContext.Transport.REST, 1L);
     }
 }

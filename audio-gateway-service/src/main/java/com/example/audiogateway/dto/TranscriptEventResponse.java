@@ -12,6 +12,12 @@ import java.util.List;
  * a client renders permanent lines from {@code UTTERANCE} and treats {@code DRAFT} as
  * volatile. {@code assemblyReason} and {@code sourceEventIds} are populated only for
  * {@code UTTERANCE} and are the audit trail back to the fragments it folded.
+ *
+ * <p><b>Ordering.</b> Sort on {@code (transportEpoch, windowSeq)}. {@code windowSeq}
+ * restarts at 0 every time a new sequence space opens (a fallback, or the same socket
+ * reconnecting), so it is only comparable within one epoch. This is what lets a client
+ * place a late or stale-epoch line at its correct point in the conversation instead of
+ * appending it at the end.
  */
 public record TranscriptEventResponse(
         String eventId,
@@ -34,7 +40,8 @@ public record TranscriptEventResponse(
         Double durationSeconds,
         String correlationId,
         String assemblyReason,
-        List<String> sourceEventIds
+        List<String> sourceEventIds,
+        long transportEpoch
 ) {
 
     public TranscriptEventResponse {
@@ -83,6 +90,7 @@ public record TranscriptEventResponse(
                 durationSeconds,
                 correlationId,
                 null,
-                List.of());
+                List.of(),
+                0L);
     }
 }

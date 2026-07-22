@@ -46,30 +46,32 @@ class SentenceAssemblingSinkTest {
                 SESSION, 1L, 2L, windowSeq, startedAtMs, windowSeq, windowSeq, windowSeq,
                 startedAtMs, startedAtMs + durationMs, durationMs, "chunk", "meet-1", "dev-1",
                 "tr", "wav", 16_000, 1, "corr-1", "sha", 100,
-                DirectSttTranscriptResultContext.Transport.REST);
+                DirectSttTranscriptResultContext.Transport.REST, 1L);
     }
 
     private static DirectSttTranscriptResultContext context(
             final long windowSeq,
             final long startedAtMs,
             final int durationMs,
-            final DirectSttTranscriptResultContext.Transport transport) {
+            final DirectSttTranscriptResultContext.Transport transport,
+            final long epoch) {
         return new DirectSttTranscriptResultContext(
                 SESSION, 1L, 2L, windowSeq, startedAtMs, windowSeq, windowSeq, windowSeq,
                 startedAtMs, startedAtMs + durationMs, durationMs, "chunk", "meet-1", "dev-1",
-                "tr", "wav", 16_000, 1, "corr-1", "sha", 100, transport);
+                "tr", "wav", 16_000, 1, "corr-1", "sha", 100, transport, epoch);
     }
 
     private void offerVia(
             final SentenceAssemblingSink sink,
             final DirectSttTranscriptResultContext.Transport transport,
+            final long epoch,
             final String text,
             final long windowSeq,
             final long startedAtMs,
             final int durationMs,
             final long receiptAtMs) {
         now.set(receiptAtMs);
-        sink.emit(result(text), context(windowSeq, startedAtMs, durationMs, transport));
+        sink.emit(result(text), context(windowSeq, startedAtMs, durationMs, transport, epoch));
     }
 
     private void offer(
@@ -122,7 +124,7 @@ class SentenceAssemblingSinkTest {
         assertThat(assembled.context().assembly()).isNotNull();
         assertThat(assembled.context().assembly().reason())
                 .isEqualTo(SentenceAssembler.REASON_PUNCTUATION);
-        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("REST:0:0", "REST:1:1");
+        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("1:0:0", "1:1:1");
         assertThat(assembled.context().windowStartedAtMs()).isZero();
         assertThat(assembled.context().windowEndedAtMs()).isEqualTo(3_100);
     }
@@ -242,7 +244,7 @@ class SentenceAssemblingSinkTest {
                 new DirectSttTranscriptResultContext(
                         "  ", 1L, 2L, 0, 0, 0, 0, 0, 0, 1_000, 1_000, "chunk", "meet-1", "dev-1",
                         "tr", "wav", 16_000, 1, "corr-1", "sha", 100,
-                        DirectSttTranscriptResultContext.Transport.REST);
+                        DirectSttTranscriptResultContext.Transport.REST, 1L);
 
         sink.emit(result("Tamam."), noSession);
 
@@ -280,7 +282,7 @@ class SentenceAssemblingSinkTest {
         assertThat(assembled.get(0).result().text())
                 .isEqualTo("Bugün toplantıda bütçeyi konuşacağız.");
         assertThat(assembled.get(0).context().assembly().sourceEventIds())
-                .containsExactly("REST:0:0", "REST:1:1");
+                .containsExactly("1:0:0", "1:1:1");
     }
 
     @Test
@@ -347,14 +349,14 @@ class SentenceAssemblingSinkTest {
         // real speech as a "duplicate" — exactly what a mid-recording fallback does.
         final SentenceAssemblingSink sink = sink(recorder);
 
-        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 7L,
                 "canlı kanaldan gelen", 0, 0, 1_000, 1_000);
-        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 7L,
                 "ikinci pencere", 1, 1_100, 1_000, 2_100);
         emissions.clear();
 
-        // Socket drops; REST resumes at window 0 again.
-        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST,
+        // Socket drops; REST opens a NEW sequence space and resumes at window 0 again.
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST, 8L,
                 "yedek kanaldan gelen.", 0, 2_200, 1_000, 3_200);
 
         final List<Emission> assembled =
@@ -368,11 +370,11 @@ class SentenceAssemblingSinkTest {
     @Test
     void a_transport_switch_closes_the_previous_legs_open_line() {
         final SentenceAssemblingSink sink = sink(recorder);
-        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 3L,
                 "yarım kalan canlı cümle", 0, 0, 1_000, 1_000);
         emissions.clear();
 
-        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST,
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST, 4L,
                 "yeni kanal", 0, 1_100, 1_000, 2_100);
 
         // The socket's unfinished line is closed on its own rather than being merged
@@ -485,12 +487,65 @@ class SentenceAssemblingSinkTest {
         // Both legs restart windows at 0, so a bare "0:0" would be ambiguous.
         final SentenceAssemblingSink sink = sink(recorder);
 
-        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 9L,
                 "canlı cümle.", 0, 0, 1_000, 1_000);
 
         final Emission assembled =
                 emissions.stream().filter(e -> e.context().assembly() != null).findFirst().orElseThrow();
-        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("WEBSOCKET:0:0");
+        assertThat(assembled.context().assembly().sourceEventIds()).containsExactly("9:0:0");
+    }
+
+    @Test
+    void a_reconnect_on_the_SAME_transport_is_a_new_sequence_space() {
+        // The socket drops and reconnects: same transport, window numbering back to 0.
+        // Comparing transports alone cannot see this, and the reconnected leg's speech
+        // would be rejected as replayed.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 11L,
+                "ilk bağlantı", 0, 0, 1_000, 1_000);
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 11L,
+                "ilk bağlantı devamı", 1, 1_100, 1_000, 2_100);
+        emissions.clear();
+
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 12L,
+                "yeniden bağlandı.", 0, 2_200, 1_000, 3_200);
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled)
+                .anySatisfy(e -> assertThat(e.result().text()).contains("yeniden bağlandı."));
+    }
+
+    @Test
+    void a_straggler_from_a_closed_sequence_space_does_not_reopen_it() {
+        // A completion from the dropped leg lands after the new one started. Letting it
+        // move the session back would thrash the buffer on every subsequent result.
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 20L,
+                "eski kanal", 0, 0, 1_000, 1_000);
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST, 21L,
+                "yeni kanal", 0, 1_100, 1_000, 2_100);
+        emissions.clear();
+
+        // Straggler from epoch 20, arriving after epoch 21 is active.
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.WEBSOCKET, 20L,
+                "gecikmiş eski parça", 1, 500, 1_000, 3_000);
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled).hasSize(1);
+        assertThat(assembled.get(0).result().text()).isEqualTo("gecikmiş eski parça");
+        assertThat(assembled.get(0).context().assembly().reason())
+                .isEqualTo(SentenceAssembler.REASON_STALE_EPOCH);
+
+        // The active space is untouched: the next epoch-21 result still folds normally.
+        emissions.clear();
+        offerVia(sink, DirectSttTranscriptResultContext.Transport.REST, 21L,
+                "devam ediyor.", 1, 2_200, 1_000, 4_000);
+        assertThat(emissions.stream().filter(e -> e.context().assembly() != null).toList())
+                .anySatisfy(e -> assertThat(e.result().text()).contains("devam ediyor."));
     }
 
     @Test

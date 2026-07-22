@@ -23,6 +23,11 @@ import java.util.List;
  * feature. {@code status}, {@code assemblyReason} and {@code sourceEventIds} are additions,
  * and the latter two are omitted entirely for a raw chunk.
  *
+ * <p><b>Ordering.</b> Sort on {@code (transportEpoch, windowSeq)}. {@code windowSeq}
+ * restarts at 0 whenever a new sequence space opens, so it is only comparable within one
+ * epoch. A viewer that sorts on this key places a late or stale-epoch line where it
+ * belongs in the conversation rather than appending it at the end.
+ *
  * <p>Carries transcript text — never raw audio, bearer data, or the chunk hash.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -42,7 +47,11 @@ public record LiveTranscriptEvent(
         /** Why the assembled line closed; {@code null} for a raw chunk. */
         String assemblyReason,
         /** The chunks folded into an assembled line, in order; empty for a raw chunk. */
-        List<String> sourceEventIds) {
+        List<String> sourceEventIds,
+        /** Sequence space this increment belongs to — first half of the ordering key. */
+        long transportEpoch,
+        /** Position within that space — second half of the ordering key. */
+        long windowSeq) {
 
     /** Status of a raw committed chunk, cut on an acoustic boundary. */
     public static final String STATUS_DRAFT = "DRAFT";
@@ -71,6 +80,8 @@ public record LiveTranscriptEvent(
                 result == null ? null : result.segments(),
                 assembly == null ? STATUS_DRAFT : STATUS_UTTERANCE,
                 assembly == null ? null : assembly.reason(),
-                assembly == null ? List.of() : assembly.sourceEventIds());
+                assembly == null ? List.of() : assembly.sourceEventIds(),
+                context == null ? 0L : context.transportEpoch(),
+                context == null ? 0L : context.windowSeq());
     }
 }

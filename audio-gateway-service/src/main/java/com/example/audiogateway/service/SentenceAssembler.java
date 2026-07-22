@@ -59,6 +59,13 @@ public final class SentenceAssembler {
      */
     public static final String REASON_LATE_AFTER_GAP = "late_after_gap";
 
+    /**
+     * Emitted on its own because it arrived from a sequence space that has already been
+     * closed — a straggler from a dropped WebSocket leg, for instance. Folding it into the
+     * current line would mix two unrelated sequence spaces.
+     */
+    public static final String REASON_STALE_EPOCH = "stale_epoch";
+
     private final SentenceAssemblyPolicy policy;
     private final List<String> bufferedEventIds = new ArrayList<>();
     private final StringBuilder buffer = new StringBuilder();

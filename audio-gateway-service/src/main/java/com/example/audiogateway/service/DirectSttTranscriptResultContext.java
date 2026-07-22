@@ -11,11 +11,13 @@ import java.util.List;
  * <p>{@link #assembly()} is {@code null} for a raw committed chunk and set only on the
  * synthetic result {@link SentenceAssemblingSink} emits for an assembled line.
  *
- * <p>{@link #transport()} names which leg produced the result. It matters because the two
- * legs number their windows independently — each starts at 0 — so {@code windowSeq} is
- * only comparable WITHIN one transport. A session that falls back from the live socket to
- * REST would otherwise collide on {@code (sessionId, windowSeq)} and have real speech
- * rejected as a duplicate.
+ * <p>{@link #transportEpoch()} identifies the sequence space {@code windowSeq} belongs to.
+ * Window numbering restarts at 0 whenever a new space opens — a fresh REST session buffer,
+ * a fresh WebSocket leg, or the same socket reconnecting — so {@code windowSeq} is only
+ * comparable WITHIN one epoch. A consumer advances only to a higher epoch; anything
+ * carrying a lower one is a straggler from a closed space, not a reason to reopen it.
+ * {@link #transport()} names the leg for logging and metrics but is NOT an epoch: a
+ * reconnect keeps the same transport while opening a new sequence space.
  */
 public record DirectSttTranscriptResultContext(
         String sessionId,
@@ -40,6 +42,7 @@ public record DirectSttTranscriptResultContext(
         String sha256,
         int byteLength,
         Transport transport,
+        long transportEpoch,
         Assembly assembly
 ) {
 
@@ -90,7 +93,8 @@ public record DirectSttTranscriptResultContext(
             final String correlationId,
             final String sha256,
             final int byteLength,
-            final Transport transport) {
+            final Transport transport,
+            final long transportEpoch) {
         this(
                 sessionId,
                 tenantId,
@@ -114,6 +118,7 @@ public record DirectSttTranscriptResultContext(
                 sha256,
                 byteLength,
                 transport,
+                transportEpoch,
                 null);
     }
 
@@ -143,6 +148,7 @@ public record DirectSttTranscriptResultContext(
                 sha256,
                 byteLength,
                 transport,
+                transportEpoch,
                 new Assembly(utterance.flushReason(), utterance.sourceEventIds()));
     }
 }

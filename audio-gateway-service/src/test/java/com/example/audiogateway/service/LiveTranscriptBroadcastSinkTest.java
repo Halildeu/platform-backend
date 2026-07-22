@@ -37,7 +37,7 @@ class LiveTranscriptBroadcastSinkTest {
                 "corr-x",
                 "0".repeat(64),
                 0,
-                DirectSttTranscriptResultContext.Transport.REST);
+                DirectSttTranscriptResultContext.Transport.REST, 1L);
     }
 
     /**

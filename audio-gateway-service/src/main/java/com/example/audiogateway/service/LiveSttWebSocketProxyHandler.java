@@ -556,7 +556,8 @@ public class LiveSttWebSocketProxyHandler implements WebSocketHandler, Disposabl
                 correlationId,
                 window.sha256(),
                 window.byteLength(),
-                DirectSttTranscriptResultContext.Transport.WEBSOCKET);
+                DirectSttTranscriptResultContext.Transport.WEBSOCKET,
+                window.epoch());
     }
 
     private UpstreamEvent parseUpstreamEvent(final String value) {

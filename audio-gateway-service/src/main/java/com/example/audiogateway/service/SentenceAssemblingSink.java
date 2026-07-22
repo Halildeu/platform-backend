@@ -26,12 +26,21 @@ import org.slf4j.LoggerFactory;
  * each one still carries the context and result it arrived with — a reordered fragment
  * must not be stamped with a later fragment's metadata.
  *
- * <h2>Transport switch is an epoch boundary</h2>
- * The two legs number their windows independently, each from 0. When a session falls back
- * from the live socket to REST, continuing to reorder against the old sequence space
- * would reject fresh speech as a duplicate. A transport change therefore flushes and
- * resets the session's reorder buffer, and closes the open line, before the new leg's
- * first fragment is folded.
+ * <h2>Sequence spaces are epochs, and epochs only move forward</h2>
+ * Window numbering restarts at 0 every time a new sequence space opens — a REST fallback,
+ * a fresh WebSocket leg, or the same socket RECONNECTING. Continuing to reorder against
+ * the old space would reject fresh speech as a replayed duplicate. A higher epoch
+ * therefore flushes and resets the reorder buffer and closes the open line before the new
+ * space's first fragment is folded.
+ *
+ * <p>A LOWER epoch is a straggler from a space that is already closed. It never reopens
+ * that space — allowing it to would let a late completion flip the session back and forth
+ * and thrash the buffer — so it is emitted on its own as {@code stale_epoch}.
+ *
+ * <p>When the epoch is unknown (0 — the aggregation-disabled forward path has no window
+ * to name a space with), the sink falls back to comparing transports. That is weaker: it
+ * cannot see a reconnect. It is the pre-existing behaviour, kept honest rather than
+ * pretending an epoch exists.
  *
  * <h2>Additive, never destructive</h2>
  * The raw chunk is forwarded to the delegate first and unchanged. The assembled line is
@@ -50,6 +59,12 @@ import org.slf4j.LoggerFactory;
  * happens inside {@link ConcurrentHashMap#compute} on that session's key, so a concurrent
  * emit, sweep and close cannot interleave, resurrect a removed buffer, or emit a line
  * stamped with another fragment's metadata.
+ *
+ * <p>Assembled lines are DELIVERED outside that lock — a durable write must not be held
+ * inside a map-segment lock — so ordering needs its own guarantee. Each session queues its
+ * lines while holding the state lock and drains that queue under a separate per-session
+ * delivery lock. The queue is FIFO and enqueue order is the state-lock order, so a
+ * concurrent sweep and emit cannot deliver an older line after a newer one.
  *
  * <h2>Emission failures are contained</h2>
  * An assembled emission that throws is logged, metered, and swallowed: the raw chunk has
@@ -113,6 +128,8 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         private ChunkReorderBuffer<Envelope> reorder =
                 new ChunkReorderBuffer<>(REORDER_CAPACITY, REORDER_WINDOW_MS);
         private DirectSttTranscriptResultContext.Transport transport;
+        /** Highest sequence-space epoch seen; only ever advances. 0 = none seen yet. */
+        private long epoch;
         /**
          * The most recent envelope actually folded IN SOURCE ORDER. A close that is not
          * triggered by a specific fragment (idle, session end, transport switch) is
@@ -121,6 +138,11 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
          */
         private Envelope lastFoldedEnvelope;
         private long touchedAtMs;
+        /** Lines queued under the state lock, delivered in this order. */
+        private final java.util.Queue<Pending> outbox = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        /** Held while draining {@link #outbox} so deliveries cannot interleave. */
+        private final java.util.concurrent.locks.ReentrantLock deliveryLock =
+                new java.util.concurrent.locks.ReentrantLock();
 
         private SessionState(final long nowMs) {
             this.touchedAtMs = nowMs;
@@ -142,7 +164,7 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             return;
         }
 
-        final List<Pending> toEmit = new ArrayList<>();
+        final SessionState[] target = new SessionState[1];
         try {
             sessions.compute(
                     context.sessionId(),
@@ -150,7 +172,8 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                         final long receiptMs = clock.getAsLong();
                         final SessionState state =
                                 existing == null ? new SessionState(receiptMs) : existing;
-                        toEmit.addAll(accept(state, result, context, receiptMs));
+                        state.outbox.addAll(accept(state, result, context, receiptMs));
+                        target[0] = state;
                         return state;
                     });
         } catch (final RuntimeException ex) {
@@ -160,7 +183,30 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                     ex.getClass().getSimpleName());
             return;
         }
-        toEmit.forEach(this::emitAssembled);
+        drain(target[0]);
+    }
+
+    /**
+     * Deliver a session's queued lines in enqueue order.
+     *
+     * <p>The delivery lock is separate from the state lock so a durable write is never
+     * performed inside a map-segment lock, while still guaranteeing that two threads
+     * cannot deliver one session's lines out of order.
+     */
+    private void drain(final SessionState state) {
+        if (state == null) {
+            return;
+        }
+        state.deliveryLock.lock();
+        try {
+            for (Pending pending = state.outbox.poll();
+                    pending != null;
+                    pending = state.outbox.poll()) {
+                emitAssembled(pending);
+            }
+        } finally {
+            state.deliveryLock.unlock();
+        }
     }
 
     /** Fold one arrival into the session. Runs under the map's per-key lock. */
@@ -172,30 +218,56 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         final List<Pending> pending = new ArrayList<>();
         state.touchedAtMs = receiptMs;
 
-        // A transport switch restarts the window numbering, so the old sequence space
-        // must be closed out before the new leg's first fragment is folded.
-        if (state.transport != null && state.transport != context.transport()) {
+        final long incoming = context.transportEpoch();
+        final boolean epochsComparable = incoming > 0 && state.epoch > 0;
+
+        if (epochsComparable && incoming < state.epoch) {
+            // A straggler from a closed sequence space. It must not reopen that space,
+            // so it is neither folded nor allowed to move the epoch backwards.
+            count("assembly_stale_epoch_total", context.transport().name());
+            staleLine(envelopeOf(result, context, receiptMs)).ifPresent(pending::add);
+            return pending;
+        }
+
+        final boolean newSpace =
+                epochsComparable
+                        ? incoming > state.epoch
+                        // No epoch to compare: fall back to the weaker transport signal.
+                        : state.transport != null && state.transport != context.transport();
+        if (newSpace) {
             pending.addAll(foldOrdered(state, state.reorder.flushAll()));
             state.assembler.closeSession().ifPresent(u -> pending.add(pendingOf(state, u)));
             state.reorder = new ChunkReorderBuffer<>(REORDER_CAPACITY, REORDER_WINDOW_MS);
-            count("assembly_transport_switch_total", context.transport().name());
+            count("assembly_sequence_space_switch_total", context.transport().name());
         }
         state.transport = context.transport();
+        state.epoch = Math.max(state.epoch, incoming);
 
-        final Envelope envelope =
-                new Envelope(
-                        new SentenceAssembler.Fragment(
-                                eventIdOf(context),
-                                result == null ? null : result.text(),
-                                context.windowStartedAtMs(),
-                                context.windowEndedAtMs(),
-                                context.audioDurationMs(),
-                                receiptMs),
-                        context,
-                        result);
+        final Envelope envelope = envelopeOf(result, context, receiptMs);
         pending.addAll(
                 foldOrdered(state, state.reorder.offer(context.windowSeq(), receiptMs, envelope)));
         return pending;
+    }
+
+    private Envelope envelopeOf(
+            final TranscriptResult result,
+            final DirectSttTranscriptResultContext context,
+            final long receiptMs) {
+        return new Envelope(
+                new SentenceAssembler.Fragment(
+                        eventIdOf(context),
+                        result == null ? null : result.text(),
+                        context.windowStartedAtMs(),
+                        context.windowEndedAtMs(),
+                        context.audioDurationMs(),
+                        receiptMs),
+                context,
+                result);
+    }
+
+    /** A straggler from a closed sequence space, as its own line. */
+    private java.util.Optional<Pending> staleLine(final Envelope envelope) {
+        return standaloneLine(envelope, SentenceAssembler.REASON_STALE_EPOCH);
     }
 
     /**
@@ -210,20 +282,21 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         if (sessionId == null) {
             return;
         }
-        final List<Pending> toEmit = new ArrayList<>();
-        // Remove and drain atomically: a concurrent emit either runs before this and is
+        final SessionState[] closed = new SessionState[1];
+        // Remove and queue atomically: a concurrent emit either runs before this and is
         // included, or after it and rebuilds a fresh state — never appends to a buffer
         // that has already been dropped from the map.
         sessions.computeIfPresent(
                 sessionId,
                 (id, state) -> {
-                    toEmit.addAll(foldOrdered(state, state.reorder.flushAll()));
+                    state.outbox.addAll(foldOrdered(state, state.reorder.flushAll()));
                     state.assembler
                             .closeSession()
-                            .ifPresent(u -> toEmit.add(pendingOf(state, u)));
+                            .ifPresent(u -> state.outbox.add(pendingOf(state, u)));
+                    closed[0] = state;
                     return null;
                 });
-        toEmit.forEach(this::emitAssembled);
+        drain(closed[0]);
     }
 
     /**
@@ -235,23 +308,25 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
      */
     public void sweep() {
         final long now = clock.getAsLong();
-        final List<Pending> toEmit = new ArrayList<>();
         for (final String sessionId : List.copyOf(sessions.keySet())) {
+            final SessionState[] touched = new SessionState[1];
             sessions.computeIfPresent(
                     sessionId,
                     (id, state) -> {
-                        toEmit.addAll(foldOrdered(state, state.reorder.sweep(now)));
+                        state.outbox.addAll(foldOrdered(state, state.reorder.sweep(now)));
                         state.assembler
                                 .flushIfIdle(now)
-                                .ifPresent(u -> toEmit.add(pendingOf(state, u)));
+                                .ifPresent(u -> state.outbox.add(pendingOf(state, u)));
+                        touched[0] = state;
                         final boolean evict =
                                 !state.assembler.hasBufferedText()
                                         && !state.reorder.hasPending()
+                                        && state.outbox.isEmpty()
                                         && now - state.touchedAtMs >= SESSION_EVICT_AFTER_MS;
                         return evict ? null : state;
                     });
+            drain(touched[0]);
         }
-        toEmit.forEach(this::emitAssembled);
     }
 
     /** Test/observability helper — sessions currently holding assembler state. */
@@ -278,7 +353,8 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         for (final ChunkReorderBuffer.Release<Envelope> release : released) {
             final Envelope envelope = release.payload();
             if (release.lateAfterGap()) {
-                standaloneLateLine(envelope).ifPresent(pending::add);
+                standaloneLine(envelope, SentenceAssembler.REASON_LATE_AFTER_GAP)
+                        .ifPresent(pending::add);
                 continue;
             }
             state.lastFoldedEnvelope = envelope;
@@ -289,14 +365,21 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
         return pending;
     }
 
-    /** The out-of-order arrival as a line of its own, marked as such. */
-    private java.util.Optional<Pending> standaloneLateLine(final Envelope envelope) {
+    /**
+     * An arrival that must not join the open line, as a line of its own.
+     *
+     * <p>Used for both out-of-order stragglers: one whose gap was abandoned, and one from
+     * a sequence space that is already closed. In each case the text survives and the
+     * anomaly is visible in the provenance instead of hidden inside a sentence.
+     */
+    private java.util.Optional<Pending> standaloneLine(
+            final Envelope envelope, final String reason) {
         final String text =
                 envelope.fragment().text() == null ? "" : envelope.fragment().text().strip();
         if (text.isEmpty()) {
             return java.util.Optional.empty();
         }
-        count("assembled_lines_total", SentenceAssembler.REASON_LATE_AFTER_GAP);
+        count("assembled_lines_total", reason);
         return java.util.Optional.of(
                 new Pending(
                         new AssembledUtterance(
@@ -305,7 +388,7 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                                 envelope.fragment().startedAtMs(),
                                 envelope.fragment().endedAtMs(),
                                 envelope.fragment().speechDurationMs(),
-                                SentenceAssembler.REASON_LATE_AFTER_GAP),
+                                reason),
                         envelope));
     }
 
@@ -327,7 +410,8 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
             delegate.emit(
                     assembledResult(utterance, source.result()),
                     source.context().withAssembly(utterance));
-            if (!SentenceAssembler.REASON_LATE_AFTER_GAP.equals(utterance.flushReason())) {
+            if (!SentenceAssembler.REASON_LATE_AFTER_GAP.equals(utterance.flushReason())
+                    && !SentenceAssembler.REASON_STALE_EPOCH.equals(utterance.flushReason())) {
                 count("assembled_lines_total", utterance.flushReason());
             }
         } catch (final RuntimeException ex) {
@@ -374,8 +458,12 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
      * id (which is assigned later). This is the namespace {@code sourceEventIds} uses.
      */
     private static String eventIdOf(final DirectSttTranscriptResultContext context) {
-        // Window sequences restart per transport, so the transport has to be part of the
-        // identity or a fallback's "0:0" would be indistinguishable from the socket's.
-        return context.transport().name() + ":" + context.windowSeq() + ":" + context.chunkSeq();
+        // Window sequences restart per sequence space, so the epoch has to be part of the
+        // identity or a reconnect's "0:0" would be indistinguishable from the first leg's.
+        return context.transportEpoch()
+                + ":"
+                + context.windowSeq()
+                + ":"
+                + context.chunkSeq();
     }
 }

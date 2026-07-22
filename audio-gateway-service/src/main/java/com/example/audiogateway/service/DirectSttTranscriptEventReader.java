@@ -133,7 +133,8 @@ public class DirectSttTranscriptEventReader {
                 parseDouble(fields.get("durationSeconds")),
                 blankToNull(fields.get("correlationId")),
                 blankToNull(fields.get("assemblyReason")),
-                splitIds(fields.get("sourceEventIds")));
+                splitIds(fields.get("sourceEventIds")),
+                defaultLong(parseLong(fields.get("transportEpoch")), 0L));
     }
 
     /** Comma-joined source ids of an assembled line; empty for a raw chunk. */

@@ -50,6 +50,9 @@ public class RedisStreamDirectSttTranscriptResultSink implements DirectSttTransc
         fields.put("chunkSeq", Long.toString(context.chunkSeq()));
         fields.put("chunkStartedAtMs", Long.toString(context.chunkStartedAtMs()));
         fields.put("windowSeq", Long.toString(context.windowSeq()));
+        // Ordering key: windowSeq restarts per sequence space, so a consumer that wants
+        // chronological order must sort on (transportEpoch, windowSeq), not windowSeq.
+        fields.put("transportEpoch", Long.toString(context.transportEpoch()));
         fields.put("firstChunkSeq", Long.toString(context.firstChunkSeq()));
         fields.put("lastChunkSeq", Long.toString(context.lastChunkSeq()));
         fields.put("windowStartedAtMs", Long.toString(context.windowStartedAtMs()));
