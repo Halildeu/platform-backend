@@ -587,11 +587,20 @@ class SentenceAssemblingSinkTest {
                 .isGreaterThan(gapClosed.context().windowSeq());
     }
 
+    /**
+     * Observes that a second line produced during a slow first delivery still arrives
+     * second.
+     *
+     * <p><b>Limits (Codex {@code 019f8715}).</b> This does NOT reproduce the original
+     * race, which needed a thread to pause between enqueue and entering the delegate so a
+     * second drain could overtake it — reachable only with a hook inside the delivery
+     * path. So it is a smoke test for ordering, not a load-bearing proof of the outbox.
+     * The guarantee itself rests on the structure: enqueue happens in the session's
+     * {@code compute} order, the queue is FIFO, and every drain is serialised on the same
+     * per-session delivery lock.
+     */
     @Test
     void a_concurrent_sweep_and_emit_deliver_a_session_in_enqueue_order() throws Exception {
-        // State access is serialised, but delivery happens outside that lock. Without the
-        // per-session outbox + delivery lock, a slow delivery could let a newer line
-        // overtake an older one.
         final java.util.concurrent.CountDownLatch firstDeliveryStarted =
                 new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch release =

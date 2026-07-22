@@ -96,6 +96,9 @@ class RedisStreamDirectSttTranscriptResultSinkTest {
                 .containsEntry("schemaVersion", "audioGateway.directSttTranscriptResult.v1")
                 .containsEntry("eventType", "DIRECT_STT_TRANSCRIPT_RESULT")
                 .containsEntry("sessionId", "SES-abc")
+                // Ordering key: windowSeq restarts per sequence space, so a consumer can
+                // only order correctly if the epoch travels with it.
+                .containsEntry("transportEpoch", "1")
                 .containsEntry("tenantId", "42")
                 .containsEntry("userId", "7")
                 .containsEntry("meetingId", "22222222-2222-4222-8222-222222222222")

@@ -78,6 +78,12 @@ class LiveTranscriptBroadcastSinkTest {
                 .isEqualTo(com.example.audiogateway.dto.LiveTranscriptEvent.STATUS_DRAFT);
         assertThat(published.get(0).assemblyReason()).isNull();
         assertThat(published.get(0).sourceEventIds()).isEmpty();
+        // Pre-existing fields must survive the wrapper — the broadcast uses this type
+        // whether or not assembly is enabled, so a dropped field is a silent regression
+        // on a default-off feature. And the ordering key has to reach the viewer.
+        assertThat(published.get(0).segments()).isNull();
+        assertThat(published.get(0).transportEpoch()).isEqualTo(1L);
+        assertThat(published.get(0).windowSeq()).isZero();
 
         assertThat(published.get(1).status())
                 .isEqualTo(com.example.audiogateway.dto.LiveTranscriptEvent.STATUS_UTTERANCE);
