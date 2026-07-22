@@ -549,6 +549,90 @@ class SentenceAssemblingSinkTest {
     }
 
     @Test
+    void a_gap_closed_line_keeps_its_own_window_not_the_new_fragments() {
+        // One offer closes TWO lines: the speech gap closes window 0's line, and
+        // window 1's punctuation closes its own. Giving both the new fragment's carrier
+        // would hand the older line the newer ordering key — and could give both the
+        // same (epoch, windowSeq).
+        final SentenceAssemblingSink sink = sink(recorder);
+
+        now.set(1_000);
+        sink.emit(
+                new TranscriptResult(
+                        "önceki cümle", "tr", 0.9d, 2.0d, 50.0d, "win0-model", "int8", "cpu", null),
+                context(0, 0, 1_000, DirectSttTranscriptResultContext.Transport.REST, 5L));
+        // 3 s source gap, then a fragment that ends a sentence.
+        now.set(2_000);
+        sink.emit(
+                new TranscriptResult(
+                        "Yeni cümle.", "tr", 0.9d, 2.0d, 50.0d, "win1-model", "int8", "cpu", null),
+                context(1, 4_000, 1_000, DirectSttTranscriptResultContext.Transport.REST, 5L));
+
+        final List<Emission> assembled =
+                emissions.stream().filter(e -> e.context().assembly() != null).toList();
+        assertThat(assembled).hasSize(2);
+
+        final Emission gapClosed = assembled.get(0);
+        assertThat(gapClosed.result().text()).isEqualTo("önceki cümle");
+        assertThat(gapClosed.context().windowSeq()).isZero();
+        assertThat(gapClosed.result().model()).isEqualTo("win0-model");
+
+        final Emission punctuationClosed = assembled.get(1);
+        assertThat(punctuationClosed.result().text()).isEqualTo("Yeni cümle.");
+        assertThat(punctuationClosed.context().windowSeq()).isEqualTo(1);
+        assertThat(punctuationClosed.result().model()).isEqualTo("win1-model");
+
+        // The ordering key must move forward between the two lines.
+        assertThat(punctuationClosed.context().windowSeq())
+                .isGreaterThan(gapClosed.context().windowSeq());
+    }
+
+    @Test
+    void a_concurrent_sweep_and_emit_deliver_a_session_in_enqueue_order() throws Exception {
+        // State access is serialised, but delivery happens outside that lock. Without the
+        // per-session outbox + delivery lock, a slow delivery could let a newer line
+        // overtake an older one.
+        final java.util.concurrent.CountDownLatch firstDeliveryStarted =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        final List<String> delivered = java.util.Collections.synchronizedList(new ArrayList<>());
+        final SentenceAssemblingSink sink =
+                sink(
+                        (result, context) -> {
+                            if (context == null || context.assembly() == null) {
+                                return;
+                            }
+                            delivered.add(result.text());
+                            if (delivered.size() == 1) {
+                                firstDeliveryStarted.countDown();
+                                try {
+                                    release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                                } catch (final InterruptedException ex) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                        });
+
+        // First line closes and its delivery blocks inside the delegate.
+        final Thread first =
+                new Thread(() -> offer(sink, "birinci cümle.", 0, 0, 1_000));
+        first.start();
+        assertThat(firstDeliveryStarted.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+        // A second line is produced while the first is still being delivered.
+        final Thread second =
+                new Thread(() -> offer(sink, "ikinci cümle.", 1, 1_100, 1_000));
+        second.start();
+        Thread.sleep(50);
+        release.countDown();
+        first.join(5_000);
+        second.join(5_000);
+
+        assertThat(delivered).containsExactly("birinci cümle.", "ikinci cümle.");
+    }
+
+    @Test
     void closing_an_unknown_session_is_a_no_op() {
         final SentenceAssemblingSink sink = sink(recorder);
 

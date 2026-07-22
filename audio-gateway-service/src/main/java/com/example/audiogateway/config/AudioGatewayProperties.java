@@ -428,6 +428,18 @@ public class AudioGatewayProperties {
                 }
                 return;
             }
+            if (sentenceAssembly.isEnabled() && !aggregation.isEnabled()) {
+                // Sentence assembly reconciles order and detects a reconnect by the
+                // sequence-space epoch, and only the aggregation window can name a space.
+                // Without it the sink would fall back to comparing transports, which
+                // cannot see a socket reconnecting and lets a straggler flip the session
+                // back and forth. Refusing to start is honest; silently degrading to a
+                // weaker ordering guarantee is not.
+                throw new IllegalStateException(
+                        "audio.gateway.direct-stt.aggregation.enabled must be true when "
+                                + "sentence-assembly.enabled is true (assembly needs the "
+                                + "aggregation window to identify a sequence space)");
+            }
             if (transcribeUrl == null || transcribeUrl.isBlank()) {
                 throw new IllegalStateException(
                         "audio.gateway.direct-stt.transcribe-url must be set when direct-stt is enabled");

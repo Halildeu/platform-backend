@@ -357,9 +357,18 @@ public final class SentenceAssemblingSink implements DirectSttTranscriptResultSi
                         .ifPresent(pending::add);
                 continue;
             }
+            // One offer can close TWO lines: a source-audio gap closes the previous
+            // buffer before this fragment opens a new one. Those two lines belong to
+            // different windows, so they cannot share a carrier — doing so would give
+            // the older line the newer window's ordering key, and could even give both
+            // lines the same (epoch, windowSeq).
+            final Envelope previous = state.lastFoldedEnvelope;
+            final String currentId = envelope.fragment().eventId();
             state.lastFoldedEnvelope = envelope;
             for (final AssembledUtterance utterance : state.assembler.offer(envelope.fragment())) {
-                pending.add(new Pending(utterance, envelope));
+                final Envelope carrier =
+                        utterance.sourceEventIds().contains(currentId) ? envelope : previous;
+                pending.add(new Pending(utterance, carrier));
             }
         }
         return pending;
