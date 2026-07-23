@@ -49,7 +49,7 @@ class EthicsServiceMailboxTimingTest {
                 new EthicsProperties(UUID.randomUUID(), Duration.ofMinutes(15), 120_000,
                         "ethics-manager", "ethics-manager", true, 30),
                 secrets, cases, reports, grants, messages, sessions, audit, idempotency,
-                authorization, transactionLocks, new ObjectMapper());
+                authorization, transactionLocks, new PublicIntakeSanitizer(), new ObjectMapper());
     }
 
     @Test

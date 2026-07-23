@@ -3,6 +3,8 @@ package com.example.ethics.api;
 import com.example.ethics.api.EthicsDtos.*;
 import com.example.ethics.security.PublicCredentialBoundaryFilter;
 import com.example.ethics.service.EthicsService;
+import io.github.resilience4j.bulkhead.annotation.Bulkhead;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -17,12 +19,16 @@ public class PublicEthicsController {
     public PublicEthicsController(EthicsService service){this.service=service;}
 
     @PostMapping("/reports")
+    @RateLimiter(name = "publicIntake")
+    @Bulkhead(name = "publicIntake")
     ResponseEntity<CreateReportResponse> create(HttpServletRequest servletRequest,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody CreateReportRequest request){
         CreateReportResponse result=service.createReport(servletRequest.getServerName(),key,request);
         return ResponseEntity.status(result.idempotentReplay()?HttpStatus.OK:HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(result);
     }
 
     @PostMapping("/mailbox/sessions")
+    @RateLimiter(name = "publicMailbox")
+    @Bulkhead(name = "publicMailbox")
     MailboxSessionResponse login(@Valid @RequestBody MailboxLoginRequest request,HttpServletRequest servletRequest,HttpServletResponse response){
         EthicsService.SessionGrant grant=service.openMailbox(servletRequest.getServerName(),request);
         ResponseCookie cookie=ResponseCookie.from(PublicCredentialBoundaryFilter.MAILBOX_COOKIE,grant.token()).httpOnly(true).secure(true).sameSite("Strict").path("/").maxAge(java.time.Duration.between(java.time.Instant.now(),grant.expiresAt())).build();
@@ -38,6 +44,8 @@ public class PublicEthicsController {
     }
 
     @PostMapping("/mailbox/messages")
+    @RateLimiter(name = "publicMailbox")
+    @Bulkhead(name = "publicMailbox")
     ResponseEntity<MessageResponse> reply(HttpServletRequest request,@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody MessageRequest body){return ResponseEntity.status(HttpStatus.CREATED).cacheControl(CacheControl.noStore()).body(service.reporterReply(request.getServerName(),mailboxToken(request),key,body));}
 
     @DeleteMapping("/mailbox/session")

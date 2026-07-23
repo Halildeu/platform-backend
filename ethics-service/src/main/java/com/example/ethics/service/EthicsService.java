@@ -28,17 +28,20 @@ public class EthicsService {
     private final IntakeIdempotencyRepository idempotency;
     private final EthicsAuthorization authorization;
     private final TransactionKeyLock transactionLocks;
+    private final PublicIntakeSanitizer publicIntakeSanitizer;
     private final ObjectMapper auditMapper;
     private final String dummyMailboxHash;
 
     public EthicsService(EthicsProperties properties, SecretHasher secrets, EthicsCaseRepository cases,
             EthicsReportRepository reports, ReporterAccessGrantRepository grants, EthicsMessageRepository messages,
             MailboxSessionRepository sessions, AuditOutboxRepository audit, IntakeIdempotencyRepository idempotency,
-            EthicsAuthorization authorization, TransactionKeyLock transactionLocks, ObjectMapper auditMapper) {
+            EthicsAuthorization authorization, TransactionKeyLock transactionLocks,
+            PublicIntakeSanitizer publicIntakeSanitizer, ObjectMapper auditMapper) {
         this.properties=properties;this.secrets=secrets;this.cases=cases;this.reports=reports;this.grants=grants;
         this.messages=messages;this.sessions=sessions;this.audit=audit;this.idempotency=idempotency;
         this.authorization=authorization;
         this.transactionLocks=transactionLocks;
+        this.publicIntakeSanitizer=publicIntakeSanitizer;
         this.auditMapper=auditMapper;
         // Missing receipts, wrong channels and locked grants must spend the
         // same PBKDF work as a wrong secret. This process-local value is never
@@ -49,6 +52,7 @@ public class EthicsService {
     @Transactional
     public CreateReportResponse createReport(String channel, String key, CreateReportRequest request) {
         if (key == null || key.isBlank() || key.length() > 200) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Idempotency-Key is required.");
+        publicIntakeSanitizer.validateReport(request);
         String normalizedChannel = normalizeChannel(channel);
         UUID orgId = properties.publicOrgId();
         if (request.mode()!=ReportMode.ANONYMOUS) throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,"REPORT_MODE_NOT_ENABLED");
@@ -113,6 +117,7 @@ public class EthicsService {
 
     @Transactional
     public MessageResponse reporterReply(String channel,String token,String key,MessageRequest request) {
+        publicIntakeSanitizer.validateMessage(request);
         UUID caseId=caseForSession(channel,token);
         return createMessage(caseId,"REPORTER","REPORTER_VISIBLE",key,request.body(),properties.publicOrgId(),"reporter",
                 () -> ensureOpen(cases.findById(caseId).orElseThrow(EthicsService::genericMailboxDeny)));

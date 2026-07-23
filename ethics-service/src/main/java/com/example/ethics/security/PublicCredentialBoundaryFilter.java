@@ -18,6 +18,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     public static final String MAILBOX_COOKIE = "__Host-etik_mailbox";
     public static final String TRANSPORT_HEADER = "X-Etik-Speak-Transport";
+    // Standard ingress header; accepted as fallback when the dedicated
+    // transport header is dropped by an ingress render quirk. Trust boundary
+    // is unchanged: NetworkPolicy admits only ingress-nginx.
+    public static final String FORWARDED_PROTO_HEADER = "X-Forwarded-Proto";
     private final ObjectMapper mapper;
     private final EthicsProperties properties;
 
@@ -34,25 +38,11 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        // Faz 35 ES-306 hardening — secure-transport gate ingress-nginx
-        // `X-Etik-Speak-Transport: https` header'ını ya da standard
-        // `X-Forwarded-Proto: https` (ingress-nginx `use-forwarded-headers`
-        // altında otomatik set eder) header'ını kabul eder. Bu ikinci yol
-        // ingress-nginx v1.9+ `proxy-set-headers` ConfigMap içindeki custom
-        // header'ları render etmeyen (alfabetik-first-only) quirk için canonical
-        // workaround; ayrıca sektör-standardı (nginx reverse-proxy defaults +
-        // Spring Boot server.forward-headers-strategy=NATIVE) uyumludur.
-        if (Boolean.TRUE.equals(properties.secureTransportRequired())
-                && !isSecureTransport(request)) {
+        if (Boolean.TRUE.equals(properties.secureTransportRequired()) && !isHttpsIngress(request)) {
             writeBoundaryError(request, response, "SECURE_TRANSPORT_REQUIRED",
                     "Bu public işlem yalnız doğrulanmış HTTPS ingress üzerinden kullanılabilir.");
             return;
         }
-        // Faz 35 ES-306 hardening — ingress-nginx `Authorization: ""` empty-set
-        // rendering'i (basic-auth remove sonrası boş string) backend'e null
-        // değil empty header olarak gelir. `getHeader() != null` check bu
-        // durumu foreign-credential olarak yorumlar + CREDENTIAL_CONFUSION
-        // reject. Fix: null + isBlank() birlikte kontrol (defense-in-depth).
         String authorization = request.getHeader("Authorization");
         boolean hasAuthorization = authorization != null && !authorization.isBlank();
         boolean hasForeignCookie = false;
@@ -72,21 +62,14 @@ public class PublicCredentialBoundaryFilter extends OncePerRequestFilter {
         chain.doFilter(request, response);
     }
 
-    /**
-     * Verifies the request arrived over HTTPS. Accepts either the Faz 35
-     * dedicated transport proof header ({@code X-Etik-Speak-Transport: https})
-     * or the standard {@code X-Forwarded-Proto: https} reverse-proxy header.
-     * Both must be set by a trusted ingress; direct client control is
-     * prevented by the boundary NetworkPolicy (application only accepts
-     * traffic from the ingress-nginx namespace).
-     */
-    private boolean isSecureTransport(HttpServletRequest request) {
-        String etikTransport = request.getHeader(TRANSPORT_HEADER);
-        if ("https".equalsIgnoreCase(etikTransport)) {
-            return true;
-        }
-        String forwardedProto = request.getHeader("X-Forwarded-Proto");
-        return "https".equalsIgnoreCase(forwardedProto);
+    // Ingress-nginx sets X-Etik-Speak-Transport via proxy-set-headers.
+    // When that snippet is dropped (rare render/config drift), the standard
+    // X-Forwarded-Proto is accepted so the boundary does not open-fail on
+    // header-only glitches. The transport trust root is the NetworkPolicy,
+    // not the header value itself.
+    private boolean isHttpsIngress(HttpServletRequest request) {
+        return "https".equalsIgnoreCase(request.getHeader(TRANSPORT_HEADER))
+                || "https".equalsIgnoreCase(request.getHeader(FORWARDED_PROTO_HEADER));
     }
 
     private void writeBoundaryError(

@@ -1,6 +1,8 @@
 package com.example.ethics.api;
 
 import com.example.ethics.security.SensitiveResponseHeadersFilter;
+import io.github.resilience4j.bulkhead.BulkheadFullException;
+import io.github.resilience4j.ratelimiter.RequestNotPermitted;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import org.springframework.http.*;
@@ -17,6 +19,16 @@ public class ApiExceptionHandler {
     ResponseEntity<Map<String,Object>> validation(HttpServletRequest request){return ResponseEntity.badRequest().body(error("VALIDATION_FAILED","Gönderilen bilgiler doğrulanamadı.",request));}
     @ExceptionHandler(OptimisticLockingFailureException.class)
     ResponseEntity<Map<String,Object>> optimistic(HttpServletRequest request){return ResponseEntity.status(HttpStatus.PRECONDITION_FAILED).body(error("CASE_VERSION_MISMATCH","Vaka başka bir yetkili tarafından güncellendi.",request));}
+    @ExceptionHandler(RequestNotPermitted.class)
+    ResponseEntity<Map<String,Object>> rateLimited(HttpServletRequest request){
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header(HttpHeaders.RETRY_AFTER,"1")
+                .body(error("RATE_LIMITED","İstek sıklığı sınırı aşıldı. Lütfen kısa süre sonra tekrar deneyin.",request));
+    }
+    @ExceptionHandler(BulkheadFullException.class)
+    ResponseEntity<Map<String,Object>> bulkheadFull(HttpServletRequest request){
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).header(HttpHeaders.RETRY_AFTER,"1")
+                .body(error("SERVICE_BUSY","Sistem yoğun. Lütfen birkaç saniye sonra tekrar deneyin.",request));
+    }
     private static String code(ResponseStatusException ex){
         String reason=ex.getReason();
         if(reason!=null&&reason.matches("[A-Z_]+")) return reason;

@@ -29,3 +29,26 @@ ethics:
 erp:
   openfga:
     enabled: false
+# Default test ceilings are effectively disabled so pre-existing MockMvc
+# suites (5+ sequential POST intake) stay green. Rate-limit / bulkhead
+# behaviour under load is covered by dedicated tests that override these
+# ceilings via @TestPropertySource + @DirtiesContext.
+resilience4j:
+  ratelimiter:
+    instances:
+      publicIntake:
+        limit-for-period: 100000
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      publicMailbox:
+        limit-for-period: 100000
+        limit-refresh-period: 1s
+        timeout-duration: 0
+  bulkhead:
+    instances:
+      publicIntake:
+        max-concurrent-calls: 1000
+        max-wait-duration: 0
+      publicMailbox:
+        max-concurrent-calls: 1000
+        max-wait-duration: 0
