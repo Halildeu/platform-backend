@@ -655,6 +655,27 @@ class TranscriptCanonicalTransactionPostgresIntegrationTest {
     }
 
     @Test
+    void associationResolutionFailurePersistsTypedRetryTimestamp() {
+        UUID associationId = UUID.randomUUID();
+        UUID claimToken = UUID.randomUUID();
+        insertAssociation(associationId, TENANT, MEETING, "SES-retry", null,
+                "RESOLVING", claimToken, 0);
+        Instant failedAt = Instant.now()
+                .truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        Instant retryAt = failedAt.plusSeconds(5);
+
+        assertThat(associationStore.fail(
+                associationId, claimToken, "SESSION_NOT_FOUND",
+                3, false, retryAt, failedAt)).isTrue();
+
+        var pending = associations.findById(associationId).orElseThrow();
+        assertThat(pending.getStatus()).isEqualTo(TranscriptSessionAssociationStatus.PENDING);
+        assertThat(pending.getResolutionAttempts()).isEqualTo(1);
+        assertThat(pending.getNextRetryAt()).isEqualTo(retryAt);
+        assertThat(pending.getLastErrorCode()).isEqualTo("SESSION_NOT_FOUND");
+    }
+
+    @Test
     void publishThenCrashLeaseRecoveryIsBackedOffRetryableAndFenced() {
         insertResolvedAssociation();
         saveSegment(TENANT, MEETING, SESSION, "SES-42", 1L,
