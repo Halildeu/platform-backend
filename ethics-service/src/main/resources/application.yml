@@ -45,6 +45,17 @@ ethics:
   # Public mutations are accepted only after ingress-nginx overwrites the
   # transport proof header. The NetworkPolicy admits only that namespace.
   secure-transport-required: ${ETHICS_SECURE_TRANSPORT_REQUIRED:true}
+  # Faz 35 ES multi-tenant public intake — host → org mapping. Empty by default:
+  # every public host falls back to public-org-id above (single-tenant cell).
+  # Adding a customer = one entry here + their ingress host + staff realm org_id
+  # claim. No data-model change (every entity is already org_id-scoped).
+  # Example (bracket notation preserves dotted host keys):
+  #   ethics:
+  #     tenancy:
+  #       public-hosts:
+  #         "[ihbar.firma.com]": 11111111-1111-1111-1111-111111111111
+  tenancy:
+    public-hosts: {}
 
 erp:
   openfga:

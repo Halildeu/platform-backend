@@ -45,11 +45,14 @@ class EthicsServiceMailboxTimingTest {
     void setUp() {
         when(secrets.newSecret()).thenReturn("process-local-dummy-secret");
         when(secrets.hash(anyString(), anyInt())).thenReturn("process-local-dummy-hash");
+        EthicsProperties props = new EthicsProperties(UUID.randomUUID(), Duration.ofMinutes(15), 120_000,
+                "ethics-manager", "ethics-manager", true, 30);
         service = new EthicsService(
-                new EthicsProperties(UUID.randomUUID(), Duration.ofMinutes(15), 120_000,
-                        "ethics-manager", "ethics-manager", true, 30),
+                props,
                 secrets, cases, reports, grants, messages, sessions, audit, idempotency,
-                authorization, transactionLocks, new PublicIntakeSanitizer(), new ObjectMapper());
+                authorization, transactionLocks, new PublicIntakeSanitizer(), new ObjectMapper(),
+                new com.example.ethics.security.PublicTenantResolver(
+                        props, new com.example.ethics.config.PublicTenantProperties(java.util.Map.of())));
     }
 
     @Test
